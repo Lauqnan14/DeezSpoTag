@@ -3316,20 +3316,7 @@ public sealed class SpotifyArtistService
             }
         }
 
-        try
-        {
-            var defaults = await _autoTagDefaultsStore.LoadAsync();
-            return defaults.RenameSpotifyArtistFolders != false;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to read enhancement defaults for Spotify artist folder canonicalization.");
-            }
-
-            return true;
-        }
+        return true;
     }
 
     private static bool TryGetRenameSpotifyArtistFoldersFromProfile(TaggingProfile? profile, out bool value)

@@ -282,7 +282,6 @@
 
 
     const AUTOTAG_SELECTED_PLATFORMS_KEY = "autotag-selected-platforms";
-    const AUTOTAG_PREFERENCES_KEY = "autotag-preferences";
     const AUTOTAG_ACTIVE_PROFILE_KEY = "autotag-active-profile-id";
     const AUTOTAG_FOLDER_UNIFORMITY_JOB_KEY = "autotag-folder-uniformity-job-id";
     const AUTOTAG_FOLDER_UNIFORMITY_STATUS_SNAPSHOT_KEY = "autotag-folder-uniformity-status-snapshot";
@@ -1833,7 +1832,7 @@
     }
 
     function resolveCoverMaintenanceTargetResolution(artworkSettings = null) {
-        const settings = artworkSettings || readArtworkSettingsFromUI(state.settingsCache || {});
+        const settings = artworkSettings || readArtworkSettingsFromUI();
         const fallbackEnabled = settings.artworkFallbackEnabled ?? true;
         const providerOrder = fallbackEnabled
             ? normalizeProviderOrder(settings.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","), ARTWORK_SOURCE_ORDER)
@@ -1872,7 +1871,7 @@
     }
 
     function resolveCoverMaintenancePolicyFromTechnical(artworkSettings = null) {
-        const settings = artworkSettings || readArtworkSettingsFromUI(state.settingsCache || {});
+        const settings = artworkSettings || readArtworkSettingsFromUI();
         const fallbackEnabled = settings.artworkFallbackEnabled ?? true;
         const providerOrder = fallbackEnabled
             ? normalizeProviderOrder(settings.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","), ARTWORK_SOURCE_ORDER)
@@ -2765,19 +2764,6 @@
         storeSelectedPlatforms();
     }
 
-    function loadStoredPreferences() {
-        try {
-            const stored = localStorage.getItem(AUTOTAG_PREFERENCES_KEY);
-            if (!stored) {
-                return null;
-            }
-            return JSON.parse(stored);
-        } catch (error) {
-            console.warn("Failed to load AutoTag preferences", error);
-            return null;
-        }
-    }
-
     function normalizeStoredProfileId(value) {
         const normalized = typeof value === "string" ? value.trim() : "";
         return normalized.length > 0 ? normalized : null;
@@ -2835,7 +2821,7 @@
 
     function formatCoverMaintenancePolicySummary() {
         ensureEnhancementDefaults();
-        const policy = resolveCoverMaintenancePolicyFromTechnical(readArtworkSettingsFromUI(state.settingsCache || {}));
+        const policy = resolveCoverMaintenancePolicyFromTechnical(readArtworkSettingsFromUI());
         const targetPolicy = policy.targetPolicy;
         if (targetPolicy.mode === "platform" && targetPolicy.platformName) {
             return `Cover target: inherit ${targetPolicy.platformName} art_resolution (${targetPolicy.resolution}px).`;
@@ -3106,16 +3092,13 @@
         if (select) {
             select.value = profileId;
         }
-        const autoTagData = profile.autoTag?.data
-            || profile.autoTag
-            || profile.AutoTag?.data
+        const autoTagData = profile.autoTag
             || profile.AutoTag
             || {};
         applyProfileConfig(autoTagData);
         applyFolderStructureToUI(profile.folderStructure || profile.FolderStructure);
         applyTechnicalSettingsToUI(profile.technical || profile.Technical);
         applyProfileScopedExtrasToUI(autoTagData);
-        void applyProfileScopedLibrarySettings(autoTagData);
         const nameInput = el("autotag-profile-name");
         if (nameInput) {
             nameInput.value = profile.name || profile.Name || "";
@@ -3167,19 +3150,6 @@
                 requireActiveProfile: true,
                 applyToRuntime: true
             });
-            await saveEnhancementDefaults({
-                skipProfileUpsert: true,
-                suppressToast: true,
-                suppressStatus: true,
-                rethrow: true
-            });
-            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "");
-            try {
-                localStorage.setItem(AUTOTAG_PREFERENCES_KEY, JSON.stringify(config));
-                if (globalThis.UserPrefs) globalThis.UserPrefs.set('autoTagPreferences', config);
-            } catch (storageError) {
-                console.warn("Failed to persist AutoTag preference cache", storageError);
-            }
             showToast(`Preferences saved for profile "${activeProfileName}".`, "success");
         } catch (error) {
             console.error("Failed to save AutoTag preferences.", error);
@@ -3752,7 +3722,7 @@
         state.config.capitalizeGenres = getChecked("autotag-capitalize-genres", state.config.capitalizeGenres);
         state.config.custom.itunes.art_resolution = Number.parseInt(getValue("autotag-itunes-art-resolution", state.config.custom?.itunes?.art_resolution || 1000), 10) || 1000;
         state.config.custom.itunes.animated_artwork = getAnimatedArtworkValue(
-            state.config.custom?.itunes?.animated_artwork ?? state.settingsCache?.saveAnimatedArtwork ?? false
+            state.config.custom?.itunes?.animated_artwork ?? false
         );
         state.config.downloadTagSource = normalizeDownloadTagSource(getDownloadTagSource() || state.config.downloadTagSource || "engine");
     }
@@ -4426,7 +4396,7 @@
         try {
             const config = readConfigFromUI();
             const options = config.enhancement.coverMaintenance;
-            const artworkSettings = readArtworkSettingsFromUI(state.settingsCache || {});
+            const artworkSettings = readArtworkSettingsFromUI();
             const policy = resolveCoverMaintenancePolicyFromTechnical(artworkSettings);
             const targetPolicy = policy.targetPolicy;
             const inheritedTargetResolution = targetPolicy.mode === "platform" ? targetPolicy.resolution : null;
@@ -5390,134 +5360,6 @@
         field.checked = value;
     }
 
-    function applyLyricsSettingsToUI(settings) {
-        if (!settings) {
-            return;
-        }
-
-        const saveLyrics = document.getElementById("saveLyrics");
-        if (saveLyrics) {
-            saveLyrics.checked = settings.saveLyrics === true || settings.syncedLyrics === true;
-        }
-
-        const embedLyrics = document.getElementById("embedLyrics");
-        if (embedLyrics) {
-            embedLyrics.checked = settings.embedLyrics !== false;
-        }
-
-        const lrcType = document.getElementById("lrcType");
-        if (lrcType) {
-            lrcType.value = normalizeLyricsTypeSetting(settings.lrcType || DEFAULT_LYRICS_TYPE_SELECTION);
-        }
-
-        const lrcFormat = document.getElementById("lrcFormat");
-        if (lrcFormat) {
-            lrcFormat.value = normalizeEmbedLyricsFormat(settings.lrcFormat || "both");
-        }
-
-        const fallbackEnabled = document.getElementById("lyricsFallbackEnabled");
-        if (fallbackEnabled) {
-            fallbackEnabled.checked = settings.lyricsFallbackEnabled !== false;
-        }
-
-        const fallbackOrder = document.getElementById("lyricsFallbackOrder");
-        if (fallbackOrder) {
-            fallbackOrder.value = settings.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(",");
-        }
-
-        if (state.syncLyricsFallbackOrder) {
-            state.syncLyricsFallbackOrder();
-        }
-        syncDefaultSourceSelectFromOrder(
-            "lyricsDefaultSource",
-            fallbackOrder?.value || settings.lyricsFallbackOrder,
-            LYRICS_SOURCE_ORDER
-        );
-
-        if (state.syncLyricsTypeSelection) {
-            state.syncLyricsTypeSelection();
-        }
-
-        updateEmbedLyricsFormatVisibility();
-        syncFallbackSourceControls();
-    }
-
-    function applyTemplateSettingsToUI(settings) {
-        if (!settings) {
-            return;
-        }
-
-        const trackTemplate = document.getElementById("autotag-trackname-template");
-        if (trackTemplate) {
-            trackTemplate.value = settings.tracknameTemplate || "";
-        }
-
-        renderFolderStructurePreview();
-    }
-
-    function applyArtworkSettingsToUI(settings) {
-        if (!settings) {
-            return;
-        }
-
-        applyFieldCheckedTrueOnly("saveArtwork", settings.saveArtwork);
-        applyFieldCheckedTrueOnly("saveAnimatedArtwork", settings.saveAnimatedArtwork);
-        applyFieldCheckedTrueOnly("dlAlbumcoverForPlaylist", settings.dlAlbumcoverForPlaylist);
-        applyFieldCheckedTrueOnly("saveArtworkArtist", settings.saveArtworkArtist);
-        applyFieldValueIfPresent("coverImageTemplate", settings.coverImageTemplate ?? "cover");
-        applyFieldValueIfPresent("artistImageTemplate", settings.artistImageTemplate ?? "folder");
-        applyFieldValueIfPresent("localArtworkFormat", settings.localArtworkFormat ?? "jpg");
-        applyFieldCheckedTrueOnly("embedMaxQualityCover", settings.embedMaxQualityCover ?? true);
-        applyFieldCheckedTrueOnly("artworkFallbackEnabled", settings.artworkFallbackEnabled ?? true);
-        applyFieldValueIfPresent("artworkFallbackOrder", settings.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(","));
-        applyFieldCheckedTrueOnly("artistArtworkFallbackEnabled", settings.artistArtworkFallbackEnabled ?? settings.artworkFallbackEnabled ?? true);
-        applyFieldValueIfPresent("artistArtworkFallbackOrder", settings.artistArtworkFallbackOrder ?? settings.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(","));
-        applyFieldCheckedTrueOnly("coverDescriptionUTF8", settings.tags?.coverDescriptionUTF8 ?? settings.coverDescriptionUTF8);
-        applyFieldValueIfPresent("jpegImageQuality", settings.jpegImageQuality ?? 90);
-        refreshArtworkTemplateFieldState();
-
-        loadItunesArtOptions();
-        updateCoverMaintenanceTargetResolutionPolicyUI();
-
-        if (state.syncArtworkFallbackOrder) {
-            state.syncArtworkFallbackOrder();
-        }
-        syncDefaultSourceSelectFromOrder("artworkDefaultSource", settings.artworkFallbackOrder, ARTWORK_SOURCE_ORDER);
-        if (state.syncArtistArtworkFallbackOrder) {
-            state.syncArtistArtworkFallbackOrder();
-        }
-        syncDefaultSourceSelectFromOrder(
-            "artistArtworkDefaultSource",
-            settings.artistArtworkFallbackOrder ?? settings.artworkFallbackOrder,
-            ARTWORK_SOURCE_ORDER
-        );
-        syncFallbackSourceControls();
-    }
-
-    function applyOtherSettingsToUI(settings) {
-        if (!settings) {
-            return;
-        }
-
-        applyFieldValueIfPresent("dateFormat", settings.dateFormat ?? "Y-M-D");
-        applyFieldCheckedTrueOnly("albumVariousArtists", settings.albumVariousArtists);
-        applyFieldCheckedTrueOnly("removeAlbumVersion", settings.removeAlbumVersion);
-        applyFieldCheckedTrueOnly("removeDuplicateArtists", settings.removeDuplicateArtists);
-        applyFieldValueIfPresent("featuredToTitle", settings.featuredToTitle ?? "0");
-        applyFieldValueIfPresent("titleCasing", settings.titleCasing ?? "nothing");
-        applyFieldValueIfPresent("artistCasing", settings.artistCasing ?? "nothing");
-
-        if (settings.tags) {
-            applyFieldCheckedTrueOnly("savePlaylistAsCompilation", settings.tags.savePlaylistAsCompilation);
-            applyFieldCheckedTrueOnly("useNullSeparator", settings.tags.useNullSeparator);
-            applyFieldCheckedTrueOnly("saveID3v1", settings.tags.saveID3v1);
-            applyFieldValueIfPresent("multiArtistSeparator", settings.tags.multiArtistSeparator ?? "default");
-            applyFieldCheckedTrueOnly("singleAlbumArtist", settings.tags.singleAlbumArtist ?? true);
-        }
-
-        syncMultiArtistHandlingState();
-    }
-
     function applyTechnicalSettingsToUI(technical) {
         if (!technical) {
             return;
@@ -5572,25 +5414,6 @@
         syncMultiArtistHandlingState();
     }
 
-    function applyFolderStructureSettingsToUI(settings) {
-        if (!settings) {
-            return;
-        }
-
-        applyFieldCheckedTrueOnly("createPlaylistFolder", settings.createPlaylistFolder !== false);
-        applyFieldValueIfPresent("playlistNameTemplate", settings.playlistNameTemplate || "%playlist%");
-        applyFieldCheckedTrueOnly("createArtistFolder", settings.createArtistFolder !== false);
-        applyFieldValueIfPresent("artistNameTemplate", settings.artistNameTemplate || "%artist%");
-        applyFieldCheckedTrueOnly("createAlbumFolder", settings.createAlbumFolder !== false);
-        applyFieldValueIfPresent("albumNameTemplate", settings.albumNameTemplate || "%album%");
-        applyFieldCheckedTrueOnly("createCDFolder", settings.createCDFolder);
-        applyFieldCheckedTrueOnly("createStructurePlaylist", settings.createStructurePlaylist);
-        applyFieldCheckedTrueOnly("createSingleFolder", settings.createSingleFolder);
-        applyFieldValueIfPresent("illegalCharacterReplacer", settings.illegalCharacterReplacer || "_");
-        updateFolderStructureVisibility();
-        renderFolderStructurePreview();
-    }
-
     async function loadLyricsSettings() {
         try {
             const response = await fetch("/api/settings");
@@ -5599,11 +5422,6 @@
             }
             const data = await response.json();
             state.settingsCache = data?.settings || null;
-            applyLyricsSettingsToUI(state.settingsCache);
-            applyArtworkSettingsToUI(state.settingsCache);
-            applyTemplateSettingsToUI(state.settingsCache);
-            applyOtherSettingsToUI(state.settingsCache);
-            applyFolderStructureSettingsToUI(state.settingsCache);
             refreshDownloadTagsForSource();
             // Manual external intake path input is intentionally disabled.
             // const intakeInput = el("autotag-custom-path");
@@ -5763,7 +5581,7 @@
             tracknameTemplate: getInputValue("autotag-trackname-template", getBaseString("tracknameTemplate", "")),
             renameSpotifyArtistFolders: getInputChecked(
                 "enhancementRenameSpotifyArtistFolders",
-                getBaseBool("renameSpotifyArtistFolders", state.autoTagDefaults?.renameSpotifyArtistFolders !== false)
+                getBaseBool("renameSpotifyArtistFolders", DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS)
             ),
             saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", false)),
             dlAlbumcoverForPlaylist: getInputChecked("dlAlbumcoverForPlaylist", getBaseBool("dlAlbumcoverForPlaylist", true)),
@@ -5786,41 +5604,7 @@
             )
         };
 
-        const normalizedRecentDownloadWindowHours = convertRecentWindowDaysToHours(profileScoped.recentDownloadWindowDays);
-        const libraryFolderSettings = collectProfileScopedLibraryFolderSettings(base, normalizedRecentDownloadWindowHours);
-        if (libraryFolderSettings) {
-            profileScoped.libraryFolderSettings = libraryFolderSettings;
-        }
-
         return profileScoped;
-    }
-
-    function withSyncedRecentWindow(value, normalizedRecentDownloadWindowHours) {
-        if (!value || typeof value !== "object") {
-            return null;
-        }
-        return {
-            ...value,
-            recentDownloadWindowHours: normalizedRecentDownloadWindowHours
-        };
-    }
-
-    function collectProfileScopedLibraryFolderSettings(base, normalizedRecentDownloadWindowHours) {
-        const fallbackLibrarySettings = base.libraryFolderSettings;
-        if (typeof globalThis.collectAutoTagProfileLibrarySettings !== "function") {
-            return withSyncedRecentWindow(fallbackLibrarySettings, normalizedRecentDownloadWindowHours);
-        }
-
-        try {
-            const libraryFolderSettings = globalThis.collectAutoTagProfileLibrarySettings();
-            if (libraryFolderSettings && typeof libraryFolderSettings === "object") {
-                return withSyncedRecentWindow(libraryFolderSettings, normalizedRecentDownloadWindowHours);
-            }
-        } catch (error) {
-            console.warn("Failed to collect profile-scoped library folder settings.", error);
-        }
-
-        return withSyncedRecentWindow(fallbackLibrarySettings, normalizedRecentDownloadWindowHours);
     }
 
     function applyProfileScopedExtrasToUI(data) {
@@ -5866,27 +5650,6 @@
         renderFolderStructurePreview();
     }
 
-    async function applyProfileScopedLibrarySettings(autoTagData) {
-        if (!autoTagData || typeof autoTagData !== "object") {
-            return;
-        }
-
-        const libraryFolderSettings = autoTagData.libraryFolderSettings;
-        if (!libraryFolderSettings || typeof libraryFolderSettings !== "object") {
-            return;
-        }
-
-        if (typeof globalThis.applyAutoTagProfileLibrarySettings !== "function") {
-            return;
-        }
-
-        try {
-            await globalThis.applyAutoTagProfileLibrarySettings(libraryFolderSettings, { silent: true });
-        } catch (error) {
-            console.warn("Failed to apply profile-scoped library folder settings.", error);
-        }
-    }
-
     function loadItunesArtOptions() {
         const select = el("autotag-itunes-art-resolution");
         const animatedControls = getAnimatedArtworkControls();
@@ -5902,7 +5665,7 @@
         const configured = state.config?.custom?.itunes?.animated_artwork;
         const animatedValue = typeof configured === "boolean"
             ? configured
-            : Boolean(state.settingsCache?.saveAnimatedArtwork);
+            : false;
         if (animatedControls.length > 0) {
             setAnimatedArtworkControls(animatedValue);
         }
@@ -6169,14 +5932,6 @@
 
     async function initAutoTagDefaultsPanel() {
         try {
-            if (typeof globalThis.refreshAutoTagFolderDefaults === "function") {
-                await globalThis.refreshAutoTagFolderDefaults();
-            }
-        } catch (error) {
-            console.error("Failed to load AutoTag folder defaults.", error);
-            showToast("Failed to load folder profile defaults.", "error");
-        }
-        try {
             await loadAutoTagDefaults();
         } catch (error) {
             console.error("Failed to load AutoTag defaults.", error);
@@ -6184,9 +5939,7 @@
         }
 
         const activeProfile = getActiveProfile() || getSelectedProfile();
-        const activeAutoTagData = activeProfile?.autoTag?.data
-            || activeProfile?.autoTag
-            || activeProfile?.AutoTag?.data
+        const activeAutoTagData = activeProfile?.autoTag
             || activeProfile?.AutoTag
             || null;
         if (activeAutoTagData && typeof activeAutoTagData === "object") {
@@ -6393,16 +6146,6 @@
 
     function applyAutoTagDefaultsToUi() {
         ensureRecentDownloadWindowControls();
-        const field = el("enhancementRecentDownloadWindowDays");
-        if (field) {
-            const value = convertRecentWindowHoursToDays(
-                state.autoTagDefaults?.recentDownloadWindowHours ?? DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS);
-            field.value = value;
-        }
-        const renameField = el("enhancementRenameSpotifyArtistFolders");
-        if (renameField instanceof HTMLInputElement) {
-            renameField.checked = state.autoTagDefaults?.renameSpotifyArtistFolders !== false;
-        }
     }
 
     async function loadAutoTagDefaults() {
@@ -6423,7 +6166,6 @@
     async function saveEnhancementDefaults(options = {}) {
         const suppressToast = options?.suppressToast === true;
         const suppressStatus = options?.suppressStatus === true;
-        const skipProfileUpsert = options?.skipProfileUpsert === true;
         const rethrow = options?.rethrow === true;
         const button = el("saveRecentDownloadWindow") || el("saveEnhancementDefaults");
         if (button) {
@@ -6431,7 +6173,7 @@
         }
         try {
             const { renameFoldersCheckbox, renameSpotifyArtistFolders } =
-                await saveEnhancementDefaultsCore(skipProfileUpsert);
+                await saveEnhancementDefaultsCore();
             applyEnhancementDefaultsSaveSuccess(renameFoldersCheckbox, renameSpotifyArtistFolders, suppressStatus, suppressToast);
         } catch (error) {
             handleEnhancementDefaultsSaveError(error, suppressStatus, suppressToast);
@@ -6447,20 +6189,19 @@
 
     function applyEnhancementDefaultsSaveSuccess(renameFoldersCheckbox, renameSpotifyArtistFolders, suppressStatus, suppressToast) {
         state.autoTagDefaultsDirty = false;
-        applyAutoTagDefaultsToUi();
         if (renameFoldersCheckbox instanceof HTMLInputElement) {
             renameFoldersCheckbox.checked = renameSpotifyArtistFolders;
         }
         if (!suppressStatus) {
-            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults and profile preferences saved.");
+            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement profile settings saved.");
         }
         if (!suppressToast) {
-            showToast("Enhancement defaults and profile preferences saved.", "success");
+            showToast("Enhancement profile settings saved.", "success");
         }
     }
 
     function handleEnhancementDefaultsSaveError(error, suppressStatus, suppressToast) {
-        const message = `Failed to save enhancement defaults: ${error?.message || error}`;
+        const message = `Failed to save enhancement profile settings: ${error?.message || error}`;
         if (!suppressStatus) {
             setEnhancementStatus("enhancementRecentDownloadWindowStatus", message);
         }
@@ -6469,44 +6210,17 @@
         }
     }
 
-    async function saveEnhancementDefaultsCore(skipProfileUpsert) {
-        if (!state.autoTagDefaultsLoaded) {
-            await loadAutoTagDefaults();
-        }
-
-        const defaults = normalizeAutoTagDefaults(state.autoTagDefaults);
+    async function saveEnhancementDefaultsCore() {
         const renameFoldersCheckbox = el("enhancementRenameSpotifyArtistFolders");
         const renameSpotifyArtistFolders = renameFoldersCheckbox instanceof HTMLInputElement
             ? renameFoldersCheckbox.checked
-            : defaults.renameSpotifyArtistFolders !== false;
-
-        if (!skipProfileUpsert && state.activeProfileId) {
-            await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
-        }
-
-        const recentDownloadWindowDays = readRecentDownloadWindowDays();
-        const recentDownloadWindowHours = convertRecentWindowDaysToHours(recentDownloadWindowDays);
-        const response = await fetch("/api/autotag/defaults", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                defaultFileProfile: defaults.defaultFileProfile,
-                librarySchedules: defaults.librarySchedules,
-                recentDownloadWindowHours,
-                renameSpotifyArtistFolders
-            })
-        });
-        if (!response.ok) {
-            throw new Error(await readApiErrorMessage(response));
-        }
-
-        const saved = await response.json().catch(() => null);
-        state.autoTagDefaults = normalizeAutoTagDefaults(saved);
+            : DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS;
+        await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
         return { renameFoldersCheckbox, renameSpotifyArtistFolders };
     }
 
     function getProfileAutoTagSnapshot(profile) {
-        const rawAutoTag = profile?.autoTag?.data || profile?.autoTag || {};
+        const rawAutoTag = profile?.autoTag || {};
         const currentConfig = readConfigFromUI();
         const profileScopedExtras = readProfileScopedExtrasFromUI(rawAutoTag);
         if (!rawAutoTag || typeof rawAutoTag !== "object") {
@@ -6517,7 +6231,6 @@
         }
 
         const snapshot = structuredClone(rawAutoTag);
-        delete snapshot.data;
         const mergedSnapshot = {
             ...snapshot,
             ...currentConfig,
@@ -7004,12 +6717,13 @@
     el("runEnhancementQualityChecks")?.addEventListener("click", runEnhancementQualityChecks);
     el("enhancementRenameSpotifyArtistFolders")?.addEventListener("change", () => {
         state.autoTagDefaultsDirty = true;
-        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults have unsaved changes.");
+        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement profile settings have unsaved changes.");
         scheduleProfileAutoSave();
     });
     el("enhancementRecentDownloadWindowDays")?.addEventListener("input", () => {
         state.autoTagDefaultsDirty = true;
-        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement defaults have unsaved changes.");
+        setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement profile settings have unsaved changes.");
+        scheduleProfileAutoSave();
     });
     [
         "saveAnimatedArtwork"
@@ -7123,14 +6837,6 @@
         refreshDownloadTagsForSource();
         ensurePlatformCustomDefaults();
         await initialProfilesLoad;
-        if (!Array.isArray(state.profiles) || state.profiles.length === 0) {
-            const storedPreferences = loadStoredPreferences();
-            if (storedPreferences) {
-                applyProfileConfig(storedPreferences);
-                enforceSingleDownloadSource();
-                refreshDownloadTagsForSource();
-            }
-        }
         await initAutoTagDefaultsPanel();
         await resumeFolderUniformityRunIfNeeded();
         const recoveredJobId = await resolveActiveAutoTagJobId();

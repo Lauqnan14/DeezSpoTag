@@ -667,14 +667,14 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return false;
         }
 
-        var recentDownloadWindowHours = ResolveRecentDownloadWindowHours(profileContext.Defaults);
-        if (!TryApplyRecentDownloadWindow(folder.RootPath, recentDownloadWindowHours, ref scopedFiles))
+        var enhancementProfile = ResolveRecentEnhancementProfile(destination.Key, folder.AutoTagProfileId, profileContext, folder.RootPath);
+        if (enhancementProfile == null)
         {
             return false;
         }
 
-        var enhancementProfile = ResolveRecentEnhancementProfile(destination.Key, folder.AutoTagProfileId, profileContext, folder.RootPath);
-        if (enhancementProfile == null)
+        var recentDownloadWindowHours = ResolveRecentDownloadWindowHours(enhancementProfile, profileContext.Defaults);
+        if (!TryApplyRecentDownloadWindow(folder.RootPath, recentDownloadWindowHours, ref scopedFiles))
         {
             return false;
         }
@@ -989,10 +989,98 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return false;
     }
 
-    private static int ResolveRecentDownloadWindowHours(AutoTagDefaultsDto defaults)
+    private static int ResolveRecentDownloadWindowHours(TaggingProfile profile, AutoTagDefaultsDto defaults)
     {
+        if (TryReadRecentDownloadWindowHoursFromProfile(profile, out var profileWindowHours))
+        {
+            return profileWindowHours;
+        }
+
         var resolved = defaults.RecentDownloadWindowHours ?? AutoTagDefaultsDto.DefaultRecentDownloadWindowHours;
         return resolved < 0 ? AutoTagDefaultsDto.DefaultRecentDownloadWindowHours : resolved;
+    }
+
+    private static bool TryReadRecentDownloadWindowHoursFromProfile(TaggingProfile? profile, out int value)
+    {
+        value = 0;
+        if (profile?.AutoTag?.Data == null || profile.AutoTag.Data.Count == 0)
+        {
+            return false;
+        }
+
+        if (TryReadIntFromAutoTag(profile.AutoTag.Data, "recentDownloadWindowHours", out var hours))
+        {
+            if (hours < 0)
+            {
+                hours = 0;
+            }
+
+            value = hours;
+            return true;
+        }
+
+        if (TryReadIntFromAutoTag(profile.AutoTag.Data, "recentDownloadWindowDays", out var days))
+        {
+            if (days < 0)
+            {
+                days = 0;
+            }
+
+            value = days * 24;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadIntFromAutoTag(
+        Dictionary<string, JsonElement> data,
+        string key,
+        out int value)
+    {
+        value = 0;
+        if (!TryGetAutoTagValue(data, key, out var element))
+        {
+            return false;
+        }
+
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var numeric))
+        {
+            value = numeric;
+            return true;
+        }
+
+        if (element.ValueKind == JsonValueKind.String
+            && int.TryParse(element.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            value = parsed;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetAutoTagValue(
+        Dictionary<string, JsonElement> data,
+        string key,
+        out JsonElement value)
+    {
+        if (data.TryGetValue(key, out value))
+        {
+            return true;
+        }
+
+        foreach (var entry in data)
+        {
+            if (string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = entry.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static List<string> FilterRecentFiles(List<string> files, int recentDownloadWindowHours)

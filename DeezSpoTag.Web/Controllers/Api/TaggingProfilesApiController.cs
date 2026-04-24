@@ -125,33 +125,11 @@ public sealed class TaggingProfilesApiController : ControllerBase
             profile.Name,
             profile.IsDefault,
             profile.TagConfig,
-            AutoTag = BuildAutoTagResponse(sanitizedAutoTag),
+            AutoTag = sanitizedAutoTag.Data,
             profile.Technical,
             profile.FolderStructure,
             profile.Verification
         };
-    }
-
-    private static Dictionary<string, object?> BuildAutoTagResponse(AutoTagSettings? autoTag)
-    {
-        var data = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        if (autoTag?.Data is { Count: > 0 })
-        {
-            foreach (var entry in autoTag.Data)
-            {
-                data[entry.Key] = entry.Value;
-            }
-        }
-
-        var response = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in data)
-        {
-            response[entry.Key] = entry.Value;
-        }
-
-        // Backward-compat: expose nested shape as well as flat shape.
-        response["data"] = data;
-        return response;
     }
 
     private static AutoTagSettings SanitizeAutoTagSettings(AutoTagSettings? autoTag)
