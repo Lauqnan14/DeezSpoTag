@@ -864,6 +864,12 @@ public sealed class DownloadIntentService
         var deezerTrackId = ResolveDeezerTrackIdForEnqueue(request.Intent, request.ResolvedSourceUrl, isPodcastIntent);
         if (string.IsNullOrWhiteSpace(deezerTrackId))
         {
+            var recoverySourceUrl = request.ResolvedSourceUrl ?? request.Intent.SourceUrl ?? string.Empty;
+            await EnsureDeezerIdentityAsync(request.Intent, recoverySourceUrl, request.CancellationToken);
+            deezerTrackId = ResolveDeezerTrackIdForEnqueue(request.Intent, request.ResolvedSourceUrl, isPodcastIntent);
+        }
+        if (string.IsNullOrWhiteSpace(deezerTrackId))
+        {
             var idType = isPodcastIntent ? EpisodeType : TrackType;
             return new EngineEnqueueOutcome(
                 new DownloadIntentResult
@@ -1126,7 +1132,7 @@ public sealed class DownloadIntentService
         }
         if (string.IsNullOrWhiteSpace(deezerTrackId))
         {
-            deezerTrackId = NormalizeDeezerTrackId(TryExtractDeezerTrackId(resolvedSourceUrl));
+            deezerTrackId = NormalizeDeezerTrackId(TryExtractDeezerTrackId(sourceUrl));
         }
 
         return deezerTrackId;
@@ -4826,6 +4832,8 @@ public sealed class DownloadIntentService
             return false;
         }
 
+        // TODO(review): ResolveSecondaryQuality is currently redundant for Apple secondary queueing,
+        // because this branch enforces Atmos-only fallback below. Remove this indirection in a later cleanup.
         var secondaryQuality = ResolveSecondaryQuality(ApplePlatform, null, excludeAtmos: false);
         if (string.IsNullOrWhiteSpace(secondaryQuality) || !IsAtmosQuality(secondaryQuality))
         {
