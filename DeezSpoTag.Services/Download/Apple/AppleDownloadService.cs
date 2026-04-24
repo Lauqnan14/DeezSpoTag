@@ -385,6 +385,19 @@ public sealed class AppleDownloadService : IAppleDownloadService
         var variant = SelectVariant(masterManifest, request);
         if (variant == null || string.IsNullOrWhiteSpace(variant.Uri))
         {
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                var atmosGroupCount = BuildAtmosAudioGroupSet(masterManifest.Media).Count;
+                _logger.LogWarning(
+                    "Apple variant selection failed for manifest {ManifestUrl}. profile={Profile}, variants={VariantCount}, audioEntries={AudioEntries}, atmosGroups={AtmosGroups}, atmosMax={AtmosMax}.",
+                    manifestUrl,
+                    request.PreferredProfile ?? string.Empty,
+                    masterManifest.Variants.Count,
+                    masterManifest.Media.Count,
+                    atmosGroupCount,
+                    request.AtmosMax);
+            }
+
             return null;
         }
 
@@ -552,7 +565,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         foreach (var profileName in orderedProfiles)
         {
-            var candidates = FilterVariantsByProfile(master.Variants, profileName, request).ToList();
+            var candidates = FilterVariantsByProfile(master, profileName, request).ToList();
             if (candidates.Count == 0)
             {
                 continue;
@@ -608,14 +621,17 @@ public sealed class AppleDownloadService : IAppleDownloadService
            && profile.Contains(AtmosKeyword, StringComparison.OrdinalIgnoreCase);
 
     private static IEnumerable<AppleHlsVariantEntry> FilterVariantsByProfile(
-        IEnumerable<AppleHlsVariantEntry> variants,
+        AppleHlsMasterManifest master,
         string profile,
         AppleDownloadRequest request)
     {
+        var variants = master.Variants;
+        var atmosGroups = BuildAtmosAudioGroupSet(master.Media);
+
         if (profile.Contains("aac", StringComparison.OrdinalIgnoreCase))
         {
             return variants
-                .Where(v => !IsAtmosVariantCandidate(v))
+                .Where(v => !IsAtmosVariantCandidate(v, atmosGroups))
                 .Where(v => v.Codecs.Contains("mp4a", StringComparison.OrdinalIgnoreCase))
                 .Where(v => IsMatchingAacGroup(v.AudioGroup, request.AacType));
         }
@@ -623,14 +639,14 @@ public sealed class AppleDownloadService : IAppleDownloadService
         if (profile.Contains(AtmosKeyword, StringComparison.OrdinalIgnoreCase))
         {
             return variants
-                .Where(IsAtmosVariantCandidate)
+                .Where(v => IsAtmosVariantCandidate(v, atmosGroups))
                 .Where(v => IsMatchingAtmosGroup(v.AudioGroup, request.AtmosMax));
         }
 
         if (profile.Contains("alac", StringComparison.OrdinalIgnoreCase))
         {
             return variants
-                .Where(v => !IsAtmosVariantCandidate(v))
+                .Where(v => !IsAtmosVariantCandidate(v, atmosGroups))
                 .Where(v => v.Codecs.Contains("alac", StringComparison.OrdinalIgnoreCase))
                 .Where(v => IsMatchingAlacGroup(v.AudioGroup, request.AlacMax));
         }
@@ -638,7 +654,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         return variants;
     }
 
-    private static bool IsAtmosVariantCandidate(AppleHlsVariantEntry variant)
+    private static bool IsAtmosVariantCandidate(AppleHlsVariantEntry variant, HashSet<string>? knownAtmosGroups = null)
     {
         if (variant == null)
         {
@@ -655,10 +671,27 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
 
         var group = variant.AudioGroup ?? string.Empty;
+        if (knownAtmosGroups != null
+            && !string.IsNullOrWhiteSpace(group)
+            && knownAtmosGroups.Contains(group))
+        {
+            return true;
+        }
+
         return group.Contains(AtmosKeyword, StringComparison.OrdinalIgnoreCase)
                || group.Contains("joc", StringComparison.OrdinalIgnoreCase)
                || group.Contains("ec3", StringComparison.OrdinalIgnoreCase)
                || group.Contains("ac3", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static HashSet<string> BuildAtmosAudioGroupSet(IEnumerable<AppleHlsMediaEntry> mediaEntries)
+    {
+        return mediaEntries
+            .Where(entry => entry.Type.Equals("AUDIO", StringComparison.OrdinalIgnoreCase))
+            .Where(IsAtmosAudioEntry)
+            .Select(entry => entry.GroupId)
+            .Where(groupId => !string.IsNullOrWhiteSpace(groupId))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsStationRequest(string sourceUrl, string? appleId)
@@ -3269,7 +3302,12 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return true;
         }
 
-        var bitrate = ExtractTrailingNumber(audioGroup);
+        if (maxBitrate <= 0)
+        {
+            return true;
+        }
+
+        var bitrate = ExtractAtmosBitrateKbps(audioGroup);
         return bitrate == 0 || bitrate <= maxBitrate;
     }
 
@@ -3323,6 +3361,57 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
 
         return ExtractTrailingNumber(audioGroup);
+    }
+
+    private static int ExtractAtmosBitrateKbps(string? audioGroup)
+    {
+        if (string.IsNullOrWhiteSpace(audioGroup))
+        {
+            return 0;
+        }
+
+        var tokens = audioGroup
+            .Split(['-', '_', '/', '.', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static token => token.Trim().ToLowerInvariant())
+            .ToArray();
+
+        for (var index = 0; index < tokens.Length - 1; index++)
+        {
+            if (!IsAtmosToken(tokens[index]))
+            {
+                continue;
+            }
+
+            if (!int.TryParse(tokens[index + 1], out var numericToken))
+            {
+                continue;
+            }
+
+            var normalized = NormalizeAtmosBitrateKbps(numericToken);
+            if (normalized > 0)
+            {
+                return normalized;
+            }
+        }
+
+        return 0;
+    }
+
+    private static bool IsAtmosToken(string token)
+    {
+        return token.Contains(AtmosKeyword, StringComparison.OrdinalIgnoreCase)
+            || token is "joc" or "ec3" or "ec-3" or "ac3" or "ac-3";
+    }
+
+    private static int NormalizeAtmosBitrateKbps(int rawBitrate)
+    {
+        var normalized = rawBitrate;
+        if (normalized >= 64000)
+        {
+            normalized /= 1000;
+        }
+
+        return normalized is >= 256 and <= 32000 ? normalized : 0;
     }
 
     private sealed record AppleVideoAttributes
