@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Linq;
 using System.Buffers;
+using System.Globalization;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
@@ -553,9 +554,14 @@ public sealed class DownloadIntentService
             intent.SpotifyId = TryExtractSpotifyId(intent.SourceUrl) ?? string.Empty;
         }
 
-        if (string.IsNullOrWhiteSpace(intent.DeezerId))
+        var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
+        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
-            intent.DeezerId = TryExtractDeezerTrackId(intent.SourceUrl) ?? string.Empty;
+            intent.DeezerId = NormalizeDeezerTrackId(TryExtractDeezerTrackId(intent.SourceUrl)) ?? string.Empty;
+        }
+        else
+        {
+            intent.DeezerId = normalizedDeezerId;
         }
 
         if (string.IsNullOrWhiteSpace(intent.SourceUrl))
@@ -566,10 +572,10 @@ public sealed class DownloadIntentService
             }
             else
             {
-                var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
-                if (!string.IsNullOrWhiteSpace(normalizedDeezerId))
+                var normalizedDeezerIdForUrl = NormalizeDeezerTrackId(intent.DeezerId);
+                if (!string.IsNullOrWhiteSpace(normalizedDeezerIdForUrl))
                 {
-                    intent.SourceUrl = $"https://www.deezer.com/track/{normalizedDeezerId}";
+                    intent.SourceUrl = $"https://www.deezer.com/track/{normalizedDeezerIdForUrl}";
                 }
             }
         }
@@ -2583,7 +2589,9 @@ public sealed class DownloadIntentService
         }
 
         var id = StripQueryAndFragment(last);
-        return long.TryParse(id, out _) ? id : null;
+        return long.TryParse(id, out var numeric) && numeric > 0
+            ? numeric.ToString(CultureInfo.InvariantCulture)
+            : null;
     }
 
     private static string? TryExtractDeezerEpisodeId(string? url)
@@ -2710,7 +2718,9 @@ public sealed class DownloadIntentService
             return null;
         }
 
-        return long.TryParse(trackId, out _) ? trackId : null;
+        return long.TryParse(trackId, out var numeric) && numeric > 0
+            ? numeric.ToString(CultureInfo.InvariantCulture)
+            : null;
     }
 
 
@@ -2930,12 +2940,15 @@ public sealed class DownloadIntentService
 
     private async Task EnsureDeezerIdentityAsync(DownloadIntent intent, string sourceUrl, CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(intent.DeezerId))
+        var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
+        if (!string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
         {
+            intent.DeezerId = normalizedExistingDeezerId;
             return;
         }
+        intent.DeezerId = string.Empty;
 
-        var deezerId = TryExtractDeezerTrackId(sourceUrl);
+        var deezerId = NormalizeDeezerTrackId(TryExtractDeezerTrackId(sourceUrl));
         if (!string.IsNullOrWhiteSpace(deezerId))
         {
             intent.DeezerId = deezerId;
@@ -2956,15 +2969,18 @@ public sealed class DownloadIntentService
 
         if (!string.IsNullOrWhiteSpace(intent.SpotifyId))
         {
-            intent.DeezerId = await _songLinkResolver.ResolveDeezerIdFromSpotifyAsync(intent.SpotifyId, cancellationToken) ?? string.Empty;
+            intent.DeezerId = NormalizeDeezerTrackId(
+                await _songLinkResolver.ResolveDeezerIdFromSpotifyAsync(intent.SpotifyId, cancellationToken))
+                ?? string.Empty;
         }
 
         if (string.IsNullOrWhiteSpace(intent.DeezerId) && !string.IsNullOrWhiteSpace(sourceUrl))
         {
             var link = await _songLinkResolver.ResolveByUrlAsync(sourceUrl, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(link?.DeezerId))
+            var normalizedLinkedDeezerId = NormalizeDeezerTrackId(link?.DeezerId);
+            if (!string.IsNullOrWhiteSpace(normalizedLinkedDeezerId))
             {
-                intent.DeezerId = link.DeezerId;
+                intent.DeezerId = normalizedLinkedDeezerId;
             }
             if (string.IsNullOrWhiteSpace(intent.SpotifyId) && !string.IsNullOrWhiteSpace(link?.SpotifyId))
             {
@@ -3194,11 +3210,16 @@ public sealed class DownloadIntentService
 
     private static string? BootstrapIntentDeezerIdentity(DownloadIntent intent, string sourceUrl, bool isPodcastIntent, ref string normalizedSourceUrl)
     {
-        if (string.IsNullOrWhiteSpace(intent.DeezerId))
+        var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
+        if (string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
         {
             intent.DeezerId = isPodcastIntent
                 ? (TryExtractDeezerEpisodeId(sourceUrl) ?? string.Empty)
                 : (TryExtractDeezerTrackId(sourceUrl) ?? string.Empty);
+        }
+        else
+        {
+            intent.DeezerId = normalizedExistingDeezerId;
         }
 
         var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
@@ -3652,13 +3673,14 @@ public sealed class DownloadIntentService
         bool overwriteExisting = false,
         bool forceCoverOverwrite = false)
     {
-        var trackId = string.IsNullOrWhiteSpace(intent.DeezerId)
+        var trackId = NormalizeDeezerTrackId(string.IsNullOrWhiteSpace(intent.DeezerId)
             ? TryExtractDeezerTrackId(sourceUrl)
-            : intent.DeezerId;
+            : intent.DeezerId);
         if (string.IsNullOrWhiteSpace(trackId))
         {
             return;
         }
+        intent.DeezerId = trackId;
 
         try
         {
@@ -5666,7 +5688,9 @@ public sealed class DownloadIntentService
         payload.Album = intent.Album ?? string.Empty;
         payload.AlbumArtist = string.IsNullOrWhiteSpace(intent.AlbumArtist) ? intent.Artist ?? string.Empty : intent.AlbumArtist;
         payload.Isrc = intent.Isrc ?? string.Empty;
-        payload.DeezerId = intent.DeezerId ?? string.Empty;
+        payload.DeezerId = !string.IsNullOrWhiteSpace(payload.DeezerId)
+            ? payload.DeezerId
+            : intent.DeezerId ?? string.Empty;
         payload.AppleId = intent.AppleId ?? string.Empty;
         payload.ContentType = context.ContentType;
         payload.Cover = intent.Cover ?? string.Empty;
