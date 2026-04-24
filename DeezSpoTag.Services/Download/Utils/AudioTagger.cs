@@ -1151,6 +1151,10 @@ public class AudioTagger
                 startInfo.ArgumentList.Add($"{key}={value}");
             }
 
+            // Persist arbitrary metadata keys (SOURCEID/DEEZER_TRACK_ID/etc.) in MP4 containers.
+            startInfo.ArgumentList.Add("-movflags");
+            startInfo.ArgumentList.Add("use_metadata_tags");
+
             startInfo.ArgumentList.Add("-f");
             startInfo.ArgumentList.Add("mp4");
             startInfo.ArgumentList.Add(tempPath);
