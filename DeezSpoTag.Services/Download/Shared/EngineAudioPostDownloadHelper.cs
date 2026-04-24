@@ -8,10 +8,12 @@ using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
@@ -213,7 +215,16 @@ public static partial class EngineAudioPostDownloadHelper
         PopulateTrackMetadata(track, payload, artistName);
 
         configureTrack?.Invoke(track, payload);
+        return BuildTrackContextFromTrack(track, payload, settings, pathProcessor, downloadTypeResolver);
+    }
 
+    public static EngineTrackContext BuildTrackContextFromTrack(
+        Track track,
+        EngineQueueItemBase payload,
+        DeezSpoTagSettings settings,
+        EnhancedPathTemplateProcessor pathProcessor,
+        Func<EngineQueueItemBase, string>? downloadTypeResolver = null)
+    {
         if (!string.IsNullOrWhiteSpace(payload.CollectionName)
             && string.Equals(payload.CollectionType, PlaylistType, StringComparison.OrdinalIgnoreCase))
         {
@@ -232,6 +243,190 @@ public static partial class EngineAudioPostDownloadHelper
 
         var outputDir = DownloadPathResolver.ResolveIoPath(pathResult.FilePath);
         return new EngineTrackContext(track, pathResult, outputDir, $"literal:{filenameStem}");
+    }
+
+    public static async Task<string?> ResolveProfileDownloadTagSourceAsync(
+        IDownloadTagSettingsResolver tagSettingsResolver,
+        long? destinationFolderId,
+        DeezSpoTagSettings settings,
+        string engineName,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var profile = await tagSettingsResolver.ResolveProfileAsync(destinationFolderId, cancellationToken);
+            if (profile == null)
+            {
+                return null;
+            }
+
+            return DownloadTagSourceHelper.ResolveDownloadTagSource(
+                profile.DownloadTagSource,
+                engineName,
+                settings.Service);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "Failed to resolve profile download tag source for folder {FolderId}", destinationFolderId);
+            }
+
+            return null;
+        }
+    }
+
+    public static async Task<bool> ApplyProfileMetadataOverrideAsync(
+        Track track,
+        EngineQueueItemBase payload,
+        DeezSpoTagSettings settings,
+        IServiceProvider serviceProvider,
+        string engineName,
+        string? resolvedDownloadTagSource,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var source = DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(resolvedDownloadTagSource);
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return false;
+        }
+
+        using var scope = serviceProvider.CreateScope();
+        var registry = scope.ServiceProvider.GetService<IMetadataResolverRegistry>();
+        var resolver = registry?.GetResolver(source);
+        if (resolver == null)
+        {
+            return false;
+        }
+
+        ApplyResolvedTagSourceIdentity(track, payload, source);
+        try
+        {
+            await resolver.ResolveTrackAsync(track, settings, cancellationToken);
+            ApplyResolvedTagSourceIdentity(track, payload, source);
+            track.ApplySettings(settings);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(
+                    ex,
+                    "{Engine} profile metadata resolver failed for source {Source} and track {TrackId}",
+                    engineName,
+                    source,
+                    track.Id);
+            }
+
+            return false;
+        }
+    }
+
+    private static void ApplyResolvedTagSourceIdentity(Track track, EngineQueueItemBase payload, string source)
+    {
+        track.Source = source;
+        var sourceId = ResolveTagSourceId(payload, source, track);
+        if (!string.IsNullOrWhiteSpace(sourceId))
+        {
+            track.SourceId = sourceId;
+            ApplyResolvedPayloadSourceId(payload, source, sourceId);
+        }
+    }
+
+    private static void ApplyResolvedPayloadSourceId(EngineQueueItemBase payload, string source, string sourceId)
+    {
+        switch (source)
+        {
+            case DeezerSource:
+                payload.DeezerId = sourceId;
+                return;
+            case SpotifySource:
+                payload.SpotifyId = sourceId;
+                return;
+            case AppleSource:
+                payload.AppleId = sourceId;
+                return;
+        }
+
+        var property = payload.GetType().GetProperty(
+            $"{source}Id",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (property?.CanWrite == true && property.PropertyType == typeof(string))
+        {
+            property.SetValue(payload, sourceId);
+        }
+    }
+
+    private static string? ResolveTagSourceId(EngineQueueItemBase payload, string source, Track track)
+    {
+        return source switch
+        {
+            DeezerSource => FirstNonEmpty(
+                payload.DeezerId,
+                track.Urls.GetValueOrDefault("deezer_track_id"),
+                track.Urls.GetValueOrDefault("deezer_id"),
+                ExtractTrailingId(track.Urls.GetValueOrDefault(DeezerSource))),
+            SpotifySource => FirstNonEmpty(
+                payload.SpotifyId,
+                track.Urls.GetValueOrDefault("spotify_track_id"),
+                track.Urls.GetValueOrDefault("spotify_id"),
+                ExtractTrailingId(track.Urls.GetValueOrDefault(SpotifySource))),
+            AppleSource => FirstNonEmpty(
+                payload.AppleId,
+                track.Urls.GetValueOrDefault("apple_track_id"),
+                track.Urls.GetValueOrDefault("apple_id"),
+                ExtractTrailingId(track.Urls.GetValueOrDefault(AppleSource))),
+            _ => FirstNonEmpty(
+                ReadStringProperty(payload, $"{source}Id"),
+                ReadStringProperty(payload, $"{source}TrackId"),
+                track.Urls.GetValueOrDefault($"{source}_track_id"),
+                track.Urls.GetValueOrDefault($"{source}_id"),
+                ExtractTrailingId(track.Urls.GetValueOrDefault(source)))
+        };
+    }
+
+    private static string? ReadStringProperty(object instance, string propertyName)
+    {
+        var property = instance.GetType().GetProperty(
+            propertyName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        return property?.GetValue(instance) as string;
+    }
+
+    private static string? ExtractTrailingId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim().TrimEnd('/');
+        var queryIndex = trimmed.IndexOf('?', StringComparison.Ordinal);
+        if (queryIndex >= 0)
+        {
+            trimmed = trimmed[..queryIndex].TrimEnd('/');
+        }
+
+        var slashIndex = trimmed.LastIndexOf('/');
+        return slashIndex >= 0 && slashIndex < trimmed.Length - 1
+            ? trimmed[(slashIndex + 1)..]
+            : trimmed;
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
     }
 
     private static string ResolveFilenameStem(string filename)

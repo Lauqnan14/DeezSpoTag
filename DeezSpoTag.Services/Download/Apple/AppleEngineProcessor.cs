@@ -175,6 +175,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         public required DeezSpoTagSettings Settings { get; init; }
         public required bool VideoPayload { get; init; }
         public required string? OriginalDownloadLocation { get; init; }
+        public string? ResolvedDownloadTagSource { get; init; }
         public string? VideoDestinationRoot { get; init; }
     }
 
@@ -362,7 +363,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         var settings = _settingsService.LoadSettings();
         var originalDownloadLocation = settings.DownloadLocation;
-        await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
+        var resolvedDownloadTagSource = await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
             _tagSettingsResolver,
             settings,
             payload.DestinationFolderId,
@@ -399,7 +400,8 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             Settings = settings,
             VideoPayload = isVideoPayload,
             VideoDestinationRoot = videoDestinationRoot,
-            OriginalDownloadLocation = originalDownloadLocation
+            OriginalDownloadLocation = originalDownloadLocation,
+            ResolvedDownloadTagSource = resolvedDownloadTagSource
         };
     }
 
@@ -433,7 +435,12 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             queueContext.Payload,
             _logger,
             itemToken);
-        var trackContext = await BuildTrackContextAsync(next.QueueUuid, queueContext.Payload, queueContext.Settings, itemToken);
+        var trackContext = await BuildTrackContextAsync(
+            next.QueueUuid,
+            queueContext.Payload,
+            queueContext.Settings,
+            queueContext.ResolvedDownloadTagSource,
+            itemToken);
         var request = AppleRequestBuilder.BuildRequest(queueContext.Payload, queueContext.Settings, progressReporter);
         await TryPopulateAuthorizationTokenAsync(next.QueueUuid, request, itemToken);
         if (trackContext != null && !queueContext.VideoPayload)
@@ -457,6 +464,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         string queueUuid,
         AppleQueueItem payload,
         DeezSpoTagSettings settings,
+        string? resolvedDownloadTagSource,
         CancellationToken itemToken)
     {
         var appleId = ResolveAppleId(payload);
@@ -494,7 +502,24 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         using var buildScope = _serviceProvider.CreateScope();
         var pathProcessor = buildScope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
-        return BuildTrackContext(payload, settings, pathProcessor, appleId);
+        var context = BuildTrackContext(payload, settings, pathProcessor, appleId);
+        var applied = await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
+            context.Track,
+            payload,
+            settings,
+            _serviceProvider,
+            EngineName,
+            resolvedDownloadTagSource,
+            _logger,
+            itemToken);
+        return applied
+            ? EngineAudioPostDownloadHelper.BuildTrackContextFromTrack(
+                context.Track,
+                payload,
+                settings,
+                pathProcessor,
+                ResolveAppleDownloadType)
+            : context;
     }
 
     private async Task TryPopulateAuthorizationTokenAsync(
@@ -1022,20 +1047,25 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             pathProcessor,
             AppleProvider,
             appleId,
-            static queueItem => queueItem.CollectionType?.ToLowerInvariant() switch
-            {
-                "artist" => "artist",
-                PlaylistType => PlaylistType,
-                "album" => "album",
-                _ => "track"
-            },
-            static (track, queueItem) =>
-            {
-                if (queueItem is AppleQueueItem { HasAppleDigitalMaster: true })
-                {
-                    track.Urls["apple_digital_master"] = "1";
-                }
-            });
+            ResolveAppleDownloadType,
+            ConfigureAppleTrack);
+    }
+
+    private static string ResolveAppleDownloadType(EngineQueueItemBase queueItem)
+        => queueItem.CollectionType?.ToLowerInvariant() switch
+        {
+            "artist" => "artist",
+            PlaylistType => PlaylistType,
+            "album" => "album",
+            _ => "track"
+        };
+
+    private static void ConfigureAppleTrack(Track track, EngineQueueItemBase queueItem)
+    {
+        if (queueItem is AppleQueueItem { HasAppleDigitalMaster: true })
+        {
+            track.Urls["apple_digital_master"] = "1";
+        }
     }
 
     private async Task<string?> ResolveVideoDestinationRootAsync(long? destinationFolderId, CancellationToken cancellationToken)

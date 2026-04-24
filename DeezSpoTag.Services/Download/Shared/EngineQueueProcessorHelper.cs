@@ -181,12 +181,7 @@ internal static class EngineQueueProcessorHelper
             await workContext.Callbacks.PreparePayloadAsync(workContext.Payload, itemToken);
         }
 
-        var context = BuildTrackContextOrNull(
-            workContext.Payload,
-            workContext.Settings,
-            workContext.Deps.ServiceProvider,
-            workContext.EngineName,
-            workContext.Callbacks.ResolveSourceId(workContext.Payload));
+        var context = await BuildTrackContextOrNullAsync(workContext);
         var request = workContext.Callbacks.BuildRequest(workContext.Payload, workContext.Settings);
         if (context != null)
         {
@@ -226,16 +221,41 @@ internal static class EngineQueueProcessorHelper
         await CompleteProcessingAsync(workContext, outputPath);
     }
 
-    private static EngineAudioPostDownloadHelper.EngineTrackContext? BuildTrackContextOrNull(
-        EngineQueueItemBase payload,
-        DeezSpoTagSettings settings,
-        IServiceProvider serviceProvider,
-        string engineName,
-        string? sourceId)
+    private static async Task<EngineAudioPostDownloadHelper.EngineTrackContext?> BuildTrackContextOrNullAsync<TPayload>(
+        QueueWorkContext<TPayload> workContext)
+        where TPayload : EngineQueueItemBase
     {
-        using var scope = serviceProvider.CreateScope();
+        using var scope = workContext.Deps.ServiceProvider.CreateScope();
         var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
-        return BuildTrackContext(payload, settings, pathProcessor, engineName, sourceId);
+        var context = BuildTrackContext(
+            workContext.Payload,
+            workContext.Settings,
+            pathProcessor,
+            workContext.EngineName,
+            workContext.Callbacks.ResolveSourceId(workContext.Payload));
+        var resolvedSource = await EngineAudioPostDownloadHelper.ResolveProfileDownloadTagSourceAsync(
+            workContext.Deps.TagSettingsResolver,
+            workContext.Payload.DestinationFolderId,
+            workContext.Settings,
+            workContext.EngineName,
+            workContext.Deps.Logger,
+            workContext.ItemToken);
+        var applied = await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
+            context.Track,
+            workContext.Payload,
+            workContext.Settings,
+            workContext.Deps.ServiceProvider,
+            workContext.EngineName,
+            resolvedSource,
+            workContext.Deps.Logger,
+            workContext.ItemToken);
+        return applied
+            ? EngineAudioPostDownloadHelper.BuildTrackContextFromTrack(
+                context.Track,
+                workContext.Payload,
+                workContext.Settings,
+                pathProcessor)
+            : context;
     }
 
     private static async Task QueuePrefetchIfNeededAsync<TPayload>(
