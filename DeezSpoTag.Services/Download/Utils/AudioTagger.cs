@@ -15,6 +15,7 @@ using System.Diagnostics;
 using TagLib;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace DeezSpoTag.Services.Download.Utils;
 
@@ -579,7 +580,8 @@ public class AudioTagger
                 throw new IOException($"Failed to persist {reason} MP4 tags with ffmpeg for {path}");
             }
 
-            if (!VerifyMp4TagPersistence(path, track, save))
+            if (!VerifyMp4TagPersistence(path, track, save)
+                && !VerifyMp4TagPersistenceWithFfprobe(path, track, save))
             {
                 var reason = isAtmos ? "Atmos" : "fragmented";
                 throw new IOException($"{reason} MP4 tag verification failed for {path}");
@@ -1228,6 +1230,97 @@ public class AudioTagger
         }
     }
 
+    private bool VerifyMp4TagPersistenceWithFfprobe(string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        try
+        {
+            var ffprobePath = ResolveFfprobePath();
+            if (string.IsNullOrWhiteSpace(ffprobePath))
+            {
+                return false;
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ffprobePath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            startInfo.ArgumentList.Add("-v");
+            startInfo.ArgumentList.Add("error");
+            startInfo.ArgumentList.Add("-show_entries");
+            startInfo.ArgumentList.Add("stream=codec_type:format_tags");
+            startInfo.ArgumentList.Add("-of");
+            startInfo.ArgumentList.Add("json");
+            startInfo.ArgumentList.Add(path);
+
+            using var process = Process.Start(startInfo);
+            if (process == null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(5000);
+            var stdout = process.StandardOutput.ReadToEnd();
+            if (string.IsNullOrWhiteSpace(stdout))
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(stdout);
+            var root = document.RootElement;
+
+            var tagValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (root.TryGetProperty("format", out var format)
+                && format.TryGetProperty("tags", out var tags)
+                && tags.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in tags.EnumerateObject())
+                {
+                    if (property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        tagValues[property.Name] = property.Value.GetString() ?? string.Empty;
+                    }
+                }
+            }
+
+            var validators = BuildFfprobeMp4PersistenceValidators(track, save);
+            if (validators.Count == 0)
+            {
+                return true;
+            }
+
+            var hasCover = false;
+            if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var stream in streams.EnumerateArray())
+                {
+                    if (stream.TryGetProperty("codec_type", out var codecType)
+                        && codecType.ValueKind == JsonValueKind.String
+                        && string.Equals(codecType.GetString(), "video", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasCover = true;
+                        break;
+                    }
+                }
+            }
+
+            return validators.Any(validator => validator(tagValues, hasCover));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "ffprobe MP4 verification failed for {Path}", path);
+            }
+
+            return false;
+        }
+    }
+
     private static List<Func<TagLib.Tag, bool>> BuildMp4PersistenceValidators(DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         var validators = new List<Func<TagLib.Tag, bool>>();
@@ -1270,6 +1363,61 @@ public class AudioTagger
     private static bool HasAnyPerformers(TagLib.Tag tag) =>
         tag.Performers?.Any(value => !string.IsNullOrWhiteSpace(value)) == true;
 
+    private static List<Func<IReadOnlyDictionary<string, string>, bool, bool>> BuildFfprobeMp4PersistenceValidators(
+        DeezSpoTag.Core.Models.Track track,
+        TagSettings save)
+    {
+        var validators = new List<Func<IReadOnlyDictionary<string, string>, bool, bool>>();
+        if (save.Title && !string.IsNullOrWhiteSpace(track.Title))
+        {
+            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "title"));
+        }
+
+        if (save.Artist && (track.Artists.Count > 0 || !string.IsNullOrWhiteSpace(track.MainArtist?.Name)))
+        {
+            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "artist", "ARTIST", "©ART"));
+        }
+
+        if (save.Album && !string.IsNullOrWhiteSpace(track.Album?.Title))
+        {
+            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "album", "ALBUM", "©ALB"));
+        }
+
+        if ((save.Date && track.Date != null && track.Date.IsValid())
+            || (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year)))
+        {
+            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "date", "DATE", "©day"));
+        }
+
+        if (save.Isrc && !string.IsNullOrWhiteSpace(track.ISRC))
+        {
+            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "isrc", "ISRC", "TSRC"));
+        }
+
+        var expectsCover = save.Cover
+            && !string.IsNullOrWhiteSpace(track.Album?.EmbeddedCoverPath)
+            && System.IO.File.Exists(track.Album.EmbeddedCoverPath);
+        if (expectsCover)
+        {
+            validators.Add(static (_, hasCover) => hasCover);
+        }
+
+        return validators;
+    }
+
+    private static bool HasAnyNonEmpty(IReadOnlyDictionary<string, string> tags, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (tags.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool HasSafeTaggedDuration(
         string sourcePath,
         string taggedPath,
@@ -1311,6 +1459,8 @@ public class AudioTagger
         AddTrackNumberMp4Metadata(metadata, track, save);
         AddAlbumAndDateMp4Metadata(metadata, track, save);
         AddAdditionalMp4Metadata(metadata, track, save);
+        AddContributorMp4Metadata(metadata, track, save);
+        AddCompilationAndRatingMp4Metadata(metadata, track, save);
         AddSourceMp4Metadata(metadata, track, save);
         return metadata;
     }
@@ -1333,6 +1483,11 @@ public class AudioTagger
         if (save.Artist)
         {
             AddMetadataValue(metadata, "artist", track.Artists.Count > 0 ? track.ArtistsString : track.MainArtist?.Name);
+        }
+
+        if (save.Artists)
+        {
+            AddMetadataValue(metadata, "ARTISTS", ResolveMultiArtistValue(track, save));
         }
 
         if (save.Album)
@@ -1389,20 +1544,43 @@ public class AudioTagger
 
     private static void AddAdditionalMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
+        AddMetadataValue(metadata, "LENGTH", save.Length ? (track.Duration * 1000).ToString(CultureInfo.InvariantCulture) : null);
+
         if (save.Isrc)
         {
             AddMetadataValue(metadata, "isrc", track.ISRC);
+            AddMetadataValue(metadata, "ISRC", track.ISRC);
         }
 
         if (save.Bpm && track.Bpm > 0)
         {
             AddMetadataValue(metadata, "bpm", track.Bpm.ToString(CultureInfo.InvariantCulture));
+            AddMetadataValue(metadata, "BPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
         }
+
+        AddMetadataValue(metadata, "initialkey", save.Key ? track.Key : null);
+        AddMetadataValue(metadata, "DANCEABILITY", save.Danceability && track.Danceability.HasValue ? FormatAudioFeature(track.Danceability.Value) : null);
+        AddMetadataValue(metadata, "ENERGY", save.Energy && track.Energy.HasValue ? FormatAudioFeature(track.Energy.Value) : null);
+        AddMetadataValue(metadata, "VALENCE", save.Valence && track.Valence.HasValue ? FormatAudioFeature(track.Valence.Value) : null);
+        AddMetadataValue(metadata, "ACOUSTICNESS", save.Acousticness && track.Acousticness.HasValue ? FormatAudioFeature(track.Acousticness.Value) : null);
+        AddMetadataValue(metadata, "INSTRUMENTALNESS", save.Instrumentalness && track.Instrumentalness.HasValue ? FormatAudioFeature(track.Instrumentalness.Value) : null);
+        AddMetadataValue(metadata, "SPEECHINESS", save.Speechiness && track.Speechiness.HasValue ? FormatAudioFeature(track.Speechiness.Value) : null);
+        AddMetadataValue(metadata, "LOUDNESS", save.Loudness && track.Loudness.HasValue ? FormatAudioFeature(track.Loudness.Value) : null);
+        AddMetadataValue(metadata, "TEMPO", save.Tempo && track.Tempo.HasValue ? FormatAudioFeature(track.Tempo.Value) : null);
+        AddMetadataValue(
+            metadata,
+            "TIME_SIGNATURE",
+            save.TimeSignature && track.TimeSignature.HasValue ? track.TimeSignature.Value.ToString(CultureInfo.InvariantCulture) : null);
+        AddMetadataValue(metadata, "LIVENESS", save.Liveness && track.Liveness.HasValue ? FormatAudioFeature(track.Liveness.Value) : null);
 
         if (save.Label)
         {
             AddMetadataValue(metadata, "publisher", track.Album?.Label);
+            AddMetadataValue(metadata, "PUBLISHER", track.Album?.Label);
         }
+
+        AddMetadataValue(metadata, "BARCODE", save.Barcode ? track.Album?.Barcode : null);
+        AddMetadataValue(metadata, "REPLAYGAIN_TRACK_GAIN", save.ReplayGain ? track.ReplayGain : null);
 
         if (save.Composer
             && track.Contributors.TryGetValue(ComposerRole, out var composersObj)
@@ -1420,6 +1598,12 @@ public class AudioTagger
         if (save.Lyrics && !string.IsNullOrWhiteSpace(track.Lyrics?.Unsync))
         {
             AddMetadataValue(metadata, LyricsKey, track.Lyrics.Unsync);
+            AddMetadataValue(metadata, "LYRICS", track.Lyrics.Unsync);
+        }
+
+        if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
+        {
+            AddMetadataValue(metadata, "LYRICS_SYNCED", syncedLyricsText);
         }
 
         if (save.Url)
@@ -1431,6 +1615,57 @@ public class AudioTagger
         if (save.Explicit)
         {
             AddMetadataValue(metadata, "ITUNESADVISORY", track.Explicit ? "1" : "0");
+        }
+
+        if (TryGetAppleDigitalMasterMarker(track, out var appleDigitalMasterMarker))
+        {
+            AddMetadataValue(metadata, AppleDigitalMasterTag, appleDigitalMasterMarker);
+        }
+    }
+
+    private static void AddContributorMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (track.Contributors.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var contributor in track.Contributors)
+        {
+            var role = contributor.Key.ToUpperInvariant();
+            if (SupportedContributorRoles.Contains(role)
+                && ShouldWriteContributorRole(save, role)
+                && contributor.Value is List<string> people
+                && people.Count > 0)
+            {
+                AddMetadataValue(metadata, role, string.Join(", ", people.Where(static value => !string.IsNullOrWhiteSpace(value))));
+                continue;
+            }
+
+            if (role == "MUSICPUBLISHER"
+                && save.InvolvedPeople
+                && contributor.Value is List<string> publishers
+                && publishers.Count > 0)
+            {
+                AddMetadataValue(metadata, "ORGANIZATION", string.Join(", ", publishers.Where(static value => !string.IsNullOrWhiteSpace(value))));
+            }
+        }
+    }
+
+    private static void AddCompilationAndRatingMp4Metadata(
+        Dictionary<string, string> metadata,
+        DeezSpoTag.Core.Models.Track track,
+        TagSettings save)
+    {
+        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
+        {
+            AddMetadataValue(metadata, "COMPILATION", "1");
+        }
+
+        if (save.Rating && track.Rank > 0)
+        {
+            var rank = Math.Round(track.Rank / 10000.0);
+            AddMetadataValue(metadata, "RATING", rank.ToString(CultureInfo.InvariantCulture));
         }
     }
 
