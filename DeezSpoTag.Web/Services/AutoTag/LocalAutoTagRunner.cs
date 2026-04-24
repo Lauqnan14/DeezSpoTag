@@ -3731,12 +3731,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var saved = atlTrack.Save();
             if (!saved)
             {
-                _logger.LogWarning("MP4 ATL writer did not report a successful save for {File}", context.FilePath);
+                throw new InvalidOperationException($"MP4 ATL writer did not report a successful save for {context.FilePath}");
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "MP4 ATL writer failed for {File}", context.FilePath);
+            throw new InvalidOperationException($"MP4 ATL writer failed for {context.FilePath}", ex);
         }
     }
 
@@ -6937,8 +6938,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         public static bool HasRaw(TagLib.File file, string rawName)
         {
-            var apple = (TagLib.Mpeg4.AppleTag?)file.GetTag(TagTypes.Apple, false);
-            return apple != null && TagRawProbe.HasAppleDashBox(apple, Mp4RawTagNameNormalizer.Normalize(rawName));
+            return HasMp4RawValue(file, rawName);
         }
 
         public static void SetDate(TagLib.File file, string dateString)
@@ -7120,11 +7120,173 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (IsMp4Family(extension))
         {
             var apple = (TagLib.Mpeg4.AppleTag?)file.GetTag(TagTypes.Apple, false);
-            if (apple == null) return new List<string>();
-            return readAppleValues(apple, Mp4RawTagNameNormalizer.Normalize(name));
+            var normalizedName = Mp4RawTagNameNormalizer.Normalize(name);
+            if (apple != null)
+            {
+                var dashValues = readAppleValues(apple, normalizedName);
+                if (dashValues.Count > 0)
+                {
+                    return dashValues;
+                }
+            }
+
+            return ReadMp4AtlRawValues(file.Name, normalizedName);
         }
 
         return new List<string>();
+    }
+
+    private static bool HasMp4RawValue(TagLib.File file, string rawName)
+    {
+        var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
+        var apple = (TagLib.Mpeg4.AppleTag?)file.GetTag(TagTypes.Apple, false);
+        if (apple != null && TagRawProbe.HasAppleDashBox(apple, normalized))
+        {
+            return true;
+        }
+
+        if (ReadMp4AtlRawValues(file.Name, normalized).Count > 0)
+        {
+            return true;
+        }
+
+        return normalized.ToUpperInvariant() switch
+        {
+            "©NAM" or "TITLE" => !string.IsNullOrWhiteSpace(file.Tag.Title),
+            "©ART" or "ARTIST" or "ARTISTS" => file.Tag.Performers?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
+            "AART" or "ALBUMARTIST" => file.Tag.AlbumArtists?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
+            "©ALB" or "ALBUM" => !string.IsNullOrWhiteSpace(file.Tag.Album),
+            "ISRC" => !string.IsNullOrWhiteSpace(file.Tag.ISRC),
+            "©GEN" or "GENRE" => file.Tag.Genres?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
+            "TRACK" or "TRKN" => file.Tag.Track > 0 || file.Tag.TrackCount > 0,
+            "DISC" or "DISK" => file.Tag.Disc > 0 || file.Tag.DiscCount > 0,
+            "LYRICS" or "©LYR" => !string.IsNullOrWhiteSpace(file.Tag.Lyrics),
+            _ => false
+        };
+    }
+
+    private static List<string> ReadMp4AtlRawValues(string filePath, string rawName)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !IOFile.Exists(filePath))
+        {
+            return new List<string>();
+        }
+
+        try
+        {
+            var atlTrack = new ATL.Track(filePath);
+            var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
+            var values = new List<string>();
+
+            switch (normalized.ToUpperInvariant())
+            {
+                case "©NAM":
+                case "TITLE":
+                    AddIfPresent(values, atlTrack.Title);
+                    break;
+                case "©ART":
+                case "ARTIST":
+                case "ARTISTS":
+                    AddIfPresent(values, atlTrack.Artist);
+                    break;
+                case "©ALB":
+                case "ALBUM":
+                    AddIfPresent(values, atlTrack.Album);
+                    break;
+                case "AART":
+                case "ALBUMARTIST":
+                case "ALBUM ARTIST":
+                    AddIfPresent(values, atlTrack.AlbumArtist);
+                    break;
+                case "©WRT":
+                case "COMPOSER":
+                    AddIfPresent(values, atlTrack.Composer);
+                    break;
+                case "©GEN":
+                case "GENRE":
+                    AddIfPresent(values, atlTrack.Genre);
+                    break;
+                case "ISRC":
+                    AddIfPresent(values, atlTrack.ISRC);
+                    break;
+                case "DATE":
+                case "YEAR":
+                case "©DAY":
+                    if (atlTrack.Date.HasValue)
+                    {
+                        AddIfPresent(values, atlTrack.Date.Value.ToString("yyyy-MM-dd"));
+                    }
+
+                    break;
+                case "BPM":
+                case "TMPO":
+                    if (atlTrack.BPM > 0)
+                    {
+                        AddIfPresent(values, atlTrack.BPM.ToString());
+                    }
+
+                    break;
+                case "TRACK":
+                case "TRKN":
+                    if (atlTrack.TrackNumber > 0)
+                    {
+                        AddIfPresent(values, atlTrack.TrackNumber.ToString());
+                    }
+
+                    break;
+                case "DISC":
+                case "DISK":
+                    if (atlTrack.DiscNumber > 0)
+                    {
+                        AddIfPresent(values, atlTrack.DiscNumber.ToString());
+                    }
+
+                    break;
+                case "LYRICS":
+                case "©LYR":
+                    if (atlTrack.Lyrics != null && atlTrack.Lyrics.Count > 0)
+                    {
+                        foreach (var line in atlTrack.Lyrics)
+                        {
+                            AddIfPresent(values, line?.UnsynchronizedLyrics);
+                        }
+                    }
+
+                    break;
+            }
+
+            if (atlTrack.AdditionalFields != null)
+            {
+                var additional = new Dictionary<string, string>(atlTrack.AdditionalFields, StringComparer.OrdinalIgnoreCase);
+                AddIfPresent(values, ResolveAtlAdditionalValue(additional, normalized));
+                AddIfPresent(values, ResolveAtlAdditionalValue(additional, BuildAtlDashFieldName(normalized)));
+            }
+
+            return values
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return new List<string>();
+        }
+    }
+
+    private static string ResolveAtlAdditionalValue(Dictionary<string, string> additional, string key)
+    {
+        return additional.TryGetValue(key, out var value)
+            ? value
+            : string.Empty;
+    }
+
+    private static void AddIfPresent(List<string> values, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            values.Add(value);
+        }
     }
 
     private static void ApplyId3CustomTags(
