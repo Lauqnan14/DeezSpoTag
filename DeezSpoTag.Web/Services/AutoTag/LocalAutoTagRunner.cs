@@ -3461,12 +3461,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 TempCoverPath = tempCoverPath
             },
             token);
-        await ApplyCustomTagsAsync(
-            filePath,
-            track,
-            config,
-            platformId,
-            effectiveTagSettings.UseNullSeparator);
+        if (!IsMp4Family(Path.GetExtension(filePath)))
+        {
+            await ApplyCustomTagsAsync(
+                filePath,
+                track,
+                config,
+                platformId,
+                effectiveTagSettings.UseNullSeparator);
+        }
 
         if (!string.IsNullOrWhiteSpace(tempCoverPath) && !string.Equals(Path.GetDirectoryName(tempCoverPath), Path.GetDirectoryName(filePath), StringComparison.OrdinalIgnoreCase))
         {
@@ -3664,8 +3667,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var context = BuildTagWriteExecutionContext(request);
         var chapterSnapshot = AtlTagHelper.CaptureChapters(context.FilePath, context.Extension, _logger);
 
-        using (var file = TagLib.File.Create(context.FilePath))
+        if (IsMp4Family(context.Extension))
         {
+            WriteMp4TagsWithAtl(context);
+        }
+        else
+        {
+            using var file = TagLib.File.Create(context.FilePath);
             PrepareId3Version(file, context);
 
             var tagWriteContext = new TagWriteContext(
@@ -3691,6 +3699,584 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var sidecarWriteResult = await WriteLyricsSidecarsAsync(context, token);
         CleanupUpgradedTxtSidecar(context, sidecarWriteResult);
+    }
+
+    private void WriteMp4TagsWithAtl(TagWriteExecutionContext context)
+    {
+        try
+        {
+            var atlTrack = new ATL.Track(context.FilePath);
+            var additional = atlTrack.AdditionalFields != null
+                ? new Dictionary<string, string>(atlTrack.AdditionalFields, StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            ApplyMp4AtlPrimaryTagWrites(atlTrack, additional, context);
+            ApplyMp4AtlAudioFeatureTagWrites(additional, context);
+            ApplyMp4AtlReleaseAndMetadataTagWrites(atlTrack, additional, context);
+            ApplyMp4AtlTrackAndLyricsTagWrites(atlTrack, additional, context);
+            ApplyMp4AtlAlbumArtTagWrite(atlTrack, context);
+
+            using (var probe = TagLib.File.Create(context.FilePath))
+            {
+                var customWrites = BuildCustomTagWrites(
+                    context.SourceTrack,
+                    context.Config,
+                    context.PlatformId,
+                    context.Extension,
+                    probe);
+                ApplyMp4AtlCustomTagWrites(atlTrack, additional, customWrites, context);
+            }
+
+            atlTrack.AdditionalFields = additional;
+            var saved = atlTrack.Save();
+            if (!saved)
+            {
+                _logger.LogWarning("MP4 ATL writer did not report a successful save for {File}", context.FilePath);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "MP4 ATL writer failed for {File}", context.FilePath);
+        }
+    }
+
+    private static void ApplyMp4AtlPrimaryTagWrites(
+        ATL.Track atlTrack,
+        Dictionary<string, string> additional,
+        TagWriteExecutionContext context)
+    {
+        if (context.EnabledTags.Contains(TitleTag) && context.EffectiveTagSettings.Title)
+        {
+            var titleValue = context.CoreTrack.Title;
+            if (!context.Config.ShortTitle
+                && !string.IsNullOrWhiteSpace(context.SourceTrack.Version)
+                && !titleValue.Contains(context.SourceTrack.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                titleValue = $"{titleValue} ({context.SourceTrack.Version})";
+            }
+
+            if (ShouldOverwriteTag(context.Config, SupportedTag.Title) || string.IsNullOrWhiteSpace(atlTrack.Title))
+            {
+                atlTrack.Title = titleValue;
+            }
+        }
+
+        if (context.EnabledTags.Contains(ArtistTag) && context.EffectiveTagSettings.Artist)
+        {
+            var artists = ResolveArtistValues(context.CoreTrack, context.EffectiveTagSettings);
+            var joined = JoinAtlValues(artists, context.Separator);
+            if (!string.IsNullOrWhiteSpace(joined)
+                && (ShouldOverwriteTag(context.Config, SupportedTag.Artist) || string.IsNullOrWhiteSpace(atlTrack.Artist)))
+            {
+                atlTrack.Artist = joined;
+            }
+        }
+
+        if (context.EnabledTags.Contains(AlbumArtistTag) && context.EffectiveTagSettings.AlbumArtist)
+        {
+            var albumArtists = ResolveAlbumArtistValues(context.CoreTrack);
+            var joined = JoinAtlValues(albumArtists, context.Separator);
+            if (!string.IsNullOrWhiteSpace(joined)
+                && (ShouldOverwriteTag(context.Config, SupportedTag.AlbumArtist) || string.IsNullOrWhiteSpace(atlTrack.AlbumArtist)))
+            {
+                atlTrack.AlbumArtist = joined;
+            }
+        }
+
+        if (context.EnabledTags.Contains(AlbumTag) && context.EffectiveTagSettings.Album && context.CoreTrack.Album != null)
+        {
+            if (ShouldOverwriteTag(context.Config, SupportedTag.Album) || string.IsNullOrWhiteSpace(atlTrack.Album))
+            {
+                atlTrack.Album = context.CoreTrack.Album.Title;
+            }
+        }
+
+        if (context.EnabledTags.Contains(GenreTag) && context.EffectiveTagSettings.Genre)
+        {
+            var genres = SanitizeGenres(context.CoreTrack.Album?.Genre ?? new List<string>(), context.GenreAliasMap, context.SplitCompositeGenres);
+            var styles = context.SourceTrack.Styles.ToList();
+            (genres, styles) = ApplyStylesOptions(genres, styles, context.Config.StylesOptions);
+
+            if (context.Config.CapitalizeGenres)
+            {
+                genres = genres.Select(CapitalizeGenre).ToList();
+            }
+
+            var joined = JoinAtlValues(genres, context.Separator);
+            if (!string.IsNullOrWhiteSpace(joined)
+                && (ShouldOverwriteTag(context.Config, SupportedTag.Genre) || string.IsNullOrWhiteSpace(atlTrack.Genre)))
+            {
+                atlTrack.Genre = joined;
+            }
+        }
+
+        if (context.EnabledTags.Contains("bpm") && context.SourceTrack.Bpm.HasValue)
+        {
+            if (ShouldOverwriteTag(context.Config, SupportedTag.BPM) || atlTrack.BPM <= 0)
+            {
+                atlTrack.BPM = (int)context.SourceTrack.Bpm.Value;
+            }
+        }
+
+        if (context.EnabledTags.Contains("key") && !string.IsNullOrWhiteSpace(context.SourceTrack.Key))
+        {
+            var keyValue = context.Config.Camelot ? ToCamelot(context.SourceTrack.Key) : context.SourceTrack.Key;
+            WriteMp4AtlRaw(additional, "KEY", keyValue, context.Config, SupportedTag.Key);
+            WriteMp4AtlRaw(additional, "initialkey", keyValue, context.Config, SupportedTag.Key);
+        }
+
+        if (context.EnabledTags.Contains(LabelTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.Label))
+        {
+            WriteMp4AtlRaw(additional, LabelUpperTag, context.SourceTrack.Label, context.Config, SupportedTag.Label);
+        }
+
+        if (context.EnabledTags.Contains(IsrcTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.Isrc))
+        {
+            if (ShouldOverwriteTag(context.Config, SupportedTag.ISRC) || string.IsNullOrWhiteSpace(atlTrack.ISRC))
+            {
+                atlTrack.ISRC = context.SourceTrack.Isrc;
+            }
+
+            WriteMp4AtlRaw(additional, "ISRC", context.SourceTrack.Isrc, context.Config, SupportedTag.ISRC);
+        }
+    }
+
+    private static void ApplyMp4AtlAudioFeatureTagWrites(
+        Dictionary<string, string> additional,
+        TagWriteExecutionContext context)
+    {
+        WriteMp4AtlAudioFeature(additional, context, "danceability", DanceabilityTag, SupportedTag.Danceability, context.SourceTrack.Danceability);
+        WriteMp4AtlAudioFeature(additional, context, "energy", EnergyTag, SupportedTag.Energy, context.SourceTrack.Energy);
+        WriteMp4AtlAudioFeature(additional, context, "valence", ValenceTag, SupportedTag.Valence, context.SourceTrack.Valence);
+        WriteMp4AtlAudioFeature(additional, context, "acousticness", AcousticnessTag, SupportedTag.Acousticness, context.SourceTrack.Acousticness);
+        WriteMp4AtlAudioFeature(additional, context, "instrumentalness", InstrumentalnessTag, SupportedTag.Instrumentalness, context.SourceTrack.Instrumentalness);
+        WriteMp4AtlAudioFeature(additional, context, "speechiness", SpeechinessTag, SupportedTag.Speechiness, context.SourceTrack.Speechiness);
+        WriteMp4AtlAudioFeature(additional, context, "loudness", LoudnessTag, SupportedTag.Loudness, context.SourceTrack.Loudness);
+        WriteMp4AtlAudioFeature(additional, context, "tempo", TempoTag, SupportedTag.Tempo, context.SourceTrack.Tempo);
+        WriteMp4AtlAudioFeature(additional, context, "liveness", LivenessTag, SupportedTag.Liveness, context.SourceTrack.Liveness);
+
+        if (context.EnabledTags.Contains("timeSignature") && context.SourceTrack.TimeSignature.HasValue)
+        {
+            WriteMp4AtlRaw(
+                additional,
+                TimeSignatureTag,
+                context.SourceTrack.TimeSignature.Value.ToString(CultureInfo.InvariantCulture),
+                context.Config,
+                SupportedTag.TimeSignature);
+        }
+    }
+
+    private static void WriteMp4AtlAudioFeature(
+        Dictionary<string, string> additional,
+        TagWriteExecutionContext context,
+        string enabledTag,
+        string rawTag,
+        SupportedTag supportedTag,
+        double? value)
+    {
+        if (!context.EnabledTags.Contains(enabledTag) || !value.HasValue)
+        {
+            return;
+        }
+
+        WriteMp4AtlRaw(
+            additional,
+            rawTag,
+            FormatAudioFeature(value.Value),
+            context.Config,
+            supportedTag);
+    }
+
+    private static void ApplyMp4AtlReleaseAndMetadataTagWrites(
+        ATL.Track atlTrack,
+        Dictionary<string, string> additional,
+        TagWriteExecutionContext context)
+    {
+        if (context.EnabledTags.Contains(ReleaseDateTag) && context.SourceTrack.ReleaseDate.HasValue)
+        {
+            var releaseDate = context.SourceTrack.ReleaseDate.Value;
+            if (ShouldOverwriteTag(context.Config, SupportedTag.ReleaseDate) || atlTrack.Year <= 0)
+            {
+                atlTrack.Date = releaseDate;
+            }
+
+            var dateString = IsYearOnlyDateFormat(context.Config.Technical?.DateFormat)
+                ? releaseDate.Year.ToString(CultureInfo.InvariantCulture)
+                : releaseDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, "DATE", dateString, context.Config, SupportedTag.ReleaseDate);
+            WriteMp4AtlRaw(additional, "©day", dateString, context.Config, SupportedTag.ReleaseDate);
+        }
+
+        if (context.EnabledTags.Contains(PublishDateTag) && context.SourceTrack.PublishDate.HasValue)
+        {
+            var publishDate = context.SourceTrack.PublishDate.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, "ORIGINALDATE", publishDate, context.Config, SupportedTag.PublishDate);
+        }
+
+        if (context.EnabledTags.Contains(UrlTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.Url))
+        {
+            WriteMp4AtlRaw(additional, WwwAudioFileTag, context.SourceTrack.Url, context.Config, SupportedTag.URL);
+        }
+
+        if (context.EnabledTags.Contains(TrackIdTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.TrackId))
+        {
+            WriteMp4AtlRaw(
+                additional,
+                $"{context.PlatformId.ToUpperInvariant()}_TRACK_ID",
+                context.SourceTrack.TrackId,
+                context.Config,
+                SupportedTag.TrackId);
+        }
+
+        if (context.EnabledTags.Contains(ReleaseIdTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.ReleaseId))
+        {
+            WriteMp4AtlRaw(
+                additional,
+                $"{context.PlatformId.ToUpperInvariant()}_RELEASE_ID",
+                context.SourceTrack.ReleaseId,
+                context.Config,
+                SupportedTag.ReleaseId);
+        }
+
+        if (context.EnabledTags.Contains(CatalogNumberTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.CatalogNumber))
+        {
+            if (ShouldOverwriteTag(context.Config, SupportedTag.CatalogNumber) || string.IsNullOrWhiteSpace(atlTrack.CatalogNumber))
+            {
+                atlTrack.CatalogNumber = context.SourceTrack.CatalogNumber;
+            }
+
+            WriteMp4AtlRaw(additional, CatalogNumberUpperTag, context.SourceTrack.CatalogNumber, context.Config, SupportedTag.CatalogNumber);
+        }
+
+        if (context.EnabledTags.Contains(DurationTag) && context.SourceTrack.Duration.HasValue)
+        {
+            var totalSeconds = ((int)context.SourceTrack.Duration.Value.TotalSeconds).ToString(CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, LengthUpperTag, totalSeconds, context.Config, SupportedTag.Duration);
+        }
+
+        if (context.EnabledTags.Contains(RemixerTag) && context.SourceTrack.Remixers.Count > 0)
+        {
+            WriteMp4AtlRaw(
+                additional,
+                RemixerUpperTag,
+                JoinAtlValues(context.SourceTrack.Remixers, context.Separator),
+                context.Config,
+                SupportedTag.Remixer);
+        }
+
+        if (context.EnabledTags.Contains("mood") && !string.IsNullOrWhiteSpace(context.SourceTrack.Mood))
+        {
+            WriteMp4AtlRaw(additional, "MOOD", context.SourceTrack.Mood, context.Config, SupportedTag.Mood);
+        }
+    }
+
+    private static void ApplyMp4AtlTrackAndLyricsTagWrites(
+        ATL.Track atlTrack,
+        Dictionary<string, string> additional,
+        TagWriteExecutionContext context)
+    {
+        if (context.EnabledTags.Contains(DiscNumberTag)
+            && context.EffectiveTagSettings.DiscNumber
+            && context.SourceTrack.DiscNumber.HasValue)
+        {
+            if (ShouldOverwriteTag(context.Config, SupportedTag.DiscNumber) || atlTrack.DiscNumber <= 0)
+            {
+                atlTrack.DiscNumber = context.SourceTrack.DiscNumber.Value;
+            }
+        }
+
+        if (context.EnabledTags.Contains(TrackNumberTag)
+            && context.EffectiveTagSettings.TrackNumber
+            && context.SourceTrack.TrackNumber.HasValue)
+        {
+            if (ShouldOverwriteTag(context.Config, SupportedTag.TrackNumber) || atlTrack.TrackNumber <= 0)
+            {
+                atlTrack.TrackNumber = context.SourceTrack.TrackNumber.Value;
+            }
+        }
+
+        if (context.EnabledTags.Contains(TrackTotalTag)
+            && context.EffectiveTagSettings.TrackTotal
+            && context.SourceTrack.TrackTotal is > 0)
+        {
+            if (ShouldOverwriteTag(context.Config, SupportedTag.TrackTotal) || atlTrack.TrackTotal <= 0)
+            {
+                atlTrack.TrackTotal = context.SourceTrack.TrackTotal.Value;
+            }
+        }
+
+        var discTotal = ResolveFirstPositiveInt(context.SourceTrack, DiscTotalTag, DiscTotalRawTag);
+        if (discTotal is > 0 && (ShouldOverwriteTag(context.Config, SupportedTag.DiscNumber) || atlTrack.DiscTotal <= 0))
+        {
+            atlTrack.DiscTotal = discTotal.Value;
+        }
+
+        if (context.EnabledTags.Contains(SourceTag) && context.EffectiveTagSettings.Source)
+        {
+            var sourceValues = ResolveOtherValues(context.SourceTrack, SourceTag);
+            var sourceValue = sourceValues.Count > 0
+                ? sourceValues[0]
+                : context.PlatformId.ToUpperInvariant();
+            WriteMp4AtlRaw(additional, SourceRawTag, sourceValue, context.Config, SupportedTag.OtherTags);
+
+            var sourceIdValues = ResolveOtherValues(context.SourceTrack, "sourceId", "SOURCE_ID", SourceIdRawTag);
+            if (sourceIdValues.Count == 0 && !string.IsNullOrWhiteSpace(context.SourceTrack.TrackId))
+            {
+                sourceIdValues.Add(context.SourceTrack.TrackId);
+            }
+
+            if (sourceIdValues.Count > 0)
+            {
+                WriteMp4AtlRaw(additional, SourceIdRawTag, sourceIdValues[0], context.Config, SupportedTag.OtherTags);
+            }
+        }
+
+        if (ShouldWriteSyncedLyrics(context) && TryResolveLyricsLines(context.SourceTrack, true, out var syncedLyricsLines))
+        {
+            WriteMp4AtlRaw(
+                additional,
+                LyricsSyncedTag,
+                string.Join(Environment.NewLine, syncedLyricsLines),
+                context.Config,
+                SupportedTag.SyncedLyrics);
+        }
+
+        if (ShouldWriteUnsyncedLyrics(context) && TryResolveLyricsLines(context.SourceTrack, false, out var unsyncedLyricsLines))
+        {
+            var text = string.Join(Environment.NewLine, unsyncedLyricsLines);
+            WriteMp4AtlRaw(additional, LyricsUpperTag, text, context.Config, SupportedTag.UnsyncedLyrics);
+        }
+
+        if (context.EnabledTags.Contains(ExplicitTag) && context.SourceTrack.Explicit.HasValue)
+        {
+            WriteMp4AtlRaw(
+                additional,
+                ItunesAdvisoryTag,
+                context.SourceTrack.Explicit.Value ? "1" : "2",
+                context.Config,
+                SupportedTag.Explicit);
+        }
+    }
+
+    private static void ApplyMp4AtlAlbumArtTagWrite(ATL.Track atlTrack, TagWriteExecutionContext context)
+    {
+        if (!context.EnabledTags.Contains(AlbumArtTag)
+            || !context.EffectiveTagSettings.Cover
+            || string.IsNullOrWhiteSpace(context.TempCoverPath)
+            || !IOFile.Exists(context.TempCoverPath))
+        {
+            return;
+        }
+
+        if (ShouldOverwriteTag(context.Config, SupportedTag.AlbumArt) || atlTrack.EmbeddedPictures is not { Count: > 0 })
+        {
+            try
+            {
+                var bytes = IOFile.ReadAllBytes(context.TempCoverPath);
+                var picture = ATL.PictureInfo.fromBinaryData(
+                    bytes,
+                    ATL.PictureInfo.PIC_TYPE.Front,
+                    ATL.AudioData.MetaDataIOFactory.TagType.NATIVE,
+                    null,
+                    1);
+                picture.Description = "Cover";
+
+                var pictures = atlTrack.EmbeddedPictures;
+                if (pictures != null)
+                {
+                    pictures.Clear();
+                    pictures.Add(picture);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // best effort for problematic containers
+            }
+        }
+
+        if (!ShouldWriteArtworkSidecar(context.Config))
+        {
+            return;
+        }
+
+        var coverPath = Path.Join(Path.GetDirectoryName(context.FilePath) ?? "", "cover.jpg");
+        if (!IOFile.Exists(coverPath))
+        {
+            IOFile.Copy(context.TempCoverPath, coverPath, overwrite: false);
+        }
+    }
+
+    private static void ApplyMp4AtlCustomTagWrites(
+        ATL.Track atlTrack,
+        Dictionary<string, string> additional,
+        List<CustomTagWrite> writes,
+        TagWriteExecutionContext context)
+    {
+        foreach (var write in writes)
+        {
+            if (!context.EnabledTags.Contains(write.TagKey) || write.Values.Count == 0)
+            {
+                continue;
+            }
+
+            var joined = JoinAtlValues(write.Values, context.Separator);
+            if (string.IsNullOrWhiteSpace(joined))
+            {
+                continue;
+            }
+
+            var normalized = Mp4RawTagNameNormalizer.Normalize(write.RawTagName);
+            if (!ShouldOverwriteTag(context.Config, write.SupportedTag) && HasMp4AtlRaw(additional, normalized))
+            {
+                continue;
+            }
+
+            ApplyMp4AtlKnownField(atlTrack, normalized, joined);
+            SetAtlAdditionalField(additional, normalized, joined);
+            SetAtlAdditionalField(additional, BuildAtlDashFieldName(normalized), joined);
+        }
+    }
+
+    private static void ApplyMp4AtlKnownField(ATL.Track track, string rawName, string value)
+    {
+        if (string.IsNullOrWhiteSpace(rawName) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var normalized = rawName.Trim();
+        switch (normalized.ToUpperInvariant())
+        {
+            case "©NAM":
+            case "TITLE":
+                track.Title = value;
+                return;
+            case "©ART":
+            case "ARTIST":
+            case "ARTISTS":
+                track.Artist = value;
+                return;
+            case "©ALB":
+            case "ALBUM":
+                track.Album = value;
+                return;
+            case "AART":
+            case "ALBUMARTIST":
+            case "ALBUM ARTIST":
+                track.AlbumArtist = value;
+                return;
+            case "©WRT":
+            case "COMPOSER":
+                track.Composer = value;
+                return;
+            case "©GEN":
+            case "GENRE":
+                track.Genre = value;
+                return;
+            case "ISRC":
+                track.ISRC = value;
+                return;
+            case "DATE":
+            case "YEAR":
+            case "©DAY":
+                if (TryParseAtlYear(value, out var parsedYear))
+                {
+                    track.Date = new DateTime(parsedYear, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                }
+
+                return;
+        }
+    }
+
+    private static bool TryParseAtlYear(string input, out int year)
+    {
+        year = 0;
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        var trimmed = input.Trim();
+        if (trimmed.Length >= 4 && int.TryParse(trimmed[..4], out var parsed) && parsed is >= 1 and <= 9999)
+        {
+            year = parsed;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void WriteMp4AtlRaw(
+        Dictionary<string, string> additional,
+        string rawName,
+        string? value,
+        AutoTagRunnerConfig config,
+        SupportedTag tag)
+    {
+        if (string.IsNullOrWhiteSpace(rawName) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
+        if (!ShouldOverwriteTag(config, tag) && HasMp4AtlRaw(additional, normalized))
+        {
+            return;
+        }
+
+        SetAtlAdditionalField(additional, normalized, value);
+        SetAtlAdditionalField(additional, BuildAtlDashFieldName(normalized), value);
+    }
+
+    private static bool HasMp4AtlRaw(Dictionary<string, string> additional, string rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+        {
+            return false;
+        }
+
+        var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
+        return additional.ContainsKey(normalized)
+               || additional.ContainsKey(BuildAtlDashFieldName(normalized));
+    }
+
+    private static string BuildAtlDashFieldName(string name)
+    {
+        return string.IsNullOrWhiteSpace(name)
+            ? string.Empty
+            : $"----:com.apple.iTunes:{name.Trim()}";
+    }
+
+    private static void SetAtlAdditionalField(Dictionary<string, string> fields, string key, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            fields.Remove(key);
+            return;
+        }
+
+        fields[key] = value.Trim();
+    }
+
+    private static string JoinAtlValues(IEnumerable<string> values, string separator)
+    {
+        var cleaned = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (cleaned.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var resolvedSeparator = string.IsNullOrWhiteSpace(separator) ? ", " : separator;
+        return string.Join(resolvedSeparator, cleaned);
     }
 
     private static TagWriteExecutionContext BuildTagWriteExecutionContext(TagWriteRequest request)

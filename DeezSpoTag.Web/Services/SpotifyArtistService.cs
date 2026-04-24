@@ -25,7 +25,7 @@ public sealed class SpotifyArtistService
     private static readonly TimeSpan DeezerEnrichmentTimeout = TimeSpan.FromSeconds(15);
     private const int ShazamArtistSampleTrackLimit = 3;
     private const int ShazamArtistCandidateTrackWindow = 5;
-    private const int ShazamStrongVoteThreshold = 2;
+    private const int ShazamStrongVoteThreshold = 3;
     private const int CanonicalFallbackMinScore = 2_030;
     private const int CanonicalFallbackMinLead = 250;
     private const int ExactCandidateScoreParallelism = 4;
@@ -1551,21 +1551,21 @@ public sealed class SpotifyArtistService
             var localSignals = await TryGetLocalArtistSpotifyMatchSignalsAsync(localArtistId, cancellationToken);
             MergeAliasTargetsFromLocalSignals(aliasTargets, localSignals);
 
-            var localEvidenceResolved = await TryResolveArtistIdViaLocalTrackEvidenceAsync(
-                artistName,
-                localAlbumTitleSet,
-                aliasTargets,
-                localSignals,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(localEvidenceResolved))
-            {
-                AddActivity("info", $"[spotify] artist id resolved via local track evidence: {artistName} -> {localEvidenceResolved}.");
-                return localEvidenceResolved;
-            }
-
             var results = await SearchArtistCandidatesWithFallbackQueryAsync(artistName, cancellationToken);
             if (results.Count == 0)
             {
+                var localEvidenceResolved = await TryResolveArtistIdViaLocalTrackEvidenceAsync(
+                    artistName,
+                    localAlbumTitleSet,
+                    aliasTargets,
+                    localSignals,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(localEvidenceResolved))
+                {
+                    AddActivity("info", $"[spotify] artist id resolved via local track evidence: {artistName} -> {localEvidenceResolved}.");
+                    return localEvidenceResolved;
+                }
+
                 return await ResolveArtistIdWithShazamFallbackAsync(
                     artistName,
                     localArtistId,
@@ -1583,6 +1583,18 @@ public sealed class SpotifyArtistService
 
             if (exactCandidates.Count == 0)
             {
+                var localEvidenceResolved = await TryResolveArtistIdViaLocalTrackEvidenceAsync(
+                    artistName,
+                    localAlbumTitleSet,
+                    aliasTargets,
+                    localSignals,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(localEvidenceResolved))
+                {
+                    AddActivity("info", $"[spotify] artist id resolved via local track evidence: {artistName} -> {localEvidenceResolved}.");
+                    return localEvidenceResolved;
+                }
+
                 return await ResolveArtistIdWithShazamFallbackAsync(
                     artistName,
                     localArtistId,
@@ -1601,6 +1613,18 @@ public sealed class SpotifyArtistService
             if (!string.IsNullOrWhiteSpace(selectedExactCandidateId))
             {
                 return selectedExactCandidateId;
+            }
+
+            var fallbackLocalEvidenceResolved = await TryResolveArtistIdViaLocalTrackEvidenceAsync(
+                artistName,
+                localAlbumTitleSet,
+                aliasTargets,
+                localSignals,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(fallbackLocalEvidenceResolved))
+            {
+                AddActivity("info", $"[spotify] artist id resolved via local track evidence: {artistName} -> {fallbackLocalEvidenceResolved}.");
+                return fallbackLocalEvidenceResolved;
             }
 
             return await ResolveArtistIdWithShazamFallbackAsync(
