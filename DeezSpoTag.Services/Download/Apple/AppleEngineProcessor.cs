@@ -1239,6 +1239,8 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         IServiceProvider scope,
         CancellationToken cancellationToken)
     {
+        EngineAudioPostDownloadHelper.SynchronizeTrackWithPayloadForTagging(context.Track, payload);
+
         var imageDownloader = scope.GetRequiredService<ImageDownloader>();
         var audioTagger = scope.GetRequiredService<AudioTagger>();
         var spotifyArtworkResolver = scope.GetService<ISpotifyArtworkResolver>();

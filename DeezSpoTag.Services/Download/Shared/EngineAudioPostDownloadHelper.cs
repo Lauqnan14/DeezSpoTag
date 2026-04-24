@@ -295,11 +295,25 @@ public static partial class EngineAudioPostDownloadHelper
 
         using var scope = serviceProvider.CreateScope();
         var registry = scope.ServiceProvider.GetService<IMetadataResolverRegistry>();
+        if (registry == null)
+        {
+            logger.LogWarning(
+                "{Engine} profile metadata registry unavailable; skipping profile source {Source} for track {TrackId}",
+                engineName,
+                source,
+                track.Id);
+            return false;
+        }
+
         var resolver = registry?.GetResolver(source);
         if (resolver == null)
         {
-            throw new InvalidOperationException(
-                $"{engineName} download profile metadata source '{source}' is not registered.");
+            logger.LogWarning(
+                "{Engine} profile metadata source {Source} is not registered; skipping metadata override for track {TrackId}",
+                engineName,
+                source,
+                track.Id);
+            return false;
         }
 
         ApplyResolvedTagSourceIdentity(track, payload, source);
@@ -318,9 +332,7 @@ public static partial class EngineAudioPostDownloadHelper
                 engineName,
                 source,
                 track.Id);
-            throw new InvalidOperationException(
-                $"{engineName} download profile metadata source '{source}' failed for track '{track.Title}'.",
-                ex);
+            return false;
         }
     }
 
@@ -622,6 +634,8 @@ public static partial class EngineAudioPostDownloadHelper
         PostDownloadSettingsRequest request,
         CancellationToken cancellationToken = default)
     {
+        SynchronizeTrackWithPayloadForTagging(request.Context.Track, request.Payload);
+
         var imageDownloader = request.Scope.GetRequiredService<ImageDownloader>();
         var audioTagger = request.Scope.GetRequiredService<AudioTagger>();
         var lyricsService = request.Scope.GetRequiredService<LyricsService>();
@@ -675,6 +689,98 @@ public static partial class EngineAudioPostDownloadHelper
 
         UpdateAudioPayloadFiles(request.Payload, request.Context.PathResult, request.OutputPath);
         return request.OutputPath;
+    }
+
+    public static void SynchronizeTrackWithPayloadForTagging(Track track, EngineQueueItemBase payload)
+    {
+        if (track == null || payload == null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.Title) && !string.IsNullOrWhiteSpace(payload.Title))
+        {
+            track.Title = payload.Title.Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(track.ISRC) && !string.IsNullOrWhiteSpace(payload.Isrc))
+        {
+            track.ISRC = payload.Isrc.Trim();
+        }
+
+        if (track.Duration <= 0 && payload.DurationSeconds > 0)
+        {
+            track.Duration = payload.DurationSeconds;
+        }
+
+        if (track.TrackNumber <= 0)
+        {
+            if (payload.TrackNumber > 0)
+            {
+                track.TrackNumber = payload.TrackNumber;
+            }
+            else if (payload.SpotifyTrackNumber > 0)
+            {
+                track.TrackNumber = payload.SpotifyTrackNumber;
+            }
+            else if (payload.Position > 0)
+            {
+                track.TrackNumber = payload.Position;
+            }
+        }
+
+        if (track.DiscNumber <= 0)
+        {
+            if (payload.DiscNumber > 0)
+            {
+                track.DiscNumber = payload.DiscNumber;
+            }
+            else if (payload.SpotifyDiscNumber > 0)
+            {
+                track.DiscNumber = payload.SpotifyDiscNumber;
+            }
+        }
+
+        if (track.Album != null)
+        {
+            if (string.IsNullOrWhiteSpace(track.Album.Title) && !string.IsNullOrWhiteSpace(payload.Album))
+            {
+                track.Album.Title = payload.Album.Trim();
+            }
+
+            if (track.Album.TrackTotal <= 0 && payload.TrackTotal > 0)
+            {
+                track.Album.TrackTotal = payload.TrackTotal;
+            }
+
+            if (track.Album.DiscTotal <= 0 && payload.DiscTotal > 0)
+            {
+                track.Album.DiscTotal = payload.DiscTotal;
+            }
+        }
+
+        if ((track.Artists?.Count ?? 0) == 0 && !string.IsNullOrWhiteSpace(payload.Artist))
+        {
+            var artistName = payload.Artist.Trim();
+            track.Artists = new List<string> { artistName };
+            track.Artist["Main"] = new List<string> { artistName };
+            track.MainArtist ??= new Artist("0", artistName);
+        }
+
+        PopulateTrackUrls(track, payload);
+
+        if (string.IsNullOrWhiteSpace(track.DownloadURL))
+        {
+            track.DownloadURL = !string.IsNullOrWhiteSpace(payload.Url)
+                ? payload.Url!
+                : payload.SourceUrl ?? string.Empty;
+        }
+
+        var normalizedSource = DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(track.Source);
+        if (!string.IsNullOrWhiteSpace(normalizedSource))
+        {
+            ApplyResolvedTagSourceIdentity(track, payload, normalizedSource);
+        }
     }
 
     private static async Task EnsureLyricsForTaggingAsync(
