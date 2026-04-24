@@ -132,6 +132,17 @@ public static class DownloadEngineArtworkHelper
             }
         }
 
+        // Payload-provided cover URL is a final fallback so download-time embedding can still proceed
+        // even when provider lookups fail.
+        if (!string.IsNullOrWhiteSpace(request.PayloadCover))
+        {
+            var normalizedPayloadCover = request.PayloadCover.Trim();
+            if (!coverUrls.Contains(normalizedPayloadCover, StringComparer.OrdinalIgnoreCase))
+            {
+                coverUrls.Add(normalizedPayloadCover);
+            }
+        }
+
         return coverUrls;
     }
 
