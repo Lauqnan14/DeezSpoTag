@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class SpotifyMetadataResolver : IMetadataResolver
 {
+    private const string SpotifySource = "spotify";
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly SpotifyMetadataService _metadataService;
 
@@ -31,7 +32,10 @@ public sealed class SpotifyMetadataResolver : IMetadataResolver
             return;
         }
 
-        var metadata = await _metadataService.FetchByUrlAsync($"https://open.spotify.com/track/{spotifyId}", cancellationToken);
+        var normalizedSpotifyId = spotifyId.Trim();
+        ApplySpotifyIdentity(track, normalizedSpotifyId);
+
+        var metadata = await _metadataService.FetchByUrlAsync($"https://open.spotify.com/track/{normalizedSpotifyId}", cancellationToken);
         var summary = metadata?.TrackList?.FirstOrDefault();
         if (summary == null)
         {
@@ -39,6 +43,7 @@ public sealed class SpotifyMetadataResolver : IMetadataResolver
         }
 
         ApplySummary(track, summary);
+        ApplySpotifyIdentity(track, normalizedSpotifyId);
     }
 
     private async Task<string?> ResolveSpotifyIdAsync(Track track, CancellationToken cancellationToken)
@@ -59,6 +64,27 @@ public sealed class SpotifyMetadataResolver : IMetadataResolver
         ApplyLabelAndGenres(track, summary);
         ApplyCopyright(track, summary);
         ApplyAudioFeatures(track, summary);
+    }
+
+    private static void ApplySpotifyIdentity(Track track, string spotifyId)
+    {
+        if (string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return;
+        }
+
+        var normalizedId = spotifyId.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedId))
+        {
+            return;
+        }
+
+        var spotifyUrl = $"https://open.spotify.com/track/{normalizedId}";
+        track.Source = SpotifySource;
+        track.SourceId = normalizedId;
+        track.Urls["spotify_track_id"] = normalizedId;
+        track.Urls["spotify_id"] = normalizedId;
+        track.Urls[SpotifySource] = spotifyUrl;
     }
 
     private static void ApplyTitleAndIsrc(Track track, SpotifyTrackSummary summary)

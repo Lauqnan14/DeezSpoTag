@@ -8,6 +8,7 @@ using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Logging;
 using System.IO;
 using System.Diagnostics;
@@ -1600,11 +1601,9 @@ public class AudioTagger
 
     private static string? ResolveSpotifyTrackId(DeezSpoTag.Core.Models.Track track)
     {
-        return ResolveTrackIdFromUrls(
-            track,
-            directKey: "spotify_track_id",
-            fallbackUrlKey: SpotifySource,
-            marker: "/track/");
+        return TrackIdNormalization.TryResolveSpotifyTrackId(track, out var spotifyTrackId)
+            ? spotifyTrackId
+            : null;
     }
 
     private static string? ResolveDeezerTrackId(DeezSpoTag.Core.Models.Track track)
