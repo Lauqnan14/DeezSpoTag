@@ -1,4 +1,6 @@
 using DeezSpoTag.Core.Models;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DeezSpoTag.Services.Download.Shared.Models;
 
@@ -31,6 +33,7 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public string Url { get; set; } = "";
     public string Barcode { get; set; } = "";
     public string PreferredEngine { get; set; } = "";
+    [JsonConverter(typeof(FlexibleStringJsonConverter))]
     public string Quality { get; set; } = "";
     public string ContentType { get; set; } = "";
     public long? DestinationFolderId { get; set; }
@@ -42,6 +45,31 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public bool HasAtmos { get; set; }
     public bool HasAppleDigitalMaster { get; set; }
     public bool AllowQualityUpgrade { get; set; }
+}
+
+internal sealed class FlexibleStringJsonConverter : JsonConverter<string>
+{
+    public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        return reader.TokenType switch
+        {
+            JsonTokenType.String => reader.GetString() ?? string.Empty,
+            JsonTokenType.Number => reader.TryGetInt64(out var intValue)
+                ? intValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : reader.TryGetDouble(out var doubleValue)
+                    ? doubleValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : string.Empty,
+            JsonTokenType.True => bool.TrueString.ToLowerInvariant(),
+            JsonTokenType.False => bool.FalseString.ToLowerInvariant(),
+            JsonTokenType.Null => string.Empty,
+            _ => throw new JsonException($"Unsupported token type '{reader.TokenType}' for string conversion.")
+        };
+    }
+
+    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value);
+    }
 }
 
 public sealed class DownloadIntentResult
