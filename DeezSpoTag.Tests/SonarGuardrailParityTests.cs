@@ -151,6 +151,19 @@ public sealed class SonarGuardrailParityTests
         Assert.Contains("foreach (var key in new[] { \"DATE\", \"TDRC\", \"TDOR\", \"ORIGINALDATE\", \"©day\", \"iTunes:DATE\" })", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AutoTagStatus_DiffButton_RequestsFinalAccumulatedDiff()
+    {
+        var root = FindRepoRoot();
+        var statusScriptPath = Path.Combine(root, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(statusScriptPath), $"File not found: {statusScriptPath}");
+
+        var source = File.ReadAllText(statusScriptPath);
+        Assert.Contains("showTagDiff(decodeURIComponent(encodedPath), null);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-platform=\"${encodedPlatform}\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("const encodedPlatform = platform && platform !== \"--\" ? encodeURIComponent(platform) : \"\";", source, StringComparison.Ordinal);
+    }
+
     private static string FindRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
