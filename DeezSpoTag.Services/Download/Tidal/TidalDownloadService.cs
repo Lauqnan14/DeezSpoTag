@@ -29,13 +29,16 @@ public sealed class TidalDownloadService
     private readonly ILogger<TidalDownloadService> _logger;
     private readonly HttpClient _client;
     private readonly TidalApiProviderSource _providerSource;
+    private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
-        TidalApiProviderSource providerSource)
+        TidalApiProviderSource providerSource,
+        SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
     {
         _logger = logger;
         _providerSource = providerSource;
+        _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(15)
@@ -81,7 +84,7 @@ public sealed class TidalDownloadService
             }
         }
 
-        throw new InvalidOperationException("Tidal download requires a valid service URL or Spotify ID for song.link resolution.");
+        throw new InvalidOperationException("Tidal download requires a valid service URL or Spotify ID for native link regeneration.");
     }
 
     public async Task<string?> ResolveTrackUrlAsync(
@@ -158,33 +161,41 @@ public sealed class TidalDownloadService
             expectedDurationSeconds,
             progressCallback,
             cancellationToken);
-        await AudioFileTaggingHelper.TryTagAsync(
-            new AudioFileTaggingHelper.AudioTaggingRequest(
-                Logger: _logger,
-                EngineName: "Tidal",
-                HttpClient: _client,
-                FilePath: outputPath,
-                TagData: AudioFileTaggingHelper.CreateTagData(
-                    new AudioFileTaggingHelper.AudioTagDataInput(
-                        Title: request.TrackName,
-                        Artist: request.ArtistName,
-                        Album: request.AlbumName,
-                        AlbumArtist: request.AlbumArtist,
-                        ReleaseDate: request.ReleaseDate,
-                        TrackNumber: request.SpotifyTrackNumber,
-                        DiscNumber: request.SpotifyDiscNumber,
-                        TotalTracks: request.SpotifyTotalTracks,
-                        Isrc: request.Isrc)),
-                CoverUrl: request.CoverUrl,
-                EmbedMaxQualityCover: embedMaxQualityCover,
-                TagSettings: tagSettings),
-            cancellationToken);
         return outputPath;
     }
 
     private async Task<string> GetTidalUrlFromSpotifyAsync(string spotifyId, CancellationToken cancellationToken)
     {
-        return await SongLinkClient.ResolvePlatformUrlAsync(_client, spotifyId, "tidal", cancellationToken);
+        if (_spotifyTrackMetadataResolver == null)
+        {
+            throw new InvalidOperationException("Spotify metadata resolver is not available for Tidal URL regeneration.");
+        }
+
+        var spotifyTrack = await _spotifyTrackMetadataResolver.ResolveTrackAsync(spotifyId, cancellationToken);
+        if (spotifyTrack == null
+            || string.IsNullOrWhiteSpace(spotifyTrack.Title)
+            || string.IsNullOrWhiteSpace(spotifyTrack.Artist))
+        {
+            throw new InvalidOperationException("Unable to hydrate Spotify metadata for Tidal link regeneration.");
+        }
+
+        var expectedDuration = spotifyTrack.DurationMs.HasValue && spotifyTrack.DurationMs.Value > 0
+            ? (int)Math.Round(spotifyTrack.DurationMs.Value / 1000d)
+            : 0;
+
+        var resolved = await ResolveTrackUrlAsync(
+            spotifyTrack.Title,
+            spotifyTrack.Artist,
+            spotifyTrack.Isrc ?? string.Empty,
+            expectedDuration,
+            cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(resolved))
+        {
+            throw new InvalidOperationException("Tidal URL regeneration failed for the provided Spotify track.");
+        }
+
+        return resolved;
     }
 
     private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)

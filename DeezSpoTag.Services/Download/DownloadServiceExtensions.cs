@@ -74,6 +74,7 @@ public static class DownloadServiceExtensions
         services.AddScoped<Download.Utils.TrackEnrichmentService>();
         services.AddScoped<SearchFallbackService>();
         services.AddSingleton<SongLinkPersistentCacheStore>();
+        services.AddSingleton<SpotifyTrackMetadataResolver>();
         services.AddSingleton<SongLinkResolver>();
         services.AddSingleton<EngineFallbackCoordinator>();
         services.AddSingleton<DeezerIsrcResolver>();
@@ -109,11 +110,6 @@ public static class DownloadServiceExtensions
             client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
             client.Timeout = TimeSpan.FromMinutes(5);
         }).ConfigurePrimaryHttpMessageHandler(CreatePermissiveHandler);
-
-        services.AddHttpClient("SongLink", client =>
-        {
-            client.Timeout = TimeSpan.FromSeconds(30);
-        });
 
         services.AddHttpClient("TidalProviderList", client =>
         {
