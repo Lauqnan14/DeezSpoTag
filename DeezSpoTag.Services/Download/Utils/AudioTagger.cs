@@ -11,11 +11,13 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Logging;
 using System.IO;
-using System.Diagnostics;
 using TagLib;
 using System.Globalization;
 using System.Text.RegularExpressions;
-using System.Text.Json;
+using AtlLyricsInfo = ATL.LyricsInfo;
+using AtlPictureInfo = ATL.PictureInfo;
+using AtlTagType = ATL.AudioData.MetaDataIOFactory.TagType;
+using AtlTrack = ATL.Track;
 
 namespace DeezSpoTag.Services.Download.Utils;
 
@@ -86,8 +88,6 @@ public class AudioTagger
         @"^\s*\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$",
         RegexOptions.Compiled,
         RegexTimeout);
-    private static readonly Lazy<string?> FfmpegPath = new(ResolveFfmpegPath);
-
     public AudioTagger(
         ILogger<AudioTagger> logger,
         PlatformCapabilitiesStore capabilitiesStore,
@@ -168,9 +168,12 @@ public class AudioTagger
     /// </summary>
     public async Task TagTrackAsync(string extension, string writePath, DeezSpoTag.Core.Models.Track track, TagSettings tags)
     {
-        var normalizedExtension = string.IsNullOrWhiteSpace(extension)
-            ? Path.GetExtension(writePath).ToLowerInvariant()
-            : extension.Trim().ToLowerInvariant();
+        var finalPathExtension = Path.GetExtension(writePath);
+        var normalizedExtension = !string.IsNullOrWhiteSpace(finalPathExtension)
+            ? finalPathExtension.Trim().ToLowerInvariant()
+            : (string.IsNullOrWhiteSpace(extension)
+                ? string.Empty
+                : extension.Trim().ToLowerInvariant());
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -247,6 +250,7 @@ public class AudioTagger
             ApplyMp3ContributorMetadata(tag, track, save);
             ApplyMp3OwnershipAndCompilationMetadata(tag, track, save);
             ApplyMp3SourceMetadata(tag, track, save);
+            ApplyMp3RatingMetadata(tag, track, save);
 
             if (save.Cover)
             {
@@ -353,8 +357,16 @@ public class AudioTagger
 
         if (save.Date)
         {
-            var dateString = $"{track.Date.Day}{track.Date.Month}";
-            SetCustomFrame(tag, "TDAT", "", dateString, save);
+            if (track.Date != null && track.Date.IsValid())
+            {
+                SetCustomFrame(tag, "TDRC", "", track.DateString, save);
+            }
+
+            if (track.Date != null)
+            {
+                var legacyDateString = $"{track.Date.Day}{track.Date.Month}";
+                SetCustomFrame(tag, "TDAT", "", legacyDateString, save);
+            }
         }
     }
 
@@ -408,7 +420,7 @@ public class AudioTagger
 
     private void ApplyMp3ContributorMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
-        if (!save.InvolvedPeople || track.Contributors.Count == 0)
+        if ((!save.InvolvedPeople && !save.Composer) || track.Contributors.Count == 0)
         {
             return;
         }
@@ -433,7 +445,7 @@ public class AudioTagger
             }
         }
 
-        if (involvedPeople.Count > 0)
+        if (save.InvolvedPeople && involvedPeople.Count > 0)
         {
             SetCustomFrame(tag, "TXXX", "INVOLVEDPEOPLE", string.Join("; ", involvedPeople), save);
         }
@@ -483,6 +495,17 @@ public class AudioTagger
                 SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", releaseId, save);
             }
         }
+    }
+
+    private void ApplyMp3RatingMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (!save.Rating || track.Rank <= 0)
+        {
+            return;
+        }
+
+        var rank = Math.Round(track.Rank / 10000.0);
+        SetCustomFrame(tag, "TXXX", "RATING", rank.ToString(CultureInfo.InvariantCulture), save);
     }
 
     private static void RemoveId3v1WhenDisabled(TagLib.File file, TagSettings save)
@@ -561,54 +584,67 @@ public class AudioTagger
     /// </summary>
     private async Task TagMP4Async(string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
-        var ffmpegPath = FfmpegPath.Value;
-        var isAtmos = IsAtmosCodecMp4(path);
-        var isFragmented = FragmentedMp4DurationReader.IsFragmentedMp4(path);
-
-        if (isAtmos || isFragmented)
+        await TagMP4WithAtlAsync(path, track, save);
+        if (!VerifyMp4TagPersistence(path, track, save))
         {
-            if (string.IsNullOrWhiteSpace(ffmpegPath))
-            {
-                var reason = isAtmos ? "Atmos" : "fragmented";
-                throw new IOException($"ffmpeg is required for {reason} MP4 tagging: {path}");
-            }
-
-            var taggedWithFfmpeg = await TryTagMP4WithFfmpegAsync(ffmpegPath, path, track, save);
-            if (!taggedWithFfmpeg)
-            {
-                var reason = isAtmos ? "Atmos" : "fragmented";
-                throw new IOException($"Failed to persist {reason} MP4 tags with ffmpeg for {path}");
-            }
-
-            if (!VerifyMp4TagPersistence(path, track, save)
-                && !VerifyMp4TagPersistenceWithFfprobe(path, track, save))
-            {
-                var reason = isAtmos ? "Atmos" : "fragmented";
-                throw new IOException($"{reason} MP4 tag verification failed for {path}");
-            }
-
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                if (isAtmos)
-                {
-                    _logger.LogInformation("Successfully tagged Atmos MP4 file with ffmpeg: {Path}", path);
-                }
-                else
-                {
-                    _logger.LogInformation("Successfully tagged fragmented MP4 file with ffmpeg: {Path}", path);
-                }
-            }
-            return;
+            throw new IOException($"MP4 tag verification failed for {path}");
         }
 
-        await TagMP4WithTagLibAsync(path, track, save);
-        if (VerifyMp4TagPersistence(path, track, save))
+        if (_logger.IsEnabled(LogLevel.Information))
         {
-            return;
+            _logger.LogInformation("Successfully tagged MP4 file with ATL: {Path}", path);
         }
+    }
 
-        _logger.LogWarning("TagLib MP4 tagging completed but expected metadata is missing for {Path}", path);
-        throw new IOException($"Failed to persist MP4 tags for {path}");
+    private async Task TagMP4WithAtlAsync(string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        try
+        {
+            ClearAtlNativeTags(path);
+            var file = new AtlTrack(path);
+
+            ApplyAtlMp4CoreMetadata(file, track, save);
+            ApplyAtlMp4AdditionalMetadata(file, track, save);
+            ApplyAtlMp4ContributorMetadata(file, track, save);
+            ApplyAtlMp4OwnershipAndCompilationMetadata(file, track, save);
+            ApplyAtlMp4SourceMetadata(file, track, save);
+            ApplyAtlMp4RatingMetadata(file, track, save);
+
+            if (save.Cover)
+            {
+                await AttachAtlCoverArtAsync(file, track.Album?.EmbeddedCoverPath);
+            }
+
+            if (!file.Save(AtlTagType.NATIVE))
+            {
+                throw new IOException("ATL returned false while saving MP4 tags.");
+            }
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Successfully tagged MP4 file with ATL: {Path}", path);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new InvalidOperationException($"Failed to tag MP4 file with ATL: {path}", ex);
+        }
+    }
+
+    private void ClearAtlNativeTags(string path)
+    {
+        try
+        {
+            var file = new AtlTrack(path);
+            if (!file.Remove(AtlTagType.NATIVE))
+            {
+                _logger.LogDebug("ATL did not remove existing native MP4 tags before retagging: {Path}", path);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Unable to clear existing native MP4 tags before retagging: {Path}", path);
+        }
     }
 
     private async Task TagMP4WithTagLibAsync(string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -798,6 +834,176 @@ public class AudioTagger
         SetVorbisComment(tag, "RATING", new[] { rank.ToString(CultureInfo.InvariantCulture) });
     }
 
+    private void ApplyAtlMp4CoreMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (save.Title)
+        {
+            file.Title = track.Title;
+        }
+
+        if (save.Artist && (track.Artists.Count > 0 || !string.IsNullOrWhiteSpace(track.MainArtist?.Name)))
+        {
+            file.Artist = ResolveAtlArtistValue(track, save);
+            if (save.Artists)
+            {
+                SetAtlAdditionalField(file, "ARTISTS", ResolveMultiArtistValue(track, save));
+            }
+        }
+
+        if (save.Album)
+        {
+            file.Album = track.Album?.Title ?? string.Empty;
+        }
+
+        ApplyAtlAlbumArtistAndSequenceTags(file, track, save);
+
+        if (save.Genre && track.Album?.Genre is { Count: > 0 })
+        {
+            file.Genre = string.Join("; ", SanitizeGenres(track.Album.Genre));
+        }
+
+        if (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year) && int.TryParse(track.Date.Year, out var year))
+        {
+            file.Year = year;
+        }
+
+        if (save.Date && track.Date != null && track.Date.IsValid())
+        {
+            SetAtlAdditionalField(file, "DATE", track.DateString);
+        }
+    }
+
+    private void ApplyAtlMp4AdditionalMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        SetAtlAdditionalFieldIf(file, save.Length, "LENGTH", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
+        if (save.Bpm && track.Bpm > 0)
+        {
+            file.BPM = (float)track.Bpm;
+        }
+
+        SetAtlAdditionalFieldIf(file, save.Key, "initialkey", track.Key);
+        SetAtlAdditionalFieldIf(file, save.Danceability && track.Danceability.HasValue, "DANCEABILITY", FormatAudioFeature(track.Danceability ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Energy && track.Energy.HasValue, "ENERGY", FormatAudioFeature(track.Energy ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Valence && track.Valence.HasValue, "VALENCE", FormatAudioFeature(track.Valence ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Acousticness && track.Acousticness.HasValue, "ACOUSTICNESS", FormatAudioFeature(track.Acousticness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Instrumentalness && track.Instrumentalness.HasValue, "INSTRUMENTALNESS", FormatAudioFeature(track.Instrumentalness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Speechiness && track.Speechiness.HasValue, "SPEECHINESS", FormatAudioFeature(track.Speechiness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Loudness && track.Loudness.HasValue, "LOUDNESS", FormatAudioFeature(track.Loudness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Tempo && track.Tempo.HasValue, "TEMPO", FormatAudioFeature(track.Tempo ?? 0));
+        SetAtlAdditionalFieldIf(file, save.TimeSignature && track.TimeSignature.HasValue, "TIME_SIGNATURE", track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
+        SetAtlAdditionalFieldIf(file, save.Liveness && track.Liveness.HasValue, "LIVENESS", FormatAudioFeature(track.Liveness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Barcode, "BARCODE", track.Album?.Barcode);
+        SetAtlAdditionalFieldIf(file, save.Explicit, "ITUNESADVISORY", track.Explicit ? "1" : "0");
+        SetAtlAdditionalFieldIf(file, save.ReplayGain, "REPLAYGAIN_TRACK_GAIN", track.ReplayGain);
+
+        if (save.Label)
+        {
+            file.Publisher = track.Album?.Label ?? string.Empty;
+            SetAtlAdditionalFieldIf(file, true, "PUBLISHER", track.Album?.Label);
+        }
+
+        if (save.Isrc && !string.IsNullOrWhiteSpace(track.ISRC))
+        {
+            file.ISRC = track.ISRC;
+            SetAtlAdditionalField(file, "ISRC", track.ISRC);
+        }
+
+        if (TryGetAppleDigitalMasterMarker(track, out var appleDigitalMasterMarker))
+        {
+            SetAtlAdditionalField(file, AppleDigitalMasterTag, appleDigitalMasterMarker);
+        }
+
+        ApplyAtlLyricsMetadata(file, track, save);
+    }
+
+    private void ApplyAtlMp4ContributorMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (track.Contributors.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var contributor in track.Contributors)
+        {
+            var role = contributor.Key.ToUpperInvariant();
+            if (SupportedContributorRoles.Contains(role)
+                && ShouldWriteContributorRole(save, role)
+                && contributor.Value is List<string> people)
+            {
+                SetAtlAdditionalField(file, role, people);
+                continue;
+            }
+
+            if (role == "MUSICPUBLISHER"
+                && save.InvolvedPeople
+                && contributor.Value is List<string> publishers)
+            {
+                SetAtlAdditionalField(file, "ORGANIZATION", publishers);
+            }
+        }
+    }
+
+    private void ApplyAtlMp4OwnershipAndCompilationMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (save.Copyright)
+        {
+            file.Copyright = track.Copyright ?? string.Empty;
+            SetAtlAdditionalFieldIf(file, true, "COPYRIGHT", track.Copyright);
+        }
+
+        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
+        {
+            SetAtlAdditionalField(file, "COMPILATION", CompilationEnabledValue);
+        }
+    }
+
+    private void ApplyAtlMp4SourceMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        var sourceId = ResolveSourceId(track);
+        if (save.Source)
+        {
+            SetAtlAdditionalField(file, "SOURCE", ResolveSourceName(track));
+            if (!string.IsNullOrWhiteSpace(sourceId))
+            {
+                SetAtlAdditionalField(file, "SOURCEID", sourceId);
+            }
+        }
+
+        SetAtlAdditionalFieldIf(file, save.Url, "WWWAUDIOFILE", ResolveTrackUrl(track));
+
+        if (save.TrackId)
+        {
+            if (!string.IsNullOrWhiteSpace(sourceId))
+            {
+                SetAtlAdditionalField(file, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId);
+            }
+
+            SetAtlAdditionalFieldIf(file, true, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
+            SetAtlAdditionalFieldIf(file, true, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
+            SetAtlAdditionalFieldIf(file, true, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
+        }
+
+        if (save.ReleaseId)
+        {
+            var releaseId = ResolveReleaseId(track);
+            if (!string.IsNullOrWhiteSpace(releaseId))
+            {
+                SetAtlAdditionalField(file, $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", releaseId);
+            }
+        }
+    }
+
+    private void ApplyAtlMp4RatingMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (!save.Rating || track.Rank <= 0)
+        {
+            return;
+        }
+
+        var rank = Math.Round(track.Rank / 10000.0);
+        SetAtlAdditionalField(file, "RATING", rank.ToString(CultureInfo.InvariantCulture));
+    }
+
     private void ApplyMp4CoreMetadata(
         Tag tag,
         TagLib.Mpeg4.AppleTag? appleTag,
@@ -826,6 +1032,12 @@ public class AudioTagger
         if (save.Year && !string.IsNullOrEmpty(track.Date?.Year) && uint.TryParse(track.Date.Year, out var year))
         {
             tag.Year = year;
+        }
+
+        if (save.Date && track.Date != null && track.Date.IsValid())
+        {
+            TrySetAppleDashBox(appleTag, "DATE", new[] { track.DateString });
+            TrySetAppleDashBox(appleTag, "©day", new[] { track.DateString });
         }
     }
 
@@ -1023,6 +1235,106 @@ public class AudioTagger
         }
     }
 
+    private static void ApplyAtlAlbumArtistAndSequenceTags(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (save.AlbumArtist)
+        {
+            file.AlbumArtist = ResolvePrimaryAlbumArtist(track);
+        }
+
+        if (save.TrackNumber)
+        {
+            file.TrackNumber = track.TrackNumber;
+        }
+
+        if (save.TrackTotal && track.Album != null)
+        {
+            file.TrackTotal = track.Album.TrackTotal;
+        }
+
+        if (save.DiscNumber)
+        {
+            file.DiscNumber = track.DiscNumber;
+        }
+
+        if (save.DiscTotal)
+        {
+            var discTotal = track.Album?.DiscTotal;
+            if (discTotal.HasValue)
+            {
+                file.DiscTotal = discTotal.Value;
+            }
+        }
+    }
+
+    private static string ResolveAtlArtistValue(DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (save.MultiArtistSeparator == DefaultMultiArtistSeparator)
+        {
+            return track.Artists.Count > 0
+                ? string.Join(", ", track.Artists.Where(static value => !string.IsNullOrWhiteSpace(value)))
+                : track.MainArtist?.Name ?? UnknownValue;
+        }
+
+        return ResolveMultiArtistValue(track, save);
+    }
+
+    private void ApplyAtlLyricsMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        var lyrics = new List<AtlLyricsInfo>();
+        if (save.Lyrics && !string.IsNullOrWhiteSpace(track.Lyrics?.Unsync))
+        {
+            lyrics.Add(new AtlLyricsInfo
+            {
+                ContentType = AtlLyricsInfo.LyricsType.LYRICS,
+                Format = AtlLyricsInfo.LyricsFormat.UNSYNCHRONIZED,
+                LanguageCode = "eng",
+                UnsynchronizedLyrics = track.Lyrics.Unsync
+            });
+            SetAtlAdditionalField(file, "LYRICS", track.Lyrics.Unsync);
+        }
+
+        if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
+        {
+            lyrics.Add(new AtlLyricsInfo
+            {
+                ContentType = AtlLyricsInfo.LyricsType.LYRICS,
+                Format = AtlLyricsInfo.LyricsFormat.LRC,
+                LanguageCode = "eng",
+                UnsynchronizedLyrics = syncedLyricsText
+            });
+            SetAtlAdditionalField(file, "LYRICS_SYNCED", syncedLyricsText);
+        }
+
+        if (lyrics.Count > 0)
+        {
+            file.Lyrics = lyrics;
+        }
+    }
+
+    private static void SetAtlAdditionalFieldIf(AtlTrack file, bool condition, string field, string? value)
+    {
+        if (condition && !string.IsNullOrWhiteSpace(value))
+        {
+            SetAtlAdditionalField(file, field, value);
+        }
+    }
+
+    private static void SetAtlAdditionalField(AtlTrack file, string field, IEnumerable<string> values)
+    {
+        SetAtlAdditionalField(file, field, string.Join("; ", values.Where(static value => !string.IsNullOrWhiteSpace(value))));
+    }
+
+    private static void SetAtlAdditionalField(AtlTrack file, string field, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        file.AdditionalFields[field] = value;
+    }
+
     private static void ApplyFlacOrMp4PerformerTags(
         Tag tag,
         DeezSpoTag.Core.Models.Track track,
@@ -1073,136 +1385,6 @@ public class AudioTagger
             : save.InvolvedPeople;
     }
 
-    private async Task<bool> TryTagMP4WithFfmpegAsync(string ffmpegPath, string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        var coverPath = save.Cover ? track.Album?.EmbeddedCoverPath : null;
-        var hasCover = !string.IsNullOrWhiteSpace(coverPath) && System.IO.File.Exists(coverPath);
-        var metadata = BuildMP4FfmpegMetadata(track, save);
-        if (_logger.IsEnabled(LogLevel.Debug))
-        {
-            _logger.LogDebug(
-                "ffmpeg MP4 metadata map for {Path}: {Keys}",
-                path,
-                string.Join(", ", metadata.Keys.OrderBy(static key => key, StringComparer.OrdinalIgnoreCase)));
-        }
-
-        if (!hasCover && metadata.Count == 0)
-        {
-            return true;
-        }
-
-        var directory = Path.GetDirectoryName(path) ?? Path.GetTempPath();
-        var extension = Path.GetExtension(path);
-        var tempPath = Path.Join(
-            directory,
-            $"{Path.GetFileNameWithoutExtension(path)}.{Guid.NewGuid():N}.tag{extension}");
-
-        try
-        {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ffmpegPath,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            startInfo.ArgumentList.Add("-y");
-            startInfo.ArgumentList.Add("-hide_banner");
-            startInfo.ArgumentList.Add("-loglevel");
-            startInfo.ArgumentList.Add("error");
-            startInfo.ArgumentList.Add("-i");
-            startInfo.ArgumentList.Add(path);
-
-            if (hasCover)
-            {
-                startInfo.ArgumentList.Add("-i");
-                startInfo.ArgumentList.Add(coverPath!);
-            }
-
-            startInfo.ArgumentList.Add("-map_metadata");
-            startInfo.ArgumentList.Add("-1");
-            startInfo.ArgumentList.Add("-map");
-            startInfo.ArgumentList.Add("0:a:0");
-
-            if (hasCover)
-            {
-                startInfo.ArgumentList.Add("-map");
-                startInfo.ArgumentList.Add("1:v:0");
-            }
-
-            startInfo.ArgumentList.Add("-c:a");
-            startInfo.ArgumentList.Add("copy");
-
-            if (hasCover)
-            {
-                startInfo.ArgumentList.Add("-c:v");
-                startInfo.ArgumentList.Add("mjpeg");
-                startInfo.ArgumentList.Add("-disposition:v:0");
-                startInfo.ArgumentList.Add("attached_pic");
-            }
-            else
-            {
-                startInfo.ArgumentList.Add("-vn");
-            }
-
-            foreach (var (key, value) in metadata)
-            {
-                startInfo.ArgumentList.Add("-metadata");
-                startInfo.ArgumentList.Add($"{key}={value}");
-            }
-
-            // Persist arbitrary metadata keys (SOURCEID/DEEZER_TRACK_ID/etc.) in MP4 containers.
-            startInfo.ArgumentList.Add("-movflags");
-            startInfo.ArgumentList.Add("use_metadata_tags");
-
-            startInfo.ArgumentList.Add("-f");
-            startInfo.ArgumentList.Add("mp4");
-            startInfo.ArgumentList.Add(tempPath);
-
-            using var process = Process.Start(startInfo);
-            if (process == null)
-            {
-                return false;
-            }
-
-            await process.WaitForExitAsync();
-            var stderr = await process.StandardError.ReadToEndAsync();
-
-            if (process.ExitCode != 0 || !System.IO.File.Exists(tempPath))
-            {
-                _logger.LogWarning(
-                    "ffmpeg MP4 tagging failed for {Path} (exit {ExitCode}): {Error}",
-                    path,
-                    process.ExitCode,
-                    stderr);
-                TryDeleteTempFile(tempPath);
-                return false;
-            }
-
-            if (!HasSafeTaggedDuration(path, tempPath, out var sourceDurationSeconds, out var taggedDurationSeconds))
-            {
-                _logger.LogWarning(
-                    "ffmpeg MP4 tagging rejected for {Path} due to duration delta (source={SourceDuration:F3}s tagged={TaggedDuration:F3}s).",
-                    path,
-                    sourceDurationSeconds,
-                    taggedDurationSeconds);
-                TryDeleteTempFile(tempPath);
-                return false;
-            }
-
-            System.IO.File.Move(tempPath, path, true);
-            return true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "ffmpeg MP4 tagging threw for {Path}", path);
-            TryDeleteTempFile(tempPath);
-            return false;
-        }
-    }
-
     private bool VerifyMp4TagPersistence(string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         var validators = BuildMp4PersistenceValidators(track, save);
@@ -1213,13 +1395,8 @@ public class AudioTagger
 
         try
         {
-            using var file = TagLib.File.Create(path);
-            if ((file.TagTypesOnDisk & TagTypes.Apple) == 0)
-            {
-                return false;
-            }
-
-            return validators.Any(validator => validator(file.Tag));
+            var file = new AtlTrack(path);
+            return validators.All(validator => validator(file));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1230,100 +1407,10 @@ public class AudioTagger
         }
     }
 
-    private bool VerifyMp4TagPersistenceWithFfprobe(string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    private static List<Func<AtlTrack, bool>> BuildMp4PersistenceValidators(DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
-        try
-        {
-            var ffprobePath = ResolveFfprobePath();
-            if (string.IsNullOrWhiteSpace(ffprobePath))
-            {
-                return false;
-            }
+        var validators = new List<Func<AtlTrack, bool>>();
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ffprobePath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            startInfo.ArgumentList.Add("-v");
-            startInfo.ArgumentList.Add("error");
-            startInfo.ArgumentList.Add("-show_entries");
-            startInfo.ArgumentList.Add("stream=codec_type:format_tags");
-            startInfo.ArgumentList.Add("-of");
-            startInfo.ArgumentList.Add("json");
-            startInfo.ArgumentList.Add(path);
-
-            using var process = Process.Start(startInfo);
-            if (process == null)
-            {
-                return false;
-            }
-
-            process.WaitForExit(5000);
-            var stdout = process.StandardOutput.ReadToEnd();
-            if (string.IsNullOrWhiteSpace(stdout))
-            {
-                return false;
-            }
-
-            using var document = JsonDocument.Parse(stdout);
-            var root = document.RootElement;
-
-            var tagValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (root.TryGetProperty("format", out var format)
-                && format.TryGetProperty("tags", out var tags)
-                && tags.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var property in tags.EnumerateObject())
-                {
-                    if (property.Value.ValueKind == JsonValueKind.String)
-                    {
-                        tagValues[property.Name] = property.Value.GetString() ?? string.Empty;
-                    }
-                }
-            }
-
-            var validators = BuildFfprobeMp4PersistenceValidators(track, save);
-            if (validators.Count == 0)
-            {
-                return true;
-            }
-
-            var hasCover = false;
-            if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var stream in streams.EnumerateArray())
-                {
-                    if (stream.TryGetProperty("codec_type", out var codecType)
-                        && codecType.ValueKind == JsonValueKind.String
-                        && string.Equals(codecType.GetString(), "video", StringComparison.OrdinalIgnoreCase))
-                    {
-                        hasCover = true;
-                        break;
-                    }
-                }
-            }
-
-            return validators.Any(validator => validator(tagValues, hasCover));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "ffprobe MP4 verification failed for {Path}", path);
-            }
-
-            return false;
-        }
-    }
-
-    private static List<Func<TagLib.Tag, bool>> BuildMp4PersistenceValidators(DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        var validators = new List<Func<TagLib.Tag, bool>>();
         if (save.Title && !string.IsNullOrWhiteSpace(track.Title))
         {
             validators.Add(static tag => !string.IsNullOrWhiteSpace(tag.Title));
@@ -1331,7 +1418,7 @@ public class AudioTagger
 
         if (save.Artist && (track.Artists.Count > 0 || !string.IsNullOrWhiteSpace(track.MainArtist?.Name)))
         {
-            validators.Add(HasAnyPerformers);
+            validators.Add(static tag => !string.IsNullOrWhiteSpace(tag.Artist));
         }
 
         if (save.Album && !string.IsNullOrWhiteSpace(track.Album?.Title))
@@ -1340,6 +1427,11 @@ public class AudioTagger
         }
 
         if (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year))
+        {
+            validators.Add(static tag => tag.Year > 0);
+        }
+
+        if (save.Date && track.Date != null && track.Date.IsValid())
         {
             validators.Add(static tag => tag.Year > 0);
         }
@@ -1354,406 +1446,10 @@ public class AudioTagger
             && System.IO.File.Exists(track.Album.EmbeddedCoverPath);
         if (expectsCover)
         {
-            validators.Add(static tag => tag.Pictures?.Length > 0);
+            validators.Add(static tag => tag.EmbeddedPictures?.Count > 0);
         }
 
         return validators;
-    }
-
-    private static bool HasAnyPerformers(TagLib.Tag tag) =>
-        tag.Performers?.Any(value => !string.IsNullOrWhiteSpace(value)) == true;
-
-    private static List<Func<IReadOnlyDictionary<string, string>, bool, bool>> BuildFfprobeMp4PersistenceValidators(
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        var validators = new List<Func<IReadOnlyDictionary<string, string>, bool, bool>>();
-        if (save.Title && !string.IsNullOrWhiteSpace(track.Title))
-        {
-            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "title"));
-        }
-
-        if (save.Artist && (track.Artists.Count > 0 || !string.IsNullOrWhiteSpace(track.MainArtist?.Name)))
-        {
-            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "artist", "ARTIST", "©ART"));
-        }
-
-        if (save.Album && !string.IsNullOrWhiteSpace(track.Album?.Title))
-        {
-            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "album", "ALBUM", "©ALB"));
-        }
-
-        if ((save.Date && track.Date != null && track.Date.IsValid())
-            || (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year)))
-        {
-            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "date", "DATE", "©day"));
-        }
-
-        if (save.Isrc && !string.IsNullOrWhiteSpace(track.ISRC))
-        {
-            validators.Add(static (tags, _) => HasAnyNonEmpty(tags, "isrc", "ISRC", "TSRC"));
-        }
-
-        var expectsCover = save.Cover
-            && !string.IsNullOrWhiteSpace(track.Album?.EmbeddedCoverPath)
-            && System.IO.File.Exists(track.Album.EmbeddedCoverPath);
-        if (expectsCover)
-        {
-            validators.Add(static (_, hasCover) => hasCover);
-        }
-
-        return validators;
-    }
-
-    private static bool HasAnyNonEmpty(IReadOnlyDictionary<string, string> tags, params string[] keys)
-    {
-        foreach (var key in keys)
-        {
-            if (tags.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private bool HasSafeTaggedDuration(
-        string sourcePath,
-        string taggedPath,
-        out double sourceDurationSeconds,
-        out double taggedDurationSeconds)
-    {
-        sourceDurationSeconds = 0;
-        taggedDurationSeconds = 0;
-
-        try
-        {
-            using var sourceFile = TagLib.File.Create(sourcePath);
-            using var taggedFile = TagLib.File.Create(taggedPath);
-            sourceDurationSeconds = sourceFile.Properties.Duration.TotalSeconds;
-            taggedDurationSeconds = taggedFile.Properties.Duration.TotalSeconds;
-
-            if (sourceDurationSeconds <= 0 || taggedDurationSeconds <= 0)
-            {
-                return true;
-            }
-
-            var delta = Math.Abs(sourceDurationSeconds - taggedDurationSeconds);
-            var allowedDelta = Math.Max(2d, sourceDurationSeconds * 0.05d);
-            return delta <= allowedDelta;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Unable to compare MP4 durations for {SourcePath} and {TaggedPath}", sourcePath, taggedPath);            }
-            return true;
-        }
-    }
-
-    private Dictionary<string, string> BuildMP4FfmpegMetadata(DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        AddPrimaryMp4Metadata(metadata, track, save);
-        AddTrackNumberMp4Metadata(metadata, track, save);
-        AddAlbumAndDateMp4Metadata(metadata, track, save);
-        AddAdditionalMp4Metadata(metadata, track, save);
-        AddContributorMp4Metadata(metadata, track, save);
-        AddCompilationAndRatingMp4Metadata(metadata, track, save);
-        AddSourceMp4Metadata(metadata, track, save);
-        return metadata;
-    }
-
-    private static void AddMetadataValue(Dictionary<string, string> metadata, string key, string? value)
-    {
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            metadata[key] = value.Trim();
-        }
-    }
-
-    private static void AddPrimaryMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        if (save.Title)
-        {
-            AddMetadataValue(metadata, "title", track.Title);
-        }
-
-        if (save.Artist)
-        {
-            AddMetadataValue(metadata, "artist", track.Artists.Count > 0 ? track.ArtistsString : track.MainArtist?.Name);
-        }
-
-        if (save.Artists)
-        {
-            AddMetadataValue(metadata, "ARTISTS", ResolveMultiArtistValue(track, save));
-        }
-
-        if (save.Album)
-        {
-            AddMetadataValue(metadata, "album", track.Album?.Title);
-        }
-
-        if (save.AlbumArtist)
-        {
-            AddMetadataValue(metadata, "album_artist", ResolvePrimaryAlbumArtist(track));
-        }
-    }
-
-    private static void AddTrackNumberMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        if (save.TrackNumber && track.TrackNumber > 0)
-        {
-            var trackValue = save.TrackTotal && (track.Album?.TrackTotal ?? 0) > 0
-                ? $"{track.TrackNumber}/{track.Album!.TrackTotal}"
-                : track.TrackNumber.ToString(CultureInfo.InvariantCulture);
-            AddMetadataValue(metadata, "track", trackValue);
-        }
-
-        if (save.DiscNumber && track.DiscNumber > 0)
-        {
-            var discTotal = track.Album?.DiscTotal;
-            var discValue = save.DiscTotal && discTotal.HasValue && discTotal.Value > 0
-                ? $"{track.DiscNumber}/{discTotal.Value}"
-                : track.DiscNumber.ToString(CultureInfo.InvariantCulture);
-            AddMetadataValue(metadata, "disc", discValue);
-        }
-    }
-
-    private void AddAlbumAndDateMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        if (save.Genre && track.Album?.Genre is { Count: > 0 })
-        {
-            var genres = SanitizeGenres(track.Album.Genre);
-            if (genres.Length > 0)
-            {
-                AddMetadataValue(metadata, "genre", string.Join("; ", genres));
-            }
-        }
-
-        if (save.Date && track.Date != null && track.Date.IsValid())
-        {
-            AddMetadataValue(metadata, "date", track.DateString);
-        }
-        else if (save.Year && track.Date != null && !string.IsNullOrWhiteSpace(track.Date.Year))
-        {
-            AddMetadataValue(metadata, "date", track.Date.Year);
-        }
-    }
-
-    private static void AddAdditionalMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        AddMetadataValue(metadata, "LENGTH", save.Length ? (track.Duration * 1000).ToString(CultureInfo.InvariantCulture) : null);
-
-        if (save.Isrc)
-        {
-            AddMetadataValue(metadata, "isrc", track.ISRC);
-            AddMetadataValue(metadata, "ISRC", track.ISRC);
-        }
-
-        if (save.Bpm && track.Bpm > 0)
-        {
-            AddMetadataValue(metadata, "bpm", track.Bpm.ToString(CultureInfo.InvariantCulture));
-            AddMetadataValue(metadata, "BPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
-        }
-
-        AddMetadataValue(metadata, "initialkey", save.Key ? track.Key : null);
-        AddMetadataValue(metadata, "DANCEABILITY", save.Danceability && track.Danceability.HasValue ? FormatAudioFeature(track.Danceability.Value) : null);
-        AddMetadataValue(metadata, "ENERGY", save.Energy && track.Energy.HasValue ? FormatAudioFeature(track.Energy.Value) : null);
-        AddMetadataValue(metadata, "VALENCE", save.Valence && track.Valence.HasValue ? FormatAudioFeature(track.Valence.Value) : null);
-        AddMetadataValue(metadata, "ACOUSTICNESS", save.Acousticness && track.Acousticness.HasValue ? FormatAudioFeature(track.Acousticness.Value) : null);
-        AddMetadataValue(metadata, "INSTRUMENTALNESS", save.Instrumentalness && track.Instrumentalness.HasValue ? FormatAudioFeature(track.Instrumentalness.Value) : null);
-        AddMetadataValue(metadata, "SPEECHINESS", save.Speechiness && track.Speechiness.HasValue ? FormatAudioFeature(track.Speechiness.Value) : null);
-        AddMetadataValue(metadata, "LOUDNESS", save.Loudness && track.Loudness.HasValue ? FormatAudioFeature(track.Loudness.Value) : null);
-        AddMetadataValue(metadata, "TEMPO", save.Tempo && track.Tempo.HasValue ? FormatAudioFeature(track.Tempo.Value) : null);
-        AddMetadataValue(
-            metadata,
-            "TIME_SIGNATURE",
-            save.TimeSignature && track.TimeSignature.HasValue ? track.TimeSignature.Value.ToString(CultureInfo.InvariantCulture) : null);
-        AddMetadataValue(metadata, "LIVENESS", save.Liveness && track.Liveness.HasValue ? FormatAudioFeature(track.Liveness.Value) : null);
-
-        if (save.Label)
-        {
-            AddMetadataValue(metadata, "publisher", track.Album?.Label);
-            AddMetadataValue(metadata, "PUBLISHER", track.Album?.Label);
-        }
-
-        AddMetadataValue(metadata, "BARCODE", save.Barcode ? track.Album?.Barcode : null);
-        AddMetadataValue(metadata, "REPLAYGAIN_TRACK_GAIN", save.ReplayGain ? track.ReplayGain : null);
-
-        if (save.Composer
-            && track.Contributors.TryGetValue(ComposerRole, out var composersObj)
-            && composersObj is List<string> composers
-            && composers.Count > 0)
-        {
-            AddMetadataValue(metadata, ComposerRole, string.Join(", ", composers.Where(x => !string.IsNullOrWhiteSpace(x))));
-        }
-
-        if (save.Copyright)
-        {
-            AddMetadataValue(metadata, "copyright", track.Copyright);
-        }
-
-        if (save.Lyrics && !string.IsNullOrWhiteSpace(track.Lyrics?.Unsync))
-        {
-            AddMetadataValue(metadata, LyricsKey, track.Lyrics.Unsync);
-            AddMetadataValue(metadata, "LYRICS", track.Lyrics.Unsync);
-        }
-
-        if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
-        {
-            AddMetadataValue(metadata, "LYRICS_SYNCED", syncedLyricsText);
-        }
-
-        if (save.Url)
-        {
-            AddMetadataValue(metadata, "purl", ResolveTrackUrl(track));
-            AddMetadataValue(metadata, "WWWAUDIOFILE", ResolveTrackUrl(track));
-        }
-
-        if (save.Explicit)
-        {
-            AddMetadataValue(metadata, "ITUNESADVISORY", track.Explicit ? "1" : "0");
-        }
-
-        if (TryGetAppleDigitalMasterMarker(track, out var appleDigitalMasterMarker))
-        {
-            AddMetadataValue(metadata, AppleDigitalMasterTag, appleDigitalMasterMarker);
-        }
-    }
-
-    private static void AddContributorMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        if (track.Contributors.Count == 0)
-        {
-            return;
-        }
-
-        foreach (var contributor in track.Contributors)
-        {
-            var role = contributor.Key.ToUpperInvariant();
-            if (SupportedContributorRoles.Contains(role)
-                && ShouldWriteContributorRole(save, role)
-                && contributor.Value is List<string> people
-                && people.Count > 0)
-            {
-                AddMetadataValue(metadata, role, string.Join(", ", people.Where(static value => !string.IsNullOrWhiteSpace(value))));
-                continue;
-            }
-
-            if (role == "MUSICPUBLISHER"
-                && save.InvolvedPeople
-                && contributor.Value is List<string> publishers
-                && publishers.Count > 0)
-            {
-                AddMetadataValue(metadata, "ORGANIZATION", string.Join(", ", publishers.Where(static value => !string.IsNullOrWhiteSpace(value))));
-            }
-        }
-    }
-
-    private static void AddCompilationAndRatingMp4Metadata(
-        Dictionary<string, string> metadata,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
-        {
-            AddMetadataValue(metadata, "COMPILATION", "1");
-        }
-
-        if (save.Rating && track.Rank > 0)
-        {
-            var rank = Math.Round(track.Rank / 10000.0);
-            AddMetadataValue(metadata, "RATING", rank.ToString(CultureInfo.InvariantCulture));
-        }
-    }
-
-    private static void AddSourceMp4Metadata(Dictionary<string, string> metadata, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        var sourceId = ResolveSourceId(track);
-        if (save.Source)
-        {
-            AddMetadataValue(metadata, "SOURCE", ResolveSourceName(track));
-            AddMetadataValue(metadata, "SOURCEID", sourceId);
-        }
-
-        if (save.TrackId)
-        {
-            AddMetadataValue(metadata, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId);
-            AddMetadataValue(metadata, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
-            AddMetadataValue(metadata, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
-            AddMetadataValue(metadata, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
-        }
-
-        if (save.ReleaseId)
-        {
-            AddMetadataValue(metadata, $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", ResolveReleaseId(track));
-        }
-    }
-
-    private static bool IsAtmosCodecMp4(string path)
-    {
-        try
-        {
-            var ffprobePath = ResolveFfprobePath();
-            if (string.IsNullOrWhiteSpace(ffprobePath))
-            {
-                return false;
-            }
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ffprobePath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            startInfo.ArgumentList.Add("-v");
-            startInfo.ArgumentList.Add("error");
-            startInfo.ArgumentList.Add("-select_streams");
-            startInfo.ArgumentList.Add("a:0");
-            startInfo.ArgumentList.Add("-show_entries");
-            startInfo.ArgumentList.Add("stream=codec_name");
-            startInfo.ArgumentList.Add("-of");
-            startInfo.ArgumentList.Add("default=noprint_wrappers=1:nokey=1");
-            startInfo.ArgumentList.Add(path);
-
-            using var process = Process.Start(startInfo);
-            if (process == null)
-            {
-                return false;
-            }
-
-            process.WaitForExit(3000);
-            var stdout = process.StandardOutput.ReadToEnd();
-            var codec = stdout.Trim();
-            return codec.Equals("eac3", StringComparison.OrdinalIgnoreCase)
-                   || codec.Equals("ec-3", StringComparison.OrdinalIgnoreCase)
-                   || codec.Equals("ac3", StringComparison.OrdinalIgnoreCase)
-                   || codec.Equals("ac-3", StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-    }
-
-    private static void TryDeleteTempFile(string? path)
-    {
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(path) && System.IO.File.Exists(path))
-            {
-                System.IO.File.Delete(path);
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            _ = ex;
-        }
     }
 
     #endregion
@@ -1907,10 +1603,6 @@ public class AudioTagger
         return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
 
-    private static string? ResolveFfmpegPath() => ExternalToolResolver.ResolveFfmpegPath();
-
-    private static string? ResolveFfprobePath() => ExternalToolResolver.ResolveFfprobePath();
-
     private static async Task AttachCoverArtAsync(TagLib.Tag tag, string? embeddedCoverPath, TagSettings save)
     {
         if (string.IsNullOrEmpty(embeddedCoverPath) || !System.IO.File.Exists(embeddedCoverPath))
@@ -1926,18 +1618,44 @@ public class AudioTagger
 
         if (tag is TagLib.Id3v2.Tag id3Tag)
         {
-            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8);
+            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8, embeddedCoverPath);
             return;
         }
 
+        var mimeType = CoverArtMimeTypeResolver.Resolve(embeddedCoverPath, coverData);
         tag.Pictures = new[]
         {
             new TagLib.Picture(coverData)
             {
                 Type = PictureType.FrontCover,
-                Description = CoverDescription
+                Description = CoverDescription,
+                MimeType = mimeType
             }
         };
+    }
+
+    private static async Task AttachAtlCoverArtAsync(AtlTrack file, string? embeddedCoverPath)
+    {
+        if (string.IsNullOrEmpty(embeddedCoverPath) || !System.IO.File.Exists(embeddedCoverPath))
+        {
+            return;
+        }
+
+        var coverData = await System.IO.File.ReadAllBytesAsync(embeddedCoverPath);
+        if (coverData.Length == 0)
+        {
+            return;
+        }
+
+        file.EmbeddedPictures.Clear();
+        var picture = AtlPictureInfo.fromBinaryData(
+            coverData,
+            AtlPictureInfo.PIC_TYPE.Front,
+            AtlTagType.NATIVE,
+            null,
+            0);
+        picture.Description = CoverDescription;
+        file.EmbeddedPictures.Add(picture);
     }
 
     /// <summary>
@@ -1981,12 +1699,14 @@ public class AudioTagger
         }
     }
 
-    private static void SetId3CoverFrame(TagLib.Id3v2.Tag id3Tag, byte[] coverData, bool coverDescriptionUtf8)
+    private static void SetId3CoverFrame(TagLib.Id3v2.Tag id3Tag, byte[] coverData, bool coverDescriptionUtf8, string? embeddedCoverPath = null)
     {
+        var mimeType = CoverArtMimeTypeResolver.Resolve(embeddedCoverPath, coverData);
         var picture = new TagLib.Picture(coverData)
         {
             Type = PictureType.FrontCover,
-            Description = CoverDescription
+            Description = CoverDescription,
+            MimeType = mimeType
         };
         id3Tag.RemoveFrames("APIC");
         var apic = new TagLib.Id3v2.AttachmentFrame(picture)
@@ -2091,7 +1811,7 @@ public class AudioTagger
     {
         if (!AppleDashBoxReflectionHelper.TrySetValues(tag, name, values))
         {
-            _logger.LogWarning("Failed to set MP4 dash box {Name}", name);
+            _logger.LogDebug("Failed to set MP4 dash box {Name}.", name);
         }
     }
 
@@ -2362,16 +2082,18 @@ public class AudioTagger
             return;
         }
 
+        var mimeType = CoverArtMimeTypeResolver.Resolve(track.Album?.EmbeddedCoverPath, coverData);
         if (tag is TagLib.Id3v2.Tag id3Tag)
         {
-            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8);
+            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8, track.Album?.EmbeddedCoverPath);
             return;
         }
 
         var picture = new TagLib.Picture(coverData)
         {
             Type = PictureType.FrontCover,
-            Description = CoverDescription
+            Description = CoverDescription,
+            MimeType = mimeType
         };
         tag.Pictures = new[] { picture };
     }
