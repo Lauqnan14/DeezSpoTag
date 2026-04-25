@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
@@ -2987,6 +2988,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string extension,
         int? durationSeconds)
     {
+        var normalizedDurationSeconds = NormalizeDurationSeconds(filePath, extension, durationSeconds)
+            ?? ResolveDurationSecondsFromTags(draft.Tags)
+            ?? ResolveDurationSecondsWithFfprobe(filePath, extension);
+
         return new AutoTagAudioInfo
         {
             Title = draft.Title,
@@ -2995,7 +3000,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 ? new List<string> { draft.Artist }
                 : draft.Artists,
             Album = string.IsNullOrWhiteSpace(draft.Album) ? null : draft.Album,
-            DurationSeconds = NormalizeDurationSeconds(filePath, extension, durationSeconds),
+            DurationSeconds = normalizedDurationSeconds,
             Isrc = string.IsNullOrWhiteSpace(draft.Isrc) ? null : draft.Isrc,
             TrackNumber = draft.TrackNumber,
             Tags = draft.Tags,
@@ -3143,6 +3148,100 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return durationSeconds;
+    }
+
+    private static int? ResolveDurationSecondsFromTags(Dictionary<string, List<string>> tags)
+    {
+        var raw = ReadFirstTagValue(tags, LengthUpperTag, "TLEN", "SHAZAM_DURATION_MS", "SHAZAM_META_DURATION", "SHAZAM_META_TIME", "SHAZAM_META_LENGTH");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var normalized = raw.Trim();
+        if (normalized.Contains(':', StringComparison.Ordinal) && TimeSpan.TryParse(normalized, CultureInfo.InvariantCulture, out var parsedTime))
+        {
+            return parsedTime.TotalSeconds > 0
+                ? (int)Math.Round(parsedTime.TotalSeconds)
+                : null;
+        }
+
+        if (!double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || value <= 0)
+        {
+            return null;
+        }
+
+        var seconds = value >= 10000d ? value / 1000d : value;
+        return seconds > 0 ? (int)Math.Round(seconds) : null;
+    }
+
+    private static int? ResolveDurationSecondsWithFfprobe(string filePath, string extension)
+    {
+        if (!IsMp4Family(extension))
+        {
+            return null;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "ffprobe",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("-v");
+            startInfo.ArgumentList.Add("error");
+            startInfo.ArgumentList.Add("-show_entries");
+            startInfo.ArgumentList.Add("format=duration");
+            startInfo.ArgumentList.Add("-of");
+            startInfo.ArgumentList.Add("default=noprint_wrappers=1:nokey=1");
+            startInfo.ArgumentList.Add(filePath);
+
+            using var process = Process.Start(startInfo);
+
+            if (process == null)
+            {
+                return null;
+            }
+
+            if (!process.WaitForExit(3000))
+            {
+                TryKillProcess(process);
+                return null;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                return null;
+            }
+
+            var output = process.StandardOutput.ReadToEnd().Trim();
+            return double.TryParse(output, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) && seconds > 0
+                ? (int)Math.Round(seconds)
+                : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private static void TryKillProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // best effort timeout cleanup
+        }
     }
 
     private static List<string> SplitArtistCredits(IEnumerable<string> rawCredits)
@@ -3698,6 +3797,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ApplyMp4AtlAudioFeatureTagWrites(additional, context);
             ApplyMp4AtlReleaseAndMetadataTagWrites(atlTrack, additional, context);
             ApplyMp4AtlTrackAndLyricsTagWrites(atlTrack, additional, context);
+            ApplyMp4AtlCompatibilityAliasWrites(atlTrack, additional, context);
             ApplyMp4AtlAlbumArtTagWrite(atlTrack, context);
 
             using (var probe = TagLib.File.Create(context.FilePath))
@@ -3801,6 +3901,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 atlTrack.BPM = (int)context.SourceTrack.Bpm.Value;
             }
+
+            WriteMp4AtlRaw(
+                additional,
+                "BPM",
+                context.SourceTrack.Bpm.Value.ToString(CultureInfo.InvariantCulture),
+                context.Config,
+                SupportedTag.BPM);
         }
 
         if (context.EnabledTags.Contains("key") && !string.IsNullOrWhiteSpace(context.SourceTrack.Key))
@@ -3935,8 +4042,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (context.EnabledTags.Contains(DurationTag) && context.SourceTrack.Duration.HasValue)
         {
-            var totalSeconds = ((int)context.SourceTrack.Duration.Value.TotalSeconds).ToString(CultureInfo.InvariantCulture);
-            WriteMp4AtlRaw(additional, LengthUpperTag, totalSeconds, context.Config, SupportedTag.Duration);
+            var totalMilliseconds = ((int)Math.Round(context.SourceTrack.Duration.Value.TotalMilliseconds)).ToString(CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, LengthUpperTag, totalMilliseconds, context.Config, SupportedTag.Duration);
         }
 
         if (context.EnabledTags.Contains(RemixerTag) && context.SourceTrack.Remixers.Count > 0)
@@ -3953,6 +4060,128 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             WriteMp4AtlRaw(additional, "MOOD", context.SourceTrack.Mood, context.Config, SupportedTag.Mood);
         }
+    }
+
+    private static void ApplyMp4AtlCompatibilityAliasWrites(
+        ATL.Track atlTrack,
+        Dictionary<string, string> additional,
+        TagWriteExecutionContext context)
+    {
+        if (context.EnabledTags.Contains(TitleTag) && context.EffectiveTagSettings.Title)
+        {
+            WriteMp4AtlRaw(additional, "TITLE", atlTrack.Title, context.Config, SupportedTag.Title);
+            WriteMp4AtlRaw(additional, "TIT2", atlTrack.Title, context.Config, SupportedTag.Title);
+        }
+
+        if (context.EnabledTags.Contains(ArtistTag) && context.EffectiveTagSettings.Artist)
+        {
+            WriteMp4AtlRaw(additional, "ARTIST", atlTrack.Artist, context.Config, SupportedTag.Artist);
+            WriteMp4AtlRaw(additional, "TPE1", atlTrack.Artist, context.Config, SupportedTag.Artist);
+        }
+
+        if (context.EnabledTags.Contains(AlbumArtistTag) && context.EffectiveTagSettings.AlbumArtist)
+        {
+            WriteMp4AtlRaw(additional, "ALBUMARTIST", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
+            WriteMp4AtlRaw(additional, "TPE2", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
+        }
+
+        if (context.EnabledTags.Contains(AlbumTag) && context.EffectiveTagSettings.Album)
+        {
+            WriteMp4AtlRaw(additional, "ALBUM", atlTrack.Album, context.Config, SupportedTag.Album);
+            WriteMp4AtlRaw(additional, "TALB", atlTrack.Album, context.Config, SupportedTag.Album);
+        }
+
+        if (context.EnabledTags.Contains(GenreTag) && context.EffectiveTagSettings.Genre)
+        {
+            WriteMp4AtlRaw(additional, Mp4GenreTag, atlTrack.Genre, context.Config, SupportedTag.Genre);
+            WriteMp4AtlRaw(additional, "TCON", atlTrack.Genre, context.Config, SupportedTag.Genre);
+        }
+
+        if (context.EnabledTags.Contains(BpmTag) && context.SourceTrack.Bpm.HasValue)
+        {
+            var bpm = context.SourceTrack.Bpm.Value.ToString(CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, "BPM", bpm, context.Config, SupportedTag.BPM);
+            WriteMp4AtlRaw(additional, "TBPM", bpm, context.Config, SupportedTag.BPM);
+        }
+
+        if (context.EnabledTags.Contains(ReleaseDateTag) && context.SourceTrack.ReleaseDate.HasValue)
+        {
+            var releaseDate = context.SourceTrack.ReleaseDate.Value;
+            var dateString = IsYearOnlyDateFormat(context.Config.Technical?.DateFormat)
+                ? releaseDate.Year.ToString(CultureInfo.InvariantCulture)
+                : releaseDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, "DATE", dateString, context.Config, SupportedTag.ReleaseDate);
+            WriteMp4AtlRaw(additional, "TDRC", dateString, context.Config, SupportedTag.ReleaseDate);
+            WriteMp4AtlRaw(additional, "TDAT", releaseDate.ToString("ddMM", CultureInfo.InvariantCulture), context.Config, SupportedTag.ReleaseDate);
+        }
+
+        if (context.EnabledTags.Contains(TrackNumberTag)
+            && context.EffectiveTagSettings.TrackNumber
+            && context.SourceTrack.TrackNumber.HasValue)
+        {
+            var trackNumber = context.SourceTrack.TrackNumber.Value;
+            var total = context.EnabledTags.Contains(TrackTotalTag)
+                && context.EffectiveTagSettings.TrackTotal
+                && context.SourceTrack.TrackTotal is > 0
+                ? context.SourceTrack.TrackTotal
+                : null;
+            WriteMp4AtlRaw(additional, "TRACKNUMBER", trackNumber.ToString(CultureInfo.InvariantCulture), context.Config, SupportedTag.TrackNumber);
+            WriteMp4AtlRaw(additional, "TRCK", FormatTrackOrDiscSequence(trackNumber, total, context.Config), context.Config, SupportedTag.TrackNumber);
+        }
+
+        if (context.EnabledTags.Contains(TrackTotalTag)
+            && context.EffectiveTagSettings.TrackTotal
+            && context.SourceTrack.TrackTotal is > 0)
+        {
+            WriteMp4AtlRaw(additional, TrackTotalRawTag, context.SourceTrack.TrackTotal.Value.ToString(CultureInfo.InvariantCulture), context.Config, SupportedTag.TrackTotal);
+        }
+
+        if (context.EnabledTags.Contains(DiscNumberTag)
+            && context.EffectiveTagSettings.DiscNumber
+            && context.SourceTrack.DiscNumber.HasValue)
+        {
+            var discNumber = context.SourceTrack.DiscNumber.Value;
+            var total = ResolveFirstPositiveInt(context.SourceTrack, DiscTotalTag, DiscTotalRawTag);
+            WriteMp4AtlRaw(additional, "DISCNUMBER", discNumber.ToString(CultureInfo.InvariantCulture), context.Config, SupportedTag.DiscNumber);
+            WriteMp4AtlRaw(additional, "TPOS", FormatTrackOrDiscSequence(discNumber, total, context.Config), context.Config, SupportedTag.DiscNumber);
+        }
+
+        var discTotal = ResolveFirstPositiveInt(context.SourceTrack, DiscTotalTag, DiscTotalRawTag);
+        if (context.EnabledTags.Contains(DiscTotalTag)
+            && context.EffectiveTagSettings.DiscTotal
+            && discTotal is > 0)
+        {
+            WriteMp4AtlRaw(additional, DiscTotalRawTag, discTotal.Value.ToString(CultureInfo.InvariantCulture), context.Config, SupportedTag.DiscNumber);
+        }
+
+        if (context.EnabledTags.Contains(DurationTag) && context.SourceTrack.Duration.HasValue)
+        {
+            var totalMilliseconds = ((int)Math.Round(context.SourceTrack.Duration.Value.TotalMilliseconds)).ToString(CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, LengthUpperTag, totalMilliseconds, context.Config, SupportedTag.Duration);
+            WriteMp4AtlRaw(additional, "TLEN", totalMilliseconds, context.Config, SupportedTag.Duration);
+        }
+
+        if (context.EnabledTags.Contains(LabelTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.Label))
+        {
+            WriteMp4AtlRaw(additional, LabelUpperTag, context.SourceTrack.Label, context.Config, SupportedTag.Label);
+            WriteMp4AtlRaw(additional, "TPUB", context.SourceTrack.Label, context.Config, SupportedTag.Label);
+        }
+
+        if (context.EnabledTags.Contains(IsrcTag) && !string.IsNullOrWhiteSpace(atlTrack.ISRC))
+        {
+            WriteMp4AtlRaw(additional, "ISRC", atlTrack.ISRC, context.Config, SupportedTag.ISRC);
+            WriteMp4AtlRaw(additional, "TSRC", atlTrack.ISRC, context.Config, SupportedTag.ISRC);
+        }
+    }
+
+    private static string FormatTrackOrDiscSequence(int number, int? total, AutoTagRunnerConfig config)
+    {
+        var numberText = config.TrackNumberLeadingZeroes > 0
+            ? number.ToString($"D{config.TrackNumberLeadingZeroes}", CultureInfo.InvariantCulture)
+            : number.ToString(CultureInfo.InvariantCulture);
+        return total is > 0
+            ? $"{numberText}/{total.Value.ToString(CultureInfo.InvariantCulture)}"
+            : numberText;
     }
 
     private static void ApplyMp4AtlTrackAndLyricsTagWrites(
@@ -5751,7 +5980,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Remixer => Mp4TagHelper.HasRaw(file, RemixerUpperTag),
             SupportedTag.Mood => Mp4TagHelper.HasRaw(file, "MOOD"),
             SupportedTag.Key => Mp4TagHelper.HasRaw(file, "initialkey"),
-            SupportedTag.ReleaseDate => Mp4TagHelper.HasRaw(file, "©day"),
+            SupportedTag.ReleaseDate =>
+                Mp4TagHelper.HasRaw(file, "©day")
+                || Mp4TagHelper.HasRaw(file, "DATE"),
             SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, "ORIGINALDATE"),
             SupportedTag.URL => Mp4TagHelper.HasRaw(file, WwwAudioFileTag),
             SupportedTag.TrackId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
@@ -6259,12 +6490,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (kind == ReleaseDateTag)
         {
-            if (!ShouldOverwriteTag(config, tag) && Mp4TagHelper.HasRaw(file, "©day"))
+            if (!ShouldOverwriteTag(config, tag)
+                && (Mp4TagHelper.HasRaw(file, "©day")
+                    || Mp4TagHelper.HasRaw(file, "DATE")))
             {
                 return;
             }
 
             Mp4TagHelper.SetDate(file, dateString);
+            var appleRelease = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
+            TrySetAppleDashBox(appleRelease, "DATE", new[] { dateString });
             return;
         }
 
