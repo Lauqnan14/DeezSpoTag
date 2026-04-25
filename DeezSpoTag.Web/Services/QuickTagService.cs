@@ -484,7 +484,47 @@ public sealed class QuickTagService
             }
         }
 
+        RestoreVorbisCloneDate(destinationFile, destinationExtension, snapshot.RawTags);
         destinationFile.Save();
+    }
+
+    private static void RestoreVorbisCloneDate(
+        TagLib.File destinationFile,
+        string destinationExtension,
+        IReadOnlyDictionary<string, List<string>> rawTags)
+    {
+        if (!VorbisFamilyExtensions.Contains(destinationExtension))
+        {
+            return;
+        }
+
+        var date = ResolveCloneDate(rawTags);
+        if (string.IsNullOrWhiteSpace(date))
+        {
+            return;
+        }
+
+        var vorbis = (TagLib.Ogg.XiphComment)destinationFile.GetTag(TagTypes.Xiph, true);
+        SetVorbisRaw(vorbis, "DATE", new List<string> { date }, string.Empty);
+    }
+
+    private static string? ResolveCloneDate(IReadOnlyDictionary<string, List<string>> rawTags)
+    {
+        foreach (var key in new[] { "DATE", "TDRC", "TDOR", "ORIGINALDATE", "©day", "iTunes:DATE" })
+        {
+            if (!rawTags.TryGetValue(key, out var values))
+            {
+                continue;
+            }
+
+            var value = values.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item));
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
     }
 
     private void ApplyMp4AtlFallbackIfNeeded(
@@ -1639,6 +1679,7 @@ public sealed class QuickTagService
         var apple = (TagLib.Mpeg4.AppleTag?)file.GetTag(TagTypes.Apple, false);
         if (apple == null)
         {
+            ReadMp4AtlAdditionalTags(tags, file.Name, separators);
             return;
         }
 
@@ -1650,6 +1691,56 @@ public sealed class QuickTagService
                 MergeTagValues(tags, $"iTunes:{key}", values, separators.Mp4);
             }
         }
+
+        ReadMp4AtlAdditionalTags(tags, file.Name, separators);
+    }
+
+    private static void ReadMp4AtlAdditionalTags(
+        Dictionary<string, List<string>> tags,
+        string filePath,
+        QuickTagSeparators separators)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !IOFile.Exists(filePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var track = new ATL.Track(filePath);
+            if (track.AdditionalFields == null || track.AdditionalFields.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var (rawKey, rawValue) in track.AdditionalFields)
+            {
+                if (string.IsNullOrWhiteSpace(rawKey) || string.IsNullOrWhiteSpace(rawValue))
+                {
+                    continue;
+                }
+
+                var key = NormalizeMp4AtlAdditionalDisplayKey(rawKey);
+                MergeTagValues(tags, key, new[] { rawValue }, separators.Mp4);
+            }
+        }
+        catch
+        {
+            // TagLib can read some malformed MP4 files that ATL cannot. Keep the
+            // native TagLib snapshot instead of failing the AutoTag diff capture.
+        }
+    }
+
+    private static string NormalizeMp4AtlAdditionalDisplayKey(string rawKey)
+    {
+        var key = rawKey.Trim();
+        const string iTunesDashPrefix = "----:com.apple.iTunes:";
+        if (key.StartsWith(iTunesDashPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"iTunes:{key[iTunesDashPrefix.Length..]}";
+        }
+
+        return key;
     }
 
     private static void MergeTagValues(Dictionary<string, List<string>> target, string key, IEnumerable<string?> values, string? separator)

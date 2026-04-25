@@ -2615,8 +2615,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             WriteLrc = raw.WriteLrc,
             CapitalizeGenres = raw.CapitalizeGenres,
             TracknameTemplate = raw.TracknameTemplate,
-            AlbumTracknameTemplate = raw.TracknameTemplate,
-            PlaylistTracknameTemplate = raw.TracknameTemplate,
             SaveArtwork = effectiveSaveArtwork,
             DlAlbumcoverForPlaylist = raw.DlAlbumcoverForPlaylist,
             SaveArtworkArtist = raw.SaveArtworkArtist,
@@ -2808,7 +2806,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         info.Tags[key.Trim()] = normalized;
     }
 
-    private AutoTagAudioInfo BuildAudioInfo(string filePath, string rootPath, bool parseFilename, string? filenameTemplate, string? titleRegex)
+    private AutoTagAudioInfo BuildAudioInfo(string filePath, string rootPath, bool parseFilename, string? tracknameTemplate, string? titleRegex)
     {
         var extension = Path.GetExtension(filePath);
         try
@@ -2818,7 +2816,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             PopulateAudioInfoTagMap(file, extension, draft.Tags);
             ApplyDraftTagFallbacks(draft);
-            ApplyFilenameTemplateFallbacks(draft, filePath, parseFilename, filenameTemplate);
+            ApplyTracknameTemplateFallbacks(draft, filePath, parseFilename, tracknameTemplate);
             EnsureArtistFallbacks(draft, filePath, rootPath);
             draft.Title = ResolveTitleWithFallback(draft.Title, filePath, titleRegex);
 
@@ -2831,7 +2829,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed reading tags for {File}", filePath);
-            return BuildAudioInfoFallback(filePath, rootPath, parseFilename, filenameTemplate, titleRegex);
+            return BuildAudioInfoFallback(filePath, rootPath, parseFilename, tracknameTemplate, titleRegex);
         }
     }
 
@@ -2901,18 +2899,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static void ApplyFilenameTemplateFallbacks(
+    private static void ApplyTracknameTemplateFallbacks(
         AudioInfoDraft draft,
         string filePath,
         bool parseFilename,
-        string? filenameTemplate)
+        string? tracknameTemplate)
     {
         if (!parseFilename || (!string.IsNullOrWhiteSpace(draft.Title) && !string.IsNullOrWhiteSpace(draft.Artist)))
         {
             return;
         }
 
-        var template = OneTaggerMatching.ParseFilenameTemplate(filenameTemplate);
+        var template = OneTaggerMatching.ParseFilenameTemplate(tracknameTemplate);
         if (!TryParseFilename(Path.GetFileName(filePath), template, out var parsedArtist, out var parsedTitle))
         {
             return;
@@ -3013,7 +3011,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string filePath,
         string rootPath,
         bool parseFilename,
-        string? filenameTemplate,
+        string? tracknameTemplate,
         string? titleRegex)
     {
         var draft = new AudioInfoDraft
@@ -3029,7 +3027,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             draft.Artists = SplitArtistCredits(new[] { draft.Artist });
         }
 
-        ApplyFilenameTemplateFallbacks(draft, filePath, parseFilename, filenameTemplate);
+        ApplyTracknameTemplateFallbacks(draft, filePath, parseFilename, tracknameTemplate);
         draft.Title = ApplyTitleRegexFilter(draft.Title, titleRegex);
 
         return new AutoTagAudioInfo
@@ -4069,32 +4067,32 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (context.EnabledTags.Contains(TitleTag) && context.EffectiveTagSettings.Title)
         {
-            WriteMp4AtlRaw(additional, "TITLE", atlTrack.Title, context.Config, SupportedTag.Title);
-            WriteMp4AtlRaw(additional, "TIT2", atlTrack.Title, context.Config, SupportedTag.Title);
+            WriteMp4AtlCompatibilityRaw(additional, "TITLE", atlTrack.Title, context.Config, SupportedTag.Title);
+            WriteMp4AtlCompatibilityRaw(additional, "TIT2", atlTrack.Title, context.Config, SupportedTag.Title);
         }
 
         if (context.EnabledTags.Contains(ArtistTag) && context.EffectiveTagSettings.Artist)
         {
-            WriteMp4AtlRaw(additional, "ARTIST", atlTrack.Artist, context.Config, SupportedTag.Artist);
-            WriteMp4AtlRaw(additional, "TPE1", atlTrack.Artist, context.Config, SupportedTag.Artist);
+            WriteMp4AtlCompatibilityRaw(additional, "ARTIST", atlTrack.Artist, context.Config, SupportedTag.Artist);
+            WriteMp4AtlCompatibilityRaw(additional, "TPE1", atlTrack.Artist, context.Config, SupportedTag.Artist);
         }
 
         if (context.EnabledTags.Contains(AlbumArtistTag) && context.EffectiveTagSettings.AlbumArtist)
         {
-            WriteMp4AtlRaw(additional, "ALBUMARTIST", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
-            WriteMp4AtlRaw(additional, "TPE2", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
+            WriteMp4AtlCompatibilityRaw(additional, "ALBUMARTIST", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
+            WriteMp4AtlCompatibilityRaw(additional, "TPE2", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
         }
 
         if (context.EnabledTags.Contains(AlbumTag) && context.EffectiveTagSettings.Album)
         {
-            WriteMp4AtlRaw(additional, "ALBUM", atlTrack.Album, context.Config, SupportedTag.Album);
-            WriteMp4AtlRaw(additional, "TALB", atlTrack.Album, context.Config, SupportedTag.Album);
+            WriteMp4AtlCompatibilityRaw(additional, "ALBUM", atlTrack.Album, context.Config, SupportedTag.Album);
+            WriteMp4AtlCompatibilityRaw(additional, "TALB", atlTrack.Album, context.Config, SupportedTag.Album);
         }
 
         if (context.EnabledTags.Contains(GenreTag) && context.EffectiveTagSettings.Genre)
         {
-            WriteMp4AtlRaw(additional, Mp4GenreTag, atlTrack.Genre, context.Config, SupportedTag.Genre);
-            WriteMp4AtlRaw(additional, "TCON", atlTrack.Genre, context.Config, SupportedTag.Genre);
+            WriteMp4AtlCompatibilityRaw(additional, Mp4GenreTag, atlTrack.Genre, context.Config, SupportedTag.Genre);
+            WriteMp4AtlCompatibilityRaw(additional, "TCON", atlTrack.Genre, context.Config, SupportedTag.Genre);
         }
 
         if (context.EnabledTags.Contains(BpmTag) && context.SourceTrack.Bpm.HasValue)
@@ -4169,8 +4167,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (context.EnabledTags.Contains(IsrcTag) && !string.IsNullOrWhiteSpace(atlTrack.ISRC))
         {
-            WriteMp4AtlRaw(additional, "ISRC", atlTrack.ISRC, context.Config, SupportedTag.ISRC);
-            WriteMp4AtlRaw(additional, "TSRC", atlTrack.ISRC, context.Config, SupportedTag.ISRC);
+            WriteMp4AtlCompatibilityRaw(additional, "ISRC", atlTrack.ISRC, context.Config, SupportedTag.ISRC);
+            WriteMp4AtlCompatibilityRaw(additional, "TSRC", atlTrack.ISRC, context.Config, SupportedTag.ISRC);
         }
     }
 
@@ -4442,6 +4440,43 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         SetAtlAdditionalField(additional, normalized, value);
         SetAtlAdditionalField(additional, BuildAtlDashFieldName(normalized), value);
+    }
+
+    private static void WriteMp4AtlCompatibilityRaw(
+        Dictionary<string, string> additional,
+        string rawName,
+        string? value,
+        AutoTagRunnerConfig config,
+        SupportedTag tag)
+    {
+        if (string.IsNullOrWhiteSpace(rawName) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
+        if (!ShouldOverwriteTag(config, tag)
+            && HasMp4AtlRaw(additional, normalized)
+            && Mp4AtlRawMatches(additional, normalized, value))
+        {
+            return;
+        }
+
+        SetAtlAdditionalField(additional, normalized, value);
+        SetAtlAdditionalField(additional, BuildAtlDashFieldName(normalized), value);
+    }
+
+    private static bool Mp4AtlRawMatches(Dictionary<string, string> additional, string rawName, string value)
+    {
+        var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
+        return Mp4AtlRawValueMatches(additional, normalized, value)
+               || Mp4AtlRawValueMatches(additional, BuildAtlDashFieldName(normalized), value);
+    }
+
+    private static bool Mp4AtlRawValueMatches(Dictionary<string, string> additional, string key, string value)
+    {
+        return additional.TryGetValue(key, out var existing)
+               && string.Equals(existing?.Trim(), value.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasMp4AtlRaw(Dictionary<string, string> additional, string rawName)
@@ -8331,8 +8366,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool WriteLrc { get; set; } = true;
         public bool CapitalizeGenres { get; set; }
         public string? TracknameTemplate { get; set; }
-        public string? AlbumTracknameTemplate { get; set; }
-        public string? PlaylistTracknameTemplate { get; set; }
         public bool? SaveArtwork { get; set; }
         public bool? DlAlbumcoverForPlaylist { get; set; }
         public bool? SaveArtworkArtist { get; set; }
