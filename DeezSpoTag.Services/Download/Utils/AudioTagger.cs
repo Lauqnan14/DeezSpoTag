@@ -10,6 +10,7 @@ using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.IO;
 using TagLib;
 using System.Globalization;
@@ -600,6 +601,7 @@ public class AudioTagger
     {
         try
         {
+            EnsureAtlWritableMp4Container(path);
             ClearAtlNativeTags(path);
             var file = new AtlTrack(path);
 
@@ -609,6 +611,7 @@ public class AudioTagger
             ApplyAtlMp4OwnershipAndCompilationMetadata(file, track, save);
             ApplyAtlMp4SourceMetadata(file, track, save);
             ApplyAtlMp4RatingMetadata(file, track, save);
+            ApplyAtlMp4CompatibilityAliases(file, track, save);
 
             if (save.Cover)
             {
@@ -644,6 +647,118 @@ public class AudioTagger
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Unable to clear existing native MP4 tags before retagging: {Path}", path);
+        }
+    }
+
+    private void EnsureAtlWritableMp4Container(string path)
+    {
+        if (!TryReadAtlDuration(path, out var duration) || duration >= 0)
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "ATL reported invalid MP4 duration {Duration} for {Path}; remuxing container before tagging.",
+            duration,
+            path);
+
+        RemuxMp4ContainerForTagging(path);
+
+        if (TryReadAtlDuration(path, out var repairedDuration) && repairedDuration < 0)
+        {
+            throw new IOException($"MP4 container remux did not repair ATL duration for {path}.");
+        }
+    }
+
+    private static bool TryReadAtlDuration(string path, out double duration)
+    {
+        duration = 0;
+        try
+        {
+            duration = new AtlTrack(path).Duration;
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static void RemuxMp4ContainerForTagging(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        var tempPath = Path.Combine(
+            string.IsNullOrWhiteSpace(directory) ? Path.GetTempPath() : directory,
+            $".{Path.GetFileNameWithoutExtension(path)}.{Guid.NewGuid():N}.remux.mp4");
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "ffmpeg",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("-hide_banner");
+            startInfo.ArgumentList.Add("-y");
+            startInfo.ArgumentList.Add("-i");
+            startInfo.ArgumentList.Add(path);
+            startInfo.ArgumentList.Add("-map");
+            startInfo.ArgumentList.Add("0");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("copy");
+            startInfo.ArgumentList.Add("-movflags");
+            startInfo.ArgumentList.Add("+faststart");
+            startInfo.ArgumentList.Add("-f");
+            startInfo.ArgumentList.Add("mp4");
+            startInfo.ArgumentList.Add(tempPath);
+
+            using var process = Process.Start(startInfo)
+                ?? throw new IOException("Failed to start ffmpeg for MP4 container remux.");
+            var stderr = process.StandardError.ReadToEnd();
+            if (!process.WaitForExit(30000))
+            {
+                TryKillProcess(process);
+                throw new IOException("ffmpeg timed out while remuxing MP4 container for tagging.");
+            }
+
+            if (process.ExitCode != 0 || !System.IO.File.Exists(tempPath) || new FileInfo(tempPath).Length == 0)
+            {
+                throw new IOException($"ffmpeg remux failed before MP4 tagging: {stderr.Trim()}");
+            }
+
+            System.IO.File.Copy(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (System.IO.File.Exists(tempPath))
+                {
+                    System.IO.File.Delete(tempPath);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // best effort cleanup
+            }
+        }
+    }
+
+    private static void TryKillProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // best effort timeout cleanup
         }
     }
 
@@ -879,6 +994,7 @@ public class AudioTagger
         if (save.Bpm && track.Bpm > 0)
         {
             file.BPM = (float)track.Bpm;
+            SetAtlAdditionalField(file, "BPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
         }
 
         SetAtlAdditionalFieldIf(file, save.Key, "initialkey", track.Key);
@@ -1002,6 +1118,111 @@ public class AudioTagger
 
         var rank = Math.Round(track.Rank / 10000.0);
         SetAtlAdditionalField(file, "RATING", rank.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private void ApplyAtlMp4CompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (save.Title)
+        {
+            var title = string.IsNullOrWhiteSpace(file.Title) ? track.Title : file.Title;
+            SetAtlAdditionalField(file, "TITLE", title);
+            SetAtlAdditionalField(file, "TIT2", title);
+        }
+
+        if (save.Artist && (track.Artists.Count > 0 || !string.IsNullOrWhiteSpace(track.MainArtist?.Name)))
+        {
+            var artistValue = string.IsNullOrWhiteSpace(file.Artist)
+                ? ResolveAtlArtistValue(track, save)
+                : file.Artist;
+            SetAtlAdditionalField(file, "ARTIST", artistValue);
+            SetAtlAdditionalField(file, "TPE1", artistValue);
+        }
+
+        if (save.AlbumArtist)
+        {
+            var albumArtist = string.IsNullOrWhiteSpace(file.AlbumArtist)
+                ? ResolvePrimaryAlbumArtist(track)
+                : file.AlbumArtist;
+            SetAtlAdditionalField(file, "ALBUMARTIST", albumArtist);
+            SetAtlAdditionalField(file, "TPE2", albumArtist);
+        }
+
+        if (save.Album)
+        {
+            var album = string.IsNullOrWhiteSpace(file.Album) ? track.Album?.Title : file.Album;
+            SetAtlAdditionalField(file, "ALBUM", album);
+            SetAtlAdditionalField(file, "TALB", album);
+        }
+
+        if (save.Genre && track.Album?.Genre is { Count: > 0 })
+        {
+            var genreValue = string.IsNullOrWhiteSpace(file.Genre)
+                ? string.Join(", ", SanitizeGenres(track.Album.Genre))
+                : file.Genre;
+            SetAtlAdditionalField(file, "GENRE", genreValue);
+            SetAtlAdditionalField(file, "TCON", genreValue);
+        }
+
+        if (save.Date && track.Date != null)
+        {
+            if (track.Date.IsValid())
+            {
+                SetAtlAdditionalField(file, "DATE", track.DateString);
+                SetAtlAdditionalField(file, "TDRC", track.DateString);
+            }
+
+            SetAtlAdditionalField(file, "TDAT", $"{track.Date.Day}{track.Date.Month}");
+        }
+        else if (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year))
+        {
+            SetAtlAdditionalField(file, "TDRC", track.Date.Year);
+        }
+
+        if (save.TrackNumber && track.TrackNumber > 0)
+        {
+            SetAtlAdditionalField(file, "TRACKNUMBER", track.TrackNumber.ToString(CultureInfo.InvariantCulture));
+            SetAtlAdditionalField(file, "TRCK", FormatTrackOrDiscSequence(track.TrackNumber, save.TrackTotal ? track.Album?.TrackTotal : null));
+        }
+
+        if (save.TrackTotal && track.Album?.TrackTotal > 0)
+        {
+            SetAtlAdditionalField(file, "TRACKTOTAL", track.Album.TrackTotal.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (save.DiscNumber && track.DiscNumber > 0)
+        {
+            SetAtlAdditionalField(file, "DISCNUMBER", track.DiscNumber.ToString(CultureInfo.InvariantCulture));
+            SetAtlAdditionalField(file, "TPOS", FormatTrackOrDiscSequence(track.DiscNumber, save.DiscTotal ? track.Album?.DiscTotal : null));
+        }
+
+        if (save.DiscTotal && track.Album?.DiscTotal is > 0)
+        {
+            SetAtlAdditionalField(file, "DISCTOTAL", track.Album.DiscTotal.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (save.Length)
+        {
+            SetAtlAdditionalField(file, "TLEN", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (save.Bpm && track.Bpm > 0)
+        {
+            SetAtlAdditionalField(file, "BPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
+            SetAtlAdditionalField(file, "TBPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (save.Label)
+        {
+            SetAtlAdditionalField(file, "LABEL", track.Album?.Label);
+            SetAtlAdditionalField(file, "TPUB", track.Album?.Label);
+        }
+
+        if (save.Isrc)
+        {
+            SetAtlAdditionalField(file, "TSRC", track.ISRC);
+        }
+
+        SetAtlAdditionalFieldIf(file, save.Key, "INITIALKEY", track.Key);
     }
 
     private void ApplyMp4CoreMetadata(
@@ -1277,6 +1498,16 @@ public class AudioTagger
         }
 
         return ResolveMultiArtistValue(track, save);
+    }
+
+    private static string FormatTrackOrDiscSequence(int number, int? total)
+    {
+        if (total is > 0)
+        {
+            return $"{number:D2}/{total.Value.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        return number.ToString(CultureInfo.InvariantCulture);
     }
 
     private void ApplyAtlLyricsMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
