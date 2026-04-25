@@ -2961,37 +2961,74 @@ public sealed class DownloadIntentService
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(intent.SpotifyId))
+        var deezerByIsrc = await ResolveDeezerTrackIdFromIsrcAsync(intent.Isrc);
+        if (!string.IsNullOrWhiteSpace(deezerByIsrc))
         {
-            intent.SpotifyId = TryExtractSpotifyId(sourceUrl)
-                ?? await _spotifyIdResolver.ResolveTrackIdAsync(
+            intent.DeezerId = deezerByIsrc;
+            return;
+        }
+
+        var deezerByMetadata = await ResolveDeezerTrackIdFromMetadataAsync(intent);
+        if (!string.IsNullOrWhiteSpace(deezerByMetadata))
+        {
+            intent.DeezerId = deezerByMetadata;
+        }
+    }
+
+    private async Task<string?> ResolveDeezerTrackIdFromIsrcAsync(string? isrc)
+    {
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return null;
+        }
+
+        try
+        {
+            var normalizedIsrc = isrc.Trim().ToUpperInvariant();
+            var track = await _deezerClient.GetTrackByIsrcAsync(normalizedIsrc);
+            return NormalizeDeezerTrackId(track?.Id?.ToString());
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ID ISRC lookup failed for {Isrc}", isrc);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<string?> ResolveDeezerTrackIdFromMetadataAsync(DownloadIntent intent)
+    {
+        if (string.IsNullOrWhiteSpace(intent.Title)
+            || string.IsNullOrWhiteSpace(intent.Artist))
+        {
+            return null;
+        }
+
+        try
+        {
+            var durationMs = intent.DurationMs > 0 ? intent.DurationMs : (int?)null;
+            var resolvedId = await _deezerClient.GetTrackIdFromMetadataAsync(
+                intent.Artist,
+                intent.Title,
+                intent.Album ?? string.Empty,
+                durationMs);
+            return NormalizeDeezerTrackId(resolvedId);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Deezer ID metadata lookup failed for '{Title}' by '{Artist}'",
                     intent.Title ?? string.Empty,
-                    intent.Artist ?? string.Empty,
-                    intent.Album,
-                    intent.Isrc,
-                    cancellationToken)
-                ?? string.Empty;
-        }
-
-        if (!string.IsNullOrWhiteSpace(intent.SpotifyId))
-        {
-            intent.DeezerId = NormalizeDeezerTrackId(
-                await _songLinkResolver.ResolveDeezerIdFromSpotifyAsync(intent.SpotifyId, cancellationToken))
-                ?? string.Empty;
-        }
-
-        if (string.IsNullOrWhiteSpace(intent.DeezerId) && !string.IsNullOrWhiteSpace(sourceUrl))
-        {
-            var link = await _songLinkResolver.ResolveByUrlAsync(sourceUrl, cancellationToken);
-            var normalizedLinkedDeezerId = NormalizeDeezerTrackId(link?.DeezerId);
-            if (!string.IsNullOrWhiteSpace(normalizedLinkedDeezerId))
-            {
-                intent.DeezerId = normalizedLinkedDeezerId;
+                    intent.Artist ?? string.Empty);
             }
-            if (string.IsNullOrWhiteSpace(intent.SpotifyId) && !string.IsNullOrWhiteSpace(link?.SpotifyId))
-            {
-                intent.SpotifyId = link.SpotifyId;
-            }
+
+            return null;
         }
     }
 
