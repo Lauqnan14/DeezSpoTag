@@ -172,7 +172,7 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task TryAdvanceAsync_AdvancesToAmazon_WhenSpotifyIdCanBeHydratedFromSongLink()
+    public async Task TryAdvanceAsync_AdvancesToAmazon_WhenSpotifyIdCanBeHydratedFromNativeResolver()
     {
         const string queueUuid = "recovery-qobuz-to-amazon";
         var payload = new QobuzQueueItem
@@ -206,49 +206,22 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
                 new StubHttpClientFactory(new StubHttpMessageHandler(request =>
                 {
             var requestUri = request.RequestUri?.ToString() ?? string.Empty;
-            if (!requestUri.Contains("api.song.link", StringComparison.OrdinalIgnoreCase))
+            if (!requestUri.Contains("api.deezer.com/track/3094483121", StringComparison.OrdinalIgnoreCase))
             {
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             }
 
-            if (!requestUri.Contains("deezer.com%2Ftrack%2F3094483121", StringComparison.OrdinalIgnoreCase))
-            {
-                return new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("{}")
-                };
-            }
-
             const string payloadJson = """
 {
-  "entityUniqueId": "deezer:track:3094483121",
-  "linksByPlatform": {
-    "deezer": {
-      "url": "https://www.deezer.com/track/3094483121",
-      "entityUniqueId": "deezer:track:3094483121"
-    },
-    "spotify": {
-      "url": "https://open.spotify.com/track/2f2ksxHYvYxfL8M4L4sKcA",
-      "entityUniqueId": "spotify:track:2f2ksxHYvYxfL8M4L4sKcA"
-    }
+  "id": 3094483121,
+  "title": "Nairobi",
+  "isrc": "ZA56E2420399",
+  "duration": 189,
+  "artist": {
+    "name": "Marioo"
   },
-  "entitiesByUniqueId": {
-    "deezer:track:3094483121": {
-      "id": "3094483121",
-      "platform": "deezer",
-      "type": "song",
-      "title": "Nairobi",
-      "artistName": "Marioo",
-      "link": "https://www.deezer.com/track/3094483121"
-    },
-    "spotify:track:2f2ksxHYvYxfL8M4L4sKcA": {
-      "id": "2f2ksxHYvYxfL8M4L4sKcA",
-      "platform": "spotify",
-      "type": "song",
-      "title": "Nairobi",
-      "artistName": "Marioo",
-      "link": "https://open.spotify.com/track/2f2ksxHYvYxfL8M4L4sKcA"
-    }
+  "album": {
+    "title": "The Godson"
   }
 }
 """;
@@ -261,7 +234,10 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
                 qobuzMetadataService: null,
                 qobuzTrackResolver: null,
                 qobuzOptions: null,
-                NullLogger<SongLinkResolver>.Instance),
+                NullLogger<SongLinkResolver>.Instance,
+                persistentCacheStore: null,
+                spotifyTrackMetadataResolver: null,
+                spotifyIdResolver: new StubSpotifyIdResolver("2f2ksxHYvYxfL8M4L4sKcA")),
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
@@ -364,5 +340,25 @@ WHERE queue_uuid = $queueUuid;";
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(_handler(request));
+    }
+
+    private sealed class StubSpotifyIdResolver : ISpotifyIdResolver
+    {
+        private readonly string _spotifyId;
+
+        public StubSpotifyIdResolver(string spotifyId)
+        {
+            _spotifyId = spotifyId;
+        }
+
+        public Task<string?> ResolveTrackIdAsync(
+            string title,
+            string artist,
+            string? album,
+            string? isrc,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<string?>(_spotifyId);
+        }
     }
 }

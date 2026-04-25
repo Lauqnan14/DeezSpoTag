@@ -1,80 +1,74 @@
 using System.Collections.Concurrent;
-using System.Linq;
+using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Integrations.Qobuz;
-using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Metadata.Qobuz;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace DeezSpoTag.Services.Download.Utils;
 
 /// <summary>
-/// Song.link resolver used to pivot a Spotify (or other) URL into other providers.
-/// Ports the lightweight Redomi song.link client and extends it for the providers we support.
+/// Compatibility resolver retained under SongLink naming, but fully backed by native matching logic.
+/// No requests are made to song.link.
 /// </summary>
 public sealed class SongLinkResolver
 {
-    private const int MaxRequestsPerMinute = 9;
     private const string DeezerPlatform = "deezer";
     private const string SpotifyPlatform = "spotify";
-    private const int MaxApiRetries = 3;
-    private static readonly TimeSpan MinDelay = TimeSpan.FromSeconds(7);
-    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(15);
+    private const string TidalPlatform = "tidal";
+    private const string QobuzPlatform = "qobuz";
+    private const string ApplePlatform = "appleMusic";
+    private const string AmazonPlatform = "amazonMusic";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan NegativeCacheTtl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly JsonSerializerOptions CaseInsensitiveJsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
-    private static readonly char[] QueryAndFragmentSeparators = ['?', '#'];
-    private static readonly string[] QobuzVersionPatterns =
-    {
-        "remaster", "remastered", "deluxe", "bonus", "single",
-        "album version", "radio edit", "original mix", "extended",
-        "club mix", "remix", "live", "acoustic", "demo"
-    };
-    private static readonly string[] QobuzDashPatterns =
-    {
-        " - remaster", " - remastered", " - single version", " - radio edit",
-        " - live", " - acoustic", " - demo", " - remix"
-    };
-    private static readonly (int Start, int End)[] ExtendedLatinRanges =
-    {
-        (0x0100, 0x024F),
-        (0x1E00, 0x1EFF),
-        (0x00C0, 0x00FF)
-    };
-    private static readonly (int Start, int End)[] NonLatinScriptRanges =
-    {
-        (0x4E00, 0x9FFF),
-        (0x3040, 0x309F),
-        (0x30A0, 0x30FF),
-        (0xAC00, 0xD7AF),
-        (0x0600, 0x06FF),
-        (0x0400, 0x04FF)
-    };
+    private static readonly Regex QobuzTrackRegex = new(
+        @"qobuz\.com\/(?:[a-z]{2}\/[a-z]{2}\/)?track\/(?<id>\d+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly Regex TidalTrackRegex = new(
+        @"tidal\.com\/(?:browse\/)?track\/(?<id>\d+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly Regex AppleMusicTrackRegex = new(
+        @"music\.apple\.com\/.+\?i=(?<id>\d+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly DeezSpoTag.Services.Metadata.Qobuz.IQobuzMetadataService? _qobuzMetadataService;
+    private readonly IQobuzMetadataService? _qobuzMetadataService;
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly QobuzApiConfig _qobuzConfig;
     private readonly SongLinkPersistentCacheStore? _persistentCacheStore;
     private readonly ILogger<SongLinkResolver> _logger;
-    private readonly SemaphoreSlim _rateGate = new(1, 1);
+    private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
+    private readonly ISpotifyIdResolver? _spotifyIdResolver;
+    private readonly TidalDownloadService? _tidalDownloadService;
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
-    private DateTimeOffset _lastCall = DateTimeOffset.MinValue;
-    private DateTimeOffset _windowStart = DateTimeOffset.UtcNow;
-    private int _windowCount;
 
     public SongLinkResolver(
         IHttpClientFactory httpClientFactory,
-        DeezSpoTag.Services.Metadata.Qobuz.IQobuzMetadataService? qobuzMetadataService,
+        IQobuzMetadataService? qobuzMetadataService,
         QobuzTrackResolver? qobuzTrackResolver,
         IOptions<QobuzApiConfig>? qobuzOptions,
         ILogger<SongLinkResolver> logger,
-        SongLinkPersistentCacheStore? persistentCacheStore = null)
+        SongLinkPersistentCacheStore? persistentCacheStore = null,
+        SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null,
+        ISpotifyIdResolver? spotifyIdResolver = null,
+        TidalDownloadService? tidalDownloadService = null)
     {
         _httpClientFactory = httpClientFactory;
         _qobuzMetadataService = qobuzMetadataService;
@@ -82,11 +76,11 @@ public sealed class SongLinkResolver
         _qobuzConfig = qobuzOptions?.Value ?? new QobuzApiConfig();
         _logger = logger;
         _persistentCacheStore = persistentCacheStore;
+        _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
+        _spotifyIdResolver = spotifyIdResolver;
+        _tidalDownloadService = tidalDownloadService;
     }
 
-    /// <summary>
-    /// Resolve a Spotify track ID to cross-provider URLs (Deezer, Tidal, Amazon, Qobuz) and metadata.
-    /// </summary>
     public Task<SongLinkResult?> ResolveSpotifyTrackAsync(string spotifyTrackId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(spotifyTrackId))
@@ -94,7 +88,7 @@ public sealed class SongLinkResolver
             return Task.FromResult<SongLinkResult?>(null);
         }
 
-        var spotifyUrl = $"https://open.spotify.com/track/{spotifyTrackId}";
+        var spotifyUrl = $"https://open.spotify.com/track/{spotifyTrackId.Trim()}";
         return ResolveByUrlAsync(spotifyUrl, cancellationToken);
     }
 
@@ -106,25 +100,17 @@ public sealed class SongLinkResolver
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(result.DeezerId))
+        if (TrackIdNormalization.TryNormalizeDeezerTrackId(result.DeezerId, out var deezerId))
         {
-            return result.DeezerId;
+            return deezerId;
         }
 
-        if (!string.IsNullOrWhiteSpace(result.DeezerUrl))
-        {
-            return ExtractId(DeezerPlatform, null, result.DeezerUrl);
-        }
-
-        return null;
+        return TrackIdNormalization.NormalizeDeezerTrackIdOrNull(result.DeezerUrl);
     }
 
-    /// <summary>
-    /// Resolve an arbitrary music URL via song.link.
-    /// </summary>
-    public async Task<SongLinkResult?> ResolveByUrlAsync(string url, CancellationToken cancellationToken)
+    public Task<SongLinkResult?> ResolveByUrlAsync(string url, CancellationToken cancellationToken)
     {
-        return await ResolveByUrlAsync(url, userCountry: null, cancellationToken);
+        return ResolveByUrlAsync(url, userCountry: null, cancellationToken);
     }
 
     public async Task<SongLinkResult?> ResolveByUrlAsync(string url, string? userCountry, CancellationToken cancellationToken)
@@ -135,7 +121,6 @@ public sealed class SongLinkResolver
         }
 
         var normalizedUrl = NormalizeCacheUrl(url);
-        var deezerTrackIdFromUrl = ExtractId(DeezerPlatform, null, normalizedUrl);
 
         if (TryGetFromCache(normalizedUrl, userCountry, out var cached))
         {
@@ -149,125 +134,975 @@ public sealed class SongLinkResolver
             return persistentCached;
         }
 
-        await EnforceRateLimitAsync(cancellationToken);
-        using var client = _httpClientFactory.CreateClient("SongLink");
-        var requestOutcome = await FetchSongLinkPayloadAsync(
-            client,
-            BuildSongLinkApiUrl(normalizedUrl, userCountry),
-            cancellationToken);
-
-        var payload = requestOutcome.Payload;
-        if (payload?.LinksByPlatform == null || payload.EntitiesByUniqueId == null)
+        if (_logger.IsEnabled(LogLevel.Debug))
         {
-            return await HandleMissingPayloadAsync(
-                normalizedUrl,
-                userCountry,
-                deezerTrackIdFromUrl,
-                requestOutcome.SkipNegativeCache,
-                cancellationToken);
+            _logger.LogDebug("song.link is deactivated. Using native link regeneration for {Url}", normalizedUrl);
         }
 
-        var result = await BuildSongLinkResultAsync(payload, cancellationToken);
+        var result = await ResolveNativeAsync(normalizedUrl, cancellationToken);
         CacheResult(normalizedUrl, userCountry, result);
         await CacheResultInPersistentStoreAsync(normalizedUrl, userCountry, result, cancellationToken);
         return result;
     }
 
-    private static string BuildSongLinkApiUrl(string url, string? userCountry)
+    public Task<SongLinkResult?> ResolveByDeezerTrackIdAsync(string deezerTrackId, CancellationToken cancellationToken)
     {
-        var countryParam = string.IsNullOrWhiteSpace(userCountry)
-            ? string.Empty
-            : $"&userCountry={WebUtility.UrlEncode(userCountry)}";
+        if (!TrackIdNormalization.TryNormalizeDeezerTrackId(deezerTrackId, out var normalized))
+        {
+            return Task.FromResult<SongLinkResult?>(null);
+        }
 
-        return $"https://api.song.link/v1-alpha.1/links?url={WebUtility.UrlEncode(url)}{countryParam}";
+        var deezerUrl = $"https://www.deezer.com/track/{normalized}";
+        return ResolveByUrlAsync(deezerUrl, cancellationToken);
     }
 
-    private async Task<SongLinkRequestOutcome> FetchSongLinkPayloadAsync(
-        HttpClient client,
-        string apiUrl,
-        CancellationToken cancellationToken)
+    private async Task<SongLinkResult?> ResolveNativeAsync(string normalizedUrl, CancellationToken cancellationToken)
     {
-        var skipNegativeCache = false;
-        for (var attempt = 1; attempt <= MaxApiRetries; attempt++)
+        var source = TryParseSource(normalizedUrl);
+        if (source == null)
         {
-            try
+            return null;
+        }
+
+        var result = new SongLinkResult();
+        var metadata = new TrackMetadata();
+
+        switch (source.Platform)
+        {
+            case DeezerPlatform:
+                result.DeezerId = source.TrackId;
+                result.DeezerUrl = BuildDeezerTrackUrl(source.TrackId);
+                metadata = await ResolveDeezerTrackMetadataByIdAsync(source.TrackId, cancellationToken);
+                break;
+            case SpotifyPlatform:
+                result.SpotifyId = source.TrackId;
+                result.SpotifyUrl = BuildSpotifyTrackUrl(source.TrackId);
+                metadata = await ResolveSpotifyTrackMetadataByIdAsync(source.TrackId, cancellationToken);
+                break;
+            case QobuzPlatform:
+                result.QobuzUrl = BuildQobuzTrackUrl(source.TrackId);
+                break;
+            case TidalPlatform:
+                result.TidalUrl = BuildTidalTrackUrl(source.TrackId);
+                break;
+            case ApplePlatform:
+                result.AppleMusicUrl = normalizedUrl;
+                break;
+            case AmazonPlatform:
+                result.AmazonUrl = normalizedUrl;
+                break;
+            default:
+                break;
+        }
+
+        result.SourceType = "song";
+        result.SourceTitle = metadata.Title;
+        result.SourceArtist = metadata.Artist;
+        result.Isrc = metadata.Isrc;
+
+        var resolvedDeezer = result.DeezerId;
+        if (string.IsNullOrWhiteSpace(resolvedDeezer))
+        {
+            resolvedDeezer = await ResolveDeezerIdByMetadataAsync(metadata, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(resolvedDeezer))
             {
-                using var response = await client.GetAsync(apiUrl, cancellationToken);
-                if ((int)response.StatusCode == 429)
-                {
-                    skipNegativeCache = true;
-                    var hasRetry = attempt < MaxApiRetries;
-                    await HandleSongLinkRateLimitAsync(attempt, hasRetry, cancellationToken);
-                    if (hasRetry)
-                    {
-                        continue;
-                    }
-
-                    return new SongLinkRequestOutcome(null, skipNegativeCache);
-                }
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning(
-                        "song.link failed: status={Status}",
-                        (int)response.StatusCode);
-                    return new SongLinkRequestOutcome(null, skipNegativeCache);
-                }
-
-                var payload = await ParseSongLinkPayloadAsync(response, cancellationToken);
-                return new SongLinkRequestOutcome(payload, skipNegativeCache);
+                result.DeezerId = resolvedDeezer;
+                result.DeezerUrl = BuildDeezerTrackUrl(resolvedDeezer);
             }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.DeezerId)
+            && (string.IsNullOrWhiteSpace(result.SourceTitle)
+                || string.IsNullOrWhiteSpace(result.SourceArtist)
+                || string.IsNullOrWhiteSpace(result.Isrc)
+                || !metadata.DurationMs.HasValue))
+        {
+            var deezerMetadata = await ResolveDeezerTrackMetadataByIdAsync(result.DeezerId, cancellationToken);
+            metadata = metadata.Merge(deezerMetadata);
+            result.SourceTitle ??= metadata.Title;
+            result.SourceArtist ??= metadata.Artist;
+            result.Isrc ??= metadata.Isrc;
+        }
+
+        if (string.IsNullOrWhiteSpace(result.SpotifyId))
+        {
+            result.SpotifyId = await ResolveSpotifyIdByMetadataAsync(metadata, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(result.SpotifyId))
             {
-                _logger.LogWarning(ex, "song.link request timed out");
-                return new SongLinkRequestOutcome(null, skipNegativeCache);
+                result.SpotifyUrl = BuildSpotifyTrackUrl(result.SpotifyId);
             }
-            catch (HttpRequestException ex)
+        }
+
+        if (string.IsNullOrWhiteSpace(result.TidalUrl))
+        {
+            result.TidalUrl = await ResolveTidalUrlByMetadataAsync(metadata, cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(result.QobuzUrl))
+        {
+            result.QobuzUrl = await ResolveQobuzUrlFromMetadataAsync(metadata, cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(result.DeezerUrl) && !string.IsNullOrWhiteSpace(result.DeezerId))
+        {
+            result.DeezerUrl = BuildDeezerTrackUrl(result.DeezerId);
+        }
+
+        if (string.IsNullOrWhiteSpace(result.SpotifyUrl) && !string.IsNullOrWhiteSpace(result.SpotifyId))
+        {
+            result.SpotifyUrl = BuildSpotifyTrackUrl(result.SpotifyId);
+        }
+
+        return HasAnyResolvedLink(result) ? result : null;
+    }
+
+    private static bool HasAnyResolvedLink(SongLinkResult result)
+    {
+        return !string.IsNullOrWhiteSpace(result.DeezerId)
+               || !string.IsNullOrWhiteSpace(result.DeezerUrl)
+               || !string.IsNullOrWhiteSpace(result.SpotifyId)
+               || !string.IsNullOrWhiteSpace(result.SpotifyUrl)
+               || !string.IsNullOrWhiteSpace(result.TidalUrl)
+               || !string.IsNullOrWhiteSpace(result.QobuzUrl)
+               || !string.IsNullOrWhiteSpace(result.AppleMusicUrl)
+               || !string.IsNullOrWhiteSpace(result.AmazonUrl);
+    }
+
+    private async Task<TrackMetadata> ResolveSpotifyTrackMetadataByIdAsync(string spotifyTrackId, CancellationToken cancellationToken)
+    {
+        if (_spotifyTrackMetadataResolver == null)
+        {
+            return TrackMetadata.Empty;
+        }
+
+        var metadata = await _spotifyTrackMetadataResolver.ResolveTrackAsync(spotifyTrackId, cancellationToken);
+        if (metadata == null)
+        {
+            return TrackMetadata.Empty;
+        }
+
+        return new TrackMetadata(
+            metadata.Title,
+            metadata.Artist,
+            metadata.Album,
+            metadata.Isrc,
+            metadata.DurationMs);
+    }
+
+    private async Task<TrackMetadata> ResolveDeezerTrackMetadataByIdAsync(string deezerTrackId, CancellationToken cancellationToken)
+    {
+        if (!TrackIdNormalization.TryNormalizeDeezerTrackId(deezerTrackId, out var normalizedTrackId))
+        {
+            return TrackMetadata.Empty;
+        }
+
+        try
+        {
+            using var client = _httpClientFactory.CreateClient();
+            using var response = await client.GetAsync($"https://api.deezer.com/track/{WebUtility.UrlEncode(normalizedTrackId)}", cancellationToken);
+            if (!response.IsSuccessStatusCode)
             {
-                if (attempt < MaxApiRetries)
+                return TrackMetadata.Empty;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var payload = await JsonSerializer.DeserializeAsync<DeezerTrackEnvelope>(
+                stream,
+                CaseInsensitiveJsonOptions,
+                cancellationToken);
+            if (payload == null || payload.Id <= 0)
+            {
+                return TrackMetadata.Empty;
+            }
+
+            return new TrackMetadata(
+                payload.Title,
+                payload.Artist?.Name,
+                payload.Album?.Title,
+                NormalizeIsrc(payload.Isrc),
+                payload.Duration > 0 ? payload.Duration * 1000 : null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer track metadata lookup failed for {TrackId}", deezerTrackId);
+            }
+
+            return TrackMetadata.Empty;
+        }
+    }
+
+    private async Task<string?> ResolveDeezerIdByMetadataAsync(TrackMetadata metadata, CancellationToken cancellationToken)
+    {
+        var normalizedIsrc = NormalizeIsrc(metadata.Isrc);
+        if (!string.IsNullOrWhiteSpace(normalizedIsrc))
+        {
+            var deezerIdByIsrc = await ResolveDeezerIdByIsrcAsync(normalizedIsrc, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(deezerIdByIsrc))
+            {
+                return deezerIdByIsrc;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.Title) || string.IsNullOrWhiteSpace(metadata.Artist))
+        {
+            return null;
+        }
+
+        var bestCandidate = await SearchBestDeezerCandidateAsync(metadata, cancellationToken);
+        return bestCandidate?.Id;
+    }
+
+    private async Task<string?> ResolveDeezerIdByIsrcAsync(string isrc, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = _httpClientFactory.CreateClient();
+            using var response = await client.GetAsync($"https://api.deezer.com/track/isrc:{WebUtility.UrlEncode(isrc)}", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var payload = await JsonSerializer.DeserializeAsync<DeezerTrackEnvelope>(
+                stream,
+                CaseInsensitiveJsonOptions,
+                cancellationToken);
+
+            return payload != null && payload.Id > 0
+                ? payload.Id.ToString(CultureInfo.InvariantCulture)
+                : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", isrc);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<DeezerSearchCandidate?> SearchBestDeezerCandidateAsync(TrackMetadata metadata, CancellationToken cancellationToken)
+    {
+        var queries = BuildDeezerSearchQueries(metadata);
+        DeezerSearchCandidate? best = null;
+
+        foreach (var query in queries)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                continue;
+            }
+
+            var candidates = await SearchDeezerCandidatesAsync(query, cancellationToken);
+            foreach (var candidate in candidates)
+            {
+                if (IsDerivativeMismatch(metadata.Title, candidate.Title, metadata.Artist, candidate.Artist))
                 {
-                    _logger.LogWarning(
-                        ex,
-                        "song.link request failed (attempt {Attempt}/{MaxAttempts}); retrying in {Delay}s",
-                        attempt,
-                        MaxApiRetries,
-                        RetryDelay.TotalSeconds);
-                    await Task.Delay(RetryDelay, cancellationToken);
                     continue;
                 }
 
-                _logger.LogWarning(
-                    ex,
-                    "song.link request failed after {Attempts} attempts",
-                    attempt);
-                return new SongLinkRequestOutcome(null, skipNegativeCache);
+                if (!string.IsNullOrWhiteSpace(metadata.Isrc)
+                    && !string.IsNullOrWhiteSpace(candidate.Isrc)
+                    && string.Equals(metadata.Isrc, candidate.Isrc, StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate with { Score = 1.0d };
+                }
+
+                var score = ScoreDeezerCandidate(metadata, candidate);
+                if (best == null || score > best.Score)
+                {
+                    best = candidate with { Score = score };
+                }
             }
         }
 
-        return new SongLinkRequestOutcome(null, skipNegativeCache);
+        if (best == null)
+        {
+            return null;
+        }
+
+        return best.Score >= 0.62d ? best : null;
     }
 
-    private async Task<SongLinkResult?> HandleMissingPayloadAsync(
-        string url,
-        string? userCountry,
-        string? deezerTrackIdFromUrl,
-        bool skipNegativeCache,
+    private static IEnumerable<string> BuildDeezerSearchQueries(TrackMetadata metadata)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(metadata.Artist) && !string.IsNullOrWhiteSpace(metadata.Title))
+        {
+            var strict = $"artist:\"{metadata.Artist.Trim()}\" track:\"{metadata.Title.Trim()}\"";
+            if (seen.Add(strict))
+            {
+                yield return strict;
+            }
+
+            var loose = $"{metadata.Artist.Trim()} {metadata.Title.Trim()}";
+            if (seen.Add(loose))
+            {
+                yield return loose;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(metadata.Title) && seen.Add(metadata.Title.Trim()))
+        {
+            yield return metadata.Title.Trim();
+        }
+    }
+
+    private async Task<List<DeezerSearchCandidate>> SearchDeezerCandidatesAsync(string query, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = _httpClientFactory.CreateClient();
+            var url = $"https://api.deezer.com/search/track?q={WebUtility.UrlEncode(query)}&limit=12";
+            using var response = await client.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new List<DeezerSearchCandidate>();
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+            if (!document.RootElement.TryGetProperty("data", out var data)
+                || data.ValueKind != JsonValueKind.Array)
+            {
+                return new List<DeezerSearchCandidate>();
+            }
+
+            var candidates = new List<DeezerSearchCandidate>();
+            foreach (var item in data.EnumerateArray())
+            {
+                if (!TryExtractDeezerSearchCandidate(item, out var candidate))
+                {
+                    continue;
+                }
+
+                candidates.Add(candidate);
+            }
+
+            return candidates;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer metadata search failed for query \"{Query}\"", query);
+            }
+
+            return new List<DeezerSearchCandidate>();
+        }
+    }
+
+    private static bool TryExtractDeezerSearchCandidate(JsonElement item, out DeezerSearchCandidate candidate)
+    {
+        candidate = new DeezerSearchCandidate(string.Empty, null, null, null, null, null, 0d);
+
+        var id = item.TryGetProperty("id", out var idElement)
+                 && idElement.ValueKind == JsonValueKind.Number
+                 && idElement.TryGetInt64(out var idValue)
+            ? idValue.ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return false;
+        }
+
+        var title = item.TryGetProperty("title", out var titleElement) && titleElement.ValueKind == JsonValueKind.String
+            ? titleElement.GetString()
+            : null;
+        var artist = item.TryGetProperty("artist", out var artistElement)
+                     && artistElement.ValueKind == JsonValueKind.Object
+                     && artistElement.TryGetProperty("name", out var artistName)
+                     && artistName.ValueKind == JsonValueKind.String
+            ? artistName.GetString()
+            : null;
+        var album = item.TryGetProperty("album", out var albumElement)
+                    && albumElement.ValueKind == JsonValueKind.Object
+                    && albumElement.TryGetProperty("title", out var albumTitle)
+                    && albumTitle.ValueKind == JsonValueKind.String
+            ? albumTitle.GetString()
+            : null;
+        var isrc = item.TryGetProperty("isrc", out var isrcElement) && isrcElement.ValueKind == JsonValueKind.String
+            ? NormalizeIsrc(isrcElement.GetString())
+            : null;
+        var duration = item.TryGetProperty("duration", out var durationElement)
+                       && durationElement.ValueKind == JsonValueKind.Number
+                       && durationElement.TryGetInt32(out var durationSeconds)
+            ? durationSeconds * 1000
+            : (int?)null;
+
+        candidate = new DeezerSearchCandidate(id, title, artist, album, isrc, duration, 0d);
+        return true;
+    }
+
+    private static double ScoreDeezerCandidate(TrackMetadata source, DeezerSearchCandidate candidate)
+    {
+        var titleScore = ComputeTokenSimilarity(source.Title, candidate.Title);
+        var artistScore = ComputeTokenSimilarity(source.Artist, candidate.Artist);
+        var albumScore = ComputeTokenSimilarity(source.Album, candidate.Album);
+        var durationScore = ComputeDurationScore(source.DurationMs, candidate.DurationMs);
+
+        return (titleScore * 0.45d)
+               + (artistScore * 0.35d)
+               + (albumScore * 0.10d)
+               + (durationScore * 0.10d);
+    }
+
+    private async Task<string?> ResolveSpotifyIdByMetadataAsync(TrackMetadata metadata, CancellationToken cancellationToken)
+    {
+        if (_spotifyIdResolver == null)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.Title) && string.IsNullOrWhiteSpace(metadata.Isrc))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await _spotifyIdResolver.ResolveTrackIdAsync(
+                metadata.Title ?? string.Empty,
+                metadata.Artist ?? string.Empty,
+                metadata.Album,
+                metadata.Isrc,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify ID regeneration failed for {Title} - {Artist}", metadata.Title, metadata.Artist);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<string?> ResolveTidalUrlByMetadataAsync(TrackMetadata metadata, CancellationToken cancellationToken)
+    {
+        if (_tidalDownloadService == null
+            || string.IsNullOrWhiteSpace(metadata.Title)
+            || string.IsNullOrWhiteSpace(metadata.Artist))
+        {
+            return null;
+        }
+
+        try
+        {
+            var expectedDuration = metadata.DurationMs.HasValue && metadata.DurationMs.Value > 0
+                ? (int)Math.Round(metadata.DurationMs.Value / 1000d)
+                : 0;
+
+            return await _tidalDownloadService.ResolveTrackUrlAsync(
+                metadata.Title,
+                metadata.Artist,
+                metadata.Isrc ?? string.Empty,
+                expectedDuration,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Tidal URL regeneration failed for {Title} - {Artist}", metadata.Title, metadata.Artist);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<string?> ResolveQobuzUrlFromMetadataAsync(TrackMetadata metadata, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(metadata.Isrc))
+        {
+            var isrcResolved = await ResolveQobuzUrlByIsrcAsync(metadata.Isrc, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(isrcResolved))
+            {
+                return isrcResolved;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(metadata.Title) || string.IsNullOrWhiteSpace(metadata.Artist))
+        {
+            return null;
+        }
+
+        return await ResolveQobuzUrlByMetadataAsync(
+            metadata.Title,
+            metadata.Artist,
+            metadata.DurationMs,
+            cancellationToken);
+    }
+
+    public async Task<string?> ResolveQobuzUrlByIsrcAsync(string isrc, CancellationToken cancellationToken)
+    {
+        var normalizedIsrc = NormalizeIsrc(isrc);
+        if (string.IsNullOrWhiteSpace(normalizedIsrc))
+        {
+            return null;
+        }
+
+        var resolverResult = await TryResolveQobuzUrlViaResolverAsync(normalizedIsrc, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolverResult))
+        {
+            return resolverResult;
+        }
+
+        var metadataResult = await TryResolveQobuzUrlViaMetadataServiceAsync(normalizedIsrc, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(metadataResult))
+        {
+            return metadataResult;
+        }
+
+        return await TryResolveQobuzUrlViaPublicSearchAsync(normalizedIsrc, cancellationToken);
+    }
+
+    public async Task<string?> ResolveQobuzUrlByMetadataAsync(
+        string title,
+        string artist,
+        int? durationMs,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(deezerTrackIdFromUrl))
+        if (_qobuzMetadataService == null && _qobuzTrackResolver == null)
         {
-            var deezerOnly = await BuildDeezerOnlyResultAsync(deezerTrackIdFromUrl, cancellationToken);
-            CacheResult(url, userCountry, deezerOnly);
-            await CacheResultInPersistentStoreAsync(url, userCountry, deezerOnly, cancellationToken);
-            return deezerOnly;
+            return null;
         }
 
-        if (!skipNegativeCache)
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
         {
-            CacheResult(url, userCountry, null);
+            return null;
         }
 
-        return null;
+        var expectedDurationSec = durationMs.HasValue && durationMs.Value > 0
+            ? (int)Math.Round(durationMs.Value / 1000d)
+            : 0;
+
+        var resolverResult = await TryResolveQobuzUrlViaResolverAsync(
+            isrc: null,
+            title,
+            artist,
+            album: null,
+            durationMs,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolverResult))
+        {
+            return resolverResult;
+        }
+
+        if (_qobuzMetadataService == null)
+        {
+            return null;
+        }
+
+        var queries = BuildQobuzQueries(title, artist);
+        var candidates = await SearchQobuzCandidatesByQueriesAsync(queries, cancellationToken);
+        var best = PickBestQobuzCandidate(candidates, title, artist, expectedDurationSec);
+
+        return best.HasValue
+            ? BuildQobuzTrackUrl(best.Value)
+            : null;
+    }
+
+    private async Task<string?> TryResolveQobuzUrlViaResolverAsync(
+        string? isrc,
+        string? title,
+        string? artist,
+        string? album,
+        int? durationMs,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (_qobuzTrackResolver == null)
+            {
+                return null;
+            }
+
+            return await _qobuzTrackResolver.ResolveTrackUrlAsync(
+                isrc,
+                title,
+                artist,
+                album,
+                durationMs,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz resolver lookup failed for {Isrc}", isrc);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<string?> TryResolveQobuzUrlViaResolverAsync(string isrc, CancellationToken cancellationToken)
+    {
+        return await TryResolveQobuzUrlViaResolverAsync(isrc, null, null, null, null, cancellationToken);
+    }
+
+    private async Task<string?> TryResolveQobuzUrlViaMetadataServiceAsync(string isrc, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (_qobuzMetadataService == null)
+            {
+                return null;
+            }
+
+            var track = await _qobuzMetadataService.FindTrackByISRC(isrc, cancellationToken);
+            if (track != null && track.Id > 0)
+            {
+                return BuildQobuzTrackUrl(track.Id);
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz metadata ISRC lookup failed for {Isrc}", isrc);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<string?> TryResolveQobuzUrlViaPublicSearchAsync(string isrc, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var searchUrl =
+                $"https://www.qobuz.com/api.json/0.2/track/search?query={WebUtility.UrlEncode(isrc)}&limit=1&app_id=798273057";
+            using var client = _httpClientFactory.CreateClient();
+            using var response = await client.GetAsync(searchUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+            if (!TryGetQobuzTrackItems(document.RootElement, out var items) || items.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            return TryExtractQobuzTrackId(items[0], out var trackId)
+                ? BuildQobuzTrackUrl(trackId)
+                : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz public ISRC lookup failed for {Isrc}", isrc);
+            }
+
+            return null;
+        }
+    }
+
+    private async Task<List<QobuzTrack>> SearchQobuzCandidatesByQueriesAsync(
+        IEnumerable<string> queries,
+        CancellationToken cancellationToken)
+    {
+        if (_qobuzMetadataService == null)
+        {
+            return new List<QobuzTrack>();
+        }
+
+        var results = new Dictionary<int, QobuzTrack>();
+        foreach (var query in queries)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                continue;
+            }
+
+            var searchResults = await _qobuzMetadataService.SearchTracks(query, cancellationToken);
+            foreach (var track in searchResults.Where(static track => track.Id > 0))
+            {
+                results[track.Id] = track;
+            }
+
+            foreach (var store in ResolveQobuzStores())
+            {
+                var autosuggestResults = await _qobuzMetadataService.SearchTracksAutosuggest(query, store, cancellationToken);
+                foreach (var track in autosuggestResults.Where(static track => track.Id > 0))
+                {
+                    results[track.Id] = track;
+                }
+            }
+        }
+
+        return results.Values.ToList();
+    }
+
+    private IEnumerable<string> ResolveQobuzStores()
+    {
+        var configuredStores = _qobuzConfig.PreferredStores ?? new List<string>();
+        if (configuredStores.Count == 0)
+        {
+            yield return string.IsNullOrWhiteSpace(_qobuzConfig.DefaultStore) ? "us-en" : _qobuzConfig.DefaultStore;
+            yield break;
+        }
+
+        foreach (var store in configuredStores
+                     .Where(static value => !string.IsNullOrWhiteSpace(value))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            yield return store;
+        }
+    }
+
+    private static List<string> BuildQobuzQueries(string title, string artist)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var queries = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
+        {
+            AddQuery($"{artist.Trim()} {title.Trim()}", seen, queries);
+        }
+
+        AddQuery(title, seen, queries);
+        AddQuery(artist, seen, queries);
+
+        return queries;
+    }
+
+    private static void AddQuery(string? value, HashSet<string> seen, List<string> queries)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var trimmed = value.Trim();
+        if (seen.Add(trimmed))
+        {
+            queries.Add(trimmed);
+        }
+    }
+
+    private static long? PickBestQobuzCandidate(
+        IEnumerable<QobuzTrack> candidates,
+        string title,
+        string artist,
+        int expectedDurationSec)
+    {
+        QobuzTrack? best = null;
+        var bestScore = double.MinValue;
+
+        foreach (var candidate in candidates.Where(static candidate => candidate != null && candidate.Id > 0))
+        {
+            var candidateArtist = candidate.Performer?.Name
+                                  ?? candidate.Album?.Artists?.FirstOrDefault()?.Name
+                                  ?? string.Empty;
+
+            var titleScore = ComputeTokenSimilarity(title, candidate.Title);
+            var artistScore = ComputeTokenSimilarity(artist, candidateArtist);
+            var durationScore = ComputeDurationScore(
+                expectedDurationSec > 0 ? expectedDurationSec * 1000 : null,
+                candidate.Duration > 0 ? candidate.Duration * 1000 : null);
+            var hiresBonus = candidate.MaximumBitDepth >= 24 || candidate.MaximumSamplingRate >= 96 ? 0.08d : 0d;
+
+            var score = (titleScore * 0.50d) + (artistScore * 0.35d) + (durationScore * 0.15d) + hiresBonus;
+            if (score <= bestScore)
+            {
+                continue;
+            }
+
+            best = candidate;
+            bestScore = score;
+        }
+
+        if (best == null)
+        {
+            return null;
+        }
+
+        return bestScore >= 0.58d ? best.Id : null;
+    }
+
+    private static string BuildQobuzTrackUrl(long trackId)
+    {
+        return $"https://play.qobuz.com/track/{trackId}";
+    }
+
+    private static bool TryGetQobuzTrackItems(JsonElement rootElement, out JsonElement items)
+    {
+        items = default;
+        if (!rootElement.TryGetProperty("tracks", out var tracks)
+            || tracks.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (tracks.TryGetProperty("total", out var total)
+            && total.ValueKind == JsonValueKind.Number
+            && total.GetInt32() <= 0)
+        {
+            return false;
+        }
+
+        return tracks.TryGetProperty("items", out items)
+               && items.ValueKind == JsonValueKind.Array;
+    }
+
+    private static bool TryExtractQobuzTrackId(JsonElement item, out int trackId)
+    {
+        trackId = 0;
+        if (!item.TryGetProperty("id", out var idElement) || idElement.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        trackId = idElement.GetInt32();
+        return trackId > 0;
+    }
+
+    private static bool IsDerivativeMismatch(string? sourceTitle, string? candidateTitle, string? sourceArtist, string? candidateArtist)
+    {
+        var sourceDerivative = ContainsDerivativeMarker(sourceTitle) || ContainsDerivativeMarker(sourceArtist);
+        var candidateDerivative = ContainsDerivativeMarker(candidateTitle) || ContainsDerivativeMarker(candidateArtist);
+        return !sourceDerivative && candidateDerivative;
+    }
+
+    private static bool ContainsDerivativeMarker(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = NormalizeForComparison(value);
+        return normalized.Contains(" cover ", StringComparison.Ordinal)
+               || normalized.Contains(" karaoke ", StringComparison.Ordinal)
+               || normalized.Contains(" tribute ", StringComparison.Ordinal)
+               || normalized.Contains(" instrumental ", StringComparison.Ordinal)
+               || normalized.Contains(" re recorded ", StringComparison.Ordinal)
+               || normalized.StartsWith("cover ", StringComparison.Ordinal)
+               || normalized.EndsWith(" cover", StringComparison.Ordinal);
+    }
+
+    private static double ComputeDurationScore(int? expectedDurationMs, int? candidateDurationMs)
+    {
+        if (!expectedDurationMs.HasValue || expectedDurationMs.Value <= 0
+            || !candidateDurationMs.HasValue || candidateDurationMs.Value <= 0)
+        {
+            return 0.45d;
+        }
+
+        var delta = Math.Abs(expectedDurationMs.Value - candidateDurationMs.Value);
+        return delta switch
+        {
+            <= 2000 => 1.0d,
+            <= 5000 => 0.85d,
+            <= 10000 => 0.65d,
+            <= 20000 => 0.35d,
+            _ => 0.05d
+        };
+    }
+
+    private static double ComputeTokenSimilarity(string? expected, string? actual)
+    {
+        var normalizedExpected = NormalizeForComparison(expected);
+        var normalizedActual = NormalizeForComparison(actual);
+        if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))
+        {
+            return 0d;
+        }
+
+        if (string.Equals(normalizedExpected, normalizedActual, StringComparison.Ordinal))
+        {
+            return 1.0d;
+        }
+
+        if (normalizedExpected.Contains(normalizedActual, StringComparison.Ordinal)
+            || normalizedActual.Contains(normalizedExpected, StringComparison.Ordinal))
+        {
+            return 0.9d;
+        }
+
+        var expectedTokens = SplitTokens(normalizedExpected);
+        var actualTokens = SplitTokens(normalizedActual);
+        if (expectedTokens.Count == 0 || actualTokens.Count == 0)
+        {
+            return 0d;
+        }
+
+        var intersection = expectedTokens.Intersect(actualTokens, StringComparer.Ordinal).Count();
+        if (intersection == 0)
+        {
+            return 0d;
+        }
+
+        var union = expectedTokens.Union(actualTokens, StringComparer.Ordinal).Count();
+        var jaccard = union > 0 ? (double)intersection / union : 0d;
+        var overlap = Math.Max(
+            (double)intersection / expectedTokens.Count,
+            (double)intersection / actualTokens.Count);
+
+        return Math.Max(jaccard, overlap);
+    }
+
+    private static HashSet<string> SplitTokens(string normalized)
+    {
+        return normalized
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static token => token.Length > 1)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static string NormalizeForComparison(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalizedForm = value.Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(normalizedForm.Length + 2);
+        builder.Append(' ');
+
+        foreach (var character in normalizedForm)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(char.ToLowerInvariant(character));
+            }
+            else
+            {
+                builder.Append(' ');
+            }
+        }
+
+        builder.Append(' ');
+        var normalized = builder.ToString();
+        while (normalized.Contains("  ", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
+        }
+
+        return normalized;
     }
 
     private async Task<SongLinkResult?> TryGetFromPersistentCacheAsync(
@@ -289,8 +1124,9 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Persistent song-link cache lookup failed for key {CacheKey}", cacheKey);
+                _logger.LogDebug(ex, "Persistent link cache lookup failed for key {CacheKey}", cacheKey);
             }
+
             return null;
         }
     }
@@ -315,1220 +1151,10 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Persistent song-link cache upsert failed for key {CacheKey}", cacheKey);
+                _logger.LogDebug(ex, "Persistent link cache upsert failed for key {CacheKey}", cacheKey);
             }
         }
     }
-
-    private async Task HandleSongLinkRateLimitAsync(
-        int attempt,
-        bool hasRetry,
-        CancellationToken cancellationToken)
-    {
-        if (hasRetry)
-        {
-            _logger.LogWarning(
-                "song.link rate-limited (attempt {Attempt}/{MaxAttempts}); retrying in {Delay}s",
-                attempt,
-                MaxApiRetries,
-                RetryDelay.TotalSeconds);
-            await Task.Delay(RetryDelay, cancellationToken);
-            return;
-        }
-
-        _logger.LogWarning(
-            "song.link failed with 429 after {Attempts} attempts",
-            attempt);
-    }
-
-    private async Task<SongLinkEnvelope?> ParseSongLinkPayloadAsync(
-        HttpResponseMessage response,
-        CancellationToken cancellationToken)
-    {
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            _logger.LogWarning("song.link empty response body");
-            return null;
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<SongLinkEnvelope>(body, CaseInsensitiveJsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "song.link JSON parse failed; response_length={ResponseLength}",
-                body.Length);
-            return null;
-        }
-    }
-
-    private async Task<SongLinkResult> BuildSongLinkResultAsync(
-        SongLinkEnvelope payload,
-        CancellationToken cancellationToken)
-    {
-        var result = new SongLinkResult();
-        PopulatePlatformUrls(result, payload.LinksByPlatform!);
-
-        var deezerEntity = TryGetDeezerEntity(payload);
-        PopulatePrimaryEntityMetadata(result, payload.EntitiesByUniqueId!, payload.EntityUniqueId);
-        PopulateSpotifyId(result, payload);
-        PopulateDeezerId(result, deezerEntity);
-        await PopulateResultIsrcAsync(result, payload.EntitiesByUniqueId!, deezerEntity, cancellationToken);
-        await PopulateQobuzUrlAsync(result, payload.LinksByPlatform!, cancellationToken);
-        return result;
-    }
-
-    private static void PopulatePlatformUrls(
-        SongLinkResult result,
-        IReadOnlyDictionary<string, SongLinkPlatform> linksByPlatform)
-    {
-        result.TidalUrl = linksByPlatform.TryGetValue("tidal", out var tidal) ? tidal.Url : null;
-        result.AmazonUrl = linksByPlatform.TryGetValue("amazonMusic", out var amazon) ? amazon.Url : null;
-        result.DeezerUrl = linksByPlatform.TryGetValue(DeezerPlatform, out var deezer) ? deezer.Url : null;
-        result.AppleMusicUrl = linksByPlatform.TryGetValue("appleMusic", out var apple) ? apple.Url : null;
-        result.SpotifyUrl = linksByPlatform.TryGetValue(SpotifyPlatform, out var spotify) ? spotify.Url : null;
-    }
-
-    private static SongLinkEntity? TryGetDeezerEntity(SongLinkEnvelope payload)
-    {
-        if (!payload.LinksByPlatform!.TryGetValue(DeezerPlatform, out var deezerLink))
-        {
-            return null;
-        }
-
-        if (string.IsNullOrWhiteSpace(deezerLink.EntityUniqueId))
-        {
-            return null;
-        }
-
-        return payload.EntitiesByUniqueId!.TryGetValue(deezerLink.EntityUniqueId, out var deezerEntity)
-            ? deezerEntity
-            : null;
-    }
-
-    private static void PopulatePrimaryEntityMetadata(
-        SongLinkResult result,
-        IReadOnlyDictionary<string, SongLinkEntity> entities,
-        string? entityUniqueId)
-    {
-        if (string.IsNullOrWhiteSpace(entityUniqueId) || !entities.TryGetValue(entityUniqueId, out var primaryEntity))
-        {
-            return;
-        }
-
-        result.Isrc = primaryEntity.Isrc;
-        result.SourceType = primaryEntity.Type;
-        result.SourceTitle = primaryEntity.Title;
-        result.SourceArtist = primaryEntity.ArtistName;
-        if (string.Equals(primaryEntity.Platform, DeezerPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            result.DeezerId = ExtractId(primaryEntity.Platform, primaryEntity.Id, primaryEntity.Link);
-        }
-    }
-
-    private static void PopulateSpotifyId(SongLinkResult result, SongLinkEnvelope payload)
-    {
-        if (TryExtractSpotifyId(payload, out var spotifyId))
-        {
-            result.SpotifyId = spotifyId;
-            return;
-        }
-
-        if (!string.IsNullOrWhiteSpace(result.SpotifyUrl))
-        {
-            result.SpotifyId = ExtractId(SpotifyPlatform, null, result.SpotifyUrl);
-        }
-    }
-
-    private static bool TryExtractSpotifyId(SongLinkEnvelope payload, out string? spotifyId)
-    {
-        spotifyId = null;
-
-        if (!payload.LinksByPlatform!.TryGetValue(SpotifyPlatform, out var spotifyLink)
-            || string.IsNullOrWhiteSpace(spotifyLink.EntityUniqueId))
-        {
-            return false;
-        }
-
-        if (!payload.EntitiesByUniqueId!.TryGetValue(spotifyLink.EntityUniqueId, out var spotifyEntity))
-        {
-            return false;
-        }
-
-        spotifyId = ExtractId(SpotifyPlatform, spotifyEntity.Id, spotifyEntity.Link ?? spotifyLink.Url);
-        return !string.IsNullOrWhiteSpace(spotifyId);
-    }
-
-    private static void PopulateDeezerId(SongLinkResult result, SongLinkEntity? deezerEntity)
-    {
-        if (!string.IsNullOrWhiteSpace(result.DeezerId))
-        {
-            return;
-        }
-
-        if (deezerEntity != null)
-        {
-            result.DeezerId = ExtractId(DeezerPlatform, deezerEntity.Id, deezerEntity.Link ?? result.DeezerUrl);
-        }
-
-        if (string.IsNullOrWhiteSpace(result.DeezerId) && !string.IsNullOrWhiteSpace(result.DeezerUrl))
-        {
-            result.DeezerId = ExtractId(DeezerPlatform, null, result.DeezerUrl);
-        }
-    }
-
-    private async Task PopulateResultIsrcAsync(
-        SongLinkResult result,
-        IReadOnlyDictionary<string, SongLinkEntity> entitiesByUniqueId,
-        SongLinkEntity? deezerEntity,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(result.Isrc) && !string.IsNullOrWhiteSpace(deezerEntity?.Isrc))
-        {
-            result.Isrc = deezerEntity.Isrc;
-        }
-
-        if (string.IsNullOrWhiteSpace(result.Isrc))
-        {
-            result.Isrc = entitiesByUniqueId.Values.FirstOrDefault(static entity => !string.IsNullOrWhiteSpace(entity.Isrc))?.Isrc;
-        }
-
-        if (string.IsNullOrWhiteSpace(result.Isrc) && !string.IsNullOrWhiteSpace(result.DeezerId))
-        {
-            result.Isrc = await ResolveDeezerIsrcAsync(result.DeezerId, cancellationToken);
-        }
-    }
-
-    private async Task PopulateQobuzUrlAsync(
-        SongLinkResult result,
-        IReadOnlyDictionary<string, SongLinkPlatform> linksByPlatform,
-        CancellationToken cancellationToken)
-    {
-        result.QobuzUrl = linksByPlatform.TryGetValue("qobuz", out var qobuzLink) ? qobuzLink.Url : null;
-        if (string.IsNullOrWhiteSpace(result.QobuzUrl) && !string.IsNullOrWhiteSpace(result.Isrc))
-        {
-            result.QobuzUrl = await ResolveQobuzUrlByIsrcAsync(result.Isrc, cancellationToken);
-        }
-    }
-
-    private async Task<SongLinkResult> BuildDeezerOnlyResultAsync(string deezerTrackId, CancellationToken cancellationToken)
-    {
-        return new SongLinkResult
-        {
-            DeezerId = deezerTrackId,
-            DeezerUrl = $"https://www.deezer.com/track/{deezerTrackId}",
-            Isrc = await ResolveDeezerIsrcAsync(deezerTrackId, cancellationToken)
-        };
-    }
-
-
-    public Task<SongLinkResult?> ResolveByDeezerTrackIdAsync(string deezerTrackId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(deezerTrackId))
-        {
-            return Task.FromResult<SongLinkResult?>(null);
-        }
-
-        var deezerUrl = $"https://www.deezer.com/track/{deezerTrackId}";
-        return ResolveByUrlAsync(deezerUrl, cancellationToken);
-    }
-
-    public async Task<string?> ResolveQobuzUrlByIsrcAsync(string isrc, CancellationToken cancellationToken)
-    {
-        var resolverResult = await TryResolveQobuzUrlViaResolverAsync(isrc, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(resolverResult))
-        {
-            return resolverResult;
-        }
-
-        var metadataResult = await TryResolveQobuzUrlViaMetadataServiceAsync(isrc, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(metadataResult))
-        {
-            return metadataResult;
-        }
-
-        return await TryResolveQobuzUrlViaPublicSearchAsync(isrc, cancellationToken);
-    }
-
-    private async Task<string?> TryResolveQobuzUrlViaResolverAsync(string isrc, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (_qobuzTrackResolver == null)
-            {
-                return null;
-            }
-
-            var resolved = await _qobuzTrackResolver.ResolveTrackUrlAsync(
-                isrc,
-                title: null,
-                artist: null,
-                album: null,
-                durationMs: null,
-                cancellationToken);
-            return string.IsNullOrWhiteSpace(resolved) ? null : resolved;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Qobuz resolver lookup failed for {Isrc}", isrc);            }
-            return null;
-        }
-    }
-
-    private async Task<string?> TryResolveQobuzUrlViaMetadataServiceAsync(string isrc, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (_qobuzMetadataService == null)
-            {
-                return null;
-            }
-
-            var track = await _qobuzMetadataService.FindTrackByISRC(isrc, cancellationToken);
-            if (track != null && track.Id > 0)
-            {
-                return $"https://play.qobuz.com/track/{track.Id}";
-            }
-
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Qobuz metadata ISRC lookup failed for {Isrc}", isrc);            }
-            return null;
-        }
-    }
-
-    private async Task<string?> TryResolveQobuzUrlViaPublicSearchAsync(string isrc, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var searchUrl = $"https://www.qobuz.com/api.json/0.2/track/search?query={WebUtility.UrlEncode(isrc)}&limit=1&app_id=798273057";
-            using var client = _httpClientFactory.CreateClient();
-            using var response = await client.GetAsync(searchUrl, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!TryGetQobuzTrackItems(doc.RootElement, out var items) || items.GetArrayLength() == 0)
-            {
-                return null;
-            }
-
-            var first = items[0];
-            return TryExtractQobuzTrackId(first, out var trackId)
-                ? $"https://play.qobuz.com/track/{trackId}"
-                : null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Qobuz public ISRC lookup failed for {Isrc}", isrc);            }
-            return null;
-        }
-    }
-
-    private async Task<string?> ResolveDeezerIsrcAsync(string deezerTrackId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(deezerTrackId))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var client = _httpClientFactory.CreateClient();
-            using var response = await client.GetAsync($"https://api.deezer.com/track/{WebUtility.UrlEncode(deezerTrackId)}", cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            var payload = await JsonSerializer.DeserializeAsync<DeezerTrackEnvelope>(
-                stream,
-                CaseInsensitiveJsonOptions,
-                cancellationToken);
-            return string.IsNullOrWhiteSpace(payload?.Isrc) ? null : payload.Isrc;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Deezer ISRC lookup failed for track {TrackId}", deezerTrackId);            }
-            return null;
-        }
-    }
-
-    public async Task<string?> ResolveQobuzUrlByMetadataAsync(
-        string title,
-        string artist,
-        int? durationMs,
-        CancellationToken cancellationToken)
-    {
-        if (_qobuzMetadataService == null)
-        {
-            return null;
-        }
-
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
-        {
-            return null;
-        }
-
-        var expectedDuration = durationMs.HasValue && durationMs.Value > 0
-            ? (int)Math.Round(durationMs.Value / 1000d)
-            : 0;
-        var queries = BuildQobuzQueries(title, artist);
-
-        var resolved = await TryResolveQobuzUrlWithMetadataStrategyAsync(title, artist, durationMs, expectedDuration, queries, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(resolved))
-        {
-            return resolved;
-        }
-
-        resolved = await TryResolveQobuzUrlByCandidateSearchAsync(
-            title,
-            artist,
-            expectedDuration,
-            "autosuggest lookup",
-            () => SearchQobuzAutosuggestAcrossStoresAsync(queries, cancellationToken));
-        if (!string.IsNullOrWhiteSpace(resolved))
-        {
-            return resolved;
-        }
-
-        return await TryResolveQobuzUrlByCandidateSearchAsync(
-            title,
-            artist,
-            expectedDuration,
-            "public search",
-            () => SearchQobuzPublicByQueriesAsync(queries, cancellationToken));
-    }
-
-    private async Task<string?> TryResolveQobuzUrlWithMetadataStrategyAsync(
-        string title,
-        string artist,
-        int? durationMs,
-        int expectedDuration,
-        IReadOnlyList<string> queries,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (_qobuzTrackResolver != null)
-            {
-                var resolved = await _qobuzTrackResolver.ResolveTrackUrlAsync(
-                    isrc: null,
-                    title,
-                    artist,
-                    album: null,
-                    durationMs,
-                    cancellationToken);
-                if (!string.IsNullOrWhiteSpace(resolved))
-                {
-                    return resolved;
-                }
-            }
-
-            var candidates = await SearchQobuzByQueriesAsync(queries, cancellationToken);
-            return BuildQobuzTrackUrl(PickBestQobuzCandidate(candidates, title, artist, expectedDuration));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Qobuz metadata lookup failed for {Title} - {Artist}", title, artist);
-            }
-
-            return null;
-        }
-    }
-
-    private async Task<string?> TryResolveQobuzUrlByCandidateSearchAsync(
-        string title,
-        string artist,
-        int expectedDuration,
-        string strategyLabel,
-        Func<Task<List<QobuzTrack>>> candidateFactory)
-    {
-        try
-        {
-            var candidates = await candidateFactory();
-            return BuildQobuzTrackUrl(PickBestQobuzCandidate(candidates, title, artist, expectedDuration));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Qobuz {Strategy} failed for {Title} - {Artist}", strategyLabel, title, artist);
-            }
-
-            return null;
-        }
-    }
-
-    private static string? BuildQobuzTrackUrl(long? bestId)
-    {
-        return bestId.HasValue
-            ? $"https://play.qobuz.com/track/{bestId.Value}"
-            : null;
-    }
-
-    private static string? ExtractId(string? platform, string? entityId, string? link)
-    {
-        if (!string.IsNullOrWhiteSpace(entityId))
-        {
-            return entityId;
-        }
-
-        if (!string.IsNullOrWhiteSpace(link))
-        {
-            var last = link.Split('/').LastOrDefault();
-            if (!string.IsNullOrWhiteSpace(last))
-            {
-                var queryTrimmed = last.Split(QueryAndFragmentSeparators, StringSplitOptions.None)[0];
-                if (!string.IsNullOrWhiteSpace(queryTrimmed))
-                {
-                    return queryTrimmed;
-                }
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(platform))
-        {
-            var parts = platform.Split(':');
-            if (parts.Length >= 3)
-            {
-                return parts[^1];
-            }
-        }
-
-        return null;
-    }
-
-    private static int ScoreQobuzCandidate(QobuzTrack candidate, string title, string artist, int expectedDurationSec)
-    {
-        var score = 0;
-        var candidateTitle = candidate.Title ?? string.Empty;
-        var candidateArtist = GetQobuzTrackArtist(candidate);
-
-        if (QobuzTitlesMatch(title, candidateTitle))
-        {
-            score += 6;
-        }
-
-        if (QobuzArtistsMatch(artist, candidateArtist))
-        {
-            score += 4;
-        }
-
-        if (expectedDurationSec > 0 && candidate.Duration > 0)
-        {
-            var delta = Math.Abs(candidate.Duration - expectedDurationSec);
-            if (delta <= 3)
-            {
-                score += 3;
-            }
-            else if (delta <= 10)
-            {
-                score += 1;
-            }
-        }
-
-        if (candidate.MaximumBitDepth >= 24)
-        {
-            score += 2;
-        }
-
-        if (candidate.MaximumSamplingRate >= 96)
-        {
-            score += 1;
-        }
-
-        return score;
-    }
-
-    private static string GetQobuzTrackArtist(QobuzTrack track)
-    {
-        if (track.Performer?.Name is { Length: > 0 } performerName)
-        {
-            return performerName;
-        }
-
-        var albumArtist = track.Album?.Artists?.FirstOrDefault()?.Name;
-        if (!string.IsNullOrWhiteSpace(albumArtist))
-        {
-            return albumArtist;
-        }
-
-        return string.Empty;
-    }
-
-    private long? PickBestQobuzCandidate(IEnumerable<QobuzTrack> candidates, string title, string artist, int expectedDurationSec)
-    {
-        var materialized = MaterializeValidQobuzCandidates(candidates);
-        if (materialized.Count == 0)
-        {
-            return null;
-        }
-
-        var (pool, hasTitleMatches) = BuildQobuzCandidatePool(materialized, title, expectedDurationSec);
-        var (best, bestScore) = SelectBestQobuzCandidate(pool, title, artist, expectedDurationSec);
-
-        if (!PassesStrictQobuzFallback(best, title, artist))
-        {
-            return null;
-        }
-
-        var minScore = hasTitleMatches ? 6 : 4;
-        if (best != null && bestScore >= minScore && best.Id > 0)
-        {
-            return best.Id;
-        }
-
-        LogLowConfidenceQobuzCandidate(best, bestScore);
-
-        return null;
-    }
-
-    private static List<QobuzTrack> MaterializeValidQobuzCandidates(IEnumerable<QobuzTrack>? candidates)
-    {
-        if (candidates == null)
-        {
-            return new List<QobuzTrack>();
-        }
-
-        return candidates.Where(static c => c != null && c.Id > 0).ToList();
-    }
-
-    private static (List<QobuzTrack> Pool, bool HasTitleMatches) BuildQobuzCandidatePool(
-        List<QobuzTrack> candidates,
-        string title,
-        int expectedDurationSec)
-    {
-        var titleMatches = candidates
-            .Where(c => QobuzTitlesMatch(title, c.Title ?? string.Empty))
-            .ToList();
-
-        var pool = titleMatches.Count > 0 ? titleMatches : candidates;
-        if (expectedDurationSec > 0)
-        {
-            var durationMatches = pool
-                .Where(c => c.Duration > 0 && Math.Abs(c.Duration - expectedDurationSec) <= 10)
-                .ToList();
-            if (durationMatches.Count > 0)
-            {
-                pool = durationMatches;
-            }
-        }
-
-        return (pool, titleMatches.Count > 0);
-    }
-
-    private static (QobuzTrack? Best, int BestScore) SelectBestQobuzCandidate(
-        IEnumerable<QobuzTrack> candidates,
-        string title,
-        string artist,
-        int expectedDurationSec)
-    {
-        QobuzTrack? best = null;
-        var bestScore = 0;
-
-        foreach (var candidate in candidates)
-        {
-            var score = ScoreQobuzCandidate(candidate, title, artist, expectedDurationSec);
-            if (score <= bestScore)
-            {
-                continue;
-            }
-
-            best = candidate;
-            bestScore = score;
-        }
-
-        return (best, bestScore);
-    }
-
-    private bool PassesStrictQobuzFallback(QobuzTrack? best, string title, string artist)
-    {
-        if (!_qobuzConfig.StrictMatchFallback)
-        {
-            return true;
-        }
-
-        if (best == null)
-        {
-            return false;
-        }
-
-        var strictTitleMatch = QobuzTitlesMatch(title, best.Title ?? string.Empty);
-        var strictArtistMatch = QobuzArtistsMatch(artist, GetQobuzTrackArtist(best));
-        return strictTitleMatch && strictArtistMatch;
-    }
-
-    private void LogLowConfidenceQobuzCandidate(QobuzTrack? best, int bestScore)
-    {
-        if (best == null)
-        {
-            return;
-        }
-
-        var bestArtist = GetQobuzTrackArtist(best);
-        if (_logger.IsEnabled(LogLevel.Debug))
-        {
-            _logger.LogDebug(
-                "Qobuz best score {Score} (candidate_duration={CandDur}s, candidate_artist_present={HasArtist})",
-                bestScore,
-                best.Duration,
-                !string.IsNullOrWhiteSpace(bestArtist));        }
-    }
-
-    private static List<string> BuildQobuzQueries(string title, string artist)
-    {
-        var queries = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
-        {
-            AddQuery($"{artist} {title}", seen, queries);
-        }
-
-        AddQuery(title, seen, queries);
-        AddJapaneseRomajiQueries(title, artist, seen, queries);
-        AddQuery(artist, seen, queries);
-
-        return queries;
-    }
-
-    private static void AddJapaneseRomajiQueries(
-        string title,
-        string artist,
-        HashSet<string> seen,
-        List<string> queries)
-    {
-        if (!QobuzRomajiHelper.ContainsJapanese(title) && !QobuzRomajiHelper.ContainsJapanese(artist))
-        {
-            return;
-        }
-
-        var romajiTitle = QobuzRomajiHelper.CleanToAscii(QobuzRomajiHelper.JapaneseToRomaji(title));
-        var romajiArtist = QobuzRomajiHelper.CleanToAscii(QobuzRomajiHelper.JapaneseToRomaji(artist));
-        if (!string.IsNullOrWhiteSpace(romajiArtist) && !string.IsNullOrWhiteSpace(romajiTitle))
-        {
-            AddQuery($"{romajiArtist} {romajiTitle}", seen, queries);
-        }
-
-        if (!string.IsNullOrWhiteSpace(romajiTitle) &&
-            !string.Equals(romajiTitle, title, StringComparison.OrdinalIgnoreCase))
-        {
-            AddQuery(romajiTitle, seen, queries);
-        }
-
-        AddQuery(romajiArtist, seen, queries);
-    }
-
-    private static void AddQuery(string? value, HashSet<string> seen, List<string> queries)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        var trimmed = value.Trim();
-        if (seen.Add(trimmed))
-        {
-            queries.Add(trimmed);
-        }
-    }
-
-    private async Task<List<QobuzTrack>> SearchQobuzByQueriesAsync(
-        IEnumerable<string> queries,
-        CancellationToken cancellationToken)
-    {
-        var results = new Dictionary<int, QobuzTrack>();
-        foreach (var query in queries)
-        {
-            var response = await _qobuzMetadataService!.SearchTracks(query, cancellationToken);
-            foreach (var track in response.Where(static track => track.Id > 0))
-            {
-                results[track.Id] = track;
-            }
-        }
-
-        return results.Values.ToList();
-    }
-
-    private async Task<List<QobuzTrack>> SearchQobuzAutosuggestAcrossStoresAsync(
-        IEnumerable<string> queries,
-        CancellationToken cancellationToken)
-    {
-        var results = new Dictionary<int, QobuzTrack>();
-        var stores = _qobuzConfig.PreferredStores?.Count > 0
-            ? _qobuzConfig.PreferredStores
-            : new List<string> { _qobuzConfig.DefaultStore };
-
-        foreach (var query in queries)
-        {
-            foreach (var store in stores.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                var response = await _qobuzMetadataService!.SearchTracksAutosuggest(query, store, cancellationToken);
-                foreach (var track in response.Where(static track => track.Id > 0))
-                {
-                    results[track.Id] = track;
-                }
-            }
-        }
-
-        return results.Values.ToList();
-    }
-
-    private async Task<List<QobuzTrack>> SearchQobuzPublicByQueriesAsync(
-        IEnumerable<string> queries,
-        CancellationToken cancellationToken)
-    {
-        var results = new Dictionary<int, QobuzTrack>();
-        foreach (var query in queries)
-        {
-            var response = await SearchQobuzPublicAsync(query, cancellationToken);
-            foreach (var track in response.Where(static track => track.Id > 0))
-            {
-                results[track.Id] = track;
-            }
-        }
-
-        return results.Values.ToList();
-    }
-
-    private static bool QobuzArtistsMatch(string expectedArtist, string foundArtist)
-    {
-        var normExpected = expectedArtist.Trim().ToLowerInvariant();
-        var normFound = foundArtist.Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(normExpected) || string.IsNullOrWhiteSpace(normFound))
-        {
-            return false;
-        }
-
-        if (HasDirectArtistMatch(normExpected, normFound))
-        {
-            return true;
-        }
-
-        if (HasSplitArtistMatch(normExpected, normFound))
-        {
-            return true;
-        }
-
-        return QobuzIsLatinScript(expectedArtist) != QobuzIsLatinScript(foundArtist);
-    }
-
-    private static bool HasDirectArtistMatch(string expected, string found)
-    {
-        return expected == found
-            || expected.Contains(found, StringComparison.Ordinal)
-            || found.Contains(expected, StringComparison.Ordinal);
-    }
-
-    private static bool HasSplitArtistMatch(string expected, string found)
-    {
-        var expectedArtists = QobuzSplitArtists(expected);
-        var foundArtists = QobuzSplitArtists(found);
-        return expectedArtists.Any(expectedArtist =>
-            foundArtists.Any(foundArtist =>
-                HasDirectArtistMatch(expectedArtist, foundArtist)
-                || QobuzSameWordsUnordered(expectedArtist, foundArtist)));
-    }
-
-    private static List<string> QobuzSplitArtists(string artists)
-    {
-        var normalized = artists
-            .Replace(" feat. ", "|", StringComparison.Ordinal)
-            .Replace(" feat ", "|", StringComparison.Ordinal)
-            .Replace(" ft. ", "|", StringComparison.Ordinal)
-            .Replace(" ft ", "|", StringComparison.Ordinal)
-            .Replace(" & ", "|", StringComparison.Ordinal)
-            .Replace(" and ", "|", StringComparison.Ordinal)
-            .Replace(", ", "|", StringComparison.Ordinal)
-            .Replace(" x ", "|", StringComparison.Ordinal);
-
-        return normalized.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
-    }
-
-    private static bool QobuzSameWordsUnordered(string a, string b)
-    {
-        var wordsA = a.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var wordsB = b.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-        if (wordsA.Length == 0 || wordsA.Length != wordsB.Length)
-        {
-            return false;
-        }
-
-        Array.Sort(wordsA, StringComparer.Ordinal);
-        Array.Sort(wordsB, StringComparer.Ordinal);
-
-        for (var i = 0; i < wordsA.Length; i++)
-        {
-            if (!string.Equals(wordsA[i], wordsB[i], StringComparison.Ordinal))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool QobuzTitlesMatch(string expectedTitle, string foundTitle)
-    {
-        var normExpected = expectedTitle.Trim().ToLowerInvariant();
-        var normFound = foundTitle.Trim().ToLowerInvariant();
-
-        if (string.IsNullOrWhiteSpace(normExpected) || string.IsNullOrWhiteSpace(normFound))
-        {
-            return false;
-        }
-
-        if (normExpected == normFound)
-        {
-            return true;
-        }
-
-        if (normExpected.Contains(normFound, StringComparison.Ordinal) ||
-            normFound.Contains(normExpected, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        var cleanExpected = QobuzCleanTitle(normExpected);
-        var cleanFound = QobuzCleanTitle(normFound);
-
-        if (cleanExpected == cleanFound)
-        {
-            return true;
-        }
-
-        if (!string.IsNullOrWhiteSpace(cleanExpected)
-            && !string.IsNullOrWhiteSpace(cleanFound)
-            && (cleanExpected.Contains(cleanFound, StringComparison.Ordinal)
-                || cleanFound.Contains(cleanExpected, StringComparison.Ordinal)))
-        {
-            return true;
-        }
-
-        var coreExpected = QobuzTitleHelpers.ExtractCoreTitle(normExpected);
-        var coreFound = QobuzTitleHelpers.ExtractCoreTitle(normFound);
-        if (!string.IsNullOrWhiteSpace(coreExpected) && coreExpected == coreFound)
-        {
-            return true;
-        }
-
-        var expectedLatin = QobuzIsLatinScript(expectedTitle);
-        var foundLatin = QobuzIsLatinScript(foundTitle);
-        if (expectedLatin != foundLatin)
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static string QobuzCleanTitle(string title)
-    {
-        var cleaned = title;
-        cleaned = RemoveTrailingVersionSection(cleaned, '(', ')');
-        cleaned = RemoveTrailingVersionSection(cleaned, '[', ']');
-        cleaned = RemoveDashVersionSuffixes(cleaned);
-
-        while (cleaned.Contains("  ", StringComparison.Ordinal))
-        {
-            cleaned = cleaned.Replace("  ", " ", StringComparison.Ordinal);
-        }
-
-        return cleaned.Trim();
-    }
-
-    private static string RemoveTrailingVersionSection(string value, char startChar, char endChar)
-    {
-        var cleaned = value;
-        while (true)
-        {
-            var startIdx = cleaned.LastIndexOf(startChar);
-            var endIdx = cleaned.LastIndexOf(endChar);
-            if (startIdx < 0 || endIdx <= startIdx)
-            {
-                break;
-            }
-
-            var content = cleaned[(startIdx + 1)..endIdx].ToLowerInvariant();
-            if (!QobuzVersionPatterns.Any(p => content.Contains(p, StringComparison.Ordinal)))
-            {
-                break;
-            }
-
-            cleaned = (cleaned[..startIdx] + cleaned[(endIdx + 1)..]).Trim();
-        }
-
-        return cleaned;
-    }
-
-    private static string RemoveDashVersionSuffixes(string value)
-    {
-        var cleaned = value;
-        while (true)
-        {
-            var matchingSuffixLength = QobuzDashPatterns
-                .Where(pattern => cleaned.EndsWith(pattern, StringComparison.OrdinalIgnoreCase))
-                .Select(pattern => pattern.Length)
-                .FirstOrDefault();
-            if (matchingSuffixLength == 0)
-            {
-                return cleaned;
-            }
-
-            cleaned = cleaned[..^matchingSuffixLength];
-        }
-    }
-
-    private static bool QobuzIsLatinScript(string value)
-    {
-        foreach (var r in value)
-        {
-            if (r < 128)
-            {
-                continue;
-            }
-
-            if (IsExtendedLatinCharacter(r))
-            {
-                continue;
-            }
-
-            if (IsNonLatinScriptCharacter(r))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool IsExtendedLatinCharacter(int codePoint)
-    {
-        return IsInAnyRange(codePoint, ExtendedLatinRanges);
-    }
-
-    private static bool IsNonLatinScriptCharacter(int codePoint)
-    {
-        return IsInAnyRange(codePoint, NonLatinScriptRanges);
-    }
-
-    private static bool IsInAnyRange(int codePoint, (int Start, int End)[] ranges)
-    {
-        return ranges.Any(range => codePoint >= range.Start && codePoint <= range.End);
-    }
-
-    private async Task<List<QobuzTrack>> SearchQobuzPublicAsync(string query, CancellationToken cancellationToken)
-    {
-        var searchUrl = $"https://www.qobuz.com/api.json/0.2/track/search?query={WebUtility.UrlEncode(query)}&limit=25&app_id=798273057";
-        using var client = _httpClientFactory.CreateClient();
-        using var response = await client.GetAsync(searchUrl, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return new List<QobuzTrack>();
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        if (!TryGetQobuzTrackItems(doc.RootElement, out var items))
-        {
-            return new List<QobuzTrack>();
-        }
-
-        var results = new List<QobuzTrack>();
-        foreach (var item in items.EnumerateArray())
-        {
-            var track = ParseQobuzPublicTrack(item);
-            if (track == null)
-            {
-                continue;
-            }
-
-            results.Add(track);
-        }
-
-        if (results.Count == 0 && _logger.IsEnabled(LogLevel.Debug))
-        {
-            _logger.LogDebug("Qobuz public search returned 0 candidates for {Query}", query);
-        }
-
-        return results;
-    }
-
-    private static bool TryGetQobuzTrackItems(JsonElement rootElement, out JsonElement items)
-    {
-        items = default;
-        if (!rootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        if (tracks.TryGetProperty("total", out var totalElement)
-            && totalElement.ValueKind == JsonValueKind.Number
-            && totalElement.GetInt32() <= 0)
-        {
-            return false;
-        }
-
-        return tracks.TryGetProperty("items", out items) && items.ValueKind == JsonValueKind.Array;
-    }
-
-    private static QobuzTrack? ParseQobuzPublicTrack(JsonElement item)
-    {
-        if (!TryExtractQobuzTrackId(item, out var trackId))
-        {
-            return null;
-        }
-
-        return new QobuzTrack
-        {
-            Id = trackId,
-            Title = item.TryGetProperty("title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String
-                ? titleEl.GetString()
-                : null,
-            Duration = item.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number
-                ? durEl.GetInt32()
-                : 0,
-            Performer = new QobuzArtist
-            {
-                Name = ExtractQobuzArtistName(item)
-            }
-        };
-    }
-
-    private static bool TryExtractQobuzTrackId(JsonElement item, out int trackId)
-    {
-        trackId = 0;
-        if (!item.TryGetProperty("id", out var idElement) || idElement.ValueKind != JsonValueKind.Number)
-        {
-            return false;
-        }
-
-        trackId = idElement.GetInt32();
-        return trackId > 0;
-    }
-
-    private static string? ExtractQobuzArtistName(JsonElement item)
-    {
-        if (item.TryGetProperty("performer", out var performer)
-            && performer.ValueKind == JsonValueKind.Object
-            && performer.TryGetProperty("name", out var perfName)
-            && perfName.ValueKind == JsonValueKind.String)
-        {
-            return perfName.GetString();
-        }
-
-        if (item.TryGetProperty("artist", out var artist)
-            && artist.ValueKind == JsonValueKind.Object
-            && artist.TryGetProperty("name", out var artName)
-            && artName.ValueKind == JsonValueKind.String)
-        {
-            return artName.GetString();
-        }
-
-        if (item.TryGetProperty("album", out var album)
-            && album.ValueKind == JsonValueKind.Object
-            && album.TryGetProperty("artist", out var albumArtist)
-            && albumArtist.ValueKind == JsonValueKind.Object
-            && albumArtist.TryGetProperty("name", out var albumArtistName)
-            && albumArtistName.ValueKind == JsonValueKind.String)
-        {
-            return albumArtistName.GetString();
-        }
-
-        return null;
-    }
-
-    private async Task EnforceRateLimitAsync(CancellationToken cancellationToken)
-    {
-        await _rateGate.WaitAsync(cancellationToken);
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            if (now - _windowStart >= TimeSpan.FromMinutes(1))
-            {
-                _windowStart = now;
-                _windowCount = 0;
-            }
-
-            if (_windowCount >= MaxRequestsPerMinute)
-            {
-                var wait = TimeSpan.FromMinutes(1) - (now - _windowStart);
-                if (wait > TimeSpan.Zero)
-                {
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug("song.link rate limit hit; waiting {Delay}", wait);                    }
-                    await Task.Delay(wait, cancellationToken);
-                    _windowStart = DateTimeOffset.UtcNow;
-                    _windowCount = 0;
-                }
-            }
-
-            if (_lastCall != DateTimeOffset.MinValue)
-            {
-                var since = now - _lastCall;
-                if (since < MinDelay)
-                {
-                    var wait = MinDelay - since;
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug("song.link spacing delay {Delay}", wait);                    }
-                    await Task.Delay(wait, cancellationToken);
-                }
-            }
-
-            _lastCall = DateTimeOffset.UtcNow;
-            _windowCount++;
-        }
-        finally
-        {
-            _rateGate.Release();
-        }
-    }
-
-    private sealed record SongLinkEnvelope(
-        string? EntityUniqueId,
-        Dictionary<string, SongLinkPlatform>? LinksByPlatform,
-        Dictionary<string, SongLinkEntity>? EntitiesByUniqueId);
-
-    private sealed record SongLinkPlatform(string? Url, string? EntityUniqueId);
-
-    private sealed record SongLinkEntity(
-        string? Id,
-        string? Platform,
-        string? Type,
-        string? Title,
-        string? ArtistName,
-        string? Link,
-        string? Isrc,
-        string? ThumbnailUrl);
-
-    private sealed record DeezerTrackEnvelope(string? Isrc);
-
-    private sealed record CacheEntry(DateTimeOffset Stamp, SongLinkResult? Result);
 
     private bool TryGetFromCache(string url, string? userCountry, out SongLinkResult? result)
     {
@@ -1582,22 +1208,153 @@ public sealed class SongLinkResolver
             Host = uri.Host.ToLowerInvariant(),
             Fragment = string.Empty
         };
+
         if ((builder.Scheme == "http" && builder.Port == 80)
             || (builder.Scheme == "https" && builder.Port == 443))
         {
             builder.Port = -1;
         }
 
-        var path = builder.Path;
-        if (!string.IsNullOrEmpty(path) && path.Length > 1)
+        if (!string.IsNullOrEmpty(builder.Path) && builder.Path.Length > 1)
         {
-            builder.Path = path.TrimEnd('/');
+            builder.Path = builder.Path.TrimEnd('/');
         }
 
         return builder.Uri.AbsoluteUri;
     }
 
-    private sealed record SongLinkRequestOutcome(SongLinkEnvelope? Payload, bool SkipNegativeCache);
+    private static SourceDescriptor? TryParseSource(string normalizedUrl)
+    {
+        if (TrackIdNormalization.TryNormalizeDeezerTrackId(normalizedUrl, out var deezerId)
+            && !string.IsNullOrWhiteSpace(deezerId))
+        {
+            return new SourceDescriptor(DeezerPlatform, deezerId);
+        }
+
+        if (TrackIdNormalization.TryNormalizeSpotifyTrackId(normalizedUrl, out var spotifyId)
+            && !string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return new SourceDescriptor(SpotifyPlatform, spotifyId);
+        }
+
+        if (TryMatchTrackId(QobuzTrackRegex, normalizedUrl, out var qobuzId))
+        {
+            return new SourceDescriptor(QobuzPlatform, qobuzId!);
+        }
+
+        if (TryMatchTrackId(TidalTrackRegex, normalizedUrl, out var tidalId))
+        {
+            return new SourceDescriptor(TidalPlatform, tidalId!);
+        }
+
+        if (TryMatchTrackId(AppleMusicTrackRegex, normalizedUrl, out var appleTrackId))
+        {
+            return new SourceDescriptor(ApplePlatform, appleTrackId!);
+        }
+
+        var amazonTrackId = EngineLinkParser.TryExtractAmazonTrackId(normalizedUrl, RegexTimeout);
+        if (!string.IsNullOrWhiteSpace(amazonTrackId))
+        {
+            return new SourceDescriptor(AmazonPlatform, amazonTrackId!);
+        }
+
+        return null;
+    }
+
+    private static bool TryMatchTrackId(Regex regex, string input, out string? id)
+    {
+        id = null;
+        var match = regex.Match(input);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var groupValue = match.Groups["id"].Value;
+        if (string.IsNullOrWhiteSpace(groupValue))
+        {
+            return false;
+        }
+
+        id = groupValue.Trim();
+        return true;
+    }
+
+    private static string BuildDeezerTrackUrl(string deezerTrackId)
+    {
+        return $"https://www.deezer.com/track/{deezerTrackId}";
+    }
+
+    private static string BuildSpotifyTrackUrl(string spotifyTrackId)
+    {
+        return $"https://open.spotify.com/track/{spotifyTrackId}";
+    }
+
+    private static string BuildQobuzTrackUrl(string qobuzTrackId)
+    {
+        return $"https://play.qobuz.com/track/{qobuzTrackId}";
+    }
+
+    private static string BuildTidalTrackUrl(string tidalTrackId)
+    {
+        return $"https://listen.tidal.com/track/{tidalTrackId}";
+    }
+
+    private static string? NormalizeIsrc(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim().ToUpperInvariant();
+        return trimmed.Length >= 8 ? trimmed : null;
+    }
+
+    private sealed record CacheEntry(DateTimeOffset Stamp, SongLinkResult? Result);
+
+    private sealed record SourceDescriptor(string Platform, string TrackId);
+
+    private sealed record TrackMetadata(
+        string? Title = null,
+        string? Artist = null,
+        string? Album = null,
+        string? Isrc = null,
+        int? DurationMs = null)
+    {
+        public static TrackMetadata Empty { get; } = new();
+
+        public TrackMetadata Merge(TrackMetadata other)
+        {
+            return new TrackMetadata(
+                Title ?? other.Title,
+                Artist ?? other.Artist,
+                Album ?? other.Album,
+                Isrc ?? other.Isrc,
+                DurationMs ?? other.DurationMs);
+        }
+    }
+
+    private sealed record DeezerSearchCandidate(
+        string Id,
+        string? Title,
+        string? Artist,
+        string? Album,
+        string? Isrc,
+        int? DurationMs,
+        double Score);
+
+    private sealed record DeezerTrackEnvelope(
+        long Id,
+        string? Title,
+        string? Isrc,
+        int Duration,
+        DeezerArtistEnvelope? Artist,
+        DeezerAlbumEnvelope? Album);
+
+    private sealed record DeezerArtistEnvelope(string? Name);
+
+    private sealed record DeezerAlbumEnvelope(string? Title);
 }
 
 public sealed class SongLinkResult

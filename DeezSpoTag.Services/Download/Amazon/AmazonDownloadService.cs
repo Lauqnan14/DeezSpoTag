@@ -9,8 +9,8 @@ using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Services.Download.Utils;
-using DeezSpoTag.Services.Download.Shared.Utils;
 using System.Diagnostics;
+using DeezSpoTag.Services.Download.Shared.Utils;
 
 namespace DeezSpoTag.Services.Download.Amazon;
 
@@ -62,13 +62,14 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
 
     private readonly ILogger<AmazonDownloadService> _logger;
     private readonly HttpClient _client;
-    private DateTimeOffset _lastApiCall = DateTimeOffset.MinValue;
-    private int _apiCallCount;
-    private DateTimeOffset _apiCallReset = DateTimeOffset.UtcNow;
+    private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
 
-    public AmazonDownloadService(ILogger<AmazonDownloadService> logger)
+    public AmazonDownloadService(
+        ILogger<AmazonDownloadService> logger,
+        SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
     {
         _logger = logger;
+        _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromMinutes(2)
@@ -153,21 +154,22 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
 
     private async Task<string> GetAmazonUrlFromSpotifyAsync(string spotifyId, CancellationToken cancellationToken)
     {
-        await ThrottleSongLinkAsync(cancellationToken);
-        _client.DefaultRequestHeaders.UserAgent.Clear();
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd(GetRandomUserAgent());
-        var amazonUrl = await SongLinkClient.ResolvePlatformUrlAsync(_client, spotifyId, "amazonMusic", cancellationToken);
-        if (amazonUrl.Contains("trackAsin=", StringComparison.OrdinalIgnoreCase))
+        if (_spotifyTrackMetadataResolver == null)
         {
-            var parts = amazonUrl.Split("trackAsin=", StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length > 1)
-            {
-                var asin = parts[1].Split('&')[0];
-                amazonUrl = $"https://music.amazon.com/tracks/{asin}?musicTerritory=US";
-            }
+            throw new InvalidOperationException(
+                "song.link is deactivated and Spotify metadata resolver is unavailable for Amazon URL regeneration.");
         }
 
-        return amazonUrl;
+        var spotifyTrack = await _spotifyTrackMetadataResolver.ResolveTrackAsync(spotifyId, cancellationToken);
+        if (spotifyTrack == null
+            || string.IsNullOrWhiteSpace(spotifyTrack.Title)
+            || string.IsNullOrWhiteSpace(spotifyTrack.Artist))
+        {
+            throw new InvalidOperationException("Unable to hydrate Spotify metadata for Amazon link regeneration.");
+        }
+
+        throw new InvalidOperationException(
+            $"song.link is deactivated. Provide a direct Amazon track URL for \"{spotifyTrack.Artist} - {spotifyTrack.Title}\".");
     }
 
     private async Task<string> DownloadFromServiceAsync(string amazonUrl, string outputDir, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
@@ -788,38 +790,6 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             newPath = request.FilePath;
         }
 
-        var taggingSucceeded = await AudioFileTaggingHelper.TryTagAsync(
-            new AudioFileTaggingHelper.AudioTaggingRequest(
-                Logger: _logger,
-                EngineName: "Amazon",
-                HttpClient: _client,
-                FilePath: newPath,
-                TagData: AudioFileTaggingHelper.CreateTagData(
-                    new AudioFileTaggingHelper.AudioTagDataInput(
-                        Title: request.TrackTitle,
-                        Artist: request.ArtistName,
-                        Album: request.AlbumTitle,
-                        AlbumArtist: request.AlbumArtist,
-                        ReleaseDate: request.ReleaseDate,
-                        TrackNumber: request.SpotifyTrackNumber,
-                        DiscNumber: request.SpotifyDiscNumber,
-                        TotalTracks: request.SpotifyTotalTracks,
-                        Isrc: request.Isrc)),
-                CoverUrl: request.CoverUrl,
-                EmbedMaxQualityCover: request.EmbedMaxQualityCover,
-                TagSettings: request.TagSettings),
-            cancellationToken);
-
-        if (!taggingSucceeded)
-        {
-            throw new InvalidOperationException($"Amazon tagging failed for '{newPath}'.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Isrc))
-        {
-            AudioFilePathHelper.EnsureIsrcMatchOrThrow(newPath, request.Isrc);
-        }
-
         return newPath;
     }
 
@@ -846,40 +816,6 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
 
         var match = Regex.Match(amazonUrl, "(B[0-9A-Z]{9})", RegexOptions.IgnoreCase, RegexTimeout);
         return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
-    }
-
-    private async Task ThrottleSongLinkAsync(CancellationToken cancellationToken)
-    {
-        var now = DateTimeOffset.UtcNow;
-        if (now - _apiCallReset >= TimeSpan.FromMinutes(1))
-        {
-            _apiCallCount = 0;
-            _apiCallReset = now;
-        }
-
-        if (_apiCallCount >= 9)
-        {
-            var waitTime = TimeSpan.FromMinutes(1) - (now - _apiCallReset);
-            if (waitTime > TimeSpan.Zero)
-            {
-                await Task.Delay(waitTime, cancellationToken);
-            }
-            _apiCallCount = 0;
-            _apiCallReset = DateTimeOffset.UtcNow;
-        }
-
-        if (_lastApiCall != DateTimeOffset.MinValue)
-        {
-            var since = DateTimeOffset.UtcNow - _lastApiCall;
-            var minDelay = TimeSpan.FromSeconds(7);
-            if (since < minDelay)
-            {
-                await Task.Delay(minDelay - since, cancellationToken);
-            }
-        }
-
-        _lastApiCall = DateTimeOffset.UtcNow;
-        _apiCallCount++;
     }
 
     private static string GetRandomUserAgent()
