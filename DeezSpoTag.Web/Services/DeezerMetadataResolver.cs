@@ -188,13 +188,13 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
 
     private static void ApplyTrackFields(Track track, ApiTrack deezerTrack)
     {
-        if (!string.IsNullOrWhiteSpace(deezerTrack.TitleShort))
-        {
-            track.Title = deezerTrack.TitleShort;
-        }
-        else if (!string.IsNullOrWhiteSpace(deezerTrack.Title))
+        if (!string.IsNullOrWhiteSpace(deezerTrack.Title))
         {
             track.Title = deezerTrack.Title;
+        }
+        else if (!string.IsNullOrWhiteSpace(deezerTrack.TitleShort))
+        {
+            track.Title = deezerTrack.TitleShort;
         }
 
         if (!string.IsNullOrWhiteSpace(deezerTrack.Isrc))
