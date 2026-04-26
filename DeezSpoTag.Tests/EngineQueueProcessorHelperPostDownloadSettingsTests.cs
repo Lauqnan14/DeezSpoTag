@@ -21,15 +21,14 @@ public sealed class EngineQueueProcessorHelperPostDownloadSettingsTests
     }
 
     [Fact]
-    public async Task ApplyPostDownloadSettingsWithFallbackAsync_ReturnsOriginalPath_WhenTaggingThrows()
+    public async Task ApplyPostDownloadSettingsWithFallbackAsync_Rethrows_WhenTaggingThrows()
     {
-        var result = await InvokeApplyPostDownloadSettingsWithFallbackAsync(
-            "apple",
-            "queue-2",
-            "/tmp/original.m4a",
-            static () => Task.FromException<string>(new InvalidOperationException("tag write failed")));
-
-        Assert.Equal("/tmp/original.m4a", result);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await InvokeApplyPostDownloadSettingsWithFallbackAsync(
+                "apple",
+                "queue-2",
+                "/tmp/original.m4a",
+                static () => Task.FromException<string>(new InvalidOperationException("tag write failed"))));
     }
 
     [Fact]
