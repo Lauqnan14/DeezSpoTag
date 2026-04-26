@@ -131,9 +131,10 @@ public static class TaggingProfileCanonicalizer
         {
             changed |= WriteTagArray(data, enhancementKey, enhancementTags);
         }
-
-        enhancementTags = BuildEnhancementTagParityList(enhancementTags, enrichmentTags);
-        changed |= WriteTagArray(data, enhancementKey, enhancementTags);
+        else if (seedFromTagConfigWhenMissing)
+        {
+            changed |= WriteTagArray(data, enhancementKey, enrichmentTags);
+        }
 
         var effectiveConfig = BuildTagConfig(baseConfig, data);
         if (!TagConfigsEqual(profile.TagConfig, effectiveConfig))
@@ -164,7 +165,7 @@ public static class TaggingProfileCanonicalizer
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), downloadTags);
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), enrichmentTags);
         TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
-        changed |= WriteTagArray(data, enhancementKey, BuildEnhancementTagParityList(enhancementTags, enrichmentTags));
+        changed |= WriteTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
         return changed;
     }
 
@@ -187,7 +188,7 @@ public static class TaggingProfileCanonicalizer
 
         WriteTagArray(data, downloadKey, downloadTags);
         WriteTagArray(data, enrichmentKey, enrichmentTags);
-        WriteTagArray(data, enhancementKey, BuildEnhancementTagParityList(enhancementTags, enrichmentTags));
+        WriteTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
 
         return data;
     }
@@ -397,16 +398,6 @@ public static class TaggingProfileCanonicalizer
         }
 
         return tags;
-    }
-
-    private static List<string> BuildEnhancementTagParityList(
-        List<string> enhancementTags,
-        List<string> enrichmentTags)
-    {
-        var merged = new List<string>(enhancementTags.Count + enrichmentTags.Count);
-        merged.AddRange(enrichmentTags);
-        merged.AddRange(enhancementTags);
-        return NormalizeTagList(merged);
     }
 
     private static void ApplyTags(UnifiedTagConfig config, IEnumerable<string> tags, TagSource source)

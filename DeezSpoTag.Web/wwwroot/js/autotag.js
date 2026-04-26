@@ -149,6 +149,7 @@
         genre: "Genre",
         year: "Year",
         date: "Date (full)",
+        releaseDate: "Release Date",
         explicit: "Explicit",
         isrc: "ISRC",
         length: "Length",
@@ -180,6 +181,55 @@
         releaseId: "Release ID (source)",
         rating: "Rating"
     };
+    const OVERWRITE_TAG_KEYS = [
+        "title",
+        "artist",
+        "artists",
+        "albumArtist",
+        "album",
+        "albumArt",
+        "cover",
+        "version",
+        "remixer",
+        "genre",
+        "style",
+        "label",
+        "releaseId",
+        "trackId",
+        "bpm",
+        "danceability",
+        "energy",
+        "valence",
+        "acousticness",
+        "instrumentalness",
+        "speechiness",
+        "loudness",
+        "tempo",
+        "timeSignature",
+        "liveness",
+        "key",
+        "mood",
+        "catalogNumber",
+        "trackNumber",
+        "discNumber",
+        "duration",
+        "length",
+        "trackTotal",
+        "discTotal",
+        "isrc",
+        "publishDate",
+        "releaseDate",
+        "year",
+        "date",
+        "explicit",
+        "url",
+        "lyrics",
+        "unsyncedLyrics",
+        "syncedLyrics",
+        "ttmlLyrics",
+        "otherTags",
+        "metaTags"
+    ];
     const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS = [
         "danceability",
         "energy",
@@ -378,6 +428,24 @@
         const download = Array.isArray(platform?.downloadTags) ? platform.downloadTags : [];
 
         [...supported, ...download].forEach((tag) => {
+            const normalized = normalizeCapabilityToken(tag);
+            if (normalized) {
+                tokens.add(normalized);
+            }
+        });
+
+        if (platform?.supportsLyrics === true) {
+            tokens.add("lyrics");
+        }
+
+        return tokens;
+    }
+
+    function getPlatformSupportedCapabilityTokenSet(platform) {
+        const tokens = new Set();
+        const supported = Array.isArray(platform?.supportedTags) ? platform.supportedTags : [];
+
+        supported.forEach((tag) => {
             const normalized = normalizeCapabilityToken(tag);
             if (normalized) {
                 tokens.add(normalized);
@@ -650,6 +718,9 @@
         if (name === "downloadTags") {
             return getDownloadTagsList();
         }
+        if (name === "overwriteTags") {
+            return getOverwriteTagsList();
+        }
         if (name === "tags" || name === "gapFillTags") {
             return TAGS.filter((tag) => !isLyricsSelectionTag(tag.tag));
         }
@@ -667,9 +738,7 @@
             input.dataset.tag = tag.tag;
             input.name = name;
             input.checked = selected.includes(tag.tag);
-            const supported = name === "downloadTags"
-                ? isDownloadTagSupported(tag.tag)
-                : isTagSupported(tag.tag);
+            const supported = isTagSelectionSupported(name, tag.tag);
             if (!supported) {
                 input.disabled = true;
                 label.classList.add("tag-disabled");
@@ -1381,9 +1450,68 @@
         }));
     }
 
+    function getOverwriteTagsList() {
+        const labels = new Map();
+        TAGS.forEach((tag) => labels.set(tag.tag, tag.label));
+        Object.entries(DOWNLOAD_TAG_LABELS).forEach(([tag, label]) => labels.set(tag, label));
+        return OVERWRITE_TAG_KEYS
+            .filter((tag) => !isLyricsSelectionTag(tag))
+            .map((tag) => ({
+                tag,
+                label: labels.get(tag) || tag
+            }));
+    }
+
     function getDownloadTagIds() {
-        return Object.keys(DOWNLOAD_TAG_LABELS)
+        const platformIds = getDownloadTagSourcePlatformIds();
+        const allowedPlatformIds = new Set(platformIds.map((id) => String(id).toLowerCase()));
+        const platformTags = state.platforms
+            .filter((platform) => allowedPlatformIds.size === 0 || allowedPlatformIds.has(String(platform.id || "").toLowerCase()))
+            .flatMap((platform) => Array.isArray(platform.downloadTags) ? platform.downloadTags : []);
+        const tags = normalizeUniqueTagList(platformTags)
+            .filter((tagId) => Object.prototype.hasOwnProperty.call(DOWNLOAD_TAG_LABELS, tagId))
             .filter((tagId) => !isLyricsSelectionTag(tagId));
+        if ((tags.includes("year") || tags.includes("date")) && !tags.includes("releaseDate")) {
+            tags.splice(tags.indexOf("date") >= 0 ? tags.indexOf("date") + 1 : tags.length, 0, "releaseDate");
+        }
+        if (tags.length > 0) {
+            return tags;
+        }
+
+        return Object.keys(DOWNLOAD_TAG_LABELS).filter((tagId) => !isLyricsSelectionTag(tagId));
+    }
+
+    function getDownloadTagSourcePlatformIds() {
+        const source = getDownloadTagSource();
+        if (source === "deezer") {
+            return ["deezer"];
+        }
+        if (source === "spotify") {
+            return ["spotify"];
+        }
+        if (source === "apple" || source === "itunes") {
+            return ["itunes", "applemusic", "apple"];
+        }
+        const active = Array.isArray(state.config.platforms) ? state.config.platforms : [];
+        return active.length > 0 ? active : [];
+    }
+
+    function normalizeUniqueTagList(tags) {
+        const result = [];
+        const seen = new Set();
+        (Array.isArray(tags) ? tags : []).forEach((raw) => {
+            const tag = String(raw || "").trim();
+            if (!tag) {
+                return;
+            }
+            const key = tag.toLowerCase();
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            result.push(tag);
+        });
+        return result;
     }
 
     function normalizeDownloadTags(selected) {
@@ -1394,26 +1522,6 @@
         }
         const allowedSet = new Set(allowed.map((tag) => String(tag).toLowerCase()));
         return selectedTags.filter((tag) => allowedSet.has(String(tag).toLowerCase()));
-    }
-
-    function buildMergedTagSelection(primary, secondary) {
-        const merged = [];
-        const seen = new Set();
-        [primary, secondary].forEach((source) => {
-            (source || []).forEach((value) => {
-                const tag = String(value || "").trim();
-                if (!tag) {
-                    return;
-                }
-                const key = tag.toLowerCase();
-                if (seen.has(key)) {
-                    return;
-                }
-                seen.add(key);
-                merged.push(tag);
-            });
-        });
-        return merged;
     }
 
     function syncEnhancementTagsWithEnrichment() {
@@ -1428,8 +1536,9 @@
         );
         state.config.tags = enrichmentTags;
         state.config.downloadTags = normalizedDownloadTags;
-        state.config.gapFillTags = removeLyricsSelectionTags(
-            buildMergedTagSelection(enrichmentTags, enhancementTags)
+        state.config.gapFillTags = enhancementTags;
+        state.config.overwriteTags = normalizeOverwriteTags(
+            Array.isArray(state.config.overwriteTags) ? state.config.overwriteTags : []
         );
     }
 
@@ -1439,6 +1548,29 @@
             return false;
         }
         return getDownloadTagIds().some((tag) => String(tag).toLowerCase() === normalizedTag);
+    }
+
+    function normalizeOverwriteTags(selected) {
+        const selectedTags = removeLyricsSelectionTags(Array.isArray(selected) ? selected : []);
+        const allowed = new Set(getOverwriteTagsList().map((tag) => String(tag.tag).toLowerCase()));
+        return selectedTags.filter((tag) => allowed.has(String(tag).toLowerCase()));
+    }
+
+    function isTagSelectionSupported(name, tag) {
+        if (name === "downloadTags") {
+            return isDownloadTagSupported(tag);
+        }
+        if (name === "overwriteTags") {
+            return isOverwriteTagSupported(tag);
+        }
+        return isTagSupported(tag);
+    }
+
+    function isOverwriteTagSupported(tag) {
+        if (tag === "metaTags") {
+            return true;
+        }
+        return isTagSupported(tag);
     }
 
     function refreshDownloadTagsForSource() {
@@ -2120,6 +2252,7 @@
         storeSelectedPlatforms();
         renderPlatforms();
         syncEnhancementTagsWithEnrichment();
+        renderTags("autotag-download-tags", state.config.downloadTags || [], "downloadTags");
         renderTags("autotag-tags", state.config.tags, "tags");
         renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
         renderTags("autotag-overwrite-tags", state.config.overwriteTags, "overwriteTags");
@@ -3056,7 +3189,7 @@
         config.tags = removeLyricsSelectionTags(Array.isArray(config.tags) ? config.tags : []);
         config.downloadTags = removeLyricsSelectionTags(Array.isArray(config.downloadTags) ? config.downloadTags : []);
         config.gapFillTags = removeLyricsSelectionTags(Array.isArray(config.gapFillTags) ? config.gapFillTags : []);
-        config.overwriteTags = Array.isArray(config.overwriteTags) ? config.overwriteTags : [];
+        config.overwriteTags = normalizeOverwriteTags(Array.isArray(config.overwriteTags) ? config.overwriteTags : []);
     }
 
     function normalizeTracknameTemplateConfig(config) {
@@ -3127,11 +3260,14 @@
         if (isHiddenSpotifyAudioFeatureTag(tag)) {
             return false;
         }
-        const normalizedTag = normalizeTagSupportKey(tag);
+        const normalizedTag = normalizeTagSelectionToken(tag);
+        const activePlatforms = new Set(
+            (Array.isArray(state.config.platforms) ? state.config.platforms : [])
+                .map((platformId) => String(platformId || "").toLowerCase())
+        );
         return state.platforms.some((platform) =>
-            state.config.platforms.includes(platform.id) &&
-            Array.isArray(platform.supportedTags) &&
-            platform.supportedTags.includes(normalizedTag)
+            activePlatforms.has(String(platform.id || "").toLowerCase()) &&
+            getPlatformSupportedCapabilityTokenSet(platform).has(normalizedTag)
         );
     }
 
@@ -3452,8 +3588,8 @@
         state.config.tags = removeLyricsSelectionTags(getCheckedTags("tags"));
         state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
         state.config.gapFillTags = removeLyricsSelectionTags(getCheckedTags("gapFillTags"));
+        state.config.overwriteTags = normalizeOverwriteTags(getCheckedTags("overwriteTags"));
         syncEnhancementTagsWithEnrichment();
-        state.config.overwriteTags = getCheckedTags("overwriteTags");
     }
 
     function readAutoTagConfigSections(getChecked, getValue) {
@@ -6543,12 +6679,14 @@
             }
             if (target instanceof HTMLInputElement
                 && target.type === "checkbox"
-                && ["tags", "downloadTags", "gapFillTags"].includes(target.name)) {
+                && ["tags", "downloadTags", "gapFillTags", "overwriteTags"].includes(target.name)) {
                 state.config.tags = removeLyricsSelectionTags(getCheckedTags("tags"));
                 state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
                 state.config.gapFillTags = removeLyricsSelectionTags(getCheckedTags("gapFillTags"));
+                state.config.overwriteTags = normalizeOverwriteTags(getCheckedTags("overwriteTags"));
                 syncEnhancementTagsWithEnrichment();
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
+                renderTags("autotag-overwrite-tags", state.config.overwriteTags || [], "overwriteTags");
             }
         }
         if (event.isTrusted && isProfileAutoSaveTarget(event.target)) {

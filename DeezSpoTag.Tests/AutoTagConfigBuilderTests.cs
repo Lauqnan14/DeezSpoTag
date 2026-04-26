@@ -18,7 +18,7 @@ public sealed class AutoTagConfigBuilderTests
     private static readonly string[] LegacyEnhancementTags = { "label" };
     private static readonly string[] ExpectedTitleOnlyDownloadTags = { "title" };
     private static readonly string[] ExpectedReleaseDateOnlyTags = { "releaseDate" };
-    private static readonly string[] ExpectedReleaseDateEnhancementTags = { "releaseDate", "label" };
+    private static readonly string[] ExpectedPreservedEnhancementTags = { "label" };
 
     [Fact]
     public void BuildConfigJson_DerivesTagArraysFromTagConfig_WhenAutoTagDataIsEmpty()
@@ -86,7 +86,7 @@ public sealed class AutoTagConfigBuilderTests
 
         Assert.Equal(ExpectedTitleOnlyDownloadTags, ReadStringArray(root.GetProperty("downloadTags")));
         Assert.Equal(ExpectedReleaseDateOnlyTags, ReadStringArray(root.GetProperty("tags")));
-        Assert.Equal(ExpectedReleaseDateEnhancementTags, ReadStringArray(root.GetProperty("gapFillTags")));
+        Assert.Equal(ExpectedPreservedEnhancementTags, ReadStringArray(root.GetProperty("gapFillTags")));
         Assert.Equal("spotify", root.GetProperty("downloadTagSource").GetString());
     }
 
