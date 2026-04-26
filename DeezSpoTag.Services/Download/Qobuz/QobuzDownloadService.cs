@@ -134,6 +134,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             return resolvedPath;
         }
+        CleanUnverifiedExpectedOutput(expectedPath);
 
         var resolution = await _trackResolver.ResolveTrackAsync(
             resolvedIsrc,
@@ -207,6 +208,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             return resolvedPath;
         }
+        CleanUnverifiedExpectedOutput(expectedPath);
 
         var downloadResolution = await GetDownloadUrlWithRetryAsync(trackId.Value, request.Quality, request.AllowQualityFallback, cancellationToken);
         if (string.IsNullOrWhiteSpace(downloadResolution.Url))
@@ -973,6 +975,16 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             return false;
         }
+    }
+
+    private static void CleanUnverifiedExpectedOutput(string expectedPath)
+    {
+        if (string.IsNullOrWhiteSpace(expectedPath))
+        {
+            return;
+        }
+
+        DownloadFileUtilities.TryDeleteFile(expectedPath);
     }
 
     private static string GetTrackArtist(QobuzTrack track)

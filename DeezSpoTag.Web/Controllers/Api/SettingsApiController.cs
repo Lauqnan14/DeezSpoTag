@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Globalization;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
 using System.Text.RegularExpressions;
@@ -141,7 +142,16 @@ namespace DeezSpoTag.Web.Controllers.Api
             var userPrefs = await _userPreferencesStore.LoadAsync();
             userPrefs.TabsPreferenceEnabled = settings.RememberTabsPreference;
             userPrefs.PreviewVolume = settings.PreviewVolume;
+            userPrefs.DownloadDestinationStereoFolderId = FormatFolderId(settings.MultiQuality?.PrimaryDestinationFolderId);
+            userPrefs.DownloadDestinationAtmosFolderId = FormatFolderId(settings.MultiQuality?.SecondaryDestinationFolderId);
             await _userPreferencesStore.SaveAsync(userPrefs);
+        }
+
+        private static string? FormatFolderId(long? folderId)
+        {
+            return folderId.HasValue
+                ? folderId.Value.ToString(CultureInfo.InvariantCulture)
+                : null;
         }
 
         /// <summary>
