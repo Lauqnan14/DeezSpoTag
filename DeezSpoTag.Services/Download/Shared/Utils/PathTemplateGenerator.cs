@@ -15,7 +15,6 @@ public class PathTemplateGenerator
 {
     private const string TrackType = "track";
     private const string EpisodeType = "episode";
-    private const string AlbumType = "album";
     private const string PlaylistType = "playlist";
     private const string UnknownValue = "Unknown";
     private const string ArtistPlaceholder = "%artist%";

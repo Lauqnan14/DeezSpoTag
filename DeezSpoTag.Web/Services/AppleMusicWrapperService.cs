@@ -682,7 +682,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         return (false, "External wrapper start command ran, but ports 10020/20020/30020 did not become reachable.");
     }
 
-    private async Task<bool> WaitForExternalWrapperPortsAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    private static async Task<bool> WaitForExternalWrapperPortsAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (!cancellationToken.IsCancellationRequested && DateTimeOffset.UtcNow < deadline)
