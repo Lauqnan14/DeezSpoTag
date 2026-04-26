@@ -132,9 +132,11 @@ public static class DownloadEngineArtworkHelper
             }
         }
 
-        // Payload-provided cover URL is a final fallback so download-time embedding can still proceed
-        // even when provider lookups fail.
-        if (!string.IsNullOrWhiteSpace(request.PayloadCover))
+        // Payload-provided cover URL is only a fallback when artwork fallback is explicitly enabled
+        // with more than one configured source. A single-source preference must stay strict.
+        if (request.Settings.ArtworkFallbackEnabled
+            && fallbackOrder.Count > 1
+            && !string.IsNullOrWhiteSpace(request.PayloadCover))
         {
             var normalizedPayloadCover = request.PayloadCover.Trim();
             if (!coverUrls.Contains(normalizedPayloadCover, StringComparer.OrdinalIgnoreCase))

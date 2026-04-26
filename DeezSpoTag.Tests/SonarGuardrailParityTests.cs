@@ -164,6 +164,38 @@ public sealed class SonarGuardrailParityTests
         Assert.DoesNotContain("const encodedPlatform = platform && platform !== \"--\" ? encodeURIComponent(platform) : \"\";", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Download_DeezerMetadataResolver_PreservesFeaturedArtistsForCrossEngineTemplates()
+    {
+        var root = FindRepoRoot();
+        var resolverPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "DeezerMetadataResolver.cs");
+        Assert.True(File.Exists(resolverPath), $"File not found: {resolverPath}");
+
+        var source = File.ReadAllText(resolverPath);
+        Assert.Contains("ApplyContributorFields(track, deezerTrack.Contributors);", source, StringComparison.Ordinal);
+        Assert.Contains("track.GenerateMainFeatStrings();", source, StringComparison.Ordinal);
+        Assert.Contains("ExtractDeezerImageMd5(deezerArtist.PictureSmall)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AppleAtmosArtworkPrefetch_UsesSharedArtworkPreferenceFallbackAndDoesNotSkipArtistOnCoverFailure()
+    {
+        var root = FindRepoRoot();
+        var processorPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Apple", "AppleEngineProcessor.cs");
+        Assert.True(File.Exists(processorPath), $"File not found: {processorPath}");
+
+        var source = File.ReadAllText(processorPath);
+        Assert.Contains("ResolvePrefetchCoverUrlsAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("SavePrefetchCoverArtworkWithFallbackAsync(context, coverName, token)", source, StringComparison.Ordinal);
+        Assert.Contains("foreach (var coverUrl in context.CoverUrls)", source, StringComparison.Ordinal);
+        Assert.Contains("var failureReasons = new List<string>();", source, StringComparison.Ordinal);
+        Assert.Contains("failureReasons.Add(\"Album artwork download failed.\");", source, StringComparison.Ordinal);
+        Assert.Contains("failureReasons.Add(\"Artist artwork download failed.\");", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("return new PrefetchArtworkResult(false, \"Album artwork URL could not be resolved.\");", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveCoverUrlWithFallbackAsync(", source, StringComparison.Ordinal);
+    }
+
     private static string FindRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
