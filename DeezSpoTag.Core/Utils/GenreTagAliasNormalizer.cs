@@ -4,7 +4,7 @@ namespace DeezSpoTag.Core.Utils;
 
 public static class GenreTagAliasNormalizer
 {
-    private static readonly char[] CompositeGenreSeparators = ['/', '\\'];
+    private static readonly char[] CompositeGenreSeparators = ['/', '\\', ',', ';'];
     private static readonly IReadOnlyDictionary<string, string> EmptyMap =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
