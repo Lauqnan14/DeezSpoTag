@@ -24,7 +24,7 @@ public sealed class TaggingProfileCanonicalizerTests
     private static readonly string[] StaleEnhancementTags = { "label" };
     private static readonly string[] ExpectedSyncedDownloadTags = { "title" };
     private static readonly string[] ExpectedSyncedAutoTags = { "releaseDate" };
-    private static readonly string[] ExpectedSyncedEnhancementTags = { "releaseDate", "label" };
+    private static readonly string[] ExpectedSyncedEnhancementTags = { "label" };
 
     [Fact]
     public void BuildTagConfig_UsesAutoTagArraysAsCanonicalSource()

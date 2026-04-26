@@ -12,37 +12,25 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     private static readonly string[] ExpectedDownloadEnrichmentTags =
     {
         "artist",
-        "genre",
-        "title",
-        "trackId",
-        "releaseId",
-        "source",
-        "url"
+        "genre"
     };
 
     private static readonly string[] ExpectedEnhancementOnlyTags =
     {
         "artist",
-        "genre",
-        "trackId",
-        "releaseId",
-        "source",
-        "url"
+        "genre"
     };
     private static readonly string[] ExpectedMergedEnhancementTags =
     {
         "artist",
-        "genre",
-        "title",
-        "trackId",
-        "releaseId"
+        "genre"
     };
     private static readonly string[] RequestedYearAndArtistTags = ["year", "artist"];
     private static readonly string[] ItunesPlatformOnly = ["itunes"];
     private static readonly string[] ExpectedReleaseDateOnly = ["releaseDate"];
 
     [Fact]
-    public void ResolveEnrichmentRequestedTags_DownloadEnrichment_CarriesIdAndSourceTagsFromDownloadTags()
+    public void ResolveEnrichmentRequestedTags_DownloadEnrichment_UsesOnlyEnrichmentTags()
     {
         var method = typeof(AutoTagService).GetMethod(
             "ResolveEnrichmentRequestedTags",
@@ -60,7 +48,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     }
 
     [Fact]
-    public void ResolveEnrichmentRequestedTags_NonDownloadEnrichment_StillMergesDownloadTagsForConsistency()
+    public void ResolveEnrichmentRequestedTags_NonDownloadEnrichment_UsesOnlyEnrichmentTags()
     {
         var method = typeof(AutoTagService).GetMethod(
             "ResolveEnrichmentRequestedTags",
@@ -78,7 +66,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     }
 
     [Fact]
-    public void ResolveEnhancementRequestedTags_MergesDownloadTagsForConsistency()
+    public void ResolveEnhancementRequestedTags_UsesOnlyGapFillTags()
     {
         var method = typeof(AutoTagService).GetMethod(
             "ResolveEnhancementRequestedTags",

@@ -2892,33 +2892,12 @@ public class AutoTagService
     private static List<string> ResolveEnrichmentRequestedTags(JsonObject baseRoot, string? runIntent)
     {
         _ = runIntent;
-        return MergeRequestedAndDownloadTags(
-            requested: ReadStringList(baseRoot, "tags"),
-            downloadTags: ReadStringList(baseRoot, AutoTagLiterals.DownloadTagsKey));
+        return ReadStringList(baseRoot, "tags");
     }
 
     private static List<string> ResolveEnhancementRequestedTags(JsonObject baseRoot)
     {
-        return MergeRequestedAndDownloadTags(
-            requested: ReadStringList(baseRoot, "gapFillTags"),
-            downloadTags: ReadStringList(baseRoot, AutoTagLiterals.DownloadTagsKey));
-    }
-
-    private static List<string> MergeRequestedAndDownloadTags(List<string> requested, List<string> downloadTags)
-    {
-        if (downloadTags.Count == 0)
-        {
-            return requested;
-        }
-
-        var merged = new List<string>(requested);
-        var seen = new HashSet<string>(merged, StringComparer.OrdinalIgnoreCase);
-        foreach (var tag in downloadTags.Where(seen.Add))
-        {
-            merged.Add(tag);
-        }
-
-        return merged;
+        return ReadStringList(baseRoot, "gapFillTags");
     }
 
     private bool TryBuildEnhancementStage(
@@ -3904,7 +3883,6 @@ public class AutoTagService
             EnsureSupportedDownloadTagSource(node);
             EnsureOverwriteDefaults(node);
             EnsureTracknameTemplateCanonical(node);
-            EnsureEnhancementTagsMergeEnrichmentAndEnhancement(node);
             EnsureEnhancementFolderScopesCanonical(node);
             EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
             EnsureLegacyOrganizerConfigRemoved(node);
@@ -4077,59 +4055,6 @@ public class AutoTagService
         CanonicalizeEnhancementFolderScopeSection(enhancement, "folderUniformity");
         CanonicalizeEnhancementFolderScopeSection(enhancement, "coverMaintenance");
         CanonicalizeEnhancementFolderScopeSection(enhancement, "qualityChecks");
-    }
-
-    private static void EnsureEnhancementTagsMergeEnrichmentAndEnhancement(JsonNode node)
-    {
-        if (node is not JsonObject root)
-        {
-            return;
-        }
-
-        var enhancementTags = ReadCanonicalTagArray(root, "gapFillTags");
-        var enrichmentTags = ReadCanonicalTagArray(root, "tags");
-        var merged = new JsonArray();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var tag in enrichmentTags.Where(seen.Add))
-        {
-            merged.Add(tag);
-        }
-
-        foreach (var tag in enhancementTags.Where(seen.Add))
-        {
-            merged.Add(tag);
-        }
-
-        root["gapFillTags"] = merged;
-    }
-
-    private static List<string> ReadCanonicalTagArray(JsonObject root, string propertyName)
-    {
-        if (root[propertyName] is not JsonArray array)
-        {
-            return new List<string>();
-        }
-
-        var tags = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var value in array)
-        {
-            if (value is not JsonValue tagValue || !tagValue.TryGetValue<string>(out var rawTag))
-            {
-                continue;
-            }
-
-            var tag = rawTag?.Trim();
-            if (string.IsNullOrWhiteSpace(tag) || !seen.Add(tag))
-            {
-                continue;
-            }
-
-            tags.Add(tag);
-        }
-
-        return tags;
     }
 
     private static void CanonicalizeEnhancementFolderScopeSection(JsonObject enhancement, string sectionName)
