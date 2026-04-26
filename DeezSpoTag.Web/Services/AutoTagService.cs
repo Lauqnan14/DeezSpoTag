@@ -1432,6 +1432,17 @@ public class AutoTagService
         Func<AutoTagPlatformDiffSnapshot, T?> afterSelector,
         Func<AutoTagPlatformDiffSnapshot, T?> beforeSelector)
     {
+        var mergedSources = ResolveMergedValueSources(
+            finalValue,
+            baselineValue,
+            completed,
+            afterSelector,
+            beforeSelector);
+        if (!string.IsNullOrWhiteSpace(mergedSources))
+        {
+            return mergedSources;
+        }
+
         var normalizedFinal = NormalizeCompareValue(finalValue);
         if (string.IsNullOrEmpty(normalizedFinal))
         {
@@ -1513,6 +1524,69 @@ public class AutoTagService
         return null;
     }
 
+    private static string? ResolveMergedValueSources<T>(
+        T? finalValue,
+        T? baselineValue,
+        IReadOnlyList<AutoTagPlatformDiffSnapshot> completed,
+        Func<AutoTagPlatformDiffSnapshot, T?> afterSelector,
+        Func<AutoTagPlatformDiffSnapshot, T?> beforeSelector)
+    {
+        var finalParts = NormalizeCompareParts(finalValue);
+        if (finalParts.Count <= 1)
+        {
+            return null;
+        }
+
+        var baselineParts = NormalizeCompareParts(baselineValue);
+        var sources = new List<string>();
+        foreach (var step in completed)
+        {
+            if (string.IsNullOrWhiteSpace(step.Platform))
+            {
+                continue;
+            }
+
+            var beforeParts = NormalizeCompareParts(beforeSelector(step));
+            if (beforeParts.Count == 0)
+            {
+                beforeParts = baselineParts;
+            }
+
+            var afterParts = NormalizeCompareParts(afterSelector(step));
+            if (afterParts.Count == 0)
+            {
+                continue;
+            }
+
+            var stepChanged = !string.Equals(
+                NormalizeCompareValue(beforeSelector(step)),
+                NormalizeCompareValue(afterSelector(step)),
+                StringComparison.Ordinal);
+            var retainedContribution = afterParts.Intersect(finalParts, StringComparer.Ordinal).Any();
+            var introducedContribution = afterParts
+                .Except(beforeParts, StringComparer.Ordinal)
+                .Intersect(finalParts, StringComparer.Ordinal)
+                .Any();
+            var changedToFinalValue = string.Equals(
+                NormalizeCompareValue(afterSelector(step)),
+                NormalizeCompareValue(finalValue),
+                StringComparison.Ordinal)
+                && !string.Equals(
+                    NormalizeCompareValue(beforeSelector(step)),
+                    NormalizeCompareValue(finalValue),
+                    StringComparison.Ordinal);
+
+            if ((introducedContribution || changedToFinalValue || retainedContribution)
+                && stepChanged
+                && !sources.Contains(step.Platform, StringComparer.OrdinalIgnoreCase))
+            {
+                sources.Add(step.Platform);
+            }
+        }
+
+        return sources.Count > 1 ? string.Join(", ", sources) : null;
+    }
+
     private static object? GetMetaFieldValue(AutoTagTagSnapshot? snapshot, string key)
     {
         if (snapshot?.Meta == null || string.IsNullOrWhiteSpace(key))
@@ -1553,6 +1627,23 @@ public class AutoTagService
         }
 
         return value.ToString()?.Trim().ToLowerInvariant() ?? string.Empty;
+    }
+
+    private static HashSet<string> NormalizeCompareParts(object? value)
+    {
+        if (value is IEnumerable<string> stringValues)
+        {
+            return stringValues
+                .Select(item => item?.Trim() ?? string.Empty)
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.ToLowerInvariant())
+                .ToHashSet(StringComparer.Ordinal);
+        }
+
+        var normalized = NormalizeCompareValue(value);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : new HashSet<string>(new[] { normalized }, StringComparer.Ordinal);
     }
 
     public string? TryGetLastJobId()
