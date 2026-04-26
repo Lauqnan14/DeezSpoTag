@@ -51,7 +51,7 @@
     "coverDescriptionUTF8": true
   },
   "tracknameTemplate": "%artist% - %title%",
-  "albumTracknameTemplate": "%tracknumber% - %title%",
+  "albumTracknameTemplate": "%artist% - %title%",
   "playlistTracknameTemplate": "%artist% - %title%",
   "createPlaylistFolder": false,
   "playlistNameTemplate": "%playlist%",
@@ -137,7 +137,7 @@
   "arl": "",
   "embedMaxQualityCover": true,
   "tidalQuality": "HI_RES_LOSSLESS",
-  "qobuzQuality": "6",
+  "qobuzQuality": "27",
   "authorizationToken": "",
   "lrcType": "lyrics,syllable-lyrics,unsynced-lyrics",
   "lrcFormat": "both",
@@ -153,7 +153,7 @@
   "convertWarnLossyToLossless": false,
   "convertSkipLossyToLossless": false,
   "mvFileFormat": "{ArtistName} - {VideoName} [{ReleaseYear}]",
-  "service": "auto",
+  "service": "deezer",
   "fallback": false,
   "librespotConcurrency": 2,
   "spotifyResolveConcurrency": 10,
@@ -184,9 +184,9 @@
   "spotifyHeroDiscographyMatchThreshold": 0.6,
   "spotifyHeroOverrideArtistNames": [],
   "appleMusic": {
-    "mediaUserToken": "",
+    "mediaUserToken": "0.AtrflUWpnOKQBZZ2HSz\u002BKMZGJVFipBu2BN2OywHTU3WCFmccXxSERIllZW6Is1koGY\u002BO8DQnqufGNo4ok0DfvzikSCvYmBIE2\u002B0QB3CKBVFCGpZ\u002BfH6uVKoeUVLZQFkaxjYbWDlxHd1uzSh4YPaQPjrQe2hudXlldJ49iItMEI/PxmY4Hw4e96P66tYIUynvDeyw2nIQeBvtd7JcKkjbqCtXbOVA3WrIKhp3lSVjsgwWRTS4NQ==",
     "authorizationToken": "",
-    "storefront": "us",
+    "storefront": "ke",
     "preferAppleCovers": true,
     "preferredAudioProfile": "alac",
     "getM3u8Mode": "hires",
@@ -214,10 +214,7 @@
     "enabled": true,
     "secondaryEnabled": true,
     "primaryDestinationFolderId": null,
-    "secondaryDestinationFolderId": 2,
-    "secondaryService": "auto",
-    "secondaryQuality": "",
-    "secondaryExcludeApple": true
+    "secondaryDestinationFolderId": 2
   },
   "saveLyrics": false
 }

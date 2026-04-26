@@ -49,7 +49,11 @@ internal static class AudioTagWriter
 
         tag.Pictures =
         [
-            new Picture(coverData) { Type = PictureType.FrontCover, MimeType = "image/jpeg" }
+            new Picture(coverData)
+            {
+                Type = PictureType.FrontCover,
+                MimeType = CoverArtMimeTypeResolver.Resolve(null, coverData)
+            }
         ];
     }
 

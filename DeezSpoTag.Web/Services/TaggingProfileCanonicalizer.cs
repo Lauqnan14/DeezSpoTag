@@ -9,6 +9,15 @@ public static class TaggingProfileCanonicalizer
     private const string DownloadTagsKey = "downloadTags";
     private const string EnrichmentTagsKey = "tags";
     private const string EnhancementTagsKey = "gapFillTags";
+    private const string TracknameTemplateKey = "tracknameTemplate";
+    private const string LegacyFilenameTemplateKey = "filenameTemplate";
+
+    private static readonly string[] LegacyTemplateKeys =
+    {
+        LegacyFilenameTemplateKey,
+        "albumTracknameTemplate",
+        "playlistTracknameTemplate"
+    };
 
     private sealed record TagDescriptor(
         string CanonicalKey,
@@ -92,6 +101,8 @@ public static class TaggingProfileCanonicalizer
         var data = profile.AutoTag.Data;
         var baseConfig = CloneConfig(profile.TagConfig);
 
+        changed |= CanonicalizeTemplateKeys(data);
+
         var hasDownloadTags = TryReadTagArray(data, DownloadTagsKey, out var downloadTags, out var downloadKey);
         var hasEnrichmentTags = TryReadTagArray(data, EnrichmentTagsKey, out var enrichmentTags, out var enrichmentKey);
 
@@ -147,6 +158,7 @@ public static class TaggingProfileCanonicalizer
 
         var data = profile.AutoTag.Data;
         var changed = false;
+        changed |= CanonicalizeTemplateKeys(data);
         var downloadTags = BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true);
         var enrichmentTags = BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true);
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), downloadTags);
@@ -165,6 +177,8 @@ public static class TaggingProfileCanonicalizer
             ? new Dictionary<string, JsonElement>(existingData, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
 
+        CanonicalizeTemplateKeys(data);
+
         var downloadKey = ResolveTagArrayKey(data, DownloadTagsKey);
         var enrichmentKey = ResolveTagArrayKey(data, EnrichmentTagsKey);
         var downloadTags = BuildTagListFromConfig(config, includeDownloadSource: true);
@@ -176,6 +190,45 @@ public static class TaggingProfileCanonicalizer
         WriteTagArray(data, enhancementKey, BuildEnhancementTagParityList(enhancementTags, enrichmentTags));
 
         return data;
+    }
+
+    public static bool CanonicalizeTemplateKeys(Dictionary<string, JsonElement>? data)
+    {
+        if (data == null || data.Count == 0)
+        {
+            return false;
+        }
+
+        var changed = false;
+        var trackKey = ResolveKey(data, TracknameTemplateKey);
+        var trackTemplate = ReadNonBlankString(data, trackKey);
+        if (string.IsNullOrWhiteSpace(trackTemplate))
+        {
+            foreach (var legacyKeyName in LegacyTemplateKeys)
+            {
+                var legacyKey = ResolveKey(data, legacyKeyName);
+                var legacyTemplate = ReadNonBlankString(data, legacyKey);
+                if (string.IsNullOrWhiteSpace(legacyTemplate))
+                {
+                    continue;
+                }
+
+                data[TracknameTemplateKey] = JsonSerializer.SerializeToElement(legacyTemplate.Trim());
+                changed = true;
+                break;
+            }
+        }
+
+        foreach (var legacyKeyName in LegacyTemplateKeys)
+        {
+            var legacyKey = ResolveKey(data, legacyKeyName);
+            if (!string.IsNullOrWhiteSpace(legacyKey) && data.Remove(legacyKey))
+            {
+                changed = true;
+            }
+        }
+
+        return changed;
     }
 
     public static UnifiedTagConfig BuildTagConfig(
@@ -246,7 +299,25 @@ public static class TaggingProfileCanonicalizer
 
     private static string ResolveTagArrayKey(Dictionary<string, JsonElement> data, string key)
     {
+        return ResolveKey(data, key);
+    }
+
+    private static string ResolveKey(Dictionary<string, JsonElement> data, string key)
+    {
         return data.Keys.FirstOrDefault(entry => string.Equals(entry, key, StringComparison.OrdinalIgnoreCase)) ?? key;
+    }
+
+    private static string? ReadNonBlankString(Dictionary<string, JsonElement> data, string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)
+            || !data.TryGetValue(key, out var element)
+            || element.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var value = element.GetString()?.Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static bool WriteTagArray(Dictionary<string, JsonElement> data, string key, IEnumerable<string> tags)

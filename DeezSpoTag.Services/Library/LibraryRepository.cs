@@ -146,13 +146,27 @@ public sealed class LibraryRepository
     private const string TrackOtherTagTable = "track_other_tag";
     private static readonly HashSet<string> SupportedFolderConvertFormats = new(StringComparer.OrdinalIgnoreCase)
     {
+        "aa",
+        "aax",
         "mp3",
         "aac",
+        "m4a",
+        "m4b",
+        "m4p",
         "alac",
+        "aiff",
+        "ape",
+        "dsf",
         "ogg",
+        "oga",
         "opus",
         "flac",
-        "wav"
+        "wav",
+        "wma",
+        "wv",
+        "webm",
+        "mpc",
+        "mpp"
     };
 
     private static readonly HashSet<string> SupportedFolderConvertBitrates = new(StringComparer.OrdinalIgnoreCase)
@@ -8701,8 +8715,9 @@ ON CONFLICT DO NOTHING;";
         var normalized = value.Trim().ToLowerInvariant();
         normalized = normalized switch
         {
-            "m4a" or "m4a-aac" => "aac",
+            "m4a-aac" => "m4a",
             "m4a-alac" => "alac",
+            "musepack" => "mpc",
             _ => normalized
         };
 

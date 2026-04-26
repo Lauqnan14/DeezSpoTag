@@ -317,6 +317,14 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         ApplyResolvedTagSourceIdentity(track, payload, source);
+        await TryHydrateResolvedTagSourceIdentityAsync(
+            track,
+            payload,
+            source,
+            scope.ServiceProvider,
+            logger,
+            cancellationToken);
+        ApplyResolvedTagSourceIdentity(track, payload, source);
         try
         {
             await resolver.ResolveTrackAsync(track, settings, cancellationToken);
@@ -334,6 +342,149 @@ public static partial class EngineAudioPostDownloadHelper
                 track.Id);
             return false;
         }
+    }
+
+    private static async Task TryHydrateResolvedTagSourceIdentityAsync(
+        Track track,
+        EngineQueueItemBase payload,
+        string source,
+        IServiceProvider scopedProvider,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(source, DeezerSource, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var existingSourceId = ResolveTagSourceId(payload, source, track);
+        if (!string.IsNullOrWhiteSpace(existingSourceId))
+        {
+            return;
+        }
+
+        var deezerClient = scopedProvider.GetService<DeezerClient>();
+        if (deezerClient == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var resolvedDeezerId = await ResolveDeezerIdForTagSourceAsync(
+                track,
+                payload,
+                deezerClient,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(resolvedDeezerId))
+            {
+                return;
+            }
+
+            payload.DeezerId = resolvedDeezerId;
+            track.Urls["deezer_track_id"] = resolvedDeezerId;
+            track.Urls[DeezerSource] = $"https://www.deezer.com/track/{resolvedDeezerId}";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(
+                    ex,
+                    "Failed to hydrate Deezer identity for metadata override on track {TrackId}",
+                    track.Id);
+            }
+        }
+    }
+
+    private static async Task<string?> ResolveDeezerIdForTagSourceAsync(
+        Track track,
+        EngineQueueItemBase payload,
+        DeezerClient deezerClient,
+        CancellationToken cancellationToken)
+    {
+        var knownDeezerId = NormalizeDeezerId(FirstNonEmpty(
+            payload.DeezerId,
+            track.Urls.GetValueOrDefault("deezer_track_id"),
+            track.Urls.GetValueOrDefault("deezer_id"),
+            track.Urls.GetValueOrDefault("deezer"),
+            ExtractTrailingId(payload.SourceUrl),
+            ExtractTrailingId(payload.Url),
+            ExtractTrailingId(track.DownloadURL)));
+        if (!string.IsNullOrWhiteSpace(knownDeezerId))
+        {
+            return knownDeezerId;
+        }
+
+        var isrc = FirstNonEmpty(track.ISRC, payload.Isrc);
+        if (!string.IsNullOrWhiteSpace(isrc))
+        {
+            try
+            {
+                var byIsrc = await deezerClient.GetTrackByIsrcAsync(isrc);
+                var fromIsrc = NormalizeDeezerId(byIsrc?.Id);
+                if (!string.IsNullOrWhiteSpace(fromIsrc))
+                {
+                    return fromIsrc;
+                }
+            }
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
+
+        var artist = FirstNonEmpty(track.MainArtist?.Name, track.ArtistString, payload.Artist);
+        var title = FirstNonEmpty(track.Title, payload.Title);
+        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
+        {
+            var durationMs = track.Duration > 0
+                ? track.Duration * 1000
+                : payload.DurationSeconds > 0
+                    ? payload.DurationSeconds * 1000
+                    : (int?)null;
+            var album = FirstNonEmpty(track.Album?.Title, payload.Album) ?? string.Empty;
+
+            try
+            {
+                var byMetadata = await deezerClient.GetTrackIdFromMetadataAsync(
+                    artist,
+                    title,
+                    album,
+                    durationMs);
+                var fromMetadata = NormalizeDeezerId(byMetadata);
+                if (!string.IsNullOrWhiteSpace(fromMetadata))
+                {
+                    return fromMetadata;
+                }
+            }
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeDeezerId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var candidate = value.Trim();
+        if (long.TryParse(candidate, out var numeric) && numeric > 0)
+        {
+            return numeric.ToString();
+        }
+
+        var fromUrl = ExtractTrailingId(candidate);
+        if (long.TryParse(fromUrl, out numeric) && numeric > 0)
+        {
+            return numeric.ToString();
+        }
+
+        return null;
     }
 
     private static void ApplyResolvedTagSourceIdentity(Track track, EngineQueueItemBase payload, string source)

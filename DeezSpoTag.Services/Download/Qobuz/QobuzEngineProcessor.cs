@@ -489,24 +489,19 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         DeezSpoTagSettings settings,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            using var scope = _serviceProvider.CreateScope();
-            return await ApplyPostDownloadSettingsAsync(
+        using var scope = _serviceProvider.CreateScope();
+        return await EngineQueueProcessorHelper.ApplyPostDownloadSettingsWithFallbackAsync(
+            EngineName,
+            queueUuid,
+            outputPath,
+            _logger,
+            () => ApplyPostDownloadSettingsAsync(
                 context,
                 payload,
                 outputPath,
                 settings,
                 scope.ServiceProvider,
-                cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Qobuz post-download settings failed for {QueueUuid}", queueUuid);
-            throw new InvalidOperationException(
-                $"Qobuz post-download profile tagging failed for queue item {queueUuid}.",
-                ex);
-        }
+                cancellationToken));
     }
 
     private async Task CompleteDownloadAsync(

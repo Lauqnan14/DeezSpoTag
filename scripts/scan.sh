@@ -32,6 +32,7 @@ Environment fallbacks:
   SONAR_COVERAGE_EXCLUSIONS
   SONAR_KEEP_LOCAL_SCAN_STATE
   SONAR_ALLOW_HIGH_MEMORY_PRESSURE
+  SONAR_ENFORCE_GUARDRAILS
 
 Example:
   SONAR_TOKEN=xxxx ./scan.sh
@@ -58,6 +59,7 @@ sonar_include_coverage="${SONAR_INCLUDE_COVERAGE:-true}"
 sonar_coverage_exclusions="${SONAR_COVERAGE_EXCLUSIONS:-**/DeezSpoTag.Tests/**,**/DeezSpoTag.CoverPortTests/**,**/Tools/**,**/References/**,**/bin/**,**/obj/**}"
 sonar_keep_local_scan_state="${SONAR_KEEP_LOCAL_SCAN_STATE:-false}"
 sonar_allow_high_memory_pressure="${SONAR_ALLOW_HIGH_MEMORY_PRESSURE:-false}"
+sonar_enforce_guardrails="${SONAR_ENFORCE_GUARDRAILS:-true}"
 coverage_dir="${ROOT_DIR}/.sonar-coverage"
 coverage_opencover_reports_path="${coverage_dir}/**/coverage.opencover.xml"
 scan_lock_file="${ROOT_DIR}/.scan.lock"
@@ -468,6 +470,7 @@ echo "Include coverage: $sonar_include_coverage"
 echo "Coverage exclusions: $sonar_coverage_exclusions"
 echo "Keep local scan state: $sonar_keep_local_scan_state"
 echo "Allow high memory pressure: $sonar_allow_high_memory_pressure"
+echo "Enforce guardrails: $sonar_enforce_guardrails"
 echo "Entry point : ./scan.sh"
 
 check_sonar_server
@@ -501,6 +504,23 @@ if ! dotnet build "$solution_path" -c "$build_config" "${extra_build_args[@]}"; 
   echo "Build failed; finalizing scan." >&2
   run_scanner end /d:sonar.token="$token" || true
   exit 1
+fi
+
+if [[ "$sonar_enforce_guardrails" == "true" ]]; then
+  guardrail_project="${ROOT_DIR}/DeezSpoTag.Tests/DeezSpoTag.Tests.csproj"
+  guardrail_filter="FullyQualifiedName~SonarGuardrailParityTests"
+  if [[ ! -f "$guardrail_project" ]]; then
+    echo "Guardrail test project not found: $guardrail_project" >&2
+    run_scanner end /d:sonar.token="$token" || true
+    exit 1
+  fi
+
+  echo "Running guardrail tests: $guardrail_filter"
+  if ! dotnet test "$guardrail_project" -c "$build_config" --filter "$guardrail_filter"; then
+    echo "Guardrail tests failed; finalizing scan." >&2
+    run_scanner end /d:sonar.token="$token" || true
+    exit 1
+  fi
 fi
 
 rm -rf "$coverage_dir"

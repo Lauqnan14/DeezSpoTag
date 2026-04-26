@@ -395,7 +395,11 @@ namespace DeezSpoTag.Web.Controllers.Api
                 var appleLogoutResult = await _appleWrapperService.LogoutExternalWrapperSessionAsync(cancellationToken);
                 if (!appleLogoutResult.Success)
                 {
-                    _logger.LogWarning("Apple wrapper session clear failed during logout: {Error}", appleLogoutResult.Error);
+                    var message = string.IsNullOrWhiteSpace(appleLogoutResult.Error)
+                        ? "Apple Music wrapper logout failed."
+                        : appleLogoutResult.Error;
+                    _logger.LogWarning("Apple wrapper session clear failed during logout: {Error}", message);
+                    return StatusCode(500, new { logged_out = false, error = message });
                 }
 
                 _logger.LogInformation("User logged out successfully");

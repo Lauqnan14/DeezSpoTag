@@ -75,18 +75,18 @@ Use the `Login` page to configure platform credentials.
   - `Account Name` is required, and can be anything.
   - `Region` is optional.
 
-Open the Spotify login page.
-In Save Web Player Cookies, paste sp_dc.
-Leave User Agent blank unless you have a specific reason to override it.
-Click Save Web Player Cookies.
-Wait for the success message.
-Then go to Spotify Account Credentials.
-Enter the account name you want to use.
-Optionally set region.
-Click Login.
-Open Spotify desktop app or Spotify web player.
-Transfer playback to the DeezSpoTag device in Spotify Connect.
-Wait for the blob/librespot login to complete.
+  - Open the Spotify login page.
+  - In Save Web Player Cookies, paste sp_dc.
+  - Leave User Agent blank unless you have a specific reason to override it.
+  - Click Save Web Player Cookies.
+  - Wait for the success message.
+  - Then go to Spotify Account Credentials.
+  - Enter the account name you want to use.
+  - Optionally set region.
+  - Click Login.
+  - Open Spotify desktop app or Spotify web player.
+  - Transfer playback to the DeezSpoTag device in Spotify Connect.
+  - Wait for the blob/librespot login to complete.
 
 ### Apple Music (Active subscription is a must)
 

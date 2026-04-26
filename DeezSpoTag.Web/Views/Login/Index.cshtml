@@ -2093,12 +2093,12 @@ function renderAppleMusicInfo(auth) {
 function showAppleMusic2fa(show = true) {
     const section = document.getElementById('appleMusic2faSection');
     if (section) {
-        section.classList.remove('hidden');
+        section.classList.toggle('hidden', !show);
     }
 }
 
 function hideAppleMusic2fa() {
-    showAppleMusic2fa(true);
+    showAppleMusic2fa(false);
 }
 
 function setAppleMusic2faEnabled(enabled, hint) {
@@ -2206,7 +2206,7 @@ async function startAppleMusicLogin() {
         return;
     }
     if (!appleMusicWrapperAvailable && appleMusicExternalMode) {
-        showToast('Wrapper is not ready yet. Start apple-wrapper and then retry login.', 'info');
+        showToast('Wrapper is not ready yet. Login will queue and auto-start wrapper.', 'info');
     }
     const email = document.getElementById('appleMusicEmail').value.trim();
     const password = document.getElementById('appleMusicPassword').value;
@@ -2365,6 +2365,7 @@ async function checkAppleMusicWrapperHelperStatus() {
             outputEl.textContent = lines.filter(Boolean).join('\n');
         }
         showToast(data.success ? 'Wrapper helper responded.' : 'Wrapper helper returned an error.', data.success ? 'success' : 'error');
+        await refreshAppleMusicWrapperStatus();
     } catch (error) {
         console.error('Wrapper helper status error', error);
         if (outputEl) {
@@ -2396,12 +2397,17 @@ async function checkAppleMusicWrapperHealth() {
             `Host: ${data.host || 'n/a'}`,
             `Ports open: ${Boolean(data.portsOpen)}`,
             `Account info reachable: ${Boolean(data.accountInfoReachable)}`,
-            `Tokens: dev=${Boolean(data.hasDevToken)} music=${Boolean(data.hasMusicToken)}`
+            `Tokens: dev=${Boolean(data.hasDevToken)} music=${Boolean(data.hasMusicToken)}`,
+            `Shared control ready: ${Boolean(data.sharedControlReady)}`
         ];
+        if (data.sharedControlDetails) {
+            lines.push(`Shared control: ${data.sharedControlDetails}`);
+        }
         if (outputEl) {
             outputEl.textContent = lines.join('\n');
         }
         showToast(data.acceptingLoginCommands ? 'Wrapper is accepting login commands.' : 'Wrapper is not accepting login commands.', data.acceptingLoginCommands ? 'success' : 'error');
+        await refreshAppleMusicWrapperStatus();
     } catch (error) {
         console.error('Wrapper health check error', error);
         if (outputEl) {
@@ -2439,7 +2445,7 @@ function beginAppleMusicPassiveStatusPolling() {
     }
     appleMusicPassiveStatusPoll = setInterval(() => {
         refreshAppleMusicWrapperStatus();
-    }, 15000);
+    }, 5000);
 }
 
 function refreshConnectedPlatformsSidebar(options = null) {
@@ -2501,7 +2507,9 @@ function handleAppleMusicStatus(data) {
     const diagnostics = data.diagnostics || null;
     const diagnosticMessage = diagnostics?.message || '';
     appleMusicExternalMode = Boolean(data.externalMode);
-    const wrapperAvailable = diagnostics ? Boolean(diagnostics.portsOpen) : true;
+    const wrapperAvailable = diagnostics
+        ? Boolean(diagnostics.acceptingLoginCommands ?? diagnostics.portsOpen)
+        : true;
     applyAppleMusicWrapperAvailability(wrapperAvailable);
     const needs2fa = Boolean(data.needsTwoFactor) || status === 'waitingfortwofactor';
     const hasExplicitSuccess = status === 'success' || wrapperReady;
@@ -3400,7 +3408,8 @@ async function logout() {
         });
         
         if (!response.ok) {
-            showToast('Logout failed', 'error');
+            const message = await getApiErrorMessage(response, 'Logout failed');
+            showToast(message, 'error');
             return;
         }
         

@@ -92,8 +92,12 @@ service_logs_tail() {
 
 resolve_container_id() {
   if use_compose_mode; then
-    compose ps -q "$SERVICE" 2>/dev/null || true
-    return
+    local compose_cid=""
+    compose_cid="$(compose ps -q "$SERVICE" 2>/dev/null || true)"
+    if [[ -n "$compose_cid" ]]; then
+      printf '%s' "$compose_cid"
+      return
+    fi
   fi
 
   docker ps -aq --filter "name=^${CONTAINER_NAME}$" | head -n 1
@@ -355,27 +359,45 @@ case "$cmd" in
     cid="$(ensure_container_present)"
 
     if use_compose_mode; then
-      session_volume="$(resolve_mount_volume "$cid" "/opt/apple-wrapper/rootfs/data/data/com.apple.android.music")"
-      if [[ -z "$session_volume" ]]; then
-        session_volume="$(resolve_volume_by_suffix "apple_wrapper_session")"
+      has_session_cache=0
+      has_queued_login=0
+      if container_has_file "$cid" "/opt/apple-wrapper/rootfs/data/data/com.apple.android.music/files/IC-Info.sido"; then
+        has_session_cache=1
+      fi
+      if container_has_file "$cid" "/opt/apple-wrapper/data/wrapper-login.txt"; then
+        has_queued_login=1
       fi
 
-      if ! volume_has_file "$session_volume" "files/IC-Info.sido"; then
-        echo "No active Apple Music wrapper session cache found (missing IC-Info.sido). Run login first." >&2
+      if [[ "$has_session_cache" -eq 0 && "$has_queued_login" -eq 0 ]]; then
+        echo "No active Apple Music wrapper session cache found (missing IC-Info.sido) and no queued login payload found (missing wrapper-login.txt). Run login first." >&2
         exit 1
       fi
 
       write_wrapper_env_file "-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
+      if [[ "$has_queued_login" -eq 0 ]]; then
+        remove_container_login_file "$cid"
+      fi
       compose up -d --no-deps "$SERVICE"
       exit 0
     fi
 
-    if ! container_has_file "$cid" "/opt/apple-wrapper/rootfs/data/data/com.apple.android.music/files/IC-Info.sido"; then
-      echo "No active Apple Music wrapper session cache found (missing IC-Info.sido). Run login first." >&2
+    has_session_cache=0
+    has_queued_login=0
+    if container_has_file "$cid" "/opt/apple-wrapper/rootfs/data/data/com.apple.android.music/files/IC-Info.sido"; then
+      has_session_cache=1
+    fi
+    if container_has_file "$cid" "/opt/apple-wrapper/data/wrapper-login.txt"; then
+      has_queued_login=1
+    fi
+
+    if [[ "$has_session_cache" -eq 0 && "$has_queued_login" -eq 0 ]]; then
+      echo "No active Apple Music wrapper session cache found (missing IC-Info.sido) and no queued login payload found (missing wrapper-login.txt). Run login first." >&2
       exit 1
     fi
 
-    remove_container_login_file "$cid"
+    if [[ "$has_queued_login" -eq 0 ]]; then
+      remove_container_login_file "$cid"
+    fi
     service_start
     ;;
 
@@ -434,20 +456,9 @@ case "$cmd" in
     fi
 
     if use_compose_mode; then
-      session_volume="$(resolve_mount_volume "$cid" "/opt/apple-wrapper/rootfs/data/data/com.apple.android.music")"
-      data_volume="$(resolve_mount_volume "$cid" "/opt/apple-wrapper/data")"
-
-      if [[ -z "$session_volume" ]]; then
-        session_volume="$(resolve_volume_by_suffix "apple_wrapper_session")"
-      fi
-      if [[ -z "$data_volume" ]]; then
-        data_volume="$(resolve_volume_by_suffix "apple_wrapper_data")"
-      fi
-
       write_wrapper_env_file "-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
       service_stop
-      clear_volume_contents "$session_volume"
-      clear_volume_contents "$data_volume"
+      clear_container_paths "$cid"
       remove_container_login_file "$cid"
       exit 0
     fi

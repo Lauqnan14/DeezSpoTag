@@ -11,8 +11,6 @@ public sealed record DownloadTagProfileSettings(
 
 public sealed record DownloadProfileRuntimeOverrides(
     string? TracknameTemplate,
-    string? AlbumTracknameTemplate,
-    string? PlaylistTracknameTemplate,
     bool? SaveArtwork,
     bool? DlAlbumcoverForPlaylist,
     bool? SaveArtworkArtist,
