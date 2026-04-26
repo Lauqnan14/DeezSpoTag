@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Services.Download.Amazon;
@@ -30,6 +31,32 @@ public sealed class ProviderIntegrationSurfaceTests
             .ToArray();
 
         Assert.Contains("qobuz.spotbye.qzz.io", names);
+    }
+
+    [Fact]
+    public void QobuzCleanUnverifiedExpectedOutput_RemovesStaleFallbackFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"deezspotag-qobuz-stale-{Guid.NewGuid():N}.flac");
+        File.WriteAllBytes(path, new byte[4096]);
+
+        try
+        {
+            var method = typeof(QobuzDownloadService).GetMethod(
+                "CleanUnverifiedExpectedOutput",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+            method!.Invoke(null, [path]);
+
+            Assert.False(File.Exists(path));
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]

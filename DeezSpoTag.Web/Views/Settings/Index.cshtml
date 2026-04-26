@@ -1607,8 +1607,8 @@ async function initLibraryFolderDestinationDropdowns() {
             ].join('');
         };
 
-        const currentPrimary = primarySelect ? (primarySelect.value || '').trim() : '';
-        const currentSecondary = secondarySelect ? (secondarySelect.value || '').trim() : '';
+        const currentPrimary = primarySelect ? ((primarySelect.value || primarySelect.dataset.pendingValue || '').trim()) : '';
+        const currentSecondary = secondarySelect ? ((secondarySelect.value || secondarySelect.dataset.pendingValue || '').trim()) : '';
         const currentVideo = videoSelect ? (videoSelect.value || '').trim() : '';
         const hasFolderIdOption = (value) => {
             const normalized = String(value ?? '').trim();
@@ -1618,12 +1618,25 @@ async function initLibraryFolderDestinationDropdowns() {
 
             return sorted.some(folder => String(folder.id).trim() === normalized);
         };
+        const appendCurrentFolderOption = (select, value, labelPrefix) => {
+            const normalized = String(value ?? '').trim();
+            if (!select || !normalized || hasFolderIdOption(normalized)) {
+                return;
+            }
+
+            const option = document.createElement('option');
+            option.value = normalized;
+            option.textContent = `${labelPrefix}: ${normalized}`;
+            select.appendChild(option);
+        };
 
         if (primarySelect) {
             primarySelect.innerHTML = buildOptionsHtml();
+            appendCurrentFolderOption(primarySelect, currentPrimary, 'Current folder');
         }
         if (secondarySelect) {
             secondarySelect.innerHTML = buildOptionsHtml();
+            appendCurrentFolderOption(secondarySelect, currentSecondary, 'Current Atmos folder');
         }
         if (videoSelect) {
             const videoOptions = [
@@ -1646,11 +1659,13 @@ async function initLibraryFolderDestinationDropdowns() {
 
         if (primarySelect && currentPrimary) {
             primarySelect.value = currentPrimary;
+            delete primarySelect.dataset.pendingValue;
+        }
+        if (secondarySelect && currentSecondary) {
+            secondarySelect.value = currentSecondary;
+            delete secondarySelect.dataset.pendingValue;
         }
         if (secondarySelect) {
-            if (hasFolderIdOption(currentSecondary)) {
-                secondarySelect.value = currentSecondary;
-            }
             updateSecondaryFolderRequirement();
         }
         if (videoSelect && currentVideo) {
@@ -3276,7 +3291,11 @@ function loadSettings(settings) {
 function setFieldValue(fieldId, value) {
     const field = document.getElementById(fieldId);
     if (field && value !== undefined && value !== null) {
-        field.value = value;
+        const stringValue = String(value);
+        if (field instanceof HTMLSelectElement && stringValue && !Array.from(field.options).some(option => option.value === stringValue)) {
+            field.dataset.pendingValue = stringValue;
+        }
+        field.value = stringValue;
         if (field.type === 'hidden') {
             const dropdown = field.closest('.dropdown-select');
             if (dropdown) {
