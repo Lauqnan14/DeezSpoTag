@@ -172,6 +172,7 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
     {
         ApplyTrackFields(track, deezerTrack);
         ApplyArtistFields(track, deezerTrack.Artist);
+        ApplyContributorFields(track, deezerTrack.Contributors);
         EnsureAlbum(track, deezerTrack);
         var album = track.Album ?? new Album("0", string.Empty);
         track.Album = album;
@@ -184,6 +185,7 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
 
         ApplyAlbumArtwork(album, deezerAlbum, deezerTrack);
         ApplyAlbumArtist(album, track.MainArtist);
+        track.GenerateMainFeatStrings();
     }
 
     private static void ApplyTrackFields(Track track, ApiTrack deezerTrack)
@@ -244,9 +246,49 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
             return;
         }
 
-        track.MainArtist = new Artist(deezerArtist.Id, artistName);
+        track.MainArtist = new Artist(
+            deezerArtist.Id,
+            artistName,
+            "Main",
+            FirstNonEmpty(deezerArtist.Md5Image, ExtractDeezerImageMd5(deezerArtist.PictureSmall)));
         track.Artists = new List<string> { artistName };
         track.Artist["Main"] = new List<string> { artistName };
+    }
+
+    private static void ApplyContributorFields(Track track, IReadOnlyList<ApiContributor>? contributors)
+    {
+        if (contributors == null || contributors.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var contributor in contributors)
+        {
+            var name = contributor.Name?.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var role = string.IsNullOrWhiteSpace(contributor.Role)
+                ? "Main"
+                : contributor.Role.Trim();
+            if (!track.Artist.TryGetValue(role, out var roleArtists))
+            {
+                roleArtists = new List<string>();
+                track.Artist[role] = roleArtists;
+            }
+
+            if (!roleArtists.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                roleArtists.Add(name);
+            }
+
+            if (!track.Artists.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                track.Artists.Add(name);
+            }
+        }
     }
 
     private static void EnsureAlbum(Track track, ApiTrack deezerTrack)
@@ -356,6 +398,23 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
         album.MainArtist = mainArtist;
         album.Artist["Main"] = new List<string> { mainArtist.Name };
         album.Artists = new List<string> { mainArtist.Name };
+    }
+
+    private static string? ExtractDeezerImageMd5(string? imageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl))
+        {
+            return null;
+        }
+
+        var parts = imageUrl.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var imagesIndex = Array.FindIndex(parts, static part => string.Equals(part, "images", StringComparison.OrdinalIgnoreCase));
+        if (imagesIndex < 0 || imagesIndex + 2 >= parts.Length)
+        {
+            return null;
+        }
+
+        return parts[imagesIndex + 2];
     }
 
     private static string? TryNormalizeTrackId(string? value)

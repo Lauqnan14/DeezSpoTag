@@ -60,13 +60,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     private readonly ConcurrentDictionary<string, PrefetchGateState> _prefetchGates =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private sealed record CoverFallbackServices(
-        AppleMusicCatalogService? AppleCatalog,
-        DeezerClient? DeezerClient,
-        ISpotifyIdResolver? SpotifyIdResolver,
-        ISpotifyArtworkResolver? SpotifyArtworkResolver,
-        IHttpClientFactory? HttpClientFactory);
-
     private sealed class PrefetchWorkContext
     {
         public required string QueueUuid { get; init; }
@@ -119,8 +112,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     private sealed class ArtworkPrefetchContext
     {
         public required PrefetchWorkContext Work { get; init; }
-        public required string? CoverUrl { get; init; }
-        public required bool IsAppleCover { get; init; }
+        public required IReadOnlyList<string> CoverUrls { get; init; }
         public required bool PreferMaxQualityCover { get; init; }
         public required int AppleArtworkSize { get; init; }
         public required ImageDownloader ImageDownloader { get; init; }
@@ -833,24 +825,19 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     {
         if (trackContext != null && !queueContext.VideoPayload)
         {
-            try
-            {
-                using var scope = _serviceProvider.CreateScope();
-                return await ApplyPostDownloadSettingsAsync(
+            using var scope = _serviceProvider.CreateScope();
+            return await EngineQueueProcessorHelper.ApplyPostDownloadSettingsWithFallbackAsync(
+                EngineName,
+                queueUuid,
+                outputPath,
+                _logger,
+                () => ApplyPostDownloadSettingsAsync(
                     trackContext,
                     queueContext.Payload,
                     outputPath,
                     queueContext.Settings,
                     scope.ServiceProvider,
-                    itemToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Apple post-download settings failed for {QueueUuid}", queueUuid);
-                throw new InvalidOperationException(
-                    $"Apple post-download profile tagging failed for queue item {queueUuid}.",
-                    ex);
-            }
+                    itemToken));
         }
 
         if (!queueContext.VideoPayload)
@@ -1239,91 +1226,17 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         IServiceProvider scope,
         CancellationToken cancellationToken)
     {
-        EngineAudioPostDownloadHelper.SynchronizeTrackWithPayloadForTagging(context.Track, payload);
-
-        var imageDownloader = scope.GetRequiredService<ImageDownloader>();
-        var audioTagger = scope.GetRequiredService<AudioTagger>();
-        var spotifyArtworkResolver = scope.GetService<ISpotifyArtworkResolver>();
-        var spotifyIdResolver = scope.GetService<ISpotifyIdResolver>();
-        var httpClientFactory = scope.GetService<IHttpClientFactory>();
-        var appleCatalog = scope.GetService<AppleMusicCatalogService>();
-        var deezerClient = scope.GetService<DeezerClient>();
-        var services = new CoverFallbackServices(appleCatalog, deezerClient, spotifyIdResolver, spotifyArtworkResolver, httpClientFactory);
-
-        var isPlaylist = string.Equals(payload.CollectionType, PlaylistType, StringComparison.OrdinalIgnoreCase);
-        var allowPlaylistCover = !isPlaylist || settings.DlAlbumcoverForPlaylist;
-        var coverUrl = await ResolveCoverUrlWithFallbackAsync(
-            payload,
-            settings,
-            services,
+        return await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(
+            new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
+                context,
+                payload,
+                outputPath,
+                settings,
+                scope,
+                EngineName,
+                _logger,
+                payload.AppleId),
             cancellationToken);
-
-        var isAppleCover = IsAppleArtworkUrl(coverUrl);
-
-        if (allowPlaylistCover && settings.Tags?.Cover == true && !string.IsNullOrWhiteSpace(coverUrl) && context.Track.Album != null)
-        {
-            var embedSize = settings.EmbedMaxQualityCover ? settings.LocalArtworkSize : settings.EmbeddedArtworkSize;
-            var embedUrl = coverUrl;
-            string extension;
-            if (isAppleCover)
-            {
-                extension = $".{AppleQueueHelpers.GetAppleArtworkExtension(coverUrl, AppleQueueHelpers.GetAppleArtworkFormat(settings))}";
-            }
-            else if (embedUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-            {
-                extension = ".png";
-            }
-            else
-            {
-                extension = ".jpg";
-            }
-            var embedPath = Path.Join(Path.GetTempPath(), $"apple-embed-{Guid.NewGuid():N}{extension}");
-            string? downloaded;
-            if (isAppleCover)
-            {
-                downloaded = await AppleQueueHelpers.DownloadAppleArtworkAsync(
-                    imageDownloader,
-                    new AppleQueueHelpers.AppleArtworkDownloadRequest
-                    {
-                        RawUrl = embedUrl,
-                        OutputPath = embedPath,
-                        Settings = settings,
-                        Size = embedSize,
-                        Overwrite = settings.OverwriteFile,
-                        PreferMaxQuality = true,
-                        Logger = _logger
-                    },
-                    cancellationToken);
-            }
-            else
-            {
-                var sizedUrl = ApplyArtworkSize(embedUrl, embedSize);
-                downloaded = await imageDownloader.DownloadImageAsync(
-                    sizedUrl,
-                    embedPath,
-                    settings.OverwriteFile,
-                    true,
-                    cancellationToken);
-            }
-
-            if (!string.IsNullOrWhiteSpace(downloaded))
-            {
-                context.Track.Album.EmbeddedCoverPath = downloaded;
-            }
-        }
-
-        try
-        {
-            await audioTagger.TagTrackAsync(outputPath, context.Track, settings);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Apple tagging failed for {Path}", outputPath);
-            throw new InvalidOperationException($"Apple tagging failed for '{outputPath}'.", ex);
-        }
-
-        UpdateAudioPayloadFiles(payload, context.PathResult, outputPath);
-        return outputPath;
     }
 
     private async Task QueueParallelPostDownloadPrefetchAsync(
@@ -1417,23 +1330,23 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             var httpClientFactory = provider.GetService<IHttpClientFactory>();
             var appleCatalog = provider.GetService<AppleMusicCatalogService>();
             var deezerClient = provider.GetService<DeezerClient>();
-            var services = new CoverFallbackServices(appleCatalog, deezerClient, spotifyIdResolver, spotifyArtworkResolver, httpClientFactory);
             var preferMaxQualityCover = work.Settings.EmbedMaxQualityCover;
             var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(work.Settings);
             var runState = new PrefetchRunState(work.ShouldFetchArtwork, work.ShouldFetchLyrics);
 
-            var coverUrl = await ResolveCoverUrlWithFallbackAsync(
-                work.Payload,
-                work.Settings,
-                services,
+            var coverUrls = await ResolvePrefetchCoverUrlsAsync(
+                work,
+                appleCatalog,
+                httpClientFactory,
+                spotifyArtworkResolver,
+                spotifyIdResolver,
+                deezerClient,
                 token);
-            var isAppleCover = IsAppleArtworkUrl(coverUrl);
             var artworkTask = BuildArtworkPrefetchTask(
                 new ArtworkPrefetchContext
                 {
                     Work = work,
-                    CoverUrl = coverUrl,
-                    IsAppleCover = isAppleCover,
+                    CoverUrls = coverUrls,
                     PreferMaxQualityCover = preferMaxQualityCover,
                     AppleArtworkSize = appleArtworkSize,
                     ImageDownloader = imageDownloader,
@@ -1541,6 +1454,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     {
         try
         {
+            var failureReasons = new List<string>();
             var coverName = context.PathProcessor.GenerateAlbumName(
                 context.Work.Settings.CoverImageTemplate,
                 context.Work.Context.Track.Album,
@@ -1549,26 +1463,18 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
             if (context.Work.ShouldFetchPrimaryArtwork)
             {
-                if (string.IsNullOrWhiteSpace(context.CoverUrl))
+                if (context.CoverUrls.Count == 0)
                 {
-                    return new PrefetchArtworkResult(false, "Album artwork URL could not be resolved.");
+                    failureReasons.Add("Album artwork URL could not be resolved.");
                 }
-
-                Directory.CreateDirectory(context.Work.CoverPath);
-                var coverSaved = await SavePrefetchCoverArtworkAsync(
-                    new CoverSaveContext(
-                        context.Work.Settings,
-                        context.CoverUrl,
-                        context.Work.CoverPath,
-                        coverName,
-                        context.IsAppleCover,
-                        context.PreferMaxQualityCover,
-                        context.AppleArtworkSize,
-                        context.ImageDownloader),
-                    token);
-                if (!coverSaved)
+                else
                 {
-                    return new PrefetchArtworkResult(false, "Album artwork download failed.");
+                    Directory.CreateDirectory(context.Work.CoverPath);
+                    var coverSaved = await SavePrefetchCoverArtworkWithFallbackAsync(context, coverName, token);
+                    if (!coverSaved)
+                    {
+                        failureReasons.Add("Album artwork download failed.");
+                    }
                 }
             }
 
@@ -1600,12 +1506,18 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                     token);
                 if (!artistSaved)
                 {
-                    return new PrefetchArtworkResult(false, "Artist artwork download failed.");
+                    failureReasons.Add("Artist artwork download failed.");
                 }
             }
 
-            context.SetArtworkStatus(CompletedStatus);
-            return new PrefetchArtworkResult(true);
+            if (failureReasons.Count == 0)
+            {
+                context.SetArtworkStatus(CompletedStatus);
+                return new PrefetchArtworkResult(true);
+            }
+
+            context.SetArtworkStatus(FailedStatus);
+            return new PrefetchArtworkResult(false, string.Join(" ", failureReasons));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1706,6 +1618,38 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         return anySaved;
     }
 
+    private async Task<bool> SavePrefetchCoverArtworkWithFallbackAsync(
+        ArtworkPrefetchContext context,
+        string coverName,
+        CancellationToken token)
+    {
+        foreach (var coverUrl in context.CoverUrls)
+        {
+            if (string.IsNullOrWhiteSpace(coverUrl))
+            {
+                continue;
+            }
+
+            var coverSaved = await SavePrefetchCoverArtworkAsync(
+                new CoverSaveContext(
+                    context.Work.Settings,
+                    coverUrl,
+                    context.Work.CoverPath,
+                    coverName,
+                    IsAppleArtworkUrl(coverUrl),
+                    context.PreferMaxQualityCover,
+                    context.AppleArtworkSize,
+                    context.ImageDownloader),
+                token);
+            if (coverSaved)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private async Task<bool> SaveAnimatedPrefetchArtworkAsync(
         DeezSpoTagSettings settings,
         AppleQueueItem payload,
@@ -1786,94 +1730,36 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         payload.LyricsStatus = result.LyricsStatus;
     }
 
-    private static string ApplyArtworkSize(string url, int size)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return url;
-        }
-
-        var sizeStr = $"{size}x{size}";
-        if (url.Contains("{w}x{h}", StringComparison.OrdinalIgnoreCase))
-        {
-            return url.Replace("{w}x{h}", sizeStr, StringComparison.OrdinalIgnoreCase);
-        }
-
-        if (url.Contains("{w}", StringComparison.OrdinalIgnoreCase) || url.Contains("{h}", StringComparison.OrdinalIgnoreCase))
-        {
-            return url
-                .Replace("{w}", size.ToString(), StringComparison.OrdinalIgnoreCase)
-                .Replace("{h}", size.ToString(), StringComparison.OrdinalIgnoreCase);
-        }
-
-        return url;
-    }
-
     private static bool IsAppleArtworkUrl(string? url)
         => !string.IsNullOrWhiteSpace(url)
            && url.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<string?> ResolveCoverUrlWithFallbackAsync(
-        AppleQueueItem payload,
-        DeezSpoTagSettings settings,
-        CoverFallbackServices services,
-        CancellationToken cancellationToken)
-    {
-        foreach (var fallback in ArtworkFallbackHelper.ResolveOrder(settings))
-        {
-            var coverUrl = fallback switch
-            {
-                AppleProvider => await TryResolveAppleCoverUrlAsync(payload, settings, services.AppleCatalog, services.HttpClientFactory, cancellationToken),
-                DeezerProvider => await ArtworkFallbackHelper.TryResolveDeezerCoverAsync(
-                    services.DeezerClient,
-                    payload.DeezerId,
-                    settings.LocalArtworkSize,
-                    _logger,
-                    cancellationToken,
-                    payload.Album),
-                SpotifyProvider => await ArtworkFallbackHelper.TryResolveSpotifyCoverAsync(
-                    services.SpotifyIdResolver,
-                    services.SpotifyArtworkResolver,
-                    payload.Title,
-                    payload.Artist,
-                    payload.Album,
-                    payload.Isrc,
-                    cancellationToken),
-                _ => null
-            };
-
-            if (!string.IsNullOrWhiteSpace(coverUrl))
-            {
-                return coverUrl;
-            }
-        }
-
-        return null;
-    }
-
-    private async Task<string?> TryResolveAppleCoverUrlAsync(
-        AppleQueueItem payload,
-        DeezSpoTagSettings settings,
+    private Task<IReadOnlyList<string>> ResolvePrefetchCoverUrlsAsync(
+        PrefetchWorkContext work,
         AppleMusicCatalogService? appleCatalog,
         IHttpClientFactory? httpClientFactory,
+        ISpotifyArtworkResolver? spotifyArtworkResolver,
+        ISpotifyIdResolver? spotifyIdResolver,
+        DeezerClient? deezerClient,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(payload.Cover) && IsAppleArtworkUrl(payload.Cover))
-        {
-            return payload.Cover;
-        }
-
-        var appleId = ResolveAppleId(payload);
-        return await ArtworkFallbackHelper.TryResolveAppleCoverAsync(
-            appleCatalog,
-            httpClientFactory,
-            new ArtworkFallbackHelper.AppleCoverLookupRequest(
-                settings,
-                appleId,
+        var payload = work.Payload;
+        return DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
+            new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
+                work.Settings,
+                appleCatalog,
+                httpClientFactory,
+                spotifyArtworkResolver,
+                spotifyIdResolver,
+                deezerClient,
+                ResolveAppleId(payload),
                 payload.Title,
                 payload.Artist,
-                payload.Album),
-            _logger,
+                payload.Album,
+                payload.DeezerId,
+                payload.Cover,
+                payload.Isrc,
+                _logger),
             cancellationToken);
     }
 
