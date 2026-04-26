@@ -152,16 +152,30 @@ public sealed class SonarGuardrailParityTests
     }
 
     [Fact]
-    public void AutoTagStatus_DiffButton_RequestsFinalAccumulatedDiff()
+    public void AutoTagStatus_DiffButton_RequestsPlatformDiff()
     {
         var root = FindRepoRoot();
         var statusScriptPath = Path.Combine(root, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
         Assert.True(File.Exists(statusScriptPath), $"File not found: {statusScriptPath}");
 
         var source = File.ReadAllText(statusScriptPath);
-        Assert.Contains("showTagDiff(decodeURIComponent(encodedPath), null);", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("data-platform=\"${encodedPlatform}\"", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("const encodedPlatform = platform && platform !== \"--\" ? encodeURIComponent(platform) : \"\";", source, StringComparison.Ordinal);
+        Assert.Contains("const encodedPlatform = platform && platform !== \"--\" ? encodeURIComponent(platform) : \"\";", source, StringComparison.Ordinal);
+        Assert.Contains("data-platform=\"${encodedPlatform}\"", source, StringComparison.Ordinal);
+        Assert.Contains("showTagDiff(decodeURIComponent(encodedPath), decodeURIComponent(encodedPlatform));", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("showTagDiff(decodeURIComponent(encodedPath), null);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_FinalDiffRetainedSources_CanReportMergedPlatformContributors()
+    {
+        var root = FindRepoRoot();
+        var servicePath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"File not found: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.Contains("ResolveMergedValueSources(", source, StringComparison.Ordinal);
+        Assert.Contains("introducedContribution", source, StringComparison.Ordinal);
+        Assert.Contains("return sources.Count > 1 ? string.Join(\", \", sources) : null;", source, StringComparison.Ordinal);
     }
 
     [Fact]

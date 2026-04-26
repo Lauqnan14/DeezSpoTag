@@ -490,10 +490,12 @@
             const track = toFileName(inner.path);
             const usedShazam = inner.usedShazam ? '<i class="fas fa-music ms-1" title="Identified with Shazam"></i>' : "";
             const encodedPath = inner.path ? encodeURIComponent(inner.path) : "";
+            const encodedPlatform = platform && platform !== "--" ? encodeURIComponent(platform) : "";
             const canDiff = inner.path
+                && encodedPlatform
                 && (resultNormalized === STATUS_TAGGED || resultNormalized === STATUS_OK);
             const diffButton = canDiff
-                ? `<button type="button" class="action-btn action-btn-sm autotag-diff-btn" data-path="${encodedPath}">Diff</button>`
+                ? `<button type="button" class="action-btn action-btn-sm autotag-diff-btn" data-path="${encodedPath}" data-platform="${encodedPlatform}">Diff</button>`
                 : '<span class="text-muted">--</span>';
             return `<tr>
                 <td>${escapeHtml(time)}</td>
@@ -1121,11 +1123,12 @@
             }
 
             const encodedPath = button.dataset.path || "";
-            if (!encodedPath) {
+            const encodedPlatform = button.dataset.platform || "";
+            if (!encodedPath || !encodedPlatform) {
                 return;
             }
 
-            showTagDiff(decodeURIComponent(encodedPath), null);
+            showTagDiff(decodeURIComponent(encodedPath), decodeURIComponent(encodedPlatform));
         });
     }
 
