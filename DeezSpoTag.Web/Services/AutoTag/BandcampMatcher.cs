@@ -51,7 +51,7 @@ public sealed class BandcampMatcher
             _logger.LogWarning(ex, "Failed to extend Bandcamp track.");
         }
 
-        return new AutoTagMatchResult { Accuracy = match.Value.Accuracy, Track = ToAutoTagTrack(match.Value.Track) };
+        return null;
     }
 
     private static AutoTagTrack ToAutoTagTrack(BandcampTrackInfo track)

@@ -188,6 +188,7 @@ internal static class OneTaggerMatching
             var score = hasDurationEvidence
                 ? ((titleScore * 0.55d) + (durationScore * 0.45d))
                 : titleScore;
+            score = ApplyEvidenceCaps(score, info.Title, trackTitle, hasDurationEvidence);
             if (score >= config.Strictness)
             {
                 fuzzy.Add((score, track));
@@ -205,6 +206,26 @@ internal static class OneTaggerMatching
         SortTracks(top, config.MultipleMatches, selectors.GetReleaseDate);
 
         return new MatchSelection<T>(top[0].Score, top[0].Track);
+    }
+
+    private static double ApplyEvidenceCaps(
+        double score,
+        string sourceTitle,
+        string candidateTitle,
+        bool hasDurationEvidence)
+    {
+        var capped = score;
+        if (!string.Equals(sourceTitle.Trim(), candidateTitle.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            capped = Math.Min(capped, 0.96d);
+        }
+
+        if (!hasDurationEvidence)
+        {
+            capped = Math.Min(capped, 0.94d);
+        }
+
+        return capped;
     }
 
     private static MatchSelection<T>? MatchTrackExactFallback<T>(
@@ -240,7 +261,8 @@ internal static class OneTaggerMatching
             var cleanTitle = ApplySteps(info.Title, stepCount);
             foreach (var track in tracks)
             {
-                if (!MatchDuration(info.DurationSeconds, selectors.GetDuration(track), config))
+                var trackDuration = selectors.GetDuration(track);
+                if (!MatchDuration(info.DurationSeconds, trackDuration, config))
                 {
                     continue;
                 }
@@ -256,11 +278,47 @@ internal static class OneTaggerMatching
                     continue;
                 }
 
-                return new MatchSelection<T>(1.0, track);
+                return new MatchSelection<T>(
+                    ComputeExactFallbackScore(info, trackDuration, stepCount, requireArtistMatch),
+                    track);
             }
         }
 
         return null;
+    }
+
+    private static double ComputeExactFallbackScore(
+        AutoTagAudioInfo info,
+        TimeSpan? trackDuration,
+        int cleanupStepCount,
+        bool requiredArtistMatch)
+    {
+        var score = 1d;
+
+        if (cleanupStepCount > 0)
+        {
+            score -= Math.Min(0.24d, cleanupStepCount * 0.04d);
+        }
+
+        if (!requiredArtistMatch)
+        {
+            score = Math.Min(score, 0.90d);
+        }
+
+        if (!HasDurationEvidence(info.DurationSeconds, trackDuration))
+        {
+            score = Math.Min(score, 0.94d);
+        }
+
+        return Math.Clamp(score, 0d, 1d);
+    }
+
+    private static bool HasDurationEvidence(int? infoDurationSeconds, TimeSpan? trackDuration)
+    {
+        return infoDurationSeconds.HasValue
+               && infoDurationSeconds.Value > 0
+               && trackDuration is { } duration
+               && duration > TimeSpan.Zero;
     }
 
     private static double ComputeDurationScore(

@@ -690,62 +690,16 @@ DeezSpoTag.Download = {
                     return;
                 }
                 
-                // Deezer queue progress updates
+                // Queue progress/status updates. Different engines may emit either event name,
+                // but both are reduced through the same handler to keep progress state singular.
+                // TODO: Migrate backend emitters to updateQueue only, then remove the
+                // downloadProgress compatibility subscription.
                 this.connection.on("updateQueue", (update) => {
-                    if (!update) return;
-                    const eventContext = this.resolveQueueEventContext(update);
-                    if (!eventContext) return;
-                    const { downloadId, payload } = eventContext;
-
-                    if (payload.engine || payload.sourceService) {
-                        const resolvedEngine = this.resolveEngine(payload.engine, payload.sourceService);
-                        this.engineById[downloadId] = this.normalizeEngine(resolvedEngine);
-                    }
-
-                    const queueProgress = this.parseProgressValue(
-                        payload.progress !== undefined && payload.progress !== null
-                            ? payload.progress
-                            : payload.progressNext);
-                    if (queueProgress !== null) {
-                        this.updateDownloadProgress(downloadId, queueProgress);
-                    }
-
-                    const nextStatus = this.mapServerQueueStatus(payload.status);
-                    if (nextStatus === 'completed') {
-                        this.handleDownloadCompleted(downloadId, payload);
-                        return;
-                    }
-
-                    if (nextStatus === 'failed' || payload.failed === true) {
-                        this.handleDownloadError(downloadId, { message: payload.error || payload.message || 'Download failed' });
-                        return;
-                    }
-
-                    if (nextStatus === 'downloading' && queueProgress === null) {
-                        this.updateLocalQueueItem(downloadId, { status: 'downloading' });
-                        this.updateQueueDisplay();
-                        return;
-                    }
-
-                    if (nextStatus === 'paused' || nextStatus === 'cancelled') {
-                        this.updateLocalQueueItem(downloadId, { status: nextStatus });
-                        this.updateQueueDisplay();
-                    }
+                    this.handleQueueRealtimeUpdate(update);
                 });
 
-                // Progress updates emitted by the Deezer adapter
                 this.connection.on("downloadProgress", (update) => {
-                    if (!update) return;
-                    const eventContext = this.resolveQueueEventContext(update);
-                    if (!eventContext) return;
-                    const { downloadId, payload } = eventContext;
-                    const progress = this.parseProgressValue(
-                        payload.progress !== undefined && payload.progress !== null
-                            ? payload.progress
-                            : payload.progressNext);
-                    if (progress !== null) {
-                        this.updateDownloadProgress(downloadId, progress);
-                    }
+                    this.handleQueueRealtimeUpdate(update);
                 });
 
                 // Deezer adapter emits downloadStart/downloadComplete
@@ -2315,6 +2269,48 @@ DeezSpoTag.Download = {
     },
 
     // SignalR event handlers
+    handleQueueRealtimeUpdate(update) {
+        if (!update) return;
+        const eventContext = this.resolveQueueEventContext(update);
+        if (!eventContext) return;
+        const { downloadId, payload } = eventContext;
+
+        if (payload.engine || payload.sourceService) {
+            const resolvedEngine = this.resolveEngine(payload.engine, payload.sourceService);
+            this.engineById[downloadId] = this.normalizeEngine(resolvedEngine);
+        }
+
+        const queueProgress = this.parseProgressValue(
+            payload.progress !== undefined && payload.progress !== null
+                ? payload.progress
+                : payload.progressNext);
+        if (queueProgress !== null) {
+            this.updateDownloadProgress(downloadId, queueProgress);
+        }
+
+        const nextStatus = this.mapServerQueueStatus(payload.status);
+        if (nextStatus === 'completed') {
+            this.handleDownloadCompleted(downloadId, payload);
+            return;
+        }
+
+        if (nextStatus === 'failed' || payload.failed === true) {
+            this.handleDownloadError(downloadId, { message: payload.error || payload.message || 'Download failed' });
+            return;
+        }
+
+        if (nextStatus === 'downloading' && queueProgress === null) {
+            this.updateLocalQueueItem(downloadId, { status: 'downloading' });
+            this.updateQueueDisplay();
+            return;
+        }
+
+        if (nextStatus === 'paused' || nextStatus === 'cancelled') {
+            this.updateLocalQueueItem(downloadId, { status: nextStatus });
+            this.updateQueueDisplay();
+        }
+    },
+
     updateDownloadProgress(downloadId, progress) {
         const item = this.queue.items.find(entry => entry.id === downloadId);
         const mergedProgress = this.mergeProgressPercent(

@@ -892,6 +892,22 @@
     overflow: hidden;
 }
 
+.downloads-tab .progress-bar.is-indeterminate .progress-fill {
+    width: 35%;
+    min-width: 35%;
+    transition: none;
+    animation: downloadProgressIndeterminate 1.15s ease-in-out infinite;
+}
+
+@@keyframes downloadProgressIndeterminate {
+    0% {
+        transform: translateX(-120%);
+    }
+    100% {
+        transform: translateX(310%);
+    }
+}
+
 .downloads-tab .progress-text {
     display: flex;
     justify-content: space-between;
@@ -4270,9 +4286,13 @@ async function clearCanceledTasks() {
 	            ? clampQueueProgressPercent(cachedProgress)
 	            : progressValue;
 	        queueProgressCache[taskId] = progressStart;
+	        const hasMeasuredProgress = progressValue > 0 || progressStart > 0;
 		        const progressHtml = statusForUi === 'running'
-		            ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
-		               <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
+		            ? (hasMeasuredProgress
+		                ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
+		                   <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
+		                : `<div class="progress-text"><span>Downloading...</span><span class="progress-value">Working</span></div>
+		                   <div class="progress-bar is-indeterminate"><div class="progress-fill"></div></div>`)
 		            : '';
 		        if (statusForUi !== 'running' && queueProgressTextAnimationByTask[taskId] != null) {
 		            cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
@@ -4451,35 +4471,6 @@ function animateQueueProgress(taskId, fillEl, valueEl, target) {
     fillEl.style.width = `${targetValue}%`;
     valueEl.textContent = `${formatQueueProgressPercent(targetValue)}%`;
     queueProgressCache[taskId] = targetValue;
-}
-
-function updateQueueProgressDom(taskId, progress) {
-    const selectorTaskId = escapeCssSelectorValue(taskId);
-    if (!selectorTaskId) {
-        return false;
-    }
-
-    const taskCard = document.querySelector(`.task-card[data-task-id="${selectorTaskId}"]`);
-    if (!taskCard) {
-        return false;
-    }
-
-    const fillEl = taskCard.querySelector('.progress-fill[data-progress-target]');
-    const valueEl = taskCard.querySelector('.progress-value');
-    if (!fillEl || !valueEl) {
-        return false;
-    }
-
-    const targetValue = clampQueueProgressPercent(progress);
-    const startValue = Number.isFinite(queueProgressCache[taskId])
-        ? clampQueueProgressPercent(queueProgressCache[taskId])
-        : targetValue;
-    fillEl.dataset.progressTarget = String(targetValue);
-    fillEl.dataset.progressStart = String(startValue);
-    valueEl.dataset.progressTarget = String(targetValue);
-    valueEl.dataset.progressStart = String(startValue);
-    animateQueueProgress(taskId, fillEl, valueEl, targetValue);
-    return true;
 }
 
 function orderTasksForAutoScroll(taskList, options) {
@@ -5477,64 +5468,6 @@ function parseQueueRealtimeProgressValue(value) {
     return Number.isFinite(numeric) ? numeric : null;
 }
 
-function applyQueueRealtimeProgress(payload) {
-    const taskId = normalizeQueueEventUuid(payload);
-    if (!taskId) {
-        return;
-    }
-    const progress = normalizeQueueProgressPercent(payload?.progress ?? payload?.progressNext);
-    const task = tasks.find(entry => entry.taskId === taskId);
-    if (!task) {
-        scheduleQueueHydrationRefresh();
-        return;
-    }
-
-    const previousStatus = task.status;
-    let changed = false;
-    const mergedProgress = normalizeQueueProgressPercent(resolveMergedQueueProgress(
-        task.progress,
-        progress,
-        task.status,
-        'running'));
-    if (task.progress !== mergedProgress) {
-        task.progress = mergedProgress;
-        changed = true;
-    }
-    if (progress > 0 && task.status === 'queued') {
-        task.status = 'running';
-        changed = true;
-    }
-    if (progress >= 100) {
-        setTaskActivity(taskId, 'Finalizing items...');
-    } else {
-        if (hasActivePrefetchStatus(taskId)) {
-            if (changed) {
-                if (task.status !== previousStatus) {
-                    updateStats();
-                }
-                scheduleRenderTasks();
-            }
-            return;
-        }
-        clearTaskActivity(taskId);
-    }
-    if (taskNeedsMetadataHydration(task)) {
-        scheduleQueueHydrationRefresh();
-    }
-    if (changed) {
-        const statusChanged = task.status !== previousStatus;
-        if (statusChanged) {
-            updateStats();
-            scheduleRenderTasks();
-            return;
-        }
-
-        if (!updateQueueProgressDom(taskId, task.progress)) {
-            scheduleRenderTasks();
-        }
-    }
-}
-
 function applyQueueRealtimeUpdate(payload) {
     const taskId = normalizeQueueEventUuid(payload);
     if (!taskId) {
@@ -5576,6 +5509,10 @@ function applyQueueRealtimeUpdate(payload) {
     const mergedStatus = resolveMergedQueueStatus(task.status, status, task.progress);
     if (status && task.status !== mergedStatus) {
         task.status = mergedStatus;
+        taskChanged = true;
+    }
+    if (!status && nextProgress !== null && nextProgress > 0 && task.status === 'queued') {
+        task.status = 'running';
         taskChanged = true;
     }
     const nextTitle = resolveQueueItemTitle(update);
@@ -5662,6 +5599,11 @@ function applyQueueRealtimeUpdate(payload) {
         task.progress = 100;
         taskChanged = true;
     }
+    if (nextProgress !== null && nextProgress >= 100) {
+        setTaskActivity(taskId, 'Finalizing items...');
+    } else if ((status === 'running' || nextProgress !== null) && !hasActivePrefetchStatus(taskId)) {
+        clearTaskActivity(taskId);
+    }
     if (taskNeedsMetadataHydration(task)) {
         scheduleQueueHydrationRefresh();
     }
@@ -5670,11 +5612,7 @@ function applyQueueRealtimeUpdate(payload) {
         scheduleRenderTasks();
     }
 
-    if (status === 'running') {
-        applyQueueRealtimeProgress(update);
-        return;
-    }
-    if (status) {
+    if (status && status !== 'running') {
         clearTaskActivity(taskId);
         clearTaskPrefetchStatus(taskId);
         return;
@@ -5686,13 +5624,6 @@ function applyQueueRealtimeUpdate(payload) {
         return;
     }
 
-    const trailingProgress = parseQueueRealtimeProgressValue(
-        update?.progress !== undefined && update?.progress !== null
-            ? update.progress
-            : update?.progressNext);
-    if (trailingProgress !== null) {
-        applyQueueRealtimeProgress(update);
-    }
 }
 
 function resolveQueueRealtimeConnection() {
@@ -5718,11 +5649,13 @@ function initQueueRealtimeEvents() {
     }
 
     queueRealtimeAttached = true;
+    // TODO: Migrate backend emitters to a single canonical queue event and remove the
+    // downloadProgress compatibility subscription after every engine emits updateQueue.
     connection.on('updateQueue', (payload) => {
         applyQueueRealtimeUpdate(payload);
     });
     connection.on('downloadProgress', (payload) => {
-        applyQueueRealtimeProgress(payload);
+        applyQueueRealtimeUpdate(payload);
     });
     connection.on('downloadInfo', (payload) => {
         const taskId = normalizeQueueEventUuid(payload);
