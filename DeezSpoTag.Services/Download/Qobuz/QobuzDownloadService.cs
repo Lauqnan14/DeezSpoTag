@@ -927,21 +927,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 context.Request.ProgressCallback,
                 cancellationToken);
 
-            await TryTagFileAsync(new QobuzTaggingContext
-            {
-                FilePath = context.OutputPath,
-                Title = context.Request.TrackName,
-                Artist = context.Request.ArtistName,
-                Album = context.Request.AlbumName,
-                AlbumArtist = context.Request.AlbumArtist,
-                ReleaseDate = context.Request.ReleaseDate,
-                TrackNumber = context.Request.SpotifyTrackNumber,
-                DiscNumber = context.Request.SpotifyDiscNumber,
-                TotalTracks = context.Request.SpotifyTotalTracks,
-                CoverUrl = context.Request.CoverUrl,
-                EmbedMaxQualityCover = context.Request.EmbedMaxQualityCover,
-                TagSettings = context.Request.TagSettings
-            }, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -950,54 +935,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
     }
 
-    private async Task TryTagFileAsync(
-        QobuzTaggingContext context,
-        CancellationToken cancellationToken)
-    {
-        await AudioFileTaggingHelper.TryTagAsync(
-            new AudioFileTaggingHelper.AudioTaggingRequest(
-                Logger: _logger,
-                EngineName: "Qobuz",
-                HttpClient: _apiClient,
-                FilePath: context.FilePath,
-                TagData: AudioFileTaggingHelper.CreateTagData(
-                    new AudioFileTaggingHelper.AudioTagDataInput(
-                        Title: context.Title,
-                        Artist: context.Artist,
-                        Album: context.Album,
-                        AlbumArtist: context.AlbumArtist,
-                        ReleaseDate: context.ReleaseDate,
-                        TrackNumber: context.TrackNumber,
-                        DiscNumber: context.DiscNumber,
-                        TotalTracks: context.TotalTracks,
-                        Isrc: null)),
-                CoverUrl: context.CoverUrl,
-                EmbedMaxQualityCover: context.EmbedMaxQualityCover,
-                TagSettings: context.TagSettings),
-            cancellationToken);
-    }
-
     private sealed class DownloadExecutionContext
     {
         public required string DownloadUrl { get; init; }
         public required string OutputPath { get; init; }
         public required QobuzDownloadRequest Request { get; init; }
-    }
-
-    private sealed class QobuzTaggingContext
-    {
-        public required string FilePath { get; init; }
-        public required string Title { get; init; }
-        public required string Artist { get; init; }
-        public required string Album { get; init; }
-        public required string AlbumArtist { get; init; }
-        public required string ReleaseDate { get; init; }
-        public required int TrackNumber { get; init; }
-        public required int DiscNumber { get; init; }
-        public required int TotalTracks { get; init; }
-        public required string CoverUrl { get; init; }
-        public required bool EmbedMaxQualityCover { get; init; }
-        public required DeezSpoTag.Core.Models.Settings.TagSettings? TagSettings { get; init; }
     }
 
     private static bool TryResolveExpectedExisting(string expectedPath, string isrc, out string resolvedPath)

@@ -119,6 +119,37 @@ public sealed class AutoTagConfigBuilderTests
     }
 
     [Fact]
+    public void BuildConfigJson_MigratesLegacyFilenameTemplateToTracknameTemplate()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>
+                {
+                    ["filenameTemplate"] = JsonSerializer.SerializeToElement("%artists% - %title%"),
+                    ["albumTracknameTemplate"] = JsonSerializer.SerializeToElement("%tracknumber% - %title%"),
+                    ["playlistTracknameTemplate"] = JsonSerializer.SerializeToElement("%artist% - %title%")
+                }
+            }
+        };
+        profile.TagConfig.Title = TagSource.DownloadSource;
+
+        var builder = new AutoTagConfigBuilder();
+        var json = builder.BuildConfigJson(profile);
+
+        Assert.False(string.IsNullOrWhiteSpace(json));
+        using var document = JsonDocument.Parse(json!);
+        var root = document.RootElement;
+
+        Assert.Equal("%artists% - %title%", root.GetProperty("tracknameTemplate").GetString());
+        Assert.False(root.TryGetProperty("filenameTemplate", out _));
+        Assert.False(root.TryGetProperty("albumTracknameTemplate", out _));
+        Assert.False(root.TryGetProperty("playlistTracknameTemplate", out _));
+    }
+
+    [Fact]
     public void BuildConfigJson_IncludesProfileTechnicalSettings()
     {
         var profile = new TaggingProfile

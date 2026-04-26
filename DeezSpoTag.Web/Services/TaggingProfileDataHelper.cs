@@ -77,6 +77,7 @@ internal static class TaggingProfileDataHelper
         var sanitized = autoTag ?? new AutoTagSettings();
         sanitized.Data ??= new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         _ = StripAuthSecrets(sanitized.Data);
+        TaggingProfileCanonicalizer.CanonicalizeTemplateKeys(sanitized.Data);
         CanonicalizeArtworkSidecarKey(sanitized.Data);
         EnsureBooleanAutoTagDefault(sanitized.Data, OverwriteKey, false);
         EnsureStringArrayAutoTagDefault(sanitized.Data, OverwriteTagsKey);

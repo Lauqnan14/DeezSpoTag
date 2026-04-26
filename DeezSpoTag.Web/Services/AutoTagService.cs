@@ -1595,7 +1595,7 @@ public class AutoTagService
                 return null;
             }
 
-            return RedactSensitiveConfigJson(json);
+            return RedactSensitiveConfigJson(SanitizeConfigJson(json));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3812,6 +3812,7 @@ public class AutoTagService
             EnsureEffectivePlatforms(node);
             EnsureSupportedDownloadTagSource(node);
             EnsureOverwriteDefaults(node);
+            EnsureTracknameTemplateCanonical(node);
             EnsureEnhancementTagsMergeEnrichmentAndEnhancement(node);
             EnsureEnhancementFolderScopesCanonical(node);
             EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
@@ -3870,6 +3871,46 @@ public class AutoTagService
         {
             root["forceShazam"] = false;
         }
+    }
+
+    private static void EnsureTracknameTemplateCanonical(JsonNode node)
+    {
+        if (node is not JsonObject root)
+        {
+            return;
+        }
+
+        var trackTemplate = ReadString(root, "tracknameTemplate");
+        if (string.IsNullOrWhiteSpace(trackTemplate))
+        {
+            foreach (var legacyKey in new[] { "filenameTemplate", "albumTracknameTemplate", "playlistTracknameTemplate" })
+            {
+                var legacyTemplate = ReadString(root, legacyKey);
+                if (string.IsNullOrWhiteSpace(legacyTemplate))
+                {
+                    continue;
+                }
+
+                root["tracknameTemplate"] = legacyTemplate.Trim();
+                break;
+            }
+        }
+
+        root.Remove("filenameTemplate");
+        root.Remove("albumTracknameTemplate");
+        root.Remove("playlistTracknameTemplate");
+    }
+
+    private static string? ReadString(JsonObject root, string key)
+    {
+        if (root[key] is not JsonValue value
+            || !value.TryGetValue<string>(out var text))
+        {
+            return null;
+        }
+
+        text = text.Trim();
+        return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 
     private static void EnsureSupportedDownloadTagSource(JsonNode node)

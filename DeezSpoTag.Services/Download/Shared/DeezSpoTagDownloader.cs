@@ -823,7 +823,8 @@ public class DeezSpoTagDownloader : IDeezSpoTagDownloader
         var picture = new TagLib.Picture(coverData)
         {
             Type = TagLib.PictureType.FrontCover,
-            Description = "cover"
+            Description = "cover",
+            MimeType = CoverArtMimeTypeResolver.Resolve(embeddedCoverPath, coverData)
         };
         file.Tag.Pictures = new TagLib.IPicture[] { picture };
         file.Save();

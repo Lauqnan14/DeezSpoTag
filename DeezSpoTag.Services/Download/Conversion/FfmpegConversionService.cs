@@ -8,6 +8,10 @@ public sealed class FfmpegConversionService
 {
     private const string M4aAacFormat = "m4a-aac";
     private const string M4aAlacFormat = "m4a-alac";
+    private const string M4bAacFormat = "m4b-aac";
+    private const string M4pAacFormat = "m4p-aac";
+    private const string AaxAacFormat = "aax-aac";
+    private const string AaAacFormat = "aa-aac";
     private const string AudioCodecArg = "-codec:a";
     private readonly ILogger<FfmpegConversionService> _logger;
 
@@ -82,9 +86,16 @@ public sealed class FfmpegConversionService
 
         return convertTo.Trim().ToLowerInvariant() switch
         {
-            "aac" => M4aAacFormat,
+            "aac" => "aac",
             "alac" => M4aAlacFormat,
             "m4a" => M4aAacFormat,
+            "m4b" => M4bAacFormat,
+            "m4p" => M4pAacFormat,
+            "aax" => AaxAacFormat,
+            "aa" => AaAacFormat,
+            "m4a-aac" => M4aAacFormat,
+            "oga" => "oga",
+            "mpp" => "mpc",
             _ => convertTo.Trim().ToLowerInvariant()
         };
     }
@@ -96,6 +107,10 @@ public sealed class FfmpegConversionService
         var extension = format switch
         {
             M4aAacFormat or M4aAlacFormat => ".m4a",
+            M4bAacFormat => ".m4b",
+            M4pAacFormat => ".m4p",
+            AaxAacFormat => ".aax",
+            AaAacFormat => ".aa",
             _ => "." + format
         };
 
@@ -125,7 +140,19 @@ public sealed class FfmpegConversionService
 
     private static bool IsLossy(string format)
     {
-        return format is "mp3" or M4aAacFormat or "ogg" or "opus";
+        return format is
+            "mp3"
+            or "aac"
+            or M4aAacFormat
+            or M4bAacFormat
+            or M4pAacFormat
+            or AaxAacFormat
+            or AaAacFormat
+            or "ogg"
+            or "oga"
+            or "opus"
+            or "webm"
+            or "wma";
     }
 
     private ConversionSetup TryBuildConversionSetup(
@@ -261,7 +288,14 @@ public sealed class FfmpegConversionService
             "-map_metadata", "0"
         };
 
-        var preserveAttachedArtwork = format is "mp3" or M4aAacFormat or M4aAlacFormat;
+        var preserveAttachedArtwork = format is
+            "mp3"
+            or M4aAacFormat
+            or M4aAlacFormat
+            or M4bAacFormat
+            or M4pAacFormat
+            or AaxAacFormat
+            or AaAacFormat;
         if (preserveAttachedArtwork)
         {
             args.Add("-map");
@@ -280,7 +314,17 @@ public sealed class FfmpegConversionService
                 args.Add("-id3v2_version");
                 args.Add("3");
                 break;
+            case "aac":
+                args.Add(AudioCodecArg);
+                args.Add("aac");
+                args.Add("-b:a");
+                args.Add(bitrate);
+                break;
             case M4aAacFormat:
+            case M4bAacFormat:
+            case M4pAacFormat:
+            case AaxAacFormat:
+            case AaAacFormat:
                 args.Add(AudioCodecArg);
                 args.Add("aac");
                 args.Add("-b:a");
@@ -299,12 +343,14 @@ public sealed class FfmpegConversionService
                 args.Add("flac");
                 break;
             case "ogg":
+            case "oga":
                 args.Add(AudioCodecArg);
                 args.Add("libvorbis");
                 args.Add("-b:a");
                 args.Add(bitrate);
                 break;
             case "opus":
+            case "webm":
                 args.Add(AudioCodecArg);
                 args.Add("libopus");
                 args.Add("-b:a");
@@ -313,6 +359,34 @@ public sealed class FfmpegConversionService
             case "wav":
                 args.Add(AudioCodecArg);
                 args.Add("pcm_s16le");
+                break;
+            case "aiff":
+                args.Add(AudioCodecArg);
+                args.Add("pcm_s16be");
+                break;
+            case "wma":
+                args.Add(AudioCodecArg);
+                args.Add("wmav2");
+                args.Add("-b:a");
+                args.Add(bitrate);
+                break;
+            case "ape":
+                args.Add(AudioCodecArg);
+                args.Add("ape");
+                break;
+            case "wv":
+                args.Add(AudioCodecArg);
+                args.Add("wavpack");
+                break;
+            case "dsf":
+                args.Add(AudioCodecArg);
+                args.Add("dsd_lsbf");
+                break;
+            case "mpc":
+                args.Add(AudioCodecArg);
+                args.Add("mpc7");
+                args.Add("-b:a");
+                args.Add(bitrate);
                 break;
         }
 
@@ -337,12 +411,37 @@ public sealed class FfmpegConversionService
 
     private static bool IsLossyFormat(string format)
     {
-        return format is "mp3" or "m4a" or M4aAacFormat or "aac" or "ogg" or "opus";
+        return format is
+            "mp3"
+            or "m4a"
+            or "m4b"
+            or "m4p"
+            or "aax"
+            or "aa"
+            or M4aAacFormat
+            or M4bAacFormat
+            or M4pAacFormat
+            or AaxAacFormat
+            or AaAacFormat
+            or "aac"
+            or "ogg"
+            or "oga"
+            or "opus"
+            or "webm"
+            or "wma";
     }
 
     private static bool IsLosslessTarget(string format)
     {
-        return format is "flac" or "wav" or M4aAlacFormat or "alac";
+        return format is
+            "flac"
+            or "wav"
+            or "aiff"
+            or "ape"
+            or "wv"
+            or "dsf"
+            or M4aAlacFormat
+            or "alac";
     }
 
     private static string Quote(string value) => $"\"{value}\"";

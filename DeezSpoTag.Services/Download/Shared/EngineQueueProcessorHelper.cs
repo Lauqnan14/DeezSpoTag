@@ -300,29 +300,42 @@ internal static class EngineQueueProcessorHelper
             return outputPath;
         }
 
+        using var scope = workContext.Deps.ServiceProvider.CreateScope();
+        var postDownloadRequest = new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
+            context,
+            workContext.Payload,
+            outputPath,
+            workContext.Settings,
+            scope.ServiceProvider,
+            workContext.EngineName,
+            workContext.Deps.Logger);
+        return await ApplyPostDownloadSettingsWithFallbackAsync(
+            workContext.EngineName,
+            workContext.Item.QueueUuid,
+            outputPath,
+            workContext.Deps.Logger,
+            () => EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(postDownloadRequest, itemToken));
+    }
+
+    internal static async Task<string> ApplyPostDownloadSettingsWithFallbackAsync(
+        string engineName,
+        string queueUuid,
+        string outputPath,
+        ILogger logger,
+        Func<Task<string>> applySettingsAsync)
+    {
         try
         {
-            using var scope = workContext.Deps.ServiceProvider.CreateScope();
-            var postDownloadRequest = new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
-                context,
-                workContext.Payload,
-                outputPath,
-                workContext.Settings,
-                scope.ServiceProvider,
-                workContext.EngineName,
-                workContext.Deps.Logger);
-            return await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(postDownloadRequest, itemToken);
+            return await applySettingsAsync();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            workContext.Deps.Logger.LogWarning(
+            logger.LogError(
                 ex,
-                "{Engine} post-download settings failed for {QueueUuid}",
-                workContext.EngineName,
-                workContext.Item.QueueUuid);
-            throw new InvalidOperationException(
-                $"{workContext.EngineName} post-download profile tagging failed for queue item {workContext.Item.QueueUuid}.",
-                ex);
+                "{Engine} post-download settings failed for {QueueUuid}; failing queue item.",
+                engineName,
+                queueUuid);
+            throw;
         }
     }
 

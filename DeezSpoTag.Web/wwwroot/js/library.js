@@ -160,7 +160,11 @@ let activeFolderQualityDropdown = null;
 let activeFolderQualityPanel = null;
 let activeFolderQualitySummary = null;
 let folderQualityOverlayHandlersBound = false;
-const FOLDER_CONVERSION_FORMAT_VALUES = Object.freeze(['mp3', 'aac', 'alac', 'ogg', 'opus', 'flac', 'wav']);
+const FOLDER_CONVERSION_FORMAT_VALUES = Object.freeze([
+    'aa', 'aax', 'aac', 'aiff', 'ape', 'dsf', 'flac', 'm4a', 'm4b', 'm4p',
+    'mp3', 'mpc', 'mpp', 'ogg', 'oga', 'wav', 'wma', 'wv', 'webm',
+    'alac', 'opus'
+]);
 const FOLDER_CONVERSION_BITRATE_VALUES = Object.freeze(['AUTO', '64', '96', '128', '160', '192', '256', '320']);
 
 function normalizeFolderConvertFormatValue(value) {
@@ -169,10 +173,12 @@ function normalizeFolderConvertFormatValue(value) {
         return null;
     }
     let normalized = text;
-    if (text === 'm4a' || text === 'm4a-aac') {
-        normalized = 'aac';
+    if (text === 'm4a-aac') {
+        normalized = 'm4a';
     } else if (text === 'm4a-alac') {
         normalized = 'alac';
+    } else if (text === 'musepack') {
+        normalized = 'mpc';
     }
     return FOLDER_CONVERSION_FORMAT_VALUES.includes(normalized) ? normalized : null;
 }
@@ -9274,13 +9280,27 @@ function renderFolders() {
     const qualityOptions = rawQualityOptions.filter((option) => !["ATMOS", "VIDEO", "PODCAST"].includes(option.value));
     const conversionModeValue = 'conv:on';
     const conversionFormatOptions = [
-        { value: 'mp3', label: 'MP3' },
-        { value: 'aac', label: 'AAC (M4A)' },
-        { value: 'alac', label: 'ALAC (M4A)' },
-        { value: 'ogg', label: 'OGG' },
-        { value: 'opus', label: 'OPUS' },
+        { value: 'aa', label: 'AA' },
+        { value: 'aax', label: 'AAX' },
+        { value: 'aac', label: 'AAC' },
+        { value: 'aiff', label: 'AIFF' },
+        { value: 'ape', label: 'APE' },
+        { value: 'dsf', label: 'DSF' },
         { value: 'flac', label: 'FLAC' },
-        { value: 'wav', label: 'WAV' }
+        { value: 'm4a', label: 'M4A' },
+        { value: 'm4b', label: 'M4B' },
+        { value: 'm4p', label: 'M4P' },
+        { value: 'mp3', label: 'MP3' },
+        { value: 'mpc', label: 'MPC' },
+        { value: 'mpp', label: 'MPP' },
+        { value: 'ogg', label: 'OGG' },
+        { value: 'oga', label: 'OGA' },
+        { value: 'wav', label: 'WAV' },
+        { value: 'wma', label: 'WMA' },
+        { value: 'wv', label: 'WV' },
+        { value: 'webm', label: 'WEBM' },
+        { value: 'alac', label: 'ALAC (M4A)' },
+        { value: 'opus', label: 'OPUS' }
     ];
     const conversionBitrateOptions = [
         { value: 'AUTO', label: 'Auto' },

@@ -22,6 +22,8 @@ DeezSpoTag.Download = {
     progressCacheById: {},
     progressAnimationFrameById: {},
     progressAnimationDurationMs: 300,
+    inFlightLockTimeoutMs: 45000,
+    inFlightSequence: 0,
     inFlightByUrl: {},
     settings: null,
     settingsPromise: null,
@@ -873,13 +875,49 @@ DeezSpoTag.Download = {
             }
         };
     },
+    cleanupStaleInFlightLocks() {
+        const now = Date.now();
+        const timeoutMs = Number(this.inFlightLockTimeoutMs) || 45000;
+        Object.keys(this.inFlightByUrl || {}).forEach((url) => {
+            const lock = this.inFlightByUrl[url];
+            const startedAt = Number(lock?.startedAt || 0);
+            if (!startedAt || (now - startedAt) > timeoutMs) {
+                delete this.inFlightByUrl[url];
+            }
+        });
+    },
+    getActiveInFlightLock(normalizedUrl) {
+        this.cleanupStaleInFlightLocks();
+        const lock = this.inFlightByUrl[normalizedUrl];
+        return lock && typeof lock === 'object' ? lock : null;
+    },
+    acquireInFlightLock(normalizedUrl, destinationId) {
+        const lockId = `${Date.now()}-${++this.inFlightSequence}`;
+        this.inFlightByUrl[normalizedUrl] = {
+            id: lockId,
+            startedAt: Date.now(),
+            destinationId: destinationId ?? null
+        };
+        return lockId;
+    },
+    releaseInFlightLock(normalizedUrl, lockId) {
+        const activeLock = this.inFlightByUrl[normalizedUrl];
+        if (!activeLock) {
+            return;
+        }
+        if (lockId && activeLock.id && activeLock.id !== lockId) {
+            return;
+        }
+        delete this.inFlightByUrl[normalizedUrl];
+    },
     validateQueueInput(url, normalizedUrl, destinationFolderId, destinationId, notify) {
         if (!url) {
             const errorMessage = 'Please provide a valid URL';
             notify(errorMessage, 'error');
             return { success: false, errorMessage };
         }
-        if (this.inFlightByUrl[normalizedUrl]) {
+        const activeLock = this.getActiveInFlightLock(normalizedUrl);
+        if (activeLock) {
             const errorMessage = 'Download already queued or in progress';
             notify(errorMessage, 'warning');
             this.logDownloadEvent('info', errorMessage);
@@ -1571,7 +1609,7 @@ DeezSpoTag.Download = {
 
         notify('Adding to download queue...', 'info');
         this.addPendingQueueIfNeeded(url, bitrate, destinationId, options);
-        this.inFlightByUrl[normalizedUrl] = true;
+        const lockId = this.acquireInFlightLock(normalizedUrl, destinationId);
 
         try {
             await this.ensureSettingsLoaded();
@@ -1594,7 +1632,7 @@ DeezSpoTag.Download = {
                 notify
             });
         } finally {
-            delete this.inFlightByUrl[normalizedUrl];
+            this.releaseInFlightLock(normalizedUrl, lockId);
         }
     },
 

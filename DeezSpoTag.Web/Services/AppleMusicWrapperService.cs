@@ -22,6 +22,9 @@ public sealed record AppleMusicWrapperStatusSnapshot(
 public sealed record AppleMusicWrapperDiagnostics(
     string? WrapperHost,
     bool PortsOpen,
+    bool AcceptingLoginCommands,
+    bool SharedControlReady,
+    string? SharedControlDetails,
     bool AccountInfoReachable,
     bool HasDevToken,
     bool HasMusicToken,
@@ -619,9 +622,12 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         if (!IsHelperControlModeEnabled())
         {
+            var autoStartResult = await TryAutoStartExternalWrapperAsync(cancellationToken);
             lock (_sync)
             {
-                _externalStartError = "External wrapper is not reachable. Start the apple-wrapper service/container and retry Apple login.";
+                _externalStartError = autoStartResult.Success
+                    ? null
+                    : autoStartResult.Error ?? "External wrapper is not reachable. Start the apple-wrapper service/container and retry Apple login.";
                 _externalStartErrorAt = DateTimeOffset.UtcNow;
             }
             return;
@@ -643,6 +649,54 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 _externalStartErrorAt = DateTimeOffset.UtcNow;
             }
         }
+    }
+
+    private async Task<(bool Success, string? Error)> TryAutoStartExternalWrapperAsync(CancellationToken cancellationToken)
+    {
+        var hostCandidates = ResolveExternalWrapperHosts();
+        if (hostCandidates.Any(candidate => AreWrapperPortsOpen(candidate, TimeSpan.FromMilliseconds(350))))
+        {
+            return (true, null);
+        }
+
+        var helperPath = ResolveExternalWrapperHelperPath();
+        if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
+        {
+            return (false, "External wrapper is not reachable and helper is unavailable. Start apple-wrapper manually, then retry login.");
+        }
+
+        var runResult = await TryRunExternalWrapperHelperAsync(HelperRunArgs, cancellationToken);
+        if (!runResult.Success)
+        {
+            var message = string.IsNullOrWhiteSpace(runResult.Error)
+                ? "External wrapper start command failed."
+                : runResult.Error;
+            return (false, message);
+        }
+
+        if (await WaitForExternalWrapperPortsAsync(TimeSpan.FromSeconds(10), cancellationToken))
+        {
+            return (true, null);
+        }
+
+        return (false, "External wrapper start command ran, but ports 10020/20020/30020 did not become reachable.");
+    }
+
+    private async Task<bool> WaitForExternalWrapperPortsAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!cancellationToken.IsCancellationRequested && DateTimeOffset.UtcNow < deadline)
+        {
+            var hostCandidates = ResolveExternalWrapperHosts();
+            if (hostCandidates.Any(candidate => AreWrapperPortsOpen(candidate, TimeSpan.FromMilliseconds(300))))
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+        }
+
+        return false;
     }
 
     public async Task<AppleMusicWrapperHelperResult> RunExternalWrapperHelperAsync(string[] args, CancellationToken cancellationToken)
@@ -705,23 +759,47 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         AppleMusicWrapperHelperResult result;
         if (!IsHelperControlModeEnabled())
         {
-            if (TryClearSharedWrapperSession(out var clearError))
+            var sharedSessionCleared = TryClearSharedWrapperSession(out var clearError);
+            var runtimeResetResult = await TryResetSharedModeWrapperRuntimeCacheAsync(cancellationToken);
+            var runtimeResetSucceeded = runtimeResetResult?.Success == true;
+            var wrapperStillReachable = ResolveExternalWrapperHosts()
+                .Any(candidate => AreWrapperPortsOpen(candidate, TimeSpan.FromMilliseconds(250)));
+            var runtimeStateCleared = runtimeResetSucceeded || !wrapperStillReachable;
+
+            if (sharedSessionCleared && runtimeStateCleared)
             {
+                var outputParts = new List<string>(4)
+                {
+                    "Shared wrapper session cleared."
+                };
+                if (runtimeResetSucceeded)
+                {
+                    outputParts.Add("Wrapper runtime cache reset.");
+                }
+                else
+                {
+                    outputParts.Add("Wrapper runtime is not reachable.");
+                }
+
                 result = new AppleMusicWrapperHelperResult(
                     true,
-                    0,
-                    "Shared wrapper session cleared.",
-                    null,
-                    null);
+                    runtimeResetResult?.ExitCode ?? 0,
+                    string.Join(' ', outputParts),
+                    runtimeResetResult?.Success == true ? null : runtimeResetResult?.Error,
+                    runtimeResetResult?.HelperPath);
             }
             else
             {
+                var combinedError = BuildSharedLogoutError(
+                    clearError,
+                    runtimeResetResult?.Error,
+                    wrapperStillReachable);
                 result = new AppleMusicWrapperHelperResult(
                     false,
                     -1,
                     null,
-                    clearError ?? "Failed to clear shared wrapper session.",
-                    null);
+                    combinedError,
+                    runtimeResetResult?.HelperPath);
             }
         }
         else
@@ -775,6 +853,57 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         return result;
+    }
+
+    private async Task<AppleMusicWrapperHelperResult?> TryResetSharedModeWrapperRuntimeCacheAsync(CancellationToken cancellationToken)
+    {
+        // Shared-control mode clears mounted session files directly, but the wrapper process
+        // can still retain account tokens in memory until it is restarted. Best-effort helper
+        // logout stops/restarts wrapper runtime and clears that in-memory token state.
+        var helperPath = ResolveExternalWrapperHelperPath();
+        if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
+        {
+            return null;
+        }
+
+        var result = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
+        if (result.Success)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Shared-mode logout reset wrapper runtime cache via helper logout.");
+            }
+            return result;
+        }
+
+        _logger.LogWarning(
+            "Shared-mode wrapper runtime cache reset failed during logout: {Error}",
+            result.Error ?? result.Output ?? "unknown error");
+        return result;
+    }
+
+    private static string BuildSharedLogoutError(string? sessionError, string? runtimeError, bool wrapperStillReachable)
+    {
+        var parts = new List<string>(3);
+        if (!string.IsNullOrWhiteSpace(sessionError))
+        {
+            parts.Add(sessionError.Trim());
+        }
+        else
+        {
+            parts.Add("Failed to clear shared wrapper session.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(runtimeError))
+        {
+            parts.Add($"Runtime cache reset failed: {runtimeError.Trim()}");
+        }
+        else if (wrapperStillReachable)
+        {
+            parts.Add("Wrapper is still reachable after logout attempt. In-memory Apple tokens may still be active.");
+        }
+
+        return string.Join(' ', parts);
     }
 
     public async Task<AppleMusicWrapperHealthResult> CheckExternalWrapperHealthAsync(CancellationToken cancellationToken)
@@ -1037,6 +1166,15 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                     sharedLoginFileBytes);
             }
 
+            var startResult = await TryAutoStartExternalWrapperAsync(cancellationToken);
+            if (!startResult.Success)
+            {
+                var details = string.IsNullOrWhiteSpace(startResult.Error)
+                    ? $"Login payload queued at {sharedLoginPath}, but wrapper is still unreachable."
+                    : $"{startResult.Error} Login payload remains queued at {sharedLoginPath}.";
+                return (false, details);
+            }
+
             return (true, null);
         }
 
@@ -1190,6 +1328,12 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             await TryResetHelperControlledWrapperSessionAsync(cancellationToken);
             return;
+        }
+
+        var sessionCleared = TryClearSharedWrapperSession(out var clearError);
+        if (!sessionCleared && !string.IsNullOrWhiteSpace(clearError))
+        {
+            _logger.LogWarning("Shared wrapper session reset failed before login: {Error}", clearError);
         }
 
         ResetSharedControlMarkers();
@@ -1923,6 +2067,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         var context = CreateExternalStatusContext();
         SyncTwoFactorProbeState(context);
         DiscoverWrapperPorts(context);
+        ResolveStatusSharedControl(context);
         ResolveAuthenticationState(context);
         RecoverTwoFactorAfterRestart(context);
         RefreshLoginSnapshot(context);
@@ -2019,6 +2164,50 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 context.Host = candidate;
             }
         }
+    }
+
+    private static void ResolveStatusSharedControl(ExternalStatusContext context)
+    {
+        if (context.PortsOpen)
+        {
+            context.SharedControlReady = false;
+            context.SharedControlDetails = "Wrapper ports are reachable.";
+            return;
+        }
+
+        if (IsHelperControlModeEnabled())
+        {
+            context.SharedControlReady = false;
+            context.SharedControlDetails = "Shared wrapper control is not active.";
+            return;
+        }
+
+        var dataPath = ResolveExternalWrapperSharedDataDir();
+        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files");
+        var dataReady = TryProbeSharedControlPath(dataPath, ".wrapper-status-probe-data", out var dataError);
+        var sessionReady = TryProbeSharedControlPath(sessionPath, ".wrapper-status-probe-session", out var sessionError);
+
+        context.SharedControlReady = dataReady && sessionReady;
+        if (context.SharedControlReady)
+        {
+            context.SharedControlDetails = $"Shared wrapper control paths writable ({dataPath}, {sessionPath}).";
+            return;
+        }
+
+        var parts = new List<string>();
+        if (!dataReady)
+        {
+            parts.Add($"data path not writable: {dataPath} ({dataError})");
+        }
+
+        if (!sessionReady)
+        {
+            parts.Add($"session path not writable: {sessionPath} ({sessionError})");
+        }
+
+        context.SharedControlDetails = parts.Count > 0
+            ? string.Join("; ", parts)
+            : "Shared wrapper control paths unavailable.";
     }
 
     private void ResolveAuthenticationState(ExternalStatusContext context)
@@ -2345,6 +2534,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         _diagnostics = new AppleMusicWrapperDiagnostics(
             context.Host,
             context.PortsOpen,
+            context.PortsOpen || context.SharedControlReady,
+            context.SharedControlReady,
+            context.SharedControlDetails,
             context.AccountInfoReachable,
             context.HasDevToken,
             context.HasMusicToken,
@@ -2368,6 +2560,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         _diagnostics = new AppleMusicWrapperDiagnostics(
             context.Host,
             context.PortsOpen,
+            context.PortsOpen || context.SharedControlReady,
+            context.SharedControlReady,
+            context.SharedControlDetails,
             context.AccountInfoReachable,
             context.HasDevToken,
             context.HasMusicToken,
@@ -2388,6 +2583,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         _diagnostics = new AppleMusicWrapperDiagnostics(
             context.Host,
             context.PortsOpen,
+            context.PortsOpen || context.SharedControlReady,
+            context.SharedControlReady,
+            context.SharedControlDetails,
             context.AccountInfoReachable,
             context.HasDevToken,
             context.HasMusicToken,
@@ -2396,7 +2594,12 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         string message;
         string status;
-        if (!context.PortsOpen)
+        if (!context.PortsOpen && context.SharedControlReady)
+        {
+            message = "Shared wrapper control is ready. Enter Apple credentials to queue login; wrapper ports will open when authentication starts.";
+            status = StatusRunning;
+        }
+        else if (!context.PortsOpen)
         {
             message = $"External wrapper mode is enabled, but nothing is listening on {context.Host}:10020/20020. " +
                       "Start the wrapper container to continue.";
@@ -2442,6 +2645,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         if (!context.PortsOpen)
         {
+            if (context.SharedControlReady)
+            {
+                return "Shared wrapper control paths are writable. Queue Apple credentials to start wrapper login; ports 10020/20020 will open after authentication begins.";
+            }
+
             return $"External wrapper mode is enabled, but the wrapper is not reachable on {context.Host}:10020/20020.";
         }
 
@@ -2712,6 +2920,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         public bool HasMusicToken { get; set; }
         public string? StorefrontId { get; set; }
         public List<string> HostsWithPorts { get; } = new();
+        public bool SharedControlReady { get; set; }
+        public string? SharedControlDetails { get; set; }
         public bool PromotedFromLogin { get; set; }
         public bool HasAuthentication { get; set; }
         public bool LoginActive { get; set; }

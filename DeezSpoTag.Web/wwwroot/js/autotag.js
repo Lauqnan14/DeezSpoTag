@@ -180,31 +180,6 @@
         releaseId: "Release ID (source)",
         rating: "Rating"
     };
-    const ENGINE_NATIVE_COMBINED_PLATFORM_ID = "engine-native-combined";
-    const ENGINE_NATIVE_COMBINED_TAGS = Object.freeze([
-        "title",
-        "artist",
-        "artists",
-        "album",
-        "albumArtist",
-        "trackNumber",
-        "trackTotal",
-        "discNumber",
-        "genre",
-        "year",
-        "date",
-        "explicit",
-        "isrc",
-        "length",
-        "bpm",
-        "key",
-        "label",
-        "cover",
-        "source",
-        "url",
-        "trackId",
-        "releaseId"
-    ]);
     const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS = [
         "danceability",
         "energy",
@@ -828,82 +803,6 @@
         }
     }
 
-    function getDownloadSourcePlatform(downloadTagSource) {
-        const source = normalizeDownloadTagSource(downloadTagSource);
-        if (source === "engine") {
-            return ENGINE_NATIVE_COMBINED_PLATFORM_ID;
-        }
-        if (source === "deezer") {
-            return "deezer";
-        }
-        if (source === "spotify") {
-            return "spotify";
-        }
-        return null;
-    }
-
-    function getPlatformDownloadTags(platformId) {
-        const platform = state.platforms.find((item) => item.id === platformId);
-        if (!platform || !Array.isArray(platform.downloadTags)) {
-            return [];
-        }
-
-        return platform.downloadTags
-            .filter((tagId) => !isHiddenSpotifyAudioFeatureTag(tagId))
-            .map((tagId) => String(tagId).trim())
-            .filter((tagId) => tagId.length > 0);
-    }
-
-    function getEngineNativeCombinedDownloadTags() {
-        const merged = [];
-        const seen = new Set();
-        const addTag = (tag) => {
-            const normalized = String(tag || "").trim();
-            if (!normalized) {
-                return;
-            }
-
-            const key = normalized.toLowerCase();
-            if (seen.has(key) || isHiddenSpotifyAudioFeatureTag(normalized)) {
-                return;
-            }
-
-            seen.add(key);
-            merged.push(normalized);
-        };
-
-        ENGINE_NATIVE_COMBINED_TAGS.forEach(addTag);
-        getPlatformDownloadTags("itunes").forEach(addTag);
-        getPlatformDownloadTags("qobuz").forEach(addTag);
-        getPlatformDownloadTags("tidal").forEach(addTag);
-        getPlatformDownloadTags("amazon").forEach(addTag);
-        return merged;
-    }
-
-    function resolveDownloadTagCatalog(downloadTagSource) {
-        const source = normalizeDownloadTagSource(downloadTagSource);
-        if (!source) {
-            return { platformId: null, tags: [] };
-        }
-
-        const platformId = getDownloadSourcePlatform(source);
-        if (!platformId) {
-            return { platformId: null, tags: [] };
-        }
-
-        if (platformId === ENGINE_NATIVE_COMBINED_PLATFORM_ID) {
-            return {
-                platformId,
-                tags: getEngineNativeCombinedDownloadTags()
-            };
-        }
-
-        return {
-            platformId,
-            tags: getPlatformDownloadTags(platformId)
-        };
-    }
-
     function renderDownloadTagSourceContext() {
         const source = getDownloadTagSource();
         const helper = el("download-tag-source-helper");
@@ -912,12 +811,12 @@
         }
 
         if (source === "engine") {
-            helper.textContent = "Engine-native mode: when Apple/Qobuz/TIDAL/Amazon is used for a download, write only the selected basic tags that engine can provide. Select Deezer or Spotify source if you want those metadata systems to override download-stage tags.";
+            helper.textContent = "Follow download engine: use the active download engine for metadata lookup while keeping the same Download tab tag selection.";
             return;
         }
 
         const sourceLabel = source === "spotify" ? "Spotify" : "Deezer";
-        helper.textContent = `Overrides Settings > Download Source only for tag metadata during download. Files still use the engine from Settings, while ${sourceLabel} supplies the tags written immediately on download.`;
+        helper.textContent = `Uses ${sourceLabel} as the metadata source during download while keeping the same Download tab tag selection for every engine and output format.`;
     }
 
     function updateDownloadSourceAvailability() {
@@ -1475,12 +1374,7 @@
     }
 
     function getDownloadTagsList() {
-        const source = getDownloadTagSource();
-        if (!source) {
-            return [];
-        }
-        return resolveDownloadTagCatalog(source).tags
-            .filter((tagId) => !isLyricsSelectionTag(tagId))
+        return getDownloadTagIds()
             .map((tagId) => ({
             tag: tagId,
             label: DOWNLOAD_TAG_LABELS[tagId] || tagId
@@ -1488,11 +1382,7 @@
     }
 
     function getDownloadTagIds() {
-        const source = getDownloadTagSource();
-        if (!source) {
-            return [];
-        }
-        return resolveDownloadTagCatalog(source).tags
+        return Object.keys(DOWNLOAD_TAG_LABELS)
             .filter((tagId) => !isLyricsSelectionTag(tagId));
     }
 
@@ -1503,14 +1393,7 @@
             return selectedTags;
         }
         const allowedSet = new Set(allowed.map((tag) => String(tag).toLowerCase()));
-        const filtered = selectedTags.filter((tag) => allowedSet.has(String(tag).toLowerCase()));
-        if (filtered.length > 0) {
-            return filtered;
-        }
-        if (selectedTags.length > 0) {
-            return allowed.slice();
-        }
-        return selectedTags;
+        return selectedTags.filter((tag) => allowedSet.has(String(tag).toLowerCase()));
     }
 
     function buildMergedTagSelection(primary, secondary) {
@@ -1551,19 +1434,11 @@
     }
 
     function isDownloadTagSupported(tagKey) {
-        if (isHiddenSpotifyAudioFeatureTag(tagKey)) {
+        const normalizedTag = String(tagKey || "").trim().toLowerCase();
+        if (!normalizedTag) {
             return false;
         }
-
-        const source = getDownloadTagSource();
-        if (!source) {
-            return false;
-        }
-        const catalog = resolveDownloadTagCatalog(source);
-        if (!catalog.tags.length) {
-            return false;
-        }
-        return catalog.tags.some((tag) => String(tag).toLowerCase() === String(tagKey).toLowerCase());
+        return getDownloadTagIds().some((tag) => String(tag).toLowerCase() === normalizedTag);
     }
 
     function refreshDownloadTagsForSource() {
@@ -1602,11 +1477,13 @@
         if (helper) {
             if (!enabled) {
                 helper.textContent = "Enable a metadata source to choose download tags.";
-            } else if (source === "engine") {
-                const engineLabel = getCurrentDownloadEngineLabel();
-                helper.textContent = `Engine-native tag mode is active (current download source: ${engineLabel}). These selected tags are used only when Apple/Qobuz/TIDAL/Amazon metadata is writing download-stage tags.`;
             } else {
-                helper.textContent = "Select which tags to write during the download process. This metadata source only affects tags written during download, not the engine that downloads the file.";
+                const sourceLabel = source === "engine"
+                    ? `Download engine (${getCurrentDownloadEngineLabel()})`
+                    : source === "spotify"
+                        ? "Spotify"
+                        : "Deezer";
+                helper.textContent = `Select which tags to write during download. The selected tags apply across all download engines and supported output file formats; only metadata lookup source changes (${sourceLabel}).`;
             }
         }
     }
@@ -3171,6 +3048,7 @@
 
     function normalizeMergedProfileConfig(config) {
         ensureProfileConfigDefaults(config);
+        normalizeTracknameTemplateConfig(config);
         delete config.moveSuccessMode;
         const moveSuccessLibraryId = Number.parseInt(String(config.moveSuccessLibraryFolderId ?? ""), 10);
         config.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
@@ -3179,6 +3057,24 @@
         config.downloadTags = removeLyricsSelectionTags(Array.isArray(config.downloadTags) ? config.downloadTags : []);
         config.gapFillTags = removeLyricsSelectionTags(Array.isArray(config.gapFillTags) ? config.gapFillTags : []);
         config.overwriteTags = Array.isArray(config.overwriteTags) ? config.overwriteTags : [];
+    }
+
+    function normalizeTracknameTemplateConfig(config) {
+        if (!config || typeof config !== "object") {
+            return;
+        }
+
+        const legacyKeys = ["filenameTemplate", "albumTracknameTemplate", "playlistTracknameTemplate"];
+        if (!String(config.tracknameTemplate || "").trim()) {
+            const legacyTemplate = legacyKeys
+                .map((key) => String(config[key] || "").trim())
+                .find((value) => value.length > 0);
+            if (legacyTemplate) {
+                config.tracknameTemplate = legacyTemplate;
+            }
+        }
+
+        legacyKeys.forEach((key) => delete config[key]);
     }
 
     function migrateLegacyOrganizerConfig(config) {

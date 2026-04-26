@@ -119,8 +119,6 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         var unifiedTrackTemplate = ReadStringValue(data, "tracknameTemplate");
         var runtime = new DownloadProfileRuntimeOverrides(
             TracknameTemplate: unifiedTrackTemplate,
-            AlbumTracknameTemplate: unifiedTrackTemplate,
-            PlaylistTracknameTemplate: unifiedTrackTemplate,
             SaveArtwork: ReadBooleanValue(data, "saveArtwork"),
             DlAlbumcoverForPlaylist: ReadBooleanValue(data, "dlAlbumcoverForPlaylist"),
             SaveArtworkArtist: ReadBooleanValue(data, "saveArtworkArtist"),

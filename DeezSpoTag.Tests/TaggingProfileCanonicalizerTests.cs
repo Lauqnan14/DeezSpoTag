@@ -146,6 +146,33 @@ public sealed class TaggingProfileCanonicalizerTests
         Assert.Equal(ExpectedSyncedEnhancementTags, ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
     }
 
+    [Fact]
+    public void Canonicalize_RemovesLegacyTemplateKeys()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["filenameTemplate"] = JsonSerializer.SerializeToElement("%artists% - %title%"),
+                    ["albumTracknameTemplate"] = JsonSerializer.SerializeToElement("%tracknumber% - %title%"),
+                    ["playlistTracknameTemplate"] = JsonSerializer.SerializeToElement("%artist% - %title%")
+                }
+            }
+        };
+        profile.TagConfig.Title = TagSource.DownloadSource;
+
+        var changed = TaggingProfileCanonicalizer.Canonicalize(profile, seedFromTagConfigWhenMissing: true);
+
+        Assert.True(changed);
+        Assert.Equal("%artists% - %title%", profile.AutoTag.Data["tracknameTemplate"].GetString());
+        Assert.False(profile.AutoTag.Data.ContainsKey("filenameTemplate"));
+        Assert.False(profile.AutoTag.Data.ContainsKey("albumTracknameTemplate"));
+        Assert.False(profile.AutoTag.Data.ContainsKey("playlistTracknameTemplate"));
+    }
+
     private static UnifiedTagConfig CreateEmptyTagConfig()
     {
         var config = new UnifiedTagConfig();

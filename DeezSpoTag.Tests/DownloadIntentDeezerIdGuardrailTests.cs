@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -18,6 +19,12 @@ public sealed class DownloadIntentDeezerIdGuardrailTests
             "TryExtractDeezerTrackId",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("DownloadIntentService.TryExtractDeezerTrackId not found.");
+
+    private static readonly MethodInfo ResolveDeezerTrackIdForEnqueueMethod =
+        typeof(DownloadIntentService).GetMethod(
+            "ResolveDeezerTrackIdForEnqueue",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("DownloadIntentService.ResolveDeezerTrackIdForEnqueue not found.");
 
     [Theory]
     [InlineData("0")]
@@ -58,6 +65,23 @@ public sealed class DownloadIntentDeezerIdGuardrailTests
         Assert.Equal("3135556", extracted);
     }
 
+    [Fact]
+    public void ResolveDeezerTrackIdForEnqueue_UsesIntentSourceUrl_WhenResolvedSourceUrlIsMissing()
+    {
+        var intent = new DownloadIntent
+        {
+            SourceUrl = "https://www.deezer.com/track/3135556",
+            DeezerId = string.Empty
+        };
+
+        var resolved = ResolveDeezerTrackIdForEnqueue(
+            intent,
+            resolvedSourceUrl: null,
+            isPodcastIntent: false);
+
+        Assert.Equal("3135556", resolved);
+    }
+
     private static string? NormalizeDeezerTrackId(string? value)
     {
         return NormalizeDeezerTrackIdMethod.Invoke(null, new object?[] { value }) as string;
@@ -66,5 +90,15 @@ public sealed class DownloadIntentDeezerIdGuardrailTests
     private static string? TryExtractDeezerTrackId(string? value)
     {
         return TryExtractDeezerTrackIdMethod.Invoke(null, new object?[] { value }) as string;
+    }
+
+    private static string? ResolveDeezerTrackIdForEnqueue(
+        DownloadIntent intent,
+        string? resolvedSourceUrl,
+        bool isPodcastIntent)
+    {
+        return ResolveDeezerTrackIdForEnqueueMethod.Invoke(
+            null,
+            new object?[] { intent, resolvedSourceUrl, isPodcastIntent }) as string;
     }
 }

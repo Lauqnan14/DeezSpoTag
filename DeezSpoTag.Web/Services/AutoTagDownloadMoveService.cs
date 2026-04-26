@@ -1562,6 +1562,18 @@ public sealed class AutoTagDownloadMoveService
                     sourceIo,
                     convertedIo,
                     cloneResult.Error ?? "unknown");
+                TryDeleteFileSilently(convertedIo);
+                return movedPath;
+            }
+
+            if (!VerifyConvertedTagTransfer(sourceIo, convertedIo))
+            {
+                _logger.LogWarning(
+                    "Converted tag verification failed for {Source} -> {Output}; keeping source file as final output.",
+                    sourceIo,
+                    convertedIo);
+                TryDeleteFileSilently(convertedIo);
+                return movedPath;
             }
 
             TryDeleteOriginalAfterConversion(sourceIo, convertedIo, conversionPlan.KeepOriginal);
@@ -1577,6 +1589,126 @@ public sealed class AutoTagDownloadMoveService
         {
             _logger.LogWarning(ex, "Destination conversion failed for {Path}", movedPath);
             return movedPath;
+        }
+    }
+
+    private bool VerifyConvertedTagTransfer(string sourcePath, string convertedPath)
+    {
+        try
+        {
+            var sourceDump = _quickTagService.Dump(sourcePath, includeArtworkData: false, enforceLibraryPathCheck: false);
+            var convertedDump = _quickTagService.Dump(convertedPath, includeArtworkData: false, enforceLibraryPathCheck: false);
+            if (!HasFullTagParity(sourceDump.Tags, convertedDump.Tags))
+            {
+                return false;
+            }
+
+            if (sourceDump.Pictures.Count > 0 && convertedDump.Pictures.Count == 0)
+            {
+                return false;
+            }
+
+            using var sourceFile = TagLib.File.Create(sourcePath);
+            using var convertedFile = TagLib.File.Create(convertedPath);
+
+            var sourceTag = sourceFile.Tag;
+            var convertedTag = convertedFile.Tag;
+
+            if (HasText(sourceTag.Title) && !HasText(convertedTag.Title))
+            {
+                return false;
+            }
+
+            if (HasAnyText(sourceTag.Performers) && !HasAnyText(convertedTag.Performers))
+            {
+                return false;
+            }
+
+            if (HasText(sourceTag.Album) && !HasText(convertedTag.Album))
+            {
+                return false;
+            }
+
+            if (sourceTag.Pictures is { Length: > 0 } && convertedTag.Pictures is not { Length: > 0 })
+            {
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasFullTagParity(
+        Dictionary<string, List<string>> sourceTags,
+        Dictionary<string, List<string>> destinationTags)
+    {
+        if (sourceTags.Count == 0)
+        {
+            return true;
+        }
+
+        var destinationByKey = destinationTags.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value,
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in sourceTags)
+        {
+            var sourceValues = pair.Value
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .ToArray();
+            if (sourceValues.Length == 0)
+            {
+                continue;
+            }
+
+            if (!destinationByKey.TryGetValue(pair.Key, out var destinationValuesRaw))
+            {
+                return false;
+            }
+
+            var destinationValues = new HashSet<string>(
+                destinationValuesRaw
+                    .Where(static value => !string.IsNullOrWhiteSpace(value))
+                    .Select(static value => value.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var sourceValue in sourceValues)
+            {
+                if (!destinationValues.Contains(sourceValue))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasText(string? value) => !string.IsNullOrWhiteSpace(value);
+
+    private static bool HasAnyText(IEnumerable<string>? values)
+    {
+        return values?.Any(static value => !string.IsNullOrWhiteSpace(value)) == true;
+    }
+
+    private void TryDeleteFileSilently(string path)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(path) && IOFile.Exists(path))
+            {
+                IOFile.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to delete temporary converted file {Path}", path);
         }
     }
 

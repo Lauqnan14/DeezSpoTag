@@ -8,6 +8,7 @@
 #include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/mount.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -24,7 +25,7 @@ static void intHan(int signum) {
     }
 }
 
-int has_cap_sys_admin() {
+static int has_cap_sys_admin() {
     FILE *fp;
     char line[256];
     unsigned long long cap_eff = 0;
@@ -53,11 +54,7 @@ int has_cap_sys_admin() {
         return 0;
     }
 
-    if (cap_eff & CAP_SYS_ADMIN_BIT) {
-        return 1;
-    } else {
-        return 0;
-    }
+    return (cap_eff & CAP_SYS_ADMIN_BIT) != 0;
 }
 
 int main(int argc, char *argv[], char *envp[]) {
@@ -65,6 +62,26 @@ int main(int argc, char *argv[], char *envp[]) {
     if (signal(SIGINT, intHan) == SIG_ERR) {
         perror("signal");
         return 1;
+    }
+
+    mkdir("./rootfs/proc", 0755);
+    if (mount("proc", "./rootfs/proc", "proc", 0, NULL) != 0) {
+        if (errno == EPERM || errno == EACCES || errno == ENOSYS) {
+            fprintf(stderr, "warning: mount(proc) unavailable (%s); continuing without proc mount\n", strerror(errno));
+        } else {
+            perror("mount proc");
+            return 1;
+        }
+    }
+
+    mkdir("./rootfs/dev", 0755);
+    if (mount("/dev", "./rootfs/dev", NULL, MS_BIND, NULL) != 0) {
+        if (errno == EPERM || errno == EACCES || errno == ENOSYS) {
+            fprintf(stderr, "warning: mount(/dev bind) unavailable (%s); continuing with existing device nodes\n", strerror(errno));
+        } else {
+            perror("mount /dev");
+            return 1;
+        }
     }
 
     if (chdir("./rootfs") != 0) {
@@ -75,7 +92,6 @@ int main(int argc, char *argv[], char *envp[]) {
         perror("chroot");
         return 1;
     }
-    mknod("/dev/urandom", S_IFCHR | 0666, makedev(0x1, 0x9));
     chmod("/system/bin/linker64", 0755);
     chmod("/system/bin/main", 0755);
 

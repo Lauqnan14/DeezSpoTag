@@ -20,13 +20,27 @@ public class LibraryFoldersApiController : ControllerBase
 
     private static readonly HashSet<string> AllowedConversionFormats = new(StringComparer.OrdinalIgnoreCase)
     {
+        "aa",
+        "aax",
         "mp3",
         "aac",
+        "m4a",
+        "m4b",
+        "m4p",
         "alac",
+        "aiff",
+        "ape",
+        "dsf",
         "ogg",
+        "oga",
         "opus",
         "flac",
-        "wav"
+        "wav",
+        "wma",
+        "wv",
+        "webm",
+        "mpc",
+        "mpp"
     };
 
     private static readonly HashSet<string> AllowedConversionBitrates = new(StringComparer.OrdinalIgnoreCase)
@@ -165,7 +179,7 @@ public class LibraryFoldersApiController : ControllerBase
         {
             if (!TryNormalizeConversionFormat(request.ConvertFormat, out convertFormat))
             {
-                return BadRequest("Invalid conversion format. Allowed values: mp3, aac, alac, ogg, opus, flac, wav.");
+                return BadRequest("Invalid conversion format. Allowed values: aa, aax, aac, aiff, ape, dsf, flac, m4a, m4b, m4p, mp3, mpc, mpp, ogg, oga, wav, wma, wv, webm, alac, opus.");
             }
             if (!TryNormalizeConversionBitrate(request.ConvertBitrate, out convertBitrate))
             {
@@ -441,8 +455,9 @@ public class LibraryFoldersApiController : ControllerBase
         var candidate = normalized.Trim().ToLowerInvariant();
         candidate = candidate switch
         {
-            "m4a" or "m4a-aac" => "aac",
+            "m4a-aac" => "m4a",
             "m4a-alac" => "alac",
+            "musepack" => "mpc",
             _ => candidate
         };
 
@@ -530,7 +545,7 @@ public class LibraryFoldersApiController : ControllerBase
 
         if (!TryNormalizeConversionFormat(request.ConvertFormat, out var convertFormat))
         {
-            return (true, null, null, "Invalid conversion format. Allowed values: mp3, aac, alac, ogg, opus, flac, wav.");
+            return (true, null, null, "Invalid conversion format. Allowed values: aa, aax, aac, aiff, ape, dsf, flac, m4a, m4b, m4p, mp3, mpc, mpp, ogg, oga, wav, wma, wv, webm, alac, opus.");
         }
 
         if (!TryNormalizeConversionBitrate(request.ConvertBitrate, out var convertBitrate))

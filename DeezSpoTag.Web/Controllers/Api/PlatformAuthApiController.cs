@@ -376,9 +376,14 @@ public class PlatformAuthApiController : ControllerBase
 
         if (normalizedPlatform == "applemusic")
         {
-            // Always clear auth state even if the wrapper helper fails to clean up its session.
-            // LogoutExternalWrapperSessionAsync logs any helper errors internally.
-            await _appleWrapperService.LogoutExternalWrapperSessionAsync(cancellationToken);
+            var wrapperLogout = await _appleWrapperService.LogoutExternalWrapperSessionAsync(cancellationToken);
+            if (!wrapperLogout.Success)
+            {
+                var message = string.IsNullOrWhiteSpace(wrapperLogout.Error)
+                    ? "Apple Music logout failed. Wrapper session may still be active."
+                    : wrapperLogout.Error;
+                return StatusCode(500, message);
+            }
         }
 
         await _authService.UpdateAsync(state =>
