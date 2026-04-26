@@ -114,6 +114,7 @@
         { tag: "label", label: "Label" },
         { tag: "releaseId", label: "Release ID" },
         { tag: "trackId", label: "Track ID" },
+        { tag: "source", label: "Source ID" },
         { tag: "bpm", label: "BPM" },
         { tag: "key", label: "Key" },
         { tag: "mood", label: "Mood" },
@@ -3261,13 +3262,17 @@
             return false;
         }
         const normalizedTag = normalizeTagSelectionToken(tag);
+        const platformSupportsTag = (platform, token) =>
+            getPlatformSupportedCapabilityTokenSet(platform).has(token)
+            || getPlatformCapabilityTokenSet(platform).has(token);
         const activePlatforms = new Set(
             (Array.isArray(state.config.platforms) ? state.config.platforms : [])
                 .map((platformId) => String(platformId || "").toLowerCase())
         );
         return state.platforms.some((platform) =>
             activePlatforms.has(String(platform.id || "").toLowerCase()) &&
-            getPlatformSupportedCapabilityTokenSet(platform).has(normalizedTag)
+            (platformSupportsTag(platform, normalizedTag)
+                || (normalizedTag === "source" && platformSupportsTag(platform, "trackid")))
         );
     }
 
