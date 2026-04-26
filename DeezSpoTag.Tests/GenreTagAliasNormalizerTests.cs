@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
 using Xunit;
@@ -48,5 +50,27 @@ public sealed class GenreTagAliasNormalizerTests
             splitComposite: true);
 
         Assert.Equal(["HipHop", "Pop"], values);
+    }
+
+    [Fact]
+    public void NormalizeAndExpandValues_SplitsJoinedGenreStringsBeforeDedupe()
+    {
+        var aliasMap = GenreTagAliasNormalizer.BuildAliasMap(
+        [
+            new GenreTagAliasRule
+            {
+                Alias = "Hip-Hop",
+                Canonical = "HipHop"
+            }
+        ]);
+
+        var values = GenreTagAliasNormalizer.NormalizeAndExpandValues(
+                ["HipHop, Rap", "Rap", "Hip-Hop"],
+                aliasMap,
+                splitComposite: true)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        Assert.Equal(new[] { "HipHop", "Rap" }, values);
     }
 }
