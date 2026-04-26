@@ -87,16 +87,12 @@ What you do here:
 
 - choose the main download engine
 - choose where downloads should go
-- control naming rules for files and folders
-- set lyrics, artwork, video, conversion, and library settings
 - control how the app behaves in general
 
 This is where you tell the app things like:
 
 - "download from Qobuz"
 - "save files in this folder"
-- "name albums this way"
-- "embed artwork and lyrics"
 
 Simple meaning:
 
@@ -140,6 +136,8 @@ Its tabs are basically the workflow:
 
 - `Technical`
   - advanced behavior and deeper file-handling rules
+  - control naming rules for files and folders
+  - set lyrics, artwork, video, conversion, and library settings
 
 Simple meaning:
 
@@ -221,7 +219,7 @@ Its major areas are:
   - playlists already in Plex or Jellyfin
 
 - `Favorites`
-  - saved favorites
+  - saved favorites from spotify and deezer
 
 Simple meaning:
 
