@@ -7,6 +7,7 @@ globalThis.DeezSpoTag = globalThis.DeezSpoTag || {};
 
 DeezSpoTag.Download = {
     APPLE_NOTIFICATION_MODE_KEY: 'apple-download-notification-mode',
+    DOWNLOAD_SOURCE_SETTING_KEY: 'deezspotag-download-source-updated',
     csrfUnsafeMethods: new Set(['POST', 'PUT', 'PATCH', 'DELETE']),
     // Download queue management
     queue: {
@@ -50,6 +51,8 @@ DeezSpoTag.Download = {
         globalThis.addEventListener('storage', (event) => {
             if (event.key === this.APPLE_NOTIFICATION_MODE_KEY) {
                 this.refreshAppleNotificationMode();
+            } else if (event.key === this.DOWNLOAD_SOURCE_SETTING_KEY) {
+                this.applyUpdatedDownloadSource(event.newValue);
             }
         });
         this.resumePendingQueue();
@@ -317,6 +320,28 @@ DeezSpoTag.Download = {
         this.settingsPromise = nextSettings
             ? Promise.resolve(nextSettings)
             : null;
+    },
+    applyUpdatedDownloadSource(serialized) {
+        let payload = null;
+        try {
+            payload = serialized ? JSON.parse(serialized) : null;
+        } catch {
+            payload = null;
+        }
+
+        const service = String(payload?.service || '').trim().toLowerCase();
+        if (!service) {
+            this.settings = null;
+            this.settingsPromise = null;
+            return;
+        }
+
+        const nextSettings = this.settings && typeof this.settings === 'object'
+            ? this.cloneSettingsPayload(this.settings)
+            : {};
+        nextSettings.service = service;
+        this.settings = nextSettings;
+        this.settingsPromise = Promise.resolve(nextSettings);
     },
     cloneSettingsPayload(value) {
         if (typeof structuredClone === 'function') {

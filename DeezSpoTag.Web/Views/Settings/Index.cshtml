@@ -1371,6 +1371,7 @@ let mediaServerLibraryAutoSaveTimer = 0;
 let mediaServerLibraryAutoSaveInFlight = false;
 const SERVER_LIBRARY_LEGACY_PIN_STORAGE_KEY = 'deezspotag-server-library-pin';
 const APPLE_NOTIFICATION_MODE_KEY = 'apple-download-notification-mode';
+const DOWNLOAD_SOURCE_SETTING_KEY = 'deezspotag-download-source-updated';
 const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
     DeezSpoTag.Services.Download.QualityCatalog.GetEngineQualityOptions()
         .ToDictionary(
@@ -3612,6 +3613,7 @@ async function saveSettings(showSuccessToast = true) {
             if (window.DeezSpoTagDownload && typeof window.DeezSpoTagDownload.applyUpdatedSettings === 'function') {
                 window.DeezSpoTagDownload.applyUpdatedSettings(settings);
             }
+            publishDownloadSourceSetting(settings.service);
             window.dispatchEvent(new CustomEvent('deezspotag:settings-updated', {
                 detail: {
                     settings
@@ -3638,6 +3640,22 @@ async function saveSettings(showSuccessToast = true) {
             settingsSaveQueuedToast = false;
             window.setTimeout(() => saveSettings(queuedToast), 0);
         }
+    }
+}
+
+function publishDownloadSourceSetting(service) {
+    try {
+        const normalized = String(service || '').trim().toLowerCase();
+        if (!normalized) {
+            return;
+        }
+
+        localStorage.setItem(DOWNLOAD_SOURCE_SETTING_KEY, JSON.stringify({
+            service: normalized,
+            updatedAt: Date.now()
+        }));
+    } catch (error) {
+        console.warn('Failed to publish download source setting update', error);
     }
 }
 
