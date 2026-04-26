@@ -208,7 +208,7 @@ public sealed class BoomplayMatcher
             };
         }
 
-        return TrySelectBySimilarityWithFallback(info, config, tracks);
+        return TrySelectBySimilarity(info, config, tracks);
     }
 
     private async Task<AutoTagMatchResult?> TryMatchByQueryAsync(
@@ -226,7 +226,7 @@ public sealed class BoomplayMatcher
             await AppendQueryTracksAsync(query, searchLimit, seen, allTracks, cancellationToken);
         }
 
-        return TrySelectBySimilarityWithFallback(info, config, allTracks);
+        return TrySelectBySimilarity(info, config, allTracks);
     }
 
     private async Task AppendQueryTracksAsync(
@@ -440,26 +440,6 @@ public sealed class BoomplayMatcher
         allTracks.Add(track);
     }
 
-    private static AutoTagMatchResult? TrySelectBySimilarityWithFallback(
-        AutoTagAudioInfo info,
-        AutoTagMatchingConfig config,
-        IReadOnlyList<BoomplayTrackMetadata> tracks)
-    {
-        var strict = TrySelectBySimilarity(info, config, tracks);
-        if (strict != null)
-        {
-            return strict;
-        }
-
-        var relaxedConfig = BuildRelaxedConfig(config);
-        if (ReferenceEquals(relaxedConfig, config))
-        {
-            return null;
-        }
-
-        return TrySelectBySimilarity(info, relaxedConfig, tracks);
-    }
-
     private static AutoTagMatchResult? TrySelectBySimilarity(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig config,
@@ -494,26 +474,6 @@ public sealed class BoomplayMatcher
         {
             Accuracy = match.Accuracy,
             Track = ToAutoTagTrack(match.Track.Track)
-        };
-    }
-
-    private static AutoTagMatchingConfig BuildRelaxedConfig(AutoTagMatchingConfig config)
-    {
-        var strictness = Math.Min(config.Strictness, 0.56);
-        var matchDuration = false;
-
-        if (Math.Abs(strictness - config.Strictness) < 0.0001
-            && config.MatchDuration == matchDuration)
-        {
-            return config;
-        }
-
-        return new AutoTagMatchingConfig
-        {
-            Strictness = strictness,
-            MatchDuration = matchDuration,
-            MaxDurationDifferenceSeconds = config.MaxDurationDifferenceSeconds,
-            MultipleMatches = config.MultipleMatches
         };
     }
 
