@@ -72,7 +72,6 @@ public sealed class SpotifyArtistService
     private readonly SpotifyMetadataService _metadataService;
     private readonly SpotifyDeezerLinkService _deezerLinkService;
     private readonly ShazamRecognitionService _shazamRecognitionService;
-    private readonly AutoTagDefaultsStore _autoTagDefaultsStore;
     private readonly TaggingProfileService _taggingProfileService;
     private readonly ILogger<SpotifyArtistService> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
@@ -111,7 +110,7 @@ public sealed class SpotifyArtistService
         _metadataService = dependencies.MetadataService;
         _deezerLinkService = dependencies.DeezerLinkService;
         _shazamRecognitionService = dependencies.ShazamRecognitionService;
-        _autoTagDefaultsStore = autoTagDefaultsStore;
+        _ = autoTagDefaultsStore ?? throw new ArgumentNullException(nameof(autoTagDefaultsStore));
         _taggingProfileService = taggingProfileService;
         _logger = logger;
     }

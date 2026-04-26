@@ -1470,10 +1470,11 @@
             .filter((platform) => allowedPlatformIds.size === 0 || allowedPlatformIds.has(String(platform.id || "").toLowerCase()))
             .flatMap((platform) => Array.isArray(platform.downloadTags) ? platform.downloadTags : []);
         const tags = normalizeUniqueTagList(platformTags)
-            .filter((tagId) => Object.prototype.hasOwnProperty.call(DOWNLOAD_TAG_LABELS, tagId))
+            .filter((tagId) => Object.hasOwn(DOWNLOAD_TAG_LABELS, tagId))
             .filter((tagId) => !isLyricsSelectionTag(tagId));
         if ((tags.includes("year") || tags.includes("date")) && !tags.includes("releaseDate")) {
-            tags.splice(tags.indexOf("date") >= 0 ? tags.indexOf("date") + 1 : tags.length, 0, "releaseDate");
+            const dateIndex = tags.indexOf("date");
+            tags.splice(tags.includes("date") ? dateIndex + 1 : tags.length, 0, "releaseDate");
         }
         if (tags.length > 0) {
             return tags;
@@ -5379,15 +5380,6 @@
         field.value = value;
     }
 
-    function applyFieldCheckedTrueOnly(id, value) {
-        const field = document.getElementById(id);
-        if (!field) {
-            return;
-        }
-
-        field.checked = value === true;
-    }
-
     function applyFieldCheckedWhenBoolean(id, value) {
         const field = document.getElementById(id);
         if (!field || typeof value !== "boolean") {
@@ -6162,25 +6154,6 @@
         return Math.max(1, Math.round(normalizedHours / 24));
     }
 
-    function convertRecentWindowDaysToHours(days) {
-        const normalizedDays = Number.isFinite(days) && days >= 0
-            ? days
-            : DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS;
-        return normalizedDays * 24;
-    }
-
-    function readRecentDownloadWindowDays() {
-        const field = el("enhancementRecentDownloadWindowDays");
-        if (!field) {
-            return DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS;
-        }
-        const parsed = Number.parseInt(String(field.value ?? "").trim(), 10);
-        if (!Number.isFinite(parsed) || parsed < 0) {
-            return DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS;
-        }
-        return parsed;
-    }
-
     function applyAutoTagDefaultsToUi() {
         ensureRecentDownloadWindowControls();
     }
@@ -6198,62 +6171,6 @@
             state.autoTagDefaultsLoaded = true;
             applyAutoTagDefaultsToUi();
         }
-    }
-
-    async function saveEnhancementDefaults(options = {}) {
-        const suppressToast = options?.suppressToast === true;
-        const suppressStatus = options?.suppressStatus === true;
-        const rethrow = options?.rethrow === true;
-        const button = el("saveRecentDownloadWindow") || el("saveEnhancementDefaults");
-        if (button) {
-            button.disabled = true;
-        }
-        try {
-            const { renameFoldersCheckbox, renameSpotifyArtistFolders } =
-                await saveEnhancementDefaultsCore();
-            applyEnhancementDefaultsSaveSuccess(renameFoldersCheckbox, renameSpotifyArtistFolders, suppressStatus, suppressToast);
-        } catch (error) {
-            handleEnhancementDefaultsSaveError(error, suppressStatus, suppressToast);
-            if (rethrow) {
-                throw error;
-            }
-        } finally {
-            if (button) {
-                button.disabled = false;
-            }
-        }
-    }
-
-    function applyEnhancementDefaultsSaveSuccess(renameFoldersCheckbox, renameSpotifyArtistFolders, suppressStatus, suppressToast) {
-        state.autoTagDefaultsDirty = false;
-        if (renameFoldersCheckbox instanceof HTMLInputElement) {
-            renameFoldersCheckbox.checked = renameSpotifyArtistFolders;
-        }
-        if (!suppressStatus) {
-            setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement profile settings saved.");
-        }
-        if (!suppressToast) {
-            showToast("Enhancement profile settings saved.", "success");
-        }
-    }
-
-    function handleEnhancementDefaultsSaveError(error, suppressStatus, suppressToast) {
-        const message = `Failed to save enhancement profile settings: ${error?.message || error}`;
-        if (!suppressStatus) {
-            setEnhancementStatus("enhancementRecentDownloadWindowStatus", message);
-        }
-        if (!suppressToast) {
-            showToast(message, "error");
-        }
-    }
-
-    async function saveEnhancementDefaultsCore() {
-        const renameFoldersCheckbox = el("enhancementRenameSpotifyArtistFolders");
-        const renameSpotifyArtistFolders = renameFoldersCheckbox instanceof HTMLInputElement
-            ? renameFoldersCheckbox.checked
-            : DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS;
-        await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
-        return { renameFoldersCheckbox, renameSpotifyArtistFolders };
     }
 
     function getProfileAutoTagSnapshot(profile) {

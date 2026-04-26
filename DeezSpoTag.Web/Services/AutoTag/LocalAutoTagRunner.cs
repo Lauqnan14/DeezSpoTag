@@ -3182,9 +3182,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
+            var ffprobePath = ExternalToolResolver.ResolveFfprobePath();
+            if (string.IsNullOrWhiteSpace(ffprobePath))
+            {
+                return null;
+            }
+
             var startInfo = new ProcessStartInfo
             {
-                FileName = "ffprobe",
+                FileName = ffprobePath,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,

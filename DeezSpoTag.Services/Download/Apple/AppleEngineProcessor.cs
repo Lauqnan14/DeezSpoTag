@@ -21,8 +21,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 {
     private const string EngineName = "apple";
     private const string AppleProvider = "apple";
-    private const string DeezerProvider = "deezer";
-    private const string SpotifyProvider = "spotify";
     private const string FailedStatus = "failed";
     private const string CompletedStatus = "completed";
     private const string NoLyricsStatus = "no-lyrics";

@@ -618,7 +618,7 @@ public class AudioTagger
                 await AttachAtlCoverArtAsync(file, track.Album?.EmbeddedCoverPath);
             }
 
-            if (!file.Save(AtlTagType.NATIVE))
+            if (!await file.SaveAsync(AtlTagType.NATIVE))
             {
                 throw new IOException("ATL returned false while saving MP4 tags.");
             }
@@ -693,9 +693,11 @@ public class AudioTagger
 
         try
         {
+            var ffmpegPath = ExternalToolResolver.ResolveFfmpegPath()
+                ?? throw new InvalidOperationException("ffmpeg executable not found. Install ffmpeg or set DEEZSPOTAG_FFMPEG_PATH.");
             var startInfo = new ProcessStartInfo
             {
-                FileName = "ffmpeg",
+                FileName = ffmpegPath,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -1032,7 +1034,7 @@ public class AudioTagger
         ApplyAtlLyricsMetadata(file, track, save);
     }
 
-    private void ApplyAtlMp4ContributorMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    private static void ApplyAtlMp4ContributorMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         if (track.Contributors.Count == 0)
         {
@@ -1059,7 +1061,7 @@ public class AudioTagger
         }
     }
 
-    private void ApplyAtlMp4OwnershipAndCompilationMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    private static void ApplyAtlMp4OwnershipAndCompilationMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         if (save.Copyright)
         {
@@ -1073,7 +1075,7 @@ public class AudioTagger
         }
     }
 
-    private void ApplyAtlMp4SourceMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    private static void ApplyAtlMp4SourceMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         var sourceId = ResolveSourceId(track);
         if (save.Source)
@@ -1109,7 +1111,7 @@ public class AudioTagger
         }
     }
 
-    private void ApplyAtlMp4RatingMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    private static void ApplyAtlMp4RatingMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         if (!save.Rating || track.Rank <= 0)
         {
