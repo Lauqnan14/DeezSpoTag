@@ -5674,10 +5674,16 @@ async function persistArtistVisualSelection(artistId, action, url, path) {
         });
 
         const prefs = loadArtistVisualPrefs(artistId) || {};
-        if (applyPersistedArtistVisualResult(artistId, result, prefs)) {
+        if (applyPersistedArtistVisualResult(artistId, result, prefs, action)) {
             bumpImageCacheKey();
             saveArtistVisualPrefs(artistId, prefs);
-            applyStoredArtistVisuals(artistId);
+            if (action === 'avatar') {
+                applyStoredArtistAvatarVisual(artistId, prefs);
+            } else if (action === 'background') {
+                applyStoredArtistBackgroundVisual(artistId, prefs);
+            } else {
+                applyStoredArtistVisuals(artistId);
+            }
             if (document.getElementById('artistsGrid')) {
                 await applyLibraryViewFilter();
             }
@@ -5724,11 +5730,89 @@ function applyPersistedArtistBackgroundResult(artistEntry, result, prefs) {
     return true;
 }
 
-function applyPersistedArtistVisualResult(artistId, result, prefs) {
+function applyPersistedArtistVisualResult(artistId, result, prefs, action = null) {
     const artistEntry = findArtistEntryById(artistId);
-    const avatarUpdated = applyPersistedArtistAvatarResult(artistEntry, result, prefs);
-    const backgroundUpdated = applyPersistedArtistBackgroundResult(artistEntry, result, prefs);
+    const applyAvatar = action !== 'background';
+    const applyBackground = action !== 'avatar';
+    const avatarUpdated = applyAvatar
+        ? applyPersistedArtistAvatarResult(artistEntry, result, prefs)
+        : false;
+    const backgroundUpdated = applyBackground
+        ? applyPersistedArtistBackgroundResult(artistEntry, result, prefs)
+        : false;
     return avatarUpdated || backgroundUpdated;
+}
+
+function applyStoredArtistAvatarVisual(artistId, prefs) {
+    const resolvedPrefs = prefs || loadArtistVisualPrefs(artistId) || {};
+    const serverAvatarPath = (libraryState.artistVisuals.preferredAvatarPath || '').toString().trim();
+    const avatarUrl = resolvedPrefs.avatarUrl
+        || (resolvedPrefs.avatarPath ? buildLibraryImageUrl(resolvedPrefs.avatarPath, 320) : '')
+        || (serverAvatarPath ? buildLibraryImageUrl(serverAvatarPath, 320) : '');
+    if (!avatarUrl) {
+        return;
+    }
+
+    const avatarEl = document.getElementById('artistAvatar');
+    if (!avatarEl) {
+        return;
+    }
+
+    const src = appendCacheKey(avatarUrl);
+    setArtistAvatarImageElement(avatarEl, src, 'Artist avatar', true);
+}
+
+function applyStoredArtistBackgroundVisual(artistId, prefs) {
+    const resolvedPrefs = prefs || loadArtistVisualPrefs(artistId) || {};
+    const serverBackgroundPath = (libraryState.artistVisuals.preferredBackgroundPath || '').toString().trim();
+    const backgroundUrl = resolvedPrefs.backgroundUrl
+        || (resolvedPrefs.backgroundPath ? buildLibraryImageUrl(resolvedPrefs.backgroundPath) : '')
+        || (serverBackgroundPath ? buildLibraryImageUrl(serverBackgroundPath) : '');
+    if (!backgroundUrl) {
+        return;
+    }
+
+    const bgEl = document.querySelector('.artist-page');
+    if (!bgEl) {
+        return;
+    }
+
+    const savedUrl = appendCacheKey(backgroundUrl);
+    const applyId = (libraryState.artistVisuals.backgroundApplyId || 0) + 1;
+    libraryState.artistVisuals.backgroundApplyId = applyId;
+
+    const applyBackground = (url) => {
+        if (libraryState.artistVisuals.backgroundApplyId !== applyId) {
+            return;
+        }
+        applyArtistHeroBackgroundImage(url, true);
+    };
+
+    // Apply immediately so async profile refreshes do not overwrite the new image while it is loading.
+    applyBackground(savedUrl);
+    const probe = new Image();
+    probe.onload = () => {
+        applyBackground(savedUrl);
+    };
+    probe.onerror = () => {
+        if (libraryState.artistVisuals.backgroundApplyId !== applyId) {
+            return;
+        }
+        const fallback = libraryState.artistVisuals.headerImageUrl
+            || selectImage(libraryState.currentSpotifyArtist?.images, 'large');
+        if (fallback) {
+            applyArtistHeroBackgroundImage(fallback, false);
+        }
+        const hasSavedPath = !!((resolvedPrefs.backgroundPath || '').toString().trim() || serverBackgroundPath);
+        if (!hasSavedPath && resolvedPrefs.backgroundUrl) {
+            const nextPrefs = loadArtistVisualPrefs(artistId) || {};
+            if (nextPrefs.backgroundUrl) {
+                delete nextPrefs.backgroundUrl;
+                saveArtistVisualPrefs(artistId, nextPrefs);
+            }
+        }
+    };
+    probe.src = savedUrl;
 }
 
 function getSpotifySyncSelectionState(artistId) {
@@ -5891,69 +5975,8 @@ function resolveManagedArtistVisualPath(artistId, preferredPath, serverPath) {
 
 function applyStoredArtistVisuals(artistId) {
     const prefs = loadArtistVisualPrefs(artistId) || {};
-    const serverAvatarPath = (libraryState.artistVisuals.preferredAvatarPath || '').toString().trim();
-    const serverBackgroundPath = (libraryState.artistVisuals.preferredBackgroundPath || '').toString().trim();
-
-    const avatarUrl = prefs.avatarUrl
-        || (prefs.avatarPath ? buildLibraryImageUrl(prefs.avatarPath, 320) : '')
-        || (serverAvatarPath ? buildLibraryImageUrl(serverAvatarPath, 320) : '');
-    const backgroundUrl = prefs.backgroundUrl
-        || (prefs.backgroundPath ? buildLibraryImageUrl(prefs.backgroundPath) : '')
-        || (serverBackgroundPath ? buildLibraryImageUrl(serverBackgroundPath) : '');
-
-    if (!avatarUrl && !backgroundUrl) {
-        return;
-    }
-
-    if (avatarUrl) {
-        const avatarEl = document.getElementById('artistAvatar');
-        if (avatarEl) {
-            const src = appendCacheKey(avatarUrl);
-            setArtistAvatarImageElement(avatarEl, src, 'Artist avatar', true);
-        }
-    }
-
-    if (backgroundUrl) {
-        const bgEl = document.querySelector('.artist-page');
-        if (bgEl) {
-            const savedUrl = appendCacheKey(backgroundUrl);
-            const applyId = (libraryState.artistVisuals.backgroundApplyId || 0) + 1;
-            libraryState.artistVisuals.backgroundApplyId = applyId;
-
-            const applyBackground = (url) => {
-                if (libraryState.artistVisuals.backgroundApplyId !== applyId) {
-                    return;
-                }
-                applyArtistHeroBackgroundImage(url, true);
-            };
-
-            // Apply immediately so async profile refreshes do not overwrite the new image while it is loading.
-            applyBackground(savedUrl);
-            const probe = new Image();
-            probe.onload = () => {
-                applyBackground(savedUrl);
-            };
-            probe.onerror = () => {
-                if (libraryState.artistVisuals.backgroundApplyId !== applyId) {
-                    return;
-                }
-                const fallback = libraryState.artistVisuals.headerImageUrl
-                    || selectImage(libraryState.currentSpotifyArtist?.images, 'large');
-                if (fallback) {
-                    applyArtistHeroBackgroundImage(fallback, false);
-                }
-                const hasSavedPath = !!((prefs.backgroundPath || '').toString().trim() || serverBackgroundPath);
-                if (!hasSavedPath && prefs.backgroundUrl) {
-                    const nextPrefs = loadArtistVisualPrefs(artistId) || {};
-                    if (nextPrefs.backgroundUrl) {
-                        delete nextPrefs.backgroundUrl;
-                        saveArtistVisualPrefs(artistId, nextPrefs);
-                    }
-                }
-            };
-            probe.src = savedUrl;
-        }
-    }
+    applyStoredArtistAvatarVisual(artistId, prefs);
+    applyStoredArtistBackgroundVisual(artistId, prefs);
 }
 
 function pickArtistVisualCandidates(items, term) {
@@ -6219,7 +6242,13 @@ function renderArtistVisualPicker(artistId) {
                 }
             }
             saveArtistVisualPrefs(artistId, prefs);
-            applyStoredArtistVisuals(artistId);
+            if (action === 'avatar') {
+                applyStoredArtistAvatarVisual(artistId, prefs);
+            } else if (action === 'background') {
+                applyStoredArtistBackgroundVisual(artistId, prefs);
+            } else {
+                applyStoredArtistVisuals(artistId);
+            }
             void persistArtistVisualSelection(artistId, action, normalized, path);
         });
     });
