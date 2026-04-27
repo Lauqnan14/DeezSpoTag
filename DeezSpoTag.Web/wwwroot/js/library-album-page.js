@@ -1,5 +1,20 @@
 (() => {
     let runtimeLoadPromise = null;
+    const runtimeVersion = resolveRuntimeVersion();
+
+    function resolveRuntimeVersion() {
+        const script = document.querySelector('script[src*="/js/library-album-page.js"]');
+        if (!script) {
+            return '';
+        }
+
+        try {
+            const sourceUrl = new URL(script.src, globalThis.location?.origin || globalThis.location?.href || 'http://localhost');
+            return sourceUrl.searchParams.get('v') || '';
+        } catch {
+            return '';
+        }
+    }
 
     function ensureLibraryRuntimeLoaded() {
         if (typeof globalThis.loadAlbum === 'function') {
@@ -10,7 +25,9 @@
         }
         runtimeLoadPromise = new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = '/js/library.js';
+            script.src = runtimeVersion
+                ? `/js/library.js?v=${encodeURIComponent(runtimeVersion)}`
+                : '/js/library.js';
             script.async = true;
             script.onload = () => resolve();
             script.onerror = () => reject(new Error('Failed to load library runtime.'));
@@ -26,6 +43,9 @@
         }
         try {
             await ensureLibraryRuntimeLoaded();
+            if (typeof globalThis.bindGlobalLibraryInteractionHandlers === 'function') {
+                globalThis.bindGlobalLibraryInteractionHandlers();
+            }
             if (typeof globalThis.loadAlbum === 'function') {
                 await globalThis.loadAlbum();
             }
