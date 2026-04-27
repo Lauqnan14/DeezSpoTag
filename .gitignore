@@ -90,3 +90,6 @@ done_all
 *.user
 *.suo
 *.swp
+
+# Local runtime settings with personal tokens
+DeezSpoTag.Workers/Data/deezspotag/config.json
