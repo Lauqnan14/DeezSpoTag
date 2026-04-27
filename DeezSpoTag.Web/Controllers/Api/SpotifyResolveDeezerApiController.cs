@@ -87,7 +87,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
                 new SpotifyTrackResolveOptions(
                     AllowFallbackSearch: true,
                     PreferIsrcOnly: false,
-                    UseSongLink: false,
+                    UseSongLink: true,
                     StrictMode: true,
                     BypassNegativeCanonicalCache: false,
                     Logger: _logger,
