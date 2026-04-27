@@ -77,8 +77,7 @@ public static class DeezSpoTagServiceExtensions
         // CRITICAL FIX: Use basic listener here - SignalR listener will be registered in Web project
         // NOTE: IDeezSpoTagListener is registered in the Web project as SignalRDeezSpoTagListener
 
-        // CRITICAL FIX: Add the actual download engine
-        // DeezSpoTagDownloader is created per-download, not registered as service
+        // Unified queue processor is the single download path.
 
         // Unified queue processor handles all engines.
         services.AddScoped<DeezSpoTag.Services.Download.Deezer.DeezerEngineProcessor>();
