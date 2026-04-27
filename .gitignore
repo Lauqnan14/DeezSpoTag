@@ -52,6 +52,7 @@ DeezSpoTag.Web/smb_/**
 DeezSpoTag Diagnostic/
 **/.venv/
 **/venv/
+**/.audit-venv/
 Tools/AppleMusicWrapper/runtime/app/rootfs/
 Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
 Tools/AppleMusicWrapper/runtime/app/.backup-ref-swap/
