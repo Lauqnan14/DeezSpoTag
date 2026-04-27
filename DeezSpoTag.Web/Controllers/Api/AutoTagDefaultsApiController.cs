@@ -72,8 +72,10 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
                 .Select(id => id.ToString(CultureInfo.InvariantCulture))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var scheduleCleaned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (request.LibrarySchedules != null)
+        var scheduleCleaned = request.LibrarySchedules is null
+            ? new Dictionary<string, string>(state.Defaults.LibrarySchedules, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (request.LibrarySchedules is not null)
         {
             foreach (var (key, value) in request.LibrarySchedules)
             {
