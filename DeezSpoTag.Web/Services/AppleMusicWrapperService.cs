@@ -95,6 +95,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string SharedLogoutFileName = "wrapper-logout.txt";
     private const string SharedLogoutStateFileName = "wrapper-logout-state.txt";
     private const string SharedTwoFactorStateFileName = "wrapper-2fa-state.txt";
+    private const string SharedAuthActiveFileName = "wrapper-auth-active.txt";
     private static readonly string[] HelperLogoutArgs = ["logout"];
     private static readonly string[] HelperRunArgs = ["run"];
     private static readonly string[] HelperStatusArgs = ["status"];
@@ -220,7 +221,17 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             RecoverStaleSharedLoginState();
             if (TryGetInFlightLoginStatus(out var inFlightStatus))
             {
-                return inFlightStatus;
+                if (IsHelperControlModeEnabled())
+                {
+                    return inFlightStatus;
+                }
+
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Restarting shared-mode Apple login despite in-flight state. Status={Status}",
+                        inFlightStatus.Status);
+                }
             }
 
             StopProcess("external_login_restart");
@@ -275,16 +286,18 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         var loginFileQueued = false;
+        var sharedAuthFlowActive = false;
         try
         {
             loginFileQueued = File.Exists(ResolveExternalWrapperSharedLoginFilePath());
+            sharedAuthFlowActive = IsSharedAuthFlowActive();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Unable to inspect shared wrapper login file while recovering stale state.");
         }
 
-        if (loginFileQueued)
+        if (loginFileQueued || sharedAuthFlowActive)
         {
             return;
         }
@@ -489,19 +502,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             return true;
         }
-
-        if (!IsExternalLoginFlowActive())
-        {
-            return false;
-        }
-
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Accepting Apple wrapper 2FA submission while probe reports not waiting. Status={Status}, LoginActive=true",
-                currentStatus.Status);
-        }
-        return true;
+        return false;
     }
 
     private AppleMusicWrapperStatusSnapshot SetTwoFactorFailureState(string? error)
@@ -1289,10 +1290,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return;
         }
 
-        var sessionCleared = TryClearSharedWrapperSession(out var clearError);
-        if (!sessionCleared && !string.IsNullOrWhiteSpace(clearError))
+        var resetResult = await RequestSharedWrapperLogoutAsync(cancellationToken);
+        if (!resetResult.Success)
         {
-            _logger.LogWarning("Shared wrapper session reset failed before login: {Error}", clearError);
+            var resetError = resetResult.Error ?? "unknown error";
+            _logger.LogWarning("Shared wrapper session reset failed before login: {Error}", resetError);
         }
 
         ResetSharedControlMarkers();
@@ -1600,6 +1602,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         return Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files", "2fa.txt");
     }
 
+    private static string ResolveExternalWrapperSharedAuthActiveFilePath()
+    {
+        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedAuthActiveFileName);
+    }
+
     private static bool TryQueueSharedLoginCredentials(string email, string password, out string? error)
     {
         error = null;
@@ -1627,7 +1634,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 Directory.CreateDirectory(parentDir);
             }
 
-            File.WriteAllText(loginFilePath, credentialsPayload);
+            WriteSharedTextFileAtomic(loginFilePath, credentialsPayload);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1658,7 +1665,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 Directory.CreateDirectory(parentDir);
             }
 
-            File.WriteAllText(twoFactorFilePath, trimmedCode);
+            WriteSharedTextFileAtomic(twoFactorFilePath, trimmedCode);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1759,7 +1766,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 Directory.CreateDirectory(parentDir);
             }
 
-            File.WriteAllText(logoutFilePath, requestId);
+            WriteSharedTextFileAtomic(logoutFilePath, requestId);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1852,6 +1859,45 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         return File.Exists("/.dockerenv");
+    }
+
+    private static void WriteSharedTextFileAtomic(string filePath, string content)
+    {
+        var parentDir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrWhiteSpace(parentDir))
+        {
+            Directory.CreateDirectory(parentDir);
+        }
+
+        var tempPath = Path.Combine(
+            parentDir ?? Path.GetTempPath(),
+            $".{Path.GetFileName(filePath)}.{Guid.NewGuid():N}.tmp");
+
+        File.WriteAllText(tempPath, content);
+        File.Move(tempPath, filePath, overwrite: true);
+    }
+
+    private static bool IsSharedAuthFlowActive()
+    {
+        try
+        {
+            var authActivePath = ResolveExternalWrapperSharedAuthActiveFilePath();
+            if (!File.Exists(authActivePath))
+            {
+                return false;
+            }
+
+            var raw = File.ReadAllText(authActivePath).Trim().ToLowerInvariant();
+            return raw is "1" or "true" or "active" or "in_progress";
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void StopProcess(string reason)
@@ -2422,6 +2468,72 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             context.ShouldPromptTwoFactor = context.ShouldPromptTwoFactor || _awaitingTwoFactor;
             context.StartedAt = _startedAt;
         }
+
+        if (context.PortsOpen || IsHelperControlModeEnabled())
+        {
+            return;
+        }
+
+        var sharedLoginQueued = false;
+        var sharedAwaitingTwoFactor = false;
+        var sharedAuthFlowActive = false;
+        try
+        {
+            sharedLoginQueued = IsSharedLoginQueued();
+            sharedAwaitingTwoFactor = ProbeSharedTwoFactorState(maxAttempts: 2, delayBetweenAttempts: TimeSpan.FromMilliseconds(50))
+                                      == TwoFactorProbeState.Waiting;
+            sharedAuthFlowActive = IsSharedAuthFlowActive();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to read shared wrapper login/2FA markers while refreshing status snapshot.");
+        }
+
+        if (!sharedLoginQueued && !sharedAwaitingTwoFactor && !sharedAuthFlowActive)
+        {
+            var preserveRecentLoginState = false;
+            lock (_sync)
+            {
+                preserveRecentLoginState =
+                    _startedAt.HasValue &&
+                    DateTimeOffset.UtcNow - _startedAt.Value < TimeSpan.FromSeconds(20);
+                if (!preserveRecentLoginState)
+                {
+                    _awaitingTwoFactor = false;
+                    _loginInProgress = false;
+                    _startedAt = null;
+                    _twoFactorSubmittedAt = null;
+                }
+            }
+
+            if (preserveRecentLoginState)
+            {
+                lock (_sync)
+                {
+                    _loginInProgress = true;
+                }
+                context.LoginActive = true;
+                context.LoginInProgress = true;
+                return;
+            }
+
+            context.LoginActive = false;
+            context.LoginInProgress = false;
+            context.ShouldPromptTwoFactor = false;
+            context.StartedAt = null;
+            return;
+        }
+
+        lock (_sync)
+        {
+            _awaitingTwoFactor = sharedAwaitingTwoFactor;
+            _loginInProgress = sharedLoginQueued || sharedAwaitingTwoFactor || sharedAuthFlowActive;
+            _startedAt ??= DateTimeOffset.UtcNow;
+            context.LoginActive = true;
+            context.LoginInProgress = _loginInProgress;
+            context.ShouldPromptTwoFactor = sharedAwaitingTwoFactor;
+            context.StartedAt = _startedAt;
+        }
     }
 
     private AppleMusicWrapperStatusSnapshot? TryBuildTransientLoginStatus(ExternalStatusContext context)
@@ -2494,6 +2606,32 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return null;
         }
 
+        if (!IsHelperControlModeEnabled() && elapsed > TimeSpan.FromSeconds(20))
+        {
+            var sharedLoginQueued = false;
+            var sharedAwaitingTwoFactor = false;
+            var sharedAuthFlowActive = false;
+            var hasSharedSessionCache = false;
+            try
+            {
+                sharedLoginQueued = IsSharedLoginQueued();
+                sharedAwaitingTwoFactor = ProbeSharedTwoFactorState(maxAttempts: 2, delayBetweenAttempts: TimeSpan.FromMilliseconds(50))
+                                          == TwoFactorProbeState.Waiting;
+                sharedAuthFlowActive = IsSharedAuthFlowActive();
+                hasSharedSessionCache = HasSharedWrapperSessionCache();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Failed to inspect shared wrapper startup markers.");
+            }
+
+            if (!sharedLoginQueued && !sharedAwaitingTwoFactor && !sharedAuthFlowActive && !hasSharedSessionCache)
+            {
+                return SetAndReturnLoginFailure(
+                    "Recovered stale wrapper login state: wrapper ports are closed and no shared login/2FA/session markers were found. Enter credentials and try again.");
+            }
+        }
+
         var modeHint = "External wrapper mode is enabled. Start the wrapper container to continue.";
         var details = BuildStartupTimeoutDetails(context);
 
@@ -2506,6 +2644,30 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         return SetAndReturnLoginFailure($"Wrapper did not start or stopped unexpectedly. {modeHint} {details}");
+    }
+
+    private static bool HasSharedWrapperSessionCache()
+    {
+        var filesPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files");
+        if (!Directory.Exists(filesPath))
+        {
+            return false;
+        }
+
+        var icInfo = Path.Combine(filesPath, "IC-Info.sido");
+        if (File.Exists(icInfo))
+        {
+            return true;
+        }
+
+        var musicToken = Path.Combine(filesPath, "MUSIC_TOKEN");
+        return File.Exists(musicToken);
+    }
+
+    private static bool IsSharedLoginQueued()
+    {
+        var loginPath = ResolveExternalWrapperSharedLoginFilePath();
+        return File.Exists(loginPath);
     }
 
     private static string BuildStartupTimeoutDetails(ExternalStatusContext context)
@@ -2614,6 +2776,16 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private AppleMusicWrapperStatusSnapshot BuildStableWrapperStatus(ExternalStatusContext context)
     {
+        var recentSharedLoginAttempt = false;
+        lock (_sync)
+        {
+            recentSharedLoginAttempt =
+                !string.IsNullOrWhiteSpace(_email) &&
+                !_authStateReady &&
+                _startedAt.HasValue &&
+                DateTimeOffset.UtcNow - _startedAt.Value < TimeSpan.FromSeconds(20);
+        }
+
         var diagnosticMessage = BuildExternalWrapperDiagnosticMessage(context);
         _diagnostics = new AppleMusicWrapperDiagnostics(
             context.Host,
@@ -2629,7 +2801,12 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         string message;
         string status;
-        if (!context.PortsOpen && context.SharedControlReady)
+        if (!context.PortsOpen && context.SharedControlReady && recentSharedLoginAttempt)
+        {
+            message = "Starting wrapper login...";
+            status = StatusStarting;
+        }
+        else if (!context.PortsOpen && context.SharedControlReady)
         {
             message = "Shared wrapper control is ready. Enter Apple credentials to queue login; wrapper ports will open when authentication starts.";
             status = StatusRunning;

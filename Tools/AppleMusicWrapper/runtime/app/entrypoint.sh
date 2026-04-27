@@ -9,6 +9,9 @@ DEFAULT_WRAPPER_ARGS="-H 0.0.0.0 -D 10020 -M 20020 -A 30020"
 LOGIN_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-login.txt"
 LOGIN_ENV_MARKER_DEFAULT="/opt/apple-wrapper/data/.wrapper-login-env.sha256"
 TWO_FACTOR_STATE_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-2fa-state.txt"
+LOGOUT_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-logout.txt"
+LOGOUT_STATE_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-logout-state.txt"
+AUTH_ACTIVE_FILE_DEFAULT="/opt/apple-wrapper/data/wrapper-auth-active.txt"
 STARTUP_LOGIN_CREDS=""
 
 log() {
@@ -39,6 +42,56 @@ set_wrapper_runtime_flag() {
   printf '%s\n' "$value" > "$tmp_file"
   mv -f "$tmp_file" "$flag_file"
   chmod 644 "$flag_file" || true
+}
+
+set_logout_state() {
+  local state_file="$1"
+  local request_id="$2"
+  local parent_dir
+  local tmp_file
+  parent_dir="$(dirname "$state_file")"
+  mkdir -p "$parent_dir"
+  tmp_file="$(mktemp "$parent_dir/.wrapper-logout-state.XXXXXX")"
+  printf '%s\n' "$request_id" > "$tmp_file"
+  mv -f "$tmp_file" "$state_file"
+  chmod 644 "$state_file" || true
+}
+
+clear_dir_contents() {
+  local target_dir="$1"
+  if [[ ! -d "$target_dir" ]]; then
+    return 0
+  fi
+
+  find "$target_dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+}
+
+process_shared_logout_request() {
+  local logout_file="${WRAPPER_LOGOUT_FILE:-$LOGOUT_FILE_DEFAULT}"
+  local logout_state_file="${WRAPPER_LOGOUT_STATE_FILE:-$LOGOUT_STATE_FILE_DEFAULT}"
+  local login_file="${WRAPPER_LOGIN_FILE:-$LOGIN_FILE_DEFAULT}"
+  local marker_file="${WRAPPER_LOGIN_ENV_MARKER_FILE:-$LOGIN_ENV_MARKER_DEFAULT}"
+  local session_cache_dir="$ROOTFS_DIR/data/data/com.apple.android.music/files"
+  local data_dir="$ROOT_DIR/data"
+  local request_id=""
+
+  if [[ ! -f "$logout_file" ]]; then
+    return 1
+  fi
+
+  request_id="$(tr -d '\r\n' < "$logout_file" 2>/dev/null || true)"
+  rm -f "$logout_file" || true
+
+  clear_dir_contents "$session_cache_dir"
+  clear_dir_contents "$data_dir"
+  rm -f "$login_file" "$marker_file" || true
+
+  if [[ -n "$request_id" ]]; then
+    set_logout_state "$logout_state_file" "$request_id"
+  fi
+
+  log "processed shared logout request${request_id:+ ($request_id)}."
+  return 0
 }
 
 require_file() {
@@ -223,12 +276,16 @@ read_login_credentials() {
 wait_for_startup_inputs() {
   local wait_seconds=0
   local last_notice=0
+  local auth_active_file="${WRAPPER_AUTH_ACTIVE_FILE:-$AUTH_ACTIVE_FILE_DEFAULT}"
   STARTUP_LOGIN_CREDS=""
+  set_wrapper_runtime_flag "$auth_active_file" "0"
 
   log "no Apple session cache found; wrapper will wait for login/session instead of exiting."
   log "provide WRAPPER_LOGIN=user:pass or write credentials to ${WRAPPER_LOGIN_FILE:-$LOGIN_FILE_DEFAULT}"
 
   while true; do
+    process_shared_logout_request || true
+
     if has_cached_session; then
       log "session cache detected; starting wrapper in normal mode."
       return 0
@@ -322,6 +379,10 @@ run_wrapper_with_state_tracking() {
   local state_file="$2"
   local transient_flag_file="$3"
   local response_type_file="$4"
+  local auth_active_file="$5"
+  local login_attempt_active="$6"
+  shift
+  shift
   shift
   shift
   shift
@@ -331,6 +392,7 @@ run_wrapper_with_state_tracking() {
   set_twofactor_state "$state_file" "not_waiting_for_2fa"
   set_wrapper_runtime_flag "$transient_flag_file" "0"
   set_wrapper_runtime_flag "$response_type_file" ""
+  set_wrapper_runtime_flag "$auth_active_file" "$login_attempt_active"
 
   "$wrapper_binary" "$@" 2> >(
     while IFS= read -r line; do
@@ -350,9 +412,25 @@ run_wrapper_with_state_tracking() {
           ;;
       esac
     done
-  ) || exit_code=$?
+  ) &
+  local wrapper_pid=$!
+
+  while kill -0 "$wrapper_pid" 2>/dev/null; do
+    if process_shared_logout_request; then
+      if kill -0 "$wrapper_pid" 2>/dev/null; then
+        kill "$wrapper_pid" 2>/dev/null || true
+      fi
+      break
+    fi
+    sleep 0.2
+  done
+
+  if ! wait "$wrapper_pid"; then
+    exit_code=$?
+  fi
 
   set_twofactor_state "$state_file" "not_waiting_for_2fa"
+  set_wrapper_runtime_flag "$auth_active_file" "0"
   return "$exit_code"
 }
 
@@ -411,6 +489,9 @@ main() {
   retry_delay_seconds="${WRAPPER_LOGIN_RETRY_DELAY_SECONDS:-4}"
   local exit_on_login_failure
   exit_on_login_failure="${WRAPPER_EXIT_ON_LOGIN_FAILURE:-0}"
+  local auth_active_file
+  auth_active_file="${WRAPPER_AUTH_ACTIVE_FILE:-$AUTH_ACTIVE_FILE_DEFAULT}"
+  set_wrapper_runtime_flag "$auth_active_file" "0"
 
   while true; do
     local wrapper_args_string
@@ -439,7 +520,7 @@ main() {
     while true; do
       set_wrapper_runtime_flag "$transient_flag_file" "0"
       set_wrapper_runtime_flag "$response_type_file" ""
-      if run_wrapper_with_state_tracking "$wrapper_binary" "$two_factor_state_file" "$transient_flag_file" "$response_type_file" "${wrapper_args[@]}"; then
+      if run_wrapper_with_state_tracking "$wrapper_binary" "$two_factor_state_file" "$transient_flag_file" "$response_type_file" "$auth_active_file" "$wrapper_has_login" "${wrapper_args[@]}"; then
         exit_code=0
       else
         exit_code=$?
