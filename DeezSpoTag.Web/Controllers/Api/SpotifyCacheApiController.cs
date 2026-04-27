@@ -414,14 +414,6 @@ public class SpotifyCacheApiController : ControllerBase
             : null;
         var biography = includeBio ? (request.Biography ?? string.Empty).Trim() : null;
 
-        if (includeAvatar
-            && avatarVisual is null
-            && string.IsNullOrWhiteSpace(request.AvatarImagePath)
-            && string.IsNullOrWhiteSpace(request.AvatarVisualUrl))
-        {
-            avatarVisual = ResolveVisualSelection(managedVisualRoot, request.ImagePath, null);
-        }
-
         return (
             new PreparedPushRequest(
                 artistId,
