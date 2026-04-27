@@ -11,12 +11,6 @@
     globalThis.__deezspotCsrfFetchShimInstalled = true;
     const originalFetch = globalThis.fetch.bind(globalThis);
     const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-    const runtimeApiCacheName = 'deezspotag-runtime-api-v1';
-    const runtimeApiCacheBypassPatterns = [
-        /^\/api\/(?:download|connect|system-stats|platform-auth|autotag|media-server)\b/i,
-        /^\/api\/library\/(?:analysis|scan)\b/i,
-        /^\/api\/spotify\/tracklist\/matches\b/i
-    ];
 
     function readCsrfToken() {
         const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
@@ -31,62 +25,6 @@
         return String(resource || '');
     }
 
-    function isTruthyFlag(value) {
-        if (!value) {
-            return false;
-        }
-        const normalized = String(value).trim().toLowerCase();
-        return normalized === '1' || normalized === 'true' || normalized === 'yes';
-    }
-
-    function shouldUseRuntimeApiCache(url, method, resource, init) {
-        if (method !== 'GET') {
-            return false;
-        }
-        if (url.origin !== globalThis.location.origin) {
-            return false;
-        }
-        if (!url.pathname.startsWith('/api/')) {
-            return false;
-        }
-        if (url.pathname.includes('/stream')) {
-            return false;
-        }
-
-        if (runtimeApiCacheBypassPatterns.some((pattern) => pattern.test(url.pathname))) {
-            return false;
-        }
-
-        if (isTruthyFlag(url.searchParams.get('refresh'))
-            || isTruthyFlag(url.searchParams.get('nocache'))
-            || isTruthyFlag(url.searchParams.get('noCache'))
-            || isTruthyFlag(url.searchParams.get('cacheBypass'))) {
-            return false;
-        }
-
-        const headers = new Headers(init?.headers || (resource instanceof Request ? resource.headers : undefined));
-        if (isTruthyFlag(headers.get('X-Bypass-Cache'))
-            || isTruthyFlag(headers.get('Cache-Bypass'))) {
-            return false;
-        }
-
-        return true;
-    }
-
-    function isCacheableApiResponse(response) {
-        if (!response?.ok) {
-            return false;
-        }
-
-        const cacheControl = response.headers.get('Cache-Control') || '';
-        if (cacheControl.toLowerCase().includes('no-store')) {
-            return false;
-        }
-
-        const contentType = response.headers.get('Content-Type') || '';
-        return contentType.toLowerCase().includes('json');
-    }
-
     function buildFetchInit(resource, init) {
         return {
             ...init,
@@ -97,46 +35,7 @@
     globalThis.fetch = (resource, init) => {
         const method = (init?.method || (resource instanceof Request ? resource.method : 'GET') || 'GET').toUpperCase();
         if (!unsafeMethods.has(method)) {
-            const urlText = resolveUrl(resource);
-            let url;
-            try {
-                url = new URL(urlText, globalThis.location.href);
-            } catch {
-                return originalFetch(resource, init);
-            }
-
-            if (!shouldUseRuntimeApiCache(url, method, resource, init)) {
-                return originalFetch(resource, buildFetchInit(resource, init));
-            }
-
-            return (async () => {
-                try {
-                    const cache = await caches.open(runtimeApiCacheName);
-                    const cacheKey = url.toString();
-                    const cached = await cache.match(cacheKey);
-                    if (cached) {
-                        void (async () => {
-                            try {
-                                const networkResponse = await originalFetch(resource, buildFetchInit(resource, init));
-                                if (isCacheableApiResponse(networkResponse)) {
-                                    await cache.put(cacheKey, networkResponse.clone());
-                                }
-                            } catch {
-                                // Best-effort background refresh.
-                            }
-                        })();
-                        return cached;
-                    }
-
-                    const networkResponse = await originalFetch(resource, buildFetchInit(resource, init));
-                    if (isCacheableApiResponse(networkResponse)) {
-                        await cache.put(cacheKey, networkResponse.clone());
-                    }
-                    return networkResponse;
-                } catch {
-                    return originalFetch(resource, buildFetchInit(resource, init));
-                }
-            })();
+            return originalFetch(resource, buildFetchInit(resource, init));
         }
 
         const urlText = resolveUrl(resource);

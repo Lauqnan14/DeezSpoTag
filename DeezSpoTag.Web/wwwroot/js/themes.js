@@ -1,7 +1,6 @@
 // DeezSpoTag Default Theme
 // Simple theme initialization for the default dark purple theme
 
-const themeStorageKey = 'deezspotag-theme';
 const availableThemes = ['blue', 'purple', 'green', 'orange', 'red', 'teal', 'indigo', 'pink', 'amoled-white', 'amoled-red', 'amoled-yellow', 'amoled-blue', 'amoled-neon', 'amoled-green', 'amoled-purple', 'amoled-inverse'];
 const themeDisplayNames = {
     blue: 'Blue',
@@ -61,11 +60,29 @@ function initializeTheme(theme) {
 }
 
 function getStoredTheme() {
-    const stored = localStorage.getItem(themeStorageKey);
-    if (stored && availableThemes.includes(stored)) {
-        return stored;
+    const prefs = globalThis.__userPrefsData;
+    const preferred = prefs && typeof prefs.theme === 'string' ? prefs.theme : '';
+    if (preferred && availableThemes.includes(preferred)) {
+        return preferred;
     }
     return 'blue';
+}
+
+function persistThemePreference(theme) {
+    if (!availableThemes.includes(theme)) {
+        return;
+    }
+
+    const prefs = (globalThis.__userPrefsData && typeof globalThis.__userPrefsData === 'object')
+        ? globalThis.__userPrefsData
+        : {};
+
+    prefs.theme = theme;
+    globalThis.__userPrefsData = prefs;
+
+    if (globalThis.UserPrefs) {
+        globalThis.UserPrefs.set('theme', theme);
+    }
 }
 
 function applyTheme(theme) {
@@ -142,8 +159,7 @@ function wireThemePicker() {
             if (!theme) {
                 return;
             }
-            localStorage.setItem(themeStorageKey, theme);
-            if (globalThis.UserPrefs) globalThis.UserPrefs.set('theme', theme);
+            persistThemePreference(theme);
             applyTheme(theme);
             setPickerOpen(false);
         });
@@ -172,7 +188,7 @@ if (typeof module !== 'undefined' && module.exports) {
             if (!availableThemes.includes(theme)) {
                 return;
             }
-            localStorage.setItem(themeStorageKey, theme);
+            persistThemePreference(theme);
             applyTheme(theme);
         }
     };
@@ -188,8 +204,7 @@ globalThis.ThemeManager = {
         if (!availableThemes.includes(theme)) {
             return;
         }
-        localStorage.setItem(themeStorageKey, theme);
-        if (globalThis.UserPrefs) globalThis.UserPrefs.set('theme', theme);
+        persistThemePreference(theme);
         applyTheme(theme);
     }
 };

@@ -18,10 +18,10 @@
 <script>
     (function () {
         try {
-            var themeStorageKey = 'deezspotag-theme';
             var availableThemes = ['blue', 'purple', 'green', 'orange', 'red', 'teal', 'indigo', 'pink', 'amoled-white', 'amoled-red', 'amoled-yellow', 'amoled-blue', 'amoled-neon', 'amoled-green', 'amoled-purple', 'amoled-inverse'];
-            var storedTheme = localStorage.getItem(themeStorageKey);
-            var theme = (storedTheme && availableThemes.indexOf(storedTheme) !== -1) ? storedTheme : 'blue';
+            var prefs = globalThis.__userPrefsData || {};
+            var preferredTheme = (prefs && typeof prefs.theme === 'string') ? prefs.theme : '';
+            var theme = availableThemes.indexOf(preferredTheme) !== -1 ? preferredTheme : 'blue';
             var root = document.documentElement;
             availableThemes.forEach(function (name) { root.classList.remove('theme-' + name); });
             root.classList.add('theme-' + theme);

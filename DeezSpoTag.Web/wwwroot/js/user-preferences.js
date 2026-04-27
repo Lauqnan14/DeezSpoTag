@@ -132,6 +132,26 @@ globalThis.UserPrefs = (function () {
         set(field, parsed);
     }
 
+    function drainPendingPreferenceSync() {
+        const pending = Array.isArray(globalThis.__deezspotPendingPrefSync)
+            ? globalThis.__deezspotPendingPrefSync
+            : [];
+        if (pending.length === 0) {
+            return;
+        }
+
+        globalThis.__deezspotPendingPrefSync = [];
+        pending.forEach((entry) => {
+            if (!entry || typeof entry.key !== 'string' || typeof entry.value !== 'string') {
+                return;
+            }
+
+            syncFromLocalStorage(entry.key, entry.value);
+        });
+    }
+
+    drainPendingPreferenceSync();
+
     return {
         /** Set by DTO field name */
         set: set,
