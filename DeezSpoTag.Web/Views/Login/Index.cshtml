@@ -2176,6 +2176,20 @@ let appleMusicLoginRequestPending = false;
 let appleMusicStatusRequestInFlight = false;
 let appleMusicLastSyncSignature = '';
 
+async function fetchJsonWithTimeout(url, options, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(url, {
+            ...(options || {}),
+            signal: controller.signal
+        });
+        return response;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 function applyAppleMusicWrapperAvailability(available) {
     appleMusicWrapperAvailable = available;
     const ids = [
@@ -2198,6 +2212,9 @@ function applyAppleMusicWrapperAvailability(available) {
 
 async function startAppleMusicLogin() {
     if (appleMusicLoginRequestPending || appleMusicLoginInProgress || appleMusic2faSubmitting) {
+        setAppleMusicLoginState('Login already in progress. Waiting for wrapper response.');
+        beginAppleMusicStatusPolling();
+        void refreshAppleMusicWrapperStatus();
         return;
     }
 
@@ -2226,13 +2243,14 @@ async function startAppleMusicLogin() {
     setAppleMusic2faEnabled(false, '');
     document.getElementById('appleMusic2fa').value = '';
     beginAppleMusicStatusPolling();
+    void refreshAppleMusicWrapperStatus();
 
     try {
-        const response = await fetch('/api/apple-music/wrapper-ref/login', {
+        const response = await fetchJsonWithTimeout('/api/apple-music/wrapper-ref/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password })
-        });
+        }, 15000);
         if (!response.ok) {
             const message = await response.text();
             showToast(message || 'Apple Music login failed', 'error');
@@ -2249,13 +2267,21 @@ async function startAppleMusicLogin() {
         appleMusicLoginRequestPending = false;
         handleAppleMusicStatus(data);
     } catch (error) {
-        console.error('Apple Music login error:', error);
-        showToast('Network error while starting Apple Music login', 'error');
-        setAppleMusicLoginState('Network error');
-        setAppleMusicCredentialsEnabled(true);
-        setAppleMusicLoginEnabled(true);
-        appleMusicLoginInProgress = false;
-        appleMusicLoginRequestPending = false;
+        if (error?.name === 'AbortError') {
+            appleMusicLoginRequestPending = false;
+            setAppleMusicLoginState('Login request is taking longer than expected. Waiting for wrapper response...');
+            showToast('Apple wrapper is taking longer than expected. Still checking status...', 'info');
+            beginAppleMusicStatusPolling();
+            void refreshAppleMusicWrapperStatus();
+        } else {
+            console.error('Apple Music login error:', error);
+            showToast('Network error while starting Apple Music login', 'error');
+            setAppleMusicLoginState('Network error');
+            setAppleMusicCredentialsEnabled(true);
+            setAppleMusicLoginEnabled(true);
+            appleMusicLoginInProgress = false;
+            appleMusicLoginRequestPending = false;
+        }
     } finally {
         document.getElementById('appleMusicPassword').value = '';
     }
@@ -2280,13 +2306,14 @@ async function submitAppleMusic2fa() {
     setAppleMusicLoginEnabled(false);
     setAppleMusicCredentialsEnabled(false);
     beginAppleMusicStatusPolling();
+    void refreshAppleMusicWrapperStatus();
 
     try {
-        const response = await fetch('/api/apple-music/wrapper-ref/2fa', {
+        const response = await fetchJsonWithTimeout('/api/apple-music/wrapper-ref/2fa', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ code })
-        });
+        }, 20000);
         if (!response.ok) {
             const message = await response.text();
             showToast(message || 'Verification failed', 'error');
@@ -2296,12 +2323,19 @@ async function submitAppleMusic2fa() {
         const data = await response.json();
         handleAppleMusicStatus(data);
     } catch (error) {
-        console.error('Apple Music 2FA error:', error);
-        showToast('Network error while submitting code', 'error');
-        setAppleMusicLoginState('Network error');
-        setAppleMusic2faEnabled(true, 'Enter the verification code from Apple.');
-        setAppleMusicCredentialsEnabled(true);
-        setAppleMusicLoginEnabled(true);
+        if (error?.name === 'AbortError') {
+            setAppleMusicLoginState('2FA verification is taking longer than expected. Waiting for wrapper response...');
+            showToast('2FA verification is still in progress. Checking wrapper status...', 'info');
+            beginAppleMusicStatusPolling();
+            void refreshAppleMusicWrapperStatus();
+        } else {
+            console.error('Apple Music 2FA error:', error);
+            showToast('Network error while submitting code', 'error');
+            setAppleMusicLoginState('Network error');
+            setAppleMusic2faEnabled(true, 'Enter the verification code from Apple.');
+            setAppleMusicCredentialsEnabled(true);
+            setAppleMusicLoginEnabled(true);
+        }
     } finally {
         // Keep polling active, but allow users to retry/resubmit if wrapper remains in waiting state.
         appleMusic2faSubmitting = false;
@@ -2842,7 +2876,8 @@ async function loadSpotifyConfig(options = {}) {
             return accountName && accountName.toLowerCase() === activeAccountName.toLowerCase();
         }) || null;
         const accountHasLibrespotBlob = Boolean(resolveSpotifyAccountLibrespotBlobPath(active));
-        applySpotifyConnectionUiState(data, active, activeAccountName, false);
+        // Login state must be driven by saved librespot/blob credentials.
+        applySpotifyConnectionUiState(data, active, activeAccountName, accountHasLibrespotBlob);
         queueConnectedPlatformsRefresh();
 
         await refreshSpotifyConnectionStatus(data, active, activeAccountName, accountHasLibrespotBlob, loadSequence, options);
@@ -2884,19 +2919,23 @@ function resolveSpotifyConnectedAccountName(active, activeAccountName, connectio
 
 function applySpotifyConnectionUiState(data, active, activeAccountName, isConnected, connectionStatus = null) {
     const accountName = resolveSpotifyConnectedAccountName(active, activeAccountName, connectionStatus);
-    const showLoggedIn = Boolean(isConnected && accountName);
+    const showLoggedIn = Boolean(isConnected);
     setStatus('spotifyStatus', showLoggedIn);
     if (showLoggedIn) {
         const region = active?.region || active?.Region || 'UL';
         const planValue = data?.activeAccountPlan ?? data?.ActiveAccountPlan;
         const plan = planValue ? capitalizeSpotifyPlan(planValue) : 'Unknown';
-        document.getElementById('spotifyLoggedInName').textContent = accountName;
+        document.getElementById('spotifyLoggedInName').textContent = accountName || 'Spotify';
         document.getElementById('spotifyLoggedInPlanLocation').textContent = `${plan} | ${region || 'UL'}`;
         const picture = document.getElementById('spotifyLoggedInPicture');
         if (picture) {
             picture.src = getPlatformIcon('spotify');
         }
-        localStorage.setItem('spotifyAccount', accountName);
+        if (accountName) {
+            localStorage.setItem('spotifyAccount', accountName);
+        } else {
+            localStorage.removeItem('spotifyAccount');
+        }
     } else {
         localStorage.removeItem('spotifyAccount');
     }
@@ -2967,8 +3006,7 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
             const hasUsableSpotifySession = webPlayerOk || librespotOk || backendOk;
             const hasAnyLibrespotBlob = accountHasLibrespotBlob || Boolean(resolveSpotifyStatusLibrespotBlobPath(connectionStatus));
             const statusActiveAccount = resolveSpotifyStatusActiveAccount(connectionStatus);
-            const hasKnownAccount = Boolean(active || activeAccountName || statusActiveAccount);
-            const hasCredentialLogin = hasKnownAccount && hasAnyLibrespotBlob;
+            const hasCredentialLogin = hasAnyLibrespotBlob;
             // Keep Login tab state tied to saved librespot credentials; runtime checks are advisory.
             const isConnected = Boolean(connectionStatus && hasCredentialLogin);
 
@@ -2979,7 +3017,7 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
                 if (hasCredentialLogin && !hasUsableSpotifySession) {
                     console.info('Spotify credentials are present, but live session check is not ready yet.');
                 }
-                if (hasKnownAccount && !isConnected && webPlayerOk && !librespotOk) {
+                if (!isConnected && webPlayerOk && !librespotOk) {
                     console.info('Spotify web-player cookies saved. Complete Spotify Login (blob/librespot) to switch to logged-in state.');
                 }
                 return;
