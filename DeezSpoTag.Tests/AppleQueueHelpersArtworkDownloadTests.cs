@@ -16,7 +16,7 @@ namespace DeezSpoTag.Tests;
 public sealed class AppleQueueHelpersArtworkDownloadTests
 {
     [Fact]
-    public async Task DownloadAppleArtworkAsync_RawAcArtwork_PreservesRequestedSize()
+    public async Task DownloadAppleArtworkAsync_RawAcArtwork_ClampsToSourceDimensions()
     {
         var handler = new CapturingHttpMessageHandler();
         var downloader = new ImageDownloader(
@@ -32,7 +32,7 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
                 RawUrl = "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/7b/d6/6d/7bd66d99-3c31-8c1d-e81d-3353e86ae938/artwork.jpg/1200x1200ac.jpg",
                 OutputPath = outputPath,
                 Settings = settings,
-                Size = 1200,
+                Size = 5000,
                 Overwrite = "y",
                 PreferMaxQuality = true,
                 Logger = NullLogger.Instance

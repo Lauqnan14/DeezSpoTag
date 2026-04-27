@@ -92,13 +92,6 @@ public static class DownloadServiceExtensions
 
         // Settings service is registered in DeezSpoTagServiceExtensions
 
-        // EXACT deezspotag implementation: got with https: { rejectUnauthorized: false }
-        services.AddHttpClient<DeezSpoTag.Services.Downloader.DeezerDownloadService>(client =>
-        {
-            client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
-            client.Timeout = LongDownloadTimeout;
-        }).ConfigurePrimaryHttpMessageHandler(CreatePermissiveHandler);
-
         services.AddHttpClient("DeezSpoTagDownload", client =>
         {
             client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);

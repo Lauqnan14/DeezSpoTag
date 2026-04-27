@@ -905,19 +905,21 @@ public static class AppleQueueHelpers
         if (isRawItunesArtwork)
         {
             var (preferredWidth, preferredHeight, preferredSizeText) = GetAppleArtworkDimensions(settings);
-            if (ShouldPreserveRawArtworkSize(sourceUrl))
+            if (ShouldPreserveRawArtworkSize(sourceUrl, out var sourceWidth, out var sourceHeight))
             {
-                var safeSize = size > 0
-                    ? size
-                    : (settings.AppleArtworkSize > 0 ? settings.AppleArtworkSize : 1200);
-                preferredWidth = safeSize;
-                preferredHeight = safeSize;
-                preferredSizeText = $"{safeSize}x{safeSize}";
+                var requestedWidth = size > 0 ? size : preferredWidth;
+                var requestedHeight = size > 0 ? size : preferredHeight;
+                var safeWidth = sourceWidth > 0 ? Math.Min(requestedWidth, sourceWidth) : requestedWidth;
+                var safeHeight = sourceHeight > 0 ? Math.Min(requestedHeight, sourceHeight) : requestedHeight;
+                preferredWidth = safeWidth;
+                preferredHeight = safeHeight;
+                preferredSizeText = $"{safeWidth}x{safeHeight}";
                 if (logger.IsEnabled(LogLevel.Debug))
                 {
                     logger.LogDebug(
-                        "Apple raw artwork uses presentation crop suffix; preserving requested size {Size} for {Url}",
-                        safeSize,
+                        "Apple raw artwork uses presentation crop suffix; clamping requested size to {Width}x{Height} for {Url}",
+                        safeWidth,
+                        safeHeight,
                         sourceUrl);
                 }
             }
@@ -984,12 +986,17 @@ public static class AppleQueueHelpers
         return null;
     }
 
-    private static bool ShouldPreserveRawArtworkSize(string sourceUrl)
+    private static bool ShouldPreserveRawArtworkSize(string sourceUrl, out int width, out int height)
     {
-        if (!TryExtractArtworkDimensionSuffix(sourceUrl, out var suffix))
+        width = 0;
+        height = 0;
+        if (!TryExtractArtworkDimensionSuffix(sourceUrl, out var suffix, out var extractedWidth, out var extractedHeight))
         {
             return false;
         }
+
+        width = extractedWidth;
+        height = extractedHeight;
 
         // Apple "ac"/"cw" variants are presentation-style assets. Upscaling those to
         // 5000x5000 can produce mostly blank canvases with a tiny cropped corner.
@@ -997,9 +1004,11 @@ public static class AppleQueueHelpers
             || suffix.Contains("cw", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool TryExtractArtworkDimensionSuffix(string sourceUrl, out string suffix)
+    private static bool TryExtractArtworkDimensionSuffix(string sourceUrl, out string suffix, out int width, out int height)
     {
         suffix = string.Empty;
+        width = 0;
+        height = 0;
         if (string.IsNullOrWhiteSpace(sourceUrl))
         {
             return false;
@@ -1007,13 +1016,15 @@ public static class AppleQueueHelpers
 
         var match = MatchWithTimeout(
             sourceUrl,
-            @"/\d{2,5}x\d{2,5}(?<suffix>[a-z]{0,8})\.[a-z0-9]+(?:$|\?)",
+            @"/(?<width>\d{2,5})x(?<height>\d{2,5})(?<suffix>[a-z]{0,8})\.[a-z0-9]+(?:$|\?)",
             RegexOptions.IgnoreCase);
         if (!match.Success)
         {
             return false;
         }
 
+        _ = int.TryParse(match.Groups["width"].Value, out width);
+        _ = int.TryParse(match.Groups["height"].Value, out height);
         suffix = match.Groups["suffix"].Value;
         return !string.IsNullOrWhiteSpace(suffix);
     }

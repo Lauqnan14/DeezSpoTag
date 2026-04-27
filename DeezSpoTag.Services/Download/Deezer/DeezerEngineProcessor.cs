@@ -17,7 +17,6 @@ using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Integrations.Deezer;
-using DeezSpoTag.Services.Downloader;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
 using Microsoft.Extensions.DependencyInjection;
