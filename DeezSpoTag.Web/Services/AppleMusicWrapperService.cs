@@ -92,6 +92,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string DefaultHostSharedDataDir = "DeezSpoTag.Workers/Data/apple-wrapper/data";
     private const string DefaultHostSharedSessionDir = "DeezSpoTag.Workers/Data/apple-wrapper/session";
     private const string SharedLoginFileName = "wrapper-login.txt";
+    private const string SharedLogoutFileName = "wrapper-logout.txt";
+    private const string SharedLogoutStateFileName = "wrapper-logout-state.txt";
     private const string SharedTwoFactorStateFileName = "wrapper-2fa-state.txt";
     private static readonly string[] HelperLogoutArgs = ["logout"];
     private static readonly string[] HelperRunArgs = ["run"];
@@ -659,6 +661,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return (true, null);
         }
 
+        if (!IsHelperControlModeEnabled())
+        {
+            return (false, "Shared wrapper control is ready, but wrapper ports are not reachable yet. Start the apple-wrapper service/container; queued login will be consumed when it starts.");
+        }
+
         var helperPath = ResolveExternalWrapperHelperPath();
         if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
         {
@@ -759,48 +766,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         AppleMusicWrapperHelperResult result;
         if (!IsHelperControlModeEnabled())
         {
-            var sharedSessionCleared = TryClearSharedWrapperSession(out var clearError);
-            var runtimeResetResult = await TryResetSharedModeWrapperRuntimeCacheAsync(cancellationToken);
-            var runtimeResetSucceeded = runtimeResetResult?.Success == true;
-            var wrapperStillReachable = ResolveExternalWrapperHosts()
-                .Any(candidate => AreWrapperPortsOpen(candidate, TimeSpan.FromMilliseconds(250)));
-            var runtimeStateCleared = runtimeResetSucceeded || !wrapperStillReachable;
-
-            if (sharedSessionCleared && runtimeStateCleared)
-            {
-                var outputParts = new List<string>(4)
-                {
-                    "Shared wrapper session cleared."
-                };
-                if (runtimeResetSucceeded)
-                {
-                    outputParts.Add("Wrapper runtime cache reset.");
-                }
-                else
-                {
-                    outputParts.Add("Wrapper runtime is not reachable.");
-                }
-
-                result = new AppleMusicWrapperHelperResult(
-                    true,
-                    runtimeResetResult?.ExitCode ?? 0,
-                    string.Join(' ', outputParts),
-                    runtimeResetResult?.Success == true ? null : runtimeResetResult?.Error,
-                    runtimeResetResult?.HelperPath);
-            }
-            else
-            {
-                var combinedError = BuildSharedLogoutError(
-                    clearError,
-                    runtimeResetResult?.Error,
-                    wrapperStillReachable);
-                result = new AppleMusicWrapperHelperResult(
-                    false,
-                    -1,
-                    null,
-                    combinedError,
-                    runtimeResetResult?.HelperPath);
-            }
+            result = await RequestSharedWrapperLogoutAsync(cancellationToken);
         }
         else
         {
@@ -1166,15 +1132,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                     sharedLoginFileBytes);
             }
 
-            var startResult = await TryAutoStartExternalWrapperAsync(cancellationToken);
-            if (!startResult.Success)
-            {
-                var details = string.IsNullOrWhiteSpace(startResult.Error)
-                    ? $"Login payload queued at {sharedLoginPath}, but wrapper is still unreachable."
-                    : $"{startResult.Error} Login payload remains queued at {sharedLoginPath}.";
-                return (false, details);
-            }
-
+            // Shared control is file-based. Do not require Docker socket/helper
+            // access from the app container after queueing the login payload.
             return (true, null);
         }
 
@@ -1621,6 +1580,16 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedLoginFileName);
     }
 
+    private static string ResolveExternalWrapperSharedLogoutFilePath()
+    {
+        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedLogoutFileName);
+    }
+
+    private static string ResolveExternalWrapperSharedLogoutStateFilePath()
+    {
+        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedLogoutStateFileName);
+    }
+
     private static string ResolveExternalWrapperSharedTwoFactorStateFilePath()
     {
         return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedTwoFactorStateFileName);
@@ -1752,24 +1721,90 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         TryDeleteFileIfExists(ResolveExternalWrapperSharedTwoFactorStateFilePath());
     }
 
+    private async Task<AppleMusicWrapperHelperResult> RequestSharedWrapperLogoutAsync(CancellationToken cancellationToken)
+    {
+        if (!TryQueueSharedLogoutRequest(out var requestId, out var queueError))
+        {
+            return new AppleMusicWrapperHelperResult(false, -1, null, queueError, null);
+        }
+
+        if (await WaitForSharedLogoutCompletionAsync(requestId, TimeSpan.FromSeconds(15), cancellationToken))
+        {
+            return new AppleMusicWrapperHelperResult(true, 0, "Shared wrapper logout completed by wrapper container.", null, null);
+        }
+
+        return new AppleMusicWrapperHelperResult(
+            false,
+            -1,
+            null,
+            $"Shared wrapper logout request was queued at {ResolveExternalWrapperSharedLogoutFilePath()}, but the wrapper did not acknowledge it. Ensure the apple-wrapper container is running and uses an image with shared logout command support.",
+            null);
+    }
+
     private static bool TryClearSharedWrapperSession(out string? error)
     {
+        return TryQueueSharedLogoutRequest(out _, out error);
+    }
+
+    private static bool TryQueueSharedLogoutRequest(out string requestId, out string? error)
+    {
+        requestId = Guid.NewGuid().ToString("N");
         error = null;
         try
         {
-            var sessionRoot = ResolveExternalWrapperSharedSessionDir();
-            ClearDirectoryContents(sessionRoot);
-            TryDeleteFileIfExists(ResolveExternalWrapperSharedLoginFilePath());
-            TryDeleteFileIfExists(ResolveExternalWrapperSharedTwoFactorStateFilePath());
+            var logoutFilePath = ResolveExternalWrapperSharedLogoutFilePath();
+            var parentDir = Path.GetDirectoryName(logoutFilePath);
+            if (!string.IsNullOrWhiteSpace(parentDir))
+            {
+                Directory.CreateDirectory(parentDir);
+            }
+
+            File.WriteAllText(logoutFilePath, requestId);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             error =
-                $"Failed to clear shared Apple wrapper session. " +
-                $"Verify {ExternalWrapperSharedSessionDirEnv} and {ExternalWrapperSharedDataDirEnv}. Details: {ex.Message}";
+                $"Unable to queue shared Apple wrapper logout request ({ResolveExternalWrapperSharedLogoutFilePath()}). " +
+                $"Set {ExternalWrapperSharedDataDirEnv} to the wrapper data mount. Details: {ex.Message}";
             return false;
         }
+    }
+
+    private static async Task<bool> WaitForSharedLogoutCompletionAsync(
+        string requestId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var statePath = ResolveExternalWrapperSharedLogoutStateFilePath();
+                if (File.Exists(statePath))
+                {
+                    var state = (await File.ReadAllTextAsync(statePath, cancellationToken)).Trim();
+                    if (string.Equals(state, requestId, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch (IOException)
+            {
+                // The wrapper may be replacing the state file while we poll.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+        }
+
+        return false;
     }
 
     private static void TryDeleteFileIfExists(string path)
