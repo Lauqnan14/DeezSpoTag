@@ -17,6 +17,9 @@ public sealed class LibraryRecommendationServiceTests
     private static readonly MethodInfo TopUpRecommendationSelectionMethod = typeof(LibraryRecommendationService).GetMethod(
         "TopUpRecommendationSelection",
         BindingFlags.NonPublic | BindingFlags.Static)!;
+    private static readonly MethodInfo ResolveFolderContentTypeMethod = typeof(LibraryRecommendationService).GetMethod(
+        "ResolveFolderContentType",
+        BindingFlags.NonPublic | BindingFlags.Static)!;
 
     [Fact]
     public void MergeRotating_UsesRecommendationPoolLimit()
@@ -45,6 +48,48 @@ public sealed class LibraryRecommendationServiceTests
         Assert.Equal(50, result.Count);
         Assert.Equal(50, result.Select(track => track.Id).Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(Enumerable.Range(1, 50), result.Select(track => track.TrackPosition));
+    }
+
+    [Fact]
+    public void ResolveFolderContentType_TreatsLegacyZeroAsMusicByDefault()
+    {
+        var folder = new FolderDto(
+            Id: 1,
+            RootPath: "/music/library",
+            DisplayName: "Main Music",
+            Enabled: true,
+            LibraryId: 1,
+            LibraryName: "Library",
+            DesiredQuality: "0",
+            AutoTagProfileId: null,
+            AutoTagEnabled: false,
+            ConvertEnabled: false,
+            ConvertFormat: null,
+            ConvertBitrate: null);
+
+        var contentType = (string)ResolveFolderContentTypeMethod.Invoke(null, [folder])!;
+        Assert.Equal("music", contentType);
+    }
+
+    [Fact]
+    public void ResolveFolderContentType_TreatsLegacyAtmosRankAsAtmos()
+    {
+        var folder = new FolderDto(
+            Id: 1,
+            RootPath: "/music/atmos",
+            DisplayName: "Atmos",
+            Enabled: true,
+            LibraryId: 1,
+            LibraryName: "Library",
+            DesiredQuality: "5",
+            AutoTagProfileId: null,
+            AutoTagEnabled: false,
+            ConvertEnabled: false,
+            ConvertFormat: null,
+            ConvertBitrate: null);
+
+        var contentType = (string)ResolveFolderContentTypeMethod.Invoke(null, [folder])!;
+        Assert.Equal("atmos", contentType);
     }
 
     private static List<RecommendationTrackDto> CreateTracks(string prefix, int count, int idStart)

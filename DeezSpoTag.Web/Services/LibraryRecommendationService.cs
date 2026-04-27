@@ -14,6 +14,10 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class LibraryRecommendationService
 {
+    private const string FolderContentMusic = "music";
+    private const string FolderContentAtmos = "atmos";
+    private const string FolderContentVideo = "video";
+    private const string FolderContentPodcast = "podcast";
     public sealed class LibraryRecommendationCollaborators
     {
         public DeezerTrackRecommendationService DeezerRecommendations { get; init; } = null!;
@@ -138,33 +142,60 @@ public sealed class LibraryRecommendationService
 
     private static bool IsExcludedFromRecommendations(FolderDto folder)
     {
-        var mode = NormalizeFolderMode(folder.DesiredQuality);
-        return mode == DownloadContentTypes.Atmos
-            || mode == DownloadContentTypes.Video
-            || mode == DownloadContentTypes.Podcast
-            // Legacy destination-mode folders can persist as numeric "0".
-            || mode == "0";
+        var mode = ResolveFolderContentType(folder);
+        return mode == FolderContentAtmos
+            || mode == FolderContentVideo
+            || mode == FolderContentPodcast;
     }
 
-    private static string NormalizeFolderMode(string? desiredQuality)
+    private static string ResolveFolderContentType(FolderDto folder)
     {
-        var normalized = (desiredQuality ?? string.Empty).Trim().ToLowerInvariant();
+        var normalized = (folder.DesiredQuality ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return FolderContentMusic;
+        }
+
         if (normalized.Contains("atmos", StringComparison.Ordinal))
         {
-            return DownloadContentTypes.Atmos;
+            return FolderContentAtmos;
         }
 
         if (normalized.Contains("video", StringComparison.Ordinal))
         {
-            return DownloadContentTypes.Video;
+            return FolderContentVideo;
         }
 
         if (normalized.Contains("podcast", StringComparison.Ordinal))
         {
-            return DownloadContentTypes.Podcast;
+            return FolderContentPodcast;
         }
 
-        return normalized;
+        // Legacy numeric quality rank for Atmos.
+        if (normalized == "5")
+        {
+            return FolderContentAtmos;
+        }
+
+        // Legacy destination mode "0" historically mapped to mixed content.
+        // Default it to music unless the folder naming strongly indicates video/podcast.
+        if (normalized == "0")
+        {
+            var fallback = $"{folder.DisplayName} {folder.RootPath}".ToLowerInvariant();
+            if (fallback.Contains("video", StringComparison.Ordinal))
+            {
+                return FolderContentVideo;
+            }
+
+            if (fallback.Contains("podcast", StringComparison.Ordinal))
+            {
+                return FolderContentPodcast;
+            }
+
+            return FolderContentMusic;
+        }
+
+        return FolderContentMusic;
     }
 
     private static string? ResolveRecommendationArtworkUrl(
