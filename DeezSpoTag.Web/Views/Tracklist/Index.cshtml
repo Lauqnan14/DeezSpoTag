@@ -2087,7 +2087,12 @@ async function loadTracklist() {
             return;
         }
 
-        const response = await fetch(`/api/tracklist?id=${tracklistId}&type=${tracklistType}`);
+        const apiQuery = new URLSearchParams({ id: tracklistId, type: tracklistType });
+        const refreshFlag = String(tracklistQuery.get('refresh') || '').trim().toLowerCase();
+        if (refreshFlag === '1' || refreshFlag === 'true' || refreshFlag === 'yes') {
+            apiQuery.set('refresh', '1');
+        }
+        const response = await fetch(`/api/tracklist?${apiQuery.toString()}`);
         
         if (!response.ok) {
             let errorMessage = `Failed to load tracklist (HTTP ${response.status})`;

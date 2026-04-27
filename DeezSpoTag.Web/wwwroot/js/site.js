@@ -11,6 +11,42 @@
     globalThis.__deezspotCsrfFetchShimInstalled = true;
     const originalFetch = globalThis.fetch.bind(globalThis);
     const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    const clientIdHeaderName = 'X-DeezSpoTag-ClientId';
+    const clientIdStorageKey = 'deezspotag-client-id';
+    const clientId = resolveClientId();
+    if (clientId) {
+        globalThis.DeezSpoTagClientId = clientId;
+    }
+
+    function resolveClientId() {
+        let existing = '';
+        try {
+            existing = String(globalThis.sessionStorage?.getItem(clientIdStorageKey) || '').trim();
+        } catch {
+            existing = '';
+        }
+
+        if (existing) {
+            return existing;
+        }
+
+        const generated = generateClientId();
+        try {
+            globalThis.sessionStorage?.setItem(clientIdStorageKey, generated);
+        } catch {
+            // Ignore storage failures and keep runtime-only value.
+        }
+
+        return generated;
+    }
+
+    function generateClientId() {
+        if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+            return globalThis.crypto.randomUUID();
+        }
+
+        return `client-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+    }
 
     function readCsrfToken() {
         const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
@@ -25,6 +61,20 @@
         return String(resource || '');
     }
 
+    function resolveSameOriginUrl(resource) {
+        const urlText = resolveUrl(resource);
+        try {
+            const url = new URL(urlText, globalThis.location.href);
+            if (url.origin === globalThis.location.origin) {
+                return url;
+            }
+        } catch {
+            // Ignore parse errors and treat as non-same-origin.
+        }
+
+        return null;
+    }
+
     function buildFetchInit(resource, init) {
         return {
             ...init,
@@ -34,37 +84,29 @@
 
     globalThis.fetch = (resource, init) => {
         const method = (init?.method || (resource instanceof Request ? resource.method : 'GET') || 'GET').toUpperCase();
-        if (!unsafeMethods.has(method)) {
-            return originalFetch(resource, buildFetchInit(resource, init));
-        }
-
-        const urlText = resolveUrl(resource);
-        let url;
-        try {
-            url = new URL(urlText, globalThis.location.href);
-        } catch {
-            return originalFetch(resource, init);
-        }
-
-        if (url.origin !== globalThis.location.origin) {
-            return originalFetch(resource, init);
-        }
-
-        const csrfToken = readCsrfToken();
-        if (!csrfToken) {
-            return originalFetch(resource, init);
-        }
-
+        const requestInit = buildFetchInit(resource, init);
+        const sameOriginUrl = resolveSameOriginUrl(resource);
         const headers = new Headers(init?.headers || (resource instanceof Request ? resource.headers : undefined));
-        if (!headers.has('X-CSRF-TOKEN')) {
-            headers.set('X-CSRF-TOKEN', csrfToken);
+        let hasHeaderChanges = false;
+
+        if (sameOriginUrl && clientId && !headers.has(clientIdHeaderName)) {
+            headers.set(clientIdHeaderName, clientId);
+            hasHeaderChanges = true;
         }
 
-        return originalFetch(resource, {
-            ...init,
-            headers,
-            credentials: init?.credentials ?? 'same-origin'
-        });
+        if (sameOriginUrl && unsafeMethods.has(method)) {
+            const csrfToken = readCsrfToken();
+            if (csrfToken && !headers.has('X-CSRF-TOKEN')) {
+                headers.set('X-CSRF-TOKEN', csrfToken);
+                hasHeaderChanges = true;
+            }
+        }
+
+        if (hasHeaderChanges) {
+            requestInit.headers = headers;
+        }
+
+        return originalFetch(resource, requestInit);
     };
 })();
 
@@ -108,6 +150,8 @@ globalThis.DeezSpoTag = {
         baseTop: 20,
         spacing: 10
     },
+    crossDeviceSyncConnection: null,
+    crossDeviceTracklistReloadPending: false,
 
     // Themed popup helpers
     ui: {
@@ -651,11 +695,110 @@ globalThis.DeezSpoTag = {
         }
     },
 
+    getClientId() {
+        const value = typeof globalThis.DeezSpoTagClientId === 'string'
+            ? globalThis.DeezSpoTagClientId.trim()
+            : '';
+        return value;
+    },
+
+    initializeCrossDeviceSync() {
+        if (this.isLoginRoute()) {
+            return;
+        }
+
+        const signalR = globalThis.signalR;
+        if (!signalR || typeof signalR.HubConnectionBuilder !== 'function') {
+            return;
+        }
+
+        if (this.crossDeviceSyncConnection) {
+            return;
+        }
+
+        const connection = new signalR.HubConnectionBuilder()
+            .withUrl('/crossDeviceSyncHub')
+            .withAutomaticReconnect()
+            .build();
+
+        connection.on('tracklistUpdated', (eventPayload) => {
+            this.handleCrossDeviceTracklistUpdated(eventPayload);
+        });
+
+        connection.start().catch((error) => {
+            console.debug('Cross-device sync unavailable.', error);
+        });
+
+        this.crossDeviceSyncConnection = connection;
+    },
+
+    handleCrossDeviceTracklistUpdated(eventPayload) {
+        if (!this.matchesCurrentTracklist(eventPayload)) {
+            return;
+        }
+
+        if (this.crossDeviceTracklistReloadPending) {
+            return;
+        }
+
+        this.crossDeviceTracklistReloadPending = true;
+        this.showNotification('Tracklist updated on another device. Reloading...', 'info');
+
+        globalThis.setTimeout(() => {
+            const url = new URL(globalThis.location.href);
+            url.searchParams.set('refresh', '1');
+            globalThis.location.replace(url.toString());
+        }, 250);
+    },
+
+    matchesCurrentTracklist(eventPayload) {
+        const current = this.resolveCurrentTracklistContext();
+        if (!current) {
+            return false;
+        }
+
+        const sourceClientId = String(eventPayload?.sourceClientId || '').trim();
+        const localClientId = this.getClientId();
+        if (sourceClientId && localClientId && sourceClientId === localClientId) {
+            return false;
+        }
+
+        const eventType = String(eventPayload?.tracklistType || '').trim().toLowerCase();
+        const eventId = String(eventPayload?.tracklistId || '').trim();
+        if (!eventType || !eventId) {
+            return false;
+        }
+
+        return current.type === eventType && current.id === eventId;
+    },
+
+    resolveCurrentTracklistContext() {
+        const path = String(globalThis.location.pathname || '').trim().toLowerCase();
+        if (path !== '/tracklist') {
+            return null;
+        }
+
+        const searchParams = new URLSearchParams(globalThis.location.search || '');
+        const source = String(searchParams.get('source') || 'deezer').trim().toLowerCase();
+        if (source && source !== 'deezer') {
+            return null;
+        }
+
+        const type = String(searchParams.get('type') || '').trim().toLowerCase();
+        const id = String(searchParams.get('id') || '').trim();
+        if (!type || !id) {
+            return null;
+        }
+
+        return { type, id };
+    },
+
     // Initialize the application
     init() {
         this.bindGlobalEvents();
         this.initializeNavigation();
         this.initializeTabs();
+        this.initializeCrossDeviceSync();
         if (this.isLoginRoute()) {
             // Login route should avoid expensive probes unless explicitly requested.
             globalThis.setTimeout(() => this.loadConnectedPlatforms({ force: true, deep: false, reason: 'login-init' }), 350);
