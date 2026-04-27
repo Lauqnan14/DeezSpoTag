@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Integrations.Qobuz;
+using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Tidal;
@@ -47,6 +48,22 @@ public sealed class SongLinkResolver
         @"music\.apple\.com\/.+\?i=(?<id>\d+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         RegexTimeout);
+    private static readonly Regex HtmlMetaContentRegex = new(
+        "<meta\\s+[^>]*?(?:property|name)\\s*=\\s*['\\\"](?<key>[^'\\\"]+)['\\\"][^>]*?content\\s*=\\s*['\\\"](?<content>[^'\\\"]+)['\\\"][^>]*?>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly Regex HtmlMetaContentReverseRegex = new(
+        "<meta\\s+[^>]*?content\\s*=\\s*['\\\"](?<content>[^'\\\"]+)['\\\"][^>]*?(?:property|name)\\s*=\\s*['\\\"](?<key>[^'\\\"]+)['\\\"][^>]*?>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly Regex AppleTitleByArtistRegex = new(
+        @"^(.+)\s+(?:by|von|de|par|di|door|av|af|przez)\s+(.+)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly string[] QobuzTitleNoiseMarkers =
+    [
+        "remaster", "remastered", "radio edit", "single version", "album version", "live", "acoustic", "demo"
+    ];
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IQobuzMetadataService? _qobuzMetadataService;
@@ -198,6 +215,7 @@ public sealed class SongLinkResolver
                 break;
             case ApplePlatform:
                 result.AppleMusicUrl = normalizedUrl;
+                metadata = await ResolveAppleTrackMetadataByUrlAsync(normalizedUrl, cancellationToken);
                 break;
             case AmazonPlatform:
                 result.AmazonUrl = normalizedUrl;
@@ -303,28 +321,27 @@ public sealed class SongLinkResolver
                 return null;
             }
 
-            string? deezerUrl = null;
-            if (linksByPlatform.TryGetProperty(DeezerPlatform, out var deezerLink)
-                && deezerLink.ValueKind == JsonValueKind.Object
-                && deezerLink.TryGetProperty("url", out var deezerUrlEl)
-                && deezerUrlEl.ValueKind == JsonValueKind.String)
-            {
-                deezerUrl = deezerUrlEl.GetString();
-            }
-
+            var deezerUrl = TryReadPlatformUrl(linksByPlatform, DeezerPlatform);
+            var spotifyUrl = TryReadPlatformUrl(linksByPlatform, SpotifyPlatform) ?? BuildSpotifyTrackUrl(spotifyTrackId);
+            var qobuzUrl = TryReadPlatformUrl(linksByPlatform, QobuzPlatform);
+            var tidalUrl = TryReadPlatformUrl(linksByPlatform, TidalPlatform);
+            var appleUrl = TryReadPlatformUrl(linksByPlatform, ApplePlatform);
+            var amazonUrl = TryReadPlatformUrl(linksByPlatform, AmazonPlatform);
             var deezerId = TrackIdNormalization.NormalizeDeezerTrackIdOrNull(deezerUrl);
-            if (string.IsNullOrWhiteSpace(deezerId))
-            {
-                return null;
-            }
 
-            return new SongLinkResult
+            var result = new SongLinkResult
             {
                 DeezerId = deezerId,
-                DeezerUrl = BuildDeezerTrackUrl(deezerId),
+                DeezerUrl = string.IsNullOrWhiteSpace(deezerId) ? deezerUrl : BuildDeezerTrackUrl(deezerId),
                 SpotifyId = spotifyTrackId,
-                SpotifyUrl = BuildSpotifyTrackUrl(spotifyTrackId)
+                SpotifyUrl = spotifyUrl,
+                QobuzUrl = qobuzUrl,
+                TidalUrl = tidalUrl,
+                AppleMusicUrl = appleUrl,
+                AmazonUrl = amazonUrl
             };
+
+            return HasAnyResolvedLink(result) ? result : null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -335,6 +352,23 @@ public sealed class SongLinkResolver
 
             return null;
         }
+    }
+
+    private static string? TryReadPlatformUrl(JsonElement linksByPlatform, string platform)
+    {
+        if (!linksByPlatform.TryGetProperty(platform, out var platformNode)
+            || platformNode.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!platformNode.TryGetProperty("url", out var urlNode)
+            || urlNode.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return urlNode.GetString();
     }
 
     private async Task<TrackMetadata> ResolveSpotifyTrackMetadataByIdAsync(string spotifyTrackId, CancellationToken cancellationToken)
@@ -940,12 +974,17 @@ public sealed class SongLinkResolver
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queries = new List<string>();
+        var normalizedTitle = NormalizeQobuzTitle(title);
+        var normalizedArtist = NormalizeQobuzArtist(artist);
 
-        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
+        if (!string.IsNullOrWhiteSpace(normalizedArtist) && !string.IsNullOrWhiteSpace(normalizedTitle))
         {
-            AddQuery($"{artist.Trim()} {title.Trim()}", seen, queries);
+            AddQuery($"{normalizedArtist} {normalizedTitle}", seen, queries);
+            AddQuery($"{normalizedTitle} {normalizedArtist}", seen, queries);
         }
 
+        AddQuery(normalizedTitle, seen, queries);
+        AddQuery(normalizedArtist, seen, queries);
         AddQuery(title, seen, queries);
         AddQuery(artist, seen, queries);
 
@@ -1321,6 +1360,11 @@ public sealed class SongLinkResolver
             return new SourceDescriptor(ApplePlatform, appleTrackId!);
         }
 
+        if (TryExtractAppleTrackId(normalizedUrl) is { Length: > 0 } extractedAppleTrackId)
+        {
+            return new SourceDescriptor(ApplePlatform, extractedAppleTrackId);
+        }
+
         var amazonTrackId = EngineLinkParser.TryExtractAmazonTrackId(normalizedUrl, RegexTimeout);
         if (!string.IsNullOrWhiteSpace(amazonTrackId))
         {
@@ -1367,6 +1411,238 @@ public sealed class SongLinkResolver
     private static string BuildTidalTrackUrl(string tidalTrackId)
     {
         return $"https://listen.tidal.com/track/{tidalTrackId}";
+    }
+
+    private async Task<TrackMetadata> ResolveAppleTrackMetadataByUrlAsync(string appleUrl, CancellationToken cancellationToken)
+    {
+        var trackId = TryExtractAppleTrackId(appleUrl);
+        if (!string.IsNullOrWhiteSpace(trackId))
+        {
+            var apiMetadata = await TryResolveAppleTrackMetadataViaLookupAsync(trackId, cancellationToken);
+            if (apiMetadata != TrackMetadata.Empty)
+            {
+                return apiMetadata;
+            }
+        }
+
+        return await TryResolveAppleTrackMetadataViaPageAsync(appleUrl, cancellationToken);
+    }
+
+    private async Task<TrackMetadata> TryResolveAppleTrackMetadataViaLookupAsync(string appleTrackId, CancellationToken cancellationToken)
+    {
+        if (!long.TryParse(appleTrackId, out _))
+        {
+            return TrackMetadata.Empty;
+        }
+
+        try
+        {
+            using var client = _httpClientFactory.CreateClient();
+            var lookupUrl = $"https://itunes.apple.com/lookup?id={WebUtility.UrlEncode(appleTrackId)}&entity=song";
+            using var response = await client.GetAsync(lookupUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return TrackMetadata.Empty;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var payload = await JsonSerializer.DeserializeAsync<AppleLookupEnvelope>(
+                stream,
+                CaseInsensitiveJsonOptions,
+                cancellationToken);
+            if (payload?.Results == null || payload.Results.Count == 0)
+            {
+                return TrackMetadata.Empty;
+            }
+
+            var match = payload.Results.FirstOrDefault(candidate =>
+                    candidate.TrackId.HasValue
+                    && string.Equals(
+                        candidate.TrackId.Value.ToString(CultureInfo.InvariantCulture),
+                        appleTrackId,
+                        StringComparison.Ordinal))
+                ?? payload.Results.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate.TrackName));
+
+            if (match == null || string.IsNullOrWhiteSpace(match.TrackName) || string.IsNullOrWhiteSpace(match.ArtistName))
+            {
+                return TrackMetadata.Empty;
+            }
+
+            return new TrackMetadata(
+                match.TrackName,
+                match.ArtistName,
+                match.CollectionName,
+                NormalizeIsrc(match.Isrc),
+                match.TrackTimeMillis);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple lookup metadata resolution failed for {AppleTrackId}", appleTrackId);
+            }
+
+            return TrackMetadata.Empty;
+        }
+    }
+
+    private async Task<TrackMetadata> TryResolveAppleTrackMetadataViaPageAsync(string appleUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = _httpClientFactory.CreateClient();
+            using var response = await client.GetAsync(appleUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return TrackMetadata.Empty;
+            }
+
+            var html = await response.Content.ReadAsStringAsync(cancellationToken);
+            var ogTitle = TryExtractHtmlMetaContent(html, "og:title");
+            if (string.IsNullOrWhiteSpace(ogTitle))
+            {
+                return TrackMetadata.Empty;
+            }
+
+            var cleaned = Regex.Replace(
+                ogTitle,
+                @"\s+(?:on|bei|en|sur|su|no|op|på|w)\s+Apple\s+Music$",
+                string.Empty,
+                RegexOptions.IgnoreCase,
+                RegexTimeout).Trim();
+            if (string.IsNullOrWhiteSpace(cleaned))
+            {
+                return TrackMetadata.Empty;
+            }
+
+            var match = AppleTitleByArtistRegex.Match(cleaned);
+            if (match.Success)
+            {
+                var title = match.Groups[1].Value.Trim();
+                var artist = match.Groups[2].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(artist))
+                {
+                    return new TrackMetadata(title, artist, null, null, null);
+                }
+            }
+
+            return new TrackMetadata(cleaned, null, null, null, null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple page metadata resolution failed for {Url}", appleUrl);
+            }
+
+            return TrackMetadata.Empty;
+        }
+    }
+
+    private static string? TryExtractHtmlMetaContent(string html, string key)
+    {
+        if (string.IsNullOrWhiteSpace(html) || string.IsNullOrWhiteSpace(key))
+        {
+            return null;
+        }
+
+        foreach (Match match in HtmlMetaContentRegex.Matches(html))
+        {
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var foundKey = WebUtility.HtmlDecode(match.Groups["key"].Value);
+            if (!string.Equals(foundKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return WebUtility.HtmlDecode(match.Groups["content"].Value)?.Trim();
+        }
+
+        foreach (Match match in HtmlMetaContentReverseRegex.Matches(html))
+        {
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var foundKey = WebUtility.HtmlDecode(match.Groups["key"].Value);
+            if (!string.Equals(foundKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return WebUtility.HtmlDecode(match.Groups["content"].Value)?.Trim();
+        }
+
+        return null;
+    }
+
+    private static string? TryExtractAppleTrackId(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        var parsed = AppleIdParser.TryExtractFromUrl(url);
+        if (string.IsNullOrWhiteSpace(parsed))
+        {
+            return null;
+        }
+
+        return long.TryParse(parsed, out _) ? parsed : null;
+    }
+
+    private static string NormalizeQobuzTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return string.Empty;
+        }
+
+        var normalized = title.Trim();
+        normalized = Regex.Replace(normalized, @"\((?:feat|ft)\.?[^)]*\)", string.Empty, RegexOptions.IgnoreCase, RegexTimeout);
+        normalized = Regex.Replace(normalized, @"\[(?:feat|ft)\.?[^\]]*\]", string.Empty, RegexOptions.IgnoreCase, RegexTimeout);
+
+        foreach (var marker in QobuzTitleNoiseMarkers)
+        {
+            normalized = Regex.Replace(
+                normalized,
+                $@"\s*[-–]\s*{Regex.Escape(marker)}\s*$",
+                string.Empty,
+                RegexOptions.IgnoreCase,
+                RegexTimeout);
+            normalized = Regex.Replace(
+                normalized,
+                $@"\(({Regex.Escape(marker)})\)\s*$",
+                string.Empty,
+                RegexOptions.IgnoreCase,
+                RegexTimeout);
+            normalized = Regex.Replace(
+                normalized,
+                $@"\[({Regex.Escape(marker)})\]\s*$",
+                string.Empty,
+                RegexOptions.IgnoreCase,
+                RegexTimeout);
+        }
+
+        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
+    }
+
+    private static string NormalizeQobuzArtist(string? artist)
+    {
+        if (string.IsNullOrWhiteSpace(artist))
+        {
+            return string.Empty;
+        }
+
+        var normalized = artist.Trim();
+        normalized = Regex.Replace(normalized, @"\b(feat|ft)\.?\b.*$", string.Empty, RegexOptions.IgnoreCase, RegexTimeout);
+        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
     }
 
     private static string? NormalizeIsrc(string? value)
@@ -1424,6 +1700,16 @@ public sealed class SongLinkResolver
     private sealed record DeezerArtistEnvelope(string? Name);
 
     private sealed record DeezerAlbumEnvelope(string? Title);
+
+    private sealed record AppleLookupEnvelope(List<AppleLookupItem>? Results);
+
+    private sealed record AppleLookupItem(
+        long? TrackId,
+        string? TrackName,
+        string? ArtistName,
+        string? CollectionName,
+        string? Isrc,
+        int? TrackTimeMillis);
 }
 
 public sealed class SongLinkResult
