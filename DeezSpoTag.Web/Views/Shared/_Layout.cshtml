@@ -20,58 +20,247 @@
 <head>
     <title>@ViewData["Title"] - DeezSpoTag</title>
     <meta name="deezspotag-csrf-token" content="@_csrfRequestToken" />
-    <partial name="_CommonHeadAssets" />
     <script>
         (function () {
             try {
                 var p = @Html.Raw(_serverPrefsJson);
-                window.__userPrefsData = p;
-                var map = {
-                    'deezspotag-theme':                     p.theme || null,
-                    'sidebarCollapsed':                      p.sidebarCollapsed ? 'true' : 'false',
-                    'tabs-preference-enabled':               p.tabsPreferenceEnabled ? 'true' : 'false',
-                    'pwa-prompt-dismissed':                  p.pwaPromptDismissedAt != null ? String(p.pwaPromptDismissedAt) : null,
-                    'autotag-selected-platforms':            (p.autoTagSelectedPlatforms && p.autoTagSelectedPlatforms.length) ? JSON.stringify(p.autoTagSelectedPlatforms) : null,
-                    'autotag-preferences':                   p.autoTagPreferences != null ? JSON.stringify(p.autoTagPreferences) : null,
-                    'autotag-active-profile-id':             p.autoTagActiveProfileId || null,
-                    'download-destination-folder':           p.downloadDestinationFolderId || null,
-                    'download-destination-folder-stereo':    p.downloadDestinationStereoFolderId || null,
-                    'download-destination-folder-atmos':     p.downloadDestinationAtmosFolderId || null,
-                    'apple-download-notification-mode':      p.appleDownloadNotificationMode || 'detailed',
-                    'deezspotag.quicktag.columns':           (p.quickTagColumns && p.quickTagColumns.length) ? JSON.stringify(p.quickTagColumns) : null,
-                    'deezspotag.quicktag.columnPreset':      p.quickTagColumnPreset || null,
-                    'deezspotag.quicktag.tagSourceProvider': p.quickTagTagSourceProvider || null,
-                    'deezspotag.quicktag.sourceTemplate':    p.quickTagSourceTemplate || null,
-                    'quicktag_left_col':                     p.quickTagPanelLeftWidth != null ? String(p.quickTagPanelLeftWidth) : null,
-                    'quicktag_right_col':                    p.quickTagPanelRightWidth != null ? String(p.quickTagPanelRightWidth) : null,
-                    'lrc-editor-merge':                      p.lrcEditorMerge ? '1' : '0',
-                    'libraryAlbumDestinationFolderId':       p.libraryAlbumDestinationFolderId || null,
-                    'previewVolume':                         String(p.previewVolume != null ? p.previewVolume : 100),
-                    'deezspotag-spotify-cache-schedule':     p.spotifyCacheSchedule || null,
-                    'deezspotag-spotify-cache-last-run':     p.spotifyCacheLastRun != null ? String(p.spotifyCacheLastRun) : null,
-                    'multisource_recent_searches':           p.spotiflacRecentSearches != null ? JSON.stringify(p.spotiflacRecentSearches) : null
+                window.__userPrefsData = p || {};
+
+                if (p && p.sidebarCollapsed === true) {
+                    document.documentElement.classList.add('sidebar-precollapsed');
+                }
+
+                var preferenceKeyMap = {
+                    'deezspotag-theme': 'theme',
+                    'sidebarCollapsed': 'sidebarCollapsed',
+                    'tabs-preference-enabled': 'tabsPreferenceEnabled',
+                    'pwa-prompt-dismissed': 'pwaPromptDismissedAt',
+                    'autotag-selected-platforms': 'autoTagSelectedPlatforms',
+                    'autotag-preferences': 'autoTagPreferences',
+                    'autotag-active-profile-id': 'autoTagActiveProfileId',
+                    'download-destination-folder': 'downloadDestinationFolderId',
+                    'download-destination-folder-stereo': 'downloadDestinationStereoFolderId',
+                    'download-destination-folder-atmos': 'downloadDestinationAtmosFolderId',
+                    'apple-download-notification-mode': 'appleDownloadNotificationMode',
+                    'deezspotag.quicktag.columns': 'quickTagColumns',
+                    'deezspotag.quicktag.columnPreset': 'quickTagColumnPreset',
+                    'deezspotag.quicktag.tagSourceProvider': 'quickTagTagSourceProvider',
+                    'deezspotag.quicktag.sourceTemplate': 'quickTagSourceTemplate',
+                    'quicktag_left_col': 'quickTagPanelLeftWidth',
+                    'quicktag_right_col': 'quickTagPanelRightWidth',
+                    'lrc-editor-merge': 'lrcEditorMerge',
+                    'libraryAlbumDestinationFolderId': 'libraryAlbumDestinationFolderId',
+                    'previewVolume': 'previewVolume',
+                    'deezspotag-spotify-cache-schedule': 'spotifyCacheSchedule',
+                    'deezspotag-spotify-cache-last-run': 'spotifyCacheLastRun',
+                    'multisource_recent_searches': 'spotiflacRecentSearches'
                 };
-                Object.keys(map).forEach(function (k) { if (map[k] != null) localStorage.setItem(k, map[k]); });
-                if (p.tabSelections) {
-                    Object.keys(p.tabSelections).forEach(function (k) {
-                        if (k && p.tabSelections[k]) {
-                            localStorage.setItem(k, p.tabSelections[k]);
+                var legacyLocalStorageKeys = [
+                    'deezspotag-theme',
+                    'sidebarCollapsed',
+                    'tabs-preference-enabled',
+                    'pwa-prompt-dismissed',
+                    'autotag-selected-platforms',
+                    'autotag-preferences',
+                    'autotag-active-profile-id',
+                    'download-destination-folder',
+                    'download-destination-folder-stereo',
+                    'download-destination-folder-atmos',
+                    'apple-download-notification-mode',
+                    'deezspotag.quicktag.columns',
+                    'deezspotag.quicktag.columnPreset',
+                    'deezspotag.quicktag.tagSourceProvider',
+                    'deezspotag.quicktag.sourceTemplate',
+                    'quicktag_left_col',
+                    'quicktag_right_col',
+                    'lrc-editor-merge',
+                    'libraryAlbumDestinationFolderId',
+                    'previewVolume',
+                    'deezspotag-spotify-cache-schedule',
+                    'deezspotag-spotify-cache-last-run',
+                    'multisource_recent_searches',
+                    'libraryImageCacheKey',
+                    'connected-platforms-cache',
+                    'autotagJobId'
+                ];
+                legacyLocalStorageKeys.forEach(function (key) { localStorage.removeItem(key); });
+
+                var legacySessionStorageKeys = [
+                    'deezspotag-login-active-tab',
+                    'playlist-watchlist-open-settings'
+                ];
+                legacySessionStorageKeys.forEach(function (key) { sessionStorage.removeItem(key); });
+
+                if (globalThis.caches && typeof globalThis.caches.keys === 'function') {
+                    globalThis.caches.keys().then(function (cacheKeys) {
+                        cacheKeys.forEach(function (cacheKey) {
+                            void globalThis.caches.delete(cacheKey);
+                        });
+                    }).catch(function () { });
+                }
+
+                if (globalThis.navigator && globalThis.navigator.serviceWorker && typeof globalThis.navigator.serviceWorker.getRegistrations === 'function') {
+                    globalThis.navigator.serviceWorker.getRegistrations().then(function (registrations) {
+                        registrations.forEach(function (registration) {
+                            void registration.unregister();
+                        });
+                    }).catch(function () { });
+                }
+
+                var localShadow = Object.create(null);
+                var sessionShadow = Object.create(null);
+                window.__deezspotStorageShadow = { local: localShadow, session: sessionShadow };
+                window.__deezspotPendingPrefSync = window.__deezspotPendingPrefSync || [];
+
+                function parseRawValue(rawVal) {
+                    if (rawVal === 'true') return true;
+                    if (rawVal === 'false') return false;
+                    var num = Number(rawVal);
+                    if (rawVal !== '' && !Number.isNaN(num)) {
+                        return num;
+                    }
+                    try {
+                        return JSON.parse(rawVal);
+                    } catch (e) {
+                        return rawVal;
+                    }
+                }
+
+                function toRawStorageString(value) {
+                    if (value === null || value === undefined) {
+                        return null;
+                    }
+                    if (typeof value === 'string') {
+                        return value;
+                    }
+                    if (typeof value === 'number' || typeof value === 'boolean') {
+                        return String(value);
+                    }
+                    try {
+                        return JSON.stringify(value);
+                    } catch (e) {
+                        return String(value);
+                    }
+                }
+
+                function getPreferenceRawValue(key) {
+                    var field = preferenceKeyMap[key];
+                    if (!field) {
+                        return null;
+                    }
+                    var prefs = window.__userPrefsData || {};
+                    return toRawStorageString(prefs[field]);
+                }
+
+                function queuePreferenceSync(key, value) {
+                    window.__deezspotPendingPrefSync.push({ key: key, value: value });
+                    if (window.UserPrefs && typeof window.UserPrefs.syncFromLocalStorage === 'function') {
+                        window.UserPrefs.syncFromLocalStorage(key, value);
+                    }
+                }
+
+                function isTabSelectionKey(key) {
+                    var normalized = String(key || '').trim().toLowerCase();
+                    return normalized.length > 0 && normalized.indexOf('tab') >= 0;
+                }
+
+                if (globalThis.Storage && globalThis.localStorage && globalThis.sessionStorage) {
+                    var localRef = globalThis.localStorage;
+                    var sessionRef = globalThis.sessionStorage;
+                    var storagePrototype = globalThis.Storage.prototype;
+
+                    var resolveShadow = function (storageInstance) {
+                        return storageInstance === sessionRef ? sessionShadow : localShadow;
+                    };
+
+                    storagePrototype.getItem = function (key) {
+                        var normalizedKey = String(key);
+                        var shadow = resolveShadow(this);
+                        if (Object.prototype.hasOwnProperty.call(shadow, normalizedKey)) {
+                            return shadow[normalizedKey];
                         }
-                    });
+
+                        if (this === localRef) {
+                            var preferenceRaw = getPreferenceRawValue(normalizedKey);
+                            if (preferenceRaw !== null) {
+                                return preferenceRaw;
+                            }
+
+                            var prefs = window.__userPrefsData || {};
+                            if (prefs.tabSelections && Object.prototype.hasOwnProperty.call(prefs.tabSelections, normalizedKey)) {
+                                var tabValue = prefs.tabSelections[normalizedKey];
+                                return tabValue == null ? null : String(tabValue);
+                            }
+                        }
+
+                        return null;
+                    };
+
+                    storagePrototype.setItem = function (key, value) {
+                        var normalizedKey = String(key);
+                        var normalizedValue = String(value);
+                        var shadow = resolveShadow(this);
+                        shadow[normalizedKey] = normalizedValue;
+
+                        if (this === localRef) {
+                            var field = preferenceKeyMap[normalizedKey];
+                            if (field) {
+                                var prefs = window.__userPrefsData || {};
+                                prefs[field] = parseRawValue(normalizedValue);
+                                window.__userPrefsData = prefs;
+                                queuePreferenceSync(normalizedKey, normalizedValue);
+                                return;
+                            }
+
+                            if (isTabSelectionKey(normalizedKey)) {
+                                var tabPrefs = window.__userPrefsData || {};
+                                if (!tabPrefs.tabSelections || typeof tabPrefs.tabSelections !== 'object') {
+                                    tabPrefs.tabSelections = {};
+                                }
+                                tabPrefs.tabSelections[normalizedKey] = normalizedValue;
+                                window.__userPrefsData = tabPrefs;
+                                if (window.UserPrefs && typeof window.UserPrefs.setTabSelection === 'function') {
+                                    window.UserPrefs.setTabSelection(normalizedKey, normalizedValue);
+                                }
+                            }
+                        }
+                    };
+
+                    storagePrototype.removeItem = function (key) {
+                        var normalizedKey = String(key);
+                        var shadow = resolveShadow(this);
+                        delete shadow[normalizedKey];
+
+                        if (this === localRef && isTabSelectionKey(normalizedKey)) {
+                            var tabPrefs = window.__userPrefsData || {};
+                            if (tabPrefs.tabSelections && typeof tabPrefs.tabSelections === 'object') {
+                                delete tabPrefs.tabSelections[normalizedKey];
+                            }
+                            window.__userPrefsData = tabPrefs;
+                            if (window.UserPrefs && typeof window.UserPrefs.setTabSelection === 'function') {
+                                window.UserPrefs.setTabSelection(normalizedKey, '');
+                            }
+                        }
+                    };
+
+                    storagePrototype.clear = function () {
+                        var shadow = resolveShadow(this);
+                        Object.keys(shadow).forEach(function (key) { delete shadow[key]; });
+                    };
+
+                    storagePrototype.key = function (index) {
+                        var keys = Object.keys(resolveShadow(this));
+                        var requestedIndex = Number(index);
+                        if (!Number.isInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= keys.length) {
+                            return null;
+                        }
+                        return keys[requestedIndex];
+                    };
                 }
             } catch (e) {}
         })();
     </script>
-    <script>
-        (function () {
-            try {
-                if (localStorage.getItem('sidebarCollapsed') === 'true') {
-                    document.documentElement.classList.add('sidebar-precollapsed');
-                }
-            } catch (e) {
-            }
-        })();
-    </script>
+    <partial name="_CommonHeadAssets" />
     <style>
         * {
             margin: 0;

@@ -56,6 +56,7 @@ public partial class Program
     private const string WrapperSharedSessionEnv = "DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR";
     private const string WrapperDataAliasEnv = "APPLE_WRAPPER_DATA_PATH";
     private const string WrapperSessionAliasEnv = "APPLE_WRAPPER_SESSION_PATH";
+    private const string BrowserCacheResetCookieName = "deezspotag-browser-cache-reset-v1";
     private const string ContainerDataRoot = "/data";
     private static readonly string[] AdditionalCompressedMimeTypes =
     {
@@ -781,6 +782,25 @@ public partial class Program
         {
             context.Response.OnStarting(() =>
             {
+                if (ShouldIssueBrowserCacheResetHeader(context))
+                {
+                    context.Response.Headers.TryAdd("Clear-Site-Data", "\"cache\"");
+                    context.Response.Cookies.Append(
+                        BrowserCacheResetCookieName,
+                        "1",
+                        new CookieOptions
+                        {
+                            HttpOnly = true,
+                            IsEssential = true,
+                            SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Lax,
+                            Secure = context.Request.IsHttps,
+                            Expires = DateTimeOffset.UtcNow.AddYears(1)
+                        });
+                }
+
+                context.Response.Headers[HeaderNames.CacheControl] = "no-store, no-cache, max-age=0, must-revalidate";
+                context.Response.Headers[HeaderNames.Pragma] = "no-cache";
+                context.Response.Headers[HeaderNames.Expires] = "0";
                 context.Response.Headers.TryAdd("X-Frame-Options", "DENY");
                 context.Response.Headers.XContentTypeOptions = "nosniff";
                 context.Response.Headers.TryAdd("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -795,6 +815,27 @@ public partial class Program
         });
     }
 
+    static bool ShouldIssueBrowserCacheResetHeader(HttpContext context)
+    {
+        if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
+        {
+            return false;
+        }
+
+        if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (context.Request.Cookies.ContainsKey(BrowserCacheResetCookieName))
+        {
+            return false;
+        }
+
+        var accept = context.Request.Headers.Accept.ToString();
+        return accept.Contains("text/html", StringComparison.OrdinalIgnoreCase);
+    }
+
     static void ConfigureStaticFiles(WebApplication app)
     {
         var contentTypeProvider = new FileExtensionContentTypeProvider();
@@ -804,13 +845,9 @@ public partial class Program
             ContentTypeProvider = contentTypeProvider,
             OnPrepareResponse = context =>
             {
-                var path = context.Context.Request.Path.Value ?? string.Empty;
-                if (path.StartsWith("/images/icons/", StringComparison.OrdinalIgnoreCase))
-                {
-                    context.Context.Response.Headers[HeaderNames.CacheControl] =
-                        "public,max-age=604800,stale-while-revalidate=86400";
-                }
-
+                context.Context.Response.Headers[HeaderNames.CacheControl] = "no-store, no-cache, max-age=0, must-revalidate";
+                context.Context.Response.Headers[HeaderNames.Pragma] = "no-cache";
+                context.Context.Response.Headers[HeaderNames.Expires] = "0";
                 context.Context.Response.Headers.XContentTypeOptions = "nosniff";
             }
         });

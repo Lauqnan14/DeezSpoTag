@@ -21,17 +21,3 @@
 <script>
     window.DeezSpoTagAppInstanceId = '@AppInstanceIdProvider.InstanceId';
 </script>
-<script>
-    if ("serviceWorker" in navigator) {
-        window.addEventListener("load", function () {
-            navigator.serviceWorker.register("/sw.js")
-                .then(function (registration) {
-                    if (registration && typeof registration.update === "function") {
-                        registration.update();
-                    }
-                })
-                .catch(function () {
-                });
-        });
-    }
-</script>
