@@ -57,7 +57,7 @@ services:
   apple-wrapper:
     container_name: apple-wrapper
     image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:prerelease}
-    pull_policy: missing
+    pull_policy: ${APPLE_WRAPPER_PULL_POLICY:-always}
     privileged: true
     network_mode: host
     user: "${APPLE_WRAPPER_UID:-0}:${APPLE_WRAPPER_GID:-0}"

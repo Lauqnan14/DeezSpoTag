@@ -186,6 +186,8 @@ fi
 
 echo "[6/6] Auditing source/image parity markers..."
 assert_image_file_hash_matches_source "DeezSpoTag.Web/wwwroot/js/library.js" "/app/wwwroot/js/library.js"
+assert_image_file_hash_matches_source "DeezSpoTag.Web/wwwroot/js/library-album-page.js" "/app/wwwroot/js/library-album-page.js"
+assert_image_file_hash_matches_source "DeezSpoTag.Web/wwwroot/js/library-interactions.js" "/app/wwwroot/js/library-interactions.js"
 assert_image_file_hash_matches_source "DeezSpoTag.Web/wwwroot/js/site.js" "/app/wwwroot/js/site.js"
 assert_image_file_hash_matches_source "DeezSpoTag.Web/wwwroot/css/library.css" "/app/wwwroot/css/library.css"
 

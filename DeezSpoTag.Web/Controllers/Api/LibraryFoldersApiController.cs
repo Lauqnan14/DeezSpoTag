@@ -725,7 +725,7 @@ public class LibraryFoldersApiController : ControllerBase
                 return FolderContentPodcast;
             }
 
-            return FolderContentOther;
+            return FolderContentMusic;
         }
 
         return FolderContentMusic;

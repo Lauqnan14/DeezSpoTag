@@ -291,11 +291,10 @@
         try {
             const folderResponse = await fetch("/api/library/folders?includeDisabled=false&contentType=stereo", { cache: "no-store" });
             const folders = folderResponse.ok ? await folderResponse.json() : [];
-            const fromFolders = (Array.isArray(folders) ? folders : [])
+            return (Array.isArray(folders) ? folders : [])
                 .map((item) => Number(item?.libraryId))
                 .filter((value) => Number.isFinite(value) && value > 0)
                 .filter((value, index, array) => array.indexOf(value) === index);
-            return fromFolders;
         } catch (error) {
             console.warn("Failed to load recommendation folder scope.", error);
         }
