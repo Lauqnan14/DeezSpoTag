@@ -2617,16 +2617,27 @@ async function playSpotifyTrackInApp(url, button) {
     await player.play(request);
 }
 
-async function playLocalLibraryTrackInApp(trackId, button, preferredPath) {
+async function playLocalLibraryTrackInApp(trackId, button, preferredPath, audioFileId, variantKey) {
     if (!trackId) {
         return;
     }
 
+    const normalizedVariantKey = typeof variantKey === 'string' ? variantKey.trim() : '';
     const normalizedPreferredPath = typeof preferredPath === 'string' ? preferredPath.trim() : '';
-    const previewKey = `library:${trackId}:${normalizedPreferredPath}`;
-    const previewUrl = normalizedPreferredPath
-        ? `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio?filePath=${encodeURIComponent(normalizedPreferredPath)}`
-        : `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio`;
+    const normalizedAudioFileId = Number.parseInt(String(audioFileId || '').trim(), 10);
+    const hasAudioFileId = Number.isFinite(normalizedAudioFileId) && normalizedAudioFileId > 0;
+    const previewKey = normalizedVariantKey
+        ? `library:${trackId}:${normalizedVariantKey}`
+        : hasAudioFileId
+            ? `library:${trackId}:audio:${normalizedAudioFileId}`
+            : `library:${trackId}:${normalizedPreferredPath}`;
+
+    let previewUrl = `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio`;
+    if (hasAudioFileId) {
+        previewUrl += `?audioFileId=${encodeURIComponent(String(normalizedAudioFileId))}`;
+    } else if (normalizedPreferredPath) {
+        previewUrl += `?filePath=${encodeURIComponent(normalizedPreferredPath)}`;
+    }
     const player = globalThis.DeezerUnifiedPlayback;
     if (!player || typeof player.play !== 'function') {
         return;
@@ -2635,6 +2646,7 @@ async function playLocalLibraryTrackInApp(trackId, button, preferredPath) {
     await player.play({
         page: 'library',
         button,
+        key: previewKey,
         previewUrl,
         sourceKey: previewKey,
         unavailableMessage: 'Preview unavailable.',
@@ -7195,13 +7207,13 @@ function updateAlbumTrackSummary(summaryTracks) {
         : `${totalMin} min ${totalSec} sec`;
 }
 
-function buildAlbumTrackNumberCell(track, trackIndexText, rowFilePath, playLabel) {
+function buildAlbumTrackNumberCell(track, trackIndexText, rowFilePath, playLabel, rowVariantKey, rowAudioFileId) {
     if (!track.availableLocally) {
         return `<span class="track-number__index">${escapeHtml(trackIndexText)}</span>`;
     }
 
     return `<span class="track-number__index">${escapeHtml(trackIndexText)}</span>
-               <button class="library-track-play track-action track-play" type="button" data-library-play-track="${escapeHtml(String(track.id || ''))}" data-library-play-path="${escapeHtml(rowFilePath)}" aria-label="Play ${playLabel}">
+               <button class="library-track-play track-action track-play" type="button" data-library-play-track="${escapeHtml(String(track.id || ''))}" data-library-play-path="${escapeHtml(rowFilePath)}" data-library-play-variant="${escapeHtml(String(rowVariantKey || ''))}" data-library-play-audio-file-id="${escapeHtml(String(rowAudioFileId || ''))}" aria-label="Play ${playLabel}">
                     <span class="material-icons preview-controls" aria-hidden="true">play_arrow</span>
                </button>`;
 }
@@ -7220,10 +7232,11 @@ function buildAlbumTrackRow(track) {
     const trackNum = track.trackNo || '';
     const rowFilePath = track.filePath || '';
     const rowKey = String(track.variantKey || `${track.id}:0`);
+    const rowAudioFileId = Number(track.audioFileId) > 0 ? Number(track.audioFileId) : 0;
     const playLabel = escapeHtml(track.title || 'track');
     const trackIndexText = trackNum || '—';
     const { spectrogramUrl, lrcEditorUrl, tagEditorUrl } = buildAlbumTrackUrls(track, rowFilePath);
-    const numberCellContent = buildAlbumTrackNumberCell(track, trackIndexText, rowFilePath, playLabel);
+    const numberCellContent = buildAlbumTrackNumberCell(track, trackIndexText, rowFilePath, playLabel, rowKey, rowAudioFileId);
     const variantLabel = formatTrackVariantLabel(track);
     const variantClass = formatTrackVariantClass(track);
     const audioLabel = formatTrackAudioLabel(track);

@@ -18,7 +18,7 @@ public class LibraryAnalysisApiController : ControllerBase
 {
     private sealed record AudioVariantResolutionResult(
         AlbumTrackAudioInfoDto? Variant,
-        bool RejectedRequestedPath);
+        bool RequestedPathMismatch);
 
     private readonly LibraryRepository _repository;
     private readonly TrackAnalysisBackgroundService _analysisService;
@@ -400,17 +400,20 @@ public class LibraryAnalysisApiController : ControllerBase
     [HttpGet("track/{trackId:long}/audio")]
     public async Task<IActionResult> GetTrackAudio(
         long trackId,
+        [FromQuery] long? audioFileId,
         [FromQuery] string? filePath,
         CancellationToken cancellationToken)
     {
         var variants = await _repository.GetTrackAudioVariantsAsync(trackId, cancellationToken);
         var playbackRoots = await ResolvePlaybackRootCandidatesAsync(cancellationToken);
-        var resolution = await ResolveTrackAudioVariantAsync(trackId, filePath, variants, playbackRoots, cancellationToken);
-        if (resolution.RejectedRequestedPath)
+        var resolution = ResolveTrackAudioVariant(audioFileId, filePath, variants, playbackRoots);
+        if (resolution.RequestedPathMismatch)
         {
             _logger.LogWarning(
-                "Local track playback rejected for track {TrackId}: requested path did not match a known track variant.",
-                trackId);
+                "Local track playback request mismatch for track {TrackId}: audioFileId={AudioFileId}, path='{RequestedPath}' did not match a known variant.",
+                trackId,
+                audioFileId,
+                filePath);
             return NotFound();
         }
 
@@ -433,66 +436,50 @@ public class LibraryAnalysisApiController : ControllerBase
         return CreateTrackAudioFileResult(trackId, selectedVariant.FilePath!);
     }
 
-    private async Task<AudioVariantResolutionResult> ResolveTrackAudioVariantAsync(
-        long trackId,
+    private static AudioVariantResolutionResult ResolveTrackAudioVariant(
+        long? audioFileId,
         string? filePath,
         IReadOnlyList<AlbumTrackAudioInfoDto> variants,
-        IReadOnlyList<string> playbackRoots,
-        CancellationToken cancellationToken)
+        IReadOnlyList<string> playbackRoots)
     {
+        var normalizedAudioFileId = audioFileId.GetValueOrDefault();
+        var hasExplicitAudioFileId = normalizedAudioFileId > 0;
         var hasExplicitRequestedPath = !string.IsNullOrWhiteSpace(filePath);
-        var requestedVariant = FindRequestedVariant(variants, filePath);
-        if (hasExplicitRequestedPath && requestedVariant is null)
+        var hasExplicitSelector = hasExplicitAudioFileId || hasExplicitRequestedPath;
+
+        AlbumTrackAudioInfoDto? requestedVariant = null;
+        if (hasExplicitAudioFileId)
+        {
+            requestedVariant = variants.FirstOrDefault(variant => variant.AudioFileId == normalizedAudioFileId);
+        }
+        else if (hasExplicitRequestedPath)
+        {
+            requestedVariant = FindRequestedVariant(variants, filePath);
+        }
+
+        if (hasExplicitAudioFileId && hasExplicitRequestedPath && requestedVariant is not null)
+        {
+            var normalizedRequestedPath = NormalizePathForComparison(filePath);
+            var normalizedVariantPath = NormalizePathForComparison(requestedVariant.FilePath);
+            if (!string.Equals(normalizedRequestedPath, normalizedVariantPath, StringComparison.Ordinal))
+            {
+                requestedVariant = null;
+            }
+        }
+
+        var requestedPathMismatch = hasExplicitSelector && requestedVariant is null;
+        if (requestedPathMismatch)
         {
             return new AudioVariantResolutionResult(null, true);
         }
 
         var selectedVariant = ResolveVariantToExistingPath(requestedVariant, playbackRoots);
-        if (selectedVariant is null && hasExplicitRequestedPath)
-        {
-            selectedVariant = ResolveVariantByRequestedAudioVariant(variants, requestedVariant, playbackRoots);
-        }
-
-        if (selectedVariant is null && !hasExplicitRequestedPath)
+        if (selectedVariant is null && !hasExplicitSelector)
         {
             selectedVariant = ResolveFirstExistingVariant(variants, playbackRoots);
         }
 
-        if (selectedVariant is null)
-        {
-            var fallbackPath = await ResolveFallbackTrackAudioPathAsync(trackId, filePath, variants, playbackRoots, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(fallbackPath))
-            {
-                selectedVariant = BuildFallbackAudioVariant(trackId, fallbackPath);
-            }
-        }
-
-        if (selectedVariant is not null && !IsBrowserPlayableVariant(selectedVariant) && !hasExplicitRequestedPath)
-        {
-            selectedVariant = TryResolveBrowserPlayableFallback(variants) ?? selectedVariant;
-        }
-
-        return new AudioVariantResolutionResult(selectedVariant, false);
-    }
-
-    private static AlbumTrackAudioInfoDto? ResolveVariantByRequestedAudioVariant(
-        IReadOnlyList<AlbumTrackAudioInfoDto> variants,
-        AlbumTrackAudioInfoDto? requestedVariant,
-        IReadOnlyList<string> playbackRoots)
-    {
-        var requestedAudioVariant = AudioVariantResolver.NormalizeAudioVariant(requestedVariant?.AudioVariant);
-        if (string.IsNullOrWhiteSpace(requestedAudioVariant))
-        {
-            return null;
-        }
-
-        return variants
-            .Where(variant => string.Equals(
-                AudioVariantResolver.NormalizeAudioVariant(variant.AudioVariant),
-                requestedAudioVariant,
-                StringComparison.OrdinalIgnoreCase))
-            .Select(variant => ResolveVariantToExistingPath(variant, playbackRoots))
-            .FirstOrDefault(variant => variant is not null);
+        return new AudioVariantResolutionResult(selectedVariant, requestedPathMismatch);
     }
 
     private static AlbumTrackAudioInfoDto? ResolveFirstExistingVariant(
@@ -504,31 +491,6 @@ public class LibraryAnalysisApiController : ControllerBase
             .FirstOrDefault(variant => variant is not null);
     }
 
-    private static AlbumTrackAudioInfoDto BuildFallbackAudioVariant(long trackId, string fallbackPath)
-    {
-        return new AlbumTrackAudioInfoDto(
-            trackId,
-            null,
-            null,
-            null,
-            Path.GetExtension(fallbackPath),
-            null,
-            null,
-            null,
-            null,
-            null,
-            fallbackPath,
-            true,
-            false);
-    }
-
-    private static AlbumTrackAudioInfoDto? TryResolveBrowserPlayableFallback(IReadOnlyList<AlbumTrackAudioInfoDto> variants)
-    {
-        return variants.FirstOrDefault(variant =>
-            !string.IsNullOrWhiteSpace(variant.FilePath)
-            && System.IO.File.Exists(variant.FilePath)
-            && IsBrowserPlayableVariant(variant));
-    }
 
     private IActionResult CreateTrackAudioFileResult(long trackId, string resolvedPath)
     {
@@ -807,35 +769,6 @@ public class LibraryAnalysisApiController : ControllerBase
         }
     }
 
-    private async Task<string?> ResolveFallbackTrackAudioPathAsync(
-        long trackId,
-        string? requestedFilePath,
-        IReadOnlyList<AlbumTrackAudioInfoDto> variants,
-        IReadOnlyList<string> playbackRoots,
-        CancellationToken cancellationToken)
-    {
-        var candidates = new List<string>();
-        AddUniquePathCandidate(candidates, requestedFilePath);
-        foreach (var variant in variants)
-        {
-            AddUniquePathCandidate(candidates, variant.FilePath);
-        }
-
-        var primaryPath = await _repository.GetTrackPrimaryFilePathAsync(trackId, cancellationToken);
-        AddUniquePathCandidate(candidates, primaryPath);
-
-        foreach (var candidate in candidates)
-        {
-            var resolved = ResolveExistingPathWithRoots(candidate, playbackRoots);
-            if (!string.IsNullOrWhiteSpace(resolved))
-            {
-                return resolved;
-            }
-        }
-
-        return null;
-    }
-
     private static AlbumTrackAudioInfoDto? ResolveVariantToExistingPath(
         AlbumTrackAudioInfoDto? variant,
         IReadOnlyList<string> playbackRoots)
@@ -895,23 +828,6 @@ public class LibraryAnalysisApiController : ControllerBase
         {
             // Ignore invalid root paths.
         }
-    }
-
-    private static void AddUniquePathCandidate(List<string> candidates, string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
-        var normalized = NormalizePathForComparison(path);
-        if (string.IsNullOrWhiteSpace(normalized)
-            || candidates.Any(existing => string.Equals(NormalizePathForComparison(existing), normalized, StringComparison.Ordinal)))
-        {
-            return;
-        }
-
-        candidates.Add(path.Trim());
     }
 
     private static string? ResolveExistingPathWithRoots(string path, IReadOnlyList<string> playbackRoots)
