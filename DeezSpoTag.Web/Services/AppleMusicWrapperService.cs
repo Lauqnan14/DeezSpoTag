@@ -96,6 +96,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string SharedLogoutStateFileName = "wrapper-logout-state.txt";
     private const string SharedTwoFactorStateFileName = "wrapper-2fa-state.txt";
     private const string SharedAuthActiveFileName = "wrapper-auth-active.txt";
+    private const int AuthPromotionProbeThreshold = 2;
+    private const int AuthDowngradeProbeThreshold = 3;
+    private static readonly TimeSpan AuthDowngradeDelay = TimeSpan.FromSeconds(3);
     private static readonly string[] HelperLogoutArgs = ["logout"];
     private static readonly string[] HelperRunArgs = ["run"];
     private static readonly string[] HelperStatusArgs = ["status"];
@@ -125,6 +128,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private DateTimeOffset? _lastTwoFactorProbeAt;
     private bool _lastTwoFactorProbeKnown;
     private bool _lastTwoFactorProbeResult;
+    private int _authHealthyProbeCount;
+    private int _authMissingProbeCount;
+    private DateTimeOffset? _authMissingSince;
     private static readonly HttpClient ExternalWrapperClient = new()
     {
         Timeout = TimeSpan.FromSeconds(2)
@@ -522,6 +528,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _loginInProgress = false;
             _startedAt = null;
             _twoFactorSubmittedAt = null;
+            ResetAuthProbeStateLocked();
         }
 
         return _status;
@@ -792,6 +799,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _lastTwoFactorProbeAt = null;
             _lastTwoFactorProbeKnown = false;
             _lastTwoFactorProbeResult = false;
+            ResetAuthProbeStateLocked();
             _email = null;
             _status = new AppleMusicWrapperStatusSnapshot(
                 result.Success ? StatusMissing : StatusFailed,
@@ -1346,6 +1354,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _email = email;
             _awaitingTwoFactor = false;
             _authStateReady = false;
+            ResetAuthProbeStateLocked();
             _loginInProgress = true;
             _startedAt = DateTimeOffset.UtcNow;
             _externalStartError = null;
@@ -1370,6 +1379,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _loginInProgress = false;
             _startedAt = null;
             _twoFactorSubmittedAt = null;
+            ResetAuthProbeStateLocked();
             return _status;
         }
     }
@@ -1900,6 +1910,13 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
     }
 
+    private void ResetAuthProbeStateLocked()
+    {
+        _authHealthyProbeCount = 0;
+        _authMissingProbeCount = 0;
+        _authMissingSince = null;
+    }
+
     private void StopProcess(string reason)
     {
         Process? process;
@@ -1924,6 +1941,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _lastTwoFactorProbeAt = null;
             _lastTwoFactorProbeKnown = false;
             _lastTwoFactorProbeResult = false;
+            ResetAuthProbeStateLocked();
             ClearRecentOutputLocked();
         }
 
@@ -2060,6 +2078,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 lock (_sync)
                 {
                     _authStateReady = true;
+                    _authHealthyProbeCount = AuthPromotionProbeThreshold;
+                    _authMissingProbeCount = 0;
+                    _authMissingSince = null;
                 }
             }
         }
@@ -2295,15 +2316,20 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         if (!context.PortsOpen)
         {
+            PreserveAuthenticatedStateFromSnapshot(context);
             return;
         }
 
         var tokenStateValid = TryResolveAccountInfo(context);
+        RecordAuthProbe(tokenStateValid, context.AccountInfoReachable);
         if (tokenStateValid)
         {
-            if (PromoteAuthenticatedState(context))
+            if (ShouldPromoteAuthenticatedState())
             {
-                return;
+                if (PromoteAuthenticatedState(context))
+                {
+                    return;
+                }
             }
 
             context.HasAuthentication = false;
@@ -2313,7 +2339,81 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         context.HasAuthentication = false;
         if (context.AccountInfoReachable)
         {
+            if (ShouldHoldAuthenticatedState())
+            {
+                context.HasAuthentication = true;
+                return;
+            }
+
             DowngradeAuthStateIfNeeded();
+            return;
+        }
+
+        PreserveAuthenticatedStateFromSnapshot(context);
+    }
+
+    private void PreserveAuthenticatedStateFromSnapshot(ExternalStatusContext context)
+    {
+        lock (_sync)
+        {
+            context.HasAuthentication = _authStateReady;
+        }
+    }
+
+    private void RecordAuthProbe(bool tokenStateValid, bool accountInfoReachable)
+    {
+        lock (_sync)
+        {
+            if (tokenStateValid)
+            {
+                _authHealthyProbeCount = Math.Min(_authHealthyProbeCount + 1, 32);
+                _authMissingProbeCount = 0;
+                _authMissingSince = null;
+                return;
+            }
+
+            if (!accountInfoReachable)
+            {
+                return;
+            }
+
+            _authMissingProbeCount = Math.Min(_authMissingProbeCount + 1, 32);
+            if (!_authMissingSince.HasValue)
+            {
+                _authMissingSince = DateTimeOffset.UtcNow;
+            }
+            _authHealthyProbeCount = 0;
+        }
+    }
+
+    private bool ShouldPromoteAuthenticatedState()
+    {
+        lock (_sync)
+        {
+            if (_authStateReady)
+            {
+                return true;
+            }
+
+            return _authHealthyProbeCount >= AuthPromotionProbeThreshold;
+        }
+    }
+
+    private bool ShouldHoldAuthenticatedState()
+    {
+        lock (_sync)
+        {
+            if (!_authStateReady)
+            {
+                return false;
+            }
+
+            if (_authMissingProbeCount < AuthDowngradeProbeThreshold || !_authMissingSince.HasValue)
+            {
+                return true;
+            }
+
+            return DateTimeOffset.UtcNow - _authMissingSince.Value < AuthDowngradeDelay;
         }
     }
 
@@ -2370,6 +2470,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 _loginInProgress = false;
                 _startedAt = null;
                 _twoFactorSubmittedAt = null;
+                _authHealthyProbeCount = Math.Max(_authHealthyProbeCount, AuthPromotionProbeThreshold);
+                _authMissingProbeCount = 0;
+                _authMissingSince = null;
             }
 
             context.HasAuthentication = _authStateReady;
@@ -2403,6 +2506,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _loginInProgress = false;
             _startedAt = null;
             _twoFactorSubmittedAt = null;
+            ResetAuthProbeStateLocked();
             shouldPersistLoggedOut = true;
         }
 
@@ -2442,6 +2546,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             if (_authStateReady)
             {
                 _authStateReady = false;
+                ResetAuthProbeStateLocked();
                 shouldPersistLoggedOut = true;
             }
 
@@ -2503,6 +2608,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                     _loginInProgress = false;
                     _startedAt = null;
                     _twoFactorSubmittedAt = null;
+                    ResetAuthProbeStateLocked();
                 }
             }
 
@@ -2708,6 +2814,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _loginInProgress = false;
             _startedAt = null;
             _twoFactorSubmittedAt = null;
+            ResetAuthProbeStateLocked();
             return _status;
         }
     }
