@@ -575,7 +575,8 @@ public partial class Program
         int statusCode)
     {
         if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
-            || context.Request.Path.StartsWithSegments("/deezerQueueHub", StringComparison.OrdinalIgnoreCase))
+            || context.Request.Path.StartsWithSegments("/deezerQueueHub", StringComparison.OrdinalIgnoreCase)
+            || context.Request.Path.StartsWithSegments("/crossDeviceSyncHub", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = statusCode;
             return Task.CompletedTask;
@@ -1044,6 +1045,7 @@ public partial class Program
         app.MapControllers();
         app.MapRazorPages();
         app.MapHub<DeezSpoTag.Web.Hubs.DeezerQueueHub>("/deezerQueueHub");
+        app.MapHub<DeezSpoTag.Web.Hubs.CrossDeviceSyncHub>("/crossDeviceSyncHub");
         app.MapControllerRoute(
             name: "default",
             pattern: "{controller=Home}/{action=Index}/{id?}");
@@ -1221,6 +1223,8 @@ public partial class Program
     {
         services.AddSingleton<DeezSpoTag.Web.Services.AppInstanceIdProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlatformAuthService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.CrossDeviceSyncService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.TracklistSongCacheStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyUserAuthStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyUserContextAccessor, DeezSpoTag.Web.Services.SpotifyUserContextAccessor>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyUserStateProvider>();

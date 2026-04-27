@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using JsonSerializer = System.Text.Json.JsonSerializer;
+using System.Security.Cryptography;
+using System.Text;
 using System.Linq;
 using System.Net;
 using System.Globalization;
@@ -68,7 +70,9 @@ namespace DeezSpoTag.Web.Controllers
         private const string TargetField = "target";
         private const string PicturesField = "pictures";
         private const string ApplicationJsonContentType = "application/json";
+        private const string CrossDeviceClientIdHeader = "X-DeezSpoTag-ClientId";
         private const bool HomeCacheEnabled = true;
+        private static readonly TimeSpan TracklistCacheFallbackWindow = TimeSpan.FromDays(7);
         private static readonly object HomeCacheLock = new();
         private static readonly Dictionary<string, (DateTimeOffset Stamp, object Result)> HomeCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan HomeCacheTtl = TimeSpan.FromMinutes(2);
@@ -107,6 +111,8 @@ namespace DeezSpoTag.Web.Controllers
         private readonly ISpotifyIdResolver _spotifyIdResolver;
         private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
         private readonly DeezSpoTag.Web.Services.SpotifyArtistService _spotifyArtistService;
+        private readonly TracklistSongCacheStore _tracklistSongCacheStore;
+        private readonly CrossDeviceSyncService _crossDeviceSyncService;
 
         public sealed class ApiControllerMusicServices
         {
@@ -138,7 +144,9 @@ namespace DeezSpoTag.Web.Controllers
             ILoginStorageService loginStorage,
             DeezSpoTag.Web.Services.LibraryConfigStore libraryConfigStore,
             ArtistPageCacheRepository artistPageCache,
-            ApiControllerMusicServices musicServices)
+            ApiControllerMusicServices musicServices,
+            TracklistSongCacheStore tracklistSongCacheStore,
+            CrossDeviceSyncService crossDeviceSyncService)
         {
             _logger = logger;
             _deezerGatewayService = deezerGatewayService;
@@ -151,6 +159,8 @@ namespace DeezSpoTag.Web.Controllers
             _spotifyIdResolver = musicServices.SpotifyIdResolver;
             _spotifyArtworkResolver = musicServices.SpotifyArtworkResolver;
             _spotifyArtistService = musicServices.SpotifyArtistService;
+            _tracklistSongCacheStore = tracklistSongCacheStore;
+            _crossDeviceSyncService = crossDeviceSyncService;
         }
 
         // Login endpoints removed - handled by DeezSpoTag.API.Controllers.LoginController
@@ -472,8 +482,13 @@ namespace DeezSpoTag.Web.Controllers
         }
 
         [HttpGet("tracklist")]
-        public async Task<IActionResult> GetTracklist([FromQuery] string id, [FromQuery] string type)
+        public async Task<IActionResult> GetTracklist(
+            [FromQuery] string id,
+            [FromQuery] string type,
+            [FromQuery] string? refresh = null,
+            CancellationToken cancellationToken = default)
         {
+            TracklistSongCacheEntry? cachedEntry = null;
             try
             {
                 if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(type))
@@ -488,30 +503,226 @@ namespace DeezSpoTag.Web.Controllers
                     return BadRequest("Invalid Deezer ID.");
                 }
 
-                var gatewayResponse = await TryGetGatewayTracklistResponseAsync(normalizedId, normalizedType);
-                if (gatewayResponse != null)
+                var refreshRequested = IsTruthyQueryFlag(refresh);
+                var tracklistTypeKey = normalizedType.ToLowerInvariant();
+                var sourceClientId = NormalizeCrossDeviceClientId(Request.Headers[CrossDeviceClientIdHeader].ToString());
+
+                cachedEntry = await _tracklistSongCacheStore.TryGetAsync(tracklistTypeKey, normalizedId, cancellationToken);
+                if (!refreshRequested
+                    && cachedEntry != null
+                    && _tracklistSongCacheStore.IsFresh(cachedEntry, DateTimeOffset.UtcNow))
                 {
-                    return gatewayResponse;
+                    return Content(cachedEntry.PayloadJson, ApplicationJsonContentType);
                 }
 
-                using var httpClient = _httpClientFactory.CreateClient();
-                if (string.Equals(normalizedType, ArtistType, StringComparison.OrdinalIgnoreCase))
+                var liveResponse = await FetchTracklistFromSourceAsync(normalizedId, normalizedType);
+                if (TryExtractTracklistPayloadJson(liveResponse, out var payloadJson, out var trackCount))
                 {
-                    return await GetArtistData(httpClient, normalizedId);
+                    var payloadHash = ComputePayloadHash(payloadJson);
+                    var upsertResult = await _tracklistSongCacheStore.UpsertAsync(
+                        tracklistTypeKey,
+                        normalizedId,
+                        payloadJson,
+                        payloadHash,
+                        trackCount,
+                        cancellationToken);
+
+                    if (upsertResult.HasChanged && !string.IsNullOrWhiteSpace(upsertResult.PreviousHash))
+                    {
+                        await _crossDeviceSyncService.PublishTracklistUpdatedAsync(
+                            tracklistTypeKey,
+                            normalizedId,
+                            trackCount,
+                            payloadHash,
+                            sourceClientId,
+                            cancellationToken);
+                    }
+
+                    return liveResponse;
                 }
 
-                if (string.Equals(normalizedType, TrackType, StringComparison.OrdinalIgnoreCase))
+                if (TryBuildFallbackTracklistCacheResponse(cachedEntry, out var fallbackResponse))
                 {
-                    return await GetTrackAsAlbumTracklistAsync(httpClient, normalizedId);
+                    _logger.LogDebug(
+                        "Serving fallback tracklist cache. type={TracklistType} id={TracklistId} status={StatusCode}",
+                        tracklistTypeKey,
+                        normalizedId,
+                        ResolveStatusCode(liveResponse));
+                    return fallbackResponse;
                 }
 
-                return await GetDefaultTracklistAsync(httpClient, normalizedId, normalizedType);
+                return liveResponse;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Error fetching tracklist data for Type Id");
+                if (TryBuildFallbackTracklistCacheResponse(cachedEntry, out var fallbackResponse))
+                {
+                    return fallbackResponse;
+                }
+
                 return StatusCode(500, "Error fetching data");
             }
+        }
+
+        private async Task<IActionResult> FetchTracklistFromSourceAsync(string id, string type)
+        {
+            var gatewayResponse = await TryGetGatewayTracklistResponseAsync(id, type);
+            if (gatewayResponse != null)
+            {
+                return gatewayResponse;
+            }
+
+            using var httpClient = _httpClientFactory.CreateClient();
+            if (string.Equals(type, ArtistType, StringComparison.OrdinalIgnoreCase))
+            {
+                return await GetArtistData(httpClient, id);
+            }
+
+            if (string.Equals(type, TrackType, StringComparison.OrdinalIgnoreCase))
+            {
+                return await GetTrackAsAlbumTracklistAsync(httpClient, id);
+            }
+
+            return await GetDefaultTracklistAsync(httpClient, id, type);
+        }
+
+        private static bool TryBuildFallbackTracklistCacheResponse(TracklistSongCacheEntry? cacheEntry, out IActionResult fallbackResponse)
+        {
+            fallbackResponse = new EmptyResult();
+            if (cacheEntry == null || string.IsNullOrWhiteSpace(cacheEntry.PayloadJson))
+            {
+                return false;
+            }
+
+            if (DateTimeOffset.UtcNow - cacheEntry.UpdatedUtc > TracklistCacheFallbackWindow)
+            {
+                return false;
+            }
+
+            fallbackResponse = new ContentResult
+            {
+                Content = cacheEntry.PayloadJson,
+                ContentType = ApplicationJsonContentType,
+                StatusCode = StatusCodes.Status200OK
+            };
+            return true;
+        }
+
+        private static string? NormalizeCrossDeviceClientId(string? rawValue)
+        {
+            if (string.IsNullOrWhiteSpace(rawValue))
+            {
+                return null;
+            }
+
+            var sanitized = new string(rawValue.Trim().Where(ch => !char.IsControl(ch)).ToArray());
+            if (string.IsNullOrWhiteSpace(sanitized))
+            {
+                return null;
+            }
+
+            return sanitized.Length <= 128 ? sanitized : sanitized[..128];
+        }
+
+        private static bool TryExtractTracklistPayloadJson(IActionResult result, out string payloadJson, out int trackCount)
+        {
+            payloadJson = string.Empty;
+            trackCount = 0;
+
+            switch (result)
+            {
+                case ObjectResult objectResult
+                    when IsSuccessStatusCode(objectResult.StatusCode) && objectResult.Value != null:
+                    payloadJson = JsonSerializer.Serialize(objectResult.Value);
+                    break;
+                case JsonResult jsonResult
+                    when IsSuccessStatusCode(jsonResult.StatusCode) && jsonResult.Value != null:
+                    payloadJson = JsonSerializer.Serialize(jsonResult.Value);
+                    break;
+                case ContentResult contentResult
+                    when IsSuccessStatusCode(contentResult.StatusCode)
+                         && IsJsonContentType(contentResult.ContentType)
+                         && !string.IsNullOrWhiteSpace(contentResult.Content):
+                    payloadJson = contentResult.Content;
+                    break;
+                default:
+                    return false;
+            }
+
+            trackCount = ResolveTrackCount(payloadJson);
+            return true;
+        }
+
+        private static bool IsSuccessStatusCode(int? statusCode)
+        {
+            return !statusCode.HasValue || (statusCode.Value >= StatusCodes.Status200OK && statusCode.Value < StatusCodes.Status300MultipleChoices);
+        }
+
+        private static bool IsJsonContentType(string? contentType)
+        {
+            return !string.IsNullOrWhiteSpace(contentType)
+                   && contentType.Contains(ApplicationJsonContentType, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int ResolveTrackCount(string payloadJson)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(payloadJson);
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    return 0;
+                }
+
+                if (document.RootElement.TryGetProperty(NbTracksField, out var nbTracksElement)
+                    && nbTracksElement.ValueKind == JsonValueKind.Number
+                    && nbTracksElement.TryGetInt32(out var nbTracks))
+                {
+                    return Math.Max(0, nbTracks);
+                }
+
+                if (!document.RootElement.TryGetProperty(TracksField, out var tracksElement))
+                {
+                    return 0;
+                }
+
+                if (tracksElement.ValueKind == JsonValueKind.Array)
+                {
+                    return tracksElement.GetArrayLength();
+                }
+
+                if (tracksElement.ValueKind == JsonValueKind.Object
+                    && tracksElement.TryGetProperty(DataField, out var dataElement)
+                    && dataElement.ValueKind == JsonValueKind.Array)
+                {
+                    return dataElement.GetArrayLength();
+                }
+            }
+            catch
+            {
+                // Ignore malformed payloads and treat track count as unknown.
+            }
+
+            return 0;
+        }
+
+        private static string ComputePayloadHash(string payloadJson)
+        {
+            var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(payloadJson));
+            return Convert.ToHexString(hashBytes).ToLowerInvariant();
+        }
+
+        private static int ResolveStatusCode(IActionResult result)
+        {
+            return result switch
+            {
+                ObjectResult objectResult => objectResult.StatusCode ?? StatusCodes.Status200OK,
+                JsonResult jsonResult => jsonResult.StatusCode ?? StatusCodes.Status200OK,
+                ContentResult contentResult => contentResult.StatusCode ?? StatusCodes.Status200OK,
+                StatusCodeResult statusCodeResult => statusCodeResult.StatusCode,
+                _ => StatusCodes.Status200OK
+            };
         }
 
         private static bool RequiresNumericDeezerId(string type)

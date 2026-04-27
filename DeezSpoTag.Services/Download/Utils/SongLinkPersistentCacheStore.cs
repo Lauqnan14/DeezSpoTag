@@ -1,5 +1,5 @@
-using System.Text.Json;
 using System.Globalization;
+using System.Text.Json;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -7,44 +7,34 @@ using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Download.Utils;
 
-public sealed class SongLinkPersistentCacheStore
+public sealed class SongLinkPersistentCacheStore : SqlitePersistentCacheStoreBase
 {
     private const string CacheKeyParameter = "$cache_key";
-    private const string LastUsedAtFormat = "O";
-    private static readonly TimeSpan StaleAfter = TimeSpan.FromDays(30);
-    private static readonly TimeSpan CleanupInterval = TimeSpan.FromHours(6);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly ILogger<SongLinkPersistentCacheStore> _logger;
-    private readonly string? _connectionString;
-    private readonly SemaphoreSlim _schemaGate = new(1, 1);
-    private readonly SemaphoreSlim _cleanupGate = new(1, 1);
-    private volatile bool _schemaEnsured;
-    private DateTimeOffset _nextCleanupUtc = DateTimeOffset.MinValue;
 
     public SongLinkPersistentCacheStore(
         IConfiguration configuration,
         ILogger<SongLinkPersistentCacheStore> logger)
+        : base(configuration, "deezspotag.db")
     {
         _logger = logger;
-        var rawConnection = Environment.GetEnvironmentVariable("LIBRARY_DB")
-            ?? configuration.GetConnectionString("Library");
-        _connectionString = SqliteConnectionStringResolver.Resolve(rawConnection, "deezspotag.db");
     }
 
     public async Task<SongLinkResult?> TryGetAsync(string cacheKey, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(cacheKey) || string.IsNullOrWhiteSpace(_connectionString))
+        if (string.IsNullOrWhiteSpace(cacheKey) || string.IsNullOrWhiteSpace(ConnectionString))
         {
             return null;
         }
 
-        await EnsureSchemaAsync(cancellationToken);
-        await CleanupStaleEntriesIfDueAsync(cancellationToken);
+        await EnsureSchemaOnceAsync(EnsureSchemaCoreAsync, _logger, "Failed to ensure song-link cache schema.", cancellationToken);
+        await CleanupStaleEntriesIfDueAsync(CleanupCoreAsync, _logger, "Song-link cache stale cleanup failed.", cancellationToken);
 
         try
         {
-            await using var connection = new SqliteConnection(_connectionString);
+            await using var connection = new SqliteConnection(ConnectionString);
             await connection.OpenAsync(cancellationToken);
             await using var command = new SqliteCommand(@"
 SELECT result_json, last_used_at
@@ -62,8 +52,8 @@ LIMIT 1;", connection);
             var resultJson = await reader.IsDBNullAsync(0, cancellationToken) ? string.Empty : reader.GetString(0);
             var lastUsedRaw = await reader.IsDBNullAsync(1, cancellationToken) ? string.Empty : reader.GetString(1);
             if (string.IsNullOrWhiteSpace(resultJson)
-                || !DateTimeOffset.TryParse(lastUsedRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var lastUsedUtc)
-                || DateTimeOffset.UtcNow - lastUsedUtc > StaleAfter)
+                || !TryParseTimestamp(lastUsedRaw, out var lastUsedUtc)
+                || IsStale(lastUsedUtc, DateTimeOffset.UtcNow))
             {
                 await DeleteByKeyAsync(connection, cacheKey, cancellationToken);
                 return null;
@@ -107,20 +97,20 @@ LIMIT 1;", connection);
         if (string.IsNullOrWhiteSpace(cacheKey)
             || string.IsNullOrWhiteSpace(normalizedUrl)
             || result == null
-            || string.IsNullOrWhiteSpace(_connectionString))
+            || string.IsNullOrWhiteSpace(ConnectionString))
         {
             return;
         }
 
-        await EnsureSchemaAsync(cancellationToken);
-        await CleanupStaleEntriesIfDueAsync(cancellationToken);
+        await EnsureSchemaOnceAsync(EnsureSchemaCoreAsync, _logger, "Failed to ensure song-link cache schema.", cancellationToken);
+        await CleanupStaleEntriesIfDueAsync(CleanupCoreAsync, _logger, "Song-link cache stale cleanup failed.", cancellationToken);
 
         var payload = JsonSerializer.Serialize(result, JsonOptions);
-        var now = DateTimeOffset.UtcNow.ToString(LastUsedAtFormat, CultureInfo.InvariantCulture);
+        var now = FormatTimestamp(DateTimeOffset.UtcNow);
 
         try
         {
-            await using var connection = new SqliteConnection(_connectionString);
+            await using var connection = new SqliteConnection(ConnectionString);
             await connection.OpenAsync(cancellationToken);
             await using var command = new SqliteCommand(@"
 INSERT INTO song_link_cache (
@@ -160,24 +150,9 @@ ON CONFLICT(cache_key) DO UPDATE SET
         }
     }
 
-    private async Task EnsureSchemaAsync(CancellationToken cancellationToken)
+    private static async Task EnsureSchemaCoreAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
-        if (_schemaEnsured || string.IsNullOrWhiteSpace(_connectionString))
-        {
-            return;
-        }
-
-        await _schemaGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (_schemaEnsured)
-            {
-                return;
-            }
-
-            await using var connection = new SqliteConnection(_connectionString);
-            await connection.OpenAsync(cancellationToken);
-            await using var command = new SqliteCommand(@"
+        await using var command = new SqliteCommand(@"
 CREATE TABLE IF NOT EXISTS song_link_cache (
     cache_key TEXT NOT NULL PRIMARY KEY,
     normalized_url TEXT NOT NULL,
@@ -191,67 +166,16 @@ CREATE INDEX IF NOT EXISTS idx_song_link_cache_last_used
     ON song_link_cache (last_used_at);
 CREATE INDEX IF NOT EXISTS idx_song_link_cache_url_country
     ON song_link_cache (normalized_url, user_country);", connection);
-            await command.ExecuteNonQueryAsync(cancellationToken);
-            _schemaEnsured = true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to ensure song-link cache schema.");
-        }
-        finally
-        {
-            _schemaGate.Release();
-        }
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private async Task CleanupStaleEntriesIfDueAsync(CancellationToken cancellationToken)
+    private static async Task CleanupCoreAsync(SqliteConnection connection, string cutoff, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_connectionString))
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        if (now < _nextCleanupUtc)
-        {
-            return;
-        }
-
-        var hasLock = await _cleanupGate.WaitAsync(0, cancellationToken);
-        if (!hasLock)
-        {
-            return;
-        }
-
-        try
-        {
-            now = DateTimeOffset.UtcNow;
-            if (now < _nextCleanupUtc)
-            {
-                return;
-            }
-
-            await EnsureSchemaAsync(cancellationToken);
-            var cutoff = now.Subtract(StaleAfter).ToString("O");
-
-            await using var connection = new SqliteConnection(_connectionString);
-            await connection.OpenAsync(cancellationToken);
-            await using var cleanupCommand = new SqliteCommand(@"
+        await using var cleanupCommand = new SqliteCommand(@"
 DELETE FROM song_link_cache
 WHERE last_used_at < $cutoff;", connection);
-            cleanupCommand.Parameters.AddWithValue("$cutoff", cutoff);
-            await cleanupCommand.ExecuteNonQueryAsync(cancellationToken);
-            _nextCleanupUtc = now.Add(CleanupInterval);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Song-link cache stale cleanup failed.");
-            _nextCleanupUtc = DateTimeOffset.UtcNow.Add(CleanupInterval);
-        }
-        finally
-        {
-            _cleanupGate.Release();
-        }
+        cleanupCommand.Parameters.AddWithValue("$cutoff", cutoff);
+        await cleanupCommand.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task TouchByKeyAsync(SqliteConnection connection, string cacheKey, CancellationToken cancellationToken)
@@ -262,7 +186,7 @@ SET last_used_at = $last_used_at,
     updated_at = CURRENT_TIMESTAMP
 WHERE cache_key = $cache_key;", connection);
         command.Parameters.AddWithValue(CacheKeyParameter, cacheKey);
-        command.Parameters.AddWithValue("$last_used_at", DateTimeOffset.UtcNow.ToString(LastUsedAtFormat, CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$last_used_at", FormatTimestamp(DateTimeOffset.UtcNow));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
