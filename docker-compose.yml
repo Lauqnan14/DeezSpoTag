@@ -57,7 +57,8 @@ services:
   apple-wrapper:
     container_name: apple-wrapper
     image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:prerelease}
-    pull_policy: always
+    pull_policy: missing
+    privileged: true
     network_mode: host
     user: "${APPLE_WRAPPER_UID:-0}:${APPLE_WRAPPER_GID:-0}"
     env_file:
@@ -84,4 +85,15 @@ services:
         source: /dev/random
         target: /opt/apple-wrapper/rootfs/dev/random
         read_only: true
+      - type: bind
+        source: /proc
+        target: /opt/apple-wrapper/rootfs/proc
+        read_only: true
+      - type: bind
+        source: /sys
+        target: /opt/apple-wrapper/rootfs/sys
+        read_only: true
+      - type: bind
+        source: /dev/pts
+        target: /opt/apple-wrapper/rootfs/dev/pts
     restart: unless-stopped
