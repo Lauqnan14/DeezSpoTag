@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Security.Cryptography;
 
@@ -21,6 +22,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string DeezSpoTagFolderName = "deezspotag";
     private const string ConfigFileName = "config.json";
     private const string AutoTagFolderName = "autotag";
+    private const string AppleMusicAuthFileName = "applemusic.json";
     private const string ProfilesFileName = "tagging-profiles.json";
     private const string LegacyProfilesFileName = "profiles.json";
     private const string ContainerDownloadsPath = "/downloads";
@@ -234,8 +236,13 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
 
         var settings = ReadSettingsFromFile();
+        var platformAuthMigrated = ApplyAppleMusicPlatformAuthOverlay(settings);
         PersistFixedSettings(settings);
         ApplyDefaultProfileOverlay(settings);
+        if (platformAuthMigrated)
+        {
+            SaveSettingsLocked(settings);
+        }
 
         if (logLoad)
         {
@@ -281,6 +288,124 @@ public class DeezSpoTagSettingsService : ISettingsService
             SaveSettingsLocked(defaultSettings);
             return defaultSettings;
         }
+    }
+
+    private bool ApplyAppleMusicPlatformAuthOverlay(DeezSpoTagSettings settings)
+    {
+        settings.AppleMusic ??= new AppleMusicSettings();
+        var configMediaUserToken = (settings.AppleMusic.MediaUserToken ?? string.Empty).Trim();
+        var configAuthorizationToken = (settings.AppleMusic.AuthorizationToken ?? string.Empty).Trim();
+
+        var authPath = ResolveAppleMusicAuthPath();
+        var authSnapshot = LoadAppleMusicAuthSnapshot(authPath);
+
+        var authMediaUserToken = (authSnapshot.MediaUserToken ?? string.Empty).Trim();
+        var authAuthorizationToken = (authSnapshot.AuthorizationToken ?? string.Empty).Trim();
+
+        var migratedFromConfig = false;
+        if ((!string.IsNullOrWhiteSpace(configMediaUserToken) || !string.IsNullOrWhiteSpace(configAuthorizationToken)) &&
+            string.IsNullOrWhiteSpace(authMediaUserToken) &&
+            string.IsNullOrWhiteSpace(authAuthorizationToken))
+        {
+            UpsertAppleMusicAuthTokens(authPath, configMediaUserToken, configAuthorizationToken);
+            authMediaUserToken = configMediaUserToken;
+            authAuthorizationToken = configAuthorizationToken;
+            migratedFromConfig = true;
+        }
+
+        var effectiveMediaUserToken = FirstNonEmpty(authMediaUserToken, configMediaUserToken);
+        var effectiveAuthorizationToken = FirstNonEmpty(authAuthorizationToken, configAuthorizationToken);
+        settings.AppleMusic.MediaUserToken = effectiveMediaUserToken;
+        settings.AppleMusic.AuthorizationToken = effectiveAuthorizationToken;
+
+        // Keep config.json clean after migration to dedicated auth storage.
+        if (migratedFromConfig)
+        {
+            settings.AppleMusic.MediaUserToken = string.Empty;
+            settings.AppleMusic.AuthorizationToken = string.Empty;
+            return true;
+        }
+
+        return false;
+    }
+
+    private string ResolveAppleMusicAuthPath()
+    {
+        var dataRoot = Directory.GetParent(_configFolder)?.FullName ?? _configFolder;
+        return Path.Join(dataRoot, AutoTagFolderName, AppleMusicAuthFileName);
+    }
+
+    private static AppleMusicAuthSnapshot LoadAppleMusicAuthSnapshot(string authPath)
+    {
+        try
+        {
+            if (!File.Exists(authPath))
+            {
+                return AppleMusicAuthSnapshot.Empty;
+            }
+
+            var json = File.ReadAllText(authPath);
+            return JsonSerializer.Deserialize<AppleMusicAuthSnapshot>(json, SettingsDeserializeOptions)
+                   ?? AppleMusicAuthSnapshot.Empty;
+        }
+        catch
+        {
+            return AppleMusicAuthSnapshot.Empty;
+        }
+    }
+
+    private static void UpsertAppleMusicAuthTokens(
+        string authPath,
+        string mediaUserToken,
+        string authorizationToken)
+    {
+        var parent = Path.GetDirectoryName(authPath);
+        if (!string.IsNullOrWhiteSpace(parent))
+        {
+            Directory.CreateDirectory(parent);
+        }
+
+        JsonObject authObject;
+        if (File.Exists(authPath))
+        {
+            try
+            {
+                authObject = JsonNode.Parse(File.ReadAllText(authPath)) as JsonObject ?? new JsonObject();
+            }
+            catch
+            {
+                authObject = new JsonObject();
+            }
+        }
+        else
+        {
+            authObject = new JsonObject();
+        }
+
+        authObject["mediaUserToken"] = mediaUserToken;
+        authObject["authorizationToken"] = authorizationToken;
+
+        var tmp = authPath + ".tmp";
+        File.WriteAllText(tmp, authObject.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(tmp, authPath, overwrite: true);
+    }
+
+    private static string FirstNonEmpty(string primary, string fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(primary))
+        {
+            return primary;
+        }
+
+        return fallback;
+    }
+
+    private sealed class AppleMusicAuthSnapshot
+    {
+        public static AppleMusicAuthSnapshot Empty { get; } = new();
+
+        public string? MediaUserToken { get; set; }
+        public string? AuthorizationToken { get; set; }
     }
 
     private void ApplyDefaultProfileOverlay(DeezSpoTagSettings settings)

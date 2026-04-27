@@ -80,6 +80,8 @@ public class JellyfinAuth
 public class AppleMusicAuth
 {
     public string? Email { get; set; }
+    public string? MediaUserToken { get; set; }
+    public string? AuthorizationToken { get; set; }
     public bool WrapperReady { get; set; }
     public DateTimeOffset? WrapperLoggedInAt { get; set; }
 }
