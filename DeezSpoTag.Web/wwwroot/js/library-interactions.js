@@ -169,11 +169,13 @@
             event.stopPropagation();
             const trackId = button.dataset.libraryPlayTrack;
             const preferredPath = button.dataset.libraryPlayPath || '';
+            const variantKey = button.dataset.libraryPlayVariant || '';
+            const audioFileId = button.dataset.libraryPlayAudioFileId || '';
             if (!trackId) {
                 return;
             }
 
-            handlers.playLocalLibraryTrackInApp?.(trackId, button, preferredPath);
+            handlers.playLocalLibraryTrackInApp?.(trackId, button, preferredPath, audioFileId, variantKey);
         });
     }
 
