@@ -68,6 +68,7 @@ public sealed class SpotifyArtistService
     private readonly LibraryRepository _libraryRepository;
     private readonly ArtistPageCacheRepository _cacheRepository;
     private readonly LibraryConfigStore _configStore;
+    private readonly AutoTagDefaultsStore _autoTagDefaultsStore;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
     private readonly SpotifyMetadataService _metadataService;
     private readonly SpotifyDeezerLinkService _deezerLinkService;
@@ -106,11 +107,12 @@ public sealed class SpotifyArtistService
         _libraryRepository = libraryRepository;
         _cacheRepository = cacheRepository;
         _configStore = configStore;
+        _autoTagDefaultsStore = autoTagDefaultsStore;
         _pathfinderMetadataClient = dependencies.PathfinderMetadataClient;
         _metadataService = dependencies.MetadataService;
         _deezerLinkService = dependencies.DeezerLinkService;
         _shazamRecognitionService = dependencies.ShazamRecognitionService;
-        _ = autoTagDefaultsStore ?? throw new ArgumentNullException(nameof(autoTagDefaultsStore));
+        _ = _autoTagDefaultsStore ?? throw new ArgumentNullException(nameof(autoTagDefaultsStore));
         _taggingProfileService = taggingProfileService;
         _logger = logger;
     }
@@ -3297,6 +3299,22 @@ public sealed class SpotifyArtistService
 
     private async Task<bool> ShouldRewriteArtistFoldersToCanonicalNameAsync()
     {
+        try
+        {
+            var defaults = await _autoTagDefaultsStore.LoadAsync();
+            if (defaults.RenameSpotifyArtistFolders is bool defaultsPreference)
+            {
+                return defaultsPreference;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve renameSpotifyArtistFolders from AutoTag defaults.");
+            }
+        }
+
         try
         {
             var profiles = await _taggingProfileService.LoadAsync();
