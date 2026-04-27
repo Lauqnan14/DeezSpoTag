@@ -17,6 +17,9 @@ function initializeLibraryBootstrapState(targets) {
     bindGlobalLibraryInteractionHandlers();
     if (targets.shouldLoadArtists) {
         primePendingLibraryReturnState();
+        if (typeof bindLibraryReturnStateAutoPersist === 'function') {
+            bindLibraryReturnStateAutoPersist();
+        }
     }
     if (targets.shouldLoadSoundtracks && typeof primePendingSoundtrackReturnState === 'function') {
         primePendingSoundtrackReturnState();

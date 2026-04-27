@@ -119,6 +119,7 @@ const ALPHA_JUMP_LETTERS = Object.freeze([
     'V', 'W', 'X', 'Y', 'Z'
 ]);
 let pendingLibraryReturnState = null;
+let pendingLibraryScrollRestoreTimer = 0;
 const libraryTopSongsPreviewState = {
     queueButtons: [],
     queueIndex: -1
@@ -1342,8 +1343,28 @@ function persistLibraryReturnState() {
 }
 
 function clearPendingLibraryReturnState() {
+    if (pendingLibraryScrollRestoreTimer) {
+        globalThis.clearTimeout(pendingLibraryScrollRestoreTimer);
+        pendingLibraryScrollRestoreTimer = 0;
+    }
     pendingLibraryReturnState = null;
     removeSessionValue(LIBRARY_RETURN_STATE_SESSION_KEY);
+}
+
+function isLibraryReturnReferrer() {
+    try {
+        if (!document.referrer) {
+            return false;
+        }
+        const referrer = new URL(document.referrer, globalThis.location.origin);
+        if (referrer.origin !== globalThis.location.origin) {
+            return false;
+        }
+        const referrerPath = String(referrer.pathname || '').trim().toLowerCase();
+        return /^\/library\/(artist|album|albums|trackanalysis)(\/|$)/.test(referrerPath);
+    } catch {
+        return false;
+    }
 }
 
 function primePendingLibraryReturnState() {
@@ -1352,12 +1373,16 @@ function primePendingLibraryReturnState() {
         return;
     }
 
-    if (!isNavigationRestoreCandidate('/Library/Artist/')) {
+    if (!isNavigationRestoreCandidate('/Library/Artist/') && !isLibraryReturnReferrer()) {
         clearPendingLibraryReturnState();
         return;
     }
 
-    pendingLibraryReturnState = payload;
+    pendingLibraryReturnState = {
+        ...payload,
+        restoreAttemptCount: 0,
+        restoreStartedAtMs: Date.now()
+    };
     const locationScopedSelection = getLibraryScopeSelectionFromLocation();
     const hasExplicitLocationScope = locationScopedSelection !== '';
     const viewSelection = String(payload.viewSelection || '').trim();
@@ -1372,7 +1397,66 @@ function primePendingLibraryReturnState() {
 }
 
 function applyPendingLibraryScrollRestore() {
-    maybeApplyPendingScrollRestore(() => pendingLibraryReturnState, clearPendingLibraryReturnState, false);
+    if (!pendingLibraryReturnState) {
+        return;
+    }
+
+    const restored = maybeApplyPendingScrollRestore(
+        () => pendingLibraryReturnState,
+        clearPendingLibraryReturnState,
+        true
+    );
+    if (restored) {
+        return;
+    }
+
+    const attemptCount = Math.max(0, Number.parseInt(String(pendingLibraryReturnState.restoreAttemptCount ?? 0), 10) || 0) + 1;
+    pendingLibraryReturnState.restoreAttemptCount = attemptCount;
+    const startedAtMs = Math.max(0, Number.parseInt(String(pendingLibraryReturnState.restoreStartedAtMs ?? 0), 10) || 0) || Date.now();
+    pendingLibraryReturnState.restoreStartedAtMs = startedAtMs;
+    const elapsedMs = Date.now() - startedAtMs;
+    const maxAttempts = 120;
+    const maxElapsedMs = 12000;
+
+    if (attemptCount >= maxAttempts || elapsedMs >= maxElapsedMs) {
+        // Final best-effort attempt before dropping stale state.
+        maybeApplyPendingScrollRestore(
+            () => pendingLibraryReturnState,
+            clearPendingLibraryReturnState,
+            false
+        );
+        clearPendingLibraryReturnState();
+        return;
+    }
+
+    if (!pendingLibraryScrollRestoreTimer) {
+        const nextDelayMs = attemptCount < 8 ? 50 : 120;
+        pendingLibraryScrollRestoreTimer = globalThis.setTimeout(() => {
+            pendingLibraryScrollRestoreTimer = 0;
+            applyPendingLibraryScrollRestore();
+        }, nextDelayMs);
+    }
+}
+
+function bindLibraryReturnStateAutoPersist() {
+    const artistsGrid = document.getElementById('artistsGrid');
+    if (!artistsGrid || artistsGrid.dataset.libraryReturnStatePersistBound === 'true') {
+        return;
+    }
+
+    const persist = () => {
+        persistLibraryReturnState();
+    };
+
+    globalThis.addEventListener('pagehide', persist, { passive: true });
+    globalThis.addEventListener('beforeunload', persist, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            persist();
+        }
+    });
+
+    artistsGrid.dataset.libraryReturnStatePersistBound = 'true';
 }
 
 function getDiscographyFilterStorageKey() {
@@ -10010,7 +10094,7 @@ function updateLibraryViewOptions() {
     mainOption.textContent = 'Main';
     viewSelect.appendChild(mainOption);
     (libraryState.folders || [])
-        .filter(folder => isFolderEnabledFlag(folder.enabled))
+        .filter(folder => isMusicRecommendationEligibleFolder(folder))
         .forEach(folder => {
             const option = document.createElement('option');
             option.value = String(folder.id);
@@ -10018,7 +10102,7 @@ function updateLibraryViewOptions() {
             viewSelect.appendChild(option);
         });
     const selectedExists = requestedValue === 'main'
-        || (libraryState.folders || []).some(folder => isFolderEnabledFlag(folder.enabled) && String(folder.id) === requestedValue);
+        || (libraryState.folders || []).some(folder => isMusicRecommendationEligibleFolder(folder) && String(folder.id) === requestedValue);
     viewSelect.value = selectedExists ? requestedValue : 'main';
     setStoredLibraryViewSelection(viewSelect.value || 'main');
     syncLibraryScopeInLocationBar(viewSelect.value || 'main');
