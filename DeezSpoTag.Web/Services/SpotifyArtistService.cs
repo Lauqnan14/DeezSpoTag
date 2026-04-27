@@ -3252,11 +3252,6 @@ public sealed class SpotifyArtistService
             return;
         }
 
-        if (!await ShouldRewriteArtistFoldersToCanonicalNameAsync())
-        {
-            return;
-        }
-
         var canonicalArtistName = await TryFetchCanonicalSpotifyArtistNameAsync(spotifyArtistId, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(canonicalArtistName))
@@ -3297,42 +3292,11 @@ public sealed class SpotifyArtistService
         }
     }
 
-    private async Task<bool> ShouldRewriteArtistFoldersToCanonicalNameAsync()
+    private async Task<bool> ResolveRenameSpotifyArtistFoldersDefaultAsync()
     {
-        try
-        {
-            var defaults = await _autoTagDefaultsStore.LoadAsync();
-            if (defaults.RenameSpotifyArtistFolders is bool defaultsPreference)
-            {
-                return defaultsPreference;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to resolve renameSpotifyArtistFolders from AutoTag defaults.");
-            }
-        }
-
-        try
-        {
-            var profiles = await _taggingProfileService.LoadAsync();
-            var defaultProfile = profiles.FirstOrDefault(profile => profile.IsDefault)
-                ?? profiles.FirstOrDefault();
-            if (TryGetRenameSpotifyArtistFoldersFromProfile(defaultProfile, out var profilePreference))
-            {
-                return profilePreference;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to resolve renameSpotifyArtistFolders from default profile.");
-            }
-        }
-
+        await Task.CompletedTask;
+        // Folder profiles are authoritative. This fallback is only used when
+        // no profile preference is resolvable for a given folder.
         return true;
     }
 
@@ -3415,9 +3379,34 @@ public sealed class SpotifyArtistService
 
     private async Task<List<string>> ResolveEnabledLibraryRootsAsync(CancellationToken cancellationToken)
     {
+        var defaultPreference = await ResolveRenameSpotifyArtistFoldersDefaultAsync();
+        List<TaggingProfile> profiles;
+        try
+        {
+            profiles = await _taggingProfileService.LoadAsync();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            profiles = [];
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed loading profiles while resolving canonical artist rename roots.");
+            }
+        }
+
         var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
         return folders
             .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Where(folder =>
+            {
+                var profile = TaggingProfileService.FindByIdOrName(profiles, folder.AutoTagProfileId);
+                if (TryGetRenameSpotifyArtistFoldersFromProfile(profile, out var profilePreference))
+                {
+                    return profilePreference;
+                }
+
+                return defaultPreference;
+            })
             .Select(folder => Path.GetFullPath(folder.RootPath))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
