@@ -1910,14 +1910,11 @@ globalThis.DeezSpoTag = {
         const activeAccount = accounts.find((account) =>
             typeof account?.name === 'string'
             && account.name.toLowerCase() === activeAccountName.toLowerCase());
-        const hasBlob = Boolean(
-            activeAccount?.blobPath
-            || activeAccount?.librespotBlobPath
-            || activeAccount?.webPlayerBlobPath);
-        if (activeAccount && hasBlob) {
+        const hasLibrespotBlob = this.hasSpotifyLibrespotBlob(activeAccount);
+        if (activeAccount && hasLibrespotBlob) {
             connected.add('spotify');
             this.setPinnedMessage('spotify-auth', null);
-            this.setPlatformState(platformStates, 'spotify', true, 'provisional');
+            this.setPlatformState(platformStates, 'spotify', true, 'librespot-blob');
             return;
         }
 
@@ -1930,17 +1927,15 @@ globalThis.DeezSpoTag = {
             return;
         }
 
-        const webPlayerOk = status.webPlayerOk === true;
         const librespotOk = status.librespotOk === true;
-        if (webPlayerOk || librespotOk) {
+        const librespotBlobPath = typeof status.librespotBlobPath === 'string'
+            ? status.librespotBlobPath.trim()
+            : '';
+        const hasLibrespotCredentials = librespotBlobPath.length > 0;
+        if (librespotOk || hasLibrespotCredentials) {
             connected.add('spotify');
             this.setPinnedMessage('spotify-auth', null);
-            let reason = 'librespot';
-            if (webPlayerOk && librespotOk) {
-                reason = 'ok';
-            } else if (webPlayerOk) {
-                reason = 'web-player';
-            }
+            const reason = librespotOk ? 'librespot' : 'librespot-blob';
             this.setPlatformState(platformStates, 'spotify', true, reason);
             return;
         }
@@ -1954,6 +1949,28 @@ globalThis.DeezSpoTag = {
         }
 
         this.setPlatformState(platformStates, 'spotify', false, 'missing');
+    },
+
+    hasSpotifyLibrespotBlob(account) {
+        if (!account || typeof account !== 'object') {
+            return false;
+        }
+
+        const explicit = typeof account.librespotBlobPath === 'string'
+            ? account.librespotBlobPath.trim()
+            : '';
+        if (explicit.length > 0) {
+            return true;
+        }
+
+        const legacy = typeof account.blobPath === 'string'
+            ? account.blobPath.trim()
+            : '';
+        if (legacy.length === 0) {
+            return false;
+        }
+
+        return !legacy.toLowerCase().endsWith('.web.json');
     },
 
     async applyDeezerStatus(deezerResponse, deezerOk, connected, platformStates) {
