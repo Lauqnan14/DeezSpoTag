@@ -132,10 +132,30 @@ RUN set -eux; \
     python3 -m venv /opt/venv; \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip; \
     /opt/venv/bin/pip install --no-cache-dir "numpy>=1.25" pyyaml six; \
-    if ! /opt/venv/bin/pip install --no-cache-dir "${ESSENTIA_TF_PACKAGE}"; then \
-      echo "essentia-tensorflow install failed for TARGETARCH=${TARGETARCH:-unknown};" \
-           "continuing with degraded analysis support."; \
-    fi
+    /opt/venv/bin/pip install --no-cache-dir "${ESSENTIA_TF_PACKAGE}"; \
+    /opt/venv/bin/python3 - <<'PY'
+import essentia.standard as es
+
+required = [
+    "MonoLoader",
+    "TensorflowPredictMusiCNN",
+    "TensorflowPredict2D",
+    "RhythmExtractor2013",
+    "KeyExtractor",
+    "Loudness",
+    "DynamicComplexity",
+    "Danceability",
+    "Windowing",
+    "Spectrum",
+    "RMS",
+    "Centroid",
+    "FlatnessDB",
+    "ZeroCrossingRate",
+]
+missing = [name for name in required if getattr(es, name, None) is None]
+if missing:
+    raise SystemExit(f"Essentia runtime missing required algorithms: {', '.join(missing)}")
+PY
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     HOME=/data/home \
