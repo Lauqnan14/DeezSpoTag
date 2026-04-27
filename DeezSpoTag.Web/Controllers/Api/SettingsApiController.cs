@@ -24,14 +24,17 @@ namespace DeezSpoTag.Web.Controllers.Api
         private readonly ILogger<SettingsApiController> _logger;
         private readonly DeezSpoTagSettingsService _settingsService;
         private readonly UserPreferencesStore _userPreferencesStore;
+        private readonly PlatformAuthService _platformAuthService;
         public SettingsApiController(
             ILogger<SettingsApiController> logger,
             DeezSpoTagSettingsService settingsService,
-            UserPreferencesStore userPreferencesStore)
+            UserPreferencesStore userPreferencesStore,
+            PlatformAuthService platformAuthService)
         {
             _logger = logger;
             _settingsService = settingsService;
             _userPreferencesStore = userPreferencesStore;
+            _platformAuthService = platformAuthService;
         }
 
         /// <summary>
@@ -39,14 +42,20 @@ namespace DeezSpoTag.Web.Controllers.Api
         /// GET /api/getSettings
         /// </summary>
         [HttpGet("getSettings")]
-        public IActionResult GetSettings()
+        public async Task<IActionResult> GetSettings()
         {
             try
             {
                 var settings = _settingsService.LoadSettings();
+                var platformAuth = await _platformAuthService.LoadAsync();
                 var defaultSettings = DeezSpoTagSettingsService.GetStaticDefaultSettings();
                 var redactedSettings = RedactSecrets(settings);
                 var redactedDefaults = RedactSecrets(defaultSettings);
+                var appleAuth = platformAuth.AppleMusic;
+                var hasAppleMediaUserToken = !string.IsNullOrWhiteSpace(appleAuth?.MediaUserToken)
+                    || !string.IsNullOrWhiteSpace(settings.AppleMusic?.MediaUserToken);
+                var hasAppleAuthorizationToken = !string.IsNullOrWhiteSpace(appleAuth?.AuthorizationToken)
+                    || !string.IsNullOrWhiteSpace(settings.AppleMusic?.AuthorizationToken);
 
                 var response = new
                 {
@@ -57,8 +66,8 @@ namespace DeezSpoTag.Web.Controllers.Api
                         hasArl = !string.IsNullOrWhiteSpace(settings.Arl),
                         hasApiToken = !string.IsNullOrWhiteSpace(settings.ApiToken),
                         hasAuthorizationToken = !string.IsNullOrWhiteSpace(settings.AuthorizationToken),
-                        hasAppleMediaUserToken = !string.IsNullOrWhiteSpace(settings.AppleMusic?.MediaUserToken),
-                        hasAppleAuthorizationToken = !string.IsNullOrWhiteSpace(settings.AppleMusic?.AuthorizationToken)
+                        hasAppleMediaUserToken,
+                        hasAppleAuthorizationToken
                     }
                 };
 
@@ -78,7 +87,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         [HttpGet("settings")]
         public Task<IActionResult> GetSettingsAlternative()
         {
-            return Task.FromResult(GetSettings());
+            return GetSettings();
         }
 
         /// <summary>
@@ -101,6 +110,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                 };
 
                 var persisted = _settingsService.LoadSettings();
+                var platformAuth = await _platformAuthService.LoadAsync();
                 var mergedJson = MergeSettingsJson(persisted, settingsJson, options);
                 var settings = JsonSerializer.Deserialize<DeezSpoTagSettings>(mergedJson, options);
 
@@ -110,8 +120,9 @@ namespace DeezSpoTag.Web.Controllers.Api
                     return Ok(new { result = false });
                 }
 
-                PreserveSensitiveFieldsIfRedacted(persisted, settings);
+                PreserveSensitiveFieldsIfRedacted(persisted, settings, platformAuth);
                 PreserveCriticalFieldsIfBlank(persisted, settings);
+                await PersistAppleMusicPlatformTokensAsync(settings, platformAuth);
                 _settingsService.SaveSettings(settings);
                 await SyncUserPreferencesAsync(settings);
 
@@ -219,7 +230,10 @@ namespace DeezSpoTag.Web.Controllers.Api
             RegexOptions.Compiled,
             TimeSpan.FromMilliseconds(250));
 
-        private static void PreserveSensitiveFieldsIfRedacted(DeezSpoTagSettings persisted, DeezSpoTagSettings incoming)
+        private static void PreserveSensitiveFieldsIfRedacted(
+            DeezSpoTagSettings persisted,
+            DeezSpoTagSettings incoming,
+            PlatformAuthState platformAuth)
         {
             incoming.Arl = KeepIncomingOrPersisted(incoming.Arl, persisted.Arl);
             incoming.ApiToken = KeepIncomingOrPersisted(incoming.ApiToken, persisted.ApiToken);
@@ -227,12 +241,40 @@ namespace DeezSpoTag.Web.Controllers.Api
 
             incoming.AppleMusic ??= new AppleMusicSettings();
             var persistedAppleMusic = persisted.AppleMusic ?? new AppleMusicSettings();
+            var persistedAppleAuth = platformAuth.AppleMusic ?? new AppleMusicAuth();
             incoming.AppleMusic.MediaUserToken = KeepIncomingOrPersisted(
                 incoming.AppleMusic.MediaUserToken,
-                persistedAppleMusic.MediaUserToken);
+                FirstNonEmpty(persistedAppleAuth.MediaUserToken, persistedAppleMusic.MediaUserToken));
             incoming.AppleMusic.AuthorizationToken = KeepIncomingOrPersisted(
                 incoming.AppleMusic.AuthorizationToken,
-                persistedAppleMusic.AuthorizationToken);
+                FirstNonEmpty(persistedAppleAuth.AuthorizationToken, persistedAppleMusic.AuthorizationToken));
+        }
+
+        private async Task PersistAppleMusicPlatformTokensAsync(
+            DeezSpoTagSettings incoming,
+            PlatformAuthState currentAuth)
+        {
+            incoming.AppleMusic ??= new AppleMusicSettings();
+            var mediaUserToken = incoming.AppleMusic.MediaUserToken?.Trim() ?? string.Empty;
+            var authorizationToken = incoming.AppleMusic.AuthorizationToken?.Trim() ?? string.Empty;
+            var existingApple = currentAuth.AppleMusic ?? new AppleMusicAuth();
+            var hasChanged =
+                !string.Equals(existingApple.MediaUserToken ?? string.Empty, mediaUserToken, StringComparison.Ordinal) ||
+                !string.Equals(existingApple.AuthorizationToken ?? string.Empty, authorizationToken, StringComparison.Ordinal);
+            if (hasChanged)
+            {
+                await _platformAuthService.UpdateAsync(state =>
+                {
+                    state.AppleMusic ??= new AppleMusicAuth();
+                    state.AppleMusic.MediaUserToken = mediaUserToken;
+                    state.AppleMusic.AuthorizationToken = authorizationToken;
+                    return 0;
+                });
+            }
+
+            // Keep config.json clean: Apple auth tokens now live in platform auth storage.
+            incoming.AppleMusic.MediaUserToken = string.Empty;
+            incoming.AppleMusic.AuthorizationToken = string.Empty;
         }
 
         private static string KeepIncomingOrPersisted(string? incoming, string? persisted)
@@ -248,6 +290,16 @@ namespace DeezSpoTag.Web.Controllers.Api
             }
 
             return incoming.Trim();
+        }
+
+        private static string FirstNonEmpty(string? primary, string? fallback)
+        {
+            if (!string.IsNullOrWhiteSpace(primary))
+            {
+                return primary.Trim();
+            }
+
+            return fallback ?? string.Empty;
         }
 
         private static void PreserveCriticalFieldsIfBlank(DeezSpoTagSettings persisted, DeezSpoTagSettings incoming)
