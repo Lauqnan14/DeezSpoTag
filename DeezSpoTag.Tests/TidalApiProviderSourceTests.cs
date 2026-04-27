@@ -23,10 +23,12 @@ public sealed class TidalApiProviderSourceTests
 
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(15, providers.Count);
+        Assert.Equal(17, providers.Count);
         Assert.Equal("https://eu-central.monochrome.tf", providers[0]);
         Assert.Contains("https://api.monochrome.tf", providers);
         Assert.Contains("https://monochrome-api.samidy.com", providers);
+        Assert.Contains("https://hifi-one.spotisaver.net", providers);
+        Assert.Contains("https://hifi-two.spotisaver.net", providers);
         Assert.Contains("https://triton.squid.wtf", providers);
     }
 

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -31,6 +32,8 @@ public sealed class ProviderIntegrationSurfaceTests
             .ToArray();
 
         Assert.Contains("qobuz.spotbye.qzz.io", names);
+        Assert.Contains("dl.musicdl.me", names);
+        Assert.Contains("api.zarz.moe/dl/qbz", names);
     }
 
     [Fact]
@@ -70,5 +73,35 @@ public sealed class ProviderIntegrationSurfaceTests
 
         Assert.Contains("amazon.afkarxyz.fun", providers);
         Assert.Contains("amazon.spotbye.qzz.io", providers);
+    }
+
+    [Fact]
+    public void QobuzTryExtractProviderUrl_AcceptsDownloadUrlAtRoot()
+    {
+        using var document = JsonDocument.Parse("""{"success":true,"download_url":"https://example.test/file.flac"}""");
+        var method = typeof(QobuzDownloadService).GetMethod("TryExtractProviderUrl", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var args = new object?[] { document.RootElement, null };
+        var success = (bool)method!.Invoke(null, args)!;
+
+        Assert.True(success);
+        Assert.Equal("https://example.test/file.flac", args[1] as string);
+    }
+
+    [Fact]
+    public void QobuzTryExtractProviderUrl_AcceptsDownloadUrlInDataNode()
+    {
+        using var document = JsonDocument.Parse("""{"data":{"download_url":"https://example.test/data.flac"}}""");
+        var method = typeof(QobuzDownloadService).GetMethod("TryExtractProviderUrl", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var args = new object?[] { document.RootElement, null };
+        var success = (bool)method!.Invoke(null, args)!;
+
+        Assert.True(success);
+        Assert.Equal("https://example.test/data.flac", args[1] as string);
     }
 }
