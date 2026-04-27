@@ -26,7 +26,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const string DefaultAppId = "712109809";
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan ProviderRequestTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan ProviderRequestTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan ProviderTransientRetryDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan ProviderCooldown = TimeSpan.FromMinutes(10);
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
@@ -786,6 +786,32 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return await SendProviderRequestAsync(finalRequest, cancellationToken);
     }
 
+    private async Task<HttpResponseMessage> SendProviderRequestWithRetryAsync(
+        Func<HttpRequestMessage> requestFactory,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                using var request = requestFactory();
+                return await SendProviderRequestAsync(request, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsTransientProviderFailure(ex))
+            {
+                await Task.Delay(ProviderTransientRetryDelay, cancellationToken);
+            }
+        }
+
+        using var finalRequest = requestFactory();
+        return await SendProviderRequestAsync(finalRequest, cancellationToken);
+    }
+
     private async Task<HttpResponseMessage> SendProviderRequestAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         using var providerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -848,11 +874,15 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var primaryBase = DecodeBase64("aHR0cHM6Ly9kYWIueWVldC5zdS9hcGkvc3RyZWFtP3RyYWNrSWQ9");
         var fallbackBase = DecodeBase64("aHR0cHM6Ly9kYWJtdXNpYy54eXovYXBpL3N0cmVhbT90cmFja0lkPQ==");
         var squidBase = DecodeBase64("aHR0cHM6Ly9xb2J1ei5zcXVpZC53dGYvYXBpL2Rvd25sb2FkLW11c2ljP3RyYWNrX2lkPQ==");
+        var musicDlBase = "https://dl.musicdl.me/qobuz/download";
+        var zarzMusicDlBase = "https://api.zarz.moe/dl/qbz";
         var spotByeBase = "https://qobuz.spotbye.qzz.io/api/track/";
         var qbzBase = "https://qbz.afkarxyz.qzz.io/api/track/";
 
         return
         [
+            new ProviderCandidate("dl.musicdl.me", ct => TryGetMusicDlStreamUrlAsync(musicDlBase, trackId, qualityCode, ct)),
+            new ProviderCandidate("api.zarz.moe/dl/qbz", ct => TryGetMusicDlStreamUrlAsync(zarzMusicDlBase, trackId, qualityCode, ct)),
             new ProviderCandidate("dab.yeet.su", ct => TryGetStreamUrlAsync($"{primaryBase}{trackId}&quality={qualityCode}", ct)),
             new ProviderCandidate("dabmusic.xyz", ct => TryGetStreamUrlAsync($"{fallbackBase}{trackId}&quality={qualityCode}", ct)),
             new ProviderCandidate("qobuz.spotbye.qzz.io", ct => TryGetStreamUrlAsync($"{spotByeBase}{trackId}?quality={qualityCode}", ct)),
@@ -864,6 +894,102 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
     private sealed record ProviderCandidate(string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
+
+    private async Task<string?> TryGetMusicDlStreamUrlAsync(
+        string endpoint,
+        long trackId,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            quality = MapMusicDlQuality(qualityCode),
+            upload_to_r2 = false,
+            url = $"https://open.qobuz.com/track/{trackId}"
+        };
+
+        using var response = await SendProviderRequestWithRetryAsync(
+            () => new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(payload, SerializerOptions),
+                    Encoding.UTF8,
+                    "application/json")
+            },
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"MusicDL provider returned HTTP {(int)response.StatusCode}");
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            throw new InvalidOperationException("MusicDL provider returned an empty response.");
+        }
+
+        if (TryExtractDirectUrlPayload(body, out var directUrl))
+        {
+            return directUrl;
+        }
+
+        if (LooksLikeHtml(body))
+        {
+            throw new InvalidOperationException("MusicDL provider returned HTML instead of JSON.");
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("success", out var successProp)
+                && successProp.ValueKind == JsonValueKind.False)
+            {
+                if (doc.RootElement.TryGetProperty("message", out var messageProp)
+                    && messageProp.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(messageProp.GetString()))
+                {
+                    throw new InvalidOperationException(messageProp.GetString()!);
+                }
+
+                throw new InvalidOperationException("MusicDL provider reported success=false.");
+            }
+
+            if (doc.RootElement.TryGetProperty("error", out var errorProp)
+                && errorProp.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(errorProp.GetString()))
+            {
+                throw new InvalidOperationException(errorProp.GetString()!);
+            }
+
+            if (doc.RootElement.TryGetProperty("detail", out var detailProp)
+                && detailProp.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(detailProp.GetString()))
+            {
+                throw new InvalidOperationException(detailProp.GetString()!);
+            }
+
+            if (TryExtractProviderUrl(doc.RootElement, out var providerUrl))
+            {
+                return providerUrl;
+            }
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException("MusicDL provider response was not valid JSON.");
+        }
+
+        throw new InvalidOperationException("MusicDL provider response did not contain a usable stream URL.");
+    }
+
+    private static string MapMusicDlQuality(string qualityCode)
+    {
+        return NormalizeQobuzQualityCode(qualityCode) switch
+        {
+            "27" => "hi-res-max",
+            "7" => "hi-res",
+            _ => "cd"
+        };
+    }
 
     private static bool TryExtractProviderUrl(JsonElement root, out string? url)
     {
@@ -880,6 +1006,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return !string.IsNullOrWhiteSpace(url);
         }
 
+        if (root.TryGetProperty("download_url", out var downloadUrlProp) && downloadUrlProp.ValueKind == JsonValueKind.String)
+        {
+            url = downloadUrlProp.GetString();
+            return !string.IsNullOrWhiteSpace(url);
+        }
+
         if (root.TryGetProperty("link", out var linkProp) && linkProp.ValueKind == JsonValueKind.String)
         {
             url = linkProp.GetString();
@@ -891,6 +1023,13 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             if (dataProp.TryGetProperty("url", out var nestedUrl) && nestedUrl.ValueKind == JsonValueKind.String)
             {
                 url = nestedUrl.GetString();
+                return !string.IsNullOrWhiteSpace(url);
+            }
+
+            if (dataProp.TryGetProperty("download_url", out var nestedDownloadUrl)
+                && nestedDownloadUrl.ValueKind == JsonValueKind.String)
+            {
+                url = nestedDownloadUrl.GetString();
                 return !string.IsNullOrWhiteSpace(url);
             }
 

@@ -29,6 +29,8 @@ public sealed class TidalApiProviderSource
         "hund.qqdl.site",
         "katze.qqdl.site",
         "wolf.qqdl.site",
+        "hifi-one.spotisaver.net",
+        "hifi-two.spotisaver.net",
         "tidal.kinoplus.online",
         "tidal-api.binimum.org",
         "triton.squid.wtf"
