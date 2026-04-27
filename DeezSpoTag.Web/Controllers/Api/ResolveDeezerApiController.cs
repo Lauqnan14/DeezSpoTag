@@ -552,7 +552,7 @@ public sealed class ResolveDeezerApiController : ControllerBase
         return new SpotifyTrackResolveOptions(
             AllowFallbackSearch: allowFallbackSearch,
             PreferIsrcOnly: preferIsrcOnly,
-            UseSongLink: false,
+            UseSongLink: allowFallbackSearch,
             StrictMode: strictMode,
             BypassNegativeCanonicalCache: bypassNegativeCanonicalCache,
             Logger: _logger,

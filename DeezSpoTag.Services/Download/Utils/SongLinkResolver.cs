@@ -139,7 +139,18 @@ public sealed class SongLinkResolver
             _logger.LogDebug("song.link is deactivated. Using native link regeneration for {Url}", normalizedUrl);
         }
 
-        var result = await ResolveNativeAsync(normalizedUrl, cancellationToken);
+        SongLinkResult? result = null;
+        var source = TryParseSource(normalizedUrl);
+        if (source is { Platform: SpotifyPlatform })
+        {
+            result = await ResolveExternalSongLinkAsync(normalizedUrl, source.TrackId, cancellationToken);
+            if (result != null && _logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", normalizedUrl);
+            }
+        }
+
+        result ??= await ResolveNativeAsync(normalizedUrl, cancellationToken);
         CacheResult(normalizedUrl, userCountry, result);
         await CacheResultInPersistentStoreAsync(normalizedUrl, userCountry, result, cancellationToken);
         return result;
@@ -266,6 +277,64 @@ public sealed class SongLinkResolver
                || !string.IsNullOrWhiteSpace(result.QobuzUrl)
                || !string.IsNullOrWhiteSpace(result.AppleMusicUrl)
                || !string.IsNullOrWhiteSpace(result.AmazonUrl);
+    }
+
+    private async Task<SongLinkResult?> ResolveExternalSongLinkAsync(
+        string normalizedUrl,
+        string spotifyTrackId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var apiUrl = $"https://api.song.link/v1-alpha.1/links?url={WebUtility.UrlEncode(normalizedUrl)}";
+            using var client = _httpClientFactory.CreateClient();
+            using var response = await client.GetAsync(apiUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("linksByPlatform", out var linksByPlatform)
+                || linksByPlatform.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            string? deezerUrl = null;
+            if (linksByPlatform.TryGetProperty(DeezerPlatform, out var deezerLink)
+                && deezerLink.ValueKind == JsonValueKind.Object
+                && deezerLink.TryGetProperty("url", out var deezerUrlEl)
+                && deezerUrlEl.ValueKind == JsonValueKind.String)
+            {
+                deezerUrl = deezerUrlEl.GetString();
+            }
+
+            var deezerId = TrackIdNormalization.NormalizeDeezerTrackIdOrNull(deezerUrl);
+            if (string.IsNullOrWhiteSpace(deezerId))
+            {
+                return null;
+            }
+
+            return new SongLinkResult
+            {
+                DeezerId = deezerId,
+                DeezerUrl = BuildDeezerTrackUrl(deezerId),
+                SpotifyId = spotifyTrackId,
+                SpotifyUrl = BuildSpotifyTrackUrl(spotifyTrackId)
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "External song.link lookup failed for {Url}", normalizedUrl);
+            }
+
+            return null;
+        }
     }
 
     private async Task<TrackMetadata> ResolveSpotifyTrackMetadataByIdAsync(string spotifyTrackId, CancellationToken cancellationToken)

@@ -46,18 +46,58 @@ public sealed class SpotifyTrackMetadataResolver
         }
 
         var metadata = await FetchTrackAsync(normalizedId, cancellationToken);
-        _cache[normalizedId] = new CacheEntry(DateTimeOffset.UtcNow, metadata);
+        if (metadata != null)
+        {
+            _cache[normalizedId] = new CacheEntry(DateTimeOffset.UtcNow, metadata);
+        }
         return metadata;
     }
 
     private async Task<SpotifyTrackMetadata?> FetchTrackAsync(string spotifyTrackId, CancellationToken cancellationToken)
     {
-        var token = await GetAccessTokenAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(token))
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            return null;
+            var token = await GetAccessTokenAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return null;
+            }
+
+            var (metadata, retryAfter, shouldRetry) = await TryFetchTrackAttemptAsync(
+                spotifyTrackId,
+                token,
+                cancellationToken);
+            if (metadata != null)
+            {
+                return metadata;
+            }
+
+            if (!shouldRetry || attempt == maxAttempts)
+            {
+                return null;
+            }
+
+            var delay = retryAfter ?? TimeSpan.FromSeconds(attempt);
+            if (delay > TimeSpan.FromSeconds(10))
+            {
+                delay = TimeSpan.FromSeconds(10);
+            }
+
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken);
+            }
         }
 
+        return null;
+    }
+
+    private async Task<(SpotifyTrackMetadata? Metadata, TimeSpan? RetryAfter, bool ShouldRetry)> TryFetchTrackAttemptAsync(
+        string spotifyTrackId,
+        string token,
+        CancellationToken cancellationToken)
+    {
         try
         {
             using var client = _httpClientFactory.CreateClient("SpotifyPublic");
@@ -65,6 +105,8 @@ public sealed class SpotifyTrackMetadataResolver
                 HttpMethod.Get,
                 $"https://api.spotify.com/v1/tracks/{WebUtility.UrlEncode(spotifyTrackId)}?market=from_token");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
@@ -77,14 +119,27 @@ public sealed class SpotifyTrackMetadataResolver
                         (int)response.StatusCode);
                 }
 
-                return null;
+                if (response.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    _accessToken = null;
+                    _accessTokenExpiresAt = DateTimeOffset.MinValue;
+                    return (null, TimeSpan.FromMilliseconds(250), true);
+                }
+
+                if ((int)response.StatusCode == 429 || (int)response.StatusCode >= 500)
+                {
+                    var retryAfter = ResolveRetryAfter(response);
+                    return (null, retryAfter, true);
+                }
+
+                return (null, null, false);
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             var payload = await JsonSerializer.DeserializeAsync<SpotifyTrackEnvelope>(stream, JsonOptions, cancellationToken);
             if (payload == null || string.IsNullOrWhiteSpace(payload.Id))
             {
-                return null;
+                return (null, null, false);
             }
 
             var artist = payload.Artists?.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value.Name))?.Name;
@@ -92,13 +147,16 @@ public sealed class SpotifyTrackMetadataResolver
             var isrc = payload.ExternalIds?.Isrc;
             var durationMs = payload.DurationMs;
 
-            return new SpotifyTrackMetadata(
-                payload.Id,
-                payload.Name ?? string.Empty,
-                artist,
-                album,
-                durationMs > 0 ? durationMs : null,
-                string.IsNullOrWhiteSpace(isrc) ? null : isrc.Trim().ToUpperInvariant());
+            return (
+                new SpotifyTrackMetadata(
+                    payload.Id,
+                    payload.Name ?? string.Empty,
+                    artist,
+                    album,
+                    durationMs > 0 ? durationMs : null,
+                    string.IsNullOrWhiteSpace(isrc) ? null : isrc.Trim().ToUpperInvariant()),
+                null,
+                false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -107,8 +165,27 @@ public sealed class SpotifyTrackMetadataResolver
                 _logger.LogDebug(ex, "Spotify track metadata fetch failed for {TrackId}", spotifyTrackId);
             }
 
-            return null;
+            return (null, TimeSpan.FromMilliseconds(500), true);
         }
+    }
+
+    private static TimeSpan? ResolveRetryAfter(HttpResponseMessage response)
+    {
+        if (response.Headers.RetryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero)
+        {
+            return delta;
+        }
+
+        if (response.Headers.RetryAfter?.Date is DateTimeOffset at)
+        {
+            var wait = at - DateTimeOffset.UtcNow;
+            if (wait > TimeSpan.Zero)
+            {
+                return wait;
+            }
+        }
+
+        return null;
     }
 
     private async Task<string?> GetAccessTokenAsync(CancellationToken cancellationToken)
