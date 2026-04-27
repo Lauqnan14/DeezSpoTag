@@ -21,6 +21,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const string VibeAnalyzerBatchTimeoutSecondsEnvironmentVariable = "VIBE_ANALYZER_BATCH_TIMEOUT_SECONDS";
     private const string VibeAnalyzerWorkersEnvironmentVariable = "VIBE_ANALYZER_WORKERS";
     private const string VibeAnalyzerUseBatchEnvironmentVariable = "VIBE_ANALYZER_USE_BATCH";
+    private const string VibeEssentiaPackageEnvironmentVariable = "VIBE_ANALYZER_ESSENTIA_TF_PACKAGE";
+    private const string DefaultEssentiaPackage = "essentia-tensorflow==2.1b6.dev1389";
     private const string Python3Executable = "python3";
     private const string ToolsDirectoryName = "Tools";
     private const string ModelsDirectoryName = "models";
@@ -1259,10 +1261,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             if (!SupportsEssentia(venvPython))
             {
+                var essentiaPackage = ResolveEssentiaPackage();
                 TryRunProcess(venvPython, "-m pip install --upgrade pip", PipInstallTimeout, out _);
-                if (!TryRunProcess(venvPython, "-m pip install essentia-tensorflow", PipInstallTimeout, out var installError))
+                if (!TryRunProcess(venvPython, $"-m pip install {essentiaPackage}", PipInstallTimeout, out var installError))
                 {
-                    _logger.LogWarning("Essentia install failed for vibe analysis venv: {Error}", installError);
+                    _logger.LogWarning("Essentia install failed for vibe analysis venv (package {Package}): {Error}", essentiaPackage, installError);
                     return;
                 }
             }
@@ -1285,6 +1288,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private static bool SupportsEssentia(string pythonExecutable)
     {
         return TryRunProcess(pythonExecutable, "-c \"import essentia.standard\"", TimeSpan.FromSeconds(20), out _);
+    }
+
+    private static string ResolveEssentiaPackage()
+    {
+        var configured = Environment.GetEnvironmentVariable(VibeEssentiaPackageEnvironmentVariable);
+        return string.IsNullOrWhiteSpace(configured) ? DefaultEssentiaPackage : configured.Trim();
     }
 
     private static bool TryRunProcess(string fileName, string arguments, TimeSpan timeout, out string error)

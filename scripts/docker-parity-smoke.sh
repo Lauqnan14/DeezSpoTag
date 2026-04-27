@@ -108,6 +108,9 @@ with open("/tmp/vibe-probe.json", "r", encoding="utf-8") as handle:
     payload = json.load(handle)
 if not isinstance(payload, dict):
     raise RuntimeError("vibe probe did not return a JSON object")
+if payload.get("ok") is not True:
+    missing_required = payload.get("missingRequired")
+    raise RuntimeError(f"vibe probe failed: ok={payload.get('ok')} missingRequired={missing_required} message={payload.get('message')}")
 print("vibe probe ok=", payload.get("ok"))
 PY
 test -f /app/Tools/vibe_analyzer.py

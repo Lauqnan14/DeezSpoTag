@@ -269,15 +269,15 @@ class AudioAnalyzer:
 
             self._load_prediction_heads(
                 {
-                "mood_happy": "mood_happy-msd-musicnn-1.pb",
-                "mood_sad": "mood_sad-msd-musicnn-1.pb",
-                "mood_relaxed": "mood_relaxed-msd-musicnn-1.pb",
-                "mood_aggressive": "mood_aggressive-msd-musicnn-1.pb",
-                "mood_party": "mood_party-msd-musicnn-1.pb",
-                "mood_acoustic": "mood_acoustic-msd-musicnn-1.pb",
-                "mood_electronic": "mood_electronic-msd-musicnn-1.pb",
-                "danceability": "danceability-msd-musicnn-1.pb",
-                "voice_instrumental": "voice_instrumental-msd-musicnn-1.pb",
+                    "mood_happy": "mood_happy-msd-musicnn-1.pb",
+                    "mood_sad": "mood_sad-msd-musicnn-1.pb",
+                    "mood_relaxed": "mood_relaxed-msd-musicnn-1.pb",
+                    "mood_aggressive": "mood_aggressive-msd-musicnn-1.pb",
+                    "mood_party": "mood_party-msd-musicnn-1.pb",
+                    "mood_acoustic": "mood_acoustic-msd-musicnn-1.pb",
+                    "mood_electronic": "mood_electronic-msd-musicnn-1.pb",
+                    "danceability": "danceability-msd-musicnn-1.pb",
+                    "voice_instrumental": "voice_instrumental-msd-musicnn-1.pb",
                 }
             )
 
@@ -405,7 +405,7 @@ class AudioAnalyzer:
 
         return result
 
-    def _safe_predict(self, model, embeddings, _model_name: str) -> Tuple[float, float]:
+    def _safe_predict(self, model, embeddings) -> Tuple[float, float]:
         try:
             preds = np.array(model(embeddings))
             if preds.ndim == 2 and preds.shape[1] > 1:
@@ -424,7 +424,7 @@ class AudioAnalyzer:
             predictor = self.prediction_models.get(model_key)
             if predictor is None:
                 continue
-            raw_moods[output_key] = self._safe_predict(predictor, embeddings, model_key)
+            raw_moods[output_key] = self._safe_predict(predictor, embeddings)
         return raw_moods
 
     @staticmethod
@@ -468,7 +468,7 @@ class AudioAnalyzer:
     def _populate_optional_ml_scores(self, result: Dict[str, Any], embeddings) -> None:
         voice_model = self.prediction_models.get("voice_instrumental")
         if voice_model is not None:
-            voice_val, _ = self._safe_predict(voice_model, embeddings, "voice_instrumental")
+            voice_val, _ = self._safe_predict(voice_model, embeddings)
             result["instrumentalness"] = voice_val
 
         if "moodAcoustic" in result:
@@ -476,7 +476,7 @@ class AudioAnalyzer:
 
         dance_model = self.prediction_models.get("danceability")
         if dance_model is not None:
-            dance_val, _ = self._safe_predict(dance_model, embeddings, "danceability")
+            dance_val, _ = self._safe_predict(dance_model, embeddings)
             result["danceabilityMl"] = dance_val
 
     def _extract_ml_features(self, audio_16k) -> Dict[str, Any]:
@@ -664,7 +664,18 @@ class AudioAnalyzer:
             mood_aggressive=mood_aggressive,
         )
 
-        return list(set(tags))[:12]
+        return self._dedupe_in_order(tags)[:12]
+
+    @staticmethod
+    def _dedupe_in_order(values: List[str]) -> List[str]:
+        deduped: List[str] = []
+        seen = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
 
 
 def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -712,7 +723,7 @@ def _init_worker_process(models_dir: str):
 def _analyze_track_in_process(entry: Dict[str, Any]) -> Dict[str, Any]:
     track_id_raw = entry.get("trackId")
     file_path_raw = entry.get("filePath")
-    track_id = int(track_id_raw) if track_id_raw is not None else None
+    track_id = _normalize_track_id(track_id_raw)
     file_path = str(file_path_raw) if file_path_raw is not None else None
 
     if track_id is None:
@@ -778,6 +789,15 @@ def _analyze_track_in_process(entry: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
+def _normalize_track_id(track_id_raw: Any) -> Optional[int]:
+    if track_id_raw is None:
+        return None
+    try:
+        return int(track_id_raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _default_worker_count() -> int:
     cpu_count = os.cpu_count() or 4
     return max(2, min(8, cpu_count // 2))
@@ -792,7 +812,7 @@ def run_batch_analysis(
 ) -> Dict[str, Any]:
     normalized_workers = max(1, int(workers))
     normalized_track_timeout = max(1, int(per_track_timeout_seconds))
-    normalized_batch_timeout = max(normalized_track_timeout, int(batch_timeout_seconds))
+    normalized_batch_timeout = max(normalized_track_timeout, max(1, int(batch_timeout_seconds)))
     results: List[Dict[str, Any]] = []
 
     with ProcessPoolExecutor(
