@@ -37,13 +37,13 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
 
-    private static bool IsAutomationOwnedEnhancementTrigger(string? trigger)
+    private static bool IsInterruptibleEnhancementTrigger(string? trigger)
     {
-        return string.Equals(trigger, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase)
+        return string.Equals(trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
                || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool ShouldPauseAutomationEnhancementJob(AutoTagJob? job)
+    private static bool ShouldPauseEnhancementJobForEnrichment(AutoTagJob? job)
     {
         if (job == null
             || !string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
@@ -57,7 +57,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return false;
         }
 
-        return IsAutomationOwnedEnhancementTrigger(job.Trigger);
+        return IsInterruptibleEnhancementTrigger(job.Trigger);
     }
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
     public sealed record DownloadGateDecision(bool Allowed, string Message, bool EnhancementPaused);
@@ -805,7 +805,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return false;
         }
 
-        if (!IsAutomationOwnedEnhancementTrigger(job.Trigger))
+        if (!IsInterruptibleEnhancementTrigger(job.Trigger))
         {
             return false;
         }
@@ -956,7 +956,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             enhancementJob = await _autoTagService.StartJob(
                 folderRootPath,
                 enhancementConfig,
-                AutoTagLiterals.AutomationTrigger,
+                AutoTagLiterals.ScheduleTrigger,
                 null,
                 enhancementProfile.Id,
                 enhancementProfile.Name,
@@ -1747,7 +1747,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
 
             var runningJob = _autoTagService.GetJob(jobId);
-            if (!ShouldPauseAutomationEnhancementJob(runningJob))
+            if (!ShouldPauseEnhancementJobForEnrichment(runningJob))
             {
                 return false;
             }
@@ -1824,7 +1824,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
 
             var runningJob = _autoTagService.GetJob(jobId);
-            if (!ShouldPauseAutomationEnhancementJob(runningJob))
+            if (!ShouldPauseEnhancementJobForEnrichment(runningJob))
             {
                 return false;
             }
