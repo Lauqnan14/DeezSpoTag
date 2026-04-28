@@ -36,6 +36,29 @@ public sealed class DownloadOrchestrationService : BackgroundService
         IReadOnlyList<string> PendingQueueUuids);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
+
+    private static bool IsAutomationOwnedEnhancementTrigger(string? trigger)
+    {
+        return string.Equals(trigger, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldPauseAutomationEnhancementJob(AutoTagJob? job)
+    {
+        if (job == null
+            || !string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return IsAutomationOwnedEnhancementTrigger(job.Trigger);
+    }
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
     public sealed record DownloadGateDecision(bool Allowed, string Message, bool EnhancementPaused);
     private sealed class EnhancementScheduleState
@@ -778,6 +801,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
     {
         if (job == null
             || !string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!IsAutomationOwnedEnhancementTrigger(job.Trigger))
         {
             return false;
         }
@@ -1718,6 +1746,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 return false;
             }
 
+            var runningJob = _autoTagService.GetJob(jobId);
+            if (!ShouldPauseAutomationEnhancementJob(runningJob))
+            {
+                return false;
+            }
+
             _enhancementPauseRequested = true;
             _enhancementResumeAwaitingPipelineCompletion = true;
             _pipelineRequested = true;
@@ -1785,6 +1819,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
             }
 
             if (string.IsNullOrWhiteSpace(jobId))
+            {
+                return false;
+            }
+
+            var runningJob = _autoTagService.GetJob(jobId);
+            if (!ShouldPauseAutomationEnhancementJob(runningJob))
             {
                 return false;
             }

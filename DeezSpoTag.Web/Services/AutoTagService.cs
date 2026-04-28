@@ -1745,7 +1745,8 @@ public class AutoTagService
                 return;
             }
 
-            var success = await ExecuteStagesAsync(job, stages, path, fileOutcomes);
+            var execution = await ExecuteStagesAsync(job, stages, path, configPath, fileOutcomes);
+            var success = execution.Success;
 
             if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
@@ -1766,7 +1767,13 @@ public class AutoTagService
             if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
             {
-                await RunSuccessPostProcessingAsync(job, path, configPath, includesEnhancementStage, fileOutcomes);
+                await RunSuccessPostProcessingAsync(
+                    job,
+                    path,
+                    configPath,
+                    includesEnhancementStage,
+                    fileOutcomes,
+                    execution.EarlyAutoMove);
             }
 
             NotifyCompleted(job);
@@ -1823,23 +1830,75 @@ public class AutoTagService
         return true;
     }
 
-    private async Task<bool> ExecuteStagesAsync(
+    private readonly record struct StageRunResult(bool Success, AutoMoveExecutionResult? EarlyAutoMove);
+
+    private async Task<StageRunResult> ExecuteStagesAsync(
         AutoTagJob job,
         IReadOnlyList<AutoTagStageConfig> stages,
         string path,
+        string configPath,
         Dictionary<string, FileTagOutcome> fileOutcomes)
     {
+        AutoMoveExecutionResult? earlyAutoMove = null;
         for (var index = 0; index < stages.Count; index++)
         {
             var stage = stages[index];
             var stageResult = await ExecuteSingleStageAsync(job, stage, index, stages.Count, path, fileOutcomes);
             if (!stageResult.Success)
             {
-                return false;
+                return new StageRunResult(false, earlyAutoMove);
+            }
+
+            if (earlyAutoMove is null && ShouldAutoMoveAfterEnrichmentStage(job, path, stages, index))
+            {
+                var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
+                AppendLog(job, "enrichment completed, auto-move starting before enhancement");
+                earlyAutoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+                AppendLog(job, "auto-move completed before enhancement");
             }
         }
 
-        return true;
+        return new StageRunResult(true, earlyAutoMove);
+    }
+
+    private bool ShouldAutoMoveAfterEnrichmentStage(
+        AutoTagJob job,
+        string path,
+        IReadOnlyList<AutoTagStageConfig> stages,
+        int completedStageIndex)
+    {
+        if (completedStageIndex < 0
+            || completedStageIndex >= stages.Count
+            || !string.Equals(stages[completedStageIndex].Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!stages
+                .Skip(completedStageIndex + 1)
+                .Any(stage => string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return IsConfiguredDownloadRootPath(path);
+    }
+
+    private bool IsConfiguredDownloadRootPath(string path)
+    {
+        return ConfiguredDownloadRootResolver.TryResolve(
+                _settingsService,
+                "download location",
+                "download location is not configured.",
+                out var configuredDownloadRoot,
+                out _)
+            && IsPathUnderRoot(path, configuredDownloadRoot)
+            && IsPathUnderRoot(configuredDownloadRoot, path);
     }
 
     private readonly record struct StageExecutionResult(bool Success);
@@ -1921,11 +1980,10 @@ public class AutoTagService
         string path,
         string configPath,
         bool includesEnhancementStage,
-        Dictionary<string, FileTagOutcome> fileOutcomes)
+        Dictionary<string, FileTagOutcome> fileOutcomes,
+        AutoMoveExecutionResult? earlyAutoMove)
     {
-        var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
-        AppendLog(job, "tagging completed, auto-move starting");
-        var autoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+        var autoMove = earlyAutoMove ?? await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes);
         AppendLog(job, "auto-move completed, organizer starting");
         await OrganizeJobAsync(job, path, configPath);
         await RunIntegratedEnhancementWorkflowsAsync(
@@ -1947,6 +2005,17 @@ public class AutoTagService
             job,
             autoMove.Completed && (plexTriggeredByEnhancement || plexRefreshRequestedAfterMove),
             CancellationToken.None);
+    }
+
+    private async Task<AutoMoveExecutionResult> RunFinalAutoMoveAsync(
+        AutoTagJob job,
+        string path,
+        string configPath,
+        Dictionary<string, FileTagOutcome> fileOutcomes)
+    {
+        var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
+        AppendLog(job, "tagging completed, auto-move starting");
+        return await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
     }
 
     private async Task HandleRunJobFailureAsync(

@@ -68,7 +68,6 @@ public sealed class AutoTagDownloadMoveService
         string RootPath,
         AutoTagOrganizerOptions Options,
         string OverwritePolicy,
-        string? DestinationRootOverride,
         ConversionPlan ConversionPlan,
         IReadOnlyCollection<string> TaggedFiles,
         IReadOnlyCollection<string> FailedFiles);
@@ -237,21 +236,13 @@ public sealed class AutoTagDownloadMoveService
         items = await ReconcileMonitoredRoutingDestinationsAsync(items, normalizedRootPath, cancellationToken);
         var foldersById = await LoadFoldersByIdAsync(cancellationToken);
         await MoveRemainingContentByDestinationAsync(items, normalizedRootPath, settings, foldersById, summary, cancellationToken);
-        var residualDestinationFolderId = ResolveResidualDestinationFolderId(items, normalizedRootPath);
-        var residualDestination = await ResolveDestinationRootAsync(residualDestinationFolderId, cancellationToken);
-        summary.AddDestinationRoot(residualDestination);
-        var residualConversion = BuildConversionPlan(
-            settings,
-            residualDestinationFolderId.HasValue && foldersById.TryGetValue(residualDestinationFolderId.Value, out var residualFolder)
-                ? residualFolder
-                : null);
+        var residualConversion = BuildConversionPlan(settings, null);
         var overwritePolicy = string.IsNullOrWhiteSpace(settings.OverwriteFile) ? "y" : settings.OverwriteFile;
         var residualTransitions = await MoveResidualFilesAsync(
             new ResidualMoveContext(
                 normalizedRootPath,
                 options,
                 overwritePolicy,
-                residualDestination,
                 residualConversion,
                 taggedFiles,
                 failedFiles),
@@ -1145,7 +1136,7 @@ public sealed class AutoTagDownloadMoveService
         CancellationToken cancellationToken)
     {
         var moved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var runtime = await BuildResidualRuntimeAsync(context, cancellationToken);
+        var runtime = BuildResidualRuntime(context);
         if (runtime is null)
         {
             return moved;
@@ -1224,11 +1215,9 @@ public sealed class AutoTagDownloadMoveService
         }
     }
 
-    private async Task<ResidualRuntime?> BuildResidualRuntimeAsync(
-        ResidualMoveContext context,
-        CancellationToken cancellationToken)
+    private static ResidualRuntime? BuildResidualRuntime(ResidualMoveContext context)
     {
-        var resolvedSuccessRoot = await ResolveResidualSuccessRootAsync(context, cancellationToken);
+        var resolvedSuccessRoot = ResolveResidualSuccessRoot(context);
         if (string.IsNullOrWhiteSpace(resolvedSuccessRoot)
             || !TryResolveResidualPaths(context.RootPath, resolvedSuccessRoot, context.Options.MoveUntaggedPath, out var paths))
         {
@@ -1277,21 +1266,14 @@ public sealed class AutoTagDownloadMoveService
             files);
     }
 
-    private async Task<string?> ResolveResidualSuccessRootAsync(
-        ResidualMoveContext context,
-        CancellationToken cancellationToken)
+    private static string? ResolveResidualSuccessRoot(ResidualMoveContext context)
     {
         if (!string.IsNullOrWhiteSpace(context.Options.MoveTaggedPath))
         {
             return context.Options.MoveTaggedPath;
         }
 
-        if (!string.IsNullOrWhiteSpace(context.DestinationRootOverride))
-        {
-            return context.DestinationRootOverride;
-        }
-
-        return await ResolveDestinationRootAsync(null, cancellationToken);
+        return null;
     }
 
     private static bool TryResolveResidualPaths(
@@ -2245,51 +2227,6 @@ public sealed class AutoTagDownloadMoveService
 
         var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
         return folders.ToDictionary(folder => folder.Id, folder => folder);
-    }
-
-    private static long? ResolveResidualDestinationFolderId(
-        IReadOnlyList<DownloadQueueItem> items,
-        string rootPath)
-    {
-        var destinationIds = new HashSet<long>();
-        foreach (var item in items)
-        {
-            if (!IsCompletedStatus(item.Status))
-            {
-                continue;
-            }
-
-            if (!PayloadMentionsRoot(item.PayloadJson, rootPath))
-            {
-                continue;
-            }
-
-            var resolvedDestinationId = item.DestinationFolderId ?? TryReadDestinationFolderId(item.PayloadJson);
-            if (resolvedDestinationId.HasValue && resolvedDestinationId.Value > 0)
-            {
-                destinationIds.Add(resolvedDestinationId.Value);
-            }
-        }
-
-        return destinationIds.Count == 1 ? destinationIds.First() : null;
-    }
-
-    private static long? TryReadDestinationFolderId(string? payloadJson)
-    {
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(payloadJson);
-            return ReadInt64Property(document.RootElement, "destinationFolderId");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return null;
-        }
     }
 
     private static bool PayloadMentionsRoot(string? payloadJson, string rootPath)

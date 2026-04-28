@@ -279,6 +279,31 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
         }
     }
 
+    [Fact]
+    public void ResolveResidualSuccessRoot_ReturnsNull_WhenMoveTaggedPathIsNotConfigured()
+    {
+        var method = GetPrivateStaticMethod("ResolveResidualSuccessRoot");
+        var context = CreateResidualMoveContext(new AutoTagOrganizerOptions());
+
+        var result = (string?)method.Invoke(null, new[] { context });
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ResolveResidualSuccessRoot_UsesConfiguredMoveTaggedPath()
+    {
+        var method = GetPrivateStaticMethod("ResolveResidualSuccessRoot");
+        var context = CreateResidualMoveContext(new AutoTagOrganizerOptions
+        {
+            MoveTaggedPath = "/music/success"
+        });
+
+        var result = (string?)method.Invoke(null, new[] { context });
+
+        Assert.Equal("/music/success", result);
+    }
+
     private static MethodInfo GetPrivateStaticMethod(string methodName)
     {
         return typeof(AutoTagDownloadMoveService).GetMethod(
@@ -310,6 +335,43 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
     {
         var method = GetPrivateStaticMethod("ResolveRoutingFolderId");
         return (long?)method.Invoke(null, new object?[] { metadata, rules, defaultFolderId });
+    }
+
+    private static object CreateResidualMoveContext(AutoTagOrganizerOptions options)
+    {
+        var conversionPlan = CreateConversionPlan();
+        var contextType = typeof(AutoTagDownloadMoveService).GetNestedType(
+                              "ResidualMoveContext",
+                              BindingFlags.NonPublic)
+                          ?? throw new InvalidOperationException("ResidualMoveContext was not found.");
+        return Activator.CreateInstance(
+                   contextType,
+                   "/downloads",
+                   options,
+                   "y",
+                   conversionPlan,
+                   Array.Empty<string>(),
+                   Array.Empty<string>())
+               ?? throw new InvalidOperationException("ResidualMoveContext could not be created.");
+    }
+
+    private static object CreateConversionPlan()
+    {
+        var conversionPlanType = typeof(AutoTagDownloadMoveService).GetNestedType(
+                                     "ConversionPlan",
+                                     BindingFlags.NonPublic)
+                                 ?? throw new InvalidOperationException("ConversionPlan was not found.");
+        return Activator.CreateInstance(
+                   conversionPlanType,
+                   false,
+                   null,
+                   null,
+                   false,
+                   false,
+                   string.Empty,
+                   false,
+                   false)
+               ?? throw new InvalidOperationException("ConversionPlan could not be created.");
     }
 
     private static void TryDeleteDirectory(string path)
