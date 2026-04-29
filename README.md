@@ -29,9 +29,11 @@ DeezSpoTag automates music workflows end-to-end:
   <img src="Screenshots/screenshot.gif" alt="DeezSpoTag Interface Demo" />
 </p>
 
-## Warning
+## ⚠️ Warning
 
-- Apple wrapper is in development. Use the `ghcr.io/itouakirai/wrapper:x86` wrapper in the mean time.
+- This project is under active development.
+- Some features are experimental and may modify music metadata.
+- Do not run this on your main library without a backup.
 - Only Shazam, Spotify, iTunes, and Deezer have been thoroughly tested for tagging with reliable results.
 - Manual tagging is still under heavy development.
 - Soundtrack fetching requires a lot of work to reliably fetch soundtracks.
@@ -140,6 +142,19 @@ curl -L -o docker-compose.yml https://raw.githubusercontent.com/Lauqnan14/DeezSp
 curl -L -o .env https://raw.githubusercontent.com/Lauqnan14/DeezSpoTag/main/src/.env.example
 ```
 
+Create the host folders that will be mounted into the containers. These paths
+match the compose defaults; use your own absolute paths on a NAS or server and
+set the matching values in `.env`.
+
+```bash
+mkdir -p \
+  ./data \
+  ./apple-wrapper/data \
+  ./apple-wrapper/session \
+  ./downloads \
+  ./library
+```
+
 Then configure `.env` and start:
 
 ```bash
@@ -157,13 +172,13 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 
 ### Common `.env` Values
 
-- `DEEZSPOTAG_DATA_PATH`
+- `DEEZSPOTAG_DATA_PATH` - app database, settings, logs, and persistent state
 - `DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR` (for multi-instance deployments, this must point to the same shared directory in every app instance)
-- `APPLE_WRAPPER_DATA_PATH`
-- `APPLE_WRAPPER_SESSION_PATH`
+- `APPLE_WRAPPER_DATA_PATH` - shared Apple wrapper control files
+- `APPLE_WRAPPER_SESSION_PATH` - Apple wrapper login/session cache
 - `DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE` (`shared` recommended)
-- `DOWNLOADS_PATH`
-- `LIBRARY_PATH`
+- `DOWNLOADS_PATH` - completed downloads
+- `LIBRARY_PATH` - existing media library root
 
 
 ## Security Notes

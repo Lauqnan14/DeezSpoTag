@@ -1,99 +1,50 @@
 services:
-  deezspotag:
-    container_name: deezspotag
-    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:prerelease}
-    pull_policy: always
-    network_mode: host
-    user: "${PUID:-1000}:${PGID:-1000}"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      DEEZSPOTAG_APPLE_WRAPPER_MODE: external
-      DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE: ${DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE:-shared}
-      DEEZSPOTAG_APPLE_WRAPPER_HOST: 127.0.0.1
-      DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR: /apple-wrapper/data
-      DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR: /apple-wrapper/session
-      DEEZSPOTAG_DATA_DIR: /data
-      DEEZSPOTAG_CONFIG_DIR: /data
-      DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR: ${DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR:-/data/security/data-protection-keys}
-    volumes:
-      # Auto-create app state folder if missing.
-      - type: bind
-        source: ${DEEZSPOTAG_DATA_PATH:-./DeezSpoTag.Workers/Data}
-        target: /data
-        bind:
-          create_host_path: true
-      # Compatibility path for images that still write under /app/Data.
-      - type: bind
-        source: ${DEEZSPOTAG_APPDATA_PATH:-./DeezSpoTag.Workers/Data}
-        target: /app/Data
-        bind:
-          create_host_path: true
-      # Local defaults stay inside the repo and are auto-created for first run.
-      - type: bind
-        source: ${DOWNLOADS_PATH:-./Downloads}
-        target: /downloads
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${LIBRARY_PATH:-./Library}
-        target: /library
-        bind:
-          create_host_path: true
-      # Shared Apple wrapper control paths (no Docker socket dependency).
-      - type: bind
-        source: ${APPLE_WRAPPER_DATA_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/data}
-        target: /apple-wrapper/data
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${APPLE_WRAPPER_SESSION_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/session}
-        target: /apple-wrapper/session
-        bind:
-          create_host_path: true
-    restart: unless-stopped
-
   apple-wrapper:
     container_name: apple-wrapper
     image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:prerelease}
     pull_policy: ${APPLE_WRAPPER_PULL_POLICY:-always}
-    privileged: true
-    network_mode: host
-    user: "${APPLE_WRAPPER_UID:-0}:${APPLE_WRAPPER_GID:-0}"
-    env_file:
-      - path: ${APPLE_WRAPPER_ENV_FILE:-Tools/AppleMusicWrapper/docker/apple-wrapper.env}
-        required: false
-    volumes:
-      # Auto-create wrapper state folders if missing.
-      - type: bind
-        source: ${APPLE_WRAPPER_DATA_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/data}
-        target: /opt/apple-wrapper/data
-        bind:
-          create_host_path: true
-      - type: bind
-        source: ${APPLE_WRAPPER_SESSION_PATH:-./DeezSpoTag.Workers/Data/apple-wrapper/session}
-        target: /opt/apple-wrapper/rootfs/data/data/com.apple.android.music
-        bind:
-          create_host_path: true
-      # Map host random devices directly; this avoids mknod variance across Linux distros.
-      - type: bind
-        source: /dev/urandom
-        target: /opt/apple-wrapper/rootfs/dev/urandom
-        read_only: true
-      - type: bind
-        source: /dev/random
-        target: /opt/apple-wrapper/rootfs/dev/random
-        read_only: true
-      - type: bind
-        source: /proc
-        target: /opt/apple-wrapper/rootfs/proc
-        read_only: true
-      - type: bind
-        source: /sys
-        target: /opt/apple-wrapper/rootfs/sys
-        read_only: true
-      - type: bind
-        source: /dev/pts
-        target: /opt/apple-wrapper/rootfs/dev/pts
     restart: unless-stopped
+    network_mode: host
+    privileged: true
+    user: "${APPLE_WRAPPER_UID:-0}:${APPLE_WRAPPER_GID:-0}"
+    stop_grace_period: 20s
+    environment:
+      WRAPPER_ARGS: "${WRAPPER_ARGS:--H 127.0.0.1 -D 10020 -M 20020 -A 30020}"
+      args: "${WRAPPER_ARGS:--H 127.0.0.1 -D 10020 -M 20020 -A 30020}"
+      WRAPPER_LOGIN_RETRY_ATTEMPTS: "${WRAPPER_LOGIN_RETRY_ATTEMPTS:-2}"
+      WRAPPER_LOGIN_RETRY_DELAY_SECONDS: "${WRAPPER_LOGIN_RETRY_DELAY_SECONDS:-4}"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - ${APPLE_WRAPPER_DATA_PATH:-./apple-wrapper/data}:/opt/apple-wrapper/data
+      - ${APPLE_WRAPPER_SESSION_PATH:-./apple-wrapper/session}:/opt/apple-wrapper/rootfs/data/data/com.apple.android.music
+      - /dev/urandom:/opt/apple-wrapper/rootfs/dev/urandom:ro
+      - /dev/random:/opt/apple-wrapper/rootfs/dev/random:ro
+
+  deezspotag:
+    container_name: deezspotag
+    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:prerelease}
+    pull_policy: ${DEEZSPOTAG_PULL_POLICY:-always}
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - apple-wrapper
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      DEEZSPOTAG_BOOTSTRAP_USER: "${DEEZSPOTAG_BOOTSTRAP_USER:-}"
+      DEEZSPOTAG_BOOTSTRAP_PASS: "${DEEZSPOTAG_BOOTSTRAP_PASS:-}"
+      DEEZSPOTAG_DATA_DIR: "/data"
+      DEEZSPOTAG_CONFIG_DIR: "/data"
+      DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR: "/data/security/data-protection-keys"
+      DEEZSPOTAG_APPLE_WRAPPER_MODE: "external"
+      DEEZSPOTAG_APPLE_WRAPPER_HOST: "127.0.0.1"
+      DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE: "shared"
+      DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR: "/apple-wrapper/data"
+      DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR: "/apple-wrapper/session"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - ${DEEZSPOTAG_DATA_PATH:-./data}:/data
+      - ${DEEZSPOTAG_APPDATA_PATH:-./data}:/app/Data
+      - ${DOWNLOADS_PATH:-./downloads}:/downloads
+      - ${LIBRARY_PATH:-./library}:/library
+      - ${APPLE_WRAPPER_DATA_PATH:-./apple-wrapper/data}:/apple-wrapper/data
+      - ${APPLE_WRAPPER_SESSION_PATH:-./apple-wrapper/session}:/apple-wrapper/session
