@@ -142,10 +142,11 @@ public class EnhancedPathTemplateProcessor
         var c = settings.IllegalCharacterReplacer;
         var filename = template;
         var mainArtistName = GetPathArtistName(track.MainArtist?.Name, settings);
+        var normalizedMainArtist = FixName(mainArtistName, c);
 
         // EXACT PORT: Basic track information
         filename = filename.Replace("%title%", FixName(track.Title, c));
-        filename = filename.Replace(ArtistPlaceholder, FixName(mainArtistName, c));
+        filename = filename.Replace(ArtistPlaceholder, normalizedMainArtist);
         var artistsValue = settings.Tags.MultiArtistSeparator == "default"
             ? string.Join(", ", track.Artists)
             : track.ArtistsString;
@@ -204,7 +205,33 @@ public class EnhancedPathTemplateProcessor
 
         // EXACT PORT: Normalize path separators and clean up
         filename = filename.Replace("\\", "/");
+        filename = CollapseRepeatedLeadingArtistPrefix(filename, template, normalizedMainArtist);
         return AntiDot(FixLongName(filename, settings.LimitMax));
+    }
+
+    private static string CollapseRepeatedLeadingArtistPrefix(string filename, string template, string normalizedMainArtist)
+    {
+        if (string.IsNullOrWhiteSpace(filename)
+            || string.IsNullOrWhiteSpace(normalizedMainArtist)
+            || !template.Contains("%artist%", StringComparison.OrdinalIgnoreCase)
+            || !template.Contains("%title%", StringComparison.OrdinalIgnoreCase))
+        {
+            return filename;
+        }
+
+        var prefix = $"{normalizedMainArtist} - ";
+        if (!filename.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return filename;
+        }
+
+        var remainder = filename[prefix.Length..];
+        while (remainder.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            remainder = remainder[prefix.Length..];
+        }
+
+        return prefix + remainder;
     }
 
     /// <summary>

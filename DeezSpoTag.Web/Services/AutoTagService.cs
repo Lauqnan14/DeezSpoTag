@@ -352,6 +352,7 @@ public partial class AutoTagService
     };
     private const string AutoTagFolderName = "autotag";
     private const string HistoryFolderName = "history";
+    private const string TracknameTemplateKey = "tracknameTemplate";
     private static readonly string[] DiffMetaKeys =
     {
         "title",
@@ -771,7 +772,7 @@ public partial class AutoTagService
         var skippedJob = new AutoTagJob
         {
             Id = Guid.NewGuid().ToString("N"),
-            Status = "skipped",
+            Status = AutoTagLiterals.SkippedStatus,
             StartedAt = DateTimeOffset.UtcNow,
             FinishedAt = DateTimeOffset.UtcNow,
             Error = message,
@@ -2593,7 +2594,7 @@ public partial class AutoTagService
             "writeLrc",
             "capitalizeGenres",
             AutoTagLiterals.DownloadTagSourceKey,
-            "tracknameTemplate",
+            TracknameTemplateKey,
             "saveArtwork",
             "dlAlbumcoverForPlaylist",
             "saveArtworkArtist",
@@ -3382,7 +3383,7 @@ public partial class AutoTagService
 
             var sections = await _plexApiClient.GetLibrarySectionsAsync(plexUrl, plexToken, cancellationToken);
             var musicSections = sections
-                .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
+                .Where(section => string.Equals(section.Type, AutoTagLiterals.ArtistTag, StringComparison.OrdinalIgnoreCase))
                 .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (musicSections.Count == 0)
@@ -3536,22 +3537,6 @@ public partial class AutoTagService
             return;
         }
 
-        var trackTemplate = ReadString(root, "tracknameTemplate");
-        if (string.IsNullOrWhiteSpace(trackTemplate))
-        {
-            foreach (var legacyKey in new[] { "filenameTemplate", "albumTracknameTemplate", "playlistTracknameTemplate" })
-            {
-                var legacyTemplate = ReadString(root, legacyKey);
-                if (string.IsNullOrWhiteSpace(legacyTemplate))
-                {
-                    continue;
-                }
-
-                root["tracknameTemplate"] = legacyTemplate.Trim();
-                break;
-            }
-        }
-
         root.Remove("filenameTemplate");
         root.Remove("albumTracknameTemplate");
         root.Remove("playlistTracknameTemplate");
@@ -3634,7 +3619,7 @@ public partial class AutoTagService
     private static void EnsureEnhancementFolderScopesCanonical(JsonNode node)
     {
         if (node is not JsonObject root
-            || root["enhancement"] is not JsonObject enhancement)
+            || root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancement)
         {
             return;
         }
@@ -3701,7 +3686,7 @@ public partial class AutoTagService
     private static void EnsureLegacyFolderUniformityStructureMirrorsRemoved(JsonNode node)
     {
         if (node is not JsonObject root
-            || root["enhancement"] is not JsonObject enhancement
+            || root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancement
             || enhancement["folderUniformity"] is not JsonObject folderUniformity)
         {
             return;
@@ -3969,9 +3954,9 @@ public partial class AutoTagService
                 deezer["max_bitrate"] = settings.MaxBitrate;
             }
 
-            if (deezer["language"] == null && !string.IsNullOrWhiteSpace(settings.DeezerLanguage))
+            if (deezer[AutoTagLiterals.LanguageTag] == null && !string.IsNullOrWhiteSpace(settings.DeezerLanguage))
             {
-                deezer["language"] = settings.DeezerLanguage;
+                deezer[AutoTagLiterals.LanguageTag] = settings.DeezerLanguage;
             }
 
             if (deezer["country"] == null && !string.IsNullOrWhiteSpace(settings.DeezerCountry))

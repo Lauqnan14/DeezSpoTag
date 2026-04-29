@@ -1,5 +1,8 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Web.Services;
+using System;
+using System.Collections.Generic;
+using System.Text.Json;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -18,6 +21,13 @@ public sealed class AutoTagOrganizerProfileOverlayTests
 
         var profile = new TaggingProfile
         {
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["tracknameTemplate"] = JsonSerializer.SerializeToElement("%artist% - %title%")
+                }
+            },
             Technical = new TechnicalTagSettings
             {
                 SingleAlbumArtist = false,
@@ -48,6 +58,7 @@ public sealed class AutoTagOrganizerProfileOverlayTests
         Assert.True(options.CreateCDFolderOverride);
         Assert.True(options.CreatePlaylistFolderOverride);
         Assert.Equal("%playlist% [mix]", options.PlaylistNameTemplateOverride);
+        Assert.Equal("%artist% - %title%", options.TracknameTemplateOverride);
         Assert.Equal("-", options.IllegalCharacterReplacerOverride);
     }
 

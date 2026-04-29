@@ -48,6 +48,7 @@ public sealed class AutoTagOrganizerOptions
     public bool? CreateSingleFolderOverride { get; set; }
     public bool? CreatePlaylistFolderOverride { get; set; }
     public string? PlaylistNameTemplateOverride { get; set; }
+    public string? TracknameTemplateOverride { get; set; }
     public string? IllegalCharacterReplacerOverride { get; set; }
     public TechnicalTagSettings? TechnicalSettingsOverride { get; set; }
 }

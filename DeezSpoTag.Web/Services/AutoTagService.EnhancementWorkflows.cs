@@ -141,7 +141,6 @@ public partial class AutoTagService
         }
 
         var settings = _settingsService.LoadSettings();
-        ApplyEnhancementTrackTemplateOverrides(settings, enhancementRoot);
         var profileState = scopedFolders.Count > 0
             ? await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken)
             : null;
@@ -153,30 +152,6 @@ public partial class AutoTagService
 
         AppendLog(job, "enhancement workflow: folder uniformity completed.");
         return EnhancementWorkflowOutcome.Completed($"processed {rootPaths.Count} path(s).");
-    }
-
-    private static void ApplyEnhancementTrackTemplateOverrides(DeezSpoTagSettings settings, JsonObject enhancementRoot)
-    {
-        if (settings == null || enhancementRoot == null)
-        {
-            return;
-        }
-
-        ApplyTemplateIfPresent(enhancementRoot, "tracknameTemplate", value => settings.TracknameTemplate = value);
-        settings.AlbumTracknameTemplate = settings.TracknameTemplate;
-        settings.PlaylistTracknameTemplate = settings.TracknameTemplate;
-    }
-
-    private static void ApplyTemplateIfPresent(JsonObject source, string key, Action<string> assign)
-    {
-        if (source[key] is not JsonValue node
-            || !node.TryGetValue<string>(out var value)
-            || string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        assign(value.Trim());
     }
 
     private static bool TryGetFolderUniformityConfig(JsonObject enhancementRoot, out JsonObject? folderUniformity)
@@ -247,6 +222,12 @@ public partial class AutoTagService
                 }
 
                 AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(options, profile);
+                if (options.RenameFilesToTemplate
+                    && string.IsNullOrWhiteSpace(options.TracknameTemplateOverride))
+                {
+                    AppendLog(job, $"enhancement workflow: folder uniformity skipped for '{path}' (profile tracknameTemplate is required when renameFilesToTemplate is enabled).");
+                    continue;
+                }
             }
 
             var organizerReport = options.GenerateReconciliationReport

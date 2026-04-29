@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -42,6 +43,7 @@ public static class AutoTagOrganizerProfileOverlay
         }
 
         ApplyTechnicalAndFolderStructureOverrides(options, profile.Technical, profile.FolderStructure);
+        options.TracknameTemplateOverride = ReadProfileTracknameTemplate(profile);
     }
 
     public static void ApplyTechnicalAndFolderStructureOverrides(
@@ -86,5 +88,22 @@ public static class AutoTagOrganizerProfileOverlay
         options.IllegalCharacterReplacerOverride = string.IsNullOrWhiteSpace(folderStructure.IllegalCharacterReplacer)
             ? "_"
             : folderStructure.IllegalCharacterReplacer.Trim();
+    }
+
+    private static string? ReadProfileTracknameTemplate(TaggingProfile profile)
+    {
+        if (profile.AutoTag?.Data == null)
+        {
+            return null;
+        }
+
+        if (!profile.AutoTag.Data.TryGetValue("tracknameTemplate", out var node)
+            || node.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var value = node.GetString()?.Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 }

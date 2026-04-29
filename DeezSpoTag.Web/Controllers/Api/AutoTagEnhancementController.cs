@@ -1294,6 +1294,12 @@ public class AutoTagEnhancementController : ControllerBase
         // Folder Uniformity must honor each folder/profile structure as the source of truth.
         // Request-level structure mirrors are intentionally ignored here.
         AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(folderOptions, profile);
+        if (folderOptions.RenameFilesToTemplate
+            && string.IsNullOrWhiteSpace(folderOptions.TracknameTemplateOverride))
+        {
+            error = "profile tracknameTemplate is required when renameFilesToTemplate is enabled.";
+            return false;
+        }
         return true;
     }
 
@@ -1332,6 +1338,7 @@ public class AutoTagEnhancementController : ControllerBase
             CreateSingleFolderOverride = source.CreateSingleFolderOverride,
             CreatePlaylistFolderOverride = source.CreatePlaylistFolderOverride,
             PlaylistNameTemplateOverride = source.PlaylistNameTemplateOverride,
+            TracknameTemplateOverride = source.TracknameTemplateOverride,
             IllegalCharacterReplacerOverride = source.IllegalCharacterReplacerOverride,
             TechnicalSettingsOverride = source.TechnicalSettingsOverride
         };

@@ -125,6 +125,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string ItunesAdvisoryTag = "ITUNESADVISORY";
     private const string TrackTotalRawTag = "TRACKTOTAL";
     private const string DiscTotalRawTag = "DISCTOTAL";
+    private const string TitleUpperTag = "TITLE";
+    private const string ArtistUpperTag = "ARTIST";
+    private const string AlbumArtistUpperTag = "ALBUMARTIST";
+    private const string AlbumUpperTag = "ALBUM";
+    private const string TrackNumberUpperTag = "TRACKNUMBER";
+    private const string OriginalDateUpperTag = "ORIGINALDATE";
+    private const string ComposerUpperTag = "COMPOSER";
+    private const string InitialKeyRawTag = "initialkey";
+    private const string IsoDateFormat = "yyyy-MM-dd";
     private const string DurationTag = "duration";
     private const string LengthTag = "length";
     private const string ReleaseDateTag = "releaseDate";
@@ -1102,13 +1111,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void ApplyRuntimeConfigOverrides(DeezSpoTagSettings settings, AutoTagRunnerConfig config)
     {
-        if (!string.IsNullOrWhiteSpace(config.TracknameTemplate))
-        {
-            settings.TracknameTemplate = config.TracknameTemplate.Trim();
-            settings.AlbumTracknameTemplate = settings.TracknameTemplate;
-            settings.PlaylistTracknameTemplate = settings.TracknameTemplate;
-        }
-
         if (config.SaveArtwork.HasValue)
         {
             settings.SaveArtwork = config.SaveArtwork.Value;
@@ -2892,12 +2894,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (string.IsNullOrWhiteSpace(draft.Album))
         {
-            draft.Album = ReadFirstTagValue(draft.Tags, "SHAZAM_ALBUM", "ALBUM");
+            draft.Album = ReadFirstTagValue(draft.Tags, "SHAZAM_ALBUM", AlbumUpperTag);
         }
 
         if (!draft.TrackNumber.HasValue)
         {
-            draft.TrackNumber = ParsePositiveInt(ReadFirstTagValue(draft.Tags, "SHAZAM_TRACK_NUMBER", "TRACKNUMBER"));
+            draft.TrackNumber = ParsePositiveInt(ReadFirstTagValue(draft.Tags, "SHAZAM_TRACK_NUMBER", TrackNumberUpperTag));
         }
     }
 
@@ -3927,7 +3929,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             var keyValue = context.Config.Camelot ? ToCamelot(context.SourceTrack.Key) : context.SourceTrack.Key;
             WriteMp4AtlRaw(additional, "KEY", keyValue, context.Config, SupportedTag.Key);
-            WriteMp4AtlRaw(additional, "initialkey", keyValue, context.Config, SupportedTag.Key);
+            WriteMp4AtlRaw(additional, InitialKeyRawTag, keyValue, context.Config, SupportedTag.Key);
         }
 
         if (context.EnabledTags.Contains(LabelTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.Label))
@@ -4007,15 +4009,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             var dateString = IsYearOnlyDateFormat(context.Config.Technical?.DateFormat)
                 ? releaseDate.Year.ToString(CultureInfo.InvariantCulture)
-                : releaseDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                : releaseDate.ToString(IsoDateFormat, CultureInfo.InvariantCulture);
             WriteMp4AtlRaw(additional, "DATE", dateString, context.Config, SupportedTag.ReleaseDate);
             WriteMp4AtlRaw(additional, "©day", dateString, context.Config, SupportedTag.ReleaseDate);
         }
 
         if (context.EnabledTags.Contains(PublishDateTag) && context.SourceTrack.PublishDate.HasValue)
         {
-            var publishDate = context.SourceTrack.PublishDate.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            WriteMp4AtlRaw(additional, "ORIGINALDATE", publishDate, context.Config, SupportedTag.PublishDate);
+            var publishDate = context.SourceTrack.PublishDate.Value.ToString(IsoDateFormat, CultureInfo.InvariantCulture);
+            WriteMp4AtlRaw(additional, OriginalDateUpperTag, publishDate, context.Config, SupportedTag.PublishDate);
         }
 
         if (context.EnabledTags.Contains(UrlTag) && !string.IsNullOrWhiteSpace(context.SourceTrack.Url))
@@ -4082,25 +4084,25 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (context.EnabledTags.Contains(TitleTag) && context.EffectiveTagSettings.Title)
         {
-            WriteMp4AtlCompatibilityRaw(additional, "TITLE", atlTrack.Title, context.Config, SupportedTag.Title);
+            WriteMp4AtlCompatibilityRaw(additional, TitleUpperTag, atlTrack.Title, context.Config, SupportedTag.Title);
             WriteMp4AtlCompatibilityRaw(additional, "TIT2", atlTrack.Title, context.Config, SupportedTag.Title);
         }
 
         if (context.EnabledTags.Contains(ArtistTag) && context.EffectiveTagSettings.Artist)
         {
-            WriteMp4AtlCompatibilityRaw(additional, "ARTIST", atlTrack.Artist, context.Config, SupportedTag.Artist);
+            WriteMp4AtlCompatibilityRaw(additional, ArtistUpperTag, atlTrack.Artist, context.Config, SupportedTag.Artist);
             WriteMp4AtlCompatibilityRaw(additional, "TPE1", atlTrack.Artist, context.Config, SupportedTag.Artist);
         }
 
         if (context.EnabledTags.Contains(AlbumArtistTag) && context.EffectiveTagSettings.AlbumArtist)
         {
-            WriteMp4AtlCompatibilityRaw(additional, "ALBUMARTIST", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
+            WriteMp4AtlCompatibilityRaw(additional, AlbumArtistUpperTag, atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
             WriteMp4AtlCompatibilityRaw(additional, "TPE2", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
         }
 
         if (context.EnabledTags.Contains(AlbumTag) && context.EffectiveTagSettings.Album)
         {
-            WriteMp4AtlCompatibilityRaw(additional, "ALBUM", atlTrack.Album, context.Config, SupportedTag.Album);
+            WriteMp4AtlCompatibilityRaw(additional, AlbumUpperTag, atlTrack.Album, context.Config, SupportedTag.Album);
             WriteMp4AtlCompatibilityRaw(additional, "TALB", atlTrack.Album, context.Config, SupportedTag.Album);
         }
 
@@ -4122,7 +4124,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var releaseDate = context.SourceTrack.ReleaseDate.Value;
             var dateString = IsYearOnlyDateFormat(context.Config.Technical?.DateFormat)
                 ? releaseDate.Year.ToString(CultureInfo.InvariantCulture)
-                : releaseDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                : releaseDate.ToString(IsoDateFormat, CultureInfo.InvariantCulture);
             WriteMp4AtlRaw(additional, "DATE", dateString, context.Config, SupportedTag.ReleaseDate);
             WriteMp4AtlRaw(additional, "TDRC", dateString, context.Config, SupportedTag.ReleaseDate);
             WriteMp4AtlRaw(additional, "TDAT", releaseDate.ToString("ddMM", CultureInfo.InvariantCulture), context.Config, SupportedTag.ReleaseDate);
@@ -4138,7 +4140,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 && context.SourceTrack.TrackTotal is > 0
                 ? context.SourceTrack.TrackTotal
                 : null;
-            WriteMp4AtlRaw(additional, "TRACKNUMBER", trackNumber.ToString(CultureInfo.InvariantCulture), context.Config, SupportedTag.TrackNumber);
+            WriteMp4AtlRaw(additional, TrackNumberUpperTag, trackNumber.ToString(CultureInfo.InvariantCulture), context.Config, SupportedTag.TrackNumber);
             WriteMp4AtlRaw(additional, "TRCK", FormatTrackOrDiscSequence(trackNumber, total, context.Config), context.Config, SupportedTag.TrackNumber);
         }
 
@@ -4377,29 +4379,29 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         switch (normalized.ToUpperInvariant())
         {
             case "©NAM":
-            case "TITLE":
+            case TitleUpperTag:
                 track.Title = value;
                 return;
             case "©ART":
-            case "ARTIST":
+            case ArtistUpperTag:
             case "ARTISTS":
                 track.Artist = value;
                 return;
             case "©ALB":
-            case "ALBUM":
+            case AlbumUpperTag:
                 track.Album = value;
                 return;
             case "AART":
-            case "ALBUMARTIST":
+            case AlbumArtistUpperTag:
             case "ALBUM ARTIST":
                 track.AlbumArtist = value;
                 return;
             case "©WRT":
-            case "COMPOSER":
+            case ComposerUpperTag:
                 track.Composer = value;
                 return;
             case "©GEN":
-            case "GENRE":
+            case Mp4GenreTag:
                 track.Genre = value;
                 return;
             case "ISRC":
@@ -4699,7 +4701,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             titleValue = $"{titleValue} ({context.SourceTrack.Version})";
         }
 
-        SetField(tagWriteContext, new TagFieldBinding("TIT2", "TITLE", "©nam", SupportedTag.Title), new List<string> { titleValue });
+        SetField(tagWriteContext, new TagFieldBinding("TIT2", TitleUpperTag, "©nam", SupportedTag.Title), new List<string> { titleValue });
     }
 
     private static void WriteVersionTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -4725,7 +4727,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetField(tagWriteContext, new TagFieldBinding("TPE1", "ARTIST", "©ART", SupportedTag.Artist), artistValues);
+        SetField(tagWriteContext, new TagFieldBinding("TPE1", ArtistUpperTag, "©ART", SupportedTag.Artist), artistValues);
     }
 
     private static void WriteAlbumArtistTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -4738,7 +4740,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var albumArtistValues = ResolveAlbumArtistValues(context.CoreTrack);
         SetField(
             tagWriteContext,
-            new TagFieldBinding("TPE2", "ALBUMARTIST", "aART", SupportedTag.AlbumArtist),
+            new TagFieldBinding("TPE2", AlbumArtistUpperTag, "aART", SupportedTag.AlbumArtist),
             albumArtistValues);
     }
 
@@ -4749,7 +4751,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetField(tagWriteContext, new TagFieldBinding("TALB", "ALBUM", "©alb", SupportedTag.Album), new List<string> { context.CoreTrack.Album.Title });
+        SetField(tagWriteContext, new TagFieldBinding("TALB", AlbumUpperTag, "©alb", SupportedTag.Album), new List<string> { context.CoreTrack.Album.Title });
     }
 
     private static void WriteKeyTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -4760,7 +4762,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var keyValue = context.Config.Camelot ? ToCamelot(context.SourceTrack.Key) : context.SourceTrack.Key;
-        SetField(tagWriteContext, new TagFieldBinding("TKEY", "INITIALKEY", "initialkey", SupportedTag.Key), new List<string> { keyValue });
+        SetField(tagWriteContext, new TagFieldBinding("TKEY", "INITIALKEY", InitialKeyRawTag, SupportedTag.Key), new List<string> { keyValue });
     }
 
     private static void WriteBpmTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -5168,7 +5170,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var values = ResolveOtherValues(context.SourceTrack, ComposerTag, "COMPOSER", "TCOM");
+        var values = ResolveOtherValues(context.SourceTrack, ComposerTag, ComposerUpperTag, "TCOM");
         if (values.Count == 0)
         {
             return;
@@ -5373,7 +5375,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var baseFileName = BuildAlbumArtworkBaseFileName(context.SourceTrack, context.Settings);
         if (string.IsNullOrWhiteSpace(baseFileName))
         {
-            baseFileName = "cover";
+            baseFileName = CoverTag;
         }
 
         if (context.Config.OrganizeSidecarsIntoTemplateFolders == true)
@@ -5459,7 +5461,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var baseFileName = BuildAlbumArtworkBaseFileName(sourceTrack, settings);
         if (string.IsNullOrWhiteSpace(baseFileName))
         {
-            baseFileName = "cover";
+            baseFileName = CoverTag;
         }
 
         var coverPath = Path.Join(pathInfo.CoverPath, $"{baseFileName}.jpg");
@@ -5609,7 +5611,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var preferredNames = new[]
         {
-            "cover",
+            CoverTag,
             "folder",
             "front",
             AlbumTag,
@@ -6052,10 +6054,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         return supportedTag switch
         {
-            SupportedTag.Title => tag.GetField("TITLE").Length > 0,
-            SupportedTag.Artist => tag.GetField("ARTIST").Length > 0,
-            SupportedTag.AlbumArtist => tag.GetField("ALBUMARTIST").Length > 0,
-            SupportedTag.Album => tag.GetField("ALBUM").Length > 0,
+            SupportedTag.Title => tag.GetField(TitleUpperTag).Length > 0,
+            SupportedTag.Artist => tag.GetField(ArtistUpperTag).Length > 0,
+            SupportedTag.AlbumArtist => tag.GetField(AlbumArtistUpperTag).Length > 0,
+            SupportedTag.Album => tag.GetField(AlbumUpperTag).Length > 0,
             SupportedTag.Key => tag.GetField("INITIALKEY").Length > 0,
             SupportedTag.BPM => tag.GetField("BPM").Length > 0,
             SupportedTag.Danceability => TagRawProbe.HasVorbisRaw(tag, DanceabilityTag),
@@ -6074,14 +6076,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.ISRC => tag.GetField("ISRC").Length > 0,
             SupportedTag.CatalogNumber => tag.GetField(CatalogNumberUpperTag).Length > 0,
             SupportedTag.Version => tag.GetField("SUBTITLE").Length > 0,
-            SupportedTag.TrackNumber => tag.GetField("TRACKNUMBER").Length > 0,
+            SupportedTag.TrackNumber => tag.GetField(TrackNumberUpperTag).Length > 0,
             SupportedTag.TrackTotal => tag.GetField(TrackTotalRawTag).Length > 0,
             SupportedTag.DiscNumber => tag.GetField("DISCNUMBER").Length > 0,
             SupportedTag.Duration => tag.GetField(LengthUpperTag).Length > 0,
             SupportedTag.Remixer => tag.GetField(RemixerUpperTag).Length > 0,
             SupportedTag.Mood => tag.GetField("MOOD").Length > 0,
             SupportedTag.ReleaseDate => tag.GetField("DATE").Length > 0,
-            SupportedTag.PublishDate => tag.GetField("ORIGINALDATE").Length > 0,
+            SupportedTag.PublishDate => tag.GetField(OriginalDateUpperTag).Length > 0,
             SupportedTag.URL => tag.GetField(WwwAudioFileTag).Length > 0,
             SupportedTag.TrackId => tag.GetField($"{platformId.ToUpperInvariant()}_TRACK_ID").Length > 0,
             SupportedTag.ReleaseId => tag.GetField($"{platformId.ToUpperInvariant()}_RELEASE_ID").Length > 0,
@@ -6128,11 +6130,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Duration => Mp4TagHelper.HasRaw(file, LengthUpperTag),
             SupportedTag.Remixer => Mp4TagHelper.HasRaw(file, RemixerUpperTag),
             SupportedTag.Mood => Mp4TagHelper.HasRaw(file, "MOOD"),
-            SupportedTag.Key => Mp4TagHelper.HasRaw(file, "initialkey"),
+            SupportedTag.Key => Mp4TagHelper.HasRaw(file, InitialKeyRawTag),
             SupportedTag.ReleaseDate =>
                 Mp4TagHelper.HasRaw(file, "©day")
                 || Mp4TagHelper.HasRaw(file, "DATE"),
-            SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, "ORIGINALDATE"),
+            SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, OriginalDateUpperTag),
             SupportedTag.URL => Mp4TagHelper.HasRaw(file, WwwAudioFileTag),
             SupportedTag.TrackId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
             SupportedTag.ReleaseId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
@@ -6303,7 +6305,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 "id3" => "TKEY",
                 VorbisFormat => "INITIALKEY",
-                _ => "initialkey"
+                _ => InitialKeyRawTag
             },
             SupportedTag.Style => format switch
             {
@@ -6532,7 +6534,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Year: date.Year.ToString(CultureInfo.InvariantCulture),
             DateString: useYearOnly
                 ? date.Year.ToString(CultureInfo.InvariantCulture)
-                : date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+                : date.ToString(IsoDateFormat, CultureInfo.InvariantCulture));
 
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
@@ -6616,7 +6618,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string dateString)
     {
         var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
-        var field = kind == ReleaseDateTag ? "DATE" : "ORIGINALDATE";
+        var field = kind == ReleaseDateTag ? "DATE" : OriginalDateUpperTag;
         if (!ShouldOverwriteTag(config, tag) && TagRawProbe.HasVorbisRaw(vorbis, field))
         {
             return;
@@ -6658,13 +6660,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        if (!ShouldOverwriteTag(config, tag) && Mp4TagHelper.HasRaw(file, "ORIGINALDATE"))
+        if (!ShouldOverwriteTag(config, tag) && Mp4TagHelper.HasRaw(file, OriginalDateUpperTag))
         {
             return;
         }
 
         var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
-        TrySetAppleDashBox(apple, "ORIGINALDATE", new[] { dateString });
+        TrySetAppleDashBox(apple, OriginalDateUpperTag, new[] { dateString });
     }
 
     private static bool IsYearOnlyDateFormat(string? dateFormat)
@@ -6730,7 +6732,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         bool isDisc)
     {
         var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
-        var field = isDisc ? "DISCNUMBER" : "TRACKNUMBER";
+        var field = isDisc ? "DISCNUMBER" : TrackNumberUpperTag;
         if (!ShouldOverwriteTag(config, tag) && TagRawProbe.HasVorbisRaw(vorbis, field))
         {
             return;
@@ -7545,12 +7547,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         return normalized.ToUpperInvariant() switch
         {
-            "©NAM" or "TITLE" => !string.IsNullOrWhiteSpace(file.Tag.Title),
-            "©ART" or "ARTIST" or "ARTISTS" => file.Tag.Performers?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
-            "AART" or "ALBUMARTIST" => file.Tag.AlbumArtists?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
-            "©ALB" or "ALBUM" => !string.IsNullOrWhiteSpace(file.Tag.Album),
+            "©NAM" or TitleUpperTag => !string.IsNullOrWhiteSpace(file.Tag.Title),
+            "©ART" or ArtistUpperTag or "ARTISTS" => file.Tag.Performers?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
+            "AART" or AlbumArtistUpperTag => file.Tag.AlbumArtists?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
+            "©ALB" or AlbumUpperTag => !string.IsNullOrWhiteSpace(file.Tag.Album),
             "ISRC" => !string.IsNullOrWhiteSpace(file.Tag.ISRC),
-            "©GEN" or "GENRE" => file.Tag.Genres?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
+            "©GEN" or Mp4GenreTag => file.Tag.Genres?.Any(value => !string.IsNullOrWhiteSpace(value)) == true,
             "TRACK" or "TRKN" => file.Tag.Track > 0 || file.Tag.TrackCount > 0,
             "DISC" or "DISK" => file.Tag.Disc > 0 || file.Tag.DiscCount > 0,
             "LYRICS" or "©LYR" => !string.IsNullOrWhiteSpace(file.Tag.Lyrics),
@@ -7574,29 +7576,29 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             switch (normalized.ToUpperInvariant())
             {
                 case "©NAM":
-                case "TITLE":
+                case TitleUpperTag:
                     AddIfPresent(values, atlTrack.Title);
                     break;
                 case "©ART":
-                case "ARTIST":
+                case ArtistUpperTag:
                 case "ARTISTS":
                     AddIfPresent(values, atlTrack.Artist);
                     break;
                 case "©ALB":
-                case "ALBUM":
+                case AlbumUpperTag:
                     AddIfPresent(values, atlTrack.Album);
                     break;
                 case "AART":
-                case "ALBUMARTIST":
+                case AlbumArtistUpperTag:
                 case "ALBUM ARTIST":
                     AddIfPresent(values, atlTrack.AlbumArtist);
                     break;
                 case "©WRT":
-                case "COMPOSER":
+                case ComposerUpperTag:
                     AddIfPresent(values, atlTrack.Composer);
                     break;
                 case "©GEN":
-                case "GENRE":
+                case Mp4GenreTag:
                     AddIfPresent(values, atlTrack.Genre);
                     break;
                 case "ISRC":
@@ -7607,7 +7609,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 case "©DAY":
                     if (atlTrack.Date.HasValue)
                     {
-                        AddIfPresent(values, atlTrack.Date.Value.ToString("yyyy-MM-dd"));
+                        AddIfPresent(values, atlTrack.Date.Value.ToString(IsoDateFormat));
                     }
 
                     break;
@@ -7948,7 +7950,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
         {
-            return "COMPOSER";
+            return ComposerUpperTag;
         }
 
         return "©wrt";

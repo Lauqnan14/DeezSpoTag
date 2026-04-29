@@ -10,6 +10,57 @@ namespace DeezSpoTag.Tests;
 public sealed class EngineAudioPostDownloadHelperFilenameStemTests
 {
     [Fact]
+    public void GeneratePaths_UsesTrackTemplateForAlbumDownloads()
+    {
+        var settings = CreateSettings();
+        settings.TracknameTemplate = "%artist% - %title%";
+        settings.AlbumTracknameTemplate = "%tracknumber% - %title%";
+
+        var artist = new DeezSpoTag.Core.Models.Artist("Cardi B");
+        var track = new DeezSpoTag.Core.Models.Track
+        {
+            Title = "I Like It",
+            MainArtist = artist,
+            TrackNumber = 1,
+            Album = new DeezSpoTag.Core.Models.Album("Invasion of Privacy")
+            {
+                MainArtist = artist,
+                TrackTotal = 13
+            }
+        };
+
+        var processor = new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance);
+        var result = processor.GeneratePaths(track, "album", settings);
+
+        Assert.Equal("Cardi B - I Like It", result.Filename);
+    }
+
+    [Fact]
+    public void GeneratePaths_DoesNotStackArtistPrefix_WhenTemplateIsReapplied()
+    {
+        var settings = CreateSettings();
+        settings.TracknameTemplate = "%artist% - %title%";
+
+        var artist = new DeezSpoTag.Core.Models.Artist("Cardi B");
+        var track = new DeezSpoTag.Core.Models.Track
+        {
+            Title = "Cardi B - I Like It",
+            MainArtist = artist,
+            TrackNumber = 1,
+            Album = new DeezSpoTag.Core.Models.Album("Invasion of Privacy")
+            {
+                MainArtist = artist,
+                TrackTotal = 13
+            }
+        };
+
+        var processor = new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance);
+        var result = processor.GeneratePaths(track, "track", settings);
+
+        Assert.Equal("Cardi B - I Like It", result.Filename);
+    }
+
+    [Fact]
     public void BuildTrackContext_DoesNotTrimDottedTitleAsFileExtension()
     {
         var settings = CreateSettings();

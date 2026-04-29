@@ -101,4 +101,37 @@ public sealed class DownloadEngineSettingsHelperTests
 
         Assert.Equal(DownloadTagSourceHelper.DeezerSource, resolved);
     }
+
+    [Fact]
+    public void ApplyResolvedProfileToSettings_RuntimeTrackTemplate_DoesNotOverrideAlbumOrPlaylistTemplates()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            TracknameTemplate = "%artist% - %title%",
+            AlbumTracknameTemplate = "%tracknumber% - %title%",
+            PlaylistTracknameTemplate = "%playlist_position% - %title%"
+        };
+        var profile = new DownloadTagProfileSettings(
+            TagSettings: new TagSettings(),
+            DownloadTagSource: DownloadTagSourceHelper.DeezerSource,
+            FolderStructure: null,
+            Technical: null,
+            RuntimeOverrides: new DownloadProfileRuntimeOverrides(
+                TracknameTemplate: "%artists% - %title%",
+                SaveArtwork: null,
+                DlAlbumcoverForPlaylist: null,
+                SaveArtworkArtist: null,
+                CoverImageTemplate: null,
+                ArtistImageTemplate: null,
+                LocalArtworkFormat: null,
+                EmbedMaxQualityCover: null,
+                JpegImageQuality: null));
+
+        DownloadEngineSettingsHelper.ApplyResolvedProfileToSettings(settings, profile, currentEngine: "deezer");
+
+        Assert.Equal("%artists% - %title%", settings.TracknameTemplate);
+        Assert.Equal("%tracknumber% - %title%", settings.AlbumTracknameTemplate);
+        Assert.Equal("%playlist_position% - %title%", settings.PlaylistTracknameTemplate);
+    }
 }

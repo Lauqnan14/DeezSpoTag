@@ -212,6 +212,11 @@ public class AutoTagLibraryOrganizer
             settings.PlaylistNameTemplate = options.PlaylistNameTemplateOverride.Trim();
         }
 
+        if (!string.IsNullOrWhiteSpace(options.TracknameTemplateOverride))
+        {
+            settings.TracknameTemplate = options.TracknameTemplateOverride.Trim();
+        }
+
         if (!string.IsNullOrWhiteSpace(options.IllegalCharacterReplacerOverride))
         {
             settings.IllegalCharacterReplacer = options.IllegalCharacterReplacerOverride.Trim();
