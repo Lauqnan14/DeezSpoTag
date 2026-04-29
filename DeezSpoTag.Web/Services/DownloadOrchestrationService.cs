@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -33,7 +34,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
         TaggingProfile? AutomationProfile,
         AutoTagStages Stages,
         string DownloadRootPath,
-        IReadOnlyList<string> PendingQueueUuids);
+        IReadOnlyList<string> PendingQueueUuids,
+        IReadOnlyDictionary<string, DateTimeOffset> PendingCompletionMarkers);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
 
@@ -65,6 +67,10 @@ public sealed class DownloadOrchestrationService : BackgroundService
     {
         public Dictionary<string, DateTimeOffset> LastRunByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> LastScheduleByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+    private sealed class ProcessedCompletionState
+    {
+        public Dictionary<string, DateTimeOffset> ProcessedByQueueItem { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private static readonly Regex ScheduleTokenRegex = new(
@@ -122,12 +128,16 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private readonly LibraryConfigStore _configStore;
     private readonly ILogger<DownloadOrchestrationService> _logger;
     private readonly string _enhancementSchedulePath;
+    private readonly string _processedCompletionPath;
     private readonly SemaphoreSlim _pipelineLock = new(1, 1);
     private readonly SemaphoreSlim _enhancementPauseLock = new(1, 1);
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(10);
     private readonly TimeSpan _downloadIdleDelay = TimeSpan.FromSeconds(15);
     private readonly object _enhancementResumeLock = new();
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _processedCompletionByQueueItem = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _processedCompletionStateLock = new();
+    private volatile bool _processedCompletionStateLoaded;
 
     private DateTimeOffset? _queueIdleSince;
     private DateTimeOffset _lastPipelineCompletedAt = DateTimeOffset.UtcNow;
@@ -166,6 +176,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         var autoTagDataDir = Path.Join(dataRoot, "autotag");
         Directory.CreateDirectory(autoTagDataDir);
         _enhancementSchedulePath = Path.Join(autoTagDataDir, "enhancement-schedule-state.json");
+        _processedCompletionPath = Path.Join(autoTagDataDir, "processed-completions.json");
     }
 
     public bool TaggingInProgress => _taggingInProgress || _autoTagService.HasRunningJobs();
@@ -424,6 +435,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
+        MarkCompletedItemsAsProcessed(context.PendingCompletionMarkers);
         await RunPipelineEnrichmentAsync(context, cancellationToken);
         if (!await EnsurePipelineStillIdleAsync(cancellationToken))
         {
@@ -538,7 +550,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 .Select(item => item.QueueUuid)
                 .Where(queueUuid => !string.IsNullOrWhiteSpace(queueUuid))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList());
+                .ToList(),
+            BuildCompletionMarkers(pendingItems));
     }
 
     private async Task RunPipelineEnrichmentAsync(PipelineRunContext context, CancellationToken cancellationToken)
@@ -2294,6 +2307,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         CancellationToken cancellationToken,
         IReadOnlyDictionary<long, FolderDto>? foldersById = null)
     {
+        EnsureProcessedCompletionStateLoaded();
         var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
         var completedItems = queueItems
             .Where(item =>
@@ -2305,6 +2319,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         var freshItems = completedItems
             .Where(item => item.UpdatedAt > _lastPipelineCompletedAt)
+            .Where(IsCompletedItemUnprocessed)
             .ToList();
         if (freshItems.Count > 0)
         {
@@ -2317,9 +2332,155 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         var recoveredItems = completedItems
+            .Where(IsCompletedItemUnprocessed)
             .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
             .ToList();
         return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
+    }
+
+    private bool IsCompletedItemUnprocessed(DownloadQueueItem item)
+    {
+        var marker = BuildCompletionMarker(item);
+        if (string.IsNullOrWhiteSpace(marker))
+        {
+            return false;
+        }
+
+        if (!_processedCompletionByQueueItem.TryGetValue(marker, out var processedAt))
+        {
+            return true;
+        }
+
+        return item.UpdatedAt > processedAt;
+    }
+
+    private static IReadOnlyDictionary<string, DateTimeOffset> BuildCompletionMarkers(IEnumerable<DownloadQueueItem> items)
+    {
+        var markers = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            var marker = BuildCompletionMarker(item);
+            if (string.IsNullOrWhiteSpace(marker))
+            {
+                continue;
+            }
+
+            if (!markers.TryGetValue(marker, out var existing) || item.UpdatedAt > existing)
+            {
+                markers[marker] = item.UpdatedAt;
+            }
+        }
+
+        return markers;
+    }
+
+    private void MarkCompletedItemsAsProcessed(IReadOnlyDictionary<string, DateTimeOffset> markers)
+    {
+        EnsureProcessedCompletionStateLoaded();
+        var changed = false;
+        foreach (var (marker, updatedAt) in markers)
+        {
+            if (string.IsNullOrWhiteSpace(marker))
+            {
+                continue;
+            }
+
+            if (!_processedCompletionByQueueItem.TryGetValue(marker, out var existing) || updatedAt > existing)
+            {
+                _processedCompletionByQueueItem[marker] = updatedAt;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            PruneProcessedCompletionMarkers();
+            SaveProcessedCompletionState();
+        }
+    }
+
+    private static string BuildCompletionMarker(DownloadQueueItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.QueueUuid))
+        {
+            return $"queue:{item.QueueUuid.Trim()}";
+        }
+
+        return item.Id > 0 ? $"id:{item.Id}" : string.Empty;
+    }
+
+    private void EnsureProcessedCompletionStateLoaded()
+    {
+        if (_processedCompletionStateLoaded)
+        {
+            return;
+        }
+
+        lock (_processedCompletionStateLock)
+        {
+            if (_processedCompletionStateLoaded)
+            {
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(_processedCompletionPath))
+                {
+                    var json = File.ReadAllText(_processedCompletionPath);
+                    var state = JsonSerializer.Deserialize<ProcessedCompletionState>(json, ScheduleJsonOptions);
+                    if (state?.ProcessedByQueueItem is { Count: > 0 })
+                    {
+                        _processedCompletionByQueueItem.Clear();
+                        foreach (var (key, value) in state.ProcessedByQueueItem)
+                        {
+                            if (!string.IsNullOrWhiteSpace(key))
+                            {
+                                _processedCompletionByQueueItem[key] = value;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Failed to load processed completion state.");
+            }
+            finally
+            {
+                _processedCompletionStateLoaded = true;
+            }
+        }
+    }
+
+    private void SaveProcessedCompletionState()
+    {
+        try
+        {
+            var snapshot = new ProcessedCompletionState
+            {
+                ProcessedByQueueItem = new Dictionary<string, DateTimeOffset>(_processedCompletionByQueueItem, StringComparer.OrdinalIgnoreCase)
+            };
+            var json = JsonSerializer.Serialize(snapshot, ScheduleJsonOptions);
+            File.WriteAllText(_processedCompletionPath, json);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to save processed completion state.");
+        }
+    }
+
+    private void PruneProcessedCompletionMarkers()
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-3);
+        var staleKeys = _processedCompletionByQueueItem
+            .Where(pair => pair.Value < cutoff)
+            .Select(pair => pair.Key)
+            .ToList();
+        foreach (var key in staleKeys)
+        {
+            _processedCompletionByQueueItem.Remove(key);
+        }
     }
 
     private async Task<List<DownloadQueueItem>> FilterAutoTagEligiblePendingItemsAsync(
