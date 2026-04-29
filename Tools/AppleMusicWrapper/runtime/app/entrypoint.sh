@@ -394,7 +394,12 @@ run_wrapper_with_state_tracking() {
   set_wrapper_runtime_flag "$response_type_file" ""
   set_wrapper_runtime_flag "$auth_active_file" "$login_attempt_active"
 
-  "$wrapper_binary" "$@" 2> >(
+  local stderr_fifo
+  stderr_fifo="$(mktemp -u /tmp/apple-wrapper-stderr-fifo.XXXXXX)"
+  rm -f "$stderr_fifo"
+  mkfifo "$stderr_fifo"
+
+  (
     while IFS= read -r line; do
       printf '%s\n' "$line" >&2
       case "$line" in
@@ -411,8 +416,11 @@ run_wrapper_with_state_tracking() {
           set_wrapper_runtime_flag "$response_type_file" "${line##*response type }"
           ;;
       esac
-    done
+    done < "$stderr_fifo"
   ) &
+  local parser_pid=$!
+
+  "$wrapper_binary" "$@" 2>"$stderr_fifo" &
   local wrapper_pid=$!
 
   while kill -0 "$wrapper_pid" 2>/dev/null; do
@@ -428,6 +436,8 @@ run_wrapper_with_state_tracking() {
   if ! wait "$wrapper_pid"; then
     exit_code=$?
   fi
+  wait "$parser_pid" || true
+  rm -f "$stderr_fifo"
 
   set_twofactor_state "$state_file" "not_waiting_for_2fa"
   set_wrapper_runtime_flag "$auth_active_file" "0"
