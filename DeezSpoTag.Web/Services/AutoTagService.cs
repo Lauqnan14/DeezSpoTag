@@ -2055,7 +2055,7 @@ public partial class AutoTagService
         var autoMove = earlyAutoMove ?? await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes);
         if (ShouldRunGenericOrganizer(job, configPath))
         {
-            AppendLog(job, "auto-move completed, organizer starting");
+            AppendLog(job, "post-processing organizer starting");
             await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary);
         }
         else
@@ -2156,11 +2156,17 @@ public partial class AutoTagService
         SaveJob(job);
         AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
 
-        var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
-        AppendLog(job, "tagging failed, auto-move starting");
-        var autoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
-        AppendLog(job, "auto-move completed, organizer starting");
-        await OrganizeJobAsync(job, path, configPath);
+        AppendLog(job, "tagging failed, evaluating post-failure auto-move");
+        var autoMove = await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes);
+        if (ShouldRunGenericOrganizer(job, configPath))
+        {
+            AppendLog(job, "post-processing organizer starting");
+            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary);
+        }
+        else
+        {
+            AppendLog(job, "generic organizer skipped (requires enhancement folderUniformity.enforceFolderStructure=true)");
+        }
         if (autoMove.Completed)
         {
             var plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
