@@ -563,7 +563,7 @@ public partial class AutoTagService
 
         if (!HasEligibleInputFiles(normalizedPath, configJson))
         {
-            return CreateNotStartedJob(
+            return CreateSkippedJob(
                 "No eligible audio files were found for this run.",
                 normalizedPath,
                 normalizedTrigger,
@@ -760,7 +760,7 @@ public partial class AutoTagService
         return blockedJob;
     }
 
-    private static AutoTagJob CreateNotStartedJob(
+    private AutoTagJob CreateSkippedJob(
         string message,
         string rootPath,
         string trigger,
@@ -768,9 +768,9 @@ public partial class AutoTagService
         string? profileId,
         string? profileName)
     {
-        return new AutoTagJob
+        var skippedJob = new AutoTagJob
         {
-            Id = string.Empty,
+            Id = Guid.NewGuid().ToString("N"),
             Status = "skipped",
             StartedAt = DateTimeOffset.UtcNow,
             FinishedAt = DateTimeOffset.UtcNow,
@@ -781,6 +781,12 @@ public partial class AutoTagService
             ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
             ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim()
         };
+
+        _jobs[skippedJob.Id] = skippedJob;
+        SaveJob(skippedJob);
+        TrySaveLastJobId(skippedJob.Id);
+        AppendActivityLog(skippedJob.Id, $"autotag skipped: {message}");
+        return skippedJob;
     }
 
     private async Task<string?> ValidateRunIntentScopeAsync(
