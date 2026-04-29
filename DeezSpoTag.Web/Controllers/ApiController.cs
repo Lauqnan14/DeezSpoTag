@@ -486,6 +486,7 @@ namespace DeezSpoTag.Web.Controllers
             [FromQuery] string id,
             [FromQuery] string type,
             [FromQuery] string? refresh = null,
+            [FromHeader(Name = CrossDeviceClientIdHeader)] string? sourceClientIdHeader = null,
             CancellationToken cancellationToken = default)
         {
             TracklistSongCacheEntry? cachedEntry = null;
@@ -505,7 +506,7 @@ namespace DeezSpoTag.Web.Controllers
 
                 var refreshRequested = IsTruthyQueryFlag(refresh);
                 var tracklistTypeKey = normalizedType.ToLowerInvariant();
-                var sourceClientId = NormalizeCrossDeviceClientId(Request.Headers[CrossDeviceClientIdHeader].ToString());
+                var sourceClientId = NormalizeCrossDeviceClientId(sourceClientIdHeader);
 
                 cachedEntry = await _tracklistSongCacheStore.TryGetAsync(tracklistTypeKey, normalizedId, cancellationToken);
                 if (!refreshRequested

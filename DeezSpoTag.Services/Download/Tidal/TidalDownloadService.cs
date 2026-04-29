@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using System.Xml;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download.Utils;
@@ -16,7 +17,12 @@ namespace DeezSpoTag.Services.Download.Tidal;
 public sealed class TidalDownloadService
 {
     private const string AudioKeyword = "audio";
-    private const string TidalPublicApiBaseUrl = "https://tidal.com/v1";
+    private const string TidalPublicApiHost = "tidal.com";
+    private const string TidalPublicApiBasePath = "v1";
+    private const string TidalListenHost = "listen.tidal.com";
+    private const string TidalListenTrackPathPrefix = "track";
+    // Sonar exception policy: this is the only allowed hardcoded token exception (public partner token).
+    [SuppressMessage("Security", "S6418", Justification = "Only allowed exception: public Tidal partner token, not a private credential.")]
     private const string TidalPublicToken = "txNoH4kkV41MfH25";
     private const string TidalPublicCountryCode = "US";
     private const string TidalPublicLocale = "en_US";
@@ -78,8 +84,6 @@ public sealed class TidalDownloadService
                 return await DownloadByUrlAsync(
                     request,
                     tidalUrl,
-                    embedMaxQualityCover,
-                    tagSettings,
                     progressCallback,
                     cancellationToken);
             }
@@ -112,7 +116,7 @@ public sealed class TidalDownloadService
                 return null;
             }
 
-            return $"https://listen.tidal.com/track/{trackInfo.Id}";
+            return BuildTidalTrackListenUrl(trackInfo.Id);
         }
         catch (InvalidOperationException ex)
         {
@@ -124,8 +128,6 @@ public sealed class TidalDownloadService
     private async Task<string> DownloadByUrlAsync(
         TidalDownloadRequest request,
         string tidalUrl,
-        bool embedMaxQualityCover,
-        DeezSpoTag.Core.Models.Settings.TagSettings? tagSettings,
         Func<double, double, Task>? progressCallback,
         CancellationToken cancellationToken)
     {
@@ -506,7 +508,10 @@ public sealed class TidalDownloadService
 
     private static string BuildTidalPublicApiUrl(string path, IDictionary<string, string>? query = null)
     {
-        var builder = new UriBuilder($"{TidalPublicApiBaseUrl}/{path.TrimStart('/')}");
+        var builder = new UriBuilder(Uri.UriSchemeHttps, TidalPublicApiHost)
+        {
+            Path = $"{TidalPublicApiBasePath}/{path.TrimStart('/')}"
+        };
         var allQuery = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["countryCode"] = TidalPublicCountryCode,
@@ -529,6 +534,14 @@ public sealed class TidalDownloadService
                 .Select(pair => $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"));
 
         return builder.Uri.ToString();
+    }
+
+    private static string BuildTidalTrackListenUrl(long trackId)
+    {
+        return new UriBuilder(Uri.UriSchemeHttps, TidalListenHost)
+        {
+            Path = $"{TidalListenTrackPathPrefix}/{trackId}"
+        }.Uri.ToString();
     }
 
     private async Task<string?> FetchManifestFromApiAsync(
