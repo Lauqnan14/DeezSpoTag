@@ -465,6 +465,34 @@ should_retry_login() {
   [[ "$response_type" == "4" ]]
 }
 
+should_retry_login_with_fallback() {
+  local transient_flag_file="$1"
+  local response_type_file="$2"
+  local attempt="$3"
+  local retry_attempts="$4"
+  local transient_flag="0"
+  local response_type=""
+
+  if should_retry_login "$transient_flag_file" "$response_type_file"; then
+    return 0
+  fi
+
+  if [[ -f "$transient_flag_file" ]]; then
+    transient_flag="$(tr -d '\r\n' < "$transient_flag_file")"
+  fi
+  if [[ -f "$response_type_file" ]]; then
+    response_type="$(tr -d '\r\n' < "$response_type_file")"
+  fi
+
+  # Defensive fallback: if wrapper stderr markers were not captured for a failed
+  # login run, allow one retry so transient parser timing does not hard-fail auth.
+  if (( retry_attempts > 0 )) && (( attempt == 0 )) && [[ "$transient_flag" != "1" && -z "$response_type" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 main() {
   local wrapper_binary
   wrapper_binary="$(resolve_wrapper_binary)"
@@ -548,7 +576,7 @@ main() {
         break
       fi
 
-      if should_retry_login "$transient_flag_file" "$response_type_file"; then
+      if should_retry_login_with_fallback "$transient_flag_file" "$response_type_file" "$attempt" "$retry_attempts"; then
         attempt=$((attempt + 1))
         log "detected transient Apple login failure; retrying wrapper login (${attempt}/${retry_attempts}) in ${retry_delay_seconds}s..."
         sleep "$retry_delay_seconds"
