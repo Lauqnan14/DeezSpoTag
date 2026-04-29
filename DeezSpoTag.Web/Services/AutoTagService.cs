@@ -1778,6 +1778,8 @@ public partial class AutoTagService
         try
         {
             var stages = await BuildStageConfigsAsync(job, configPath);
+            var includesEnrichmentStage = stages.Any(stage =>
+                string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase));
             var includesEnhancementStage = stages.Any(stage =>
                 string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase));
             RegisterStageRuntimeConfigPaths(runtimeConfigPaths, stages);
@@ -1812,6 +1814,7 @@ public partial class AutoTagService
                     job,
                     path,
                     configPath,
+                    includesEnrichmentStage,
                     includesEnhancementStage,
                     fileOutcomes,
                     execution.EarlyAutoMove);
@@ -1900,6 +1903,24 @@ public partial class AutoTagService
         }
 
         return new StageRunResult(true, earlyAutoMove);
+    }
+
+    private static List<string> ResolveContinuationPathsAfterAutoMove(string originalPath, AutoTagMoveSummary summary)
+    {
+        var roots = summary.DestinationRoots.Count > 0
+            ? summary.DestinationRoots
+            : new List<string> { originalPath };
+
+        var existingRoots = roots
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => Path.GetFullPath(path))
+            .Where(Directory.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return existingRoots.Count > 0
+            ? existingRoots
+            : new List<string> { originalPath };
     }
 
     private bool ShouldAutoMoveAfterEnrichmentStage(
@@ -2020,6 +2041,7 @@ public partial class AutoTagService
         AutoTagJob job,
         string path,
         string configPath,
+        bool includesEnrichmentStage,
         bool includesEnhancementStage,
         Dictionary<string, FileTagOutcome> fileOutcomes,
         AutoMoveExecutionResult? earlyAutoMove)
@@ -2028,7 +2050,7 @@ public partial class AutoTagService
         if (ShouldRunGenericOrganizer(job))
         {
             AppendLog(job, "auto-move completed, organizer starting");
-            await OrganizeJobAsync(job, path, configPath);
+            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary);
         }
         else
         {
@@ -2039,6 +2061,13 @@ public partial class AutoTagService
             path,
             configPath,
             includesEnhancementStage,
+            CancellationToken.None);
+        await RunManualEnrichmentArtworkMaintenanceAsync(
+            job,
+            path,
+            includesEnrichmentStage,
+            includesEnhancementStage,
+            autoMove.Summary,
             CancellationToken.None);
         var plexTriggeredByEnhancement = await TriggerPlexMetadataRefreshAfterEnhancementAsync(
             job,
@@ -2053,6 +2082,19 @@ public partial class AutoTagService
             job,
             autoMove.Completed && (plexTriggeredByEnhancement || plexRefreshRequestedAfterMove),
             CancellationToken.None);
+    }
+
+    private async Task OrganizeAfterAutoMoveAsync(
+        AutoTagJob job,
+        string path,
+        string configPath,
+        AutoTagMoveSummary autoMoveSummary)
+    {
+        var roots = ResolveContinuationPathsAfterAutoMove(path, autoMoveSummary);
+        foreach (var root in roots)
+        {
+            await OrganizeJobAsync(job, root, configPath);
+        }
     }
 
     private async Task<AutoMoveExecutionResult> RunFinalAutoMoveAsync(
@@ -2130,16 +2172,16 @@ public partial class AutoTagService
         var shouldRunEnrichment = ShouldRunEnrichmentForIntent(runIntent);
         var enrichmentSkipReason = string.Empty;
         if (shouldRunEnrichment
-            && TryBuildEnrichmentStage(
+            && TryBuildEnrichmentStages(
                 root,
                 platformCaps,
                 eligiblePlatforms,
                 new EnrichmentBuildContext(runIntent, job.Id),
-                out var enrichmentStage,
+                out var enrichmentStages,
                 out enrichmentSkipReason,
                 out var enrichmentStrippedKeys))
         {
-            stages.Add(enrichmentStage);
+            stages.AddRange(enrichmentStages);
             AppendStageSchemaLog(job, AutoTagLiterals.EnrichmentStage, enrichmentStrippedKeys);
         }
         else
@@ -2380,86 +2422,6 @@ public partial class AutoTagService
         return options;
     }
 
-    private bool TryBuildEnrichmentStage(
-        JsonObject baseRoot,
-        Dictionary<string, PlatformTagCapabilities> platformCaps,
-        IReadOnlyList<string> eligiblePlatforms,
-        EnrichmentBuildContext context,
-        out AutoTagStageConfig stage,
-        out string skipReason,
-        out List<string> strippedKeys)
-    {
-        stage = null!;
-        skipReason = "tags not configured";
-        strippedKeys = new List<string>();
-
-        var requested = ResolveEnrichmentRequestedTags(baseRoot, context.RunIntent);
-        if (requested.Count == 0)
-        {
-            return false;
-        }
-
-        var platforms = eligiblePlatforms.ToList();
-        if (platforms.Count == 0)
-        {
-            skipReason = "no eligible enrichment platforms enabled";
-            return false;
-        }
-
-        var excludedPlatform = string.Equals(
-            NormalizeRunIntent(context.RunIntent),
-            AutoTagLiterals.RunIntentDownloadEnrichment,
-            StringComparison.OrdinalIgnoreCase)
-            ? ResolveDownloadSourcePlatform(baseRoot)
-            : null;
-        if (!string.IsNullOrWhiteSpace(excludedPlatform))
-        {
-            platforms = platforms
-                .Where(platform => !string.Equals(platform, excludedPlatform, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-        if (platforms.Count == 0)
-        {
-            skipReason = string.IsNullOrWhiteSpace(excludedPlatform)
-                ? "no enrichment platforms enabled"
-                : $"no enrichment platforms enabled after excluding download source ({excludedPlatform})";
-            return false;
-        }
-
-        var filtered = FilterSupportedTags(requested, platforms, platformCaps);
-        if (filtered.Count == 0)
-        {
-            skipReason = "no supported enrichment tags for enabled platforms";
-            return false;
-        }
-
-        var stageRoot = CloneRoot(baseRoot);
-        WriteStringList(stageRoot, "tags", filtered);
-        WriteStringList(stageRoot, AutoTagLiterals.PlatformsKey, platforms);
-        var platformCount = ReadStringList(stageRoot, AutoTagLiterals.PlatformsKey).Count;
-        stageRoot[AutoTagLiterals.MultiPlatformKey] = platformCount > 1;
-        strippedKeys = ApplyStageSchema(stageRoot, EnrichmentStageAllowedKeys);
-
-        var configJson = stageRoot.ToJsonString(new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true
-        });
-        var configPath = WriteRuntimeConfigFile(context.JobId, AutoTagLiterals.EnrichmentStage, configJson);
-        stage = new AutoTagStageConfig(
-            AutoTagLiterals.EnrichmentStage,
-            configPath,
-            filtered.Count,
-            ComputeConfigHash(configJson));
-        return true;
-    }
-
-    private static List<string> ResolveEnrichmentRequestedTags(JsonObject baseRoot, string? runIntent)
-    {
-        _ = runIntent;
-        return ReadStringList(baseRoot, "tags");
-    }
-
     private static List<string> ResolveEnhancementRequestedTags(JsonObject baseRoot)
     {
         return ReadStringList(baseRoot, "gapFillTags");
@@ -2615,6 +2577,7 @@ public partial class AutoTagService
             "coverImageTemplate",
             "artistImageTemplate",
             "localArtworkFormat",
+            "organizeSidecarsIntoTemplateFolders",
             "embedMaxQualityCover",
             "jpegImageQuality",
             "runTrigger",
@@ -3046,7 +3009,7 @@ public partial class AutoTagService
         {
             _logger.LogInformation("AutoTag job JobId: organizer started for RootPath");
             AppendLog(job, "organizer started");
-            var organizerOptions = LoadOrganizerOptions(configPath);
+            var organizerOptions = await LoadOrganizerOptionsAsync(job, configPath);
             await _libraryOrganizer.OrganizePathAsync(rootPath, organizerOptions, message => AppendLog(job, message));
             _logger.LogInformation("AutoTag job JobId: organizer finished for RootPath");
             AppendLog(job, "organizer finished");
@@ -3132,6 +3095,7 @@ public partial class AutoTagService
     private async Task<AutoTagOrganizerOptions> LoadOrganizerOptionsAsync(AutoTagJob job, string configPath)
     {
         var options = LoadOrganizerOptions(configPath);
+        await ApplyJobProfileOrganizerOverridesAsync(job, options, CancellationToken.None);
         if (!string.IsNullOrWhiteSpace(options.MoveUntaggedPath))
         {
             return options;
@@ -3149,6 +3113,41 @@ public partial class AutoTagService
         }
 
         return options;
+    }
+
+    private async Task ApplyJobProfileOrganizerOverridesAsync(
+        AutoTagJob job,
+        AutoTagOrganizerOptions options,
+        CancellationToken cancellationToken)
+    {
+        var profile = await ResolveJobProfileAsync(job, cancellationToken);
+        if (profile != null)
+        {
+            AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(options, profile);
+            return;
+        }
+
+        AutoTagOrganizerProfileOverlay.ApplySettingsOverrides(options, _settingsService.LoadSettings());
+    }
+
+    private async Task<TaggingProfile?> ResolveJobProfileAsync(AutoTagJob job, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(job.ProfileId) && string.IsNullOrWhiteSpace(job.ProfileName))
+        {
+            return null;
+        }
+
+        try
+        {
+            var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: false, cancellationToken);
+            return AutoTagProfileResolutionService.ResolveProfileReference(state.Profiles, job.ProfileId)
+                ?? AutoTagProfileResolutionService.ResolveProfileReference(state.Profiles, job.ProfileName);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to resolve AutoTag profile for organizer overrides.");
+            return null;
+        }
     }
 
     private async Task<string?> TryResolveManualFailedMovePathAsync()

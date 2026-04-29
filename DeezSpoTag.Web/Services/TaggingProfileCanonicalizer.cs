@@ -119,21 +119,21 @@ public static class TaggingProfileCanonicalizer
         if (!hasEnrichmentTags && seedFromTagConfigWhenMissing)
         {
             enrichmentTags = BuildTagListFromConfig(baseConfig, includeAutoTagSource: true);
-            changed |= WriteTagArray(data, enrichmentKey, enrichmentTags);
+            changed |= WriteAutoTagArray(data, enrichmentKey, enrichmentTags);
         }
         else if (hasEnrichmentTags)
         {
-            changed |= WriteTagArray(data, enrichmentKey, enrichmentTags);
+            changed |= WriteAutoTagArray(data, enrichmentKey, enrichmentTags);
         }
 
         var hasEnhancementTags = TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
         if (hasEnhancementTags)
         {
-            changed |= WriteTagArray(data, enhancementKey, enhancementTags);
+            changed |= WriteAutoTagArray(data, enhancementKey, enhancementTags);
         }
         else if (seedFromTagConfigWhenMissing)
         {
-            changed |= WriteTagArray(data, enhancementKey, enrichmentTags);
+            changed |= WriteAutoTagArray(data, enhancementKey, enrichmentTags);
         }
 
         var effectiveConfig = BuildTagConfig(baseConfig, data);
@@ -163,9 +163,9 @@ public static class TaggingProfileCanonicalizer
         var downloadTags = BuildTagListFromConfig(profile.TagConfig, includeDownloadSource: true);
         var enrichmentTags = BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true);
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), downloadTags);
-        changed |= WriteTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), enrichmentTags);
+        changed |= WriteAutoTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), enrichmentTags);
         TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
-        changed |= WriteTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
+        changed |= WriteAutoTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
         return changed;
     }
 
@@ -187,8 +187,8 @@ public static class TaggingProfileCanonicalizer
         TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
 
         WriteTagArray(data, downloadKey, downloadTags);
-        WriteTagArray(data, enrichmentKey, enrichmentTags);
-        WriteTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
+        WriteAutoTagArray(data, enrichmentKey, enrichmentTags);
+        WriteAutoTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
 
         return data;
     }
@@ -323,7 +323,21 @@ public static class TaggingProfileCanonicalizer
 
     private static bool WriteTagArray(Dictionary<string, JsonElement> data, string key, IEnumerable<string> tags)
     {
-        var normalized = NormalizeTagList(tags).ToArray();
+        return WriteTagArray(data, key, tags, NormalizeTagKey);
+    }
+
+    private static bool WriteAutoTagArray(Dictionary<string, JsonElement> data, string key, IEnumerable<string> tags)
+    {
+        return WriteTagArray(data, key, tags, NormalizeAutoTagSelectionKey);
+    }
+
+    private static bool WriteTagArray(
+        Dictionary<string, JsonElement> data,
+        string key,
+        IEnumerable<string> tags,
+        Func<string?, string> normalizer)
+    {
+        var normalized = NormalizeTagList(tags, normalizer).ToArray();
         if (data.TryGetValue(key, out var existing)
             && existing.ValueKind == JsonValueKind.Array)
         {
@@ -345,12 +359,15 @@ public static class TaggingProfileCanonicalizer
     }
 
     private static List<string> NormalizeTagList(IEnumerable<string> tags)
+        => NormalizeTagList(tags, NormalizeTagKey);
+
+    private static List<string> NormalizeTagList(IEnumerable<string> tags, Func<string?, string> normalizer)
     {
         var result = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var raw in tags)
         {
-            var normalized = NormalizeTagKey(raw);
+            var normalized = normalizer(raw);
             if (string.IsNullOrWhiteSpace(normalized) || !seen.Add(normalized))
             {
                 continue;
@@ -373,6 +390,17 @@ public static class TaggingProfileCanonicalizer
         return TagLookup.TryGetValue(key, out var descriptor)
             ? descriptor.CanonicalKey
             : key;
+    }
+
+    private static string NormalizeAutoTagSelectionKey(string? raw)
+    {
+        return NormalizeTagKey(raw) switch
+        {
+            "cover" => "albumArt",
+            "length" => "duration",
+            "lyrics" => "unsyncedLyrics",
+            var key => key
+        };
     }
 
     private static List<string> BuildTagListFromConfig(

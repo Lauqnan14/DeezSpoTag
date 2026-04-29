@@ -18,7 +18,7 @@ public sealed class TaggingProfileCanonicalizerTests
     private static readonly string[] LegacyAliasDownloadTags = { "duration", "albumArt", "upc", "unsyncedLyrics" };
     private static readonly string[] LegacyAliasAutoTags = { "duration", "unsyncedLyrics" };
     private static readonly string[] ExpectedNormalizedDownloadTags = { "length", "cover", "barcode", "lyrics" };
-    private static readonly string[] ExpectedNormalizedAutoTags = { "length", "lyrics" };
+    private static readonly string[] ExpectedNormalizedAutoTags = { "duration", "unsyncedLyrics" };
     private static readonly string[] StaleDownloadTags = { "artist", "album" };
     private static readonly string[] StaleAutoTags = { "genre" };
     private static readonly string[] StaleEnhancementTags = { "label" };
@@ -116,6 +116,31 @@ public sealed class TaggingProfileCanonicalizerTests
         Assert.Equal(TagSource.DownloadSource, profile.TagConfig.Cover);
         Assert.Equal(TagSource.DownloadSource, profile.TagConfig.Barcode);
         Assert.Equal(TagSource.Both, profile.TagConfig.UnsyncedLyrics);
+    }
+
+    [Fact]
+    public void Canonicalize_PreservesAutoTagUiKeysForAlbumArtAndDuration()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["tags"] = JsonSerializer.SerializeToElement(new[] { "albumArt", "duration" }),
+                    ["gapFillTags"] = JsonSerializer.SerializeToElement(new[] { "albumArt", "duration" })
+                }
+            }
+        };
+
+        var changed = TaggingProfileCanonicalizer.Canonicalize(profile, seedFromTagConfigWhenMissing: true);
+
+        Assert.True(changed);
+        Assert.Equal(new[] { "albumArt", "duration" }, ReadStringArray(profile.AutoTag.Data["tags"]));
+        Assert.Equal(new[] { "albumArt", "duration" }, ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
+        Assert.Equal(TagSource.AutoTagPlatform, profile.TagConfig.Cover);
+        Assert.Equal(TagSource.AutoTagPlatform, profile.TagConfig.Duration);
     }
 
     [Fact]

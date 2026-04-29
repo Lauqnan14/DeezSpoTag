@@ -427,6 +427,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             MultipleMatches = config.MultipleMatches
         };
         var settings = LoadRuntimeSettings(config.Technical, config);
+        settings.DownloadLocation = targetPath;
         var shazamBehavior = ResolveShazamEnrichmentBehavior(config);
         var plan = new AutoTagRunPlan
         {
@@ -2621,6 +2622,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             CoverImageTemplate = raw.CoverImageTemplate,
             ArtistImageTemplate = raw.ArtistImageTemplate,
             LocalArtworkFormat = raw.LocalArtworkFormat,
+            OrganizeSidecarsIntoTemplateFolders = raw.OrganizeSidecarsIntoTemplateFolders,
             EmbedMaxQualityCover = raw.EmbedMaxQualityCover,
             JpegImageQuality = raw.JpegImageQuality,
             Technical = raw.Technical,
@@ -3528,8 +3530,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         NormalizeTrackArtistsForTagging(track, effectiveTagSettings.SingleAlbumArtist);
         var coreTrack = BuildCoreTrack(track, separator, effectiveTagSettings.SingleAlbumArtist, settings);
         string? tempCoverPath = null;
+        var shouldPrepareTemplateArtworkSidecar = ShouldPrepareTemplateArtworkSidecar(config);
 
-        if (effectiveTagSettings.Cover && !string.IsNullOrWhiteSpace(track.Art))
+        if ((effectiveTagSettings.Cover || shouldPrepareTemplateArtworkSidecar) && !string.IsNullOrWhiteSpace(track.Art))
         {
             tempCoverPath = await DownloadCoverAsync(track.Art, token);
         }
@@ -3555,6 +3558,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 TempCoverPath = tempCoverPath
             },
             token);
+        EnsureTemplateFoldersAndArtworkSidecar(
+            track,
+            coreTrack,
+            config,
+            settings,
+            tempCoverPath);
         if (!IsMp4Family(Path.GetExtension(filePath)))
         {
             await ApplyCustomTagsAsync(
@@ -4319,7 +4328,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var coverPath = Path.Join(Path.GetDirectoryName(context.FilePath) ?? "", "cover.jpg");
+        var coverPath = BuildAlbumArtworkSidecarPath(context);
         if (!IOFile.Exists(coverPath))
         {
             IOFile.Copy(context.TempCoverPath, coverPath, overwrite: false);
@@ -4561,6 +4570,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             CoreTrack = request.CoreTrack,
             EffectiveTagSettings = request.EffectiveTagSettings,
             Config = request.Config,
+            Settings = request.Settings,
             PlatformId = request.PlatformId,
             Separator = request.Separator,
             TempCoverPath = request.TempCoverPath,
@@ -5351,15 +5361,113 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var coverPath = Path.Join(Path.GetDirectoryName(context.FilePath) ?? "", "cover.jpg");
+        var coverPath = BuildAlbumArtworkSidecarPath(context);
         if (!IOFile.Exists(coverPath))
         {
             IOFile.Copy(tempCoverPath, coverPath, overwrite: false);
         }
     }
 
+    private static string BuildAlbumArtworkSidecarPath(TagWriteExecutionContext context)
+    {
+        var baseFileName = BuildAlbumArtworkBaseFileName(context.SourceTrack, context.Settings);
+        if (string.IsNullOrWhiteSpace(baseFileName))
+        {
+            baseFileName = "cover";
+        }
+
+        if (context.Config.OrganizeSidecarsIntoTemplateFolders == true)
+        {
+            var pathInfo = BuildTemplatePathInfo(context.CoreTrack, context.Settings);
+            if (!string.IsNullOrWhiteSpace(pathInfo.CoverPath))
+            {
+                Directory.CreateDirectory(pathInfo.CoverPath);
+                return Path.Join(pathInfo.CoverPath, $"{baseFileName}.jpg");
+            }
+        }
+
+        return Path.Join(Path.GetDirectoryName(context.FilePath) ?? "", $"{baseFileName}.jpg");
+    }
+
+    private static TrackPathInfo BuildTemplatePathInfo(
+        Track coreTrack,
+        DeezSpoTagSettings settings)
+    {
+        var downloadType = string.IsNullOrWhiteSpace(coreTrack.Album?.Title) ? "track" : "album";
+        var pathInfo = PathTemplateGenerator.GeneratePath(coreTrack, downloadType, settings);
+        if (!string.IsNullOrWhiteSpace(pathInfo.CoverPath)
+            || !settings.CreateAlbumFolder
+            || string.IsNullOrWhiteSpace(coreTrack.Album?.Title))
+        {
+            return pathInfo;
+        }
+
+        var albumParentPath = !string.IsNullOrWhiteSpace(pathInfo.ArtistPath)
+            ? pathInfo.ArtistPath
+            : settings.DownloadLocation ?? ".";
+        var albumName = PathTemplateGenerator.GenerateAlbumName(
+            settings.AlbumNameTemplate,
+            coreTrack.Album,
+            settings,
+            coreTrack.Playlist);
+        if (string.IsNullOrWhiteSpace(albumName))
+        {
+            return pathInfo;
+        }
+
+        pathInfo.CoverPath = Path.Join(albumParentPath, albumName);
+        return pathInfo;
+    }
+
     private static bool ShouldWriteArtworkSidecar(AutoTagRunnerConfig config)
         => config.SaveArtwork ?? false;
+
+    private static bool ShouldPrepareTemplateArtworkSidecar(AutoTagRunnerConfig config)
+        => config.OrganizeSidecarsIntoTemplateFolders == true && ShouldWriteArtworkSidecar(config);
+
+    private static void EnsureTemplateFoldersAndArtworkSidecar(
+        AutoTagTrack sourceTrack,
+        Track coreTrack,
+        AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings,
+        string? tempCoverPath)
+    {
+        if (config.OrganizeSidecarsIntoTemplateFolders != true)
+        {
+            return;
+        }
+
+        var pathInfo = BuildTemplatePathInfo(coreTrack, settings);
+        if (!string.IsNullOrWhiteSpace(pathInfo.ArtistPath))
+        {
+            Directory.CreateDirectory(pathInfo.ArtistPath);
+        }
+
+        if (!string.IsNullOrWhiteSpace(pathInfo.CoverPath))
+        {
+            Directory.CreateDirectory(pathInfo.CoverPath);
+        }
+
+        if (!ShouldWriteArtworkSidecar(config)
+            || string.IsNullOrWhiteSpace(pathInfo.CoverPath)
+            || string.IsNullOrWhiteSpace(tempCoverPath)
+            || !IOFile.Exists(tempCoverPath))
+        {
+            return;
+        }
+
+        var baseFileName = BuildAlbumArtworkBaseFileName(sourceTrack, settings);
+        if (string.IsNullOrWhiteSpace(baseFileName))
+        {
+            baseFileName = "cover";
+        }
+
+        var coverPath = Path.Join(pathInfo.CoverPath, $"{baseFileName}.jpg");
+        if (!IOFile.Exists(coverPath))
+        {
+            IOFile.Copy(tempCoverPath, coverPath, overwrite: false);
+        }
+    }
 
     private static async Task<LyricsSidecarWriteResult> WriteLyricsSidecarsAsync(
         TagWriteExecutionContext context,
@@ -6246,6 +6354,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required Track CoreTrack { get; init; }
         public required TagSettings EffectiveTagSettings { get; init; }
         public required AutoTagRunnerConfig Config { get; init; }
+        public required DeezSpoTagSettings Settings { get; init; }
         public required string PlatformId { get; init; }
         public required string Separator { get; init; }
         public string? TempCoverPath { get; init; }
@@ -8378,6 +8487,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public string? CoverImageTemplate { get; set; }
         public string? ArtistImageTemplate { get; set; }
         public string? LocalArtworkFormat { get; set; }
+        public bool? OrganizeSidecarsIntoTemplateFolders { get; set; }
         public bool? EmbedMaxQualityCover { get; set; }
         public int? JpegImageQuality { get; set; }
         public TechnicalTagSettings? Technical { get; set; }
