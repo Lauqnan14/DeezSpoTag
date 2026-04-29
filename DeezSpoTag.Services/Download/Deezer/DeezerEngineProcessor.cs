@@ -48,6 +48,8 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
     private const string EpisodeCollectionType = "episode";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
+    private const string DirectUrlKey = "direct_url";
+    private const string ArtistKey = "artist";
     private const string HearThisBrowserUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     private const string HearThisDownloadPathSegment = "/download/";
     private const string HearThisListenPathSegment = "/listen.mp3";
@@ -2006,7 +2008,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
     {
         var direct = GetDictString(trackApi, "direct_stream_url")
                      ?? GetDictString(trackApi, "EPISODE_DIRECT_STREAM_URL")
-                     ?? GetDictString(trackApi, "direct_url")
+                     ?? GetDictString(trackApi, DirectUrlKey)
                      ?? GetDictString(trackApi, "url")
                      ?? GetDictString(trackApi, "episode_url")
                      ?? GetDictString(trackApi, "EPISODE_URL");
@@ -2055,7 +2057,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             trackNumber = GetDictInt(trackApi, "EPISODE_NUMBER", 1);
         }
 
-        var artistDict = GetDictObject(trackApi, "artist");
+        var artistDict = GetDictObject(trackApi, ArtistKey);
         var showDict = GetDictObject(trackApi, "show");
         var showDictUpper = GetDictObject(trackApi, "SHOW");
         var showId = ResolveFirstNonEmpty(

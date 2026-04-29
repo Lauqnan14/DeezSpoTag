@@ -13,6 +13,7 @@ public sealed class DownloadQueueRepository
 {
     private static readonly SemaphoreSlim DequeueGate = new(1, 1);
     private const string DownloadTaskTable = "download_task";
+    private const string FilesPropertyLower = "files";
     private readonly string _connectionString;
     private bool _schemaEnsured;
     private readonly object _schemaLock = new();
@@ -1265,7 +1266,7 @@ LIMIT 1;";
             AddPayloadPathProperty(document.RootElement, "filePath", target);
 
             AddPayloadFilePathsProperty(document.RootElement, "Files", target);
-            AddPayloadFilePathsProperty(document.RootElement, "files", target);
+            AddPayloadFilePathsProperty(document.RootElement, FilesPropertyLower, target);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

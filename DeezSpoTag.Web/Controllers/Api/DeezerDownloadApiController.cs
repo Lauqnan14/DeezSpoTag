@@ -26,6 +26,8 @@ namespace DeezSpoTag.Web.Controllers.Api
         private const string DeezerDomain = "deezer.com";
         private const int DirectPodcastQueueConcurrency = 8;
         private const string UuidRequiredError = "UUID is required.";
+        private const string PausedStatus = "paused";
+        private const string ArtistType = "artist";
         private readonly ILogger<DeezerDownloadApiController> _logger;
         private readonly DownloadIntentService _intentService;
         private readonly DeezerClient _deezerClient;
@@ -584,7 +586,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             }
             else if (string.Equals(item.Status, "queued", StringComparison.OrdinalIgnoreCase))
             {
-                await _queueRepository.UpdateStatusAsync(uuid, "paused", cancellationToken: cancellationToken);
+                await _queueRepository.UpdateStatusAsync(uuid, PausedStatus, cancellationToken: cancellationToken);
             }
 
             return Ok(new { success = true });
@@ -604,7 +606,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                 return NotFound(new { error = "Download not found." });
             }
 
-            if (string.Equals(item.Status, "paused", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(item.Status, PausedStatus, StringComparison.OrdinalIgnoreCase))
             {
                 await _queueRepository.UpdateStatusAsync(uuid, "queued", error: null, cancellationToken: cancellationToken);
             }
@@ -697,7 +699,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                     var status = statusObj?.ToString() ?? string.Empty;
                     if (string.Equals(status, "inQueue", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(status, "downloading", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase))
+                        || string.Equals(status, PausedStatus, StringComparison.OrdinalIgnoreCase))
                     {
                         activeQueue[entry.Key] = payload;
                     }
@@ -916,7 +918,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                     return await BuildAlbumIntentsAsync(id);
                 case "playlist":
                     return await BuildPlaylistIntentsAsync(id);
-                case "artist":
+                case ArtistType:
                     return await BuildArtistTopTrackIntentsAsync(id);
                 default:
                     return new List<DownloadIntent>();
@@ -1142,7 +1144,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             for (var i = 0; i < parts.Length - 1; i++)
             {
                 var part = parts[i];
-                if (part is "track" or "album" or "playlist" or "artist" or "episode" or "show")
+                if (part is "track" or "album" or "playlist" or ArtistType or "episode" or "show")
                 {
                     var valuePart = parts[i + 1];
                     var separatorIndex = valuePart.IndexOfAny(['?', '#']);
@@ -1279,7 +1281,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                 SpotifyId = ReadString(metadata, "spotifyId") ?? string.Empty,
                 Isrc = ReadString(metadata, "isrc") ?? string.Empty,
                 Title = ReadString(metadata, "title") ?? string.Empty,
-                Artist = ReadString(metadata, "artist") ?? string.Empty,
+                Artist = ReadString(metadata, ArtistType) ?? string.Empty,
                 Album = ReadString(metadata, "album") ?? string.Empty,
                 AlbumArtist = ReadString(metadata, "albumArtist") ?? string.Empty,
                 Cover = ReadString(metadata, "cover") ?? string.Empty,

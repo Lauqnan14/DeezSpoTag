@@ -6,6 +6,31 @@ namespace DeezSpoTag.Services.Download.Shared.Utils;
 
 internal static class PathTemplateCommon
 {
+    internal static string CollapseRepeatedLeadingArtistPrefix(string filename, string template, string normalizedMainArtist)
+    {
+        if (string.IsNullOrWhiteSpace(filename)
+            || string.IsNullOrWhiteSpace(normalizedMainArtist)
+            || !template.Contains("%artist%", StringComparison.OrdinalIgnoreCase)
+            || !template.Contains("%title%", StringComparison.OrdinalIgnoreCase))
+        {
+            return filename;
+        }
+
+        var prefix = $"{normalizedMainArtist} - ";
+        if (!filename.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return filename;
+        }
+
+        var remainder = filename[prefix.Length..];
+        while (remainder.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            remainder = remainder[prefix.Length..];
+        }
+
+        return prefix + remainder;
+    }
+
     internal static bool ShouldCreatePlaylistFolder(Track track, DeezSpoTagSettings settings)
     {
         return settings.CreatePlaylistFolder &&

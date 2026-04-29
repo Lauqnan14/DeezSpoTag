@@ -8,6 +8,8 @@ namespace DeezSpoTag.Web.Services;
 public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
 {
     private static readonly TimeSpan FreshTtl = TimeSpan.FromSeconds(20);
+    private const string TracklistTypeParam = "$tracklist_type";
+    private const string TracklistIdParam = "$tracklist_id";
 
     private readonly ILogger<TracklistSongCacheStore> _logger;
 
@@ -42,15 +44,15 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
             await connection.OpenAsync(cancellationToken);
 
             await using var command = connection.CreateCommand();
-            command.CommandText = """
+            command.CommandText = $"""
                 SELECT tracklist_type, tracklist_id, payload_json, payload_hash, track_count, updated_utc, last_used_at
                 FROM tracklist_song_cache
-                WHERE tracklist_type = $tracklist_type
-                  AND tracklist_id = $tracklist_id
+                WHERE tracklist_type = {TracklistTypeParam}
+                  AND tracklist_id = {TracklistIdParam}
                 LIMIT 1;
                 """;
-            command.Parameters.AddWithValue("$tracklist_type", normalizedType);
-            command.Parameters.AddWithValue("$tracklist_id", normalizedId);
+            command.Parameters.AddWithValue(TracklistTypeParam, normalizedType);
+            command.Parameters.AddWithValue(TracklistIdParam, normalizedId);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
@@ -125,15 +127,15 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
             await using (var select = connection.CreateCommand())
             {
                 select.Transaction = (SqliteTransaction)transaction;
-                select.CommandText = """
+                select.CommandText = $"""
                     SELECT payload_hash
                     FROM tracklist_song_cache
-                    WHERE tracklist_type = $tracklist_type
-                      AND tracklist_id = $tracklist_id
+                    WHERE tracklist_type = {TracklistTypeParam}
+                      AND tracklist_id = {TracklistIdParam}
                     LIMIT 1;
                     """;
-                select.Parameters.AddWithValue("$tracklist_type", normalizedType);
-                select.Parameters.AddWithValue("$tracklist_id", normalizedId);
+                select.Parameters.AddWithValue(TracklistTypeParam, normalizedType);
+                select.Parameters.AddWithValue(TracklistIdParam, normalizedId);
                 previousHash = (await select.ExecuteScalarAsync(cancellationToken) as string)?.Trim();
             }
 
@@ -143,7 +145,7 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
             await using (var upsert = connection.CreateCommand())
             {
                 upsert.Transaction = (SqliteTransaction)transaction;
-                upsert.CommandText = """
+                upsert.CommandText = $"""
                     INSERT INTO tracklist_song_cache(
                         tracklist_type,
                         tracklist_id,
@@ -155,8 +157,8 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
                         created_at,
                         updated_at
                     ) VALUES (
-                        $tracklist_type,
-                        $tracklist_id,
+                        {TracklistTypeParam},
+                        {TracklistIdParam},
                         $payload_json,
                         $payload_hash,
                         $track_count,
@@ -173,8 +175,8 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
                         updated_utc = excluded.updated_utc,
                         updated_at = excluded.updated_at;
                     """;
-                upsert.Parameters.AddWithValue("$tracklist_type", normalizedType);
-                upsert.Parameters.AddWithValue("$tracklist_id", normalizedId);
+                upsert.Parameters.AddWithValue(TracklistTypeParam, normalizedType);
+                upsert.Parameters.AddWithValue(TracklistIdParam, normalizedId);
                 upsert.Parameters.AddWithValue("$payload_json", payloadJson);
                 upsert.Parameters.AddWithValue("$payload_hash", payloadHash);
                 upsert.Parameters.AddWithValue("$track_count", Math.Max(trackCount, 0));

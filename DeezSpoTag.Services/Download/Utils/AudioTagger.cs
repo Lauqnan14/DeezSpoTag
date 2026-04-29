@@ -36,6 +36,32 @@ public class AudioTagger
     private const string ComposerRole = "composer";
     private const string CoverDescription = "cover";
     private const string LyricsKey = "lyrics";
+    private const string LyricsUpperTag = "LYRICS";
+    private const string LyricsSyncedTag = "LYRICS_SYNCED";
+    private const string LengthUpperTag = "LENGTH";
+    private const string PublisherUpperTag = "PUBLISHER";
+    private const string ArtistsUpperTag = "ARTISTS";
+    private const string DanceabilityTag = "DANCEABILITY";
+    private const string EnergyTag = "ENERGY";
+    private const string ValenceTag = "VALENCE";
+    private const string AcousticnessTag = "ACOUSTICNESS";
+    private const string InstrumentalnessTag = "INSTRUMENTALNESS";
+    private const string SpeechinessTag = "SPEECHINESS";
+    private const string LoudnessTag = "LOUDNESS";
+    private const string TempoTag = "TEMPO";
+    private const string LivenessTag = "LIVENESS";
+    private const string TimeSignatureTag = "TIME_SIGNATURE";
+    private const string BarcodeUpperTag = "BARCODE";
+    private const string ItunesAdvisoryTag = "ITUNESADVISORY";
+    private const string ReplayGainRawTag = "REPLAYGAIN_TRACK_GAIN";
+    private const string SourceUpperTag = "SOURCE";
+    private const string SourceIdUpperTag = "SOURCEID";
+    private const string WwwAudioFileTag = "WWWAUDIOFILE";
+    private const string SpotifyTrackIdTag = "SPOTIFY_TRACK_ID";
+    private const string DeezerTrackIdTag = "DEEZER_TRACK_ID";
+    private const string AppleTrackIdTag = "APPLE_TRACK_ID";
+    private const string RatingUpperTag = "RATING";
+    private const string CompilationRecordType = "compile";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
     private const string AppleSource = "apple";
@@ -318,7 +344,7 @@ public class AudioTagger
 
         if (save.Artists)
         {
-            SetCustomFrame(tag, "TXXX", "ARTISTS", ResolveMultiArtistValue(track, save), save);
+            SetCustomFrame(tag, "TXXX", ArtistsUpperTag, ResolveMultiArtistValue(track, save), save);
         }
     }
 
@@ -377,28 +403,28 @@ public class AudioTagger
         SetId3FrameIf(tag, save.Bpm && track.Bpm > 0, "TBPM", "", track.Bpm.ToString(CultureInfo.InvariantCulture), save);
         SetId3FrameIf(tag, save.Key, "TKEY", "", track.Key, save);
 
-        WriteMp3FeatureFrame(tag, save.Danceability, "DANCEABILITY", track.Danceability, save);
-        WriteMp3FeatureFrame(tag, save.Energy, "ENERGY", track.Energy, save);
-        WriteMp3FeatureFrame(tag, save.Valence, "VALENCE", track.Valence, save);
-        WriteMp3FeatureFrame(tag, save.Acousticness, "ACOUSTICNESS", track.Acousticness, save);
-        WriteMp3FeatureFrame(tag, save.Instrumentalness, "INSTRUMENTALNESS", track.Instrumentalness, save);
-        WriteMp3FeatureFrame(tag, save.Speechiness, "SPEECHINESS", track.Speechiness, save);
-        WriteMp3FeatureFrame(tag, save.Loudness, "LOUDNESS", track.Loudness, save);
-        WriteMp3FeatureFrame(tag, save.Tempo, "TEMPO", track.Tempo, save);
-        WriteMp3FeatureFrame(tag, save.Liveness, "LIVENESS", track.Liveness, save);
+        WriteMp3FeatureFrame(tag, save.Danceability, DanceabilityTag, track.Danceability, save);
+        WriteMp3FeatureFrame(tag, save.Energy, EnergyTag, track.Energy, save);
+        WriteMp3FeatureFrame(tag, save.Valence, ValenceTag, track.Valence, save);
+        WriteMp3FeatureFrame(tag, save.Acousticness, AcousticnessTag, track.Acousticness, save);
+        WriteMp3FeatureFrame(tag, save.Instrumentalness, InstrumentalnessTag, track.Instrumentalness, save);
+        WriteMp3FeatureFrame(tag, save.Speechiness, SpeechinessTag, track.Speechiness, save);
+        WriteMp3FeatureFrame(tag, save.Loudness, LoudnessTag, track.Loudness, save);
+        WriteMp3FeatureFrame(tag, save.Tempo, TempoTag, track.Tempo, save);
+        WriteMp3FeatureFrame(tag, save.Liveness, LivenessTag, track.Liveness, save);
 
         SetId3FrameIf(
             tag,
             save.TimeSignature && track.TimeSignature.HasValue,
             "TXXX",
-            "TIME_SIGNATURE",
+            TimeSignatureTag,
             track.TimeSignature?.ToString(CultureInfo.InvariantCulture),
             save);
         SetId3FrameIf(tag, save.Label, "TPUB", "", track.Album?.Label, save);
         SetId3FrameIf(tag, save.Isrc, "TSRC", "", track.ISRC, save);
-        SetId3FrameIf(tag, save.Barcode, "TXXX", "BARCODE", track.Album?.Barcode, save);
-        SetId3FrameIf(tag, save.Explicit, "TXXX", "ITUNESADVISORY", track.Explicit ? "1" : "0", save);
-        SetId3FrameIf(tag, save.ReplayGain, "TXXX", "REPLAYGAIN_TRACK_GAIN", track.ReplayGain, save);
+        SetId3FrameIf(tag, save.Barcode, "TXXX", BarcodeUpperTag, track.Album?.Barcode, save);
+        SetId3FrameIf(tag, save.Explicit, "TXXX", ItunesAdvisoryTag, track.Explicit ? "1" : "0", save);
+        SetId3FrameIf(tag, save.ReplayGain, "TXXX", ReplayGainRawTag, track.ReplayGain, save);
 
         if (TryGetAppleDigitalMasterMarker(track, out var appleDigitalMasterMarker))
         {
@@ -456,7 +482,7 @@ public class AudioTagger
     {
         SetId3FrameIf(tag, save.Copyright, "TCOP", "", track.Copyright, save);
 
-        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
+        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == CompilationRecordType)
         {
             SetCustomFrame(tag, "TCMP", "", "1", save);
         }
@@ -467,14 +493,14 @@ public class AudioTagger
         var sourceId = ResolveSourceId(track);
         if (save.Source)
         {
-            SetCustomFrame(tag, "TXXX", "SOURCE", ResolveSourceName(track), save);
+            SetCustomFrame(tag, "TXXX", SourceUpperTag, ResolveSourceName(track), save);
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
-                SetCustomFrame(tag, "TXXX", "SOURCEID", sourceId, save);
+                SetCustomFrame(tag, "TXXX", SourceIdUpperTag, sourceId, save);
             }
         }
 
-        SetId3FrameIf(tag, save.Url, "TXXX", "WWWAUDIOFILE", ResolveTrackUrl(track), save);
+        SetId3FrameIf(tag, save.Url, "TXXX", WwwAudioFileTag, ResolveTrackUrl(track), save);
 
         if (save.TrackId)
         {
@@ -483,9 +509,9 @@ public class AudioTagger
                 SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId, save);
             }
 
-            SetCustomFrameIfPresent(tag, "TXXX", "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track), save);
-            SetCustomFrameIfPresent(tag, "TXXX", "DEEZER_TRACK_ID", ResolveDeezerTrackId(track), save);
-            SetCustomFrameIfPresent(tag, "TXXX", "APPLE_TRACK_ID", ResolveAppleTrackId(track), save);
+            SetCustomFrameIfPresent(tag, "TXXX", SpotifyTrackIdTag, ResolveSpotifyTrackId(track), save);
+            SetCustomFrameIfPresent(tag, "TXXX", DeezerTrackIdTag, ResolveDeezerTrackId(track), save);
+            SetCustomFrameIfPresent(tag, "TXXX", AppleTrackIdTag, ResolveAppleTrackId(track), save);
         }
 
         if (save.ReleaseId)
@@ -506,7 +532,7 @@ public class AudioTagger
         }
 
         var rank = Math.Round(track.Rank / 10000.0);
-        SetCustomFrame(tag, "TXXX", "RATING", rank.ToString(CultureInfo.InvariantCulture), save);
+        SetCustomFrame(tag, "TXXX", RatingUpperTag, rank.ToString(CultureInfo.InvariantCulture), save);
     }
 
     private static void RemoveId3v1WhenDisabled(TagLib.File file, TagSettings save)
@@ -805,7 +831,7 @@ public class AudioTagger
             tag.Title = track.Title;
         }
 
-        ApplyFlacOrMp4PerformerTags(tag, track, save, values => SetVorbisComment(tag, "ARTISTS", values));
+        ApplyFlacOrMp4PerformerTags(tag, track, save, values => SetVorbisComment(tag, ArtistsUpperTag, values));
 
         if (save.Album)
         {
@@ -831,39 +857,39 @@ public class AudioTagger
 
     private void ApplyFlacAdditionalMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
-        SetVorbisCommentIf(tag, save.Length, "LENGTH", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
+        SetVorbisCommentIf(tag, save.Length, LengthUpperTag, (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
         SetVorbisCommentIf(tag, save.Bpm && track.Bpm > 0, "BPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
         SetVorbisCommentIf(tag, save.Key, "INITIALKEY", track.Key);
-        SetVorbisCommentIf(tag, save.Danceability && track.Danceability.HasValue, "DANCEABILITY", FormatAudioFeature(track.Danceability ?? 0));
-        SetVorbisCommentIf(tag, save.Energy && track.Energy.HasValue, "ENERGY", FormatAudioFeature(track.Energy ?? 0));
-        SetVorbisCommentIf(tag, save.Valence && track.Valence.HasValue, "VALENCE", FormatAudioFeature(track.Valence ?? 0));
-        SetVorbisCommentIf(tag, save.Acousticness && track.Acousticness.HasValue, "ACOUSTICNESS", FormatAudioFeature(track.Acousticness ?? 0));
-        SetVorbisCommentIf(tag, save.Instrumentalness && track.Instrumentalness.HasValue, "INSTRUMENTALNESS", FormatAudioFeature(track.Instrumentalness ?? 0));
-        SetVorbisCommentIf(tag, save.Speechiness && track.Speechiness.HasValue, "SPEECHINESS", FormatAudioFeature(track.Speechiness ?? 0));
-        SetVorbisCommentIf(tag, save.Loudness && track.Loudness.HasValue, "LOUDNESS", FormatAudioFeature(track.Loudness ?? 0));
-        SetVorbisCommentIf(tag, save.Tempo && track.Tempo.HasValue, "TEMPO", FormatAudioFeature(track.Tempo ?? 0));
+        SetVorbisCommentIf(tag, save.Danceability && track.Danceability.HasValue, DanceabilityTag, FormatAudioFeature(track.Danceability ?? 0));
+        SetVorbisCommentIf(tag, save.Energy && track.Energy.HasValue, EnergyTag, FormatAudioFeature(track.Energy ?? 0));
+        SetVorbisCommentIf(tag, save.Valence && track.Valence.HasValue, ValenceTag, FormatAudioFeature(track.Valence ?? 0));
+        SetVorbisCommentIf(tag, save.Acousticness && track.Acousticness.HasValue, AcousticnessTag, FormatAudioFeature(track.Acousticness ?? 0));
+        SetVorbisCommentIf(tag, save.Instrumentalness && track.Instrumentalness.HasValue, InstrumentalnessTag, FormatAudioFeature(track.Instrumentalness ?? 0));
+        SetVorbisCommentIf(tag, save.Speechiness && track.Speechiness.HasValue, SpeechinessTag, FormatAudioFeature(track.Speechiness ?? 0));
+        SetVorbisCommentIf(tag, save.Loudness && track.Loudness.HasValue, LoudnessTag, FormatAudioFeature(track.Loudness ?? 0));
+        SetVorbisCommentIf(tag, save.Tempo && track.Tempo.HasValue, TempoTag, FormatAudioFeature(track.Tempo ?? 0));
         SetVorbisCommentIf(
             tag,
             save.TimeSignature && track.TimeSignature.HasValue,
-            "TIME_SIGNATURE",
+            TimeSignatureTag,
             track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
-        SetVorbisCommentIf(tag, save.Liveness && track.Liveness.HasValue, "LIVENESS", FormatAudioFeature(track.Liveness ?? 0));
-        SetVorbisCommentIf(tag, save.Label, "PUBLISHER", track.Album?.Label);
+        SetVorbisCommentIf(tag, save.Liveness && track.Liveness.HasValue, LivenessTag, FormatAudioFeature(track.Liveness ?? 0));
+        SetVorbisCommentIf(tag, save.Label, PublisherUpperTag, track.Album?.Label);
         SetVorbisCommentIf(tag, save.Isrc, "ISRC", track.ISRC);
-        SetVorbisCommentIf(tag, save.Barcode, "BARCODE", track.Album?.Barcode);
-        SetVorbisCommentIf(tag, save.Explicit, "ITUNESADVISORY", track.Explicit ? "1" : "0");
-        SetVorbisCommentIf(tag, save.ReplayGain, "REPLAYGAIN_TRACK_GAIN", track.ReplayGain);
+        SetVorbisCommentIf(tag, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
+        SetVorbisCommentIf(tag, save.Explicit, ItunesAdvisoryTag, track.Explicit ? "1" : "0");
+        SetVorbisCommentIf(tag, save.ReplayGain, ReplayGainRawTag, track.ReplayGain);
 
         if (TryGetAppleDigitalMasterMarker(track, out var appleDigitalMasterMarker))
         {
             SetVorbisComment(tag, AppleDigitalMasterTag, new[] { appleDigitalMasterMarker });
         }
 
-        SetVorbisCommentIf(tag, save.Lyrics, "LYRICS", track.Lyrics?.Unsync);
+        SetVorbisCommentIf(tag, save.Lyrics, LyricsUpperTag, track.Lyrics?.Unsync);
 
         if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
         {
-            SetVorbisComment(tag, "LYRICS_SYNCED", new[] { syncedLyricsText });
+            SetVorbisComment(tag, LyricsSyncedTag, new[] { syncedLyricsText });
         }
     }
 
@@ -898,7 +924,7 @@ public class AudioTagger
     {
         SetVorbisCommentIf(tag, save.Copyright, "COPYRIGHT", track.Copyright);
 
-        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
+        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == CompilationRecordType)
         {
             SetVorbisComment(tag, "COMPILATION", CompilationEnabledValue);
         }
@@ -909,14 +935,14 @@ public class AudioTagger
         var sourceId = ResolveSourceId(track);
         if (save.Source)
         {
-            SetVorbisComment(tag, "SOURCE", new[] { ResolveSourceName(track) });
+            SetVorbisComment(tag, SourceUpperTag, new[] { ResolveSourceName(track) });
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
-                SetVorbisComment(tag, "SOURCEID", new[] { sourceId });
+                SetVorbisComment(tag, SourceIdUpperTag, new[] { sourceId });
             }
         }
 
-        SetVorbisCommentIf(tag, save.Url, "WWWAUDIOFILE", ResolveTrackUrl(track));
+        SetVorbisCommentIf(tag, save.Url, WwwAudioFileTag, ResolveTrackUrl(track));
 
         if (save.TrackId)
         {
@@ -925,9 +951,9 @@ public class AudioTagger
                 SetVorbisComment(tag, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", new[] { sourceId });
             }
 
-            SetVorbisCommentIf(tag, true, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
-            SetVorbisCommentIf(tag, true, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
-            SetVorbisCommentIf(tag, true, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
+            SetVorbisCommentIf(tag, true, SpotifyTrackIdTag, ResolveSpotifyTrackId(track));
+            SetVorbisCommentIf(tag, true, DeezerTrackIdTag, ResolveDeezerTrackId(track));
+            SetVorbisCommentIf(tag, true, AppleTrackIdTag, ResolveAppleTrackId(track));
         }
 
         if (save.ReleaseId)
@@ -948,7 +974,7 @@ public class AudioTagger
         }
 
         var rank = Math.Round(track.Rank / 10000.0);
-        SetVorbisComment(tag, "RATING", new[] { rank.ToString(CultureInfo.InvariantCulture) });
+        SetVorbisComment(tag, RatingUpperTag, new[] { rank.ToString(CultureInfo.InvariantCulture) });
     }
 
     private void ApplyAtlMp4CoreMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -963,7 +989,7 @@ public class AudioTagger
             file.Artist = ResolveAtlArtistValue(track, save);
             if (save.Artists)
             {
-                SetAtlAdditionalField(file, "ARTISTS", ResolveMultiArtistValue(track, save));
+                SetAtlAdditionalField(file, ArtistsUpperTag, ResolveMultiArtistValue(track, save));
             }
         }
 
@@ -992,7 +1018,7 @@ public class AudioTagger
 
     private void ApplyAtlMp4AdditionalMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
-        SetAtlAdditionalFieldIf(file, save.Length, "LENGTH", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
+        SetAtlAdditionalFieldIf(file, save.Length, LengthUpperTag, (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
         if (save.Bpm && track.Bpm > 0)
         {
             file.BPM = (float)track.Bpm;
@@ -1000,24 +1026,24 @@ public class AudioTagger
         }
 
         SetAtlAdditionalFieldIf(file, save.Key, "initialkey", track.Key);
-        SetAtlAdditionalFieldIf(file, save.Danceability && track.Danceability.HasValue, "DANCEABILITY", FormatAudioFeature(track.Danceability ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Energy && track.Energy.HasValue, "ENERGY", FormatAudioFeature(track.Energy ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Valence && track.Valence.HasValue, "VALENCE", FormatAudioFeature(track.Valence ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Acousticness && track.Acousticness.HasValue, "ACOUSTICNESS", FormatAudioFeature(track.Acousticness ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Instrumentalness && track.Instrumentalness.HasValue, "INSTRUMENTALNESS", FormatAudioFeature(track.Instrumentalness ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Speechiness && track.Speechiness.HasValue, "SPEECHINESS", FormatAudioFeature(track.Speechiness ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Loudness && track.Loudness.HasValue, "LOUDNESS", FormatAudioFeature(track.Loudness ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Tempo && track.Tempo.HasValue, "TEMPO", FormatAudioFeature(track.Tempo ?? 0));
-        SetAtlAdditionalFieldIf(file, save.TimeSignature && track.TimeSignature.HasValue, "TIME_SIGNATURE", track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
-        SetAtlAdditionalFieldIf(file, save.Liveness && track.Liveness.HasValue, "LIVENESS", FormatAudioFeature(track.Liveness ?? 0));
-        SetAtlAdditionalFieldIf(file, save.Barcode, "BARCODE", track.Album?.Barcode);
-        SetAtlAdditionalFieldIf(file, save.Explicit, "ITUNESADVISORY", track.Explicit ? "1" : "0");
-        SetAtlAdditionalFieldIf(file, save.ReplayGain, "REPLAYGAIN_TRACK_GAIN", track.ReplayGain);
+        SetAtlAdditionalFieldIf(file, save.Danceability && track.Danceability.HasValue, DanceabilityTag, FormatAudioFeature(track.Danceability ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Energy && track.Energy.HasValue, EnergyTag, FormatAudioFeature(track.Energy ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Valence && track.Valence.HasValue, ValenceTag, FormatAudioFeature(track.Valence ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Acousticness && track.Acousticness.HasValue, AcousticnessTag, FormatAudioFeature(track.Acousticness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Instrumentalness && track.Instrumentalness.HasValue, InstrumentalnessTag, FormatAudioFeature(track.Instrumentalness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Speechiness && track.Speechiness.HasValue, SpeechinessTag, FormatAudioFeature(track.Speechiness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Loudness && track.Loudness.HasValue, LoudnessTag, FormatAudioFeature(track.Loudness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Tempo && track.Tempo.HasValue, TempoTag, FormatAudioFeature(track.Tempo ?? 0));
+        SetAtlAdditionalFieldIf(file, save.TimeSignature && track.TimeSignature.HasValue, TimeSignatureTag, track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
+        SetAtlAdditionalFieldIf(file, save.Liveness && track.Liveness.HasValue, LivenessTag, FormatAudioFeature(track.Liveness ?? 0));
+        SetAtlAdditionalFieldIf(file, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
+        SetAtlAdditionalFieldIf(file, save.Explicit, ItunesAdvisoryTag, track.Explicit ? "1" : "0");
+        SetAtlAdditionalFieldIf(file, save.ReplayGain, ReplayGainRawTag, track.ReplayGain);
 
         if (save.Label)
         {
             file.Publisher = track.Album?.Label ?? string.Empty;
-            SetAtlAdditionalFieldIf(file, true, "PUBLISHER", track.Album?.Label);
+            SetAtlAdditionalFieldIf(file, true, PublisherUpperTag, track.Album?.Label);
         }
 
         if (save.Isrc && !string.IsNullOrWhiteSpace(track.ISRC))
@@ -1069,7 +1095,7 @@ public class AudioTagger
             SetAtlAdditionalFieldIf(file, true, "COPYRIGHT", track.Copyright);
         }
 
-        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
+        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == CompilationRecordType)
         {
             SetAtlAdditionalField(file, "COMPILATION", CompilationEnabledValue);
         }
@@ -1080,14 +1106,14 @@ public class AudioTagger
         var sourceId = ResolveSourceId(track);
         if (save.Source)
         {
-            SetAtlAdditionalField(file, "SOURCE", ResolveSourceName(track));
+            SetAtlAdditionalField(file, SourceUpperTag, ResolveSourceName(track));
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
-                SetAtlAdditionalField(file, "SOURCEID", sourceId);
+                SetAtlAdditionalField(file, SourceIdUpperTag, sourceId);
             }
         }
 
-        SetAtlAdditionalFieldIf(file, save.Url, "WWWAUDIOFILE", ResolveTrackUrl(track));
+        SetAtlAdditionalFieldIf(file, save.Url, WwwAudioFileTag, ResolveTrackUrl(track));
 
         if (save.TrackId)
         {
@@ -1096,9 +1122,9 @@ public class AudioTagger
                 SetAtlAdditionalField(file, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", sourceId);
             }
 
-            SetAtlAdditionalFieldIf(file, true, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
-            SetAtlAdditionalFieldIf(file, true, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
-            SetAtlAdditionalFieldIf(file, true, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
+            SetAtlAdditionalFieldIf(file, true, SpotifyTrackIdTag, ResolveSpotifyTrackId(track));
+            SetAtlAdditionalFieldIf(file, true, DeezerTrackIdTag, ResolveDeezerTrackId(track));
+            SetAtlAdditionalFieldIf(file, true, AppleTrackIdTag, ResolveAppleTrackId(track));
         }
 
         if (save.ReleaseId)
@@ -1119,7 +1145,7 @@ public class AudioTagger
         }
 
         var rank = Math.Round(track.Rank / 10000.0);
-        SetAtlAdditionalField(file, "RATING", rank.ToString(CultureInfo.InvariantCulture));
+        SetAtlAdditionalField(file, RatingUpperTag, rank.ToString(CultureInfo.InvariantCulture));
     }
 
     private void ApplyAtlMp4CompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -1238,7 +1264,7 @@ public class AudioTagger
             tag.Title = track.Title;
         }
 
-        ApplyFlacOrMp4PerformerTags(tag, track, save, values => TrySetAppleDashBox(appleTag, "ARTISTS", values));
+        ApplyFlacOrMp4PerformerTags(tag, track, save, values => TrySetAppleDashBox(appleTag, ArtistsUpperTag, values));
 
         if (save.Album)
         {
@@ -1279,23 +1305,23 @@ public class AudioTagger
         DeezSpoTag.Core.Models.Track track,
         TagSettings save)
     {
-        TrySetAppleDashBoxIf(appleTag, save.Length, "LENGTH", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
+        TrySetAppleDashBoxIf(appleTag, save.Length, LengthUpperTag, (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
         TrySetAppleDashBoxIf(appleTag, save.Bpm && track.Bpm > 0, "BPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
         TrySetAppleDashBoxIf(appleTag, save.Key, "initialkey", track.Key);
-        TrySetAppleDashBoxIf(appleTag, save.Danceability && track.Danceability.HasValue, "DANCEABILITY", FormatAudioFeature(track.Danceability ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Energy && track.Energy.HasValue, "ENERGY", FormatAudioFeature(track.Energy ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Valence && track.Valence.HasValue, "VALENCE", FormatAudioFeature(track.Valence ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Acousticness && track.Acousticness.HasValue, "ACOUSTICNESS", FormatAudioFeature(track.Acousticness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Instrumentalness && track.Instrumentalness.HasValue, "INSTRUMENTALNESS", FormatAudioFeature(track.Instrumentalness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Speechiness && track.Speechiness.HasValue, "SPEECHINESS", FormatAudioFeature(track.Speechiness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Loudness && track.Loudness.HasValue, "LOUDNESS", FormatAudioFeature(track.Loudness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Tempo && track.Tempo.HasValue, "TEMPO", FormatAudioFeature(track.Tempo ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Danceability && track.Danceability.HasValue, DanceabilityTag, FormatAudioFeature(track.Danceability ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Energy && track.Energy.HasValue, EnergyTag, FormatAudioFeature(track.Energy ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Valence && track.Valence.HasValue, ValenceTag, FormatAudioFeature(track.Valence ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Acousticness && track.Acousticness.HasValue, AcousticnessTag, FormatAudioFeature(track.Acousticness ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Instrumentalness && track.Instrumentalness.HasValue, InstrumentalnessTag, FormatAudioFeature(track.Instrumentalness ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Speechiness && track.Speechiness.HasValue, SpeechinessTag, FormatAudioFeature(track.Speechiness ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Loudness && track.Loudness.HasValue, LoudnessTag, FormatAudioFeature(track.Loudness ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Tempo && track.Tempo.HasValue, TempoTag, FormatAudioFeature(track.Tempo ?? 0));
         TrySetAppleDashBoxIf(
             appleTag,
             save.TimeSignature && track.TimeSignature.HasValue,
-            "TIME_SIGNATURE",
+            TimeSignatureTag,
             track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
-        TrySetAppleDashBoxIf(appleTag, save.Liveness && track.Liveness.HasValue, "LIVENESS", FormatAudioFeature(track.Liveness ?? 0));
+        TrySetAppleDashBoxIf(appleTag, save.Liveness && track.Liveness.HasValue, LivenessTag, FormatAudioFeature(track.Liveness ?? 0));
     }
 
     private void ApplyMp4IdentityMetadata(
@@ -1304,10 +1330,10 @@ public class AudioTagger
         DeezSpoTag.Core.Models.Track track,
         TagSettings save)
     {
-        TrySetAppleDashBoxIf(appleTag, save.Label, "PUBLISHER", track.Album?.Label);
-        TrySetAppleDashBoxIf(appleTag, save.Barcode, "BARCODE", track.Album?.Barcode);
-        TrySetAppleDashBoxIf(appleTag, save.Explicit, "ITUNESADVISORY", track.Explicit ? "1" : "0");
-        TrySetAppleDashBoxIf(appleTag, save.ReplayGain, "REPLAYGAIN_TRACK_GAIN", track.ReplayGain);
+        TrySetAppleDashBoxIf(appleTag, save.Label, PublisherUpperTag, track.Album?.Label);
+        TrySetAppleDashBoxIf(appleTag, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
+        TrySetAppleDashBoxIf(appleTag, save.Explicit, ItunesAdvisoryTag, track.Explicit ? "1" : "0");
+        TrySetAppleDashBoxIf(appleTag, save.ReplayGain, ReplayGainRawTag, track.ReplayGain);
 
         if (save.Isrc && !string.IsNullOrEmpty(track.ISRC))
         {
@@ -1320,11 +1346,11 @@ public class AudioTagger
             TrySetAppleDashBox(appleTag, AppleDigitalMasterTag, new[] { appleDigitalMasterMarker });
         }
 
-        TrySetAppleDashBoxIf(appleTag, save.Lyrics, "LYRICS", track.Lyrics?.Unsync);
+        TrySetAppleDashBoxIf(appleTag, save.Lyrics, LyricsUpperTag, track.Lyrics?.Unsync);
 
         if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
         {
-            TrySetAppleDashBox(appleTag, "LYRICS_SYNCED", new[] { syncedLyricsText });
+            TrySetAppleDashBox(appleTag, LyricsSyncedTag, new[] { syncedLyricsText });
         }
     }
 
@@ -1366,7 +1392,7 @@ public class AudioTagger
     {
         TrySetAppleDashBoxIf(appleTag, save.Copyright, "COPYRIGHT", track.Copyright);
 
-        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == "compile")
+        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == CompilationRecordType)
         {
             TrySetTagBoolProperty(tag, "IsCompilation", true);
             TrySetAppleDashBox(appleTag, "COMPILATION", CompilationEnabledValue);
@@ -1381,14 +1407,14 @@ public class AudioTagger
         var sourceId = ResolveSourceId(track);
         if (save.Source)
         {
-            TrySetAppleDashBox(appleTag, "SOURCE", new[] { ResolveSourceName(track) });
+            TrySetAppleDashBox(appleTag, SourceUpperTag, new[] { ResolveSourceName(track) });
             if (!string.IsNullOrWhiteSpace(sourceId))
             {
-                TrySetAppleDashBox(appleTag, "SOURCEID", new[] { sourceId });
+                TrySetAppleDashBox(appleTag, SourceIdUpperTag, new[] { sourceId });
             }
         }
 
-        TrySetAppleDashBoxIf(appleTag, save.Url, "WWWAUDIOFILE", ResolveTrackUrl(track));
+        TrySetAppleDashBoxIf(appleTag, save.Url, WwwAudioFileTag, ResolveTrackUrl(track));
 
         if (save.TrackId)
         {
@@ -1397,9 +1423,9 @@ public class AudioTagger
                 TrySetAppleDashBox(appleTag, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", new[] { sourceId });
             }
 
-            TrySetAppleDashBoxIf(appleTag, true, "SPOTIFY_TRACK_ID", ResolveSpotifyTrackId(track));
-            TrySetAppleDashBoxIf(appleTag, true, "DEEZER_TRACK_ID", ResolveDeezerTrackId(track));
-            TrySetAppleDashBoxIf(appleTag, true, "APPLE_TRACK_ID", ResolveAppleTrackId(track));
+            TrySetAppleDashBoxIf(appleTag, true, SpotifyTrackIdTag, ResolveSpotifyTrackId(track));
+            TrySetAppleDashBoxIf(appleTag, true, DeezerTrackIdTag, ResolveDeezerTrackId(track));
+            TrySetAppleDashBoxIf(appleTag, true, AppleTrackIdTag, ResolveAppleTrackId(track));
         }
 
         if (save.ReleaseId)
@@ -1423,7 +1449,7 @@ public class AudioTagger
         }
 
         var rank = Math.Round(track.Rank / 10000.0);
-        TrySetAppleDashBox(appleTag, "RATING", new[] { rank.ToString(CultureInfo.InvariantCulture) });
+        TrySetAppleDashBox(appleTag, RatingUpperTag, new[] { rank.ToString(CultureInfo.InvariantCulture) });
     }
 
     private static void ApplyCommonAlbumArtistAndSequenceTags(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -1524,7 +1550,7 @@ public class AudioTagger
                 LanguageCode = "eng",
                 UnsynchronizedLyrics = track.Lyrics.Unsync
             });
-            SetAtlAdditionalField(file, "LYRICS", track.Lyrics.Unsync);
+            SetAtlAdditionalField(file, LyricsUpperTag, track.Lyrics.Unsync);
         }
 
         if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
@@ -1536,7 +1562,7 @@ public class AudioTagger
                 LanguageCode = "eng",
                 UnsynchronizedLyrics = syncedLyricsText
             });
-            SetAtlAdditionalField(file, "LYRICS_SYNCED", syncedLyricsText);
+            SetAtlAdditionalField(file, LyricsSyncedTag, syncedLyricsText);
         }
 
         if (lyrics.Count > 0)

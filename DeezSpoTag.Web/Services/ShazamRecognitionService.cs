@@ -815,7 +815,7 @@ public sealed class ShazamRecognitionService
             {
                 result.TrackId = ReadString(summary, "trackId");
                 result.Title = ReadString(summary, "title");
-                result.Artist = ReadString(summary, "artist");
+                result.Artist = ReadString(summary, AutoTagLiterals.ArtistTag);
                 result.Isrc = ReadString(summary, "isrc");
                 result.Url = ReadString(summary, "url");
             }
@@ -832,7 +832,7 @@ public sealed class ShazamRecognitionService
                     ReadString(track, "track_id"),
                     ReadString(track, "trackId"));
                 result.Title ??= FirstNonEmpty(ReadString(track, "title"), ReadString(track, "name"));
-                result.Artist ??= FirstNonEmpty(ReadString(track, "subtitle"), ReadString(track, "artist"));
+                result.Artist ??= FirstNonEmpty(ReadString(track, "subtitle"), ReadString(track, AutoTagLiterals.ArtistTag));
                 result.Isrc ??= ReadString(track, "isrc");
                 result.Url ??= FirstNonEmpty(ReadString(track, "url"), ReadNestedString(track, "share", "href"));
             }

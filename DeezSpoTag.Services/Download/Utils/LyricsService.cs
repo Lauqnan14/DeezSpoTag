@@ -898,7 +898,7 @@ public class LyricsService
 
     private sealed class MusixmatchMacroCallResponse
     {
-        [JsonPropertyName("message")]
+        [JsonPropertyName(MessagePropertyName)]
         public MusixmatchMacroCallMessage? Message { get; set; }
     }
 

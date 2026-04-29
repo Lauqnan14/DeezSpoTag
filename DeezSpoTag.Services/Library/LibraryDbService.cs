@@ -42,6 +42,7 @@ public sealed class LibraryDbService
     private const string DeezerIdColumn = "deezer_id";
     private const string CreatedAtColumn = "created_at";
     private const string UpdatedAtColumn = "updated_at";
+    private static readonly string[] DownloadSources = ["deezer", "spotify", "apple"];
     private static readonly Dictionary<string, (string Table, string Column, bool Unique)> KnownIndexDefinitions =
         new Dictionary<string, (string Table, string Column, bool Unique)>(StringComparer.Ordinal)
         {
@@ -186,7 +187,7 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, DownloadTaskTable, "content_type", TextType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "isrc", TextType, cancellationToken);
 
-        foreach (var source in new[] { "deezer", "spotify", "apple" })
+        foreach (var source in DownloadSources)
         {
             await EnsureColumnAsync(connection, DownloadTaskTable, $"{source}_track_id", TextType, cancellationToken);
             await EnsureColumnAsync(connection, DownloadTaskTable, $"{source}_album_id", TextType, cancellationToken);
@@ -197,7 +198,7 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, DownloadTaskTable, "final_destinations_json", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_download_task_isrc", DownloadTaskTable, "isrc", unique: false, cancellationToken);
 
-        foreach (var source in new[] { "deezer", "spotify", "apple" })
+        foreach (var source in DownloadSources)
         {
             await EnsureIndexAsync(connection, $"idx_download_task_{source}_track", DownloadTaskTable, $"{source}_track_id", unique: false, cancellationToken);
             await EnsureIndexAsync(connection, $"idx_download_task_{source}_album", DownloadTaskTable, $"{source}_album_id", unique: false, cancellationToken);
@@ -536,7 +537,7 @@ WHERE library_id IS NULL;";
         }
 
         var preserveCreatedAt = columns.Contains(CreatedAtColumn);
-        var preserveUpdatedAt = columns.Contains("updated_at");
+        var preserveUpdatedAt = columns.Contains(UpdatedAtColumn);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
         const string dropTempSql = "DROP TABLE IF EXISTS library_settings_migrated;";

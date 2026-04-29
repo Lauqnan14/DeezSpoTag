@@ -9,7 +9,7 @@ public partial class AutoTagService
     private static readonly string[] ManualShazamBootstrapTags =
     {
         "title",
-        "artist",
+        AutoTagLiterals.ArtistTag,
         "album",
         "albumArt",
         "duration",
@@ -17,7 +17,7 @@ public partial class AutoTagService
         "trackId",
         "source",
         "url",
-        "releaseDate"
+        AutoTagLiterals.ReleaseDateTag
     };
 
     private enum EnrichmentRunMode

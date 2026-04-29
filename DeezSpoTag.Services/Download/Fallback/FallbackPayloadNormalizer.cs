@@ -308,7 +308,7 @@ public static class FallbackPayloadNormalizer
                 {
                     ["StepId"] = step.StepId,
                     ["Engine"] = step.Engine,
-                    ["Quality"] = step.Quality,
+                    [QualityKey] = step.Quality,
                     ["RequiredInputs"] = new JsonArray(step.RequiredInputs.Select(input => (JsonNode)JsonValue.Create(input)!).ToArray()),
                     ["ResolutionStrategy"] = step.ResolutionStrategy
                 })

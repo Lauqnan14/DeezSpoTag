@@ -40,6 +40,7 @@ public static partial class EngineAudioPostDownloadHelper
     private const string PausedStatus = "paused";
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
+    private const string DeezerTrackIdKey = "deezer_track_id";
     private static readonly Regex LrcTimestampRegex = LrcTimestampGeneratedRegex();
     private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -382,7 +383,7 @@ public static partial class EngineAudioPostDownloadHelper
             }
 
             payload.DeezerId = resolvedDeezerId;
-            track.Urls["deezer_track_id"] = resolvedDeezerId;
+            track.Urls[DeezerTrackIdKey] = resolvedDeezerId;
             track.Urls[DeezerSource] = $"https://www.deezer.com/track/{resolvedDeezerId}";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -405,7 +406,7 @@ public static partial class EngineAudioPostDownloadHelper
     {
         var knownDeezerId = NormalizeDeezerId(FirstNonEmpty(
             payload.DeezerId,
-            track.Urls.GetValueOrDefault("deezer_track_id"),
+            track.Urls.GetValueOrDefault(DeezerTrackIdKey),
             track.Urls.GetValueOrDefault("deezer_id"),
             track.Urls.GetValueOrDefault("deezer"),
             ExtractTrailingId(payload.SourceUrl),
@@ -528,7 +529,7 @@ public static partial class EngineAudioPostDownloadHelper
         {
             DeezerSource => FirstNonEmpty(
                 payload.DeezerId,
-                track.Urls.GetValueOrDefault("deezer_track_id"),
+                track.Urls.GetValueOrDefault(DeezerTrackIdKey),
                 track.Urls.GetValueOrDefault("deezer_id"),
                 ExtractTrailingId(track.Urls.GetValueOrDefault(DeezerSource))),
             SpotifySource => FirstNonEmpty(
@@ -685,7 +686,7 @@ public static partial class EngineAudioPostDownloadHelper
 
         if (!string.IsNullOrWhiteSpace(payload.DeezerId))
         {
-            track.Urls["deezer_track_id"] = payload.DeezerId;
+            track.Urls[DeezerTrackIdKey] = payload.DeezerId;
             track.Urls[DeezerSource] = $"https://www.deezer.com/track/{payload.DeezerId}";
         }
 

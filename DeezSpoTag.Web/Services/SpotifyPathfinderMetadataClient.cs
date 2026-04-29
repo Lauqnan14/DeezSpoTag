@@ -1740,7 +1740,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             string accountName = string.IsNullOrWhiteSpace(spotifyState.ActiveAccount) ? "platform" : spotifyState.ActiveAccount.Trim();
             string root = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-            string blobDir = Path.Join(root, "spotify", "blobs");
+            string blobDir = Path.Join(root, SpotifyDirectoryName, "blobs");
             Directory.CreateDirectory(blobDir);
             string blobPath = Path.Join(blobDir, $"{SanitizeBlobName(accountName)}.web.json");
             await _blobService.SaveWebPlayerBlobAsync(
@@ -6768,7 +6768,7 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         return string.IsNullOrWhiteSpace(configRoot)
             ? null
-            : Path.Join(configRoot, "spotify", PathfinderOverridesFileName);
+            : Path.Join(configRoot, SpotifyDirectoryName, PathfinderOverridesFileName);
     }
 }
 

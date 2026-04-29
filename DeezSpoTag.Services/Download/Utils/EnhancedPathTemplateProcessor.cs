@@ -48,7 +48,7 @@ public class EnhancedPathTemplateProcessor
     public PathGenerationResult GeneratePaths(Track track, string downloadObjectType, DeezSpoTagSettings settings)
     {
         // EXACT PORT: Determine filename template based on download type
-        var filenameTemplate = ResolveFilenameTemplate(downloadObjectType, settings);
+        var filenameTemplate = ResolveFilenameTemplate(settings);
 
         // EXACT PORT: Generate filename from template
         var filename = GenerateTrackName(filenameTemplate, track, settings);
@@ -205,33 +205,8 @@ public class EnhancedPathTemplateProcessor
 
         // EXACT PORT: Normalize path separators and clean up
         filename = filename.Replace("\\", "/");
-        filename = CollapseRepeatedLeadingArtistPrefix(filename, template, normalizedMainArtist);
+        filename = PathTemplateCommon.CollapseRepeatedLeadingArtistPrefix(filename, template, normalizedMainArtist);
         return AntiDot(FixLongName(filename, settings.LimitMax));
-    }
-
-    private static string CollapseRepeatedLeadingArtistPrefix(string filename, string template, string normalizedMainArtist)
-    {
-        if (string.IsNullOrWhiteSpace(filename)
-            || string.IsNullOrWhiteSpace(normalizedMainArtist)
-            || !template.Contains("%artist%", StringComparison.OrdinalIgnoreCase)
-            || !template.Contains("%title%", StringComparison.OrdinalIgnoreCase))
-        {
-            return filename;
-        }
-
-        var prefix = $"{normalizedMainArtist} - ";
-        if (!filename.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-        {
-            return filename;
-        }
-
-        var remainder = filename[prefix.Length..];
-        while (remainder.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-        {
-            remainder = remainder[prefix.Length..];
-        }
-
-        return prefix + remainder;
     }
 
     /// <summary>
@@ -529,7 +504,7 @@ public class EnhancedPathTemplateProcessor
                 settings.CreateStructurePlaylist);
     }
 
-    private static string ResolveFilenameTemplate(string downloadObjectType, DeezSpoTagSettings settings)
+    private static string ResolveFilenameTemplate(DeezSpoTagSettings settings)
     {
         return settings.TracknameTemplate;
     }

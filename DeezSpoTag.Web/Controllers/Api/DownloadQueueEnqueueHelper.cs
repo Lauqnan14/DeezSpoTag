@@ -9,6 +9,9 @@ internal static class DownloadQueueEnqueueHelper
 {
     private const string DuplicateReasonCode = "queue_duplicate";
     private const string DuplicateQueueMessage = "Skipped: matching track is already in queue.";
+    private const string QueuedStatus = "queued";
+    private const string RunningStatus = "running";
+    private const string PausedStatus = "paused";
 
     public static Func<TPayload, int, CancellationToken, Task<EnqueueOutcome>> CreateDedupEnqueueDelegate<TPayload>(
         DownloadQueueRepository queueRepository,
@@ -204,7 +207,7 @@ internal static class DownloadQueueEnqueueHelper
         await queueRepository.UpdatePayloadAsync(existing.QueueUuid, payloadJson, cancellationToken);
         await queueRepository.UpdateStatusAsync(
             existing.QueueUuid,
-            "queued",
+            QueuedStatus,
             error: null,
             downloaded: 0,
             failed: 0,
@@ -214,7 +217,7 @@ internal static class DownloadQueueEnqueueHelper
     }
 
     private static bool IsQueuedQueueStatus(string status)
-        => status is "queued" or "running" or "paused";
+        => status is QueuedStatus or RunningStatus or PausedStatus;
 
     private static async Task<EnqueueOutcome> EnqueueNewItemAsync<TPayload>(
         TPayload payload,
@@ -245,7 +248,7 @@ internal static class DownloadQueueEnqueueHelper
             QualityRank: null,
             QueueOrder: null,
             ContentType: payload.ContentType,
-            Status: "queued",
+            Status: QueuedStatus,
             PayloadJson: json,
             Progress: 0,
             Downloaded: 0,

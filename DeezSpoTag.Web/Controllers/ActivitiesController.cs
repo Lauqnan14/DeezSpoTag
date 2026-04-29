@@ -32,6 +32,9 @@ public class ActivitiesController : Controller
     private const string FinishedStatus = "finished";
     private const string DownloadFinishedStatus = "download finished";
     private const string DownloadNotFoundMessage = "Download not found in queue";
+    private const string DeezerSource = "deezer";
+    private const string ArtistKey = "artist";
+    private const string QualityTitleKey = "Quality";
     private const string FilesField = "files";
     private const string LyricsStatusField = "lyrics_status";
     private const string TtmlExtension = ".ttml";
@@ -718,7 +721,7 @@ public class ActivitiesController : Controller
     {
         return engine switch
         {
-            "deezer" => DownloadSourceOrder.ResolveDeezerBitrate(settings, 0).ToString(),
+            DeezerSource => DownloadSourceOrder.ResolveDeezerBitrate(settings, 0).ToString(),
             "qobuz" => MapQobuzQuality(settings.QobuzQuality),
             "tidal" => MapTidalQuality(settings.TidalQuality),
             "amazon" => "FLAC",
@@ -765,7 +768,7 @@ public class ActivitiesController : Controller
     private static void NormalizePayloadKeys(Dictionary<string, object> payload)
     {
         EnsurePayloadField(payload, "title", "Title", "trackTitle", "TrackTitle");
-        EnsurePayloadField(payload, "artist", "Artist", "artistName", "ArtistName");
+        EnsurePayloadField(payload, ArtistKey, "Artist", "artistName", "ArtistName");
         EnsurePayloadField(payload, "album", "Album", "albumName", "AlbumName");
         EnsurePayloadField(payload, "albumArtist", "AlbumArtist", "album_artist", "Album_Artist");
         EnsurePayloadField(payload, "cover", "Cover", "coverUrl", "CoverUrl", "albumCover", "AlbumCover");
@@ -773,7 +776,7 @@ public class ActivitiesController : Controller
         EnsurePayloadField(payload, "sourceUrl", "SourceUrl", "source_url");
         EnsurePayloadField(payload, "contentType", "ContentType", "content_type");
         EnsurePayloadField(payload, "collectionType", "CollectionType", "collection_type");
-        EnsurePayloadField(payload, "quality", "Quality", "bitrate", "Bitrate");
+        EnsurePayloadField(payload, "quality", QualityTitleKey, "bitrate", "Bitrate");
         EnsurePayloadFieldRaw(payload, "autoSources", "AutoSources");
         EnsurePayloadFieldRaw(payload, "autoIndex", "AutoIndex");
         EnsurePayloadFieldRaw(payload, "fallbackPlan", "FallbackPlan");
@@ -1110,7 +1113,7 @@ public class ActivitiesController : Controller
             return;
         }
 
-        var artistToken = NormalizeFileToken(GetPayloadString(payload, "artist", "Artist") ?? string.Empty);
+        var artistToken = NormalizeFileToken(GetPayloadString(payload, ArtistKey, "Artist") ?? string.Empty);
 
         var candidates = Directory.EnumerateFiles(dir, "*.*", SearchOption.TopDirectoryOnly)
             .Where(path => path.EndsWith(".lrc", StringComparison.OrdinalIgnoreCase)

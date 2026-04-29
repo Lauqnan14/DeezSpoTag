@@ -93,6 +93,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private const string DefaultHostSharedSessionDir = "DeezSpoTag.Workers/Data/apple-wrapper/session";
     private const string SharedLoginFileName = "wrapper-login.txt";
     private const string SharedLogoutFileName = "wrapper-logout.txt";
+    private const string SharedFilesDirectoryName = "files";
     private const string SharedLogoutStateFileName = "wrapper-logout-state.txt";
     private const string SharedTwoFactorStateFileName = "wrapper-2fa-state.txt";
     private const string SharedAuthActiveFileName = "wrapper-auth-active.txt";
@@ -553,7 +554,6 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _lastTwoFactorProbeResult = false;
         }
     }
-
     private bool IsExternalLoginFlowActive()
     {
         lock (_sync)
@@ -974,7 +974,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         var dataPath = ResolveExternalWrapperSharedDataDir();
-        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files");
+        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
         var dataReady = TryProbeSharedControlPath(dataPath, ".wrapper-health-probe-data", out var dataError);
         var sessionReady = TryProbeSharedControlPath(sessionPath, ".wrapper-health-probe-session", out var sessionError);
 
@@ -1609,7 +1609,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private static string ResolveExternalWrapperSharedTwoFactorCodeFilePath()
     {
-        return Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files", "2fa.txt");
+        return Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName, "2fa.txt");
     }
 
     private static string ResolveExternalWrapperSharedAuthActiveFilePath()
@@ -2285,7 +2285,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         var dataPath = ResolveExternalWrapperSharedDataDir();
-        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files");
+        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
         var dataReady = TryProbeSharedControlPath(dataPath, ".wrapper-status-probe-data", out var dataError);
         var sessionReady = TryProbeSharedControlPath(sessionPath, ".wrapper-status-probe-session", out var sessionError);
 
@@ -2754,7 +2754,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private static bool HasSharedWrapperSessionCache()
     {
-        var filesPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), "files");
+        var filesPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
         if (!Directory.Exists(filesPath))
         {
             return false;
