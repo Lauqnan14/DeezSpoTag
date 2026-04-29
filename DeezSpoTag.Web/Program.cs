@@ -794,7 +794,7 @@ public partial class Program
                             HttpOnly = true,
                             IsEssential = true,
                             SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Lax,
-                            Secure = context.Request.IsHttps,
+                            Secure = true,
                             Expires = DateTimeOffset.UtcNow.AddYears(1)
                         });
                 }

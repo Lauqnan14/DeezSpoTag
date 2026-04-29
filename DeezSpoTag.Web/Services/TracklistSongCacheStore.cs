@@ -58,14 +58,14 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
                 return null;
             }
 
-            var payloadJson = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+            var payloadJson = await GetStringAsync(reader, 2, cancellationToken);
             if (string.IsNullOrWhiteSpace(payloadJson))
             {
                 await DeleteByKeyAsync(connection, normalizedType, normalizedId, cancellationToken);
                 return null;
             }
 
-            var lastUsedRaw = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
+            var lastUsedRaw = await GetStringAsync(reader, 6, cancellationToken);
             if (!TryParseTimestamp(lastUsedRaw, out var lastUsedUtc)
                 || IsStale(lastUsedUtc, DateTimeOffset.UtcNow))
             {
@@ -73,7 +73,7 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
                 return null;
             }
 
-            var updatedUtcText = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+            var updatedUtcText = await GetStringAsync(reader, 5, cancellationToken);
             if (!TryParseTimestamp(updatedUtcText, out var updatedUtc))
             {
                 updatedUtc = DateTimeOffset.UtcNow;
@@ -82,11 +82,11 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
             await TouchByKeyAsync(connection, normalizedType, normalizedId, cancellationToken);
 
             return new TracklistSongCacheEntry(
-                TracklistType: reader.IsDBNull(0) ? normalizedType : reader.GetString(0),
-                TracklistId: reader.IsDBNull(1) ? normalizedId : reader.GetString(1),
+                TracklistType: await GetStringOrDefaultAsync(reader, 0, normalizedType, cancellationToken),
+                TracklistId: await GetStringOrDefaultAsync(reader, 1, normalizedId, cancellationToken),
                 PayloadJson: payloadJson,
-                PayloadHash: reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
-                TrackCount: reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+                PayloadHash: await GetStringAsync(reader, 3, cancellationToken),
+                TrackCount: await reader.IsDBNullAsync(4, cancellationToken) ? 0 : reader.GetInt32(4),
                 UpdatedUtc: updatedUtc);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -222,9 +222,9 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        await EnsureColumnAsync(connection, "tracklist_song_cache", "last_used_at", "TEXT", cancellationToken);
-        await EnsureColumnAsync(connection, "tracklist_song_cache", "created_at", "TEXT", cancellationToken);
-        await EnsureColumnAsync(connection, "tracklist_song_cache", "updated_at", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, "last_used_at", cancellationToken);
+        await EnsureColumnAsync(connection, "created_at", cancellationToken);
+        await EnsureColumnAsync(connection, "updated_at", cancellationToken);
 
         var now = FormatTimestamp(DateTimeOffset.UtcNow);
         await using (var normalizeCommand = connection.CreateCommand())
@@ -295,19 +295,17 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
 
     private static async Task EnsureColumnAsync(
         SqliteConnection connection,
-        string tableName,
         string columnName,
-        string columnSql,
         CancellationToken cancellationToken)
     {
         await using var pragma = connection.CreateCommand();
-        pragma.CommandText = $"PRAGMA table_info({tableName});";
+        pragma.CommandText = "PRAGMA table_info(tracklist_song_cache);";
         await using var reader = await pragma.ExecuteReaderAsync(cancellationToken);
 
         var exists = false;
         while (await reader.ReadAsync(cancellationToken))
         {
-            var existingName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            var existingName = await GetStringAsync(reader, 1, cancellationToken);
             if (string.Equals(existingName, columnName, StringComparison.OrdinalIgnoreCase))
             {
                 exists = true;
@@ -321,8 +319,31 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
         }
 
         await using var alter = connection.CreateCommand();
-        alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnSql};";
+        alter.CommandText = columnName switch
+        {
+            "last_used_at" => "ALTER TABLE tracklist_song_cache ADD COLUMN last_used_at TEXT;",
+            "created_at" => "ALTER TABLE tracklist_song_cache ADD COLUMN created_at TEXT;",
+            "updated_at" => "ALTER TABLE tracklist_song_cache ADD COLUMN updated_at TEXT;",
+            _ => throw new InvalidOperationException($"Unsupported tracklist cache column '{columnName}'.")
+        };
         await alter.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<string> GetStringAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+    {
+        return await reader.IsDBNullAsync(ordinal, cancellationToken)
+            ? string.Empty
+            : reader.GetString(ordinal);
+    }
+
+    private static async Task<string> GetStringOrDefaultAsync(
+        SqliteDataReader reader,
+        int ordinal,
+        string fallback,
+        CancellationToken cancellationToken)
+    {
+        var value = await GetStringAsync(reader, ordinal, cancellationToken);
+        return string.IsNullOrWhiteSpace(value) ? fallback : value;
     }
 
     private static bool TryNormalizeKey(

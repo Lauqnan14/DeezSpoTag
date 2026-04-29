@@ -45,7 +45,16 @@
             return globalThis.crypto.randomUUID();
         }
 
-        return `client-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+        let randomPart = '';
+        if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') {
+            const values = new Uint32Array(1);
+            globalThis.crypto.getRandomValues(values);
+            randomPart = values[0].toString(36);
+        } else {
+            randomPart = `${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`;
+        }
+
+        return `client-${Date.now()}-${randomPart}`;
     }
 
     function readCsrfToken() {
