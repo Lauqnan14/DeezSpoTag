@@ -2053,14 +2053,14 @@ public partial class AutoTagService
         AutoMoveExecutionResult? earlyAutoMove)
     {
         var autoMove = earlyAutoMove ?? await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes);
-        if (ShouldRunGenericOrganizer(job))
+        if (ShouldRunGenericOrganizer(job, configPath))
         {
             AppendLog(job, "auto-move completed, organizer starting");
             await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary);
         }
         else
         {
-            AppendLog(job, "generic organizer skipped for enhancement run");
+            AppendLog(job, "generic organizer skipped (requires enhancement folderUniformity.enforceFolderStructure=true)");
         }
         await RunIntegratedEnhancementWorkflowsAsync(
             job,
@@ -2125,9 +2125,20 @@ public partial class AutoTagService
         return await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
     }
 
-    private static bool ShouldRunGenericOrganizer(AutoTagJob job)
+    private bool ShouldRunGenericOrganizer(AutoTagJob job, string configPath)
     {
-        return !IsEnhancementRunIntent(job.RunIntent);
+        if (!IsEnhancementRunIntent(job.RunIntent))
+        {
+            return false;
+        }
+
+        var root = LoadConfigRoot(configPath);
+        if (root == null || root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
+        {
+            return false;
+        }
+
+        return TryGetFolderUniformityConfig(enhancementRoot, out _);
     }
 
     private async Task HandleRunJobFailureAsync(
