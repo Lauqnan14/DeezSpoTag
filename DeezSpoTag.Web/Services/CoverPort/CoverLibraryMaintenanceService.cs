@@ -222,7 +222,7 @@ public sealed class CoverLibraryMaintenanceService
             var coverBytes = await File.ReadAllBytesAsync(downloaded.OutputPath, cancellationToken);
             if (context.Request.SyncExternalCovers || !context.ArtworkState.HasExternal || context.WorkPlan.NeedsUpgrade)
             {
-                await File.WriteAllBytesAsync(Path.Join(context.AlbumDir, "cover.jpg"), coverBytes, cancellationToken);
+                await File.WriteAllBytesAsync(ResolveStillCoverOutputPath(context), coverBytes, cancellationToken);
             }
 
             if (context.Request.ReplaceMissingEmbeddedCovers || !context.ArtworkState.HasEmbedded || context.WorkPlan.NeedsUpgrade)
@@ -296,6 +296,17 @@ public sealed class CoverLibraryMaintenanceService
             albumModel,
             settings,
             playlist: null);
+    }
+
+    private static string ResolveStillCoverOutputPath(StillCoverUpdateContext context)
+    {
+        var baseFileName = BuildAlbumArtworkBaseFileName(context.Metadata, context.Request.CoverImageTemplate);
+        if (string.IsNullOrWhiteSpace(baseFileName))
+        {
+            baseFileName = "cover";
+        }
+
+        return Path.Join(context.AlbumDir, $"{baseFileName}.jpg");
     }
 
     private static AlbumArtworkState InspectAlbumArtwork(

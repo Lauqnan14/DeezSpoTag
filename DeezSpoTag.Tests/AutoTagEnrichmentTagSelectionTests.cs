@@ -43,7 +43,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
             ["downloadTags"] = new JsonArray("title", "trackId", "releaseId", "source", "url")
         };
 
-        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root, "download_enrichment" }));
+        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
         Assert.Equal(ExpectedDownloadEnrichmentTags, actual);
     }
 
@@ -61,7 +61,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
             ["downloadTags"] = new JsonArray("trackId", "releaseId", "source", "url")
         };
 
-        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root, "enhancement_only" }));
+        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
         Assert.Equal(ExpectedEnhancementOnlyTags, actual);
     }
 

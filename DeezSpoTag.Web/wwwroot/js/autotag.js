@@ -715,6 +715,42 @@
         return tags.filter((tag) => !isLyricsSelectionTag(tag));
     }
 
+    function normalizeAutoTagSelectionKey(tag) {
+        const raw = String(tag || "").trim();
+        if (!raw) {
+            return "";
+        }
+        const key = raw.toLowerCase();
+        if (key === "cover") {
+            return "albumArt";
+        }
+        if (key === "length") {
+            return "duration";
+        }
+        if (key === "lyrics") {
+            return "unsyncedLyrics";
+        }
+        return raw;
+    }
+
+    function normalizeAutoTagSelectionList(tags) {
+        const result = [];
+        const seen = new Set();
+        (Array.isArray(tags) ? tags : []).forEach((tag) => {
+            const normalized = normalizeAutoTagSelectionKey(tag);
+            if (!normalized || isLyricsSelectionTag(normalized)) {
+                return;
+            }
+            const key = normalized.toLowerCase();
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            result.push(normalized);
+        });
+        return result;
+    }
+
     function getTagListForTarget(name) {
         if (name === "downloadTags") {
             return getDownloadTagsList();
@@ -1527,10 +1563,10 @@
     }
 
     function syncEnhancementTagsWithEnrichment() {
-        const enrichmentTags = removeLyricsSelectionTags(
+        const enrichmentTags = normalizeAutoTagSelectionList(
             Array.isArray(state.config.tags) ? state.config.tags : []
         );
-        const enhancementTags = removeLyricsSelectionTags(
+        const enhancementTags = normalizeAutoTagSelectionList(
             Array.isArray(state.config.gapFillTags) ? state.config.gapFillTags : []
         );
         const normalizedDownloadTags = normalizeDownloadTags(
@@ -3188,9 +3224,9 @@
         const moveSuccessLibraryId = Number.parseInt(String(config.moveSuccessLibraryFolderId ?? ""), 10);
         config.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
         ensureEffectivePlatforms(config);
-        config.tags = removeLyricsSelectionTags(Array.isArray(config.tags) ? config.tags : []);
+        config.tags = normalizeAutoTagSelectionList(Array.isArray(config.tags) ? config.tags : []);
         config.downloadTags = removeLyricsSelectionTags(Array.isArray(config.downloadTags) ? config.downloadTags : []);
-        config.gapFillTags = removeLyricsSelectionTags(Array.isArray(config.gapFillTags) ? config.gapFillTags : []);
+        config.gapFillTags = normalizeAutoTagSelectionList(Array.isArray(config.gapFillTags) ? config.gapFillTags : []);
         config.overwriteTags = normalizeOverwriteTags(Array.isArray(config.overwriteTags) ? config.overwriteTags : []);
     }
 
@@ -3591,9 +3627,9 @@
     }
 
     function readTagSelectionsFromUi() {
-        state.config.tags = removeLyricsSelectionTags(getCheckedTags("tags"));
+        state.config.tags = normalizeAutoTagSelectionList(getCheckedTags("tags"));
         state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-        state.config.gapFillTags = removeLyricsSelectionTags(getCheckedTags("gapFillTags"));
+        state.config.gapFillTags = normalizeAutoTagSelectionList(getCheckedTags("gapFillTags"));
         state.config.overwriteTags = normalizeOverwriteTags(getCheckedTags("overwriteTags"));
         syncEnhancementTagsWithEnrichment();
     }
@@ -5743,6 +5779,13 @@
             return;
         }
 
+        if (!isManualEnrichmentShazamEnabled()) {
+            const message = "Manual enrichment requires Shazam. Enable Shazam in the active AutoTag profile before running manual enrichment.";
+            setExternalStartStatus(message);
+            showToast(message, "warning");
+            return;
+        }
+
         // Manual enrichment runs in the configured download/staging folder only.
         const defaultStagingPath = String(state.settingsCache?.downloadLocation || "").trim();
         const targetPath = defaultStagingPath;
@@ -5781,6 +5824,11 @@
         }
         setExternalStartStatus("External AutoTag started.");
         showToast("External AutoTag started.", "success");
+    }
+
+    function isManualEnrichmentShazamEnabled() {
+        return Array.isArray(state.config?.platforms)
+            && state.config.platforms.some((platform) => String(platform || "").trim().toLowerCase() === "shazam");
     }
 
     async function fetchJobById(jobId) {
@@ -6602,9 +6650,9 @@
             if (target instanceof HTMLInputElement
                 && target.type === "checkbox"
                 && ["tags", "downloadTags", "gapFillTags", "overwriteTags"].includes(target.name)) {
-                state.config.tags = removeLyricsSelectionTags(getCheckedTags("tags"));
+                state.config.tags = normalizeAutoTagSelectionList(getCheckedTags("tags"));
                 state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-                state.config.gapFillTags = removeLyricsSelectionTags(getCheckedTags("gapFillTags"));
+                state.config.gapFillTags = normalizeAutoTagSelectionList(getCheckedTags("gapFillTags"));
                 state.config.overwriteTags = normalizeOverwriteTags(getCheckedTags("overwriteTags"));
                 syncEnhancementTagsWithEnrichment();
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
