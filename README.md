@@ -29,6 +29,13 @@ DeezSpoTag automates music workflows end-to-end:
   <img src="Screenshots/screenshot.gif" alt="DeezSpoTag Interface Demo" />
 </p>
 
+## Warning
+
+- Apple wrapper is in development. Use the `ghcr.io/itouakirai/wrapper:x86` wrapper in the mean time.
+- Only Shazam, Spotify, iTunes, and Deezer have been thoroughly tested for tagging with reliable results.
+- Manual tagging is still under heavy development.
+- Soundtrack fetching requires a lot of work to reliably fetch soundtracks.
+
 ## Key Features
 
 ### Multi-Source Download Workflow
