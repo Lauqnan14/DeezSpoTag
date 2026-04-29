@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -72,6 +74,61 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
         Assert.NotNull(downloaded);
         Assert.Single(handler.RequestedUrls);
         Assert.Contains("/5000x5000bb.jpg", handler.RequestedUrls[0], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AnimatedArtworkSongLookup_BuildsResilientSearchTerms_ForFeaturedAndMultiArtist()
+    {
+        var method = typeof(AppleQueueHelpers).GetMethod(
+            "BuildSongIdSearchTerms",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var terms = (List<string>)method!.Invoke(
+            null,
+            new object?[]
+            {
+                "Cardi B;Kehlani",
+                "Cardi B",
+                "Invasion of Privacy",
+                "Ring (feat. Kehlani)",
+                "Ring"
+            })!;
+
+        Assert.Contains("Cardi B;Kehlani Invasion of Privacy", terms, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("Cardi B Invasion of Privacy", terms, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("Cardi B Ring", terms, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("Ring", terms, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("Cardi B;Kehlani", "Cardi B")]
+    [InlineData("Cardi B & Kehlani", "Cardi B")]
+    [InlineData("Cardi B feat. Kehlani", "Cardi B")]
+    public void AnimatedArtworkSongLookup_ExtractsPrimaryArtist(string input, string expected)
+    {
+        var method = typeof(AppleQueueHelpers).GetMethod(
+            "ExtractPrimaryArtistName",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var value = (string?)method!.Invoke(null, new object?[] { input });
+        Assert.Equal(expected, value);
+    }
+
+    [Theory]
+    [InlineData("Ring (feat. Kehlani)", "Ring")]
+    [InlineData("Song - feat. Artist", "Song")]
+    [InlineData("Plain Title", "Plain Title")]
+    public void AnimatedArtworkSongLookup_StripsFeaturingSuffixes(string input, string expected)
+    {
+        var method = typeof(AppleQueueHelpers).GetMethod(
+            "StripFeaturingFromTitle",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var value = (string?)method!.Invoke(null, new object?[] { input });
+        Assert.Equal(expected, value);
     }
 
     private static DeezSpoTagSettings BuildSettings()
