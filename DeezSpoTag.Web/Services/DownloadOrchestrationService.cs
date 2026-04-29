@@ -2884,7 +2884,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     private Task WaitForJobCompletionAsync(AutoTagJob job, CancellationToken cancellationToken)
     {
-        if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase))
+        if (!IsJobRunning(job.Id))
         {
             return Task.CompletedTask;
         }
@@ -2901,21 +2901,47 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         _autoTagService.JobCompleted += Handler;
 
-        return WaitForCompletionAsync(completion.Task, Handler, cancellationToken);
+        // Handle race: job can complete between StartJob and event subscription.
+        if (!IsJobRunning(job.Id))
+        {
+            _autoTagService.JobCompleted -= Handler;
+            return Task.CompletedTask;
+        }
+
+        return WaitForCompletionAsync(job.Id, completion.Task, Handler, cancellationToken);
     }
 
     private async Task WaitForCompletionAsync(
+        string jobId,
         Task completionTask,
         Action<AutoTagJob> handler,
         CancellationToken cancellationToken)
     {
         try
         {
-            await completionTask.WaitAsync(cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var finishedTask = await Task.WhenAny(completionTask, Task.Delay(TimeSpan.FromSeconds(1), cancellationToken));
+                if (finishedTask == completionTask || !IsJobRunning(jobId))
+                {
+                    break;
+                }
+            }
         }
         finally
         {
             _autoTagService.JobCompleted -= handler;
         }
+    }
+
+    private bool IsJobRunning(string? jobId)
+    {
+        if (string.IsNullOrWhiteSpace(jobId))
+        {
+            return false;
+        }
+
+        var job = _autoTagService.GetJob(jobId);
+        return string.Equals(job?.Status, "running", StringComparison.OrdinalIgnoreCase);
     }
 }
