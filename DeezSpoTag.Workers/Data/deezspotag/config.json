@@ -1,5 +1,5 @@
 {
-  "downloadLocation": "/home/user/Music/Test/Downs",
+  "downloadLocation": "",
   "executeCommand": "",
   "tags": {
     "title": true,
@@ -169,7 +169,7 @@
   "rememberTabsPreference": true,
   "deezerLanguage": "en",
   "deezerCountry": "US",
-  "apiToken": "REDACTED_TOKEN",
+  "apiToken": "",
   "watchEnabled": false,
   "watchPollIntervalSeconds": 1,
   "watchMaxItemsPerRun": 50,
@@ -208,7 +208,7 @@
     "titleTemplate": "%title%"
   },
   "podcast": {
-    "downloadLocation": "/home/user/Music/Test/MixTapes"
+    "downloadLocation": ""
   },
   "multiQuality": {
     "enabled": true,
