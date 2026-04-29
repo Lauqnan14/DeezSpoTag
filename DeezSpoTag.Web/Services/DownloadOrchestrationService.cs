@@ -296,44 +296,17 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         if (string.IsNullOrWhiteSpace(runningJobId))
         {
-            return DenyDownloads("Downloads paused while AutoTag state is resolving.");
-        }
-
-        var runningJob = _autoTagService.GetJob(runningJobId);
-        var runIntentDecision = TryResolveRunIntentGateDecision(runningJob);
-        if (runIntentDecision != null)
-        {
-            return runIntentDecision;
-        }
-
-        var paused = await TryPauseAnyRunningAutoTagForIncomingDownloadAsync(runningJobId);
-        if (paused || !TaggingInProgress)
-        {
+            _logger.LogWarning("AutoTag reported a running job with an empty id. Allowing download.");
             return AllowDownloads();
         }
 
-        return DenyDownloads("Downloads paused while AutoTag is still stopping.");
-    }
-
-    private static DownloadGateDecision? TryResolveRunIntentGateDecision(AutoTagJob? runningJob)
-    {
-        if (runningJob == null)
-        {
-            return null;
-        }
-
-        if (string.Equals(runningJob.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        var runningJob = _autoTagService.GetJob(runningJobId);
+        if (string.Equals(runningJob?.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
         {
             return DenyDownloads("Downloads paused while enrichment is running.");
         }
 
-        if (string.Equals(runningJob.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(runningJob.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        return DenyDownloads("Downloads paused while AutoTag stage is unknown (protecting enrichment).");
+        return AllowDownloads();
     }
 
     public void MarkDownloadQueued()
