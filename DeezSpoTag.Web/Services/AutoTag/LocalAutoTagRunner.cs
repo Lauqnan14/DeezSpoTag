@@ -4090,13 +4090,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (context.EnabledTags.Contains(ArtistTag) && context.EffectiveTagSettings.Artist)
         {
-            WriteMp4AtlCompatibilityRaw(additional, ArtistUpperTag, atlTrack.Artist, context.Config, SupportedTag.Artist);
+            WriteMp4AtlCompatibilityRaw(additional, "ARTIST", atlTrack.Artist, context.Config, SupportedTag.Artist);
             WriteMp4AtlCompatibilityRaw(additional, "TPE1", atlTrack.Artist, context.Config, SupportedTag.Artist);
         }
 
         if (context.EnabledTags.Contains(AlbumArtistTag) && context.EffectiveTagSettings.AlbumArtist)
         {
-            WriteMp4AtlCompatibilityRaw(additional, AlbumArtistUpperTag, atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
+            WriteMp4AtlCompatibilityRaw(additional, "ALBUMARTIST", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
             WriteMp4AtlCompatibilityRaw(additional, "TPE2", atlTrack.AlbumArtist, context.Config, SupportedTag.AlbumArtist);
         }
 
@@ -6134,7 +6134,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.ReleaseDate =>
                 Mp4TagHelper.HasRaw(file, "©day")
                 || Mp4TagHelper.HasRaw(file, "DATE"),
-            SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, OriginalDateUpperTag),
+            SupportedTag.PublishDate => Mp4TagHelper.HasRaw(file, "ORIGINALDATE"),
             SupportedTag.URL => Mp4TagHelper.HasRaw(file, WwwAudioFileTag),
             SupportedTag.TrackId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
             SupportedTag.ReleaseId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
@@ -6666,7 +6666,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
-        TrySetAppleDashBox(apple, OriginalDateUpperTag, new[] { dateString });
+        TrySetAppleDashBox(apple, "ORIGINALDATE", new[] { dateString });
     }
 
     private static bool IsYearOnlyDateFormat(string? dateFormat)

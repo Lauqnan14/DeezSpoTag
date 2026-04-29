@@ -532,7 +532,7 @@ public class AudioTagger
         }
 
         var rank = Math.Round(track.Rank / 10000.0);
-        SetCustomFrame(tag, "TXXX", RatingUpperTag, rank.ToString(CultureInfo.InvariantCulture), save);
+        SetCustomFrame(tag, "TXXX", "RATING", rank.ToString(CultureInfo.InvariantCulture), save);
     }
 
     private static void RemoveId3v1WhenDisabled(TagLib.File file, TagSettings save)
