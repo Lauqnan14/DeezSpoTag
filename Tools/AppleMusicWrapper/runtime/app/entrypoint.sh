@@ -433,7 +433,9 @@ run_wrapper_with_state_tracking() {
     sleep 0.2
   done
 
-  if ! wait "$wrapper_pid"; then
+  if wait "$wrapper_pid"; then
+    exit_code=0
+  else
     exit_code=$?
   fi
   wait "$parser_pid" || true
