@@ -121,6 +121,15 @@ else:
     TensorflowPredictEffnetDiscogs = None
 
 
+REQUIRED_ENHANCED_MODELS = [
+    "msd-musicnn-1.pb",
+    "mood_happy-msd-musicnn-1.pb",
+    "mood_sad-msd-musicnn-1.pb",
+    "mood_relaxed-msd-musicnn-1.pb",
+    "mood_aggressive-msd-musicnn-1.pb",
+]
+
+
 class AudioAnalyzer:
     """Lidify audio analysis core (ported)."""
 
@@ -867,16 +876,55 @@ def run_batch_analysis(
     }
 
 
-def _probe_payload() -> Dict[str, Any]:
+def _probe_payload(models_dir: Optional[str] = None) -> Dict[str, Any]:
     missing_required, missing_optional = probe_capabilities()
-    return {
+    payload: Dict[str, Any] = {
         "ok": len(missing_required) == 0,
         "retryable": False,
         "errorCode": "ESSENTIA_MISSING_REQUIRED" if len(missing_required) > 0 else None,
         "message": None if len(missing_required) == 0 else "Missing required Essentia algorithms.",
         "missingRequired": missing_required,
         "missingOptional": missing_optional,
+        "enhancedMode": False,
+        "missingEnhancedModels": [],
+        "loadedPredictionHeads": [],
     }
+
+    if missing_required:
+        return payload
+
+    if not models_dir:
+        return payload
+
+    if not os.path.isdir(models_dir):
+        payload["ok"] = False
+        payload["errorCode"] = "VIBE_MODELS_MISSING"
+        payload["message"] = f"Models directory not found: {models_dir}"
+        return payload
+
+    missing_enhanced = [
+        file_name
+        for file_name in REQUIRED_ENHANCED_MODELS
+        if not os.path.exists(os.path.join(models_dir, file_name))
+        or os.path.getsize(os.path.join(models_dir, file_name)) <= 0
+    ]
+    payload["missingEnhancedModels"] = missing_enhanced
+
+    analyzer = AudioAnalyzer(models_dir)
+    loaded_heads = sorted(analyzer.prediction_models.keys())
+    payload["enhancedMode"] = analyzer.enhanced_mode
+    payload["musicnnLoaded"] = analyzer.musicnn_model is not None
+    payload["loadedPredictionHeads"] = loaded_heads
+
+    if not analyzer.enhanced_mode:
+        payload["ok"] = False
+        payload["errorCode"] = "VIBE_ENHANCED_UNAVAILABLE"
+        if missing_enhanced:
+            payload["message"] = "Missing required enhanced analysis model files."
+        else:
+            payload["message"] = "Required enhanced analysis models exist but did not initialize."
+
+    return payload
 
 
 def _load_batch_items(batch_json_path: str) -> List[Dict[str, Any]]:
@@ -917,7 +965,7 @@ def main():
     args = parser.parse_args()
 
     if args.probe:
-        sys.stdout.write(json.dumps(_probe_payload()))
+        sys.stdout.write(json.dumps(_probe_payload(args.models)))
         return
 
     try:

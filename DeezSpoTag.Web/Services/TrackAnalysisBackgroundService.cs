@@ -1412,7 +1412,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             var startInfo = new ProcessStartInfo
             {
                 FileName = ResolvePythonExecutable(),
-                Arguments = $"\"{scriptPath}\" --probe",
+                Arguments = $"\"{scriptPath}\" --probe --models \"{modelsDir}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -1478,7 +1478,30 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return new MlCapability(false, string.IsNullOrWhiteSpace(details) ? "Essentia unavailable." : details);
         }
 
+        if (probe.EnhancedMode != true)
+        {
+            var details = BuildEnhancedProbeFailure(probe);
+            return new MlCapability(false, details);
+        }
+
         return new MlCapability(true, null);
+    }
+
+    private static string BuildEnhancedProbeFailure(ProbeOutput probe)
+    {
+        var details = new List<string>();
+        if (probe.MissingEnhancedModels is { Count: > 0 })
+        {
+            details.Add($"missing models: {string.Join(", ", probe.MissingEnhancedModels)}");
+        }
+
+        if (probe.LoadedPredictionHeads is not null)
+        {
+            details.Add($"loaded heads: {string.Join(", ", probe.LoadedPredictionHeads)}");
+        }
+
+        var suffix = details.Count == 0 ? string.Empty : $" ({string.Join("; ", details)})";
+        return $"Enhanced vibe analysis is unavailable; analyzer would fall back to standard mode{suffix}.";
     }
 
     private static string ResolvePythonExecutable()
@@ -1923,7 +1946,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         string? ErrorCode,
         string? Message,
         IReadOnlyList<string>? MissingRequired,
-        IReadOnlyList<string>? MissingOptional);
+        IReadOnlyList<string>? MissingOptional,
+        bool? EnhancedMode,
+        IReadOnlyList<string>? MissingEnhancedModels,
+        IReadOnlyList<string>? LoadedPredictionHeads);
 
     private static bool TryReadWithFfmpeg(string path, int seconds, out float[] samples, out int sampleRate, out string? errorMessage)
     {
