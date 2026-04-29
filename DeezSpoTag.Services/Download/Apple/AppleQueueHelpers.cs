@@ -1522,33 +1522,72 @@ public static class AppleQueueHelpers
         ILogger logger,
         CancellationToken cancellationToken)
     {
-        var termParts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(artist))
+        var normalizedArtist = string.IsNullOrWhiteSpace(artist) ? string.Empty : NormalizeLookupToken(artist);
+        var normalizedAlbum = string.IsNullOrWhiteSpace(album) ? string.Empty : NormalizeLookupToken(album);
+        var normalizedTitle = string.IsNullOrWhiteSpace(title) ? string.Empty : NormalizeLookupToken(title);
+
+        var primaryArtist = ExtractPrimaryArtistName(artist);
+        var normalizedPrimaryArtist = string.IsNullOrWhiteSpace(primaryArtist) ? string.Empty : NormalizeLookupToken(primaryArtist);
+        var cleanedTitle = StripFeaturingFromTitle(title);
+        var normalizedCleanedTitle = string.IsNullOrWhiteSpace(cleanedTitle) ? string.Empty : NormalizeLookupToken(cleanedTitle);
+
+        var queries = BuildSongIdSearchTerms(artist, primaryArtist, album, title, cleanedTitle);
+        foreach (var query in queries)
         {
-            termParts.Add(artist);
-        }
-        if (!string.IsNullOrWhiteSpace(album))
-        {
-            termParts.Add(album);
-        }
-        else if (!string.IsNullOrWhiteSpace(title))
-        {
-            termParts.Add(title);
+            var songId = await TryResolveSongIdForTermAsync(
+                appleCatalog,
+                query,
+                storefront,
+                normalizedArtist,
+                normalizedAlbum,
+                normalizedTitle,
+                logger,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(songId))
+            {
+                return songId;
+            }
         }
 
-        if (termParts.Count == 0)
+        foreach (var query in queries)
+        {
+            var relaxedSongId = await TryResolveSongIdForTermAsync(
+                appleCatalog,
+                query,
+                storefront,
+                string.IsNullOrWhiteSpace(normalizedPrimaryArtist) ? normalizedArtist : normalizedPrimaryArtist,
+                string.Empty,
+                string.IsNullOrWhiteSpace(normalizedCleanedTitle) ? normalizedTitle : normalizedCleanedTitle,
+                logger,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(relaxedSongId))
+            {
+                return relaxedSongId;
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<string?> TryResolveSongIdForTermAsync(
+        AppleMusicCatalogService appleCatalog,
+        string query,
+        string storefront,
+        string normalizedArtist,
+        string normalizedAlbum,
+        string normalizedTitle,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
         {
             return null;
         }
 
-        var term = string.Join(" ", termParts);
-        var normalizedArtist = string.IsNullOrWhiteSpace(artist) ? string.Empty : NormalizeLookupToken(artist);
-        var normalizedAlbum = string.IsNullOrWhiteSpace(album) ? string.Empty : NormalizeLookupToken(album);
-        var normalizedTitle = string.IsNullOrWhiteSpace(title) ? string.Empty : NormalizeLookupToken(title);
         try
         {
             using var doc = await appleCatalog.SearchAsync(
-                term,
+                query,
                 limit: 5,
                 storefront: storefront,
                 language: DefaultLanguage,
@@ -1566,10 +1605,92 @@ public static class AppleQueueHelpers
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "Apple animated artwork search failed.");
+            logger.LogDebug(ex, "Apple animated artwork search failed for query '{Query}'.", query);
         }
 
         return null;
+    }
+
+    private static List<string> BuildSongIdSearchTerms(
+        string? artist,
+        string? primaryArtist,
+        string? album,
+        string? title,
+        string? cleanedTitle)
+    {
+        var terms = new List<string>();
+
+        AddTerm(terms, artist, album);
+        AddTerm(terms, primaryArtist, album);
+        AddTerm(terms, artist, cleanedTitle);
+        AddTerm(terms, primaryArtist, cleanedTitle);
+        AddTerm(terms, artist, title);
+        AddTerm(terms, primaryArtist, title);
+        AddTerm(terms, album);
+        AddTerm(terms, cleanedTitle);
+        AddTerm(terms, title);
+
+        return terms
+            .Where(term => !string.IsNullOrWhiteSpace(term))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static void AddTerm(List<string> terms, string? left, string? right = null)
+    {
+        if (string.IsNullOrWhiteSpace(left) && string.IsNullOrWhiteSpace(right))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(right))
+        {
+            terms.Add(left!.Trim());
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(left))
+        {
+            terms.Add(right.Trim());
+            return;
+        }
+
+        terms.Add($"{left.Trim()} {right.Trim()}");
+    }
+
+    private static string? ExtractPrimaryArtistName(string? artist)
+    {
+        if (string.IsNullOrWhiteSpace(artist))
+        {
+            return null;
+        }
+
+        var normalized = artist.Trim();
+        var separators = new[] { ";", ",", "&", " x ", " feat. ", " feat ", " ft. ", " ft ", " with " };
+        foreach (var separator in separators)
+        {
+            var index = normalized.IndexOf(separator, StringComparison.OrdinalIgnoreCase);
+            if (index > 0)
+            {
+                return normalized[..index].Trim();
+            }
+        }
+
+        return normalized;
+    }
+
+    private static string? StripFeaturingFromTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        var value = title.Trim();
+        value = ReplaceWithTimeout(value, @"\s*\((?:feat|ft)\.?\s+[^)]*\)\s*", " ", RegexOptions.IgnoreCase);
+        value = ReplaceWithTimeout(value, @"\s*-\s*(?:feat|ft)\.?\s+.*$", string.Empty, RegexOptions.IgnoreCase);
+        value = ReplaceWithTimeout(value, @"\s+", " ", RegexOptions.None).Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static bool TryExtractBestMatchingSongId(
