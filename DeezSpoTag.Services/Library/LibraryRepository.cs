@@ -4961,6 +4961,16 @@ LIMIT 1;";
         command.Parameters.AddWithValue("ignoreRulesJson", (object?)ignoreRulesJson ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
 
+        const string resetStateSql = @"
+DELETE FROM playlist_watch_state
+WHERE source = @source AND source_id = @sourceId;";
+        await using (var resetStateCommand = new SqliteCommand(resetStateSql, connection))
+        {
+            resetStateCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            resetStateCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            await resetStateCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         return await GetPlaylistWatchPreferenceAsync(normalizedSource, normalizedSourceId, cancellationToken);
     }
 

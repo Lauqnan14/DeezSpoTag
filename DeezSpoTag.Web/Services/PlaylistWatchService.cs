@@ -22,6 +22,12 @@ public sealed class PlaylistWatchService
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
 
     private readonly record struct AtmosQueueRequest(string SourceLabel, string TrackId, bool AfterPrimarySkip);
+    private readonly record struct QueueWatchResult(int QueuedCount, int CompletedCount, int FailedCount)
+    {
+        public int HandledCount => QueuedCount + CompletedCount;
+    }
+
+    private readonly record struct QueueWatchTrackResult(int QueuedCount, bool Completed, bool Failed);
 
     private const string SpotifySource = "spotify";
     private const string DeezerSource = "deezer";
@@ -773,13 +779,22 @@ public sealed class PlaylistWatchService
         var scanResult = await CollectSpotifyPlaylistScanResultAsync(playlist.SourceId, loadedPage, cancellationToken);
         if (scanResult.NewTracks.Count > 0)
         {
-            await PersistAndQueueSpotifyTracksAsync(
+            var queueResult = await PersistAndQueueSpotifyTracksAsync(
                 playlist,
                 preference,
                 effectiveBlockRules,
                 loadedPage.Name,
                 scanResult.NewTracks,
                 cancellationToken);
+            if (ShouldDeferPlaylistWatchStateUpdate(
+                    SpotifySource,
+                    playlist.SourceId,
+                    loadedPage.Name ?? playlist.Name ?? "Playlist",
+                    scanResult.NewTracks.Count,
+                    queueResult))
+            {
+                return;
+            }
         }
 
         await UpsertPlaylistWatchStateAsync(
@@ -880,7 +895,7 @@ public sealed class PlaylistWatchService
         }
     }
 
-    private async Task PersistAndQueueSpotifyTracksAsync(
+    private async Task<QueueWatchResult> PersistAndQueueSpotifyTracksAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
         IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
@@ -897,7 +912,7 @@ public sealed class PlaylistWatchService
             trackInserts,
             cancellationToken);
 
-        var queuedCount = await QueueSpotifyTracksAsync(
+        var queueResult = await QueueSpotifyTracksAsync(
             newTracks,
             preference?.DestinationFolderId,
             BuildQueueWatchOptions(
@@ -909,9 +924,9 @@ public sealed class PlaylistWatchService
                 preference?.AtmosDestinationFolderId,
                 new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
             cancellationToken);
-        if (queuedCount <= 0)
+        if (queueResult.QueuedCount <= 0)
         {
-            return;
+            return queueResult;
         }
 
         var historyName = pageName ?? playlist.Name ?? "Playlist";
@@ -922,6 +937,7 @@ public sealed class PlaylistWatchService
             newTracks.Count,
             QueuedStatus,
             cancellationToken);
+        return queueResult;
     }
 
     private async Task TrySyncPlaylistToMediaServerAsync(
@@ -1272,7 +1288,7 @@ public sealed class PlaylistWatchService
                 trackInserts,
                 cancellationToken);
 
-            var queuedCount = await QueueSpotifyTracksAsync(
+            var queueResult = await QueueSpotifyTracksAsync(
                 newTracks.Select(track => track.Track).ToList(),
                 preference?.DestinationFolderId,
                 BuildQueueWatchOptions(
@@ -1290,8 +1306,17 @@ public sealed class PlaylistWatchService
                 playlist.SourceId,
                 listName,
                 newTracks.Count,
-                queuedCount > 0 ? QueuedStatus : "detected",
+                queueResult.QueuedCount > 0 ? QueuedStatus : "detected",
                 cancellationToken);
+            if (ShouldDeferPlaylistWatchStateUpdate(
+                    SpotifySource,
+                    playlist.SourceId,
+                    listName,
+                    newTracks.Count,
+                    queueResult))
+            {
+                return;
+            }
         }
 
         await UpsertPlaylistWatchStateAsync(
@@ -1422,7 +1447,7 @@ public sealed class PlaylistWatchService
             cancellationToken);
 
         var playlistName = playlistInfo.Title ?? playlist.Name ?? "Playlist";
-        var queuedCount = await QueueDeezerTracksAsync(
+        var queueResult = await QueueDeezerTracksAsync(
             newTracks,
             preference?.DestinationFolderId,
             BuildQueueWatchOptions(
@@ -1435,7 +1460,7 @@ public sealed class PlaylistWatchService
                 new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
             cancellationToken);
 
-        if (queuedCount > 0)
+        if (queueResult.QueuedCount > 0)
         {
             await AddPlaylistWatchHistoryAsync(
                 DeezerSource,
@@ -1444,6 +1469,15 @@ public sealed class PlaylistWatchService
                 newTracks.Count,
                 QueuedStatus,
                 cancellationToken);
+        }
+        if (ShouldDeferPlaylistWatchStateUpdate(
+                DeezerSource,
+                playlist.SourceId,
+                playlistName,
+                newTracks.Count,
+                queueResult))
+        {
+            return;
         }
 
         await UpsertPlaylistWatchStateAsync(
@@ -1554,7 +1588,7 @@ public sealed class PlaylistWatchService
                 trackInserts,
                 cancellationToken);
 
-            var queuedCount = await QueueAppleTracksAsync(
+            var queueResult = await QueueAppleTracksAsync(
                 newTracks,
                 preference?.DestinationFolderId,
                 BuildQueueWatchOptions(
@@ -1567,7 +1601,7 @@ public sealed class PlaylistWatchService
                     new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
                 cancellationToken);
 
-            if (queuedCount > 0)
+            if (queueResult.QueuedCount > 0)
             {
                 await AddPlaylistWatchHistoryAsync(
                     AppleSource,
@@ -1576,6 +1610,15 @@ public sealed class PlaylistWatchService
                     newTracks.Count,
                     QueuedStatus,
                     cancellationToken);
+            }
+            if (ShouldDeferPlaylistWatchStateUpdate(
+                    AppleSource,
+                    playlist.SourceId,
+                    playlistData.Name,
+                    newTracks.Count,
+                    queueResult))
+            {
+                return;
             }
         }
 
@@ -1687,7 +1730,7 @@ public sealed class PlaylistWatchService
                 trackInserts,
                 cancellationToken);
 
-            var queuedCount = await QueueBoomplayTracksAsync(
+            var queueResult = await QueueBoomplayTracksAsync(
                 newTracks,
                 preference?.DestinationFolderId,
                 BuildQueueWatchOptions(
@@ -1704,9 +1747,18 @@ public sealed class PlaylistWatchService
                 BoomplaySource,
                 playlist.SourceId,
                 playlistData.Name,
-                queuedCount,
+                queueResult.QueuedCount,
                 QueuedStatus,
                 cancellationToken);
+            if (ShouldDeferPlaylistWatchStateUpdate(
+                    BoomplaySource,
+                    playlist.SourceId,
+                    playlistData.Name,
+                    newTracks.Count,
+                    queueResult))
+            {
+                return;
+            }
         }
 
         await UpsertPlaylistWatchStateAsync(
@@ -1833,7 +1885,7 @@ public sealed class PlaylistWatchService
                 trackInserts,
                 cancellationToken);
 
-            var queuedCount = await QueueSmartTracklistTracksAsync(
+            var queueResult = await QueueSmartTracklistTracksAsync(
                 newTracks,
                 preference?.DestinationFolderId,
                 BuildQueueWatchOptions(
@@ -1850,9 +1902,18 @@ public sealed class PlaylistWatchService
                 persistedSource,
                 playlist.SourceId,
                 playlistData.Name,
-                queuedCount,
+                queueResult.QueuedCount,
                 QueuedStatus,
                 cancellationToken);
+            if (ShouldDeferPlaylistWatchStateUpdate(
+                    persistedSource,
+                    playlist.SourceId,
+                    playlistData.Name,
+                    newTracks.Count,
+                    queueResult))
+            {
+                return;
+            }
         }
 
         await UpsertPlaylistWatchStateAsync(
@@ -2085,7 +2146,7 @@ public sealed class PlaylistWatchService
                 trackInserts,
                 cancellationToken);
 
-            var queuedCount = await QueueRecommendationTracksAsync(
+            var queueResult = await QueueRecommendationTracksAsync(
                 newTracks,
                 preference?.DestinationFolderId,
                 BuildQueueWatchOptions(
@@ -2102,9 +2163,18 @@ public sealed class PlaylistWatchService
                 persistedSource,
                 playlist.SourceId,
                 playlistName,
-                queuedCount,
+                queueResult.QueuedCount,
                 QueuedStatus,
                 cancellationToken);
+            if (ShouldDeferPlaylistWatchStateUpdate(
+                    persistedSource,
+                    playlist.SourceId,
+                    playlistName,
+                    newTracks.Count,
+                    queueResult))
+            {
+                return;
+            }
         }
 
         await UpsertPlaylistWatchStateAsync(
@@ -2354,7 +2424,7 @@ public sealed class PlaylistWatchService
         return watchTracks;
     }
 
-    public Task<int> QueueSpotifyWatchTracksAsync(
+    public async Task<int> QueueSpotifyWatchTracksAsync(
         string collectionName,
         string collectionType,
         IReadOnlyCollection<SpotifyTrackSummary> tracks,
@@ -2362,14 +2432,15 @@ public sealed class PlaylistWatchService
         CancellationToken cancellationToken)
     {
         var sourceLabel = BuildQueueSourceLabel("Spotify", collectionType, collectionName);
-        return QueueSpotifyTracksAsync(
+        var result = await QueueSpotifyTracksAsync(
             tracks,
             destinationFolderId,
             BuildQueueWatchOptions(sourceLabel, null, null),
             cancellationToken);
+        return result.QueuedCount;
     }
 
-    public Task<int> QueueDeezerWatchTracksAsync(
+    public async Task<int> QueueDeezerWatchTracksAsync(
         string collectionName,
         string collectionType,
         IReadOnlyCollection<GwTrack> tracks,
@@ -2377,14 +2448,15 @@ public sealed class PlaylistWatchService
         CancellationToken cancellationToken)
     {
         var sourceLabel = BuildQueueSourceLabel("Deezer", collectionType, collectionName);
-        return QueueDeezerTracksAsync(
+        var result = await QueueDeezerTracksAsync(
             tracks,
             destinationFolderId,
             BuildQueueWatchOptions(sourceLabel, null, null),
             cancellationToken);
+        return result.QueuedCount;
     }
 
-    public Task<int> QueueAppleWatchIntentsAsync(
+    public async Task<int> QueueAppleWatchIntentsAsync(
         string collectionName,
         string collectionType,
         IReadOnlyCollection<DownloadIntent> intents,
@@ -2393,7 +2465,7 @@ public sealed class PlaylistWatchService
     {
         if (intents.Count == 0)
         {
-            return Task.FromResult(0);
+            return 0;
         }
 
         var watchTracks = intents
@@ -2412,14 +2484,15 @@ public sealed class PlaylistWatchService
             .ToList();
 
         var sourceLabel = BuildQueueSourceLabel("Apple Music", collectionType, collectionName);
-        return QueueWatchIntentTracksAsync(
+        var result = await QueueWatchIntentTracksAsync(
             watchTracks,
             destinationFolderId,
             BuildQueueWatchOptions(sourceLabel, null, null),
             cancellationToken);
+        return result.QueuedCount;
     }
 
-    private async Task<int> QueueSpotifyTracksAsync(
+    private async Task<QueueWatchResult> QueueSpotifyTracksAsync(
         IReadOnlyCollection<SpotifyTrackSummary> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
@@ -2427,7 +2500,7 @@ public sealed class PlaylistWatchService
     {
         if (tracks.Count == 0)
         {
-            return 0;
+            return default;
         }
 
         var watchTracks = tracks
@@ -2480,7 +2553,7 @@ public sealed class PlaylistWatchService
             cancellationToken);
     }
 
-    private async Task<int> QueueDeezerTracksAsync(
+    private async Task<QueueWatchResult> QueueDeezerTracksAsync(
         IReadOnlyCollection<GwTrack> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
@@ -2488,7 +2561,7 @@ public sealed class PlaylistWatchService
     {
         if (tracks.Count == 0)
         {
-            return 0;
+            return default;
         }
 
         var watchTracks = tracks
@@ -2522,7 +2595,7 @@ public sealed class PlaylistWatchService
             cancellationToken);
     }
 
-    private Task<int> QueueAppleTracksAsync(
+    private Task<QueueWatchResult> QueueAppleTracksAsync(
         IReadOnlyCollection<WatchIntentTrack> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
@@ -2535,7 +2608,7 @@ public sealed class PlaylistWatchService
             cancellationToken);
     }
 
-    private Task<int> QueueBoomplayTracksAsync(
+    private Task<QueueWatchResult> QueueBoomplayTracksAsync(
         IReadOnlyCollection<WatchIntentTrack> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
@@ -2548,7 +2621,7 @@ public sealed class PlaylistWatchService
             cancellationToken);
     }
 
-    private Task<int> QueueSmartTracklistTracksAsync(
+    private Task<QueueWatchResult> QueueSmartTracklistTracksAsync(
         IReadOnlyCollection<WatchIntentTrack> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
@@ -2561,7 +2634,7 @@ public sealed class PlaylistWatchService
             cancellationToken);
     }
 
-    private Task<int> QueueRecommendationTracksAsync(
+    private Task<QueueWatchResult> QueueRecommendationTracksAsync(
         List<RecommendationTrackDto> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
@@ -2569,7 +2642,7 @@ public sealed class PlaylistWatchService
     {
         if (tracks.Count == 0)
         {
-            return Task.FromResult(0);
+            return Task.FromResult(default(QueueWatchResult));
         }
 
         var watchTracks = tracks
@@ -2616,6 +2689,30 @@ public sealed class PlaylistWatchService
         return string.IsNullOrWhiteSpace(normalizedName)
             ? $"{defaultLabel} {normalizedType}"
             : $"{defaultLabel} {normalizedType}:{normalizedName}";
+    }
+
+    private bool ShouldDeferPlaylistWatchStateUpdate(
+        string source,
+        string sourceId,
+        string playlistName,
+        int detectedTrackCount,
+        QueueWatchResult queueResult)
+    {
+        if (detectedTrackCount <= 0 || queueResult.FailedCount <= 0)
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Playlist watch deferred snapshot update for {Source} playlist {SourceId} ({PlaylistName}) because {FailedCount} of {DetectedTrackCount} detected tracks were not queued or marked handled. queued={QueuedCount}, completed={CompletedCount}",
+            source,
+            sourceId,
+            playlistName,
+            queueResult.FailedCount,
+            detectedTrackCount,
+            queueResult.QueuedCount,
+            queueResult.CompletedCount);
+        return true;
     }
 
     private static QueueWatchOptions BuildQueueWatchOptions(
@@ -2819,7 +2916,7 @@ public sealed class PlaylistWatchService
         };
     }
 
-    private async Task<int> QueueWatchIntentTracksAsync(
+    private async Task<QueueWatchResult> QueueWatchIntentTracksAsync(
         IReadOnlyCollection<WatchIntentTrack> tracks,
         long? destinationFolderId,
         QueueWatchOptions options,
@@ -2827,7 +2924,7 @@ public sealed class PlaylistWatchService
     {
         if (tracks.Count == 0)
         {
-            return 0;
+            return default;
         }
 
         using var scope = _serviceProvider.CreateScope();
@@ -2836,6 +2933,8 @@ public sealed class PlaylistWatchService
         var normalizedDownloadVariantMode = NormalizeDownloadVariantMode(options.DownloadVariantMode);
 
         var queuedCount = 0;
+        var completedCount = 0;
+        var failedCount = 0;
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2843,6 +2942,7 @@ public sealed class PlaylistWatchService
             var intent = track.Intent;
             if (await HandleBlockedWatchIntentAsync(intent, track, options, cancellationToken))
             {
+                completedCount++;
                 continue;
             }
 
@@ -2862,10 +2962,11 @@ public sealed class PlaylistWatchService
                 cancellationToken);
             if (result is null)
             {
+                failedCount++;
                 continue;
             }
 
-            queuedCount += await HandleQueuedWatchIntentResultAsync(
+            var trackResult = await HandleQueuedWatchIntentResultAsync(
                 intentService,
                 result,
                 track,
@@ -2873,12 +2974,22 @@ public sealed class PlaylistWatchService
                 options,
                 normalizedDownloadVariantMode,
                 cancellationToken);
+            queuedCount += trackResult.QueuedCount;
+            if (trackResult.Completed)
+            {
+                completedCount++;
+            }
+
+            if (trackResult.Failed)
+            {
+                failedCount++;
+            }
         }
 
-        return queuedCount;
+        return new QueueWatchResult(queuedCount, completedCount, failedCount);
     }
 
-    private async Task<int> HandleQueuedWatchIntentResultAsync(
+    private async Task<QueueWatchTrackResult> HandleQueuedWatchIntentResultAsync(
         DownloadIntentService intentService,
         DownloadIntentResult result,
         WatchIntentTrack track,
@@ -2898,7 +3009,7 @@ public sealed class PlaylistWatchService
                 new AtmosQueueRequest(options.SourceLabel, track.TrackId, AfterPrimarySkip: false),
                 options,
                 cancellationToken);
-            return queuedCount;
+            return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: false);
         }
 
         if (ShouldMarkWatchTrackAsCompleted(result))
@@ -2923,9 +3034,11 @@ public sealed class PlaylistWatchService
                 options.WatchlistPlaylistId,
                 track.TrackId,
                 cancellationToken);
+            return new QueueWatchTrackResult(queuedCount, Completed: true, Failed: false);
         }
 
-        return queuedCount;
+        LogWatchEnqueueFailure(options, track, result);
+        return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: true);
     }
 
     private async Task<bool> HandleBlockedWatchIntentAsync(
@@ -3005,6 +3118,34 @@ public sealed class PlaylistWatchService
             _logger.LogWarning(ex, "{Source} watch queue failed for track {TrackId}", sourceLabel, trackId);
             return null;
         }
+    }
+
+    private void LogWatchEnqueueFailure(
+        QueueWatchOptions options,
+        WatchIntentTrack track,
+        DownloadIntentResult result)
+    {
+        var message = string.IsNullOrWhiteSpace(result.Message)
+            ? "No item was queued."
+            : result.Message.Trim();
+        var reasonCodes = result.SkipReasonCodes is { Count: > 0 }
+            ? string.Join(",", result.SkipReasonCodes.Where(static code => !string.IsNullOrWhiteSpace(code)))
+            : "";
+        var reasons = result.SkipReasons is { Count: > 0 }
+            ? string.Join(" | ", result.SkipReasons.Where(static reason => !string.IsNullOrWhiteSpace(reason)))
+            : "";
+
+        _logger.LogWarning(
+            "{Source} watch enqueue failed for playlist {PlaylistId}, track {TrackId} ({Title} - {Artist}). engine={Engine}, message={Message}, reasonCodes={ReasonCodes}, reasons={Reasons}",
+            options.SourceLabel,
+            options.WatchlistPlaylistId ?? "",
+            track.TrackId,
+            track.Intent.Title,
+            track.Intent.Artist,
+            result.Engine,
+            message,
+            reasonCodes,
+            reasons);
     }
 
     private async Task<int> TryQueueAtmosIntentAsync(
