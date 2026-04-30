@@ -10,6 +10,7 @@ public sealed class AppleExternalToolRunner
     private static readonly char[] LineSeparators = ['\r', '\n'];
     private static readonly string[] WindowsPathExtensions = ["", ".exe", ".cmd", ".bat"];
     private static readonly string[] DefaultPathExtensions = [""];
+    private const int MaxValidationMessageLength = 800;
 
     private readonly ILogger<AppleExternalToolRunner> _logger;
 
@@ -145,7 +146,7 @@ public sealed class AppleExternalToolRunner
             return false;
         }
 
-        var ffprobeResult = await TryRunToolAsync("ffprobe", Array.Empty<string>(), null, cancellationToken, "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", mediaPath);
+        var ffprobeResult = await TryRunToolAsync("ffprobe", Array.Empty<string>(), "DEEZSPOTAG_FFPROBE_PATH", cancellationToken, "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", mediaPath);
         if (ffprobeResult.Success)
         {
             return ffprobeResult.Output
@@ -170,7 +171,159 @@ public sealed class AppleExternalToolRunner
             || mp4boxResult.Output.Contains("MPEG-4 Audio", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<(bool Success, string Output)> TryRunToolAsync(
+    public async Task<AudioDecodeValidationResult> ValidateExpectedDurationAsync(
+        string mediaPath,
+        int expectedDurationSeconds,
+        CancellationToken cancellationToken)
+    {
+        if (expectedDurationSeconds <= 0)
+        {
+            return AudioDecodeValidationResult.Ok();
+        }
+
+        var duration = await TryReadDurationSecondsAsync(mediaPath, cancellationToken);
+        if (!duration.HasValue)
+        {
+            return AudioDecodeValidationResult.Fail("Audio validation failed: unable to read output duration with ffprobe.");
+        }
+
+        if (!LooksLikePreviewDuration(duration.Value, expectedDurationSeconds))
+        {
+            return AudioDecodeValidationResult.Ok();
+        }
+
+        return AudioDecodeValidationResult.Fail(
+            $"Audio validation failed: output duration is {duration.Value:F1}s but expected about {expectedDurationSeconds}s. Refusing likely Apple preview.");
+    }
+
+    public async Task<AudioDecodeValidationResult> ValidateDecodableAudioAsync(
+        string mediaPath,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(mediaPath))
+        {
+            return AudioDecodeValidationResult.Fail("Audio validation failed: output path is empty.");
+        }
+
+        if (!File.Exists(mediaPath))
+        {
+            return AudioDecodeValidationResult.Fail("Audio validation failed: output file is missing.");
+        }
+
+        var ffmpegResult = await TryRunToolAsync(
+            "ffmpeg",
+            Array.Empty<string>(),
+            "DEEZSPOTAG_FFMPEG_PATH",
+            cancellationToken,
+            "-nostdin",
+            "-v",
+            "error",
+            "-xerror",
+            "-i",
+            mediaPath,
+            "-map",
+            "0:a:0",
+            "-f",
+            "null",
+            "-");
+
+        if (!ffmpegResult.ToolFound)
+        {
+            _logger.LogWarning(
+                "ffmpeg executable not found; Apple decode validation failed for {MediaPath}.",
+                mediaPath);
+            return AudioDecodeValidationResult.Fail("Audio validation failed: ffmpeg executable not found.");
+        }
+
+        if (ffmpegResult.Success)
+        {
+            return AudioDecodeValidationResult.Ok();
+        }
+
+        var reason = BuildValidationFailureMessage(ffmpegResult.Output);
+        _logger.LogWarning(
+            "Apple audio decode validation failed for {MediaPath}: {Reason}",
+            mediaPath,
+            reason);
+        return AudioDecodeValidationResult.Fail(reason);
+    }
+
+    private static string BuildValidationFailureMessage(string output)
+    {
+        var normalizedOutput = string.Join(
+            " ",
+            (output ?? string.Empty)
+                .Split(LineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(line => !string.IsNullOrWhiteSpace(line)));
+        if (string.IsNullOrWhiteSpace(normalizedOutput))
+        {
+            return "Audio validation failed: ffmpeg could not decode the first audio stream.";
+        }
+
+        if (normalizedOutput.Length > MaxValidationMessageLength)
+        {
+            normalizedOutput = normalizedOutput[..MaxValidationMessageLength] + "...";
+        }
+
+        return $"Audio validation failed: ffmpeg could not decode the first audio stream. {normalizedOutput}";
+    }
+
+    private static async Task<double?> TryReadDurationSecondsAsync(string mediaPath, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(mediaPath) || !File.Exists(mediaPath))
+        {
+            return null;
+        }
+
+        var result = await TryRunToolAsync(
+            "ffprobe",
+            Array.Empty<string>(),
+            "DEEZSPOTAG_FFPROBE_PATH",
+            cancellationToken,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            mediaPath);
+        if (!result.Success)
+        {
+            return null;
+        }
+
+        var firstLine = result.Output
+            .Split(LineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        return double.TryParse(
+            firstLine,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var seconds)
+            ? seconds
+            : null;
+    }
+
+    private static bool LooksLikePreviewDuration(double actualSeconds, int expectedSeconds)
+    {
+        if (actualSeconds <= 0 || expectedSeconds < 60)
+        {
+            return false;
+        }
+
+        var missingSeconds = expectedSeconds - actualSeconds;
+        if (missingSeconds < 25)
+        {
+            return false;
+        }
+
+        var previewLengthForLongTrack = expectedSeconds > 120 && actualSeconds <= 120;
+        var clearlyShorterThanExpected = actualSeconds <= expectedSeconds * 0.85d;
+        var heavilyTruncated = actualSeconds < expectedSeconds * 0.5d;
+        return (previewLengthForLongTrack && clearlyShorterThanExpected) || heavilyTruncated;
+    }
+
+    private static async Task<ToolRunResult> TryRunToolAsync(
         string toolName,
         IReadOnlyList<string> aliases,
         string? explicitPathEnvVar,
@@ -180,7 +333,7 @@ public sealed class AppleExternalToolRunner
         var resolvedToolPath = ResolveToolPath(toolName, aliases, explicitPathEnvVar);
         if (resolvedToolPath == null)
         {
-            return (false, string.Empty);
+            return new ToolRunResult(false, string.Empty, false);
         }
 
         try
@@ -209,11 +362,11 @@ public sealed class AppleExternalToolRunner
             var output = string.Join(
                 Environment.NewLine,
                 new[] { stdout, stderr }.Where(part => !string.IsNullOrWhiteSpace(part)));
-            return (process.ExitCode == 0, output);
+            return new ToolRunResult(process.ExitCode == 0, output, true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return (false, string.Empty);
+            return new ToolRunResult(false, string.Empty, true);
         }
     }
 
@@ -371,4 +524,13 @@ public sealed class AppleExternalToolRunner
     {
         return !string.IsNullOrWhiteSpace(path) && File.Exists(path);
     }
+
+    private sealed record ToolRunResult(bool Success, string Output, bool ToolFound);
+}
+
+public sealed record AudioDecodeValidationResult(bool Success, string Message)
+{
+    public static AudioDecodeValidationResult Ok() => new(true, string.Empty);
+
+    public static AudioDecodeValidationResult Fail(string message) => new(false, message);
 }

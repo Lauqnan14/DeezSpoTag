@@ -47,6 +47,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly IAppleDownloadService _downloadService;
     private readonly IAppleWrapperStatusProvider _wrapperStatusProvider;
+    private readonly AppleExternalToolRunner _toolRunner;
     private readonly IServiceProvider _serviceProvider;
     private readonly EngineFallbackCoordinator _fallbackCoordinator;
     private readonly IActivityLogWriter _activityLog;
@@ -186,6 +187,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _downloadService = serviceProvider.GetRequiredService<IAppleDownloadService>();
         _wrapperStatusProvider = serviceProvider.GetRequiredService<IAppleWrapperStatusProvider>();
+        _toolRunner = serviceProvider.GetRequiredService<AppleExternalToolRunner>();
         _serviceProvider = serviceProvider;
         _fallbackCoordinator = serviceProvider.GetRequiredService<EngineFallbackCoordinator>();
         _activityLog = serviceProvider.GetRequiredService<IActivityLogWriter>();
@@ -278,6 +280,11 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             const string verificationError = "Downloaded file missing or empty after transfer.";
             _logger.LogWarning("Apple download verification failed for {QueueUuid}: {OutputPath}", next.QueueUuid, outputPath);
             await HandleDownloadFailureAsync(next, queueContext.Payload, verificationError, stoppingToken, itemToken);
+            return queueContext;
+        }
+
+        if (!await ValidateFinalAudioOutputAsync(next, queueContext.Payload, outputPath, stoppingToken, itemToken))
+        {
             return queueContext;
         }
 
@@ -879,6 +886,40 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         await AppleQueueItemHelpers.UpdateQueuePayloadAsync(_queueRepository, queueUuid, payload, outputPath, finalSize, itemToken);
         return true;
+    }
+
+    private async Task<bool> ValidateFinalAudioOutputAsync(
+        DownloadQueueItem next,
+        AppleQueueItem payload,
+        string outputPath,
+        CancellationToken stoppingToken,
+        CancellationToken itemToken)
+    {
+        if (IsVideoPayload(payload))
+        {
+            return true;
+        }
+
+        var validation = await _toolRunner.ValidateDecodableAudioAsync(outputPath, itemToken);
+        if (validation.Success)
+        {
+            validation = await _toolRunner.ValidateExpectedDurationAsync(
+                outputPath,
+                payload.DurationSeconds,
+                itemToken);
+            if (validation.Success)
+            {
+                return true;
+            }
+        }
+
+        _logger.LogWarning(
+            "Apple final audio decode validation failed for {QueueUuid}: {OutputPath}. {Reason}",
+            next.QueueUuid,
+            outputPath,
+            validation.Message);
+        await HandleDownloadFailureAsync(next, payload, validation.Message, stoppingToken, itemToken);
+        return false;
     }
 
     private async Task MarkQueueItemCompletedAsync(

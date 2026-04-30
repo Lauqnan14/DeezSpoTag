@@ -9,6 +9,15 @@ public sealed class AppleWebPlaybackClient
 {
     private const string ApplePlaybackHost = "play.music.apple.com";
     private const string AppleStorefrontHost = "music.apple.com";
+    private static readonly string[] PreviewUrlMarkers =
+    [
+        "audiopreview",
+        "audio-preview",
+        "/preview/",
+        "preview.m4a",
+        ".p.m4a",
+        "preview"
+    ];
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<AppleWebPlaybackClient> _logger;
@@ -278,6 +287,11 @@ public sealed class AppleWebPlaybackClient
 
         var entry = songList[0];
         var hlsPlaylistUrl = TryGetStringProperty(entry, "hls-playlist-url");
+        if (IsPreviewUrl(hlsPlaylistUrl))
+        {
+            return (null, null);
+        }
+
         if (!TryGetAssetsArray(entry, out var assets))
         {
             return (hlsPlaylistUrl, null);
@@ -321,15 +335,56 @@ public sealed class AppleWebPlaybackClient
         foreach (var asset in assets.EnumerateArray())
         {
             var flavor = TryGetStringProperty(asset, "flavor");
+            if (IsPreviewAsset(asset, flavor))
+            {
+                continue;
+            }
+
             if (!string.Equals(flavor, "28:ctrp256", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            return TryGetStringProperty(asset, "URL");
+            var url = TryGetStringProperty(asset, "URL");
+            return IsPreviewUrl(url) ? null : url;
         }
 
         return null;
+    }
+
+    private static bool IsPreviewAsset(JsonElement asset, string? flavor)
+    {
+        if (ContainsPreviewMarker(flavor))
+        {
+            return true;
+        }
+
+        foreach (var property in asset.EnumerateObject())
+        {
+            if (ContainsPreviewMarker(property.Name))
+            {
+                return true;
+            }
+
+            if (property.Value.ValueKind == JsonValueKind.String && ContainsPreviewMarker(property.Value.GetString()))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsPreviewUrl(string? url) => ContainsPreviewMarker(url);
+
+    private static bool ContainsPreviewMarker(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return PreviewUrlMarkers.Any(marker => value.Contains(marker, StringComparison.OrdinalIgnoreCase));
     }
 
     private void LogWebPlaybackAssets(JsonElement root)

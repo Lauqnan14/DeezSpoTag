@@ -430,6 +430,17 @@ public sealed class AppleDownloadService : IAppleDownloadService
             cancellationToken);
         if (success)
         {
+            var validation = await _toolRunner.ValidateDecodableAudioAsync(outputPath, cancellationToken);
+            if (!validation.Success)
+            {
+                _logger.LogWarning(
+                    "Apple wrapper decrypt produced invalid audio for {AppleId}; continuing with internal decrypt pipeline. {Reason}",
+                    appleId,
+                    validation.Message);
+                TryDelete(outputPath);
+                return null;
+            }
+
             await ReportProgressAsync(request.ProgressCallback, 98);
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -788,6 +799,20 @@ public sealed class AppleDownloadService : IAppleDownloadService
         return isAacProfile && isLc;
     }
 
+    private static bool IsApplePreviewUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
+
+        return url.Contains("audiopreview", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("audio-preview", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("/preview/", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("preview.m4a", StringComparison.OrdinalIgnoreCase)
+            || url.Contains(".p.m4a", StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<AppleDownloadResult> DownloadAacLcFromWebPlaybackAsync(
         AppleDownloadRequest request,
         string appleId,
@@ -800,6 +825,11 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
 
         var storefront = await ResolveStorefrontForAacAsync(request.MediaUserToken, request.Storefront, cancellationToken);
+        if (string.IsNullOrWhiteSpace(storefront))
+        {
+            return AppleDownloadResult.Fail("Apple Music subscription is not active or could not be verified. Refusing to download Apple preview audio.");
+        }
+
         var resolvedAppleId = await ResolveAacAppleIdAsync(request, appleId, storefront, cancellationToken);
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -828,6 +858,14 @@ public sealed class AppleDownloadService : IAppleDownloadService
             _logger.LogError("Apple AAC-LC download failed: webPlayback returned but AssetUrl is empty for {AppleId}. The track may not be available in AAC format or your account region.",
                 resolvedAppleId);
             return AppleDownloadResult.Fail("Apple web playback returned no AAC asset URL. Track may be unavailable in your region or AAC format not available.");
+        }
+
+        if (IsApplePreviewUrl(playback.AssetUrl) || IsApplePreviewUrl(playback.HlsPlaylistUrl))
+        {
+            _logger.LogWarning(
+                "Apple AAC-LC playback returned preview asset for {AppleId}; refusing preview download.",
+                resolvedAppleId);
+            return AppleDownloadResult.Fail("Apple playback returned a preview asset. Refusing to download previews.");
         }
 
         var drmInfo = await TryExtractDrmInfoAsync(playback.AssetUrl, cancellationToken);
@@ -2073,6 +2111,25 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 return AppleDownloadResult.Fail(context.DecryptFailureMessage);
             }
 
+            var validation = await _toolRunner.ValidateDecodableAudioAsync(outputPath, cancellationToken);
+            if (!validation.Success)
+            {
+                context.FailureHandlers.OnDecryptFailure?.Invoke(outputPath);
+                TryDelete(outputPath);
+                return AppleDownloadResult.Fail(validation.Message);
+            }
+
+            var durationValidation = await _toolRunner.ValidateExpectedDurationAsync(
+                outputPath,
+                request.DurationSeconds,
+                cancellationToken);
+            if (!durationValidation.Success)
+            {
+                context.FailureHandlers.OnDecryptFailure?.Invoke(outputPath);
+                TryDelete(outputPath);
+                return AppleDownloadResult.Fail(durationValidation.Message);
+            }
+
             await ReportProgressAsync(request.ProgressCallback, 98);
             return AppleDownloadResult.Ok(outputPath, context.StreamGroup);
         }
@@ -2615,11 +2672,18 @@ public sealed class AppleDownloadService : IAppleDownloadService
         return null;
     }
 
-    private async Task<string> ResolveStorefrontForAacAsync(string mediaUserToken, string? configuredStorefront, CancellationToken cancellationToken)
+    private async Task<string?> ResolveStorefrontForAacAsync(string mediaUserToken, string? configuredStorefront, CancellationToken cancellationToken)
     {
-        var storefront = string.IsNullOrWhiteSpace(configuredStorefront) ? "us" : configuredStorefront;
         var accountStorefront = await _catalogService.GetAccountStorefrontAsync(mediaUserToken, cancellationToken);
-        return string.IsNullOrWhiteSpace(accountStorefront) ? storefront : accountStorefront;
+        if (!string.IsNullOrWhiteSpace(accountStorefront))
+        {
+            return accountStorefront;
+        }
+
+        _logger.LogWarning(
+            "Apple AAC-LC download skipped: active subscription storefront could not be verified. configuredStorefront={Storefront}",
+            configuredStorefront ?? string.Empty);
+        return null;
     }
 
     private async Task<string> ResolveAacAppleIdAsync(
