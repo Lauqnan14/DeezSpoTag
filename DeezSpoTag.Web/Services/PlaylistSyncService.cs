@@ -36,6 +36,7 @@ public sealed class PlaylistSyncService
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly PlatformAuthService _authService;
+    private readonly PlaylistVisualService _playlistVisualService;
     private readonly ILogger<PlaylistSyncService> _logger;
 
     public PlaylistSyncService(
@@ -44,6 +45,7 @@ public sealed class PlaylistSyncService
         PlexApiClient plexApiClient,
         JellyfinApiClient jellyfinApiClient,
         PlatformAuthService authService,
+        PlaylistVisualService playlistVisualService,
         ILogger<PlaylistSyncService> logger)
     {
         _libraryRepository = libraryRepository;
@@ -51,6 +53,7 @@ public sealed class PlaylistSyncService
         _plexApiClient = plexApiClient;
         _jellyfinApiClient = jellyfinApiClient;
         _authService = authService;
+        _playlistVisualService = playlistVisualService;
         _logger = logger;
     }
 
@@ -437,15 +440,7 @@ public sealed class PlaylistSyncService
             playlist.Description,
             cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(playlist.ImageUrl) && preference?.UpdateArtwork != false)
-        {
-            await _plexApiClient.UpdatePlaylistPosterFromUrlAsync(
-                plex.Url,
-                plex.Token,
-                playlistId,
-                playlist.ImageUrl,
-                cancellationToken);
-        }
+        await SyncPlexPlaylistArtworkAsync(plex, playlist, preference, playlistId, cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         return new PlaylistSyncResult(true, $"Playlist synced ({modeLabel}).", playlistId, ratingKeys.Count);
@@ -531,15 +526,7 @@ public sealed class PlaylistSyncService
                 cancellationToken);
         }
 
-        if (!string.IsNullOrWhiteSpace(playlist.ImageUrl) && preference?.UpdateArtwork != false)
-        {
-            await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
-                jellyfin.Url,
-                jellyfin.ApiKey,
-                playlistId,
-                playlist.ImageUrl,
-                cancellationToken);
-        }
+        await SyncJellyfinPlaylistArtworkAsync(jellyfin, playlist, preference, playlistId, cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         return new PlaylistSyncResult(true, $"Playlist synced ({modeLabel}).", playlistId, syncedTracks);
@@ -641,6 +628,116 @@ public sealed class PlaylistSyncService
         }
 
         return (true, null, itemIds.Count);
+    }
+
+    private async Task SyncPlexPlaylistArtworkAsync(
+        PlexConnection plex,
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string playlistId,
+        CancellationToken cancellationToken)
+    {
+        if (preference?.UpdateArtwork == false)
+        {
+            return;
+        }
+
+        var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
+        if (visual != null && File.Exists(visual.FilePath))
+        {
+            await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
+                plex.Url,
+                plex.Token,
+                playlistId,
+                visual.FilePath,
+                visual.ContentType,
+                cancellationToken);
+            return;
+        }
+
+        if (IsAbsoluteHttpUrl(playlist.ImageUrl))
+        {
+            await _plexApiClient.UpdatePlaylistPosterFromUrlAsync(
+                plex.Url,
+                plex.Token,
+                playlistId,
+                playlist.ImageUrl!,
+                cancellationToken);
+            return;
+        }
+
+        LogSkippedRelativeArtworkUrl("Plex", playlist);
+    }
+
+    private async Task SyncJellyfinPlaylistArtworkAsync(
+        JellyfinConnection jellyfin,
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string playlistId,
+        CancellationToken cancellationToken)
+    {
+        if (preference?.UpdateArtwork == false)
+        {
+            return;
+        }
+
+        var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
+        if (visual != null && File.Exists(visual.FilePath))
+        {
+            var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                playlistId,
+                visual.FilePath,
+                visual.ContentType,
+                cancellationToken);
+            if (!updated)
+            {
+                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.", playlist.Source, playlist.SourceId, visual.FilePath);
+            }
+
+            return;
+        }
+
+        if (IsAbsoluteHttpUrl(playlist.ImageUrl))
+        {
+            var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                playlistId,
+                playlist.ImageUrl!,
+                cancellationToken);
+            if (!updated)
+            {
+                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from URL {ImageUrl}.", playlist.Source, playlist.SourceId, playlist.ImageUrl);
+            }
+
+            return;
+        }
+
+        LogSkippedRelativeArtworkUrl("Jellyfin", playlist);
+    }
+
+    private void LogSkippedRelativeArtworkUrl(string target, PlaylistWatchlistDto playlist)
+    {
+        if (string.IsNullOrWhiteSpace(playlist.ImageUrl))
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "Skipped {Target} playlist artwork sync for {Source}:{SourceId} because image URL is relative and no stored visual file was found: {ImageUrl}",
+            target,
+            playlist.Source,
+            playlist.SourceId,
+            playlist.ImageUrl);
+    }
+
+    private static bool IsAbsoluteHttpUrl(string? value)
+    {
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+               && (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<List<SyncTrackSummary>> FilterTracksForSyncAsync(

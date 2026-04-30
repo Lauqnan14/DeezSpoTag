@@ -624,6 +624,39 @@ public class JellyfinApiClient
         return uploadResponse.IsSuccessStatusCode;
     }
 
+    public async Task<bool> UpdateItemPrimaryImageFromFileAsync(
+        string serverUrl,
+        string apiKey,
+        string itemId,
+        string imagePath,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(itemId)
+            || string.IsNullOrWhiteSpace(imagePath)
+            || !File.Exists(imagePath))
+        {
+            return false;
+        }
+
+        await using var imageStream = File.OpenRead(imagePath);
+        using var uploadContent = new StreamContent(imageStream);
+        uploadContent.Headers.ContentType = new MediaTypeHeaderValue(
+            string.IsNullOrWhiteSpace(contentType) ? GetImageContentTypeFromUrl(imagePath) : contentType);
+
+        using var uploadRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            BuildUrl(serverUrl, $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary"))
+        {
+            Content = uploadContent
+        };
+        uploadRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        using var uploadResponse = await _httpClient.SendAsync(uploadRequest, cancellationToken);
+        return uploadResponse.IsSuccessStatusCode;
+    }
+
     public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
     {
         if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))

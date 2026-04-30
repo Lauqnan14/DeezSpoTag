@@ -1662,6 +1662,49 @@ public class PlexApiClient
         }
     }
 
+    public async Task UpdatePlaylistPosterFromFileAsync(
+        string serverUrl,
+        string token,
+        string playlistId,
+        string posterPath,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(playlistId)
+            || string.IsNullOrWhiteSpace(posterPath)
+            || !File.Exists(posterPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var bytes = await File.ReadAllBytesAsync(posterPath, cancellationToken);
+            if (bytes.Length == 0)
+            {
+                return;
+            }
+
+            using var content = new ByteArrayContent(bytes);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+                string.IsNullOrWhiteSpace(contentType) ? "image/jpeg" : contentType);
+
+            await SendPlexRequestAsync(
+                HttpMethod.Post,
+                $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}/posters?X-Plex-Token={token}",
+                "upload playlist poster",
+                playlistId,
+                cancellationToken,
+                content);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId} from local file {PosterPath}", playlistId, posterPath);
+        }
+    }
+
     private async Task ClearPlaylistItemsAsync(string serverUrl, string token, string playlistId, CancellationToken cancellationToken)
     {
         await SendPlexRequestAsync(
