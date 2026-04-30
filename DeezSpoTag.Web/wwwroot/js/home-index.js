@@ -36,14 +36,7 @@ const spotifyHomeItemCache = new Map();
 const homeTrendingWatchMetaCache = new Map();
 let spotifyHomeItemSeq = 0;
 let homeTrendingWatchSeq = 0;
-let spotifyBrowseCategoriesCache = null;
-let spotifyBrowseCategoriesLoading = false;
 let homeLoadRequestSeq = 0;
-const SPOTIFY_HOME_SECTIONS_CACHE_KEY = 'deezspotag:home:spotify-sections:v1';
-const SPOTIFY_HOME_SECTIONS_CACHE_TTL_MS = 1000 * 60 * 20;
-const SPOTIFY_HOME_SKELETON_SECTION_TITLES = ['Spotify Picks', 'Spotify New Releases'];
-const SPOTIFY_HOME_SKELETON_CARD_COUNT = 6;
-const SPOTIFY_HOME_SKELETON_MAX_WAIT_MS = 5000;
 const homeTrendingPreviewState = {
     trackKey: null,
     button: null,
@@ -1384,115 +1377,14 @@ function mergeSpotifySectionsIntoHomeSections(baseSections, spotifySections) {
     return [...baseSections, ...spotifySections];
 }
 
-function normalizeSpotifyHomeSections(sections) {
-    if (!Array.isArray(sections)) {
-        return [];
-    }
-    return sections
-        .filter(section => section && typeof section === 'object')
-        .map(section => ({ ...section, source: 'spotify' }));
-}
-
-function readSpotifyHomeSectionsCache() {
-    try {
-        if (!globalThis.localStorage) {
-            return [];
-        }
-        const raw = globalThis.localStorage.getItem(SPOTIFY_HOME_SECTIONS_CACHE_KEY);
-        if (!raw) {
-            return [];
-        }
-        const payload = JSON.parse(raw);
-        if (!payload || typeof payload !== 'object') {
-            return [];
-        }
-        const cachedAt = Number(payload.cachedAt || 0);
-        if (!Number.isFinite(cachedAt) || cachedAt <= 0) {
-            return [];
-        }
-        if ((Date.now() - cachedAt) > SPOTIFY_HOME_SECTIONS_CACHE_TTL_MS) {
-            globalThis.localStorage.removeItem(SPOTIFY_HOME_SECTIONS_CACHE_KEY);
-            return [];
-        }
-        return normalizeSpotifyHomeSections(payload.sections);
-    } catch (error) {
-        console.warn('Failed to read Spotify home cache:', error);
-        return [];
-    }
-}
-
-function writeSpotifyHomeSectionsCache(sections) {
-    try {
-        if (!globalThis.localStorage || !Array.isArray(sections) || sections.length === 0) {
-            return;
-        }
-        const payload = {
-            cachedAt: Date.now(),
-            sections
-        };
-        globalThis.localStorage.setItem(SPOTIFY_HOME_SECTIONS_CACHE_KEY, JSON.stringify(payload));
-    } catch (error) {
-        console.warn('Failed to write Spotify home cache:', error);
-    }
-}
-
-function buildSpotifyHomeSkeletonSections() {
-    return SPOTIFY_HOME_SKELETON_SECTION_TITLES.map((title, sectionIndex) => ({
-        title,
-        source: 'spotify',
-        layout: 'grid',
-        __spotifySkeleton: true,
-        items: Array.from({ length: SPOTIFY_HOME_SKELETON_CARD_COUNT }, (_, itemIndex) => ({
-            type: 'playlist',
-            source: 'spotify',
-            title: `${title} loading ${itemIndex + 1}`,
-            __homeAction: 'spotify-skeleton-card',
-            id: `spotify-skeleton-${sectionIndex + 1}-${itemIndex + 1}`
-        }))
-    }));
-}
-
-function createSpotifyHomeBootstrapState(channel) {
-    if (channel) {
-        return {
-            spotifySectionsPromise: null,
-            cachedSpotifySections: [],
-            fallbackSpotifySkeletonSections: []
-        };
-    }
-
-    const cachedSpotifySections = readSpotifyHomeSectionsCache();
-    const fallbackSpotifySkeletonSections = cachedSpotifySections.length === 0
-        ? buildSpotifyHomeSkeletonSections()
-        : [];
-    return {
-        spotifySectionsPromise: fetchSpotifyHomeSections(),
-        cachedSpotifySections,
-        fallbackSpotifySkeletonSections
-    };
-}
-
-function fetchSpotifyHomeSections() {
-    const tz = encodeURIComponent(getBrowserTimeZone());
-    return fetch(`/api/spotify/home-feed/sections?timeZone=${tz}`)
-        .then(async (response) => {
-            if (!response.ok) {
-                return [];
-            }
-            const payload = await response.json();
-            return Array.isArray(payload?.sections) ? payload.sections : [];
-        })
-        .catch((error) => {
-            console.warn('Spotify home sections merge failed:', error);
-            return [];
-        });
-}
-
 function buildHomeRequestUrl(channel, refreshEnabled) {
     const baseUrl = channel ? `/api/home?channel=${encodeURIComponent(channel)}` : '/api/home';
     const requestUrl = new URL(baseUrl, globalThis.location.origin);
     if (refreshEnabled) {
         requestUrl.searchParams.set('refresh', '1');
+    }
+    if (!channel) {
+        requestUrl.searchParams.set('timeZone', getBrowserTimeZone());
     }
     return requestUrl.toString();
 }
@@ -1507,71 +1399,10 @@ async function fetchHomeSections(channel, refreshEnabled) {
     return Array.isArray(data?.sections) ? data.sections : [];
 }
 
-function mergeInitialHomeSections(baseSections, channel, cachedSpotifySections, fallbackSpotifySkeletonSections) {
-    if (channel) {
-        return [...baseSections];
-    }
-    const initialSpotifySections = cachedSpotifySections.length > 0
-        ? cachedSpotifySections
-        : fallbackSpotifySkeletonSections;
-    if (initialSpotifySections.length === 0) {
-        return [...baseSections];
-    }
-    return mergeSpotifySectionsIntoHomeSections(baseSections, initialSpotifySections);
-}
-
 function renderHomeSectionsWithLazyImages(sections) {
     renderHomeSections(sections);
     observeLazyImages(document.getElementById('home-sections'));
     syncHomeTrendingPlaybackFromSession();
-}
-
-function scheduleHomeSpotifySkeletonFallback(requestId, sections, fallbackSpotifySkeletonSections) {
-    if (fallbackSpotifySkeletonSections.length === 0) {
-        return 0;
-    }
-
-    return globalThis.setTimeout(() => {
-        if (requestId !== homeLoadRequestSeq) {
-            return;
-        }
-        const container = document.getElementById('home-sections');
-        if (!container?.querySelector('.home-section--spotify-skeleton')) {
-            return;
-        }
-        renderHomeSections(sections);
-        observeLazyImages(container);
-    }, SPOTIFY_HOME_SKELETON_MAX_WAIT_MS);
-}
-
-async function applySpotifyHomeSectionsSecondPass(
-    requestId,
-    sections,
-    spotifySectionsPromise,
-    fallbackSpotifySkeletonSections,
-    skeletonFallbackTimer) {
-    if (spotifySectionsPromise === null) {
-        return;
-    }
-
-    const spotifySections = normalizeSpotifyHomeSections(await spotifySectionsPromise);
-    if (skeletonFallbackTimer) {
-        globalThis.clearTimeout(skeletonFallbackTimer);
-    }
-    if (requestId !== homeLoadRequestSeq) {
-        return;
-    }
-
-    if (spotifySections.length > 0) {
-        writeSpotifyHomeSectionsCache(spotifySections);
-        const mergedSections = mergeSpotifySectionsIntoHomeSections(sections, spotifySections);
-        renderHomeSectionsWithLazyImages(mergedSections);
-        return;
-    }
-
-    if (fallbackSpotifySkeletonSections.length > 0) {
-        renderHomeSectionsWithLazyImages(sections);
-    }
 }
 
 async function loadHomeData() {
@@ -1582,32 +1413,13 @@ async function loadHomeData() {
         const refresh = urlParams.get('refresh');
         const refreshEnabled = refresh === '1' || refresh === 'true' || refresh === 'yes';
 
-        console.log('Loading home data...');
-        const { spotifySectionsPromise, cachedSpotifySections, fallbackSpotifySkeletonSections } =
-            createSpotifyHomeBootstrapState(channel);
         const sections = await fetchHomeSections(channel, refreshEnabled);
         if (requestId !== homeLoadRequestSeq) {
             return;
         }
         console.log('Home data received:', { sectionsCount: sections.length });
 
-        const firstPassSections = mergeInitialHomeSections(
-            sections,
-            channel,
-            cachedSpotifySections,
-            fallbackSpotifySkeletonSections);
-        renderHomeSectionsWithLazyImages(firstPassSections);
-
-        const skeletonFallbackTimer = scheduleHomeSpotifySkeletonFallback(
-            requestId,
-            sections,
-            fallbackSpotifySkeletonSections);
-        await applySpotifyHomeSectionsSecondPass(
-            requestId,
-            sections,
-            spotifySectionsPromise,
-            fallbackSpotifySkeletonSections,
-            skeletonFallbackTimer);
+        renderHomeSectionsWithLazyImages(sections);
     } catch (error) {
         console.error('Error loading home data:', error);
         const container = document.getElementById('home-sections');
@@ -1786,9 +1598,6 @@ function renderHomeSectionCardItem(item, meta) {
     if (item?.__homeAction === 'popular-radio-see-more') {
         return renderPopularRadioSeeMoreCard();
     }
-    if (item?.__homeAction === 'spotify-skeleton-card') {
-        return renderSpotifyHomeSkeletonCard();
-    }
     if (!meta.hasFilter) {
         if (meta.isDiscover) {
             return renderDiscoveryItem(item);
@@ -1866,12 +1675,8 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
         : '';
     const deezerItemsAttr = topGenres ? topGenres.deezerItemsAttr : '';
 
-    const sectionClassName = section?.__spotifySkeleton === true
-        ? 'home-section home-section--spotify-skeleton'
-        : 'home-section';
-
     return `
-        <div class="${sectionClassName}"${sectionIdAttr}>
+        <div class="home-section"${sectionIdAttr}>
             ${titleHtml}
             ${filtersHtml}
             <div class="${rowClass}" ${rowStyle} ${deezerItemsAttr}>
@@ -2412,16 +2217,6 @@ function renderPopularRadioSeeMoreCard() {
             <div class="playlist-title"><span class="home-marquee">Popular Radio</span></div>
             <div class="playlist-meta"><span class="home-marquee">Open full list</span></div>
         </a>
-    `;
-}
-
-function renderSpotifyHomeSkeletonCard() {
-    return `
-        <div class="playlist-card playlist-card--playlist spotify-home-skeleton-card" aria-hidden="true">
-            <div class="playlist-image spotify-home-skeleton-card__image"></div>
-            <div class="spotify-home-skeleton-card__line spotify-home-skeleton-card__line--title"></div>
-            <div class="spotify-home-skeleton-card__line spotify-home-skeleton-card__line--meta"></div>
-        </div>
     `;
 }
 
@@ -3273,94 +3068,9 @@ function buildDiscoverClick(item, avatarImage, heroImage) {
     return buildHomeClick(item);
 }
 
-function normalizeSpotifyBrowseCategory(item) {
-    if (!item) {
-        return null;
-    }
-    const id = item.id || item.categoryId || '';
-    const name = item.name || item.title || id;
-    if (!id || !name) {
-        return null;
-    }
-    return {
-        id,
-        name,
-        title: name,
-        coverUrl: item.image_url || item.imageUrl || item.coverUrl || item.image || item.picture || '',
-        source: 'spotify',
-        type: 'browse-category'
-    };
-}
-
 function mergeSpotifyCategories(deezerItems, limit) {
     const baseItems = Array.isArray(deezerItems) ? deezerItems.slice() : [];
-    const targetPerPlatform = 7;
-    const deezerSlice = baseItems.slice(0, targetPerPlatform);
-    if (!spotifyBrowseCategoriesCache || spotifyBrowseCategoriesCache.length === 0) {
-        if (!spotifyBrowseCategoriesLoading) {
-            loadSpotifyCategoriesForMerge();
-        }
-        return deezerSlice.slice(0, limit || deezerSlice.length);
-    }
-    const spotifyItems = spotifyBrowseCategoriesCache
-        .map(normalizeSpotifyBrowseCategory)
-        .filter(Boolean)
-        .filter(item => !/podcast/i.test(item.name || item.title || ''))
-        .slice(0, targetPerPlatform);
-    const merged = deezerSlice.concat(spotifyItems);
-    if (limit && merged.length > limit) {
-        return merged.slice(0, limit);
-    }
-    return merged;
-}
-
-async function loadSpotifyCategoriesForMerge() {
-    if (spotifyBrowseCategoriesLoading) {
-        return;
-    }
-    spotifyBrowseCategoriesLoading = true;
-    try {
-        const response = await fetch('/api/spotify/home-feed/browse');
-        const data = await response.json();
-        if (response.ok && data?.success && Array.isArray(data.categories)) {
-            spotifyBrowseCategoriesCache = data.categories;
-            refreshCategoriesSection();
-        }
-    } catch (error) {
-        console.warn('Failed to load Spotify categories for merge:', error);
-    } finally {
-        spotifyBrowseCategoriesLoading = false;
-    }
-}
-
-function refreshCategoriesSection() {
-    const sections = document.querySelectorAll('#home-sections .home-section');
-    if (!sections.length) {
-        return;
-    }
-    const normalizeTitle = (value) => (value || '').toString().trim().toLowerCase();
-    const targetSection = Array.from(sections).find(section => {
-        const titleEl = section.querySelector('.home-section-title');
-        const title = normalizeTitle(titleEl?.textContent || '');
-        return title === 'categories' || title === 'your top genres';
-    });
-    if (!targetSection) {
-        return;
-    }
-    const row = targetSection.querySelector('.top-genres-grid');
-    if (!row) {
-        return;
-    }
-    const rawDeezerItems = row.dataset.deezerItems;
-    const deezerItems = rawDeezerItems
-        ? JSON.parse(decodeURIComponent(rawDeezerItems))
-        : null;
-    if (!Array.isArray(deezerItems)) {
-        return;
-    }
-    const mergedItems = mergeSpotifyCategories(deezerItems, 14);
-    row.innerHTML = mergedItems.map((item) => renderTopGenresItem(item)).join('')
-        + `<a class="top-genres-card top-genres-card--more" href="/Categories">See more</a>`;
+    return limit ? baseItems.slice(0, limit) : baseItems;
 }
 
 function openTracklist(id, type) {
@@ -3485,11 +3195,6 @@ document.addEventListener('DOMContentLoaded', async function() {
             void loadHomeData();
         }
     });
-    if (!isChannelPage) {
-        // Load Spotify home feed and browse categories in parallel for faster rendering
-        loadSpotifyCategoriesForMerge().catch(err => console.warn('Spotify content load error:', err));
-        scheduleSpotifyHomeFeedRefresh();
-    }
     applySearchSourceState();
     document.body.addEventListener('click', (event) => {
         const card = event.target.closest('[data-spotify-item]');
@@ -3512,15 +3217,3 @@ document.addEventListener('DOMContentLoaded', async function() {
         openHomeTrendingTracklist(trigger);
     });
 });
-
-function scheduleSpotifyHomeFeedRefresh() {
-    const homeSections = document.getElementById('home-sections');
-    const autoEnabled = homeSections?.dataset.spotifyHomeAutorefresh === 'true';
-    const hours = Number.parseInt(homeSections?.dataset.spotifyHomeRefreshHours || '2', 10);
-    if (!autoEnabled || Number.isNaN(hours) || hours < 2) {
-        return;
-    }
-    setInterval(() => {
-        loadHomeData();
-    }, hours * 60 * 60 * 1000);
-}

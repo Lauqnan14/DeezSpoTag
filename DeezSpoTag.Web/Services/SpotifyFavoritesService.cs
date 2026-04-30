@@ -6,14 +6,12 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class SpotifyFavoritesService
 {
-    private const string DefaultCacheKey = "default";
     private const string PlaylistType = "playlist";
     private const string TrackType = "track";
     private const string TitleKey = "title";
     private const string ItemsKey = "items";
     private const string ProfileKey = "profile";
     private const string SectionsKey = "sections";
-    private const string DefaultHomeFeedCacheFileName = "spotify/home-feed-cache.json";
     private static readonly string[] PersonalSectionKeywords =
     {
         "your top playlists",
@@ -98,43 +96,8 @@ public sealed class SpotifyFavoritesService
 
     private async Task<List<HomeSection>> TryLoadCachedHomeSectionsAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            var cacheKey = await ResolveHomeFeedCacheKeyAsync();
-            var cachePath = ResolveHomeFeedCachePath(cacheKey);
-            if (!File.Exists(cachePath))
-            {
-                return new List<HomeSection>();
-            }
-
-            await using var stream = File.OpenRead(cachePath);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            return ParseCachedHomeSections(doc.RootElement);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to read Spotify home feed cache for favorites.");
-            return new List<HomeSection>();
-        }
-    }
-
-    private Task<string> ResolveHomeFeedCacheKeyAsync()
-        => SpotifyHomeFeedCacheKey.ResolveAsync(
-            DefaultCacheKey,
-            _userContext,
-            _userAuthStore,
-            _platformAuthService,
-            ex => _logger.LogDebug(ex, "Failed to resolve Spotify favorites cache key."));
-
-    private static string ResolveHomeFeedCachePath(string cacheKey)
-    {
-        var configDir = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-        var sanitizedCacheKey = SpotifyHomeFeedCacheKey.Sanitize(DefaultCacheKey, cacheKey);
-
-        var fileName = cacheKey.Equals(DefaultCacheKey, StringComparison.OrdinalIgnoreCase)
-            ? DefaultHomeFeedCacheFileName
-            : $"spotify/home-feed-cache.{sanitizedCacheKey}.json";
-        return Path.Join(configDir, fileName);
+        await Task.CompletedTask;
+        return new List<HomeSection>();
     }
 
     private async Task<string?> ResolveActiveWebPlayerBlobPathAsync(CancellationToken cancellationToken)
@@ -291,76 +254,6 @@ public sealed class SpotifyFavoritesService
         return tokens
             .Where(token => !string.IsNullOrWhiteSpace(token))
             .Any(token => normalized.Contains(token, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static List<HomeSection> ParseCachedHomeSections(JsonElement root)
-    {
-        var sections = new List<HomeSection>();
-        if (!root.TryGetProperty(SectionsKey, out var sectionsElement) || sectionsElement.ValueKind != JsonValueKind.Array)
-        {
-            return sections;
-        }
-
-        foreach (var sectionElement in sectionsElement.EnumerateArray())
-        {
-            var title = TryGetString(sectionElement, TitleKey) ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(title)
-                || !sectionElement.TryGetProperty(ItemsKey, out var itemsElement)
-                || itemsElement.ValueKind != JsonValueKind.Array)
-            {
-                continue;
-            }
-
-            var items = new List<HomeItem>();
-            foreach (var itemElement in itemsElement.EnumerateArray())
-            {
-                var item = ParseCachedHomeItem(itemElement);
-                if (item != null)
-                {
-                    items.Add(item);
-                }
-            }
-
-            if (items.Count > 0)
-            {
-                sections.Add(new HomeSection(title, items));
-            }
-        }
-
-        return sections;
-    }
-
-    private static HomeItem? ParseCachedHomeItem(JsonElement itemElement)
-    {
-        var itemType = NormalizeItemType(TryGetString(itemElement, "type"));
-        var itemId = TryGetString(itemElement, "id");
-
-        if ((string.IsNullOrWhiteSpace(itemType) || string.IsNullOrWhiteSpace(itemId))
-            && TryParseSpotifyUri(TryGetString(itemElement, "uri"), out var uriType, out var uriId))
-        {
-            itemType ??= uriType;
-            itemId ??= uriId;
-        }
-
-        if (string.IsNullOrWhiteSpace(itemType) || string.IsNullOrWhiteSpace(itemId))
-        {
-            return null;
-        }
-
-        var name = TryGetString(itemElement, "name") ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return null;
-        }
-
-        return new HomeItem(
-            itemId,
-            itemType,
-            name,
-            TryGetString(itemElement, "artists"),
-            TryGetString(itemElement, "description"),
-            TryGetString(itemElement, "coverUrl"),
-            TryGetInt(itemElement, "durationMs"));
     }
 
     private static List<HomeSection> ParseHomeSections(JsonElement root)

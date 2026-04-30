@@ -1284,6 +1284,8 @@ public partial class Program
                 UserAuthStore = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyUserAuthStore>(),
                 UserContextAccessor = sp.GetRequiredService<DeezSpoTag.Web.Services.ISpotifyUserContextAccessor>()
             });
+        services.AddScoped<DeezSpoTag.Web.Services.SpotifyHomeFeedRuntimeService>();
+        services.AddHostedService<DeezSpoTag.Web.Services.SpotifyHomeFeedRefreshHostedService>();
         services.AddScoped<DeezSpoTag.Web.Controllers.Api.SpotifyCredentialsApiControllerCore.SpotifyCredentialsCollaborators>(sp =>
             new DeezSpoTag.Web.Controllers.Api.SpotifyCredentialsApiControllerCore.SpotifyCredentialsCollaborators
             {

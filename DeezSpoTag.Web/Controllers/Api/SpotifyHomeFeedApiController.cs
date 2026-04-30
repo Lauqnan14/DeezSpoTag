@@ -107,8 +107,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object PopularRadioCacheLock = new();
     private static (DateTimeOffset Stamp, object Section)? PopularRadioSectionCache;
-    private const string HomeFeedCacheFileName = "spotify/home-feed-cache.json";
-    private const string BrowseCategoriesCacheFileName = "spotify/browse-categories-cache.json";
     private static readonly TimeSpan HomeFeedCacheTtl = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan PopularRadioCacheTtl = TimeSpan.FromMinutes(20);
     private static readonly JsonSerializerOptions CompactJsonSerializerOptions = new()
@@ -217,7 +215,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetHomeFeed([FromQuery] string? timeZone, [FromQuery] bool debug, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetHomeFeed([FromQuery] string? timeZone, [FromQuery] bool debug, [FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
     {
         var cacheKey = DefaultCacheKey;
         try
@@ -225,7 +223,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             _logger.LogInformation("Spotify home feed requested. tz=TimeZone");
             cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
-            if (settings.SpotifyHomeFeedCacheEnabled && !debug &&
+            if (!refresh && settings.SpotifyHomeFeedCacheEnabled && !debug &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
             {
                 return Ok(new
@@ -243,8 +241,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
             if (settings.SpotifyHomeFeedCacheEnabled && success)
             {
-                var cacheEntry = StoreHomeFeedCache(cacheKey, greeting, finalSections);
-                await PersistHomeFeedCacheIfCurrentAsync(cacheKey, cacheEntry, cancellationToken);
+                StoreHomeFeedCache(cacheKey, greeting, finalSections);
             }
 
             var response = new
@@ -262,33 +259,24 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                     : null
             };
 
-            if (!success && TryBuildPersistedHomeFeedResponse(cacheKey, "Using last known home feed cache (auth unavailable).", out var persistedFeed))
-            {
-                return Ok(persistedFeed);
-            }
-
             return Ok(response);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Spotify home feed fetch failed.");
-            if (TryBuildPersistedHomeFeedResponse(cacheKey, "Using last known home feed cache (home feed failed).", out var persistedFeed))
-            {
-                return Ok(persistedFeed);
-            }
             return StatusCode(502, new { success = false, error = "Spotify home feed failed." });
         }
     }
 
     [HttpGet("sections")]
-    public async Task<IActionResult> GetHomeFeedSections([FromQuery] string? timeZone, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetHomeFeedSections([FromQuery] string? timeZone, [FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
     {
         var cacheKey = DefaultCacheKey;
         try
         {
             cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
-            if (settings.SpotifyHomeFeedCacheEnabled &&
+            if (!refresh && settings.SpotifyHomeFeedCacheEnabled &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
             {
                 var mapped = await MapHomeSectionsAsync(cachedFeed.Sections, cancellationToken);
@@ -299,25 +287,15 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var sections = homeFeed.Sections;
             if (sections.Count > 0 && settings.SpotifyHomeFeedCacheEnabled)
             {
-                var cacheEntry = StoreHomeFeedCache(cacheKey, homeFeed.Greeting, sections);
-                await PersistHomeFeedCacheIfCurrentAsync(cacheKey, cacheEntry, cancellationToken);
+                StoreHomeFeedCache(cacheKey, homeFeed.Greeting, sections);
             }
 
             var mappedSections = await MapHomeSectionsAsync(sections, cancellationToken);
-            if (mappedSections.Count == 0 &&
-                await TryBuildMappedHomeFeedFallbackAsync(cacheKey, "Using last known home feed cache (sections unavailable).", cancellationToken) is { } fallbackUnavailable)
-            {
-                return Ok(fallbackUnavailable);
-            }
             return Ok(new { success = mappedSections.Count > 0, sections = mappedSections });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Spotify home sections mapping failed.");
-            if (await TryBuildMappedHomeFeedFallbackAsync(cacheKey, "Using last known home feed cache (sections failed).", cancellationToken) is { } fallbackFailed)
-            {
-                return Ok(fallbackFailed);
-            }
             return StatusCode(502, new { success = false, error = "Spotify home sections failed." });
         }
     }
@@ -774,47 +752,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             fallbackSummary = Array.Empty<object>(),
             finalSummary = SummarizeSections(finalSections, "final")
         };
-    }
-
-    private static bool TryBuildPersistedHomeFeedResponse(string cacheKey, string warning, out object response)
-    {
-        if (TryLoadPersistedHomeFeedCache(cacheKey, out var persisted))
-        {
-            response = new
-            {
-                success = true,
-                greeting = persisted.Greeting,
-                sections = persisted.Sections,
-                cached = true,
-                warning
-            };
-            return true;
-        }
-
-        response = null!;
-        return false;
-    }
-
-    private async Task<object?> TryBuildMappedHomeFeedFallbackAsync(
-        string cacheKey,
-        string warning,
-        CancellationToken cancellationToken)
-    {
-        if (!TryLoadPersistedHomeFeedCache(cacheKey, out var persisted))
-        {
-            return null;
-        }
-
-        var fallback = await MapHomeSectionsAsync(persisted.Sections, cancellationToken);
-        return fallback.Count == 0
-            ? null
-            : new
-            {
-                success = true,
-                sections = fallback,
-                cached = true,
-                warning
-            };
     }
 
     private static bool TryGetFreshBrowseCategoriesCache(TimeSpan ttl, out List<object> categories)
@@ -3635,214 +3572,15 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
     }
 
-    private static string ResolveHomeFeedCachePath(string cacheKey)
-    {
-        var sanitizedCacheKey = SpotifyHomeFeedCacheKey.Sanitize(DefaultCacheKey, cacheKey);
-        var fileName = cacheKey.Equals(DefaultCacheKey, StringComparison.OrdinalIgnoreCase)
-            ? HomeFeedCacheFileName
-            : $"spotify/home-feed-cache.{sanitizedCacheKey}.json";
-        return Path.Join(ResolveHomeFeedCacheRoot(), fileName);
-    }
-
-    private async Task PersistHomeFeedCacheIfCurrentAsync(
-        string cacheKey,
-        (DateTimeOffset Stamp, string Greeting, List<object> Sections) cache,
-        CancellationToken cancellationToken)
-    {
-        if (!await ShouldPersistHomeFeedCacheAsync(cacheKey, cancellationToken))
-        {
-            lock (FeedCacheLock)
-            {
-                HomeFeedCache.Remove(cacheKey);
-            }
-
-            TryDeletePersistedHomeFeedCache(cacheKey);
-            return;
-        }
-
-        TryPersistHomeFeedCache(cacheKey, cache);
-    }
-
-    private async Task<bool> ShouldPersistHomeFeedCacheAsync(string cacheKey, CancellationToken cancellationToken)
-    {
-        if (cancellationToken.IsCancellationRequested)
-        {
-            return false;
-        }
-
-        try
-        {
-            var userId = _userContext.UserId;
-            if (!string.IsNullOrWhiteSpace(userId))
-            {
-                var userState = await _userAuthStore.LoadAsync(userId);
-                var activeAccount = userState?.ActiveAccount;
-                if (string.IsNullOrWhiteSpace(activeAccount))
-                {
-                    return false;
-                }
-
-                var expected = SpotifyHomeFeedCacheKey.BuildUserCacheKey(DefaultCacheKey, userId, activeAccount);
-                return expected.Equals(cacheKey, StringComparison.OrdinalIgnoreCase);
-            }
-
-            var platformState = await _platformAuthService.LoadAsync();
-            var platformAccount = platformState.Spotify?.ActiveAccount;
-            if (string.IsNullOrWhiteSpace(platformAccount))
-            {
-                return false;
-            }
-
-            var expectedPlatform = SpotifyHomeFeedCacheKey.BuildPlatformCacheKey(DefaultCacheKey, platformAccount);
-            return expectedPlatform.Equals(cacheKey, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Best-effort cache only.
-            return false;
-        }
-    }
-
-    private static string ResolveBrowseCategoriesCachePath()
-    {
-        return Path.Join(ResolveHomeFeedCacheRoot(), BrowseCategoriesCacheFileName);
-    }
-
-    private static void TryPersistHomeFeedCache(string cacheKey, (DateTimeOffset Stamp, string Greeting, List<object> Sections) cache)
-    {
-        try
-        {
-            var path = ResolveHomeFeedCachePath(cacheKey);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var payload = new
-            {
-                stamp = cache.Stamp,
-                greeting = cache.Greeting,
-                sections = cache.Sections
-            };
-            var json = System.Text.Json.JsonSerializer.Serialize(payload, CompactJsonSerializerOptions);
-            System.IO.File.WriteAllText(path, json);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Best-effort cache only.
-        }
-    }
-
-    private static void TryDeletePersistedHomeFeedCache(string cacheKey)
-    {
-        try
-        {
-            var path = ResolveHomeFeedCachePath(cacheKey);
-            if (!System.IO.File.Exists(path))
-            {
-                return;
-            }
-
-            System.IO.File.Delete(path);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Best-effort cache only.
-        }
-    }
-
-    private static bool TryLoadPersistedHomeFeedCache(string cacheKey, out (DateTimeOffset Stamp, string Greeting, List<object> Sections) cache)
-    {
-        cache = default;
-        try
-        {
-            var path = ResolveHomeFeedCachePath(cacheKey);
-            if (!System.IO.File.Exists(path))
-            {
-                return false;
-            }
-
-            using var doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(path));
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("stamp", out var stampElement) ||
-                !root.TryGetProperty("greeting", out var greetingElement) ||
-                !root.TryGetProperty(SectionsKey, out var sectionsElement))
-            {
-                return false;
-            }
-
-            var stamp = stampElement.GetDateTimeOffset();
-            var greeting = greetingElement.GetString() ?? string.Empty;
-            var sections = System.Text.Json.JsonSerializer.Deserialize<List<object>>(sectionsElement.GetRawText())
-                           ?? new List<object>();
-            if (sections.Count == 0)
-            {
-                return false;
-            }
-
-            cache = (stamp, greeting, sections);
-            return true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-    }
-
     private static void TryPersistBrowseCategoriesCache(List<object> categories)
     {
-        if (categories == null || categories.Count == 0)
-        {
-            return;
-        }
-        try
-        {
-            var path = ResolveBrowseCategoriesCachePath();
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var payload = new
-            {
-                stamp = DateTimeOffset.UtcNow,
-                categories
-            };
-            var json = System.Text.Json.JsonSerializer.Serialize(payload, CompactJsonSerializerOptions);
-            lock (BrowseCategoriesFileLock)
-            {
-                System.IO.File.WriteAllText(path, json);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Best-effort cache only.
-        }
+        // Runtime cache only. Persisted JSON browse caches are intentionally disabled.
     }
 
     private static bool TryLoadPersistedBrowseCategoriesCache(out List<object> categories)
     {
         categories = new List<object>();
-        try
-        {
-            var path = ResolveBrowseCategoriesCachePath();
-            if (!System.IO.File.Exists(path))
-            {
-                return false;
-            }
-
-            using var doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(path));
-            var root = doc.RootElement;
-            if (!root.TryGetProperty("categories", out var categoriesElement))
-            {
-                return false;
-            }
-
-            var parsed = System.Text.Json.JsonSerializer.Deserialize<List<object>>(categoriesElement.GetRawText())
-                         ?? new List<object>();
-            if (parsed.Count == 0)
-            {
-                return false;
-            }
-            categories = parsed;
-            return true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
+        return false;
     }
 
     private static void TryDeleteHomeFeedCache()
@@ -3878,7 +3616,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     {
         try
         {
-            var path = ResolveBrowseCategoriesCachePath();
+            var path = Path.Join(ResolveHomeFeedCacheRoot(), "spotify/browse-categories-cache.json");
             if (!System.IO.File.Exists(path))
             {
                 return;
