@@ -1147,6 +1147,7 @@ public partial class Program
                 CapabilitiesStore = sp.GetRequiredService<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagService>();
+        services.AddHostedService<DeezSpoTag.Web.Services.AutoTagStuckRecoveryHostedService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagRunner, DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ShazamRecognitionService>();

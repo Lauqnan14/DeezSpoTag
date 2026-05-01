@@ -200,6 +200,7 @@ public partial class AutoTagService
     private readonly ConcurrentDictionary<string, string> _activeJobStages = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _lastActivityLines = new();
     private readonly ConcurrentDictionary<string, byte> _staleRecoveryCleanupJobs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _stuckRecoveryJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger<AutoTagService> _logger;
     private readonly LibraryConfigStore _activityLog;
     private readonly AuthenticatedDeezerService _deezerAuth;
@@ -1835,10 +1836,25 @@ public partial class AutoTagService
         }
         finally
         {
-            CleanupRuntimeConfigFiles(runtimeConfigPaths);
+            if (!ShouldPreserveRuntimeConfigFilesForResume(job))
+            {
+                CleanupRuntimeConfigFiles(runtimeConfigPaths);
+            }
             _activeJobStages.TryRemove(job.Id, out _);
             _activeJobIds.TryRemove(job.Id, out _);
         }
+    }
+
+    private static bool ShouldPreserveRuntimeConfigFilesForResume(AutoTagJob job)
+    {
+        if (job.ResumeCheckpoint == null)
+        {
+            return false;
+        }
+
+        return string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.Status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     private static HashSet<string> InitializeRuntimeConfigPaths(string configPath)
@@ -5876,19 +5892,271 @@ public partial class AutoTagService
             return;
         }
 
-        job.Status = AutoTagLiterals.FailedStatus;
+        if (job.ResumeCheckpoint != null)
+        {
+            // The hosted stuck watchdog owns resumable stale jobs. Mutating them here can race
+            // with startup/UI reads and prevent automatic resume from the preserved checkpoint.
+            return;
+        }
+
+        job.Status = AutoTagLiterals.InterruptedStatus;
         job.ExitCode = 1;
         job.FinishedAt ??= DateTimeOffset.UtcNow;
-        job.Error ??= "AutoTag job was interrupted and recovered as stale running state.";
-        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase)
-            && job.ResumeCheckpoint != null)
-        {
-            // Download-enrichment runs depend on the latest discovered file set; stale checkpoints can skip platforms/files.
-            job.ResumeCheckpoint = null;
-            job.Logs.Add("stale recovery: resume checkpoint cleared for download_enrichment");
-        }
+        job.Error ??= "AutoTag job was interrupted by an application restart; resume is available.";
         SaveJob(job);
         TryQueueStaleRecoveryCleanup(job);
+    }
+
+    public async Task RecoverStuckJobsAsync(
+        TimeSpan staleWindow,
+        bool restartStalePersistedJobs,
+        CancellationToken cancellationToken)
+    {
+        if (staleWindow <= TimeSpan.Zero)
+        {
+            staleWindow = TimeSpan.FromMinutes(30);
+        }
+
+        await StopActiveJobsWithoutProgressAsync(staleWindow, cancellationToken);
+        await RecoverPersistedRunningJobsAsync(staleWindow, restartStalePersistedJobs, cancellationToken);
+    }
+
+    private async Task StopActiveJobsWithoutProgressAsync(TimeSpan staleWindow, CancellationToken cancellationToken)
+    {
+        foreach (var jobId in _activeJobIds.Keys.ToList())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_jobs.TryGetValue(jobId, out var job) || !IsRunningStatus(job.Status))
+            {
+                continue;
+            }
+
+            var idleFor = DateTimeOffset.UtcNow - GetLastProgressTimestamp(job);
+            if (idleFor < staleWindow)
+            {
+                continue;
+            }
+
+            if (!_stuckRecoveryJobs.TryAdd(job.Id, 0))
+            {
+                continue;
+            }
+
+            AppendLog(
+                job,
+                $"stuck watchdog: no AutoTag progress for {FormatDuration(idleFor)}; canceling active run so it can resume.");
+
+            try
+            {
+                if (await StopJobAsync(job.Id)
+                    && await WaitForJobToLeaveActiveSetAsync(job.Id, TimeSpan.FromSeconds(30), cancellationToken))
+                {
+                    await TryAutoResumeRecoveredJobAsync(job, cancellationToken);
+                }
+            }
+            finally
+            {
+                _stuckRecoveryJobs.TryRemove(job.Id, out _);
+            }
+        }
+    }
+
+    private async Task RecoverPersistedRunningJobsAsync(
+        TimeSpan staleWindow,
+        bool restartStalePersistedJobs,
+        CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(_jobsDir))
+        {
+            return;
+        }
+
+        foreach (var path in Directory.EnumerateFiles(_jobsDir, "*.json").OrderByDescending(File.GetLastWriteTimeUtc).ToList())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_activeJobIds.IsEmpty)
+            {
+                return;
+            }
+
+            var jobId = Path.GetFileNameWithoutExtension(path);
+            if (string.IsNullOrWhiteSpace(jobId)
+                || _activeJobIds.ContainsKey(jobId)
+                || !_stuckRecoveryJobs.TryAdd(jobId, 0))
+            {
+                continue;
+            }
+
+            try
+            {
+                var job = _jobs.TryGetValue(jobId, out var cachedJob) ? cachedJob : LoadJob(jobId);
+                if (job == null || !IsRunningStatus(job.Status) || _activeJobIds.ContainsKey(job.Id))
+                {
+                    continue;
+                }
+
+                var idleFor = DateTimeOffset.UtcNow - GetLastProgressTimestamp(job, path);
+                if (idleFor < staleWindow)
+                {
+                    continue;
+                }
+
+                await RecoverPersistedRunningJobAsync(job, idleFor, restartStalePersistedJobs, cancellationToken);
+            }
+            finally
+            {
+                _stuckRecoveryJobs.TryRemove(jobId, out _);
+            }
+        }
+    }
+
+    private async Task RecoverPersistedRunningJobAsync(
+        AutoTagJob job,
+        TimeSpan idleFor,
+        bool restartStalePersistedJobs,
+        CancellationToken cancellationToken)
+    {
+        job.Trigger = NormalizeRunTrigger(job.Trigger);
+        job.RunIntent = NormalizeRunIntent(job.RunIntent);
+        job.Status = AutoTagLiterals.InterruptedStatus;
+        job.ExitCode = 1;
+        job.FinishedAt ??= DateTimeOffset.UtcNow;
+        job.Error = $"AutoTag job had no progress for {FormatDuration(idleFor)} and was recovered as interrupted.";
+        SaveJob(job);
+        AppendLog(job, "stuck watchdog: recovered stale running job; resume checkpoint preserved.");
+        AppendActivityLog(job.Id, "autotag interrupted by stuck watchdog");
+
+        if (!restartStalePersistedJobs)
+        {
+            TryQueueStaleRecoveryCleanup(job);
+            return;
+        }
+
+        await TryAutoResumeRecoveredJobAsync(job, cancellationToken);
+    }
+
+    private async Task TryAutoResumeRecoveredJobAsync(AutoTagJob job, CancellationToken cancellationToken)
+    {
+        if (job.ResumeCheckpoint == null)
+        {
+            AppendLog(job, "stuck watchdog: auto-resume skipped because no resume checkpoint is available.");
+            TryQueueStaleRecoveryCleanup(job);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(job.RootPath))
+        {
+            AppendLog(job, "stuck watchdog: auto-resume skipped because the job root path is missing.");
+            TryQueueStaleRecoveryCleanup(job);
+            return;
+        }
+
+        var runtimeConfigPath = TryFindRuntimeConfigPath(job.Id, "base");
+        if (string.IsNullOrWhiteSpace(runtimeConfigPath) || !File.Exists(runtimeConfigPath))
+        {
+            AppendLog(job, "stuck watchdog: auto-resume skipped because the runtime config was not found.");
+            TryQueueStaleRecoveryCleanup(job);
+            return;
+        }
+
+        try
+        {
+            var configJson = await File.ReadAllTextAsync(runtimeConfigPath, cancellationToken);
+            if (string.IsNullOrWhiteSpace(configJson))
+            {
+                AppendLog(job, "stuck watchdog: auto-resume skipped because the runtime config is empty.");
+                TryQueueStaleRecoveryCleanup(job);
+                return;
+            }
+
+            AppendLog(job, "stuck watchdog: auto-resume starting from preserved checkpoint.");
+            var resumed = await StartJob(
+                job.RootPath!,
+                configJson,
+                job.Trigger,
+                null,
+                job.ProfileId,
+                job.ProfileName,
+                job.RunIntent);
+            AppendLog(job, $"stuck watchdog: auto-resume created job {resumed.Id} (status={resumed.Status}).");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag stuck watchdog failed to auto-resume job {JobId}.", job.Id);
+            AppendLog(job, $"stuck watchdog: auto-resume failed: {ex.Message}");
+            TryQueueStaleRecoveryCleanup(job);
+        }
+    }
+
+    private async Task<bool> WaitForJobToLeaveActiveSetAsync(
+        string jobId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_activeJobIds.ContainsKey(jobId))
+            {
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+
+        if (_jobs.TryGetValue(jobId, out var job))
+        {
+            AppendLog(job, "stuck watchdog: auto-resume deferred because the canceled run is still active.");
+        }
+
+        return false;
+    }
+
+    private static bool IsRunningStatus(string? status)
+        => string.Equals(status?.Trim(), AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase);
+
+    private static DateTimeOffset GetLastProgressTimestamp(AutoTagJob job, string? jobPath = null)
+    {
+        var timestamp = job.StartedAt;
+        if (job.ResumeCheckpoint?.UpdatedAt > timestamp)
+        {
+            timestamp = job.ResumeCheckpoint.UpdatedAt;
+        }
+
+        var lastStatusTimestamp = job.StatusHistory
+            .Select(entry => entry.Timestamp)
+            .DefaultIfEmpty(DateTimeOffset.MinValue)
+            .Max();
+        if (lastStatusTimestamp > timestamp)
+        {
+            timestamp = lastStatusTimestamp;
+        }
+
+        if (!string.IsNullOrWhiteSpace(jobPath) && File.Exists(jobPath))
+        {
+            var modified = new DateTimeOffset(File.GetLastWriteTimeUtc(jobPath), TimeSpan.Zero);
+            if (modified > timestamp)
+            {
+                timestamp = modified;
+            }
+        }
+
+        return timestamp;
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalHours >= 1)
+        {
+            return $"{duration.TotalHours:0.0}h";
+        }
+
+        return $"{Math.Max(1, duration.TotalMinutes):0}m";
     }
 
     private void TryQueueStaleRecoveryCleanup(AutoTagJob job)
