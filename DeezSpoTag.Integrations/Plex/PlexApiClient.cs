@@ -1608,7 +1608,7 @@ public class PlexApiClient
 
         await SendPlexRequestAsync(
             HttpMethod.Post,
-            $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}/posters?X-Plex-Token={token}&url={Uri.EscapeDataString(posterUrl)}",
+            $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}&url={Uri.EscapeDataString(posterUrl)}",
             "update playlist poster",
             playlistId,
             cancellationToken);
@@ -1650,7 +1650,7 @@ public class PlexApiClient
 
             await SendPlexRequestAsync(
                 HttpMethod.Post,
-                $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}/posters?X-Plex-Token={token}",
+                $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}",
                 "upload playlist poster",
                 playlistId,
                 cancellationToken,
@@ -1693,7 +1693,7 @@ public class PlexApiClient
 
             await SendPlexRequestAsync(
                 HttpMethod.Post,
-                $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}/posters?X-Plex-Token={token}",
+                $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}",
                 "upload playlist poster",
                 playlistId,
                 cancellationToken,
