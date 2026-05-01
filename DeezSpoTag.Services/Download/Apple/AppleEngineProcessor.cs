@@ -1503,19 +1503,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
             if (context.Work.ShouldFetchPrimaryArtwork)
             {
-                if (context.CoverUrls.Count == 0)
-                {
-                    failureReasons.Add("Album artwork URL could not be resolved.");
-                }
-                else
-                {
-                    Directory.CreateDirectory(context.Work.CoverPath);
-                    var coverSaved = await SavePrefetchCoverArtworkWithFallbackAsync(context, coverName, token);
-                    if (!coverSaved)
-                    {
-                        failureReasons.Add("Album artwork download failed.");
-                    }
-                }
+                await TrySavePrimaryPrefetchArtworkAsync(context, coverName, failureReasons, token);
             }
 
             if (context.Work.ShouldFetchAnimatedArtwork && context.AppleCatalog != null && context.HttpClientFactory != null)
@@ -1568,6 +1556,26 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         finally
         {
             QueuePrefetchStatusHelper.Send(_deezspotagListener, context.Work.QueueUuid, context.GetArtworkStatus(), context.GetLyricsStatus());
+        }
+    }
+
+    private async Task TrySavePrimaryPrefetchArtworkAsync(
+        ArtworkPrefetchContext context,
+        string coverName,
+        List<string> failureReasons,
+        CancellationToken token)
+    {
+        if (context.CoverUrls.Count == 0)
+        {
+            failureReasons.Add("Album artwork URL could not be resolved.");
+            return;
+        }
+
+        Directory.CreateDirectory(context.Work.CoverPath);
+        var coverSaved = await SavePrefetchCoverArtworkWithFallbackAsync(context, coverName, token);
+        if (!coverSaved)
+        {
+            failureReasons.Add("Album artwork download failed.");
         }
     }
 

@@ -146,22 +146,8 @@ public sealed class ShazamRecognitionService
 
         if (UseSearchAssistedFallbackAfterAudioOnlyMiss)
         {
-            var assistedAttempt = RecognizeWithDetails(
-                filePath,
-                mode: RecognitionMode.SearchAssisted,
-                cancellationToken: cancellationToken);
-            if (assistedAttempt.Matched)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(
-                        "Shazam search-assisted fallback matched after audio-only retries for {Path}.",
-                        filePath);
-                }
-                return assistedAttempt;
-            }
-
-            if (assistedAttempt.Outcome != ShazamRecognitionOutcome.NoMatch)
+            var assistedAttempt = RecognizeWithSearchAssistedFallback(filePath, cancellationToken);
+            if (assistedAttempt != null)
             {
                 return assistedAttempt;
             }
@@ -171,6 +157,28 @@ public sealed class ShazamRecognitionService
         {
             Outcome = ShazamRecognitionOutcome.NoMatch
         };
+    }
+
+    private ShazamRecognitionAttempt? RecognizeWithSearchAssistedFallback(string filePath, CancellationToken cancellationToken)
+    {
+        var assistedAttempt = RecognizeWithDetails(
+            filePath,
+            mode: RecognitionMode.SearchAssisted,
+            cancellationToken: cancellationToken);
+        if (assistedAttempt.Matched)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "Shazam search-assisted fallback matched after audio-only retries for {Path}.",
+                    filePath);
+            }
+            return assistedAttempt;
+        }
+
+        return assistedAttempt.Outcome == ShazamRecognitionOutcome.NoMatch
+            ? null
+            : assistedAttempt;
     }
 
     public ShazamRecognitionAttempt RecognizeWithDetails(

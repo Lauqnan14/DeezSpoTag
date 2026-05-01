@@ -21,8 +21,9 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
     {
         const string appleTrackId = "1716080873";
         var appleUrl = $"https://music.apple.com/us/song/yoyo-feat-sewersydaa/{appleTrackId}";
-        var resolver = new SongLinkResolver(
-            new StubHttpClientFactory(request =>
+        var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = new StubHttpClientFactory(request =>
             {
                 if (request.RequestUri?.Host.Equals("itunes.apple.com", StringComparison.OrdinalIgnoreCase) == true)
                 {
@@ -44,15 +45,15 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
 
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             }),
-            qobuzMetadataService: new StubQobuzMetadataService(query =>
+            QobuzMetadataService = new StubQobuzMetadataService(query =>
             {
                 return query.Contains("Virusi Mbaya", StringComparison.OrdinalIgnoreCase)
                     ? [new QobuzTrack { Id = 411245095, Title = "YoYo", Duration = 204, Performer = new QobuzArtist { Name = "Virusi Mbaya" } }]
                     : [];
             }),
-            qobuzTrackResolver: null,
-            qobuzOptions: Options.Create(new QobuzApiConfig { DefaultStore = "us-en" }),
-            NullLogger<SongLinkResolver>.Instance);
+            QobuzOptions = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" }),
+            Logger = NullLogger<SongLinkResolver>.Instance
+        });
 
         var result = await resolver.ResolveByUrlAsync(appleUrl, CancellationToken.None);
 
@@ -65,8 +66,9 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
     {
         const string deezerId = "3135556";
         var deezerUrl = $"https://www.deezer.com/track/{deezerId}";
-        var resolver = new SongLinkResolver(
-            new StubHttpClientFactory(request =>
+        var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = new StubHttpClientFactory(request =>
             {
                 if (request.RequestUri?.Host.Equals("api.deezer.com", StringComparison.OrdinalIgnoreCase) == true
                     && request.RequestUri.AbsolutePath.Contains($"/track/{deezerId}", StringComparison.Ordinal))
@@ -85,15 +87,15 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
 
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             }),
-            qobuzMetadataService: new StubQobuzMetadataService(query =>
+            QobuzMetadataService = new StubQobuzMetadataService(query =>
             {
                 return query.Contains("Daft Punk", StringComparison.OrdinalIgnoreCase)
                     ? [new QobuzTrack { Id = 99112233, Title = "Harder, Better, Faster, Stronger", Duration = 224, Performer = new QobuzArtist { Name = "Daft Punk" } }]
                     : [];
             }),
-            qobuzTrackResolver: null,
-            qobuzOptions: Options.Create(new QobuzApiConfig { DefaultStore = "us-en" }),
-            NullLogger<SongLinkResolver>.Instance);
+            QobuzOptions = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" }),
+            Logger = NullLogger<SongLinkResolver>.Instance
+        });
 
         var result = await resolver.ResolveByUrlAsync(deezerUrl, CancellationToken.None);
 

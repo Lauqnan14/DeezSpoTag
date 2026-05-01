@@ -77,48 +77,32 @@ public static class AppleDashBoxReflectionHelper
             // Clearing first keeps MP4 tags stable across repeated enrichment runs.
             TryClearValues(tag, name);
 
-            foreach (var method in EnumerateMatchingMethods(tag, "SetDashBoxes", 3))
-            {
-                var parameters = method.GetParameters();
-                if (!HasLeadingStringParameters(parameters))
-                {
-                    continue;
-                }
-
-                if (!TryBuildThirdArgument(parameters[2].ParameterType, normalizedValues, out var argument))
-                {
-                    continue;
-                }
-
-                method.Invoke(tag, new[] { MeanValue, name, argument });
-                return true;
-            }
-
-            foreach (var method in EnumerateMatchingMethods(tag, "SetDashBox", 3))
-            {
-                var parameters = method.GetParameters();
-                if (!HasLeadingStringParameters(parameters))
-                {
-                    continue;
-                }
-
-                var valueToUse = normalizedValues[0];
-                if (parameters[2].ParameterType == typeof(string))
-                {
-                    method.Invoke(tag, new object[] { MeanValue, name, valueToUse });
-                    return true;
-                }
-
-                if (TryBuildThirdArgument(parameters[2].ParameterType, normalizedValues, out var argument))
-                {
-                    method.Invoke(tag, new[] { MeanValue, name, argument });
-                    return true;
-                }
-            }
+            return TryInvokeDashBoxSetter(tag, "SetDashBoxes", name, normalizedValues)
+                   || TryInvokeDashBoxSetter(tag, "SetDashBox", name, normalizedValues);
         }
         catch
         {
             return false;
+        }
+    }
+
+    private static bool TryInvokeDashBoxSetter(
+        TagLib.Mpeg4.AppleTag tag,
+        string methodName,
+        string name,
+        string[] normalizedValues)
+    {
+        foreach (var method in EnumerateMatchingMethods(tag, methodName, 3))
+        {
+            var parameters = method.GetParameters();
+            if (!HasLeadingStringParameters(parameters)
+                || !TryBuildThirdArgument(parameters[2].ParameterType, normalizedValues, out var argument))
+            {
+                continue;
+            }
+
+            method.Invoke(tag, new[] { MeanValue, name, argument });
+            return true;
         }
 
         return false;

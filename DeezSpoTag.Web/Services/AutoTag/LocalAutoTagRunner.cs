@@ -6832,82 +6832,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
             var values = new List<string>();
 
-            switch (normalized.ToUpperInvariant())
-            {
-                case "©NAM":
-                case TitleUpperTag:
-                    AddIfPresent(values, atlTrack.Title);
-                    break;
-                case "©ART":
-                case ArtistUpperTag:
-                case "ARTISTS":
-                    AddIfPresent(values, atlTrack.Artist);
-                    break;
-                case "©ALB":
-                case AlbumUpperTag:
-                    AddIfPresent(values, atlTrack.Album);
-                    break;
-                case "AART":
-                case AlbumArtistUpperTag:
-                case "ALBUM ARTIST":
-                    AddIfPresent(values, atlTrack.AlbumArtist);
-                    break;
-                case "©WRT":
-                case ComposerUpperTag:
-                    AddIfPresent(values, atlTrack.Composer);
-                    break;
-                case "©GEN":
-                case Mp4GenreTag:
-                    AddIfPresent(values, atlTrack.Genre);
-                    break;
-                case "ISRC":
-                    AddIfPresent(values, atlTrack.ISRC);
-                    break;
-                case "DATE":
-                case "YEAR":
-                case "©DAY":
-                    if (atlTrack.Date.HasValue)
-                    {
-                        AddIfPresent(values, atlTrack.Date.Value.ToString(IsoDateFormat));
-                    }
-
-                    break;
-                case "BPM":
-                case "TMPO":
-                    if (atlTrack.BPM > 0)
-                    {
-                        AddIfPresent(values, atlTrack.BPM.ToString());
-                    }
-
-                    break;
-                case "TRACK":
-                case "TRKN":
-                    if (atlTrack.TrackNumber > 0)
-                    {
-                        AddIfPresent(values, atlTrack.TrackNumber.ToString());
-                    }
-
-                    break;
-                case "DISC":
-                case "DISK":
-                    if (atlTrack.DiscNumber > 0)
-                    {
-                        AddIfPresent(values, atlTrack.DiscNumber.ToString());
-                    }
-
-                    break;
-                case "LYRICS":
-                case "©LYR":
-                    if (atlTrack.Lyrics != null && atlTrack.Lyrics.Count > 0)
-                    {
-                        foreach (var line in atlTrack.Lyrics)
-                        {
-                            AddIfPresent(values, line?.UnsynchronizedLyrics);
-                        }
-                    }
-
-                    break;
-            }
+            AddMp4AtlNativeRawValues(values, atlTrack, normalized);
 
             if (atlTrack.AdditionalFields != null)
             {
@@ -6925,6 +6850,92 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         catch
         {
             return new List<string>();
+        }
+    }
+
+    private static void AddMp4AtlNativeRawValues(List<string> values, ATL.Track atlTrack, string normalized)
+    {
+        switch (normalized.ToUpperInvariant())
+        {
+            case "©NAM":
+            case TitleUpperTag:
+                AddIfPresent(values, atlTrack.Title);
+                break;
+            case "©ART":
+            case ArtistUpperTag:
+            case "ARTISTS":
+                AddIfPresent(values, atlTrack.Artist);
+                break;
+            case "©ALB":
+            case AlbumUpperTag:
+                AddIfPresent(values, atlTrack.Album);
+                break;
+            case "AART":
+            case AlbumArtistUpperTag:
+            case "ALBUM ARTIST":
+                AddIfPresent(values, atlTrack.AlbumArtist);
+                break;
+            case "©WRT":
+            case ComposerUpperTag:
+                AddIfPresent(values, atlTrack.Composer);
+                break;
+            case "©GEN":
+            case Mp4GenreTag:
+                AddIfPresent(values, atlTrack.Genre);
+                break;
+            case "ISRC":
+                AddIfPresent(values, atlTrack.ISRC);
+                break;
+            case "DATE":
+            case "YEAR":
+            case "©DAY":
+                AddMp4AtlDateValue(values, atlTrack);
+                break;
+            case "BPM":
+            case "TMPO":
+                AddMp4AtlPositiveNumberValue(values, atlTrack.BPM);
+                break;
+            case "TRACK":
+            case "TRKN":
+                AddMp4AtlPositiveNumberValue(values, atlTrack.TrackNumber);
+                break;
+            case "DISC":
+            case "DISK":
+                AddMp4AtlPositiveNumberValue(values, atlTrack.DiscNumber);
+                break;
+            case "LYRICS":
+            case "©LYR":
+                AddMp4AtlLyricsValues(values, atlTrack);
+                break;
+        }
+    }
+
+    private static void AddMp4AtlDateValue(List<string> values, ATL.Track atlTrack)
+    {
+        if (atlTrack.Date.HasValue)
+        {
+            AddIfPresent(values, atlTrack.Date.Value.ToString(IsoDateFormat));
+        }
+    }
+
+    private static void AddMp4AtlPositiveNumberValue(List<string> values, double? value)
+    {
+        if (value is > 0)
+        {
+            AddIfPresent(values, value.Value.ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    private static void AddMp4AtlLyricsValues(List<string> values, ATL.Track atlTrack)
+    {
+        if (atlTrack.Lyrics == null || atlTrack.Lyrics.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var line in atlTrack.Lyrics)
+        {
+            AddIfPresent(values, line?.UnsynchronizedLyrics);
         }
     }
 

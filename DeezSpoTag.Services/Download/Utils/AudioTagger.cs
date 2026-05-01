@@ -993,6 +993,13 @@ public class AudioTagger
 
     private static void ApplyAtlMp4AdditionalMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
+        ApplyAtlMp4AudioFeatures(file, track, save);
+        ApplyAtlMp4IdentityMetadata(file, track, save);
+        ApplyAtlLyricsMetadata(file, track, save);
+    }
+
+    private static void ApplyAtlMp4AudioFeatures(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         SetAtlAdditionalFieldIf(file, save.Length, LengthUpperTag, (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
         if (save.Bpm && track.Bpm > 0)
         {
@@ -1011,6 +1018,10 @@ public class AudioTagger
         SetAtlAdditionalFieldIf(file, save.Tempo && track.Tempo.HasValue, TempoTag, FormatAudioFeature(track.Tempo ?? 0));
         SetAtlAdditionalFieldIf(file, save.TimeSignature && track.TimeSignature.HasValue, TimeSignatureTag, track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
         SetAtlAdditionalFieldIf(file, save.Liveness && track.Liveness.HasValue, LivenessTag, FormatAudioFeature(track.Liveness ?? 0));
+    }
+
+    private static void ApplyAtlMp4IdentityMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         SetAtlAdditionalFieldIf(file, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
         SetAtlAdditionalFieldIf(file, save.Explicit, ItunesAdvisoryTag, track.Explicit ? "1" : "0");
         SetAtlAdditionalFieldIf(file, save.ReplayGain, ReplayGainRawTag, track.ReplayGain);
@@ -1031,8 +1042,6 @@ public class AudioTagger
         {
             SetAtlAdditionalField(file, AppleDigitalMasterTag, appleDigitalMasterMarker);
         }
-
-        ApplyAtlLyricsMetadata(file, track, save);
     }
 
     private static void ApplyAtlMp4ContributorMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -1132,6 +1141,12 @@ public class AudioTagger
 
     private void ApplyAtlMp4PrimaryCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
+        ApplyAtlTitleAndArtistCompatibilityAliases(file, track, save);
+        ApplyAtlAlbumCompatibilityAliases(file, track, save);
+    }
+
+    private static void ApplyAtlTitleAndArtistCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         if (save.Title)
         {
             var title = string.IsNullOrWhiteSpace(file.Title) ? track.Title : file.Title;
@@ -1156,7 +1171,10 @@ public class AudioTagger
             SetAtlAdditionalField(file, "ALBUMARTIST", albumArtist);
             SetAtlAdditionalField(file, "TPE2", albumArtist);
         }
+    }
 
+    private void ApplyAtlAlbumCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         if (save.Album)
         {
             var album = string.IsNullOrWhiteSpace(file.Album) ? track.Album?.Title : file.Album;
@@ -1176,6 +1194,12 @@ public class AudioTagger
 
     private static void ApplyAtlMp4DateAndSequenceCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
+        ApplyAtlDateCompatibilityAliases(file, track, save);
+        ApplyAtlSequenceCompatibilityAliases(file, track, save);
+    }
+
+    private static void ApplyAtlDateCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         if (save.Date && track.Date != null)
         {
             if (track.Date.IsValid())
@@ -1190,7 +1214,10 @@ public class AudioTagger
         {
             SetAtlAdditionalField(file, "TDRC", track.Date.Year);
         }
+    }
 
+    private static void ApplyAtlSequenceCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         if (save.TrackNumber && track.TrackNumber > 0)
         {
             SetAtlAdditionalField(file, "TRACKNUMBER", track.TrackNumber.ToString(CultureInfo.InvariantCulture));
@@ -1844,14 +1871,6 @@ public class AudioTagger
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to set Vorbis comment {Field}", field);
-        }
-    }
-
-    private void TrySetAppleDashBox(TagLib.Mpeg4.AppleTag? tag, string name, string[] values)
-    {
-        if (!AppleDashBoxReflectionHelper.TrySetValues(tag, name, values) && _logger.IsEnabled(LogLevel.Debug))
-        {
-            _logger.LogDebug("Failed to set MP4 dash box {Name}.", name);
         }
     }
 

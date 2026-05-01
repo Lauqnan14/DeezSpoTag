@@ -68,12 +68,11 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         var fallbackCoordinator = new EngineFallbackCoordinator(
             _queueRepository,
             _settingsService,
-            new SongLinkResolver(
-                new StubHttpClientFactory(),
-                qobuzMetadataService: null,
-                qobuzTrackResolver: null,
-                qobuzOptions: null,
-                NullLogger<SongLinkResolver>.Instance),
+            new SongLinkResolver(new SongLinkResolver.Dependencies
+            {
+                HttpClientFactory = new StubHttpClientFactory(),
+                Logger = NullLogger<SongLinkResolver>.Instance
+            }),
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
@@ -202,8 +201,9 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         var fallbackCoordinator = new EngineFallbackCoordinator(
             _queueRepository,
             _settingsService,
-            new SongLinkResolver(
-                new StubHttpClientFactory(new StubHttpMessageHandler(request =>
+            new SongLinkResolver(new SongLinkResolver.Dependencies
+            {
+                HttpClientFactory = new StubHttpClientFactory(new StubHttpMessageHandler(request =>
                 {
             var requestUri = request.RequestUri?.ToString() ?? string.Empty;
             if (!requestUri.Contains("api.deezer.com/track/3094483121", StringComparison.OrdinalIgnoreCase))
@@ -231,13 +231,9 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
                 Content = new StringContent(payloadJson)
             };
         })),
-                qobuzMetadataService: null,
-                qobuzTrackResolver: null,
-                qobuzOptions: null,
-                NullLogger<SongLinkResolver>.Instance,
-                persistentCacheStore: null,
-                spotifyTrackMetadataResolver: null,
-                spotifyIdResolver: new StubSpotifyIdResolver("2f2ksxHYvYxfL8M4L4sKcA")),
+                Logger = NullLogger<SongLinkResolver>.Instance,
+                SpotifyIdResolver = new StubSpotifyIdResolver("2f2ksxHYvYxfL8M4L4sKcA")
+            }),
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),

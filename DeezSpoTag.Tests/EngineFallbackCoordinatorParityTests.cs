@@ -250,12 +250,11 @@ public sealed class EngineFallbackCoordinatorParityTests
         var coordinator = new EngineFallbackCoordinator(
             queueRepository: null!,
             settingsService,
-            new SongLinkResolver(
-                new StubHttpClientFactory(),
-                qobuzMetadataService: null,
-                qobuzTrackResolver: null,
-                qobuzOptions: null,
-                NullLogger<SongLinkResolver>.Instance),
+            new SongLinkResolver(new SongLinkResolver.Dependencies
+            {
+                HttpClientFactory = new StubHttpClientFactory(),
+                Logger = NullLogger<SongLinkResolver>.Instance
+            }),
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),

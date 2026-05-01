@@ -904,48 +904,10 @@ public static class AppleQueueHelpers
 
         if (isRawItunesArtwork)
         {
-            var (preferredWidth, preferredHeight, preferredSizeText) = GetAppleArtworkDimensions(settings);
-            if (ShouldPreserveRawArtworkSize(sourceUrl, out var sourceWidth, out var sourceHeight))
-            {
-                var requestedWidth = size > 0 ? size : preferredWidth;
-                var requestedHeight = size > 0 ? size : preferredHeight;
-                var safeWidth = sourceWidth > 0 ? Math.Min(requestedWidth, sourceWidth) : requestedWidth;
-                var safeHeight = sourceHeight > 0 ? Math.Min(requestedHeight, sourceHeight) : requestedHeight;
-                preferredWidth = safeWidth;
-                preferredHeight = safeHeight;
-                preferredSizeText = $"{safeWidth}x{safeHeight}";
-                if (logger.IsEnabled(LogLevel.Debug))
-                {
-                    logger.LogDebug(
-                        "Apple raw artwork uses presentation crop suffix; clamping requested size to {Width}x{Height} for {Url}",
-                        safeWidth,
-                        safeHeight,
-                        sourceUrl);
-                }
-            }
-            var preferredUrl = NormalizeArtworkUrl(sourceUrl, preferredSizeText, preferredWidth, preferredHeight);
-            var effectivePath = outputPath;
-            var requestedExtension = Path.GetExtension(outputPath).TrimStart('.');
-            var rawExtension = GetAppleArtworkExtension(preferredUrl, DefaultArtworkFormat);
-            if (!string.IsNullOrWhiteSpace(rawExtension)
-                && !string.Equals(requestedExtension, rawExtension, StringComparison.OrdinalIgnoreCase))
-            {
-                effectivePath = Path.ChangeExtension(outputPath, rawExtension);
-            }
-
-            if (logger.IsEnabled(LogLevel.Debug))
-            {
-                logger.LogDebug(
-                    "Downloading iTunes artwork with configured size preference: {Url} (target: {Path})",
-                    preferredUrl,
-                    effectivePath);
-            }
-
-            return await downloader.DownloadImageAsync(
-                preferredUrl,
-                effectivePath,
-                overwrite,
-                preferMaxQuality,
+            return await DownloadRawItunesArtworkAsync(
+                downloader,
+                request,
+                sourceUrl,
                 cancellationToken);
         }
 
@@ -974,7 +936,8 @@ public static class AppleQueueHelpers
         {
             if (logger.IsEnabled(LogLevel.Debug))
             {
-                logger.LogDebug("Apple artwork fallback URL: {Url}", fallbackUrl);            }
+                logger.LogDebug("Apple artwork fallback URL: {Url}", fallbackUrl);
+            }
             return await downloader.DownloadImageAsync(
                 fallbackUrl,
                 outputPath,
@@ -984,6 +947,74 @@ public static class AppleQueueHelpers
         }
 
         return null;
+    }
+
+    private static async Task<string?> DownloadRawItunesArtworkAsync(
+        ImageDownloader downloader,
+        AppleArtworkDownloadRequest request,
+        string sourceUrl,
+        CancellationToken cancellationToken)
+    {
+        var (preferredWidth, preferredHeight, preferredSizeText) = ResolveRawItunesArtworkDimensions(
+            sourceUrl,
+            request.Settings,
+            request.Size,
+            request.Logger);
+        var preferredUrl = NormalizeArtworkUrl(sourceUrl, preferredSizeText, preferredWidth, preferredHeight);
+        var effectivePath = ResolveRawItunesArtworkOutputPath(request.OutputPath, preferredUrl);
+
+        if (request.Logger.IsEnabled(LogLevel.Debug))
+        {
+            request.Logger.LogDebug(
+                "Downloading iTunes artwork with configured size preference: {Url} (target: {Path})",
+                preferredUrl,
+                effectivePath);
+        }
+
+        return await downloader.DownloadImageAsync(
+            preferredUrl,
+            effectivePath,
+            request.Overwrite,
+            request.PreferMaxQuality,
+            cancellationToken);
+    }
+
+    private static (int Width, int Height, string SizeText) ResolveRawItunesArtworkDimensions(
+        string sourceUrl,
+        DeezSpoTagSettings settings,
+        int size,
+        ILogger logger)
+    {
+        var (preferredWidth, preferredHeight, preferredSizeText) = GetAppleArtworkDimensions(settings);
+        if (!ShouldPreserveRawArtworkSize(sourceUrl, out var sourceWidth, out var sourceHeight))
+        {
+            return (preferredWidth, preferredHeight, preferredSizeText);
+        }
+
+        var requestedWidth = size > 0 ? size : preferredWidth;
+        var requestedHeight = size > 0 ? size : preferredHeight;
+        var safeWidth = sourceWidth > 0 ? Math.Min(requestedWidth, sourceWidth) : requestedWidth;
+        var safeHeight = sourceHeight > 0 ? Math.Min(requestedHeight, sourceHeight) : requestedHeight;
+        if (logger.IsEnabled(LogLevel.Debug))
+        {
+            logger.LogDebug(
+                "Apple raw artwork uses presentation crop suffix; clamping requested size to {Width}x{Height} for {Url}",
+                safeWidth,
+                safeHeight,
+                sourceUrl);
+        }
+
+        return (safeWidth, safeHeight, $"{safeWidth}x{safeHeight}");
+    }
+
+    private static string ResolveRawItunesArtworkOutputPath(string outputPath, string preferredUrl)
+    {
+        var requestedExtension = Path.GetExtension(outputPath).TrimStart('.');
+        var rawExtension = GetAppleArtworkExtension(preferredUrl, DefaultArtworkFormat);
+        return !string.IsNullOrWhiteSpace(rawExtension)
+               && !string.Equals(requestedExtension, rawExtension, StringComparison.OrdinalIgnoreCase)
+            ? Path.ChangeExtension(outputPath, rawExtension)
+            : outputPath;
     }
 
     private static bool ShouldPreserveRawArtworkSize(string sourceUrl, out int width, out int height)

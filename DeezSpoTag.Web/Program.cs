@@ -1312,6 +1312,20 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Download.ISpotifyIdResolver>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Download.ISpotifyArtworkResolver>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>()));
+        services.AddScoped<DeezSpoTag.Web.Controllers.ApiController.ApiControllerDependencies>(sp =>
+            new DeezSpoTag.Web.Controllers.ApiController.ApiControllerDependencies
+            {
+                Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Controllers.ApiController>>(),
+                DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
+                SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
+                LoginStorage = sp.GetRequiredService<DeezSpoTag.Services.Authentication.ILoginStorageService>(),
+                LibraryConfigStore = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
+                ArtistPageCache = sp.GetRequiredService<DeezSpoTag.Services.Library.ArtistPageCacheRepository>(),
+                MusicServices = sp.GetRequiredService<DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices>(),
+                TracklistSongCacheStore = sp.GetRequiredService<DeezSpoTag.Web.Services.TracklistSongCacheStore>(),
+                CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
+                SpotifyHomeFeedRuntimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyHomeFeedRuntimeService>()
+            });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchPlatformServices>(sp =>
             new DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchPlatformServices
             {

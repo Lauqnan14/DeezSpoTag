@@ -17,6 +17,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DeezSpoTag.Services.Download;
 
@@ -75,6 +76,18 @@ public static class DownloadServiceExtensions
         services.AddScoped<SearchFallbackService>();
         services.AddSingleton<SongLinkPersistentCacheStore>();
         services.AddSingleton<SpotifyTrackMetadataResolver>();
+        services.AddSingleton(sp => new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
+            QobuzMetadataService = sp.GetService<IQobuzMetadataService>(),
+            QobuzTrackResolver = sp.GetService<QobuzTrackResolver>(),
+            QobuzOptions = sp.GetService<IOptions<QobuzApiConfig>>(),
+            Logger = sp.GetRequiredService<ILogger<SongLinkResolver>>(),
+            PersistentCacheStore = sp.GetService<SongLinkPersistentCacheStore>(),
+            SpotifyTrackMetadataResolver = sp.GetService<SpotifyTrackMetadataResolver>(),
+            SpotifyIdResolver = sp.GetService<ISpotifyIdResolver>(),
+            TidalDownloadService = sp.GetService<Download.Tidal.TidalDownloadService>()
+        });
         services.AddSingleton<SongLinkResolver>();
         services.AddSingleton<EngineFallbackCoordinator>();
         services.AddSingleton<DeezerIsrcResolver>();

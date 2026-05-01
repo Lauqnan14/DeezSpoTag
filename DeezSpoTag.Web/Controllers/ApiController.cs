@@ -138,32 +138,36 @@ namespace DeezSpoTag.Web.Controllers
             public DeezSpoTag.Web.Services.SpotifyArtistService SpotifyArtistService { get; }
         }
 
-        public ApiController(
-            ILogger<ApiController> logger,
-            DeezerGatewayService deezerGatewayService,
-            DeezSpoTagSettingsService settingsService,
-            ILoginStorageService loginStorage,
-            DeezSpoTag.Web.Services.LibraryConfigStore libraryConfigStore,
-            ArtistPageCacheRepository artistPageCache,
-            ApiControllerMusicServices musicServices,
-            TracklistSongCacheStore tracklistSongCacheStore,
-            CrossDeviceSyncService crossDeviceSyncService,
-            SpotifyHomeFeedRuntimeService spotifyHomeFeedRuntimeService)
+        public sealed class ApiControllerDependencies
         {
-            _logger = logger;
-            _deezerGatewayService = deezerGatewayService;
-            _settingsService = settingsService;
-            _loginStorage = loginStorage;
-            _libraryConfigStore = libraryConfigStore;
-            _artistPageCache = artistPageCache;
-            _appleCatalog = musicServices.AppleCatalog;
-            _httpClientFactory = musicServices.HttpClientFactory;
-            _spotifyIdResolver = musicServices.SpotifyIdResolver;
-            _spotifyArtworkResolver = musicServices.SpotifyArtworkResolver;
-            _spotifyArtistService = musicServices.SpotifyArtistService;
-            _tracklistSongCacheStore = tracklistSongCacheStore;
-            _crossDeviceSyncService = crossDeviceSyncService;
-            _spotifyHomeFeedRuntimeService = spotifyHomeFeedRuntimeService;
+            public required ILogger<ApiController> Logger { get; init; }
+            public required DeezerGatewayService DeezerGatewayService { get; init; }
+            public required DeezSpoTagSettingsService SettingsService { get; init; }
+            public required ILoginStorageService LoginStorage { get; init; }
+            public required DeezSpoTag.Web.Services.LibraryConfigStore LibraryConfigStore { get; init; }
+            public required ArtistPageCacheRepository ArtistPageCache { get; init; }
+            public required ApiControllerMusicServices MusicServices { get; init; }
+            public required TracklistSongCacheStore TracklistSongCacheStore { get; init; }
+            public required CrossDeviceSyncService CrossDeviceSyncService { get; init; }
+            public required SpotifyHomeFeedRuntimeService SpotifyHomeFeedRuntimeService { get; init; }
+        }
+
+        public ApiController(ApiControllerDependencies dependencies)
+        {
+            _logger = dependencies.Logger;
+            _deezerGatewayService = dependencies.DeezerGatewayService;
+            _settingsService = dependencies.SettingsService;
+            _loginStorage = dependencies.LoginStorage;
+            _libraryConfigStore = dependencies.LibraryConfigStore;
+            _artistPageCache = dependencies.ArtistPageCache;
+            _appleCatalog = dependencies.MusicServices.AppleCatalog;
+            _httpClientFactory = dependencies.MusicServices.HttpClientFactory;
+            _spotifyIdResolver = dependencies.MusicServices.SpotifyIdResolver;
+            _spotifyArtworkResolver = dependencies.MusicServices.SpotifyArtworkResolver;
+            _spotifyArtistService = dependencies.MusicServices.SpotifyArtistService;
+            _tracklistSongCacheStore = dependencies.TracklistSongCacheStore;
+            _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
+            _spotifyHomeFeedRuntimeService = dependencies.SpotifyHomeFeedRuntimeService;
         }
 
         // Login endpoints removed - handled by DeezSpoTag.API.Controllers.LoginController

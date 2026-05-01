@@ -76,26 +76,30 @@ public sealed class SongLinkResolver
     private readonly TidalDownloadService? _tidalDownloadService;
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    public SongLinkResolver(
-        IHttpClientFactory httpClientFactory,
-        IQobuzMetadataService? qobuzMetadataService,
-        QobuzTrackResolver? qobuzTrackResolver,
-        IOptions<QobuzApiConfig>? qobuzOptions,
-        ILogger<SongLinkResolver> logger,
-        SongLinkPersistentCacheStore? persistentCacheStore = null,
-        SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null,
-        ISpotifyIdResolver? spotifyIdResolver = null,
-        TidalDownloadService? tidalDownloadService = null)
+    public sealed class Dependencies
     {
-        _httpClientFactory = httpClientFactory;
-        _qobuzMetadataService = qobuzMetadataService;
-        _qobuzTrackResolver = qobuzTrackResolver;
-        _qobuzConfig = qobuzOptions?.Value ?? new QobuzApiConfig();
-        _logger = logger;
-        _persistentCacheStore = persistentCacheStore;
-        _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
-        _spotifyIdResolver = spotifyIdResolver;
-        _tidalDownloadService = tidalDownloadService;
+        public required IHttpClientFactory HttpClientFactory { get; init; }
+        public IQobuzMetadataService? QobuzMetadataService { get; init; }
+        public QobuzTrackResolver? QobuzTrackResolver { get; init; }
+        public IOptions<QobuzApiConfig>? QobuzOptions { get; init; }
+        public required ILogger<SongLinkResolver> Logger { get; init; }
+        public SongLinkPersistentCacheStore? PersistentCacheStore { get; init; }
+        public SpotifyTrackMetadataResolver? SpotifyTrackMetadataResolver { get; init; }
+        public ISpotifyIdResolver? SpotifyIdResolver { get; init; }
+        public TidalDownloadService? TidalDownloadService { get; init; }
+    }
+
+    public SongLinkResolver(Dependencies dependencies)
+    {
+        _httpClientFactory = dependencies.HttpClientFactory;
+        _qobuzMetadataService = dependencies.QobuzMetadataService;
+        _qobuzTrackResolver = dependencies.QobuzTrackResolver;
+        _qobuzConfig = dependencies.QobuzOptions?.Value ?? new QobuzApiConfig();
+        _logger = dependencies.Logger;
+        _persistentCacheStore = dependencies.PersistentCacheStore;
+        _spotifyTrackMetadataResolver = dependencies.SpotifyTrackMetadataResolver;
+        _spotifyIdResolver = dependencies.SpotifyIdResolver;
+        _tidalDownloadService = dependencies.TidalDownloadService;
     }
 
     public Task<SongLinkResult?> ResolveSpotifyTrackAsync(string spotifyTrackId, CancellationToken cancellationToken)
@@ -192,43 +196,28 @@ public sealed class SongLinkResolver
             return null;
         }
 
-        var result = new SongLinkResult();
-        var metadata = new TrackMetadata();
+        var (result, metadata) = await ResolveNativeSourceSeedAsync(source, normalizedUrl, cancellationToken);
 
-        switch (source.Platform)
-        {
-            case DeezerPlatform:
-                result.DeezerId = source.TrackId;
-                result.DeezerUrl = BuildDeezerTrackUrl(source.TrackId);
-                metadata = await ResolveDeezerTrackMetadataByIdAsync(source.TrackId, cancellationToken);
-                break;
-            case SpotifyPlatform:
-                result.SpotifyId = source.TrackId;
-                result.SpotifyUrl = BuildSpotifyTrackUrl(source.TrackId);
-                metadata = await ResolveSpotifyTrackMetadataByIdAsync(source.TrackId, cancellationToken);
-                break;
-            case QobuzPlatform:
-                result.QobuzUrl = BuildQobuzTrackUrl(source.TrackId);
-                break;
-            case TidalPlatform:
-                result.TidalUrl = BuildTidalTrackUrl(source.TrackId);
-                break;
-            case ApplePlatform:
-                result.AppleMusicUrl = normalizedUrl;
-                metadata = await ResolveAppleTrackMetadataByUrlAsync(normalizedUrl, cancellationToken);
-                break;
-            case AmazonPlatform:
-                result.AmazonUrl = normalizedUrl;
-                break;
-            default:
-                break;
-        }
+        ApplyNativeSourceMetadata(result, metadata);
+        metadata = await ResolveNativeDeezerLinkAsync(result, metadata, cancellationToken);
+        await ResolveNativePlatformLinksAsync(result, metadata, cancellationToken);
 
+        return HasAnyResolvedLink(result) ? result : null;
+    }
+
+    private static void ApplyNativeSourceMetadata(SongLinkResult result, TrackMetadata metadata)
+    {
         result.SourceType = "song";
         result.SourceTitle = metadata.Title;
         result.SourceArtist = metadata.Artist;
         result.Isrc = metadata.Isrc;
+    }
 
+    private async Task<TrackMetadata> ResolveNativeDeezerLinkAsync(
+        SongLinkResult result,
+        TrackMetadata metadata,
+        CancellationToken cancellationToken)
+    {
         var resolvedDeezer = result.DeezerId;
         if (string.IsNullOrWhiteSpace(resolvedDeezer))
         {
@@ -253,6 +242,14 @@ public sealed class SongLinkResolver
             result.Isrc ??= metadata.Isrc;
         }
 
+        return metadata;
+    }
+
+    private async Task ResolveNativePlatformLinksAsync(
+        SongLinkResult result,
+        TrackMetadata metadata,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(result.SpotifyId))
         {
             result.SpotifyId = await ResolveSpotifyIdByMetadataAsync(metadata, cancellationToken);
@@ -281,8 +278,6 @@ public sealed class SongLinkResolver
         {
             result.SpotifyUrl = BuildSpotifyTrackUrl(result.SpotifyId);
         }
-
-        return HasAnyResolvedLink(result) ? result : null;
     }
 
     private static bool HasAnyResolvedLink(SongLinkResult result)
@@ -504,22 +499,15 @@ public sealed class SongLinkResolver
             var candidates = await SearchDeezerCandidatesAsync(query, cancellationToken);
             foreach (var candidate in candidates)
             {
-                if (IsDerivativeMismatch(metadata.Title, candidate.Title, metadata.Artist, candidate.Artist))
-                {
-                    continue;
-                }
-
-                if (!string.IsNullOrWhiteSpace(metadata.Isrc)
-                    && !string.IsNullOrWhiteSpace(candidate.Isrc)
-                    && string.Equals(metadata.Isrc, candidate.Isrc, StringComparison.OrdinalIgnoreCase))
+                var candidateResult = EvaluateDeezerCandidate(metadata, candidate, best);
+                if (candidateResult.IsrcMatched)
                 {
                     return candidate with { Score = 1.0d };
                 }
 
-                var score = ScoreDeezerCandidate(metadata, candidate);
-                if (best == null || score > best.Score)
+                if (candidateResult.Best != null)
                 {
-                    best = candidate with { Score = score };
+                    best = candidateResult.Best;
                 }
             }
         }
@@ -530,6 +518,67 @@ public sealed class SongLinkResolver
         }
 
         return best.Score >= 0.62d ? best : null;
+    }
+
+    private static (bool IsrcMatched, DeezerSearchCandidate? Best) EvaluateDeezerCandidate(
+        TrackMetadata metadata,
+        DeezerSearchCandidate candidate,
+        DeezerSearchCandidate? currentBest)
+    {
+        if (IsDerivativeMismatch(metadata.Title, candidate.Title, metadata.Artist, candidate.Artist))
+        {
+            return (false, null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(metadata.Isrc)
+            && !string.IsNullOrWhiteSpace(candidate.Isrc)
+            && string.Equals(metadata.Isrc, candidate.Isrc, StringComparison.OrdinalIgnoreCase))
+        {
+            return (true, null);
+        }
+
+        var score = ScoreDeezerCandidate(metadata, candidate);
+        return currentBest == null || score > currentBest.Score
+            ? (false, candidate with { Score = score })
+            : (false, null);
+    }
+
+    private async Task<(SongLinkResult Result, TrackMetadata Metadata)> ResolveNativeSourceSeedAsync(
+        SourceDescriptor source,
+        string normalizedUrl,
+        CancellationToken cancellationToken)
+    {
+        var result = new SongLinkResult();
+        var metadata = new TrackMetadata();
+
+        switch (source.Platform)
+        {
+            case DeezerPlatform:
+                result.DeezerId = source.TrackId;
+                result.DeezerUrl = BuildDeezerTrackUrl(source.TrackId);
+                metadata = await ResolveDeezerTrackMetadataByIdAsync(source.TrackId, cancellationToken);
+                break;
+            case SpotifyPlatform:
+                result.SpotifyId = source.TrackId;
+                result.SpotifyUrl = BuildSpotifyTrackUrl(source.TrackId);
+                metadata = await ResolveSpotifyTrackMetadataByIdAsync(source.TrackId, cancellationToken);
+                break;
+            case QobuzPlatform:
+                result.QobuzUrl = BuildQobuzTrackUrl(source.TrackId);
+                break;
+            case TidalPlatform:
+                result.TidalUrl = BuildTidalTrackUrl(source.TrackId);
+                break;
+            case ApplePlatform:
+                result.AppleMusicUrl = normalizedUrl;
+                metadata = await ResolveAppleTrackMetadataByUrlAsync(normalizedUrl, cancellationToken);
+                break;
+            case AmazonPlatform:
+                result.AmazonUrl = normalizedUrl;
+                break;
+        }
+
+        return (result, metadata);
     }
 
     private static IEnumerable<string> BuildDeezerSearchQueries(TrackMetadata metadata)
