@@ -105,6 +105,10 @@ public class AudioTagger
     {
         ".mp4", ".m4a", ".m4b"
     };
+    private static readonly HashSet<string> Mp4AudioLibraryExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".m4a", ".m4b"
+    };
     private static readonly HashSet<string> BlockedGenres = new(StringComparer.OrdinalIgnoreCase)
     {
         "other",
@@ -633,6 +637,7 @@ public class AudioTagger
     {
         try
         {
+            NormalizeMp4AudioLibraryContainer(path);
             EnsureAtlWritableMp4Container(path);
             ClearAtlNativeTags(path);
             var file = new AtlTrack(path);
@@ -697,13 +702,110 @@ public class AudioTagger
             duration,
             path);
 
-        RemuxMp4ContainerForTagging(path);
+        RemuxMp4ContainerForTagging(
+            path,
+            mapAllStreams: true,
+            outputFormat: "mp4",
+            tempExtension: ".mp4");
 
         if (TryReadAtlDuration(path, out var repairedDuration) && repairedDuration < 0)
         {
             throw new IOException($"MP4 container remux did not repair ATL duration for {path}.");
         }
     }
+
+    private void NormalizeMp4AudioLibraryContainer(string path)
+    {
+        if (!Mp4AudioLibraryExtensions.Contains(Path.GetExtension(path))
+            || !HasTopLevelMp4Box(path, "moof"))
+        {
+            return;
+        }
+
+        RemuxMp4ContainerForTagging(
+            path,
+            mapAllStreams: false,
+            outputFormat: "ipod",
+            tempExtension: ".m4a");
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Normalized fragmented MP4 audio container before tagging: {Path}", path);
+        }
+    }
+
+    private static bool HasTopLevelMp4Box(string path, string boxType)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(boxType) || boxType.Length != 4)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = System.IO.File.OpenRead(path);
+            Span<byte> header = stackalloc byte[16];
+            while (stream.Position + 8 <= stream.Length)
+            {
+                var boxStart = stream.Position;
+                if (stream.Read(header[..8]) != 8)
+                {
+                    return false;
+                }
+
+                var size = ReadUInt32BigEndian(header[..4]);
+                var currentType = System.Text.Encoding.ASCII.GetString(header[4..8]);
+                ulong boxSize = size;
+                if (size == 1)
+                {
+                    if (stream.Read(header[..8]) != 8)
+                    {
+                        return false;
+                    }
+
+                    boxSize = ReadUInt64BigEndian(header[..8]);
+                }
+                else if (size == 0)
+                {
+                    boxSize = (ulong)(stream.Length - boxStart);
+                }
+
+                if (string.Equals(currentType, boxType, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                if (boxSize < 8)
+                {
+                    return false;
+                }
+
+                var nextBoxPosition = boxStart + (long)boxSize;
+                if (nextBoxPosition <= stream.Position || nextBoxPosition > stream.Length)
+                {
+                    return false;
+                }
+
+                stream.Position = nextBoxPosition;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static uint ReadUInt32BigEndian(ReadOnlySpan<byte> value)
+        => ((uint)value[0] << 24)
+            | ((uint)value[1] << 16)
+            | ((uint)value[2] << 8)
+            | value[3];
+
+    private static ulong ReadUInt64BigEndian(ReadOnlySpan<byte> value)
+        => ((ulong)ReadUInt32BigEndian(value[..4]) << 32)
+            | ReadUInt32BigEndian(value[4..8]);
 
     private static bool TryReadAtlDuration(string path, out double duration)
     {
@@ -719,12 +821,16 @@ public class AudioTagger
         }
     }
 
-    private static void RemuxMp4ContainerForTagging(string path)
+    private static void RemuxMp4ContainerForTagging(
+        string path,
+        bool mapAllStreams,
+        string outputFormat,
+        string tempExtension)
     {
         var directory = Path.GetDirectoryName(path);
         var tempPath = Path.Combine(
             string.IsNullOrWhiteSpace(directory) ? Path.GetTempPath() : directory,
-            $".{Path.GetFileNameWithoutExtension(path)}.{Guid.NewGuid():N}.remux.mp4");
+            $".{Path.GetFileNameWithoutExtension(path)}.{Guid.NewGuid():N}.remux{tempExtension}");
 
         try
         {
@@ -739,17 +845,18 @@ public class AudioTagger
                 CreateNoWindow = true
             };
             startInfo.ArgumentList.Add("-hide_banner");
+            startInfo.ArgumentList.Add("-nostdin");
             startInfo.ArgumentList.Add("-y");
             startInfo.ArgumentList.Add("-i");
             startInfo.ArgumentList.Add(path);
             startInfo.ArgumentList.Add("-map");
-            startInfo.ArgumentList.Add("0");
+            startInfo.ArgumentList.Add(mapAllStreams ? "0" : "0:a:0");
             startInfo.ArgumentList.Add("-c");
             startInfo.ArgumentList.Add("copy");
             startInfo.ArgumentList.Add("-movflags");
             startInfo.ArgumentList.Add("+faststart");
             startInfo.ArgumentList.Add("-f");
-            startInfo.ArgumentList.Add("mp4");
+            startInfo.ArgumentList.Add(outputFormat);
             startInfo.ArgumentList.Add(tempPath);
 
             using var process = Process.Start(startInfo)
