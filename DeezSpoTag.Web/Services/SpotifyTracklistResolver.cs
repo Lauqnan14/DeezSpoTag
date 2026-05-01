@@ -260,8 +260,8 @@ internal static class SpotifyTracklistResolver
         {
             if (NeedsCachedVariantValidation(context, cachedEntry))
             {
-                var isVariantMismatch = await IsDisallowedVariantCachedHitAsync(context, cachedCanonicalId);
-                if (isVariantMismatch)
+                var isInvalidCachedHit = await IsInvalidCachedHitAsync(context, cachedCanonicalId);
+                if (isInvalidCachedHit)
                 {
                     InvalidateCanonicalCacheEntry(context.CanonicalKey, context.Options.Logger);
                     return null;
@@ -311,7 +311,7 @@ internal static class SpotifyTracklistResolver
                || string.Equals(strategy, "songlink", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<bool> IsDisallowedVariantCachedHitAsync(ResolveContext context, string deezerId)
+    private static async Task<bool> IsInvalidCachedHitAsync(ResolveContext context, string deezerId)
     {
         try
         {
@@ -321,7 +321,8 @@ internal static class SpotifyTracklistResolver
                 return true;
             }
 
-            return IsVariantCandidate(candidate);
+            var validation = ValidateCandidate(context.Track, candidate, context.Options.StrictMode);
+            return !validation.IsAccepted && !validation.IsTransient;
         }
         catch (Exception ex) when (IsTransientException(ex))
         {
@@ -820,7 +821,7 @@ internal static class SpotifyTracklistResolver
             return titleCheck;
         }
 
-        var artistCheck = TryValidateArtistScore(sourceTrack, candidate, strictWithoutIsrc, titleScore, out var artistScore);
+        var artistCheck = TryValidateArtistScore(sourceTrack, candidate, strictWithoutIsrc, out var artistScore);
         if (artistCheck != null)
         {
             return artistCheck;
@@ -935,7 +936,6 @@ internal static class SpotifyTracklistResolver
         SpotifyTrackSummary sourceTrack,
         ApiTrack candidate,
         bool strictWithoutIsrc,
-        double titleScore,
         out double artistScore)
     {
         var expectedArtist = NormalizeDescriptor(GetPrimaryArtist(sourceTrack.Artists));
@@ -948,7 +948,6 @@ internal static class SpotifyTracklistResolver
         return !string.IsNullOrWhiteSpace(expectedArtist)
                && !string.IsNullOrWhiteSpace(candidateArtist)
                && artistScore < minArtistSimilarity
-               && titleScore < 0.9
             ? CandidateValidationResult.Reject("artist_mismatch", artistScore)
             : null;
     }
