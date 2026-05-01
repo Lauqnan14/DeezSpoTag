@@ -130,18 +130,6 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             "info",
             $"Playlist watchlist added: {request.Name}."));
 
-        try
-        {
-            await _playlistWatchService.CheckPlaylistWatchItemAsync(
-                added,
-                cancellationToken,
-                forceMediaServerSync: true);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Keep add endpoint resilient; background monitor will retry.
-        }
-
         return Ok(added);
     }
 

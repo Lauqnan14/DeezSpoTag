@@ -1701,8 +1701,14 @@ async function fetchJson(url, options) {
     if (!response.ok) {
         const raw = await response.text();
         const trimmed = String(raw || '').trim();
+        const contentType = response.headers.get('content-type') || '';
+        const isHtmlError = contentType.includes('text/html') || /^<!doctype html|^<html[\s>]/i.test(trimmed);
         let message = trimmed;
-        if (trimmed) {
+        if (isHtmlError) {
+            message = response.status === 524
+                ? 'The request timed out while the server was processing it. Please try again, or let the background monitor pick it up.'
+                : `Request failed: ${response.status}`;
+        } else if (trimmed) {
             try {
                 const parsed = JSON.parse(trimmed);
                 const reasonCodes = Array.isArray(parsed?.reasonCodes)
