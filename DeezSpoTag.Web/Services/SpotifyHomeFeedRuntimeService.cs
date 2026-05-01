@@ -6,19 +6,19 @@ namespace DeezSpoTag.Web.Services;
 public sealed class SpotifyHomeFeedRuntimeService
 {
     private readonly SpotifyHomeFeedCollaborators _collaborators;
-    private readonly ILogger<SpotifyHomeFeedApiController> _controllerLogger;
     private readonly IWebHostEnvironment _hostEnvironment;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<SpotifyHomeFeedRuntimeService> _logger;
 
     public SpotifyHomeFeedRuntimeService(
         SpotifyHomeFeedCollaborators collaborators,
-        ILogger<SpotifyHomeFeedApiController> controllerLogger,
         IWebHostEnvironment hostEnvironment,
+        ILoggerFactory loggerFactory,
         ILogger<SpotifyHomeFeedRuntimeService> logger)
     {
         _collaborators = collaborators;
-        _controllerLogger = controllerLogger;
         _hostEnvironment = hostEnvironment;
+        _loggerFactory = loggerFactory;
         _logger = logger;
     }
 
@@ -37,7 +37,10 @@ public sealed class SpotifyHomeFeedRuntimeService
         var sections = await GetMappedSectionsAsync(timeZone, refresh: true, cancellationToken);
         if (sections.Count > 0)
         {
-            _logger.LogInformation("Spotify home feed runtime cache refreshed. sections={SectionCount}", sections.Count);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Spotify home feed runtime cache refreshed. sections={SectionCount}", sections.Count);
+            }
         }
         else
         {
@@ -57,7 +60,7 @@ public sealed class SpotifyHomeFeedRuntimeService
     }
 
     private SpotifyHomeFeedApiController CreateController()
-        => new(_collaborators, _controllerLogger, _hostEnvironment);
+        => new(_collaborators, _loggerFactory.CreateLogger<SpotifyHomeFeedApiController>(), _hostEnvironment);
 
     private static IReadOnlyList<object> ExtractSections(IActionResult result)
     {

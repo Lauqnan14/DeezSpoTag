@@ -152,9 +152,12 @@ public sealed class ShazamRecognitionService
                 cancellationToken: cancellationToken);
             if (assistedAttempt.Matched)
             {
-                _logger.LogDebug(
-                    "Shazam search-assisted fallback matched after audio-only retries for {Path}.",
-                    filePath);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Shazam search-assisted fallback matched after audio-only retries for {Path}.",
+                        filePath);
+                }
                 return assistedAttempt;
             }
 

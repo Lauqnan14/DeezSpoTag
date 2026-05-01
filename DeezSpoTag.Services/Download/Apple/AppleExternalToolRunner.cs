@@ -171,7 +171,7 @@ public sealed class AppleExternalToolRunner
             || mp4boxResult.Output.Contains("MPEG-4 Audio", StringComparison.OrdinalIgnoreCase);
     }
 
-    public async Task<AudioDecodeValidationResult> ValidateExpectedDurationAsync(
+    public static async Task<AudioDecodeValidationResult> ValidateExpectedDurationAsync(
         string mediaPath,
         int expectedDurationSeconds,
         CancellationToken cancellationToken)

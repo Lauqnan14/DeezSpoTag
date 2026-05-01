@@ -1535,14 +1535,15 @@ public static class AppleQueueHelpers
         foreach (var query in queries)
         {
             var songId = await TryResolveSongIdForTermAsync(
-                appleCatalog,
-                query,
-                storefront,
-                normalizedArtist,
-                normalizedAlbum,
-                normalizedTitle,
-                logger,
-                cancellationToken);
+                new AppleSongIdSearchRequest(
+                    appleCatalog,
+                    query,
+                    storefront,
+                    normalizedArtist,
+                    normalizedAlbum,
+                    normalizedTitle,
+                    logger,
+                    cancellationToken));
             if (!string.IsNullOrWhiteSpace(songId))
             {
                 return songId;
@@ -1552,14 +1553,15 @@ public static class AppleQueueHelpers
         foreach (var query in queries)
         {
             var relaxedSongId = await TryResolveSongIdForTermAsync(
-                appleCatalog,
-                query,
-                storefront,
-                string.IsNullOrWhiteSpace(normalizedPrimaryArtist) ? normalizedArtist : normalizedPrimaryArtist,
-                string.Empty,
-                string.IsNullOrWhiteSpace(normalizedCleanedTitle) ? normalizedTitle : normalizedCleanedTitle,
-                logger,
-                cancellationToken);
+                new AppleSongIdSearchRequest(
+                    appleCatalog,
+                    query,
+                    storefront,
+                    string.IsNullOrWhiteSpace(normalizedPrimaryArtist) ? normalizedArtist : normalizedPrimaryArtist,
+                    string.Empty,
+                    string.IsNullOrWhiteSpace(normalizedCleanedTitle) ? normalizedTitle : normalizedCleanedTitle,
+                    logger,
+                    cancellationToken));
             if (!string.IsNullOrWhiteSpace(relaxedSongId))
             {
                 return relaxedSongId;
@@ -1569,35 +1571,37 @@ public static class AppleQueueHelpers
         return null;
     }
 
-    private static async Task<string?> TryResolveSongIdForTermAsync(
-        AppleMusicCatalogService appleCatalog,
-        string query,
-        string storefront,
-        string normalizedArtist,
-        string normalizedAlbum,
-        string normalizedTitle,
-        ILogger logger,
-        CancellationToken cancellationToken)
+    private sealed record AppleSongIdSearchRequest(
+        AppleMusicCatalogService AppleCatalog,
+        string Query,
+        string Storefront,
+        string NormalizedArtist,
+        string NormalizedAlbum,
+        string NormalizedTitle,
+        ILogger Logger,
+        CancellationToken CancellationToken);
+
+    private static async Task<string?> TryResolveSongIdForTermAsync(AppleSongIdSearchRequest request)
     {
-        if (string.IsNullOrWhiteSpace(query))
+        if (string.IsNullOrWhiteSpace(request.Query))
         {
             return null;
         }
 
         try
         {
-            using var doc = await appleCatalog.SearchAsync(
-                query,
+            using var doc = await request.AppleCatalog.SearchAsync(
+                request.Query,
                 limit: 5,
-                storefront: storefront,
+                storefront: request.Storefront,
                 language: DefaultLanguage,
-                cancellationToken,
+                request.CancellationToken,
                 new AppleMusicCatalogService.AppleSearchOptions(TypesOverride: "songs,albums"));
             if (TryExtractBestMatchingSongId(
                     doc.RootElement,
-                    normalizedArtist,
-                    normalizedAlbum,
-                    normalizedTitle,
+                    request.NormalizedArtist,
+                    request.NormalizedAlbum,
+                    request.NormalizedTitle,
                     out var songId))
             {
                 return songId;
@@ -1605,7 +1609,10 @@ public static class AppleQueueHelpers
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogDebug(ex, "Apple animated artwork search failed for query '{Query}'.", query);
+            if (request.Logger.IsEnabled(LogLevel.Debug))
+            {
+                request.Logger.LogDebug(ex, "Apple animated artwork search failed for query '{Query}'.", request.Query);
+            }
         }
 
         return null;

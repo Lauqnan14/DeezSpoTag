@@ -1645,17 +1645,18 @@
             grid.style.display = hasTagCatalog ? "grid" : "none";
         }
         if (helper) {
-            if (!enabled) {
-                helper.textContent = "Enable a metadata source to choose download tags.";
-            } else {
-                const sourceLabel = source === "engine"
-                    ? `Download engine (${getCurrentDownloadEngineLabel()})`
-                    : source === "spotify"
-                        ? "Spotify"
-                        : "Deezer";
-                helper.textContent = `Select which tags to write during download. The selected tags apply across all download engines and supported output file formats; only metadata lookup source changes (${sourceLabel}).`;
-            }
+            helper.textContent = enabled
+                ? `Select which tags to write during download. The selected tags apply across all download engines and supported output file formats; only metadata lookup source changes (${getDownloadTagSourceLabel(source)}).`
+                : "Enable a metadata source to choose download tags.";
         }
+    }
+
+    function getDownloadTagSourceLabel(source) {
+        if (source === "engine") {
+            return `Download engine (${getCurrentDownloadEngineLabel()})`;
+        }
+
+        return source === "spotify" ? "Spotify" : "Deezer";
     }
 
     function ensureCustomDefaults() {

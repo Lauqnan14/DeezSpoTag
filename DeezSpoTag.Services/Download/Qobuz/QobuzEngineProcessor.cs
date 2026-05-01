@@ -269,14 +269,15 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             _logger,
             cancellationToken);
         var applied = await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
-            context.Track,
-            payload,
-            settings,
-            _serviceProvider,
-            EngineName,
-            resolvedSource,
-            _logger,
-            cancellationToken);
+            new EngineAudioPostDownloadHelper.ProfileMetadataOverrideRequest(
+                context.Track,
+                payload,
+                settings,
+                _serviceProvider,
+                EngineName,
+                resolvedSource,
+                _logger,
+                cancellationToken));
         return applied
             ? EngineAudioPostDownloadHelper.BuildTrackContextFromTrack(
                 context.Track,

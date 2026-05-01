@@ -278,69 +278,71 @@ public static partial class EngineAudioPostDownloadHelper
         }
     }
 
-    public static async Task<bool> ApplyProfileMetadataOverrideAsync(
-        Track track,
-        EngineQueueItemBase payload,
-        DeezSpoTagSettings settings,
-        IServiceProvider serviceProvider,
-        string engineName,
-        string? resolvedDownloadTagSource,
-        ILogger logger,
-        CancellationToken cancellationToken)
+    public sealed record ProfileMetadataOverrideRequest(
+        Track Track,
+        EngineQueueItemBase Payload,
+        DeezSpoTagSettings Settings,
+        IServiceProvider ServiceProvider,
+        string EngineName,
+        string? ResolvedDownloadTagSource,
+        ILogger Logger,
+        CancellationToken CancellationToken);
+
+    public static async Task<bool> ApplyProfileMetadataOverrideAsync(ProfileMetadataOverrideRequest request)
     {
-        var source = DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(resolvedDownloadTagSource);
+        var source = DownloadTagSourceHelper.NormalizeResolvedDownloadTagSource(request.ResolvedDownloadTagSource);
         if (string.IsNullOrWhiteSpace(source))
         {
             return false;
         }
 
-        using var scope = serviceProvider.CreateScope();
+        using var scope = request.ServiceProvider.CreateScope();
         var registry = scope.ServiceProvider.GetService<IMetadataResolverRegistry>();
         if (registry == null)
         {
-            logger.LogWarning(
+            request.Logger.LogWarning(
                 "{Engine} profile metadata registry unavailable; skipping profile source {Source} for track {TrackId}",
-                engineName,
+                request.EngineName,
                 source,
-                track.Id);
+                request.Track.Id);
             return false;
         }
 
         var resolver = registry?.GetResolver(source);
         if (resolver == null)
         {
-            logger.LogWarning(
+            request.Logger.LogWarning(
                 "{Engine} profile metadata source {Source} is not registered; skipping metadata override for track {TrackId}",
-                engineName,
+                request.EngineName,
                 source,
-                track.Id);
+                request.Track.Id);
             return false;
         }
 
-        ApplyResolvedTagSourceIdentity(track, payload, source);
+        ApplyResolvedTagSourceIdentity(request.Track, request.Payload, source);
         await TryHydrateResolvedTagSourceIdentityAsync(
-            track,
-            payload,
+            request.Track,
+            request.Payload,
             source,
             scope.ServiceProvider,
-            logger,
-            cancellationToken);
-        ApplyResolvedTagSourceIdentity(track, payload, source);
+            request.Logger,
+            request.CancellationToken);
+        ApplyResolvedTagSourceIdentity(request.Track, request.Payload, source);
         try
         {
-            await resolver.ResolveTrackAsync(track, settings, cancellationToken);
-            ApplyResolvedTagSourceIdentity(track, payload, source);
-            track.ApplySettings(settings);
+            await resolver.ResolveTrackAsync(request.Track, request.Settings, request.CancellationToken);
+            ApplyResolvedTagSourceIdentity(request.Track, request.Payload, source);
+            request.Track.ApplySettings(request.Settings);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(
+            request.Logger.LogWarning(
                 ex,
                 "{Engine} profile metadata resolver failed for source {Source} and track {TrackId}",
-                engineName,
+                request.EngineName,
                 source,
-                track.Id);
+                request.Track.Id);
             return false;
         }
     }
@@ -376,6 +378,7 @@ public static partial class EngineAudioPostDownloadHelper
                 track,
                 payload,
                 deezerClient,
+                logger,
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(resolvedDeezerId))
             {
@@ -402,6 +405,7 @@ public static partial class EngineAudioPostDownloadHelper
         Track track,
         EngineQueueItemBase payload,
         DeezerClient deezerClient,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var knownDeezerId = NormalizeDeezerId(FirstNonEmpty(
@@ -429,8 +433,12 @@ public static partial class EngineAudioPostDownloadHelper
                     return fromIsrc;
                 }
             }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "Failed to resolve Deezer track id by ISRC {Isrc}.", isrc);
+                }
             }
         }
 
@@ -438,11 +446,15 @@ public static partial class EngineAudioPostDownloadHelper
         var title = FirstNonEmpty(track.Title, payload.Title);
         if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
         {
-            var durationMs = track.Duration > 0
-                ? track.Duration * 1000
-                : payload.DurationSeconds > 0
-                    ? payload.DurationSeconds * 1000
-                    : (int?)null;
+            int? durationMs = null;
+            if (track.Duration > 0)
+            {
+                durationMs = track.Duration * 1000;
+            }
+            else if (payload.DurationSeconds > 0)
+            {
+                durationMs = payload.DurationSeconds * 1000;
+            }
             var album = FirstNonEmpty(track.Album?.Title, payload.Album) ?? string.Empty;
 
             try
@@ -458,8 +470,12 @@ public static partial class EngineAudioPostDownloadHelper
                     return fromMetadata;
                 }
             }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(ex, "Failed to resolve Deezer track id by metadata for {Artist} - {Title}.", artist, title);
+                }
             }
         }
 
@@ -581,15 +597,7 @@ public static partial class EngineAudioPostDownloadHelper
 
     private static string? FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value.Trim();
-            }
-        }
-
-        return null;
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
     }
 
     private static string ResolveFilenameStem(string filename)

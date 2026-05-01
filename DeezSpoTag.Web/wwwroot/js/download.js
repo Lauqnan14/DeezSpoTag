@@ -692,8 +692,6 @@ DeezSpoTag.Download = {
                 
                 // Queue progress/status updates. Different engines may emit either event name,
                 // but both are reduced through the same handler to keep progress state singular.
-                // TODO: Migrate backend emitters to updateQueue only, then remove the
-                // downloadProgress compatibility subscription.
                 this.connection.on("updateQueue", (update) => {
                     this.handleQueueRealtimeUpdate(update);
                 });

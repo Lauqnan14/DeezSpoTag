@@ -3180,8 +3180,6 @@ async function attemptAutoLogin() {
 
 // Load data when page loads
 document.addEventListener('DOMContentLoaded', async function() {
-    const urlParams = new URLSearchParams(globalThis.location.search);
-    const isChannelPage = !!urlParams.get('channel');
     setHomeGreeting();
     // Start home render immediately; avoid blocking first paint on connect/auth checks.
     try {

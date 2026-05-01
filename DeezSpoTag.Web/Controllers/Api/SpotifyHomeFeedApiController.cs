@@ -101,7 +101,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object BrowseCategoriesLock = new();
     private static (DateTimeOffset Stamp, List<object> Categories)? BrowseCategoriesCache;
-    private static readonly object BrowseCategoriesFileLock = new();
     private static readonly object FeedCacheLock = new();
     private static readonly Dictionary<string, (DateTimeOffset Stamp, string Greeting, List<object> Sections)> HomeFeedCache
         = new(StringComparer.OrdinalIgnoreCase);
@@ -109,10 +108,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private static (DateTimeOffset Stamp, object Section)? PopularRadioSectionCache;
     private static readonly TimeSpan HomeFeedCacheTtl = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan PopularRadioCacheTtl = TimeSpan.FromMinutes(20);
-    private static readonly JsonSerializerOptions CompactJsonSerializerOptions = new()
-    {
-        WriteIndented = false
-    };
     private static readonly string[] PersonalSectionKeywords =
     {
         "favorites",
@@ -217,11 +212,10 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetHomeFeed([FromQuery] string? timeZone, [FromQuery] bool debug, [FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
     {
-        var cacheKey = DefaultCacheKey;
         try
         {
             _logger.LogInformation("Spotify home feed requested. tz=TimeZone");
-            cacheKey = await ResolveHomeFeedCacheKeyAsync();
+            var cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
             if (!refresh && settings.SpotifyHomeFeedCacheEnabled && !debug &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
@@ -271,10 +265,9 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     [HttpGet("sections")]
     public async Task<IActionResult> GetHomeFeedSections([FromQuery] string? timeZone, [FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
     {
-        var cacheKey = DefaultCacheKey;
         try
         {
-            cacheKey = await ResolveHomeFeedCacheKeyAsync();
+            var cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
             if (!refresh && settings.SpotifyHomeFeedCacheEnabled &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
@@ -719,7 +712,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return false;
     }
 
-    private static (DateTimeOffset Stamp, string Greeting, List<object> Sections) StoreHomeFeedCache(
+    private static void StoreHomeFeedCache(
         string cacheKey,
         string greeting,
         List<object> sections)
@@ -727,7 +720,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         lock (FeedCacheLock)
         {
             HomeFeedCache[cacheKey] = (DateTimeOffset.UtcNow, greeting ?? string.Empty, sections);
-            return HomeFeedCache[cacheKey];
         }
     }
 

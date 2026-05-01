@@ -2626,11 +2626,14 @@ async function playLocalLibraryTrackInApp(trackId, button, preferredPath, audioF
     const normalizedPreferredPath = typeof preferredPath === 'string' ? preferredPath.trim() : '';
     const normalizedAudioFileId = Number.parseInt(String(audioFileId || '').trim(), 10);
     const hasAudioFileId = Number.isFinite(normalizedAudioFileId) && normalizedAudioFileId > 0;
-    const previewKey = normalizedVariantKey
-        ? `library:${trackId}:${normalizedVariantKey}`
-        : hasAudioFileId
-            ? `library:${trackId}:audio:${normalizedAudioFileId}`
-            : `library:${trackId}:${normalizedPreferredPath}`;
+    let previewKey;
+    if (normalizedVariantKey) {
+        previewKey = `library:${trackId}:${normalizedVariantKey}`;
+    } else if (hasAudioFileId) {
+        previewKey = `library:${trackId}:audio:${normalizedAudioFileId}`;
+    } else {
+        previewKey = `library:${trackId}:${normalizedPreferredPath}`;
+    }
 
     let previewUrl = `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio`;
     if (hasAudioFileId) {
@@ -7232,7 +7235,7 @@ function buildAlbumTrackRow(track) {
     const trackNum = track.trackNo || '';
     const rowFilePath = track.filePath || '';
     const rowKey = String(track.variantKey || `${track.id}:0`);
-    const rowAudioFileId = Number(track.audioFileId) > 0 ? Number(track.audioFileId) : 0;
+    const rowAudioFileId = Math.max(Number(track.audioFileId), 0);
     const playLabel = escapeHtml(track.title || 'track');
     const trackIndexText = trackNum || '—';
     const { spectrogramUrl, lrcEditorUrl, tagEditorUrl } = buildAlbumTrackUrls(track, rowFilePath);

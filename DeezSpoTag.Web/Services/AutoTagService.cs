@@ -3542,18 +3542,6 @@ public partial class AutoTagService
         root.Remove("playlistTracknameTemplate");
     }
 
-    private static string? ReadString(JsonObject root, string key)
-    {
-        if (root[key] is not JsonValue value
-            || !value.TryGetValue<string>(out var text))
-        {
-            return null;
-        }
-
-        text = text.Trim();
-        return string.IsNullOrWhiteSpace(text) ? null : text;
-    }
-
     private static void EnsureSupportedDownloadTagSource(JsonNode node)
     {
         if (node is not JsonObject root)

@@ -196,11 +196,17 @@ public class AudioTagger
     public async Task TagTrackAsync(string extension, string writePath, DeezSpoTag.Core.Models.Track track, TagSettings tags)
     {
         var finalPathExtension = Path.GetExtension(writePath);
-        var normalizedExtension = !string.IsNullOrWhiteSpace(finalPathExtension)
-            ? finalPathExtension.Trim().ToLowerInvariant()
-            : (string.IsNullOrWhiteSpace(extension)
+        string normalizedExtension;
+        if (!string.IsNullOrWhiteSpace(finalPathExtension))
+        {
+            normalizedExtension = finalPathExtension.Trim().ToLowerInvariant();
+        }
+        else
+        {
+            normalizedExtension = string.IsNullOrWhiteSpace(extension)
                 ? string.Empty
-                : extension.Trim().ToLowerInvariant());
+                : extension.Trim().ToLowerInvariant();
+        }
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -665,14 +671,17 @@ public class AudioTagger
         try
         {
             var file = new AtlTrack(path);
-            if (!file.Remove(AtlTagType.NATIVE))
+            if (!file.Remove(AtlTagType.NATIVE) && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug("ATL did not remove existing native MP4 tags before retagging: {Path}", path);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Unable to clear existing native MP4 tags before retagging: {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Unable to clear existing native MP4 tags before retagging: {Path}", path);
+            }
         }
     }
 
@@ -787,40 +796,6 @@ public class AudioTagger
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // best effort timeout cleanup
-        }
-    }
-
-    private async Task TagMP4WithTagLibAsync(string path, DeezSpoTag.Core.Models.Track track, TagSettings save)
-    {
-        try
-        {
-            using var file = TagLib.File.Create(path);
-            var tag = file.GetTag(TagTypes.Apple, true);
-            var appleTag = tag as TagLib.Mpeg4.AppleTag;
-
-            // Clear existing tags
-            tag.Clear();
-
-            ApplyMp4CoreMetadata(tag, appleTag, track, save);
-            ApplyMp4AdditionalMetadata(tag, appleTag, track, save);
-            ApplyMp4ContributorMetadata(appleTag, track, save);
-            ApplyMp4OwnershipAndCompilationMetadata(tag, appleTag, track, save);
-            ApplyMp4SourceMetadata(appleTag, track, save);
-            ApplyMp4RatingMetadata(appleTag, track, save);
-
-            if (save.Cover)
-            {
-                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath, save);
-            }
-
-            file.Save();
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Successfully tagged MP4 file: {Path}", path);            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            throw new InvalidOperationException($"Failed to tag MP4 file: {path}", ex);
         }
     }
 
@@ -1016,7 +991,7 @@ public class AudioTagger
         }
     }
 
-    private void ApplyAtlMp4AdditionalMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    private static void ApplyAtlMp4AdditionalMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         SetAtlAdditionalFieldIf(file, save.Length, LengthUpperTag, (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
         if (save.Bpm && track.Bpm > 0)
@@ -1150,6 +1125,13 @@ public class AudioTagger
 
     private void ApplyAtlMp4CompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
+        ApplyAtlMp4PrimaryCompatibilityAliases(file, track, save);
+        ApplyAtlMp4DateAndSequenceCompatibilityAliases(file, track, save);
+        ApplyAtlMp4AdditionalCompatibilityAliases(file, track, save);
+    }
+
+    private void ApplyAtlMp4PrimaryCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         if (save.Title)
         {
             var title = string.IsNullOrWhiteSpace(file.Title) ? track.Title : file.Title;
@@ -1190,7 +1172,10 @@ public class AudioTagger
             SetAtlAdditionalField(file, "GENRE", genreValue);
             SetAtlAdditionalField(file, "TCON", genreValue);
         }
+    }
 
+    private static void ApplyAtlMp4DateAndSequenceCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         if (save.Date && track.Date != null)
         {
             if (track.Date.IsValid())
@@ -1227,7 +1212,10 @@ public class AudioTagger
         {
             SetAtlAdditionalField(file, "DISCTOTAL", track.Album.DiscTotal.Value.ToString(CultureInfo.InvariantCulture));
         }
+    }
 
+    private static void ApplyAtlMp4AdditionalCompatibilityAliases(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
         if (save.Length)
         {
             SetAtlAdditionalField(file, "TLEN", (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
@@ -1251,205 +1239,6 @@ public class AudioTagger
         }
 
         SetAtlAdditionalFieldIf(file, save.Key, "INITIALKEY", track.Key);
-    }
-
-    private void ApplyMp4CoreMetadata(
-        Tag tag,
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        if (save.Title)
-        {
-            tag.Title = track.Title;
-        }
-
-        ApplyFlacOrMp4PerformerTags(tag, track, save, values => TrySetAppleDashBox(appleTag, ArtistsUpperTag, values));
-
-        if (save.Album)
-        {
-            tag.Album = track.Album?.Title;
-        }
-
-        ApplyCommonAlbumArtistAndSequenceTags(tag, track, save);
-
-        if (save.Genre && track.Album?.Genre is { Count: > 0 })
-        {
-            tag.Genres = SanitizeGenres(track.Album.Genre);
-        }
-
-        if (save.Year && !string.IsNullOrEmpty(track.Date?.Year) && uint.TryParse(track.Date.Year, out var year))
-        {
-            tag.Year = year;
-        }
-
-        if (save.Date && track.Date != null && track.Date.IsValid())
-        {
-            TrySetAppleDashBox(appleTag, "DATE", new[] { track.DateString });
-            TrySetAppleDashBox(appleTag, "©day", new[] { track.DateString });
-        }
-    }
-
-    private void ApplyMp4AdditionalMetadata(
-        Tag tag,
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        ApplyMp4FeatureMetadata(appleTag, track, save);
-        ApplyMp4IdentityMetadata(tag, appleTag, track, save);
-    }
-
-    private void ApplyMp4FeatureMetadata(
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        TrySetAppleDashBoxIf(appleTag, save.Length, LengthUpperTag, (track.Duration * 1000).ToString(CultureInfo.InvariantCulture));
-        TrySetAppleDashBoxIf(appleTag, save.Bpm && track.Bpm > 0, "BPM", track.Bpm.ToString(CultureInfo.InvariantCulture));
-        TrySetAppleDashBoxIf(appleTag, save.Key, "initialkey", track.Key);
-        TrySetAppleDashBoxIf(appleTag, save.Danceability && track.Danceability.HasValue, DanceabilityTag, FormatAudioFeature(track.Danceability ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Energy && track.Energy.HasValue, EnergyTag, FormatAudioFeature(track.Energy ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Valence && track.Valence.HasValue, ValenceTag, FormatAudioFeature(track.Valence ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Acousticness && track.Acousticness.HasValue, AcousticnessTag, FormatAudioFeature(track.Acousticness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Instrumentalness && track.Instrumentalness.HasValue, InstrumentalnessTag, FormatAudioFeature(track.Instrumentalness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Speechiness && track.Speechiness.HasValue, SpeechinessTag, FormatAudioFeature(track.Speechiness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Loudness && track.Loudness.HasValue, LoudnessTag, FormatAudioFeature(track.Loudness ?? 0));
-        TrySetAppleDashBoxIf(appleTag, save.Tempo && track.Tempo.HasValue, TempoTag, FormatAudioFeature(track.Tempo ?? 0));
-        TrySetAppleDashBoxIf(
-            appleTag,
-            save.TimeSignature && track.TimeSignature.HasValue,
-            TimeSignatureTag,
-            track.TimeSignature?.ToString(CultureInfo.InvariantCulture));
-        TrySetAppleDashBoxIf(appleTag, save.Liveness && track.Liveness.HasValue, LivenessTag, FormatAudioFeature(track.Liveness ?? 0));
-    }
-
-    private void ApplyMp4IdentityMetadata(
-        Tag tag,
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        TrySetAppleDashBoxIf(appleTag, save.Label, PublisherUpperTag, track.Album?.Label);
-        TrySetAppleDashBoxIf(appleTag, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
-        TrySetAppleDashBoxIf(appleTag, save.Explicit, ItunesAdvisoryTag, track.Explicit ? "1" : "0");
-        TrySetAppleDashBoxIf(appleTag, save.ReplayGain, ReplayGainRawTag, track.ReplayGain);
-
-        if (save.Isrc && !string.IsNullOrEmpty(track.ISRC))
-        {
-            tag.ISRC = track.ISRC;
-            TrySetAppleDashBox(appleTag, "ISRC", new[] { track.ISRC });
-        }
-
-        if (TryGetAppleDigitalMasterMarker(track, out var appleDigitalMasterMarker))
-        {
-            TrySetAppleDashBox(appleTag, AppleDigitalMasterTag, new[] { appleDigitalMasterMarker });
-        }
-
-        TrySetAppleDashBoxIf(appleTag, save.Lyrics, LyricsUpperTag, track.Lyrics?.Unsync);
-
-        if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
-        {
-            TrySetAppleDashBox(appleTag, LyricsSyncedTag, new[] { syncedLyricsText });
-        }
-    }
-
-    private void ApplyMp4ContributorMetadata(
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        if (track.Contributors.Count == 0)
-        {
-            return;
-        }
-
-        foreach (var contributor in track.Contributors)
-        {
-            var role = contributor.Key.ToUpperInvariant();
-            if (SupportedContributorRoles.Contains(role)
-                && ShouldWriteContributorRole(save, role)
-                && contributor.Value is List<string> people)
-            {
-                TrySetAppleDashBox(appleTag, role, people.ToArray());
-                continue;
-            }
-
-            if (role == "MUSICPUBLISHER"
-                && save.InvolvedPeople
-                && contributor.Value is List<string> publishers)
-            {
-                TrySetAppleDashBox(appleTag, "ORGANIZATION", publishers.ToArray());
-            }
-        }
-    }
-
-    private void ApplyMp4OwnershipAndCompilationMetadata(
-        Tag tag,
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        TrySetAppleDashBoxIf(appleTag, save.Copyright, "COPYRIGHT", track.Copyright);
-
-        if ((save.SavePlaylistAsCompilation && track.Playlist != null) || track.Album?.RecordType == CompilationRecordType)
-        {
-            TrySetTagBoolProperty(tag, "IsCompilation", true);
-            TrySetAppleDashBox(appleTag, "COMPILATION", CompilationEnabledValue);
-        }
-    }
-
-    private void ApplyMp4SourceMetadata(
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        var sourceId = ResolveSourceId(track);
-        if (save.Source)
-        {
-            TrySetAppleDashBox(appleTag, SourceUpperTag, new[] { ResolveSourceName(track) });
-            if (!string.IsNullOrWhiteSpace(sourceId))
-            {
-                TrySetAppleDashBox(appleTag, SourceIdUpperTag, new[] { sourceId });
-            }
-        }
-
-        TrySetAppleDashBoxIf(appleTag, save.Url, WwwAudioFileTag, ResolveTrackUrl(track));
-
-        if (save.TrackId)
-        {
-            if (!string.IsNullOrWhiteSpace(sourceId))
-            {
-                TrySetAppleDashBox(appleTag, $"{ResolveSourceTagPrefix(track)}_TRACK_ID", new[] { sourceId });
-            }
-
-            TrySetAppleDashBoxIf(appleTag, true, SpotifyTrackIdTag, ResolveSpotifyTrackId(track));
-            TrySetAppleDashBoxIf(appleTag, true, DeezerTrackIdTag, ResolveDeezerTrackId(track));
-            TrySetAppleDashBoxIf(appleTag, true, AppleTrackIdTag, ResolveAppleTrackId(track));
-        }
-
-        if (save.ReleaseId)
-        {
-            var releaseId = ResolveReleaseId(track);
-            if (!string.IsNullOrWhiteSpace(releaseId))
-            {
-                TrySetAppleDashBox(appleTag, $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", new[] { releaseId });
-            }
-        }
-    }
-
-    private void ApplyMp4RatingMetadata(
-        TagLib.Mpeg4.AppleTag? appleTag,
-        DeezSpoTag.Core.Models.Track track,
-        TagSettings save)
-    {
-        if (!save.Rating || track.Rank <= 0)
-        {
-            return;
-        }
-
-        var rank = Math.Round(track.Rank / 10000.0);
-        TrySetAppleDashBox(appleTag, RatingUpperTag, new[] { rank.ToString(CultureInfo.InvariantCulture) });
     }
 
     private static void ApplyCommonAlbumArtistAndSequenceTags(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -1538,7 +1327,7 @@ public class AudioTagger
         return number.ToString(CultureInfo.InvariantCulture);
     }
 
-    private void ApplyAtlLyricsMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    private static void ApplyAtlLyricsMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         var lyrics = new List<AtlLyricsInfo>();
         if (save.Lyrics && !string.IsNullOrWhiteSpace(track.Lyrics?.Unsync))
@@ -1626,14 +1415,6 @@ public class AudioTagger
         if (condition && !string.IsNullOrWhiteSpace(value))
         {
             SetVorbisComment(tag, field, new[] { value });
-        }
-    }
-
-    private void TrySetAppleDashBoxIf(TagLib.Mpeg4.AppleTag? tag, bool condition, string name, string? value)
-    {
-        if (condition && !string.IsNullOrWhiteSpace(value))
-        {
-            TrySetAppleDashBox(tag, name, new[] { value });
         }
     }
 
@@ -2068,7 +1849,7 @@ public class AudioTagger
 
     private void TrySetAppleDashBox(TagLib.Mpeg4.AppleTag? tag, string name, string[] values)
     {
-        if (!AppleDashBoxReflectionHelper.TrySetValues(tag, name, values))
+        if (!AppleDashBoxReflectionHelper.TrySetValues(tag, name, values) && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Failed to set MP4 dash box {Name}.", name);
         }
@@ -2437,22 +2218,6 @@ public class AudioTagger
         yield return ("tempo", track.Tempo.HasValue);
         yield return ("timeSignature", track.TimeSignature.HasValue);
         yield return ("liveness", track.Liveness.HasValue);
-    }
-
-    private void TrySetTagBoolProperty(Tag tag, string propertyName, bool value)
-    {
-        try
-        {
-            var property = tag.GetType().GetProperty(propertyName);
-            if (property?.CanWrite == true && property.PropertyType == typeof(bool))
-            {
-                property.SetValue(tag, value);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to set tag property {Property}", propertyName);
-        }
     }
 
     #endregion

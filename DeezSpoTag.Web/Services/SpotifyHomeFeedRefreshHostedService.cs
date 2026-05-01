@@ -28,7 +28,7 @@ public sealed class SpotifyHomeFeedRefreshHostedService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var delay = DisabledPollInterval;
+            TimeSpan delay;
             try
             {
                 using var scope = _scopeFactory.CreateScope();

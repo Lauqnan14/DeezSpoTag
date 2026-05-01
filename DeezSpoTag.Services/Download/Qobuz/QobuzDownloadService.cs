@@ -30,6 +30,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private static readonly TimeSpan ProviderTransientRetryDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan ProviderCooldown = TimeSpan.FromMinutes(10);
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly string[] ProviderUrlPropertyNames = ["url", "download_url", "link"];
     private static readonly Uri JumoReferrerUri = new UriBuilder(Uri.UriSchemeHttps, "jumo-dl.pages.dev").Uri;
     private static readonly (int Start, int End)[] ExtendedLatinRanges =
     {
@@ -1000,46 +1001,32 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return false;
         }
 
-        if (root.TryGetProperty("url", out var urlProp) && urlProp.ValueKind == JsonValueKind.String)
+        if (TryReadProviderUrl(root, out url))
         {
-            url = urlProp.GetString();
-            return !string.IsNullOrWhiteSpace(url);
-        }
-
-        if (root.TryGetProperty("download_url", out var downloadUrlProp) && downloadUrlProp.ValueKind == JsonValueKind.String)
-        {
-            url = downloadUrlProp.GetString();
-            return !string.IsNullOrWhiteSpace(url);
-        }
-
-        if (root.TryGetProperty("link", out var linkProp) && linkProp.ValueKind == JsonValueKind.String)
-        {
-            url = linkProp.GetString();
-            return !string.IsNullOrWhiteSpace(url);
+            return true;
         }
 
         if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == JsonValueKind.Object)
         {
-            if (dataProp.TryGetProperty("url", out var nestedUrl) && nestedUrl.ValueKind == JsonValueKind.String)
-            {
-                url = nestedUrl.GetString();
-                return !string.IsNullOrWhiteSpace(url);
-            }
+            return TryReadProviderUrl(dataProp, out url);
+        }
 
-            if (dataProp.TryGetProperty("download_url", out var nestedDownloadUrl)
-                && nestedDownloadUrl.ValueKind == JsonValueKind.String)
-            {
-                url = nestedDownloadUrl.GetString();
-                return !string.IsNullOrWhiteSpace(url);
-            }
+        return false;
+    }
 
-            if (dataProp.TryGetProperty("link", out var nestedLink) && nestedLink.ValueKind == JsonValueKind.String)
+    private static bool TryReadProviderUrl(JsonElement element, out string? url)
+    {
+        foreach (var propertyName in ProviderUrlPropertyNames)
+        {
+            if (element.TryGetProperty(propertyName, out var property)
+                && property.ValueKind == JsonValueKind.String)
             {
-                url = nestedLink.GetString();
+                url = property.GetString();
                 return !string.IsNullOrWhiteSpace(url);
             }
         }
 
+        url = null;
         return false;
     }
 

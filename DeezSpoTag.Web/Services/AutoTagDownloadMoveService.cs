@@ -1660,12 +1660,9 @@ public sealed class AutoTagDownloadMoveService
                     .Select(static value => value.Trim()),
                 StringComparer.OrdinalIgnoreCase);
 
-            foreach (var sourceValue in sourceValues)
+            if (sourceValues.Any(sourceValue => !destinationValues.Contains(sourceValue)))
             {
-                if (!destinationValues.Contains(sourceValue))
-                {
-                    return false;
-                }
+                return false;
             }
         }
 
@@ -1690,7 +1687,10 @@ public sealed class AutoTagDownloadMoveService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to delete temporary converted file {Path}", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to delete temporary converted file {Path}", path);
+            }
         }
     }
 

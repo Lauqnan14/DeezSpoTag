@@ -1050,6 +1050,11 @@ public sealed class SongLinkResolver
         return $"https://play.qobuz.com/track/{trackId}";
     }
 
+    private static string BuildQobuzTrackUrl(string qobuzTrackId)
+    {
+        return $"https://play.qobuz.com/track/{qobuzTrackId}";
+    }
+
     private static bool TryGetQobuzTrackItems(JsonElement rootElement, out JsonElement items)
     {
         items = default;
@@ -1401,11 +1406,6 @@ public sealed class SongLinkResolver
     private static string BuildSpotifyTrackUrl(string spotifyTrackId)
     {
         return $"https://open.spotify.com/track/{spotifyTrackId}";
-    }
-
-    private static string BuildQobuzTrackUrl(string qobuzTrackId)
-    {
-        return $"https://play.qobuz.com/track/{qobuzTrackId}";
     }
 
     private static string BuildTidalTrackUrl(string tidalTrackId)

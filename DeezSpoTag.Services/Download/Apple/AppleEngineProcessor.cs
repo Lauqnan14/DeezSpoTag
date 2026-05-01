@@ -501,14 +501,15 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         var pathProcessor = buildScope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
         var context = BuildTrackContext(payload, settings, pathProcessor, appleId);
         var applied = await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
-            context.Track,
-            payload,
-            settings,
-            _serviceProvider,
-            EngineName,
-            resolvedDownloadTagSource,
-            _logger,
-            itemToken);
+            new EngineAudioPostDownloadHelper.ProfileMetadataOverrideRequest(
+                context.Track,
+                payload,
+                settings,
+                _serviceProvider,
+                EngineName,
+                resolvedDownloadTagSource,
+                _logger,
+                itemToken));
         return applied
             ? EngineAudioPostDownloadHelper.BuildTrackContextFromTrack(
                 context.Track,
@@ -903,7 +904,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         var validation = await _toolRunner.ValidateDecodableAudioAsync(outputPath, itemToken);
         if (validation.Success)
         {
-            validation = await _toolRunner.ValidateExpectedDurationAsync(
+            validation = await AppleExternalToolRunner.ValidateExpectedDurationAsync(
                 outputPath,
                 payload.DurationSeconds,
                 itemToken);
@@ -1760,13 +1761,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 _logger,
                 true),
             token);
-    }
-
-    private static void UpdateAudioPayloadFiles(AppleQueueItem payload, PathGenerationResult pathResult, string outputPath)
-    {
-        var result = QueuePayloadFileHelper.BuildAudioFiles(pathResult, outputPath);
-        payload.Files = result.Files;
-        payload.LyricsStatus = result.LyricsStatus;
     }
 
     private static bool IsAppleArtworkUrl(string? url)

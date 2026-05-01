@@ -209,25 +209,9 @@ public partial class AutoTagService
 
             cancellationToken.ThrowIfCancellationRequested();
             var options = BuildFolderUniformityOptions(folderUniformity, settings);
-            if (profileState != null && scopedFoldersByPath.TryGetValue(path, out var folder))
+            if (!TryApplyFolderUniformityProfile(job, path, options, profileState, scopedFoldersByPath))
             {
-                var profile = AutoTagProfileResolutionService.ResolveFolderProfile(
-                    profileState,
-                    folder.Id,
-                    folder.AutoTagProfileId);
-                if (profile == null)
-                {
-                    AppendLog(job, $"enhancement workflow: folder uniformity skipped for '{path}' (missing AutoTag profile).");
-                    continue;
-                }
-
-                AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(options, profile);
-                if (options.RenameFilesToTemplate
-                    && string.IsNullOrWhiteSpace(options.TracknameTemplateOverride))
-                {
-                    AppendLog(job, $"enhancement workflow: folder uniformity skipped for '{path}' (profile tracknameTemplate is required when renameFilesToTemplate is enabled).");
-                    continue;
-                }
+                continue;
             }
 
             var organizerReport = options.GenerateReconciliationReport
@@ -240,6 +224,38 @@ public partial class AutoTagService
                     $"folder uniformity report: planned={organizerReport.PlannedMoves}, files={organizerReport.MovedFiles}, sidecars={organizerReport.MovedSidecars}, duplicate-replacements={organizerReport.ReplacedDuplicates}, duplicate-quarantine={organizerReport.QuarantinedDuplicates}.");
             }
         }
+    }
+
+    private bool TryApplyFolderUniformityProfile(
+        AutoTagJob job,
+        string path,
+        AutoTagOrganizerOptions options,
+        AutoTagProfileResolutionService.ResolvedState? profileState,
+        Dictionary<string, FolderDto> scopedFoldersByPath)
+    {
+        if (profileState == null || !scopedFoldersByPath.TryGetValue(path, out var folder))
+        {
+            return true;
+        }
+
+        var profile = AutoTagProfileResolutionService.ResolveFolderProfile(
+            profileState,
+            folder.Id,
+            folder.AutoTagProfileId);
+        if (profile == null)
+        {
+            AppendLog(job, $"enhancement workflow: folder uniformity skipped for '{path}' (missing AutoTag profile).");
+            return false;
+        }
+
+        AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(options, profile);
+        if (!options.RenameFilesToTemplate || !string.IsNullOrWhiteSpace(options.TracknameTemplateOverride))
+        {
+            return true;
+        }
+
+        AppendLog(job, $"enhancement workflow: folder uniformity skipped for '{path}' (profile tracknameTemplate is required when renameFilesToTemplate is enabled).");
+        return false;
     }
 
     private async Task RunFolderUniformityDedupeAsync(

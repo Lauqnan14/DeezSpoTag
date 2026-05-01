@@ -706,21 +706,22 @@ public class TrackDownloader
         }
 
         await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
-            track,
-            new TrackDownloaderMetadataPayload
-            {
-                DeezerId = track.Id ?? string.Empty,
-                Title = track.Title ?? string.Empty,
-                Artist = track.MainArtist?.Name ?? string.Empty,
-                Album = track.Album?.Title ?? string.Empty,
-                Isrc = track.ISRC ?? string.Empty
-            },
-            settings,
-            _serviceProvider,
-            DeezerSource,
-            resolvedDownloadTagSource,
-            _logger,
-            cancellationToken);
+            new EngineAudioPostDownloadHelper.ProfileMetadataOverrideRequest(
+                track,
+                new TrackDownloaderMetadataPayload
+                {
+                    DeezerId = track.Id ?? string.Empty,
+                    Title = track.Title ?? string.Empty,
+                    Artist = track.MainArtist?.Name ?? string.Empty,
+                    Album = track.Album?.Title ?? string.Empty,
+                    Isrc = track.ISRC ?? string.Empty
+                },
+                settings,
+                _serviceProvider,
+                DeezerSource,
+                resolvedDownloadTagSource,
+                _logger,
+                cancellationToken));
     }
 
     private sealed class TrackDownloaderMetadataPayload : EngineQueueItemBase

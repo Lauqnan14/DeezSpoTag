@@ -2119,7 +2119,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 return AppleDownloadResult.Fail(validation.Message);
             }
 
-            var durationValidation = await _toolRunner.ValidateExpectedDurationAsync(
+            var durationValidation = await AppleExternalToolRunner.ValidateExpectedDurationAsync(
                 outputPath,
                 request.DurationSeconds,
                 cancellationToken);

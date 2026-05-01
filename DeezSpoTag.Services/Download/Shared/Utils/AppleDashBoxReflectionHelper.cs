@@ -17,30 +17,22 @@ public static class AppleDashBoxReflectionHelper
         {
             foreach (var method in EnumerateMatchingMethods(tag, "GetDashBoxes", 2))
             {
-                var parameters = method.GetParameters();
-                if (parameters[0].ParameterType != typeof(string)
-                    || parameters[1].ParameterType != typeof(string))
+                if (!HasLeadingStringParameters(method))
                 {
                     continue;
                 }
 
                 var result = method.Invoke(tag, new object[] { MeanValue, name });
-                if (result is string[] arrayResult)
+                var values = ConvertDashBoxResult(result);
+                if (values != null)
                 {
-                    return arrayResult.Where(static value => !string.IsNullOrWhiteSpace(value)).ToList();
-                }
-
-                if (result is IEnumerable<string> enumerableResult)
-                {
-                    return enumerableResult.Where(static value => !string.IsNullOrWhiteSpace(value)).ToList();
+                    return values;
                 }
             }
 
             foreach (var method in EnumerateMatchingMethods(tag, "GetDashBox", 2))
             {
-                var parameters = method.GetParameters();
-                if (parameters[0].ParameterType != typeof(string)
-                    || parameters[1].ParameterType != typeof(string))
+                if (!HasLeadingStringParameters(method))
                 {
                     continue;
                 }
@@ -88,8 +80,7 @@ public static class AppleDashBoxReflectionHelper
             foreach (var method in EnumerateMatchingMethods(tag, "SetDashBoxes", 3))
             {
                 var parameters = method.GetParameters();
-                if (parameters[0].ParameterType != typeof(string)
-                    || parameters[1].ParameterType != typeof(string))
+                if (!HasLeadingStringParameters(parameters))
                 {
                     continue;
                 }
@@ -106,8 +97,7 @@ public static class AppleDashBoxReflectionHelper
             foreach (var method in EnumerateMatchingMethods(tag, "SetDashBox", 3))
             {
                 var parameters = method.GetParameters();
-                if (parameters[0].ParameterType != typeof(string)
-                    || parameters[1].ParameterType != typeof(string))
+                if (!HasLeadingStringParameters(parameters))
                 {
                     continue;
                 }
@@ -141,8 +131,7 @@ public static class AppleDashBoxReflectionHelper
             foreach (var method in EnumerateMatchingMethods(tag, "SetDashBoxes", 3))
             {
                 var parameters = method.GetParameters();
-                if (parameters[0].ParameterType != typeof(string)
-                    || parameters[1].ParameterType != typeof(string))
+                if (!HasLeadingStringParameters(parameters))
                 {
                     continue;
                 }
@@ -158,8 +147,7 @@ public static class AppleDashBoxReflectionHelper
             foreach (var method in EnumerateMatchingMethods(tag, "SetDashBox", 3))
             {
                 var parameters = method.GetParameters();
-                if (parameters[0].ParameterType != typeof(string)
-                    || parameters[1].ParameterType != typeof(string))
+                if (!HasLeadingStringParameters(parameters))
                 {
                     continue;
                 }
@@ -189,10 +177,28 @@ public static class AppleDashBoxReflectionHelper
     {
         return tag
             .GetType()
-            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
             .Where(method =>
                 string.Equals(method.Name, methodName, StringComparison.Ordinal)
                 && method.GetParameters().Length == parameterCount);
+    }
+
+    private static bool HasLeadingStringParameters(MethodInfo method) =>
+        HasLeadingStringParameters(method.GetParameters());
+
+    private static bool HasLeadingStringParameters(ParameterInfo[] parameters) =>
+        parameters.Length >= 2
+        && parameters[0].ParameterType == typeof(string)
+        && parameters[1].ParameterType == typeof(string);
+
+    private static List<string>? ConvertDashBoxResult(object? result)
+    {
+        return result switch
+        {
+            string[] arrayResult => arrayResult.Where(static value => !string.IsNullOrWhiteSpace(value)).ToList(),
+            IEnumerable<string> enumerableResult => enumerableResult.Where(static value => !string.IsNullOrWhiteSpace(value)).ToList(),
+            _ => null
+        };
     }
 
     private static bool TryBuildThirdArgument(Type parameterType, string[] values, out object argument)

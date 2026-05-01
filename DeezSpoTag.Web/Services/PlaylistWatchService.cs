@@ -22,10 +22,7 @@ public sealed class PlaylistWatchService
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
 
     private readonly record struct AtmosQueueRequest(string SourceLabel, string TrackId, bool AfterPrimarySkip);
-    private readonly record struct QueueWatchResult(int QueuedCount, int CompletedCount, int FailedCount)
-    {
-        public int HandledCount => QueuedCount + CompletedCount;
-    }
+    private readonly record struct QueueWatchResult(int QueuedCount, int CompletedCount, int FailedCount);
 
     private readonly record struct QueueWatchTrackResult(int QueuedCount, bool Completed, bool Failed);
 
@@ -1360,57 +1357,19 @@ public sealed class PlaylistWatchService
 
         var snapshotId = string.IsNullOrWhiteSpace(playlistInfo.Checksum) ? null : playlistInfo.Checksum;
         var trackTotal = playlistInfo.NbTracks;
-        if (!string.IsNullOrWhiteSpace(playlistInfo.Title) || !string.IsNullOrWhiteSpace(playlistInfo.Description) || !string.IsNullOrWhiteSpace(playlistInfo.PictureXl) || trackTotal.HasValue)
-        {
-            var imageUrl = !string.IsNullOrWhiteSpace(playlistInfo.PictureXl)
-                ? playlistInfo.PictureXl
-                : playlistInfo.PictureBig;
-            imageUrl = await ResolvePlaylistImageUrlAsync(
-                DeezerSource,
-                playlist.SourceId,
-                playlistInfo.Title ?? playlist.Name,
-                imageUrl,
-                preference,
-                cancellationToken);
-            await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-                DeezerSource,
-                playlist.SourceId,
-                playlistInfo.Title,
-                imageUrl,
-                playlistInfo.Description,
-                trackTotal,
-                cancellationToken);
-        }
+        await UpdateDeezerPlaylistMetadataAsync(playlist, playlistInfo, preference, trackTotal, cancellationToken);
         var state = await _libraryRepository.GetPlaylistWatchStateAsync(DeezerSource, playlist.SourceId, cancellationToken);
         if (!string.IsNullOrWhiteSpace(snapshotId)
             && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
         {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    DeezerSource,
-                    playlist.SourceId,
-                    snapshotId,
-                    trackTotal,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
+            await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
             return;
         }
 
         var tracks = await _deezerClient.GetPlaylistTracksAsync(playlist.SourceId);
         if (tracks.Count == 0)
         {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    DeezerSource,
-                    playlist.SourceId,
-                    snapshotId,
-                    trackTotal,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
+            await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
             return;
         }
 
@@ -1424,16 +1383,7 @@ public sealed class PlaylistWatchService
 
         if (newTracks.Count == 0)
         {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    DeezerSource,
-                    playlist.SourceId,
-                    snapshotId,
-                    trackTotal,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
+            await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
             return;
         }
 
@@ -1480,10 +1430,54 @@ public sealed class PlaylistWatchService
             return;
         }
 
-        await UpsertPlaylistWatchStateAsync(
+        await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
+    }
+
+    private async Task UpdateDeezerPlaylistMetadataAsync(
+        PlaylistWatchlistDto playlist,
+        ApiPlaylist playlistInfo,
+        PlaylistWatchPreferenceDto? preference,
+        int? trackTotal,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(playlistInfo.Title)
+            && string.IsNullOrWhiteSpace(playlistInfo.Description)
+            && string.IsNullOrWhiteSpace(playlistInfo.PictureXl)
+            && !trackTotal.HasValue)
+        {
+            return;
+        }
+
+        var imageUrl = !string.IsNullOrWhiteSpace(playlistInfo.PictureXl)
+            ? playlistInfo.PictureXl
+            : playlistInfo.PictureBig;
+        imageUrl = await ResolvePlaylistImageUrlAsync(
+            DeezerSource,
+            playlist.SourceId,
+            playlistInfo.Title ?? playlist.Name,
+            imageUrl,
+            preference,
+            cancellationToken);
+        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
+            DeezerSource,
+            playlist.SourceId,
+            playlistInfo.Title,
+            imageUrl,
+            playlistInfo.Description,
+            trackTotal,
+            cancellationToken);
+    }
+
+    private Task UpsertDeezerPlaylistWatchStateAsync(
+        string sourceId,
+        string? snapshotId,
+        int? trackTotal,
+        CancellationToken cancellationToken)
+    {
+        return UpsertPlaylistWatchStateAsync(
             new LibraryRepository.PlaylistWatchStateUpsertInput(
                 DeezerSource,
-                playlist.SourceId,
+                sourceId,
                 snapshotId,
                 trackTotal,
                 null,

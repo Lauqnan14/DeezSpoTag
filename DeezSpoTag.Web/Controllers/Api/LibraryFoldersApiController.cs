@@ -16,7 +16,6 @@ public class LibraryFoldersApiController : ControllerBase
     private const string FolderContentAtmos = "atmos";
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
-    private const string FolderContentOther = "other";
 
     private static readonly HashSet<string> AllowedConversionFormats = new(StringComparer.OrdinalIgnoreCase)
     {

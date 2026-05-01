@@ -10,6 +10,8 @@ public sealed class GenreTagAliasNormalizerTests
 {
     private static readonly string[] RnbSoulComposite = ["R&B/Soul"];
     private static readonly string[] HipHopPopComposite = ["Hip-Hop/Pop"];
+    private static readonly string[] HipHopRapComposite = ["HipHop, Rap", "Rap", "Hip-Hop"];
+    private static readonly string[] ExpectedHipHopRap = ["HipHop", "Rap"];
 
     [Fact]
     public void NormalizeAndExpandValues_PrefersWholeAliasBeforeCompositeSplit()
@@ -65,12 +67,12 @@ public sealed class GenreTagAliasNormalizerTests
         ]);
 
         var values = GenreTagAliasNormalizer.NormalizeAndExpandValues(
-                ["HipHop, Rap", "Rap", "Hip-Hop"],
+                HipHopRapComposite,
                 aliasMap,
                 splitComposite: true)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        Assert.Equal(new[] { "HipHop", "Rap" }, values);
+        Assert.Equal(ExpectedHipHopRap, values);
     }
 }

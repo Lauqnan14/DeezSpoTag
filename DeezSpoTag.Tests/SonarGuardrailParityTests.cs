@@ -128,14 +128,14 @@ public sealed class SonarGuardrailParityTests
     public void Enrichment_Mp4CompatibilityAliases_AreSynchronizedWithNativeFields()
     {
         var root = FindRepoRoot();
-        var runnerPath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var runnerPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Utils", "AudioTagger.cs");
         Assert.True(File.Exists(runnerPath), $"File not found: {runnerPath}");
 
         var source = File.ReadAllText(runnerPath);
-        Assert.Contains("WriteMp4AtlCompatibilityRaw(additional, \"ARTIST\", atlTrack.Artist", source, StringComparison.Ordinal);
-        Assert.Contains("WriteMp4AtlCompatibilityRaw(additional, \"TPE1\", atlTrack.Artist", source, StringComparison.Ordinal);
-        Assert.Contains("WriteMp4AtlCompatibilityRaw(additional, \"ALBUMARTIST\", atlTrack.AlbumArtist", source, StringComparison.Ordinal);
-        Assert.Contains("Mp4AtlRawMatches(additional, normalized, value)", source, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalField(file, \"ARTIST\", artistValue);", source, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalField(file, \"TPE1\", artistValue);", source, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalField(file, \"ALBUMARTIST\", albumArtist);", source, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalField(file, \"TPE2\", albumArtist);", source, StringComparison.Ordinal);
     }
 
     [Fact]

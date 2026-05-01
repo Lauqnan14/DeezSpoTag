@@ -21,7 +21,7 @@ globalThis.addEventListener("activate", (event) => {
     try {
       const clients = await globalThis.clients.matchAll({ type: "window", includeUncontrolled: true });
       clients.forEach((client) => {
-        void client.navigate(client.url);
+        client.navigate(client.url);
       });
     } catch {
       // Best effort cleanup.

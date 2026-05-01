@@ -255,7 +255,7 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
         track.Artist["Main"] = new List<string> { artistName };
     }
 
-    private static void ApplyContributorFields(Track track, IReadOnlyList<ApiContributor>? contributors)
+    private static void ApplyContributorFields(Track track, List<ApiContributor>? contributors)
     {
         if (contributors == null || contributors.Count == 0)
         {

@@ -68,7 +68,6 @@ public sealed class SpotifyArtistService
     private readonly LibraryRepository _libraryRepository;
     private readonly ArtistPageCacheRepository _cacheRepository;
     private readonly LibraryConfigStore _configStore;
-    private readonly AutoTagDefaultsStore _autoTagDefaultsStore;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
     private readonly SpotifyMetadataService _metadataService;
     private readonly SpotifyDeezerLinkService _deezerLinkService;
@@ -99,7 +98,6 @@ public sealed class SpotifyArtistService
         LibraryRepository libraryRepository,
         ArtistPageCacheRepository cacheRepository,
         LibraryConfigStore configStore,
-        AutoTagDefaultsStore autoTagDefaultsStore,
         TaggingProfileService taggingProfileService,
         SpotifyArtistServiceDependencies dependencies,
         ILogger<SpotifyArtistService> logger)
@@ -107,12 +105,10 @@ public sealed class SpotifyArtistService
         _libraryRepository = libraryRepository;
         _cacheRepository = cacheRepository;
         _configStore = configStore;
-        _autoTagDefaultsStore = autoTagDefaultsStore;
         _pathfinderMetadataClient = dependencies.PathfinderMetadataClient;
         _metadataService = dependencies.MetadataService;
         _deezerLinkService = dependencies.DeezerLinkService;
         _shazamRecognitionService = dependencies.ShazamRecognitionService;
-        _ = _autoTagDefaultsStore ?? throw new ArgumentNullException(nameof(autoTagDefaultsStore));
         _taggingProfileService = taggingProfileService;
         _logger = logger;
     }
@@ -3292,7 +3288,7 @@ public sealed class SpotifyArtistService
         }
     }
 
-    private async Task<bool> ResolveRenameSpotifyArtistFoldersDefaultAsync()
+    private static async Task<bool> ResolveRenameSpotifyArtistFoldersDefaultAsync()
     {
         await Task.CompletedTask;
         // Folder profiles are authoritative. This fallback is only used when

@@ -1084,13 +1084,11 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return true;
         }
 
-        foreach (var entry in data)
+        var matchingEntry = data.FirstOrDefault(entry => string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrEmpty(matchingEntry.Key))
         {
-            if (string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
-            {
-                value = entry.Value;
-                return true;
-            }
+            value = matchingEntry.Value;
+            return true;
         }
 
         value = default;
@@ -2048,47 +2046,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
     }
 
-    private async Task<bool> TryPauseAnyRunningAutoTagForIncomingDownloadAsync(string? jobId)
-    {
-        if (string.IsNullOrWhiteSpace(jobId))
-        {
-            return false;
-        }
-
-        try
-        {
-            _pipelineRequested = true;
-            _queueIdleSince = null;
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                "Automation: active AutoTag job pause requested for incoming download."));
-
-            var stopped = await _autoTagService.StopJobAsync(jobId);
-            if (stopped)
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("AutoTag job {JobId} pause requested for incoming download.", jobId);
-                }
-            }
-            else
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("AutoTag job {JobId} could not be paused (already stopped).", jobId);
-                }
-            }
-
-            return true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to request AutoTag pause for incoming download.");
-            return false;
-        }
-    }
-
     private async Task TriggerPlexScanAsync(CancellationToken cancellationToken)
     {
         try
@@ -2354,7 +2311,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return item.UpdatedAt > processedAt;
     }
 
-    private static IReadOnlyDictionary<string, DateTimeOffset> BuildCompletionMarkers(IEnumerable<DownloadQueueItem> items)
+    private static Dictionary<string, DateTimeOffset> BuildCompletionMarkers(IEnumerable<DownloadQueueItem> items)
     {
         var markers = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in items)

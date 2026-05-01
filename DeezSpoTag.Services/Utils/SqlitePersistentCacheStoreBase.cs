@@ -70,7 +70,7 @@ public abstract class SqlitePersistentCacheStoreBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, failureMessage);
+            logger.LogWarning(ex, "{FailureMessage}", failureMessage);
         }
         finally
         {
@@ -117,7 +117,7 @@ public abstract class SqlitePersistentCacheStoreBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, failureMessage);
+            logger.LogWarning(ex, "{FailureMessage}", failureMessage);
             _nextCleanupUtc = DateTimeOffset.UtcNow.Add(CleanupInterval);
         }
         finally

@@ -54,16 +54,24 @@ internal sealed class FlexibleStringJsonConverter : JsonConverter<string>
         return reader.TokenType switch
         {
             JsonTokenType.String => reader.GetString() ?? string.Empty,
-            JsonTokenType.Number => reader.TryGetInt64(out var intValue)
-                ? intValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                : reader.TryGetDouble(out var doubleValue)
-                    ? doubleValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    : string.Empty,
+            JsonTokenType.Number => ReadNumberAsString(ref reader),
             JsonTokenType.True => bool.TrueString.ToLowerInvariant(),
             JsonTokenType.False => bool.FalseString.ToLowerInvariant(),
             JsonTokenType.Null => string.Empty,
             _ => throw new JsonException($"Unsupported token type '{reader.TokenType}' for string conversion.")
         };
+    }
+
+    private static string ReadNumberAsString(ref Utf8JsonReader reader)
+    {
+        if (reader.TryGetInt64(out var intValue))
+        {
+            return intValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return reader.TryGetDouble(out var doubleValue)
+            ? doubleValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : string.Empty;
     }
 
     public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)

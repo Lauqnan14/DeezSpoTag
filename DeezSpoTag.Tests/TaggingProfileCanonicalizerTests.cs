@@ -25,6 +25,7 @@ public sealed class TaggingProfileCanonicalizerTests
     private static readonly string[] ExpectedSyncedDownloadTags = { "title" };
     private static readonly string[] ExpectedSyncedAutoTags = { "releaseDate" };
     private static readonly string[] ExpectedSyncedEnhancementTags = { "label" };
+    private static readonly string[] AlbumArtDurationTags = { "albumArt", "duration" };
 
     [Fact]
     public void BuildTagConfig_UsesAutoTagArraysAsCanonicalSource()
@@ -128,8 +129,8 @@ public sealed class TaggingProfileCanonicalizerTests
             {
                 Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["tags"] = JsonSerializer.SerializeToElement(new[] { "albumArt", "duration" }),
-                    ["gapFillTags"] = JsonSerializer.SerializeToElement(new[] { "albumArt", "duration" })
+                    ["tags"] = JsonSerializer.SerializeToElement(AlbumArtDurationTags),
+                    ["gapFillTags"] = JsonSerializer.SerializeToElement(AlbumArtDurationTags)
                 }
             }
         };
@@ -137,8 +138,8 @@ public sealed class TaggingProfileCanonicalizerTests
         var changed = TaggingProfileCanonicalizer.Canonicalize(profile, seedFromTagConfigWhenMissing: true);
 
         Assert.True(changed);
-        Assert.Equal(new[] { "albumArt", "duration" }, ReadStringArray(profile.AutoTag.Data["tags"]));
-        Assert.Equal(new[] { "albumArt", "duration" }, ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
+        Assert.Equal(AlbumArtDurationTags, ReadStringArray(profile.AutoTag.Data["tags"]));
+        Assert.Equal(AlbumArtDurationTags, ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
         Assert.Equal(TagSource.AutoTagPlatform, profile.TagConfig.Cover);
         Assert.Equal(TagSource.AutoTagPlatform, profile.TagConfig.Duration);
     }

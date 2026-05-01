@@ -400,12 +400,11 @@ public class DeezSpoTagSettingsService : ISettingsService
         return fallback;
     }
 
-    private sealed class AppleMusicAuthSnapshot
+    private sealed record AppleMusicAuthSnapshot(
+        string? MediaUserToken = null,
+        string? AuthorizationToken = null)
     {
         public static AppleMusicAuthSnapshot Empty { get; } = new();
-
-        public string? MediaUserToken { get; set; }
-        public string? AuthorizationToken { get; set; }
     }
 
     private void ApplyDefaultProfileOverlay(DeezSpoTagSettings settings)

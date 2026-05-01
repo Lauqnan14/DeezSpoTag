@@ -554,20 +554,6 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             _lastTwoFactorProbeResult = false;
         }
     }
-    private bool IsExternalLoginFlowActive()
-    {
-        lock (_sync)
-        {
-            if (_loginInProgress || _awaitingTwoFactor)
-            {
-                return true;
-            }
-
-            return _startedAt.HasValue &&
-                   DateTimeOffset.UtcNow - _startedAt.Value <= TimeSpan.FromMinutes(3);
-        }
-    }
-
     private async Task<(bool Success, string? Error)> TryRunExternalWrapperHelperAsync(string[] args, CancellationToken cancellationToken, string? forcedHelperMode = null)
     {
         var helperPath = ResolveExternalWrapperHelperPath();
@@ -828,57 +814,6 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         }
 
         return result;
-    }
-
-    private async Task<AppleMusicWrapperHelperResult?> TryResetSharedModeWrapperRuntimeCacheAsync(CancellationToken cancellationToken)
-    {
-        // Shared-control mode clears mounted session files directly, but the wrapper process
-        // can still retain account tokens in memory until it is restarted. Best-effort helper
-        // logout stops/restarts wrapper runtime and clears that in-memory token state.
-        var helperPath = ResolveExternalWrapperHelperPath();
-        if (string.IsNullOrWhiteSpace(helperPath) || !File.Exists(helperPath))
-        {
-            return null;
-        }
-
-        var result = await RunExternalWrapperHelperAsync(HelperLogoutArgs, cancellationToken);
-        if (result.Success)
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Shared-mode logout reset wrapper runtime cache via helper logout.");
-            }
-            return result;
-        }
-
-        _logger.LogWarning(
-            "Shared-mode wrapper runtime cache reset failed during logout: {Error}",
-            result.Error ?? result.Output ?? "unknown error");
-        return result;
-    }
-
-    private static string BuildSharedLogoutError(string? sessionError, string? runtimeError, bool wrapperStillReachable)
-    {
-        var parts = new List<string>(3);
-        if (!string.IsNullOrWhiteSpace(sessionError))
-        {
-            parts.Add(sessionError.Trim());
-        }
-        else
-        {
-            parts.Add("Failed to clear shared wrapper session.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(runtimeError))
-        {
-            parts.Add($"Runtime cache reset failed: {runtimeError.Trim()}");
-        }
-        else if (wrapperStillReachable)
-        {
-            parts.Add("Wrapper is still reachable after logout attempt. In-memory Apple tokens may still be active.");
-        }
-
-        return string.Join(' ', parts);
     }
 
     public async Task<AppleMusicWrapperHealthResult> CheckExternalWrapperHealthAsync(CancellationToken cancellationToken)
@@ -1738,7 +1673,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         TryDeleteFileIfExists(ResolveExternalWrapperSharedTwoFactorStateFilePath());
     }
 
-    private async Task<AppleMusicWrapperHelperResult> RequestSharedWrapperLogoutAsync(CancellationToken cancellationToken)
+    private static async Task<AppleMusicWrapperHelperResult> RequestSharedWrapperLogoutAsync(CancellationToken cancellationToken)
     {
         if (!TryQueueSharedLogoutRequest(out var requestId, out var queueError))
         {
@@ -1756,11 +1691,6 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             null,
             $"Shared wrapper logout request was queued at {ResolveExternalWrapperSharedLogoutFilePath()}, but the wrapper did not acknowledge it. Ensure the apple-wrapper container is running and uses an image with shared logout command support.",
             null);
-    }
-
-    private static bool TryClearSharedWrapperSession(out string? error)
-    {
-        return TryQueueSharedLogoutRequest(out _, out error);
     }
 
     private static bool TryQueueSharedLogoutRequest(out string requestId, out string? error)
@@ -1829,24 +1759,6 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         if (File.Exists(path))
         {
             File.Delete(path);
-        }
-    }
-
-    private static void ClearDirectoryContents(string rootPath)
-    {
-        if (!Directory.Exists(rootPath))
-        {
-            return;
-        }
-
-        foreach (var filePath in Directory.EnumerateFiles(rootPath))
-        {
-            File.Delete(filePath);
-        }
-
-        foreach (var directoryPath in Directory.EnumerateDirectories(rootPath))
-        {
-            Directory.Delete(directoryPath, recursive: true);
         }
     }
 
@@ -2322,17 +2234,10 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         var tokenStateValid = TryResolveAccountInfo(context);
         RecordAuthProbe(tokenStateValid, context.AccountInfoReachable);
-        if (tokenStateValid)
+        if (tokenStateValid
+            && ShouldPromoteAuthenticatedState()
+            && PromoteAuthenticatedState(context))
         {
-            if (ShouldPromoteAuthenticatedState())
-            {
-                if (PromoteAuthenticatedState(context))
-                {
-                    return;
-                }
-            }
-
-            context.HasAuthentication = false;
             return;
         }
 

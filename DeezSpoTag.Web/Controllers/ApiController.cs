@@ -690,7 +690,7 @@ namespace DeezSpoTag.Web.Controllers
                 cachedEntry = await _tracklistSongCacheStore.TryGetAsync(tracklistTypeKey, normalizedId, cancellationToken);
                 if (!refreshRequested
                     && cachedEntry != null
-                    && _tracklistSongCacheStore.IsFresh(cachedEntry, DateTimeOffset.UtcNow))
+                    && TracklistSongCacheStore.IsFresh(cachedEntry, DateTimeOffset.UtcNow))
                 {
                     return Content(cachedEntry.PayloadJson, ApplicationJsonContentType);
                 }
@@ -698,36 +698,27 @@ namespace DeezSpoTag.Web.Controllers
                 var liveResponse = await FetchTracklistFromSourceAsync(normalizedId, normalizedType);
                 if (TryExtractTracklistPayloadJson(liveResponse, out var payloadJson, out var trackCount))
                 {
-                    var payloadHash = ComputePayloadHash(payloadJson);
-                    var upsertResult = await _tracklistSongCacheStore.UpsertAsync(
+                    await StoreTracklistCacheAndNotifyAsync(
                         tracklistTypeKey,
                         normalizedId,
                         payloadJson,
-                        payloadHash,
                         trackCount,
+                        sourceClientId,
                         cancellationToken);
-
-                    if (upsertResult.HasChanged && !string.IsNullOrWhiteSpace(upsertResult.PreviousHash))
-                    {
-                        await _crossDeviceSyncService.PublishTracklistUpdatedAsync(
-                            tracklistTypeKey,
-                            normalizedId,
-                            trackCount,
-                            payloadHash,
-                            sourceClientId,
-                            cancellationToken);
-                    }
 
                     return liveResponse;
                 }
 
                 if (TryBuildFallbackTracklistCacheResponse(cachedEntry, out var fallbackResponse))
                 {
-                    _logger.LogDebug(
-                        "Serving fallback tracklist cache. type={TracklistType} id={TracklistId} status={StatusCode}",
-                        tracklistTypeKey,
-                        normalizedId,
-                        ResolveStatusCode(liveResponse));
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug(
+                            "Serving fallback tracklist cache. type={TracklistType} id={TracklistId} status={StatusCode}",
+                            tracklistTypeKey,
+                            normalizedId,
+                            ResolveStatusCode(liveResponse));
+                    }
                     return fallbackResponse;
                 }
 
@@ -743,6 +734,37 @@ namespace DeezSpoTag.Web.Controllers
 
                 return StatusCode(500, "Error fetching data");
             }
+        }
+
+        private async Task StoreTracklistCacheAndNotifyAsync(
+            string tracklistTypeKey,
+            string normalizedId,
+            string payloadJson,
+            int trackCount,
+            string? sourceClientId,
+            CancellationToken cancellationToken)
+        {
+            var payloadHash = ComputePayloadHash(payloadJson);
+            var upsertResult = await _tracklistSongCacheStore.UpsertAsync(
+                tracklistTypeKey,
+                normalizedId,
+                payloadJson,
+                payloadHash,
+                trackCount,
+                cancellationToken);
+
+            if (!upsertResult.HasChanged || string.IsNullOrWhiteSpace(upsertResult.PreviousHash))
+            {
+                return;
+            }
+
+            await _crossDeviceSyncService.PublishTracklistUpdatedAsync(
+                tracklistTypeKey,
+                normalizedId,
+                trackCount,
+                payloadHash,
+                sourceClientId,
+                cancellationToken);
         }
 
         private async Task<IActionResult> FetchTracklistFromSourceAsync(string id, string type)

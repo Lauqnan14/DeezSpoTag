@@ -143,9 +143,15 @@ public sealed class SpotifyMatcher
     private static AutoTagTrack ToAutoTagTrack(SpotifyTrackInfo track)
     {
         var normalizedTrackId = NormalizeTrackId(track.TrackId) ?? NormalizeTrackId(track.Url);
-        var normalizedUrl = !string.IsNullOrWhiteSpace(track.Url)
-            ? track.Url
-            : (!string.IsNullOrWhiteSpace(normalizedTrackId) ? $"https://open.spotify.com/track/{normalizedTrackId}" : string.Empty);
+        var normalizedUrl = string.Empty;
+        if (!string.IsNullOrWhiteSpace(track.Url))
+        {
+            normalizedUrl = track.Url;
+        }
+        else if (!string.IsNullOrWhiteSpace(normalizedTrackId))
+        {
+            normalizedUrl = $"https://open.spotify.com/track/{normalizedTrackId}";
+        }
 
         var mapped = new AutoTagTrack
         {

@@ -27,9 +27,10 @@ public partial class AutoTagService
     }
 
     private sealed record EnrichmentStagePlan(
-        IReadOnlyList<string> RequestedTags,
+        List<string> RequestedTags,
         IReadOnlyList<string> Platforms,
-        string? ExcludedPlatform);
+        string? ExcludedPlatform,
+        bool ForceShazamFingerprint = false);
 
     private bool TryBuildEnrichmentStages(
         JsonObject baseRoot,
@@ -81,7 +82,8 @@ public partial class AutoTagService
                 .Concat(ManualShazamBootstrapTags)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList(),
-            Platforms = new[] { ShazamPlatformId }
+            Platforms = new[] { ShazamPlatformId },
+            ForceShazamFingerprint = true
         };
         if (!TryBuildEnrichmentStageFromPlan(
             baseRoot,
@@ -90,8 +92,7 @@ public partial class AutoTagService
             shazamPlan,
             out var shazamStage,
             out skipReason,
-            out var shazamStrippedKeys,
-            forceShazamFingerprint: true))
+            out var shazamStrippedKeys))
         {
             skipReason = $"manual enrichment Shazam bootstrap failed: {skipReason}";
             return false;
@@ -184,8 +185,7 @@ public partial class AutoTagService
         EnrichmentStagePlan plan,
         out AutoTagStageConfig stage,
         out string skipReason,
-        out List<string> strippedKeys,
-        bool forceShazamFingerprint = false)
+        out List<string> strippedKeys)
     {
         stage = null!;
         skipReason = "tags not configured";
@@ -216,7 +216,7 @@ public partial class AutoTagService
         WriteStringList(stageRoot, AutoTagLiterals.PlatformsKey, plan.Platforms);
         var platformCount = ReadStringList(stageRoot, AutoTagLiterals.PlatformsKey).Count;
         stageRoot[AutoTagLiterals.MultiPlatformKey] = platformCount > 1;
-        if (forceShazamFingerprint)
+        if (plan.ForceShazamFingerprint)
         {
             ConfigureShazamFingerprintBootstrap(stageRoot);
         }

@@ -146,8 +146,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 SpotifyDiscNumber: request.SpotifyDiscNumber,
                 SpotifyTotalTracks: request.SpotifyTotalTracks,
                 EmbedMaxQualityCover: embedMaxQualityCover,
-                TagSettings: tagSettings),
-            cancellationToken);
+                TagSettings: tagSettings));
 
         return renamedPath ?? filePath;
     }
@@ -746,7 +745,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         return request;
     }
 
-    private async Task<string?> TryRenameAndTagAsync(RenameAndTagRequest request, CancellationToken cancellationToken)
+    private async Task<string?> TryRenameAndTagAsync(RenameAndTagRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.TrackTitle) || string.IsNullOrWhiteSpace(request.ArtistName))
         {

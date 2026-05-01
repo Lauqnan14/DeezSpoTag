@@ -79,7 +79,7 @@ public sealed class SpotifyFavoritesService
 
     private async Task<List<HomeSection>> LoadHomeSectionsAsync(CancellationToken cancellationToken)
     {
-        var sections = await TryLoadCachedHomeSectionsAsync(cancellationToken);
+        var sections = await TryLoadCachedHomeSectionsAsync();
         if (sections.Count > 0)
         {
             return sections;
@@ -94,7 +94,7 @@ public sealed class SpotifyFavoritesService
         return ParseHomeSections(doc.RootElement);
     }
 
-    private async Task<List<HomeSection>> TryLoadCachedHomeSectionsAsync(CancellationToken cancellationToken)
+    private static async Task<List<HomeSection>> TryLoadCachedHomeSectionsAsync()
     {
         await Task.CompletedTask;
         return new List<HomeSection>();
@@ -554,9 +554,6 @@ public sealed class SpotifyFavoritesService
 
         return current.ValueKind == JsonValueKind.String ? current.GetString() : null;
     }
-
-    private static int? TryGetInt(JsonElement element, string propertyName)
-        => element.ValueKind == JsonValueKind.Object ? JsonElementReader.GetInt32(element, propertyName) : null;
 
     private static int? TryGetIntAt(JsonElement element, params object[] path)
     {

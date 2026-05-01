@@ -865,7 +865,7 @@ public sealed class DownloadIntentService
         if (string.IsNullOrWhiteSpace(deezerTrackId))
         {
             var recoverySourceUrl = request.ResolvedSourceUrl ?? request.Intent.SourceUrl ?? string.Empty;
-            await EnsureDeezerIdentityAsync(request.Intent, recoverySourceUrl, request.CancellationToken);
+            await EnsureDeezerIdentityAsync(request.Intent, recoverySourceUrl);
             deezerTrackId = ResolveDeezerTrackIdForEnqueue(request.Intent, request.ResolvedSourceUrl, isPodcastIntent);
         }
         if (string.IsNullOrWhiteSpace(deezerTrackId))
@@ -881,11 +881,7 @@ public sealed class DownloadIntentService
                 0);
         }
 
-        var collectionType = EpisodeType;
-        if (!isPodcastIntent)
-        {
-            collectionType = string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType;
-        }
+        var collectionType = ResolveDeezerCollectionType(request.Intent, isPodcastIntent);
         var requestedBitrate = int.TryParse(request.SelectedQuality, out var parsedBitrate) ? parsedBitrate : 0;
         var bitrate = isPodcastIntent
             ? 0
@@ -1136,6 +1132,16 @@ public sealed class DownloadIntentService
         }
 
         return deezerTrackId;
+    }
+
+    private static string ResolveDeezerCollectionType(DownloadIntent intent, bool isPodcastIntent)
+    {
+        if (isPodcastIntent)
+        {
+            return EpisodeType;
+        }
+
+        return string.IsNullOrWhiteSpace(intent.Album) ? TrackType : AlbumType;
     }
 
     private static string? ResolveDeezerSourceUrl(string? resolvedSourceUrl, string deezerTrackId, bool isPodcastIntent)
@@ -2899,7 +2905,7 @@ public sealed class DownloadIntentService
 
         if (string.Equals(downloadTagSource, DeezerPlatform, StringComparison.OrdinalIgnoreCase))
         {
-            await EnsureDeezerIdentityAsync(intent, sourceUrl, cancellationToken);
+            await EnsureDeezerIdentityAsync(intent, sourceUrl);
 
             var deezerUrl = !string.IsNullOrWhiteSpace(intent.DeezerId)
                 ? $"https://www.deezer.com/track/{intent.DeezerId}"
@@ -2944,7 +2950,7 @@ public sealed class DownloadIntentService
         }
     }
 
-    private async Task EnsureDeezerIdentityAsync(DownloadIntent intent, string sourceUrl, CancellationToken cancellationToken)
+    private async Task EnsureDeezerIdentityAsync(DownloadIntent intent, string sourceUrl)
     {
         var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
         if (!string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
@@ -4106,7 +4112,7 @@ public sealed class DownloadIntentService
     private async Task PopulateBoomplayIntentMetadataAsync(DownloadIntent intent, string sourceUrl, CancellationToken cancellationToken)
     {
         await PopulateBoomplayMetadataAsync(intent, sourceUrl, cancellationToken);
-        await EnsureDeezerIdentityAsync(intent, sourceUrl, cancellationToken);
+        await EnsureDeezerIdentityAsync(intent, sourceUrl);
         if (string.IsNullOrWhiteSpace(intent.DeezerId))
         {
             return;
@@ -4869,13 +4875,7 @@ public sealed class DownloadIntentService
             return false;
         }
 
-        // TODO(review): ResolveSecondaryQuality is currently redundant for Apple secondary queueing,
-        // because this branch enforces Atmos-only fallback below. Remove this indirection in a later cleanup.
-        var secondaryQuality = ResolveSecondaryQuality(ApplePlatform, null, excludeAtmos: false);
-        if (string.IsNullOrWhiteSpace(secondaryQuality) || !IsAtmosQuality(secondaryQuality))
-        {
-            secondaryQuality = "ATMOS";
-        }
+        const string secondaryQuality = "ATMOS";
 
         var candidate = await ResolveIntentAsync(
             request.Intent,
@@ -5810,14 +5810,6 @@ public sealed class DownloadIntentService
                 _deezspotagListener.SendAddedToQueue(qobuz.ToQueuePayload());
                 break;
         }
-    }
-
-    private static string? ResolveSecondaryQuality(
-        string engine,
-        string? primaryQuality,
-        bool excludeAtmos)
-    {
-        return EngineQualityFallback.GetNextLowerQuality(engine, primaryQuality, excludeAtmos);
     }
 
     private static string? TryGetPayloadQuality<TPayload>(TPayload payload) =>

@@ -19,7 +19,7 @@ public sealed class TracklistSongCacheStore : SqlitePersistentCacheStoreBase
         _logger = logger;
     }
 
-    public bool IsFresh(TracklistSongCacheEntry entry, DateTimeOffset nowUtc)
+    public static bool IsFresh(TracklistSongCacheEntry entry, DateTimeOffset nowUtc)
     {
         return nowUtc - entry.UpdatedUtc <= FreshTtl;
     }

@@ -241,14 +241,15 @@ internal static class EngineQueueProcessorHelper
             workContext.Deps.Logger,
             workContext.ItemToken);
         var applied = await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
-            context.Track,
-            workContext.Payload,
-            workContext.Settings,
-            workContext.Deps.ServiceProvider,
-            workContext.EngineName,
-            resolvedSource,
-            workContext.Deps.Logger,
-            workContext.ItemToken);
+            new EngineAudioPostDownloadHelper.ProfileMetadataOverrideRequest(
+                context.Track,
+                workContext.Payload,
+                workContext.Settings,
+                workContext.Deps.ServiceProvider,
+                workContext.EngineName,
+                resolvedSource,
+                workContext.Deps.Logger,
+                workContext.ItemToken));
         return applied
             ? EngineAudioPostDownloadHelper.BuildTrackContextFromTrack(
                 context.Track,
@@ -330,12 +331,9 @@ internal static class EngineQueueProcessorHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogError(
-                ex,
-                "{Engine} post-download settings failed for {QueueUuid}; failing queue item.",
-                engineName,
-                queueUuid);
-            throw;
+            throw new InvalidOperationException(
+                $"{engineName} post-download settings failed for {queueUuid}; failing queue item.",
+                ex);
         }
     }
 

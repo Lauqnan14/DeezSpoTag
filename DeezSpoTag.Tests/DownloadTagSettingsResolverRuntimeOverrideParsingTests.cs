@@ -67,7 +67,10 @@ public sealed class DownloadTagSettingsResolverRuntimeOverrideParsingTests
     [Fact]
     public void ExtractDownloadTagSource_DefaultsToDeezer_WhenAutoTagDataIsMissing()
     {
-        var source = ExtractDownloadTagSource(new AutoTagSettings { Data = null });
+        var autoTag = new AutoTagSettings();
+        typeof(AutoTagSettings).GetProperty(nameof(AutoTagSettings.Data))!.SetValue(autoTag, null);
+
+        var source = ExtractDownloadTagSource(autoTag);
 
         Assert.Equal(DownloadTagSourceHelper.DeezerSource, source);
     }

@@ -326,11 +326,6 @@ public static class TaggingProfileCanonicalizer
         return WriteTagArray(data, key, tags, NormalizeTagKey);
     }
 
-    private static bool WriteAutoTagArray(Dictionary<string, JsonElement> data, string key, IEnumerable<string> tags)
-    {
-        return WriteTagArray(data, key, tags, NormalizeAutoTagSelectionKey);
-    }
-
     private static bool WriteTagArray(
         Dictionary<string, JsonElement> data,
         string key,
@@ -493,5 +488,10 @@ public static class TaggingProfileCanonicalizer
         }
 
         return true;
+    }
+
+    private static bool WriteAutoTagArray(Dictionary<string, JsonElement> data, string key, IEnumerable<string> tags)
+    {
+        return WriteTagArray(data, key, tags, NormalizeAutoTagSelectionKey);
     }
 }
