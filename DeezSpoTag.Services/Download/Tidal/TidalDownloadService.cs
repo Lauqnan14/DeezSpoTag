@@ -629,7 +629,7 @@ public sealed class TidalDownloadService
             {
                 if (!string.Equals(candidateOutputPath, outputPath, StringComparison.Ordinal))
                 {
-                    DownloadFileUtilities.TryDeleteFile(candidateOutputPath);
+                    DeleteCandidateArtifacts(candidateOutputPath);
                 }
             }
         }
@@ -641,6 +641,17 @@ public sealed class TidalDownloadService
         }
 
         throw new InvalidOperationException("Tidal download failed before any audio candidate completed.");
+    }
+
+    private static void DeleteCandidateArtifacts(string candidateOutputPath)
+    {
+        DownloadFileUtilities.TryDeleteFile(candidateOutputPath);
+
+        var preservedSourcePath = Path.ChangeExtension(candidateOutputPath, ".m4a");
+        if (!string.Equals(preservedSourcePath, candidateOutputPath, StringComparison.OrdinalIgnoreCase))
+        {
+            DownloadFileUtilities.TryDeleteFile(preservedSourcePath);
+        }
     }
 
     private async Task DownloadFromManifestAsync(string manifestB64, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
