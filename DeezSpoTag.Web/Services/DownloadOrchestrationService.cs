@@ -435,7 +435,6 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
-        MarkCompletedItemsAsProcessed(context.PendingCompletionMarkers);
         await RunPipelineEnrichmentAsync(context, cancellationToken);
         if (!await EnsurePipelineStillIdleAsync(cancellationToken))
         {
@@ -453,6 +452,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
 
         await RunPostAutoTagStagesAsync(cancellationToken);
+        MarkCompletedItemsAsProcessed(context.PendingCompletionMarkers);
         _lastPipelineCompletedAt = context.PipelineStartedAt;
     }
 
@@ -1354,16 +1354,14 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 "Automation: waiting for active library scan before post-scan stages."));
             await _scanRunner.WaitForCurrentScanAsync(cancellationToken);
         }
-        else
-        {
-            await _scanRunner.RunAsync(
-                refreshImages: false,
-                reset: false,
-                folderId: null,
-                skipSpotifyFetch: false,
-                cacheSpotifyImages: false,
-                cancellationToken: cancellationToken);
-        }
+
+        await _scanRunner.RunAsync(
+            refreshImages: false,
+            reset: false,
+            folderId: null,
+            skipSpotifyFetch: false,
+            cacheSpotifyImages: false,
+            cancellationToken: cancellationToken);
 
         await TriggerPlexScanAsync(cancellationToken);
 
