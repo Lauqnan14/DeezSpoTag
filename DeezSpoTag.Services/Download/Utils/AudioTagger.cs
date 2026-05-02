@@ -109,6 +109,13 @@ public class AudioTagger
     {
         ".m4a", ".m4b"
     };
+    private static readonly byte[][] Mp4AtmosCodecMarkers =
+    [
+        "ec-3"u8.ToArray(),
+        "ac-3"u8.ToArray(),
+        "dec3"u8.ToArray(),
+        "dac3"u8.ToArray()
+    ];
     private static readonly HashSet<string> BlockedGenres = new(StringComparer.OrdinalIgnoreCase)
     {
         "other",
@@ -722,15 +729,51 @@ public class AudioTagger
             return;
         }
 
+        var isAtmosContainer = HasMp4AudioCodecMarker(path, Mp4AtmosCodecMarkers);
         RemuxMp4ContainerForTagging(
             path,
             mapAllStreams: false,
-            outputFormat: "ipod",
+            outputFormat: isAtmosContainer ? "mp4" : "ipod",
             tempExtension: ".m4a");
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Normalized fragmented MP4 audio container before tagging: {Path}", path);
+        }
+    }
+
+    private static bool HasMp4AudioCodecMarker(string path, IReadOnlyList<byte[]> codecMarkers)
+    {
+        if (string.IsNullOrWhiteSpace(path) || codecMarkers.Count == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = System.IO.File.OpenRead(path);
+            var readLength = (int)Math.Min(stream.Length, 1024 * 1024);
+            if (readLength <= 0)
+            {
+                return false;
+            }
+
+            var buffer = new byte[readLength];
+            var bytesRead = stream.Read(buffer, 0, buffer.Length);
+            var haystack = buffer.AsSpan(0, bytesRead);
+            foreach (var marker in codecMarkers)
+            {
+                if (haystack.IndexOf(marker) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
         }
     }
 
