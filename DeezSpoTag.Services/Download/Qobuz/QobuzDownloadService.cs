@@ -1055,6 +1055,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 context.Request.ProgressCallback,
                 cancellationToken);
 
+            var durationValidation = AudioDurationGuard.ValidateAgainstPreview(
+                context.OutputPath,
+                context.Request.DurationSeconds);
+            if (!durationValidation.Success)
+            {
+                DownloadFileUtilities.TryDeleteFile(context.OutputPath);
+                throw new InvalidOperationException(durationValidation.Message);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -128,6 +128,13 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
 
         var filePath = await DownloadFromServiceAsync(amazonUrl, request.OutputDir, progressCallback, cancellationToken);
+        var durationValidation = AudioDurationGuard.ValidateAgainstPreview(filePath, request.DurationSeconds);
+        if (!durationValidation.Success)
+        {
+            DownloadFileUtilities.TryDeleteFile(filePath);
+            throw new InvalidOperationException(durationValidation.Message);
+        }
+
         var renamedPath = await TryRenameAndTagAsync(
             new RenameAndTagRequest(
                 FilePath: filePath,
