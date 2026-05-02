@@ -3093,7 +3093,46 @@ public sealed class PlaylistWatchService
             intent.WatchlistTrackId = trackId;
         }
 
-        return intent;
+        return CreateManualParityQueueIntent(intent);
+    }
+
+    private static DownloadIntent CreateManualParityQueueIntent(DownloadIntent intent)
+    {
+        if (!HasResolvableSourceIdentity(intent))
+        {
+            return intent;
+        }
+
+        return new DownloadIntent
+        {
+            SourceService = intent.SourceService,
+            SourceUrl = intent.SourceUrl,
+            SpotifyId = intent.SpotifyId,
+            DeezerId = intent.DeezerId,
+            DeezerAlbumId = intent.DeezerAlbumId,
+            DeezerArtistId = intent.DeezerArtistId,
+            Isrc = intent.Isrc,
+            PreferredEngine = intent.PreferredEngine,
+            Quality = intent.Quality,
+            ContentType = intent.ContentType,
+            DestinationFolderId = intent.DestinationFolderId,
+            SecondaryDestinationFolderId = intent.SecondaryDestinationFolderId,
+            AppleId = intent.AppleId,
+            WatchlistSource = intent.WatchlistSource,
+            WatchlistPlaylistId = intent.WatchlistPlaylistId,
+            WatchlistTrackId = intent.WatchlistTrackId,
+            HasAtmos = intent.HasAtmos,
+            HasAppleDigitalMaster = intent.HasAppleDigitalMaster,
+            AllowQualityUpgrade = intent.AllowQualityUpgrade
+        };
+    }
+
+    private static bool HasResolvableSourceIdentity(DownloadIntent intent)
+    {
+        return !string.IsNullOrWhiteSpace(intent.SourceUrl)
+               || !string.IsNullOrWhiteSpace(intent.SpotifyId)
+               || !string.IsNullOrWhiteSpace(intent.DeezerId)
+               || !string.IsNullOrWhiteSpace(intent.AppleId);
     }
 
     private async Task<DownloadIntentResult?> TryQueuePrimaryIntentAsync(
