@@ -1552,13 +1552,26 @@ public class PlexApiClient
                 .ToList();
             if (pending.Count > 0)
             {
-                await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, pending, cancellationToken);
+                var added = await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, pending, cancellationToken);
+                if (!added)
+                {
+                    return null;
+                }
             }
         }
         else
         {
-            await ClearPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
-            await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, ratingKeys, cancellationToken);
+            var cleared = await ClearPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+            if (!cleared)
+            {
+                return null;
+            }
+
+            var added = await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, ratingKeys, cancellationToken);
+            if (!added)
+            {
+                return null;
+            }
         }
 
         return playlistId;
@@ -1705,9 +1718,9 @@ public class PlexApiClient
         }
     }
 
-    private async Task ClearPlaylistItemsAsync(string serverUrl, string token, string playlistId, CancellationToken cancellationToken)
+    private async Task<bool> ClearPlaylistItemsAsync(string serverUrl, string token, string playlistId, CancellationToken cancellationToken)
     {
-        await SendPlexRequestAsync(
+        return await SendPlexRequestAsync(
             HttpMethod.Delete,
             $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}/items?X-Plex-Token={token}",
             "clear playlist items",
@@ -1715,7 +1728,7 @@ public class PlexApiClient
             cancellationToken);
     }
 
-    private async Task AddPlaylistItemsAsync(
+    private async Task<bool> AddPlaylistItemsAsync(
         string serverUrl,
         string token,
         string machineIdentifier,
@@ -1724,7 +1737,7 @@ public class PlexApiClient
         CancellationToken cancellationToken)
     {
         var uri = BuildPlaylistUri(machineIdentifier, ratingKeys);
-        await SendPlexRequestAsync(
+        return await SendPlexRequestAsync(
             HttpMethod.Put,
             $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}/items?X-Plex-Token={token}&uri={Uri.EscapeDataString(uri)}",
             "add playlist items",

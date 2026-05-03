@@ -429,7 +429,7 @@ public sealed class PlaylistSyncService
             cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            return new PlaylistSyncResult(false, "Failed to create Plex playlist.");
+            return new PlaylistSyncResult(false, "Failed to create or update Plex playlist.");
         }
 
         await _plexApiClient.UpdatePlaylistMetadataAsync(
