@@ -402,8 +402,12 @@ async function loadPlaylistBlockedRules() {
                 if (!source || !sourceId) {
                     return;
                 }
-                await openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs);
-                await loadPlaylistBlockedRules();
+                try {
+                    await openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs);
+                    await loadPlaylistBlockedRules();
+                } catch (error) {
+                    showToast(`Playlist settings failed to load: ${error?.message || 'Unknown error'}`, true);
+                }
             });
         });
     } catch (error) {
@@ -624,8 +628,14 @@ async function loadPlaylistWatchlist() {
                 const sourceId = button.dataset.playlistId;
                 const playlistName = button.dataset.playlistName || 'Playlist';
                 if (!source || !sourceId) return;
-                const playlistPrefs = await playlistPrefsPromise;
-                await openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs);
+                button.disabled = true;
+                try {
+                    await openPlaylistSettingsPanel(source, sourceId, playlistName);
+                } catch (error) {
+                    showToast(`Playlist settings failed to load: ${error?.message || 'Unknown error'}`, true);
+                } finally {
+                    button.disabled = false;
+                }
             });
         });
 
@@ -697,7 +707,8 @@ function tryOpenPendingPlaylistSettings(playlistPrefs) {
         }
 
         setTimeout(() => {
-            openPlaylistSettingsPanel(pendingSource, pendingSourceId, pendingName, playlistPrefs);
+            openPlaylistSettingsPanel(pendingSource, pendingSourceId, pendingName, playlistPrefs)
+                .catch(error => showToast(`Playlist settings failed to load: ${error?.message || 'Unknown error'}`, true));
         }, 0);
     } catch {
     }
@@ -888,9 +899,13 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
 
     const prefKey = `${source}:${sourceId}`;
+    const serverPrefs = normalizePlaylistPreferenceMap(
+        playlistPrefs && typeof playlistPrefs === 'object'
+            ? playlistPrefs
+            : await hydrateSinglePlaylistPreference(source, sourceId));
     const localPlaylistPrefs = getStoredPreferences('playlistWatchlist');
     const stored = {
-        ...playlistPrefs[prefKey],
+        ...serverPrefs[prefKey],
         ...localPlaylistPrefs[prefKey]
     };
 
@@ -1880,30 +1895,76 @@ async function fetchPlaylistPreferences() {
     }
 }
 
-async function hydratePlaylistPreferences() {
-    const localPrefs = getStoredPreferences('playlistWatchlist');
-    const serverPrefs = await fetchPlaylistPreferences();
-    const merged = { ...localPrefs };
-    serverPrefs.forEach(item => {
+async function fetchSinglePlaylistPreference(source, sourceId) {
+    const normalizedSource = String(source || '').trim();
+    const normalizedSourceId = String(sourceId || '').trim();
+    if (!normalizedSource || !normalizedSourceId) {
+        return null;
+    }
+
+    return fetchJson(`/api/library/playlists/preferences/${encodeURIComponent(normalizedSource)}/${encodeURIComponent(normalizedSourceId)}`);
+}
+
+function normalizePlaylistPreferenceMap(rawPrefs) {
+    if (!rawPrefs || typeof rawPrefs !== 'object') {
+        return {};
+    }
+
+    if (!Array.isArray(rawPrefs)) {
+        return rawPrefs;
+    }
+
+    const mapped = {};
+    rawPrefs.forEach(item => {
         if (!item?.source || !item.sourceId) {
             return;
         }
+
         const key = `${item.source}:${item.sourceId}`;
         const normalizedArtwork = normalizePlaylistArtworkPreference(
             item.updateArtwork !== false,
             item.reuseSavedArtwork === true);
+        mapped[key] = {
+            folderId: item.destinationFolderId == null ? '' : String(item.destinationFolderId),
+            atmosFolderId: item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId),
+            service: item.service || 'plex',
+            preferredEngine: item.preferredEngine || '',
+            downloadVariantMode: item.downloadVariantMode || 'standard',
+            syncMode: item.syncMode || 'mirror',
+            updateArtwork: normalizedArtwork.updateArtwork,
+            reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork
+        };
+    });
+    return mapped;
+}
+
+async function hydrateSinglePlaylistPreference(source, sourceId) {
+    const item = await fetchSinglePlaylistPreference(source, sourceId);
+    if (!item?.source || !item.sourceId) {
+        return {};
+    }
+
+    return normalizePlaylistPreferenceMap([item]);
+}
+
+async function hydratePlaylistPreferences() {
+    const localPrefs = getStoredPreferences('playlistWatchlist');
+    const serverPrefs = await fetchPlaylistPreferences();
+    const serverPrefMap = normalizePlaylistPreferenceMap(serverPrefs);
+    const merged = { ...localPrefs };
+    Object.entries(serverPrefMap).forEach(([key, item]) => {
         merged[key] = {
             ...merged[key],
-            folderId: item.destinationFolderId || '',
-            atmosFolderId: item.atmosDestinationFolderId == null
+            folderId: item.folderId || '',
+            atmosFolderId: item.atmosFolderId == null || item.atmosFolderId === ''
                 ? (merged[key]?.atmosFolderId || '')
-                : String(item.atmosDestinationFolderId),
+                : String(item.atmosFolderId),
             service: item.service || merged[key]?.service || 'plex',
             preferredEngine: item.preferredEngine || merged[key]?.preferredEngine || '',
             downloadVariantMode: item.downloadVariantMode || merged[key]?.downloadVariantMode || 'standard',
             syncMode: item.syncMode || merged[key]?.syncMode || 'mirror',
-            updateArtwork: normalizedArtwork.updateArtwork,
-            reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork
+            updateArtwork: item.updateArtwork !== false,
+            reuseSavedArtwork: item.reuseSavedArtwork === true
         };
     });
     return merged;

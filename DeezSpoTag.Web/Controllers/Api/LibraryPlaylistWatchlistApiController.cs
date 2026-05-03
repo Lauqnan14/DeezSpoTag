@@ -169,7 +169,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         var normalizedSource = NormalizePlaylistSource(source);
         var item = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
-        return Ok(item);
+        return item is null ? Ok(new { }) : Ok(item);
     }
 
     [HttpPost("preferences")]
