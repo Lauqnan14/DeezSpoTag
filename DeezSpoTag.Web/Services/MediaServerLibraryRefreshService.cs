@@ -1,10 +1,12 @@
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Plex;
+using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Services;
 
 public sealed class MediaServerLibraryRefreshService
 {
+    private const int PlexTrackPageSize = 500;
     private const string PlexService = "plex";
     private const string JellyfinService = "jellyfin";
     private const string NoneService = "none";
@@ -12,17 +14,20 @@ public sealed class MediaServerLibraryRefreshService
     private readonly PlatformAuthService _authService;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
+    private readonly LibraryRepository _libraryRepository;
     private readonly ILogger<MediaServerLibraryRefreshService> _logger;
 
     public MediaServerLibraryRefreshService(
         PlatformAuthService authService,
         PlexApiClient plexApiClient,
         JellyfinApiClient jellyfinApiClient,
+        LibraryRepository libraryRepository,
         ILogger<MediaServerLibraryRefreshService> logger)
     {
         _authService = authService;
         _plexApiClient = plexApiClient;
         _jellyfinApiClient = jellyfinApiClient;
+        _libraryRepository = libraryRepository;
         _logger = logger;
     }
 
@@ -90,6 +95,69 @@ public sealed class MediaServerLibraryRefreshService
                     section.Key,
                     section.Title);
             }
+        }
+
+        await UpdatePlexTrackMetadataIndexAsync(plex, musicSections, cancellationToken);
+    }
+
+    private async Task UpdatePlexTrackMetadataIndexAsync(
+        PlexAuth plex,
+        IReadOnlyList<PlexLibrarySection> musicSections,
+        CancellationToken cancellationToken)
+    {
+        if (!_libraryRepository.IsConfigured || musicSections.Count == 0)
+        {
+            return;
+        }
+
+        var mappedCount = 0;
+        var seenRatingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var section in musicSections)
+        {
+            for (var offset = 0; ; offset += PlexTrackPageSize)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var page = await _plexApiClient.GetLibraryTracksAsync(
+                    plex.Url!,
+                    plex.Token!,
+                    section.Key,
+                    offset,
+                    PlexTrackPageSize,
+                    cancellationToken);
+                if (page.Count == 0)
+                {
+                    break;
+                }
+
+                var tracks = page
+                    .Where(track => !string.IsNullOrWhiteSpace(track.RatingKey)
+                                    && !string.IsNullOrWhiteSpace(track.FilePath)
+                                    && seenRatingKeys.Add(track.RatingKey))
+                    .ToList();
+                var filePathMap = await _libraryRepository.GetTrackIdsByFilePathsAsync(
+                    tracks.Select(static track => track.FilePath).ToList(),
+                    cancellationToken);
+                var now = DateTimeOffset.UtcNow;
+                var upserts = tracks
+                    .Where(track => filePathMap.ContainsKey(track.FilePath))
+                    .Select(track => new PlexTrackMetadataUpsertDto(
+                        filePathMap[track.FilePath],
+                        track.RatingKey,
+                        now))
+                    .ToList();
+                await _libraryRepository.UpsertPlexTrackMetadataAsync(upserts, cancellationToken);
+                mappedCount += upserts.Count;
+
+                if (page.Count < PlexTrackPageSize)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Plex track metadata index updated: mappedTracks={MappedTracks}.", mappedCount);
         }
     }
 

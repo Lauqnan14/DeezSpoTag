@@ -174,6 +174,11 @@ public sealed record PlexTrackMetadataDto(
     IReadOnlyList<string> Moods,
     DateTimeOffset? UpdatedAtUtc);
 
+public sealed record PlexTrackMetadataUpsertDto(
+    long TrackId,
+    string PlexRatingKey,
+    DateTimeOffset UpdatedAtUtc);
+
 public sealed record AnalysisStatusDto(
     int TotalTracks,
     int AnalyzedTracks,

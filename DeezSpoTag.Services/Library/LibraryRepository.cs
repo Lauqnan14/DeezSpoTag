@@ -2375,15 +2375,38 @@ WHERE ph.track_id IN (
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
+WITH requested AS (
+    SELECT CAST(value AS INTEGER) AS track_id
+    FROM json_each(@trackIdsJson)
+),
+metadata AS (
+    SELECT tpm.track_id,
+           tpm.plex_rating_key,
+           0 AS sort_group,
+           tpm.updated_at_utc AS sort_utc
+    FROM track_plex_metadata tpm
+    JOIN requested r ON r.track_id = tpm.track_id
+    WHERE tpm.plex_rating_key IS NOT NULL
+      AND TRIM(tpm.plex_rating_key) <> ''
+),
+history AS (
+    SELECT ph.track_id,
+           ph.plex_rating_key,
+           1 AS sort_group,
+           ph.played_at_utc AS sort_utc
+    FROM play_history ph
+    JOIN requested r ON r.track_id = ph.track_id
+    WHERE ph.plex_rating_key IS NOT NULL
+      AND TRIM(ph.plex_rating_key) <> ''
+)
 SELECT track_id,
        plex_rating_key
-FROM play_history
-WHERE track_id IN (
-    SELECT CAST(value AS INTEGER)
-    FROM json_each(@trackIdsJson)
+FROM (
+    SELECT * FROM metadata
+    UNION ALL
+    SELECT * FROM history
 )
-  AND plex_rating_key IS NOT NULL
-ORDER BY played_at_utc DESC;";
+ORDER BY track_id, sort_group, sort_utc DESC;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
 
@@ -2402,6 +2425,224 @@ ORDER BY played_at_utc DESC;";
 
         return mapping;
     }
+
+    public async Task UpsertPlexTrackMetadataAsync(
+        IReadOnlyCollection<PlexTrackMetadataUpsertDto> metadata,
+        CancellationToken cancellationToken = default)
+    {
+        if (metadata.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO track_plex_metadata
+    (track_id, plex_rating_key, updated_at_utc)
+VALUES
+    (@trackId, @ratingKey, @updatedAt)
+ON CONFLICT(track_id) DO UPDATE SET
+    plex_rating_key = excluded.plex_rating_key,
+    updated_at_utc = excluded.updated_at_utc;";
+
+        await using var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction);
+        var trackIdParameter = command.Parameters.Add("@trackId", SqliteType.Integer);
+        var ratingKeyParameter = command.Parameters.Add("@ratingKey", SqliteType.Text);
+        var updatedAtParameter = command.Parameters.Add("@updatedAt", SqliteType.Text);
+
+        foreach (var item in metadata)
+        {
+            if (item.TrackId <= 0 || string.IsNullOrWhiteSpace(item.PlexRatingKey))
+            {
+                continue;
+            }
+
+            trackIdParameter.Value = item.TrackId;
+            ratingKeyParameter.Value = item.PlexRatingKey.Trim();
+            updatedAtParameter.Value = item.UpdatedAtUtc.ToString("O");
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyDictionary<string, long>> GetTrackIdsByFilePathsAsync(
+        IReadOnlyCollection<string> filePaths,
+        CancellationToken cancellationToken = default)
+    {
+        var requestedPaths = filePaths
+            .Select(static path => (path ?? string.Empty).Trim())
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (requestedPaths.Count == 0)
+        {
+            return new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var result = await GetTrackIdsByExactFilePathsAsync(connection, requestedPaths, cancellationToken);
+        if (result.Count == requestedPaths.Count)
+        {
+            return result;
+        }
+
+        var localRows = await GetLocalTrackFileRowsAsync(connection, cancellationToken);
+        var byAbsolutePath = BuildUniquePathMap(localRows.Select(static row => (row.AbsolutePath, row.TrackId)));
+        var byRelativePath = BuildUniquePathMap(localRows.Select(static row => (row.RelativePath, row.TrackId)));
+
+        foreach (var path in requestedPaths)
+        {
+            if (result.ContainsKey(path))
+            {
+                continue;
+            }
+
+            var normalized = NormalizePathForLookup(path);
+            if (byAbsolutePath.TryGetValue(normalized, out var trackId)
+                || byRelativePath.TryGetValue(normalized, out trackId)
+                || TryFindByUniqueRelativeSuffix(normalized, byRelativePath, out trackId))
+            {
+                result[path] = trackId;
+            }
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, long> BuildUniquePathMap(IEnumerable<(string Path, long TrackId)> rows)
+    {
+        var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var duplicates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+        {
+            var normalized = NormalizePathForLookup(row.Path);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                continue;
+            }
+
+            if (duplicates.Contains(normalized))
+            {
+                continue;
+            }
+
+            if (result.ContainsKey(normalized))
+            {
+                result.Remove(normalized);
+                duplicates.Add(normalized);
+                continue;
+            }
+
+            result[normalized] = row.TrackId;
+        }
+
+        return result;
+    }
+
+    private static bool TryFindByUniqueRelativeSuffix(
+        string normalizedPath,
+        Dictionary<string, long> byRelativePath,
+        out long trackId)
+    {
+        trackId = 0;
+        if (string.IsNullOrWhiteSpace(normalizedPath))
+        {
+            return false;
+        }
+
+        var matches = byRelativePath
+            .Where(pair => normalizedPath.EndsWith("/" + pair.Key, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        if (matches.Count != 1)
+        {
+            return false;
+        }
+
+        trackId = matches[0].Value;
+        return true;
+    }
+
+    private async Task<Dictionary<string, long>> GetTrackIdsByExactFilePathsAsync(
+        SqliteConnection connection,
+        IReadOnlyCollection<string> filePaths,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT af.path,
+       tl.track_id
+FROM audio_file af
+JOIN track_local tl ON tl.audio_file_id = af.id
+WHERE af.path IN (
+    SELECT value
+    FROM json_each(@pathsJson)
+);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("pathsJson", SerializeJsonArray(filePaths));
+        var mapping = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var path = reader.GetString(0);
+            if (!mapping.ContainsKey(path))
+            {
+                mapping[path] = reader.GetInt64(1);
+            }
+        }
+
+        return mapping;
+    }
+
+    private async Task<List<LocalTrackFileRow>> GetLocalTrackFileRowsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT tl.track_id,
+       af.path,
+       af.relative_path,
+       f.root_path
+FROM track_local tl
+JOIN audio_file af ON af.id = tl.audio_file_id
+LEFT JOIN folder f ON f.id = af.folder_id
+WHERE af.path IS NOT NULL
+   OR af.relative_path IS NOT NULL;";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = new List<LocalTrackFileRow>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var trackId = reader.GetInt64(0);
+            var rawPath = await ReadNullableStringAsync(reader, 1, cancellationToken) ?? string.Empty;
+            var relativePath = await ReadNullableStringAsync(reader, 2, cancellationToken) ?? string.Empty;
+            var rootPath = await ReadNullableStringAsync(reader, 3, cancellationToken);
+            var absolutePath = BuildAbsolutePath(rootPath, relativePath, rawPath);
+            rows.Add(new LocalTrackFileRow(trackId, absolutePath, relativePath));
+        }
+
+        return rows;
+    }
+
+    private static string NormalizePathForLookup(string? path)
+    {
+        var normalized = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = normalized.Replace('\\', '/');
+        while (normalized.Contains("//", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("//", "/", StringComparison.Ordinal);
+        }
+
+        return normalized.TrimEnd('/').ToLowerInvariant();
+    }
+
+    private sealed record LocalTrackFileRow(long TrackId, string AbsolutePath, string RelativePath);
 
     public async Task UpsertPlexTrackMetadataAsync(
         PlexTrackMetadataDto metadata,

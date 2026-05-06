@@ -310,7 +310,19 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             candidates,
             force: true,
             cancellationToken);
-        return Ok(new { result.Success, result.Message, result.PlaylistId, result.SyncedTracks });
+        return Ok(new
+        {
+            result.Success,
+            result.Message,
+            result.PlaylistId,
+            result.SyncedTracks,
+            result.SourceTracks,
+            result.LocalMatches,
+            result.TargetMatches,
+            result.MissingTracks,
+            result.MetadataMatches,
+            result.SearchMatches
+        });
     }
 
     public sealed record PlaylistMergeSourceRequest(string Source, string SourceId);

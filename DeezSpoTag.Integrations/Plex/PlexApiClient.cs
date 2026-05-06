@@ -676,6 +676,56 @@ public class PlexApiClient
         }
     }
 
+    public async Task<List<PlexTrack>> GetLibraryTracksAsync(
+        string serverUrl,
+        string token,
+        string sectionKey,
+        int offset = 0,
+        int? limit = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(sectionKey))
+        {
+            return new List<PlexTrack>();
+        }
+
+        try
+        {
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedLimit = Math.Clamp(limit.GetValueOrDefault(500), 1, 500);
+            var baseUrl = serverUrl.TrimEnd('/');
+            var encodedSection = Uri.EscapeDataString(sectionKey.Trim());
+            var url = $"{baseUrl}/library/sections/{encodedSection}/all?type=10&X-Plex-Token={Uri.EscapeDataString(token)}&X-Plex-Container-Start={normalizedOffset}&X-Plex-Container-Size={normalizedLimit}";
+            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Failed to load Plex tracks for section {SectionKey}: {StatusCode}",
+                    sectionKey,
+                    response.StatusCode);
+                return new List<PlexTrack>();
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return new List<PlexTrack>();
+            }
+
+            var doc = XDocument.Parse(content);
+            var tracksByRatingKey = new Dictionary<string, PlexTrack>(StringComparer.OrdinalIgnoreCase);
+            AddSearchTracks(doc, tracksByRatingKey);
+            return tracksByRatingKey.Values.ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed reading Plex tracks for section {SectionKey}", sectionKey);
+            return new List<PlexTrack>();
+        }
+    }
+
     private async Task<Dictionary<string, (int score, int lengthDelta, string sectionKey, string title)>> CollectArtistCandidatesAsync(
         string baseUrl,
         string token,

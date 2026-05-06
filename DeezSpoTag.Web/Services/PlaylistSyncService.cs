@@ -24,6 +24,15 @@ public sealed class PlaylistSyncService
         IReadOnlyList<string> Genres,
         int? DurationMs);
 
+    private sealed record SyncMatchSummary(
+        IReadOnlyList<string> TargetIds,
+        int SourceTracks,
+        int LocalMatches,
+        int TargetMatches,
+        int MissingTracks,
+        int MetadataMatches,
+        int SearchMatches);
+
     private const string SpotifySource = "spotify";
     private const string IsrcSource = "isrc";
     private const string PlexService = "plex";
@@ -31,6 +40,7 @@ public sealed class PlaylistSyncService
     private const string SyncModeMirror = "mirror";
     private const string SyncModeAppend = "append";
     private const int DurationToleranceMs = 2000;
+    private const int PlexSequentialSearchFallbackLimit = 25;
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly PlexApiClient _plexApiClient;
@@ -326,13 +336,13 @@ public sealed class PlaylistSyncService
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
-            return new PlaylistSyncResult(false, "Playlist not available.");
+            return PlaylistSyncResult.Failed("Playlist not available.");
         }
 
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
         if (string.IsNullOrWhiteSpace(service))
         {
-            return new PlaylistSyncResult(false, "No target server selected.");
+            return PlaylistSyncResult.Failed("No target server selected.");
         }
 
         if (force)
@@ -343,7 +353,7 @@ public sealed class PlaylistSyncService
         var loadResult = await LoadTracksForSyncAsync(playlist, trackCandidates, cancellationToken);
         if (!string.IsNullOrWhiteSpace(loadResult.ErrorMessage))
         {
-            return new PlaylistSyncResult(false, loadResult.ErrorMessage);
+            return PlaylistSyncResult.Failed(loadResult.ErrorMessage);
         }
 
         var tracks = await FilterTracksForSyncAsync(
@@ -353,14 +363,14 @@ public sealed class PlaylistSyncService
             cancellationToken);
         if (tracks.Count == 0)
         {
-            return new PlaylistSyncResult(false, "No eligible tracks after blocked/ignored filtering.");
+            return PlaylistSyncResult.Failed("No eligible tracks after blocked/ignored filtering.");
         }
 
         return service switch
         {
             PlexService => await SyncToPlexAsync(playlist, preference, tracks, cancellationToken),
             JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, cancellationToken),
-            _ => new PlaylistSyncResult(false, "Unsupported playlist sync target.")
+            _ => PlaylistSyncResult.Failed("Unsupported playlist sync target.")
         };
     }
 
@@ -412,16 +422,24 @@ public sealed class PlaylistSyncService
 
         if (plex == null)
         {
-            return new PlaylistSyncResult(false, "Plex is not configured.");
+            return PlaylistSyncResult.Failed("Plex is not configured.");
         }
 
         var playlistName = ResolvePlaylistName(playlist);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
-        var ratingKeys = await ResolvePlexRatingKeysAsync(plex, tracks, orderedTrackIds, cancellationToken);
-        if (ratingKeys.Count == 0)
+        var matchSummary = await ResolvePlexRatingKeysAsync(plex, tracks, orderedTrackIds, cancellationToken);
+        if (matchSummary.TargetIds.Count == 0)
         {
-            _logger.LogWarning("No Plex matches found for playlist {Source}:{SourceId}.", playlist.Source, playlist.SourceId);
-            return new PlaylistSyncResult(false, "No Plex matches found for this playlist.");
+            _logger.LogWarning(
+                "No Plex matches found for playlist {Source}:{SourceId}. sourceTracks={SourceTracks}, localMatches={LocalMatches}, missingTracks={MissingTracks}",
+                playlist.Source,
+                playlist.SourceId,
+                matchSummary.SourceTracks,
+                matchSummary.LocalMatches,
+                matchSummary.MissingTracks);
+            return BuildFailedResult(
+                BuildSyncMessage("No Plex matches found for this playlist.", matchSummary),
+                matchSummary);
         }
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
@@ -431,13 +449,15 @@ public sealed class PlaylistSyncService
             plex.Token,
             plex.MachineIdentifier,
             playlistName,
-            ratingKeys,
+            matchSummary.TargetIds,
             options: new PlexApiClient.PlaylistUpsertOptions(
                 AppendMissingOnly: appendMissingOnly),
             cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            return new PlaylistSyncResult(false, "Failed to create or update Plex playlist.");
+            return BuildFailedResult(
+                BuildSyncMessage("Failed to create or update Plex playlist.", matchSummary),
+                matchSummary);
         }
 
         await _plexApiClient.UpdatePlaylistMetadataAsync(
@@ -451,7 +471,11 @@ public sealed class PlaylistSyncService
         await SyncPlexPlaylistArtworkAsync(plex, playlist, preference, playlistId, cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
-        return new PlaylistSyncResult(true, $"Playlist synced ({modeLabel}).", playlistId, ratingKeys.Count);
+        return BuildSuccessResult(
+            BuildSyncMessage($"Playlist synced ({modeLabel}).", matchSummary),
+            playlistId,
+            matchSummary,
+            matchSummary.TargetMatches);
     }
 
     private async Task<PlaylistSyncResult> SyncToJellyfinAsync(
@@ -468,15 +492,26 @@ public sealed class PlaylistSyncService
 
         if (jellyfin == null)
         {
-            return new PlaylistSyncResult(false, "Jellyfin is not configured.");
+            return PlaylistSyncResult.Failed("Jellyfin is not configured.");
         }
 
         var playlistName = ResolvePlaylistName(playlist);
+        var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var itemIds = await ResolveJellyfinItemIdsAsync(jellyfin, tracks, cancellationToken);
+        var matchSummary = new SyncMatchSummary(
+            itemIds,
+            SourceTracks: tracks.Count,
+            LocalMatches: orderedTrackIds.Count(static id => id > 0),
+            TargetMatches: itemIds.Count,
+            MissingTracks: Math.Max(0, tracks.Count - itemIds.Count),
+            MetadataMatches: 0,
+            SearchMatches: itemIds.Count);
         if (itemIds.Count == 0)
         {
             _logger.LogWarning("No Jellyfin matches found for playlist {Source}:{SourceId}.", playlist.Source, playlist.SourceId);
-            return new PlaylistSyncResult(false, "No Jellyfin matches found for this playlist.");
+            return BuildFailedResult(
+                BuildSyncMessage("No Jellyfin matches found for this playlist.", matchSummary),
+                matchSummary);
         }
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
@@ -500,7 +535,9 @@ public sealed class PlaylistSyncService
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(createdPlaylistId))
             {
-                return new PlaylistSyncResult(false, "Failed to create Jellyfin playlist.");
+                return BuildFailedResult(
+                    BuildSyncMessage("Failed to create Jellyfin playlist.", matchSummary),
+                    matchSummary);
             }
 
             playlistId = createdPlaylistId;
@@ -518,7 +555,9 @@ public sealed class PlaylistSyncService
                 cancellationToken);
             if (!syncItemsResult.Success)
             {
-                return new PlaylistSyncResult(false, syncItemsResult.ErrorMessage ?? "Failed to sync Jellyfin playlist.");
+                return BuildFailedResult(
+                    BuildSyncMessage(syncItemsResult.ErrorMessage ?? "Failed to sync Jellyfin playlist.", matchSummary),
+                    matchSummary);
             }
 
             syncedTracks = syncItemsResult.SyncedTracks;
@@ -537,7 +576,11 @@ public sealed class PlaylistSyncService
         await SyncJellyfinPlaylistArtworkAsync(jellyfin, playlist, preference, playlistId, cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
-        return new PlaylistSyncResult(true, $"Playlist synced ({modeLabel}).", playlistId, syncedTracks);
+        return BuildSuccessResult(
+            BuildSyncMessage($"Playlist synced ({modeLabel}).", matchSummary),
+            playlistId,
+            matchSummary with { TargetIds = itemIds },
+            syncedTracks);
     }
 
     private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> SyncExistingJellyfinPlaylistItemsAsync(
@@ -1015,7 +1058,7 @@ public sealed class PlaylistSyncService
             .ToList();
     }
 
-    private async Task<List<string>> ResolvePlexRatingKeysAsync(
+    private async Task<SyncMatchSummary> ResolvePlexRatingKeysAsync(
         PlexConnection plex,
         IReadOnlyList<SyncTrackSummary> tracks,
         List<long> orderedTrackIds,
@@ -1025,26 +1068,57 @@ public sealed class PlaylistSyncService
             orderedTrackIds.Where(id => id > 0).Distinct().ToList(),
             cancellationToken);
 
-        var ratingKeys = new List<string>(tracks.Count);
+        var ratingKeysByIndex = new string?[tracks.Count];
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var metadataMatches = 0;
+        var searchMatches = 0;
+        var unresolvedSearchIndexes = new List<int>();
         for (var i = 0; i < tracks.Count; i++)
         {
             var track = tracks[i];
             var trackId = orderedTrackIds[i];
             if (trackId > 0 && ratingKeyByTrackId.TryGetValue(trackId, out var ratingKey))
             {
-                ratingKeys.Add(ratingKey);
+                ratingKeysByIndex[i] = ratingKey;
+                metadataMatches++;
                 continue;
             }
 
-            var resolved = await ResolvePlexRatingKeyAsync(plex, track, searchCache, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(resolved))
-            {
-                ratingKeys.Add(resolved);
-            }
+            unresolvedSearchIndexes.Add(i);
         }
 
-        return ratingKeys;
+        if (unresolvedSearchIndexes.Count <= PlexSequentialSearchFallbackLimit)
+        {
+            foreach (var index in unresolvedSearchIndexes)
+            {
+                var track = tracks[index];
+                var resolved = await ResolvePlexRatingKeyAsync(plex, track, searchCache, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(resolved))
+                {
+                    ratingKeysByIndex[index] = resolved;
+                    searchMatches++;
+                }
+            }
+        }
+        else if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Skipped sequential Plex search fallback for {MissingCount} unresolved tracks. Populate track_plex_metadata by refreshing Plex library mapping.",
+                unresolvedSearchIndexes.Count);
+        }
+
+        var ratingKeys = ratingKeysByIndex
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!)
+            .ToList();
+        return new SyncMatchSummary(
+            ratingKeys,
+            SourceTracks: tracks.Count,
+            LocalMatches: orderedTrackIds.Count(static id => id > 0),
+            TargetMatches: ratingKeys.Count,
+            MissingTracks: Math.Max(0, tracks.Count - ratingKeys.Count),
+            MetadataMatches: metadataMatches,
+            SearchMatches: searchMatches);
     }
 
     private async Task<string?> ResolvePlexRatingKeyAsync(
@@ -1137,6 +1211,51 @@ public sealed class PlaylistSyncService
         var itemId = match?.Id;
         cache[query] = itemId;
         return itemId;
+    }
+
+    private static PlaylistSyncResult BuildFailedResult(string message, SyncMatchSummary matchSummary)
+        => new(
+            false,
+            message,
+            PlaylistId: null,
+            SyncedTracks: 0,
+            SourceTracks: matchSummary.SourceTracks,
+            LocalMatches: matchSummary.LocalMatches,
+            TargetMatches: matchSummary.TargetMatches,
+            MissingTracks: matchSummary.MissingTracks,
+            MetadataMatches: matchSummary.MetadataMatches,
+            SearchMatches: matchSummary.SearchMatches);
+
+    private static PlaylistSyncResult BuildSuccessResult(
+        string message,
+        string? playlistId,
+        SyncMatchSummary matchSummary,
+        int syncedTracks)
+        => new(
+            true,
+            message,
+            playlistId,
+            syncedTracks,
+            matchSummary.SourceTracks,
+            matchSummary.LocalMatches,
+            matchSummary.TargetMatches,
+            matchSummary.MissingTracks,
+            matchSummary.MetadataMatches,
+            matchSummary.SearchMatches);
+
+    private static string BuildSyncMessage(string baseMessage, SyncMatchSummary matchSummary)
+    {
+        return string.Concat(
+            baseMessage,
+            " Source tracks: ",
+            matchSummary.SourceTracks.ToString(CultureInfo.InvariantCulture),
+            ". Local matches: ",
+            matchSummary.LocalMatches.ToString(CultureInfo.InvariantCulture),
+            ". Target matches: ",
+            matchSummary.TargetMatches.ToString(CultureInfo.InvariantCulture),
+            ". Missing tracks: ",
+            matchSummary.MissingTracks.ToString(CultureInfo.InvariantCulture),
+            ".");
     }
 
     private static bool IsTitleArtistMatch(SyncTrackSummary track, PlexTrack result)
@@ -1353,4 +1472,14 @@ public sealed record PlaylistSyncResult(
     bool Success,
     string Message,
     string? PlaylistId = null,
-    int SyncedTracks = 0);
+    int SyncedTracks = 0,
+    int SourceTracks = 0,
+    int LocalMatches = 0,
+    int TargetMatches = 0,
+    int MissingTracks = 0,
+    int MetadataMatches = 0,
+    int SearchMatches = 0)
+{
+    public static PlaylistSyncResult Failed(string message)
+        => new(false, message);
+}
