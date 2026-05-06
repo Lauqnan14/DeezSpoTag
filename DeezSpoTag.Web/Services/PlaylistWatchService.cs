@@ -2956,6 +2956,12 @@ public sealed class PlaylistWatchService
                 cancellationToken);
             if (result is null)
             {
+                await TryMarkWatchTrackStatusAsync(
+                    options.WatchlistSource,
+                    options.WatchlistPlaylistId,
+                    track.TrackId,
+                    "failed",
+                    cancellationToken);
                 failedCount++;
                 continue;
             }
@@ -3032,6 +3038,12 @@ public sealed class PlaylistWatchService
         }
 
         LogWatchEnqueueFailure(options, track, result);
+        await TryMarkWatchTrackStatusAsync(
+            options.WatchlistSource,
+            options.WatchlistPlaylistId,
+            track.TrackId,
+            "failed",
+            cancellationToken);
         return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: true);
     }
 
@@ -3224,6 +3236,19 @@ public sealed class PlaylistWatchService
         string? watchlistPlaylistId,
         string trackId,
         CancellationToken cancellationToken)
+        => await TryMarkWatchTrackStatusAsync(
+            watchlistSource,
+            watchlistPlaylistId,
+            trackId,
+            "completed",
+            cancellationToken);
+
+    private async Task TryMarkWatchTrackStatusAsync(
+        string? watchlistSource,
+        string? watchlistPlaylistId,
+        string trackId,
+        string status,
+        CancellationToken cancellationToken)
     {
         if (!HasWatchlistContext(watchlistSource, watchlistPlaylistId)
             || string.IsNullOrWhiteSpace(trackId))
@@ -3237,14 +3262,14 @@ public sealed class PlaylistWatchService
                 watchlistSource!,
                 watchlistPlaylistId!,
                 trackId,
-                "completed",
+                status,
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to mark watch track as completed: {Source}:{PlaylistId}:{TrackId}", watchlistSource, watchlistPlaylistId, trackId);
+                _logger.LogDebug(ex, "Failed to mark watch track as {Status}: {Source}:{PlaylistId}:{TrackId}", status, watchlistSource, watchlistPlaylistId, trackId);
             }
         }
     }

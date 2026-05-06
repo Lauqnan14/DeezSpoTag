@@ -67,6 +67,9 @@ function initializeLibraryBootstrapEvents(targets) {
 async function initializeLibraryBootstrap() {
     applyLibraryScopeSelectionFromLocation();
     updateTopSongsTracklistLink(null);
+    if (typeof bindLibraryUpdatedRefreshHandler === 'function') {
+        bindLibraryUpdatedRefreshHandler();
+    }
     const elements = getLibraryBootstrapElements();
     initializeLibraryBootstrapBindings(elements);
 

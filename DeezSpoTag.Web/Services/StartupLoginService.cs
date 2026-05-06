@@ -59,6 +59,10 @@ namespace DeezSpoTag.Web.Services
                 _logger.LogInformation("Found saved ARL, attempting automatic login...");
                 await AttemptAutomaticLoginAsync(normalizedArl, cancellationToken);
             }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Startup login timed out; continuing without automatic Deezer login.");
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Error in startup login service");
@@ -93,6 +97,10 @@ namespace DeezSpoTag.Web.Services
                 }
 
                 await HandleSuccessfulLoginAsync(normalizedArl, _deezerClient.CurrentUser);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Automatic login timed out; keeping saved Deezer credentials for the next attempt.");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

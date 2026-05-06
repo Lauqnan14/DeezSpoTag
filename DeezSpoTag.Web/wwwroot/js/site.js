@@ -164,6 +164,17 @@ globalThis.DeezSpoTag = {
 
     // Themed popup helpers
     ui: {
+        showToast(message, options = {}) {
+            const normalizedOptions = typeof options === 'string'
+                ? { type: options }
+                : (options || {});
+            const type = normalizedOptions.type || 'info';
+
+            if (typeof globalThis.DeezSpoTag?.showNotification === 'function') {
+                globalThis.DeezSpoTag.showNotification(message, type, normalizedOptions);
+            }
+        },
+
         setDialogResizable(dialogEl, enabled) {
             if (!dialogEl) {
                 return;
@@ -733,12 +744,21 @@ globalThis.DeezSpoTag = {
         connection.on('tracklistUpdated', (eventPayload) => {
             this.handleCrossDeviceTracklistUpdated(eventPayload);
         });
+        connection.on('libraryUpdated', (eventPayload) => {
+            this.handleLibraryUpdated(eventPayload);
+        });
 
         connection.start().catch((error) => {
             console.debug('Cross-device sync unavailable.', error);
         });
 
         this.crossDeviceSyncConnection = connection;
+    },
+
+    handleLibraryUpdated(eventPayload) {
+        globalThis.dispatchEvent(new CustomEvent('deezspotag:library-updated', {
+            detail: eventPayload || {}
+        }));
     },
 
     handleCrossDeviceTracklistUpdated(eventPayload) {

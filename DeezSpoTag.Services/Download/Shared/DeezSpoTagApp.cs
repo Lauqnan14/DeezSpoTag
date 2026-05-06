@@ -538,7 +538,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return;
         }
 
-        if (!TryReadWatchlistIds(payloadJson, out var source, out var playlistId, out var trackId))
+        if (!TryReadWatchlistIds(payloadJson, out var source, out var playlistId, out var trackId, out var destinationFolderId))
         {
             return;
         }
@@ -556,17 +556,38 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             trackId,
             status,
             cancellationToken);
+
+        if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
+        {
+            var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
+            if (notifier != null)
+            {
+                await notifier.NotifyCompletedAsync(
+                    source,
+                    playlistId,
+                    trackId,
+                    destinationFolderId,
+                    cancellationToken);
+            }
+        }
     }
 
-    private static bool TryReadWatchlistIds(string payloadJson, out string source, out string playlistId, out string trackId)
+    private static bool TryReadWatchlistIds(
+        string payloadJson,
+        out string source,
+        out string playlistId,
+        out string trackId,
+        out long? destinationFolderId)
     {
         source = "";
         playlistId = "";
         trackId = "";
+        destinationFolderId = null;
 
         try
         {
             using var document = JsonDocument.Parse(payloadJson);
+            destinationFolderId = TryReadDestinationFolderId(document.RootElement);
             if (TryReadWatchlistFromSourceIds(document.RootElement, out source, out playlistId, out trackId))
             {
                 return true;
@@ -583,6 +604,35 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         {
             return false;
         }
+    }
+
+    private static long? TryReadDestinationFolderId(JsonElement root)
+    {
+        if (TryGetInt64(root, "destinationFolderId", out var destinationFolderId)
+            || TryGetInt64(root, "DestinationFolderId", out destinationFolderId)
+            || TryGetInt64(root, "destination_folder_id", out destinationFolderId))
+        {
+            return destinationFolderId;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetInt64(JsonElement element, string propertyName, out long value)
+    {
+        value = 0;
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return false;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out value))
+        {
+            return true;
+        }
+
+        return property.ValueKind == JsonValueKind.String
+               && long.TryParse(property.GetString(), out value);
     }
 
     private static bool TryReadWatchlistFromSourceIds(JsonElement root, out string source, out string playlistId, out string trackId)

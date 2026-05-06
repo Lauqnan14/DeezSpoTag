@@ -399,6 +399,7 @@ public sealed record TrackSourceLinksDto(
     string? DeezerTrackId,
     string? SpotifyTrackId,
     string? AppleTrackId,
+    string? Isrc,
     string? DeezerUrl,
     string? SpotifyUrl,
     string? AppleUrl);

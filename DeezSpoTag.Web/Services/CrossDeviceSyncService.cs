@@ -46,6 +46,30 @@ public sealed class CrossDeviceSyncService
             _logger.LogDebug(ex, "Failed to broadcast cross-device tracklist update.");
         }
     }
+
+    public async Task PublishLibraryUpdatedAsync(
+        int artistCount,
+        int albumCount,
+        int trackCount,
+        long? folderId,
+        CancellationToken cancellationToken = default)
+    {
+        var payload = new LibraryUpdatedEvent(
+            ArtistCount: artistCount,
+            AlbumCount: albumCount,
+            TrackCount: trackCount,
+            FolderId: folderId,
+            UpdatedUtc: DateTimeOffset.UtcNow);
+
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("libraryUpdated", payload, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to broadcast library update.");
+        }
+    }
 }
 
 public sealed record TracklistUpdatedEvent(
@@ -55,3 +79,10 @@ public sealed record TracklistUpdatedEvent(
     string PayloadHash,
     DateTimeOffset UpdatedUtc,
     string? SourceClientId);
+
+public sealed record LibraryUpdatedEvent(
+    int ArtistCount,
+    int AlbumCount,
+    int TrackCount,
+    long? FolderId,
+    DateTimeOffset UpdatedUtc);

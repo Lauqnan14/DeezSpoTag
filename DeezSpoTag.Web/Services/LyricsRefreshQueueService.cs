@@ -104,38 +104,44 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
+        try
         {
-            lock (_queueLock)
+            await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
             {
-                _processingTrackId = item.TrackId;
-            }
+                lock (_queueLock)
+                {
+                    _processingTrackId = item.TrackId;
+                }
 
-            try
-            {
-                await ProcessTrackLyricsRefreshAsync(item.TrackId, item.SettingsJson, stoppingToken);
-                lock (_queueLock)
+                try
                 {
-                    _processedCount++;
+                    await ProcessTrackLyricsRefreshAsync(item.TrackId, item.SettingsJson, stoppingToken);
+                    lock (_queueLock)
+                    {
+                        _processedCount++;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Lyrics refresh failed for track {TrackId}", item.TrackId);
+                    lock (_queueLock)
+                    {
+                        _failedCount++;
+                    }
+                }
+                finally
+                {
+                    lock (_queueLock)
+                    {
+                        _lastProcessedUtc = DateTimeOffset.UtcNow;
+                        _processingTrackId = null;
+                    }
+                    CompleteItem(item);
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Lyrics refresh failed for track {TrackId}", item.TrackId);
-                lock (_queueLock)
-                {
-                    _failedCount++;
-                }
-            }
-            finally
-            {
-                lock (_queueLock)
-                {
-                    _lastProcessedUtc = DateTimeOffset.UtcNow;
-                    _processingTrackId = null;
-                }
-                CompleteItem(item);
-            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
     }
 

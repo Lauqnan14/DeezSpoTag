@@ -1269,6 +1269,7 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
                 sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>()));
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistWatchService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistVisualService>();
         services.AddScoped<DeezSpoTag.Web.Services.SpotifyHomeFeedCollaborators>(sp =>
@@ -1340,7 +1341,11 @@ public partial class Program
                 LibraryRecommendationService = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRecommendationService>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
         services.AddHostedService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>();
+        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService.Dependencies>(sp =>

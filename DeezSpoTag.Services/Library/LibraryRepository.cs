@@ -5962,6 +5962,7 @@ SELECT t.id,
        COALESCE(MAX(CASE WHEN ts.source = 'deezer' THEN ts.source_id END), t.deezer_id) AS deezer_track_id,
        MAX(CASE WHEN ts.source = 'spotify' THEN ts.source_id END) AS spotify_track_id,
        MAX(CASE WHEN ts.source = 'apple' THEN ts.source_id END) AS apple_track_id,
+       MAX(CASE WHEN ts.source = 'isrc' THEN ts.source_id END) AS isrc,
        MAX(CASE WHEN ts.source = 'deezer' THEN ts.url END) AS deezer_url,
        MAX(CASE WHEN ts.source = 'spotify' THEN ts.url END) AS spotify_url,
        MAX(CASE WHEN ts.source = 'apple' THEN ts.url END) AS apple_url
@@ -5983,7 +5984,8 @@ GROUP BY t.id, t.deezer_id;";
                 await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
                 await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
                 await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6));
+                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
+                await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7));
         }
 
         return result;
@@ -5997,6 +5999,7 @@ SELECT t.id,
        COALESCE(MAX(CASE WHEN ts.source = 'deezer' THEN ts.source_id END), t.deezer_id) AS deezer_track_id,
        MAX(CASE WHEN ts.source = 'spotify' THEN ts.source_id END) AS spotify_track_id,
        MAX(CASE WHEN ts.source = 'apple' THEN ts.source_id END) AS apple_track_id,
+       MAX(CASE WHEN ts.source = 'isrc' THEN ts.source_id END) AS isrc,
        MAX(CASE WHEN ts.source = 'deezer' THEN ts.url END) AS deezer_url,
        MAX(CASE WHEN ts.source = 'spotify' THEN ts.url END) AS spotify_url,
        MAX(CASE WHEN ts.source = 'apple' THEN ts.url END) AS apple_url
@@ -6020,7 +6023,8 @@ LIMIT 1;";
             await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
             await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
             await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6));
+            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
+            await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7));
     }
 
     public async Task<IReadOnlyList<ArtistSpotifyMatchSignalDto>> GetArtistSpotifyMatchSignalsAsync(

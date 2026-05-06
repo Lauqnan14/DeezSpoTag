@@ -203,6 +203,7 @@ public sealed class LibraryScanRunner
                     activeCts.Token);
                 ClearScanCheckpoint();
                 AddInfoLog($"Library scan completed ({scanResult.ArtistCount} artists, {scanResult.AlbumCount} albums, {scanResult.TrackCount} tracks).");
+                await PublishLibraryUpdatedAsync(scanResult, folderId, activeCts.Token);
             }
         }
         catch (OperationCanceledException ex)
@@ -237,6 +238,25 @@ public sealed class LibraryScanRunner
                 }
             }
         }
+    }
+
+    private async Task PublishLibraryUpdatedAsync(
+        IncrementalScanResult scanResult,
+        long? folderId,
+        CancellationToken cancellationToken)
+    {
+        var syncService = _serviceProvider.GetService<CrossDeviceSyncService>();
+        if (syncService is null)
+        {
+            return;
+        }
+
+        await syncService.PublishLibraryUpdatedAsync(
+            scanResult.ArtistCount,
+            scanResult.AlbumCount,
+            scanResult.TrackCount,
+            folderId,
+            cancellationToken);
     }
 
     private bool TryStartScan(CancellationToken cancellationToken, ref CancellationTokenSource? cts, ref bool ownsActiveScan)

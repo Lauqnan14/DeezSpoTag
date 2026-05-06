@@ -2009,6 +2009,20 @@ public static partial class EngineAudioPostDownloadHelper
             payload.WatchlistTrackId,
             status,
             cancellationToken);
+
+        if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
+            if (notifier != null)
+            {
+                await notifier.NotifyCompletedAsync(
+                    payload.WatchlistSource,
+                    payload.WatchlistPlaylistId,
+                    payload.WatchlistTrackId,
+                    payload.DestinationFolderId,
+                    cancellationToken);
+            }
+        }
     }
 
     public static async Task<TPayload?> InitializeQueueItemAsync<TPayload>(

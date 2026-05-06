@@ -37,6 +37,7 @@ public sealed class PlaylistSyncService
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly PlatformAuthService _authService;
     private readonly PlaylistVisualService _playlistVisualService;
+    private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
     private readonly ILogger<PlaylistSyncService> _logger;
 
     public PlaylistSyncService(
@@ -46,6 +47,7 @@ public sealed class PlaylistSyncService
         JellyfinApiClient jellyfinApiClient,
         PlatformAuthService authService,
         PlaylistVisualService playlistVisualService,
+        MediaServerLibraryRefreshService mediaServerRefreshService,
         ILogger<PlaylistSyncService> logger)
     {
         _libraryRepository = libraryRepository;
@@ -54,6 +56,7 @@ public sealed class PlaylistSyncService
         _jellyfinApiClient = jellyfinApiClient;
         _authService = authService;
         _playlistVisualService = playlistVisualService;
+        _mediaServerRefreshService = mediaServerRefreshService;
         _logger = logger;
     }
 
@@ -330,6 +333,11 @@ public sealed class PlaylistSyncService
         if (string.IsNullOrWhiteSpace(service))
         {
             return new PlaylistSyncResult(false, "No target server selected.");
+        }
+
+        if (force)
+        {
+            await _mediaServerRefreshService.RefreshAsync(service, cancellationToken);
         }
 
         var loadResult = await LoadTracksForSyncAsync(playlist, trackCandidates, cancellationToken);

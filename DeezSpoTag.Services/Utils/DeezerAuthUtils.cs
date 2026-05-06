@@ -122,6 +122,10 @@ public class DeezerAuthUtils
                 return true;
             }
         }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "Primary Deezer availability check timed out, trying API fallback");
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Primary Deezer availability check failed, trying API fallback");
@@ -142,6 +146,10 @@ public class DeezerAuthUtils
             {
                 return openElement.GetBoolean();
             }
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Deezer availability fallback timed out.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

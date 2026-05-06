@@ -166,6 +166,7 @@ public class LibraryAlbumsApiController : ControllerBase
             DeezerTrackId = links?.DeezerTrackId,
             SpotifyTrackId = links?.SpotifyTrackId,
             AppleTrackId = links?.AppleTrackId,
+            Isrc = links?.Isrc,
             DeezerUrl = links?.DeezerUrl,
             SpotifyUrl = links?.SpotifyUrl,
             AppleUrl = links?.AppleUrl
@@ -213,6 +214,7 @@ public class LibraryAlbumsApiController : ControllerBase
             DeezerTrackId = links?.DeezerTrackId,
             SpotifyTrackId = links?.SpotifyTrackId,
             AppleTrackId = links?.AppleTrackId,
+            Isrc = links?.Isrc,
             DeezerUrl = links?.DeezerUrl,
             SpotifyUrl = links?.SpotifyUrl,
             AppleUrl = links?.AppleUrl

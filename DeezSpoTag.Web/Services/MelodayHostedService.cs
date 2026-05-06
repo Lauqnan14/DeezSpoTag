@@ -55,6 +55,10 @@ public sealed class MelodayHostedService : BackgroundService
                     _lastPeriod = period;
                 }
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "Meloday update failed.");
