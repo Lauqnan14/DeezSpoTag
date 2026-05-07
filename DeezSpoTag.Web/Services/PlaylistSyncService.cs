@@ -25,7 +25,7 @@ public sealed class PlaylistSyncService
         int? DurationMs);
 
     private sealed record SyncMatchSummary(
-        IReadOnlyList<string> TargetIds,
+        List<string> TargetIds,
         int SourceTracks,
         int LocalMatches,
         int TargetMatches,
@@ -50,24 +50,28 @@ public sealed class PlaylistSyncService
     private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
     private readonly ILogger<PlaylistSyncService> _logger;
 
-    public PlaylistSyncService(
-        LibraryRepository libraryRepository,
-        SpotifyMetadataService spotifyMetadataService,
-        PlexApiClient plexApiClient,
-        JellyfinApiClient jellyfinApiClient,
-        PlatformAuthService authService,
-        PlaylistVisualService playlistVisualService,
-        MediaServerLibraryRefreshService mediaServerRefreshService,
-        ILogger<PlaylistSyncService> logger)
+    public PlaylistSyncService(PlaylistSyncDependencies dependencies)
     {
-        _libraryRepository = libraryRepository;
-        _spotifyMetadataService = spotifyMetadataService;
-        _plexApiClient = plexApiClient;
-        _jellyfinApiClient = jellyfinApiClient;
-        _authService = authService;
-        _playlistVisualService = playlistVisualService;
-        _mediaServerRefreshService = mediaServerRefreshService;
-        _logger = logger;
+        _libraryRepository = dependencies.LibraryRepository;
+        _spotifyMetadataService = dependencies.SpotifyMetadataService;
+        _plexApiClient = dependencies.PlexApiClient;
+        _jellyfinApiClient = dependencies.JellyfinApiClient;
+        _authService = dependencies.AuthService;
+        _playlistVisualService = dependencies.PlaylistVisualService;
+        _mediaServerRefreshService = dependencies.MediaServerRefreshService;
+        _logger = dependencies.Logger;
+    }
+
+    public sealed class PlaylistSyncDependencies
+    {
+        public required LibraryRepository LibraryRepository { get; init; }
+        public required SpotifyMetadataService SpotifyMetadataService { get; init; }
+        public required PlexApiClient PlexApiClient { get; init; }
+        public required JellyfinApiClient JellyfinApiClient { get; init; }
+        public required PlatformAuthService AuthService { get; init; }
+        public required PlaylistVisualService PlaylistVisualService { get; init; }
+        public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
+        public required ILogger<PlaylistSyncService> Logger { get; init; }
     }
 
     public Task<PlaylistSyncResult> SyncSpotifyPlaylistAsync(
@@ -1075,7 +1079,6 @@ public sealed class PlaylistSyncService
         var unresolvedSearchIndexes = new List<int>();
         for (var i = 0; i < tracks.Count; i++)
         {
-            var track = tracks[i];
             var trackId = orderedTrackIds[i];
             if (trackId > 0 && ratingKeyByTrackId.TryGetValue(trackId, out var ratingKey))
             {

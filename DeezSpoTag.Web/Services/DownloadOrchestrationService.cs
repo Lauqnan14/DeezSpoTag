@@ -40,10 +40,14 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
     private sealed record EnhancementPauseRequest(
         string? FallbackJobId,
-        string ConfigLogMessage,
-        string SuccessLogMessage,
-        string AlreadyStoppedLogMessage,
-        string WarningMessage);
+        EnhancementPauseReason Reason,
+        string ConfigLogMessage);
+
+    private enum EnhancementPauseReason
+    {
+        IncomingDownload,
+        PendingPipeline
+    }
 
     private static bool IsInterruptibleEnhancementTrigger(string? trigger)
     {
@@ -1714,10 +1718,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return await TryPauseEnhancementAsync(
             new EnhancementPauseRequest(
                 fallbackEnhancementJobId,
-                "Automation: enhancement pause requested for incoming download.",
-                "Automation enhancement job {JobId} pause requested for incoming download.",
-                "Automation enhancement job {JobId} could not be paused (already stopped).",
-                "Failed to request enhancement pause for incoming download."),
+                EnhancementPauseReason.IncomingDownload,
+                "Automation: enhancement pause requested for incoming download."),
             cancellationToken);
     }
 
@@ -1732,10 +1734,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return await TryPauseEnhancementAsync(
             new EnhancementPauseRequest(
                 runningEnhancementJobId,
-                "Automation: enhancement pause requested to prioritize pending post-download enrichment.",
-                "Automation enhancement job {JobId} paused to prioritize pending post-download enrichment.",
-                "Automation enhancement job {JobId} could not be paused while prioritizing pending post-download enrichment.",
-                "Failed to pause enhancement for pending post-download enrichment."),
+                EnhancementPauseReason.PendingPipeline,
+                "Automation: enhancement pause requested to prioritize pending post-download enrichment."),
             cancellationToken);
     }
 
@@ -1788,25 +1788,72 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    _logger.LogInformation(request.SuccessLogMessage, jobId);
+                    LogEnhancementPauseSuccess(request.Reason, jobId);
                 }
             }
             else if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation(request.AlreadyStoppedLogMessage, jobId);
+                LogEnhancementPauseAlreadyStopped(request.Reason, jobId);
             }
 
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, request.WarningMessage);
+            LogEnhancementPauseFailure(request.Reason, ex);
             return false;
         }
         finally
         {
             _enhancementPauseLock.Release();
         }
+    }
+
+    private void LogEnhancementPauseSuccess(EnhancementPauseReason reason, string jobId)
+    {
+        if (!_logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
+        if (reason == EnhancementPauseReason.IncomingDownload)
+        {
+            _logger.LogInformation("Automation enhancement job {JobId} pause requested for incoming download.", jobId);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Automation enhancement job {JobId} paused to prioritize pending post-download enrichment.",
+            jobId);
+    }
+
+    private void LogEnhancementPauseAlreadyStopped(EnhancementPauseReason reason, string jobId)
+    {
+        if (!_logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
+        if (reason == EnhancementPauseReason.IncomingDownload)
+        {
+            _logger.LogInformation("Automation enhancement job {JobId} could not be paused (already stopped).", jobId);
+            return;
+        }
+
+        _logger.LogInformation(
+            "Automation enhancement job {JobId} could not be paused while prioritizing pending post-download enrichment.",
+            jobId);
+    }
+
+    private void LogEnhancementPauseFailure(EnhancementPauseReason reason, Exception exception)
+    {
+        if (reason == EnhancementPauseReason.IncomingDownload)
+        {
+            _logger.LogWarning(exception, "Failed to request enhancement pause for incoming download.");
+            return;
+        }
+
+        _logger.LogWarning(exception, "Failed to pause enhancement for pending post-download enrichment.");
     }
 
     private bool HasPendingEnhancementResumeFolders()

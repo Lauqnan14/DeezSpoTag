@@ -1567,27 +1567,17 @@ public class PlexApiClient
         var existingTitlePrefix = options?.ExistingTitlePrefix;
         var appendMissingOnly = options?.AppendMissingOnly ?? false;
         var existing = await GetPlaylistsAsync(serverUrl, token, cancellationToken);
-        var match = string.IsNullOrWhiteSpace(existingTitlePrefix)
-            ? existing.FirstOrDefault(p => string.Equals(p.Title, playlistName, StringComparison.OrdinalIgnoreCase))
-            : existing.FirstOrDefault(p => p.Title.StartsWith(existingTitlePrefix, StringComparison.OrdinalIgnoreCase));
-        var playlistId = match?.Id;
+        var playlistId = FindMatchingPlaylistId(existing, playlistName, existingTitlePrefix);
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            var createUrl = $"{serverUrl.TrimEnd('/')}/playlists?X-Plex-Token={token}&type=audio&title={Uri.EscapeDataString(playlistName)}&smart=0";
-            var uri = BuildPlaylistUri(machineIdentifier, ratingKeys);
-            createUrl += $"&uri={Uri.EscapeDataString(uri)}";
-            var response = await _httpClient.PostAsync(createUrl, null, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("Failed to create Plex playlist {PlaylistName}: {StatusCode}", playlistName, response.StatusCode);
-                return null;
-            }
-
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            var doc = XDocument.Parse(content);
-            playlistId = doc.Descendants("Playlist").FirstOrDefault()?.Attribute(RatingKeyAttributeName)?.Value;
-            return playlistId;
+            return await CreatePlaylistAsync(
+                serverUrl,
+                token,
+                machineIdentifier,
+                playlistName,
+                ratingKeys,
+                cancellationToken);
         }
 
         if (appendMissingOnly)
@@ -1625,6 +1615,40 @@ public class PlexApiClient
         }
 
         return playlistId;
+    }
+
+    private static string? FindMatchingPlaylistId(
+        IReadOnlyList<PlexPlaylist> existing,
+        string playlistName,
+        string? existingTitlePrefix)
+    {
+        var match = string.IsNullOrWhiteSpace(existingTitlePrefix)
+            ? existing.FirstOrDefault(p => string.Equals(p.Title, playlistName, StringComparison.OrdinalIgnoreCase))
+            : existing.FirstOrDefault(p => p.Title.StartsWith(existingTitlePrefix, StringComparison.OrdinalIgnoreCase));
+        return match?.Id;
+    }
+
+    private async Task<string?> CreatePlaylistAsync(
+        string serverUrl,
+        string token,
+        string machineIdentifier,
+        string playlistName,
+        IReadOnlyList<string> ratingKeys,
+        CancellationToken cancellationToken)
+    {
+        var createUrl = $"{serverUrl.TrimEnd('/')}/playlists?X-Plex-Token={token}&type=audio&title={Uri.EscapeDataString(playlistName)}&smart=0";
+        var uri = BuildPlaylistUri(machineIdentifier, ratingKeys);
+        createUrl += $"&uri={Uri.EscapeDataString(uri)}";
+        var response = await _httpClient.PostAsync(createUrl, null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Failed to create Plex playlist {PlaylistName}: {StatusCode}", playlistName, response.StatusCode);
+            return null;
+        }
+
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        var doc = XDocument.Parse(content);
+        return doc.Descendants("Playlist").FirstOrDefault()?.Attribute(RatingKeyAttributeName)?.Value;
     }
 
     public async Task UpdatePlaylistMetadataAsync(

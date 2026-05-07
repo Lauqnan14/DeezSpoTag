@@ -380,8 +380,13 @@ public sealed class TidalDownloadService
             },
             static payload => payload?.Items ?? new List<TidalTrack>(),
             new List<TidalTrack>(),
-            "Tidal OAuth search failed for query {Query}.",
-            query,
+            ex =>
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Tidal OAuth search failed for query {Query}.", query);
+                }
+            },
             cancellationToken);
     }
 
@@ -406,8 +411,13 @@ public sealed class TidalDownloadService
             },
             static payload => payload?.Items ?? new List<TidalTrack>(),
             new List<TidalTrack>(),
-            "Tidal public API search failed for query {Query}.",
-            query,
+            ex =>
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Tidal public API search failed for query {Query}.", query);
+                }
+            },
             cancellationToken);
     }
 
@@ -425,8 +435,13 @@ public sealed class TidalDownloadService
             },
             static payload => payload,
             null,
-            "Tidal OAuth track lookup failed for track ID {TrackId}.",
-            trackId,
+            ex =>
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Tidal OAuth track lookup failed for track ID {TrackId}.", trackId);
+                }
+            },
             cancellationToken);
     }
 
@@ -443,8 +458,13 @@ public sealed class TidalDownloadService
             },
             static payload => payload,
             null,
-            "Tidal public API track lookup failed for track ID {TrackId}.",
-            trackId,
+            ex =>
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Tidal public API track lookup failed for track ID {TrackId}.", trackId);
+                }
+            },
             cancellationToken);
     }
 
@@ -452,8 +472,7 @@ public sealed class TidalDownloadService
         Func<CancellationToken, Task<HttpRequestMessage>> requestFactory,
         Func<TPayload?, TResult> mapPayload,
         TResult fallback,
-        string debugMessage,
-        object logValue,
+        Action<Exception> logFailure,
         CancellationToken cancellationToken)
     {
         try
@@ -475,11 +494,7 @@ public sealed class TidalDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, debugMessage, logValue);
-            }
-
+            logFailure(ex);
             return fallback;
         }
     }

@@ -742,9 +742,9 @@ public class AudioTagger
         }
     }
 
-    private static bool HasMp4AudioCodecMarker(string path, IReadOnlyList<byte[]> codecMarkers)
+    private static bool HasMp4AudioCodecMarker(string path, byte[][] codecMarkers)
     {
-        if (string.IsNullOrWhiteSpace(path) || codecMarkers.Count == 0)
+        if (string.IsNullOrWhiteSpace(path) || codecMarkers.Length == 0)
         {
             return false;
         }
@@ -760,22 +760,16 @@ public class AudioTagger
 
             var buffer = new byte[readLength];
             var bytesRead = stream.Read(buffer, 0, buffer.Length);
-            var haystack = buffer.AsSpan(0, bytesRead);
-            foreach (var marker in codecMarkers)
-            {
-                if (haystack.IndexOf(marker) >= 0)
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            return codecMarkers.Any(marker => ContainsMarker(buffer, bytesRead, marker));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return false;
         }
     }
+
+    private static bool ContainsMarker(byte[] buffer, int bytesRead, byte[] marker)
+        => buffer.AsSpan(0, bytesRead).IndexOf(marker) >= 0;
 
     private static bool HasTopLevelMp4Box(string path, string boxType)
     {
@@ -796,22 +790,8 @@ public class AudioTagger
                     return false;
                 }
 
-                var size = ReadUInt32BigEndian(header[..4]);
                 var currentType = System.Text.Encoding.ASCII.GetString(header[4..8]);
-                ulong boxSize = size;
-                if (size == 1)
-                {
-                    if (stream.Read(header[..8]) != 8)
-                    {
-                        return false;
-                    }
-
-                    boxSize = ReadUInt64BigEndian(header[..8]);
-                }
-                else if (size == 0)
-                {
-                    boxSize = (ulong)(stream.Length - boxStart);
-                }
+                var boxSize = ReadMp4BoxSize(stream, boxStart, header);
 
                 if (string.Equals(currentType, boxType, StringComparison.Ordinal))
                 {
@@ -838,6 +818,21 @@ public class AudioTagger
         }
 
         return false;
+    }
+
+    private static ulong ReadMp4BoxSize(Stream stream, long boxStart, Span<byte> header)
+    {
+        var size = ReadUInt32BigEndian(header[..4]);
+        if (size == 1)
+        {
+            return stream.Read(header[..8]) == 8
+                ? ReadUInt64BigEndian(header[..8])
+                : 0;
+        }
+
+        return size == 0
+            ? (ulong)(stream.Length - boxStart)
+            : size;
     }
 
     private static uint ReadUInt32BigEndian(ReadOnlySpan<byte> value)

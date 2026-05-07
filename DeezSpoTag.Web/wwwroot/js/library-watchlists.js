@@ -884,7 +884,7 @@ async function openPlaylistMergePanel(items) {
     }
 }
 
-async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs) {
+async function ensurePlaylistSettingsFoldersLoaded() {
     if (!Array.isArray(libraryState.folders) || libraryState.folders.length === 0) {
         try {
             const folders = await fetchJson('/api/library/folders');
@@ -895,6 +895,91 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             libraryState.folders = Array.isArray(libraryState.folders) ? libraryState.folders : [];
         }
     }
+}
+
+function buildPlaylistTrackCandidateIndexes(trackCandidatesResponse) {
+    const trackCandidates = Array.isArray(trackCandidatesResponse) ? trackCandidatesResponse : [];
+    const trackCandidateMap = new Map();
+    const routingValueIndex = {
+        artist: new Map(),
+        title: new Map(),
+        album: new Map(),
+        genre: new Map(),
+        year: new Map()
+    };
+    const explicitModesAvailable = new Set();
+
+    trackCandidates.forEach(candidate => {
+        const normalizedCandidate = normalizePlaylistTrackCandidate(candidate);
+        if (!normalizedCandidate || trackCandidateMap.has(normalizedCandidate.trackSourceId)) {
+            return;
+        }
+
+        trackCandidateMap.set(normalizedCandidate.trackSourceId, normalizedCandidate);
+        addRoutingValue(routingValueIndex, 'artist', normalizedCandidate.artist);
+        addRoutingValue(routingValueIndex, 'title', normalizedCandidate.title);
+        addRoutingValue(routingValueIndex, 'album', normalizedCandidate.album);
+        if (Number.isInteger(normalizedCandidate.releaseYear)) {
+            addRoutingValue(routingValueIndex, 'year', String(normalizedCandidate.releaseYear));
+        }
+        normalizedCandidate.genres.forEach(genre => addRoutingValue(routingValueIndex, 'genre', genre));
+
+        if (normalizedCandidate.explicit === true) {
+            explicitModesAvailable.add('is_true');
+        } else if (normalizedCandidate.explicit === false) {
+            explicitModesAvailable.add('is_false');
+        }
+    });
+
+    return { trackCandidateMap, routingValueIndex, explicitModesAvailable };
+}
+
+function normalizePlaylistTrackCandidate(candidate) {
+    const trackSourceId = String(candidate?.trackSourceId || '').trim();
+    if (!trackSourceId) {
+        return null;
+    }
+
+    const releaseYearRaw = candidate?.releaseYear;
+    const releaseYear = Number.isFinite(Number(releaseYearRaw)) ? Number(releaseYearRaw) : null;
+    const explicitRaw = candidate?.explicit;
+    let explicit = null;
+    if (explicitRaw === true) {
+        explicit = true;
+    } else if (explicitRaw === false) {
+        explicit = false;
+    }
+    const genresRaw = Array.isArray(candidate?.genres) ? candidate.genres : [];
+
+    return {
+        trackSourceId,
+        isrc: String(candidate?.isrc || '').trim(),
+        title: String(candidate?.title || '').trim(),
+        artist: String(candidate?.artist || '').trim(),
+        album: String(candidate?.album || '').trim(),
+        releaseYear,
+        explicit,
+        genres: genresRaw
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+    };
+}
+
+function addRoutingValue(routingValueIndex, field, rawValue) {
+    const value = String(rawValue || '').trim();
+    if (!value) {
+        return;
+    }
+
+    const normalized = value.toLowerCase();
+    const bucket = routingValueIndex[field];
+    if (bucket && !bucket.has(normalized)) {
+        bucket.set(normalized, value);
+    }
+}
+
+async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs) {
+    await ensurePlaylistSettingsFoldersLoaded();
 
     const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
 
@@ -930,77 +1015,8 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     panelIntro.textContent = 'Tune sync behavior, route matching tracks to folders, and block tracks you do not want synced.';
     panel.appendChild(panelIntro);
 
-    const trackCandidates = Array.isArray(trackCandidatesResponse) ? trackCandidatesResponse : [];
-    const trackCandidateMap = new Map();
-    const routingValueIndex = {
-        artist: new Map(),
-        title: new Map(),
-        album: new Map(),
-        genre: new Map(),
-        year: new Map()
-    };
-    const explicitModesAvailable = new Set();
-
-    function addRoutingValue(field, rawValue) {
-        const value = String(rawValue || '').trim();
-        if (!value) {
-            return;
-        }
-
-        const normalized = value.toLowerCase();
-        const bucket = routingValueIndex[field];
-        if (bucket && !bucket.has(normalized)) {
-            bucket.set(normalized, value);
-        }
-    }
-
-    trackCandidates.forEach(candidate => {
-        const trackSourceId = String(candidate?.trackSourceId || '').trim();
-        if (!trackSourceId || trackCandidateMap.has(trackSourceId)) {
-            return;
-        }
-
-        const releaseYearRaw = candidate?.releaseYear;
-        const releaseYear = Number.isFinite(Number(releaseYearRaw)) ? Number(releaseYearRaw) : null;
-        const explicitRaw = candidate?.explicit;
-        let explicit = null;
-        if (explicitRaw === true) {
-            explicit = true;
-        } else if (explicitRaw === false) {
-            explicit = false;
-        }
-        const genresRaw = Array.isArray(candidate?.genres) ? candidate.genres : [];
-        const genres = genresRaw
-            .map(value => String(value || '').trim())
-            .filter(Boolean);
-
-        const normalizedCandidate = {
-            trackSourceId,
-            isrc: String(candidate?.isrc || '').trim(),
-            title: String(candidate?.title || '').trim(),
-            artist: String(candidate?.artist || '').trim(),
-            album: String(candidate?.album || '').trim(),
-            releaseYear,
-            explicit,
-            genres
-        };
-
-        trackCandidateMap.set(trackSourceId, normalizedCandidate);
-
-        addRoutingValue('artist', normalizedCandidate.artist);
-        addRoutingValue('title', normalizedCandidate.title);
-        addRoutingValue('album', normalizedCandidate.album);
-        if (Number.isInteger(normalizedCandidate.releaseYear)) {
-            addRoutingValue('year', String(normalizedCandidate.releaseYear));
-        }
-        normalizedCandidate.genres.forEach(genre => addRoutingValue('genre', genre));
-
-        if (normalizedCandidate.explicit === true) {
-            explicitModesAvailable.add('is_true');
-        } else if (normalizedCandidate.explicit === false) {
-            explicitModesAvailable.add('is_false');
-        }
-    });
+    const { routingValueIndex, explicitModesAvailable } =
+        buildPlaylistTrackCandidateIndexes(trackCandidatesResponse);
 
     const routingFieldValues = {
         artist: Array.from(routingValueIndex.artist.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),

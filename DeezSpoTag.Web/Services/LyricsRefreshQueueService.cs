@@ -140,8 +140,9 @@ public sealed class LyricsRefreshQueueService : BackgroundService
                 }
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (stoppingToken.IsCancellationRequested)
         {
+            _logger.LogDebug(ex, "Lyrics refresh queue stopped because cancellation was requested.");
         }
     }
 

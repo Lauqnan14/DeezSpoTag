@@ -1270,6 +1270,18 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>()));
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistWatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies>(sp =>
+            new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
+            {
+                LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+                SpotifyMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
+                PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
+                JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
+                AuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
+                PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
+                MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),
+                Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.PlaylistSyncService>>()
+            });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistVisualService>();
         services.AddScoped<DeezSpoTag.Web.Services.SpotifyHomeFeedCollaborators>(sp =>

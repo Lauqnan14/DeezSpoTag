@@ -5009,11 +5009,113 @@ function normalizeTopSongMatchTitle(value) {
 }
 
 function stripFeaturedArtistTitleQualifier(value) {
-    return String(value || '')
-        .replace(/\s*[\(\[\{][^\)\]\}]*\b(feat|ft|featuring)\.?\b[^\)\]\}]*[\)\]\}]/gi, ' ')
-        .replace(/\s+-\s+[^-]*\b(feat|ft|featuring)\.?\b.*$/gi, ' ')
-        .replace(/\b(feat|ft|featuring)\.?\b.*$/gi, ' ')
-        .trim();
+    let title = String(value || '');
+    title = stripFeaturedBracketQualifier(title);
+
+    const dashIndex = title.indexOf(' - ');
+    if (dashIndex >= 0 && containsFeatureToken(title.slice(dashIndex + 3))) {
+        title = title.slice(0, dashIndex);
+    }
+
+    const featureIndex = findFeatureTokenIndex(title);
+    if (featureIndex >= 0) {
+        title = title.slice(0, featureIndex);
+    }
+
+    return title.trim();
+}
+
+function stripFeaturedBracketQualifier(value) {
+    let output = '';
+    let index = 0;
+    while (index < value.length) {
+        const openIndex = findNextBracketOpen(value, index);
+        if (openIndex < 0) {
+            output += value.slice(index);
+            break;
+        }
+
+        const closeIndex = findMatchingBracketClose(value, openIndex);
+        if (closeIndex < 0) {
+            output += value.slice(index);
+            break;
+        }
+
+        const inner = value.slice(openIndex + 1, closeIndex);
+        output += value.slice(index, openIndex);
+        if (containsFeatureToken(inner)) {
+            output += ' ';
+        } else {
+            output += value.slice(openIndex, closeIndex + 1);
+        }
+        index = closeIndex + 1;
+    }
+
+    return output;
+}
+
+function findNextBracketOpen(value, startIndex) {
+    const paren = value.indexOf('(', startIndex);
+    const square = value.indexOf('[', startIndex);
+    const brace = value.indexOf('{', startIndex);
+    return [paren, square, brace]
+        .filter(index => index >= 0)
+        .sort((left, right) => left - right)[0] ?? -1;
+}
+
+function findMatchingBracketClose(value, openIndex) {
+    const opener = value[openIndex];
+    let closer = '}';
+    if (opener === '(') {
+        closer = ')';
+    } else if (opener === '[') {
+        closer = ']';
+    }
+    return value.indexOf(closer, openIndex + 1);
+}
+
+function containsFeatureToken(value) {
+    return findFeatureTokenIndex(value) >= 0;
+}
+
+function findFeatureTokenIndex(value) {
+    const lower = String(value || '').toLowerCase();
+    for (const token of ['featuring', 'feat', 'ft']) {
+        const index = findWordTokenIndex(lower, token);
+        if (index >= 0) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function findWordTokenIndex(value, token) {
+    let index = value.indexOf(token);
+    while (index >= 0) {
+        const before = index === 0 ? '' : value[index - 1];
+        const afterIndex = index + token.length;
+        const after = afterIndex >= value.length ? '' : value[afterIndex];
+        const afterDot = after === '.' ? (value[afterIndex + 1] || '') : after;
+        if (!isAsciiLetterOrDigit(before) && !isAsciiLetterOrDigit(afterDot)) {
+            return index;
+        }
+
+        index = value.indexOf(token, index + token.length);
+    }
+
+    return -1;
+}
+
+function isAsciiLetterOrDigit(value) {
+    if (!value) {
+        return false;
+    }
+
+    const code = value.codePointAt(0);
+    return (code >= 48 && code <= 57)
+        || (code >= 65 && code <= 90)
+        || (code >= 97 && code <= 122);
 }
 
 function addNormalizedTopSongId(set, value) {

@@ -101,8 +101,16 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 request.PlaylistId,
                 request.TrackId);
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (stoppingToken.IsCancellationRequested)
         {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Watchlist post-download sync canceled for {Source}:{PlaylistId}.",
+                    request.Source,
+                    request.PlaylistId);
+            }
         }
         finally
         {
@@ -161,23 +169,29 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
             if (result.Success)
             {
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Watchlist post-download sync completed for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
+                        request.Source,
+                        request.PlaylistId,
+                        request.TrackId,
+                        attempt,
+                        result.SyncedTracks);
+                }
+                return true;
+            }
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
                 _logger.LogInformation(
-                    "Watchlist post-download sync completed for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
+                    "Watchlist post-download sync not ready for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
                     request.Source,
                     request.PlaylistId,
                     request.TrackId,
                     attempt,
-                    result.SyncedTracks);
-                return true;
+                    result.Message);
             }
-
-            _logger.LogInformation(
-                "Watchlist post-download sync not ready for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
-                request.Source,
-                request.PlaylistId,
-                request.TrackId,
-                attempt,
-                result.Message);
             return false;
         }
         catch (OperationCanceledException)
@@ -208,7 +222,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task RunLocalLibraryScanAsync(
+    private static async Task RunLocalLibraryScanAsync(
         IServiceProvider services,
         SyncRequest request,
         CancellationToken cancellationToken)
@@ -234,7 +248,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             cancellationToken);
     }
 
-    private async Task RefreshMediaServerAsync(
+    private static async Task RefreshMediaServerAsync(
         IServiceProvider services,
         SyncRequest request,
         CancellationToken cancellationToken)

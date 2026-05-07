@@ -102,7 +102,7 @@ public sealed class MediaServerLibraryRefreshService
 
     private async Task UpdatePlexTrackMetadataIndexAsync(
         PlexAuth plex,
-        IReadOnlyList<PlexLibrarySection> musicSections,
+        List<PlexLibrarySection> musicSections,
         CancellationToken cancellationToken)
     {
         if (!_libraryRepository.IsConfigured || musicSections.Count == 0)
@@ -114,7 +114,8 @@ public sealed class MediaServerLibraryRefreshService
         var seenRatingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var section in musicSections)
         {
-            for (var offset = 0; ; offset += PlexTrackPageSize)
+            var offset = 0;
+            while (!cancellationToken.IsCancellationRequested)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var page = await _plexApiClient.GetLibraryTracksAsync(
@@ -152,6 +153,8 @@ public sealed class MediaServerLibraryRefreshService
                 {
                     break;
                 }
+
+                offset += PlexTrackPageSize;
             }
         }
 

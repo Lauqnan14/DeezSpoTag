@@ -45,6 +45,7 @@ public sealed class MediaServerSoundtrackCacheRepositoryTests : IAsyncLifetime
     {
         var logger = new CaptureLogger<MediaServerSoundtrackCacheRepository>();
         var environment = new StubWebHostEnvironment(_tempRoot);
+        var effectiveDataRoot = AppDataPaths.GetDataRoot(environment);
         var repository = new MediaServerSoundtrackCacheRepository(
             environment,
             logger);
@@ -112,7 +113,6 @@ public sealed class MediaServerSoundtrackCacheRepositoryTests : IAsyncLifetime
         await repository.UpsertTvShowEpisodesAsync(response, CancellationToken.None);
         Assert.True(logger.Warnings.Count == 0, string.Join(Environment.NewLine, logger.Warnings));
 
-        var effectiveDataRoot = AppDataPaths.GetDataRoot(environment);
         await using (var connection = new SqliteConnection($"Data Source={Path.Join(effectiveDataRoot, "media-server", "soundtrack-cache.db")}"))
         {
             await connection.OpenAsync();

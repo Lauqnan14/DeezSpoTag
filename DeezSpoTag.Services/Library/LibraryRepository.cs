@@ -2467,6 +2467,32 @@ ON CONFLICT(track_id) DO UPDATE SET
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task UpsertPlexTrackMetadataAsync(
+        PlexTrackMetadataDto metadata,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO track_plex_metadata
+    (track_id, plex_rating_key, user_rating, genres_json, moods_json, updated_at_utc)
+VALUES
+    (@trackId, @ratingKey, @userRating, @genresJson, @moodsJson, @updatedAt)
+ON CONFLICT(track_id) DO UPDATE SET
+    plex_rating_key = excluded.plex_rating_key,
+    user_rating = excluded.user_rating,
+    genres_json = excluded.genres_json,
+    moods_json = excluded.moods_json,
+    updated_at_utc = excluded.updated_at_utc;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(TrackIdField, metadata.TrackId);
+        command.Parameters.AddWithValue("ratingKey", (object?)metadata.PlexRatingKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("userRating", (object?)metadata.UserRating ?? DBNull.Value);
+        command.Parameters.AddWithValue("genresJson", metadata.Genres.Count == 0 ? (object)DBNull.Value : JsonSerializer.Serialize(metadata.Genres));
+        command.Parameters.AddWithValue("moodsJson", metadata.Moods.Count == 0 ? (object)DBNull.Value : JsonSerializer.Serialize(metadata.Moods));
+        command.Parameters.AddWithValue("updatedAt", metadata.UpdatedAtUtc?.ToString("O") ?? (object)DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyDictionary<string, long>> GetTrackIdsByFilePathsAsync(
         IReadOnlyCollection<string> filePaths,
         CancellationToken cancellationToken = default)
@@ -2528,9 +2554,8 @@ ON CONFLICT(track_id) DO UPDATE SET
                 continue;
             }
 
-            if (result.ContainsKey(normalized))
+            if (result.Remove(normalized))
             {
-                result.Remove(normalized);
                 duplicates.Add(normalized);
                 continue;
             }
@@ -2565,7 +2590,7 @@ ON CONFLICT(track_id) DO UPDATE SET
         return true;
     }
 
-    private async Task<Dictionary<string, long>> GetTrackIdsByExactFilePathsAsync(
+    private static async Task<Dictionary<string, long>> GetTrackIdsByExactFilePathsAsync(
         SqliteConnection connection,
         IReadOnlyCollection<string> filePaths,
         CancellationToken cancellationToken)
@@ -2595,7 +2620,7 @@ WHERE af.path IN (
         return mapping;
     }
 
-    private async Task<List<LocalTrackFileRow>> GetLocalTrackFileRowsAsync(
+    private static async Task<List<LocalTrackFileRow>> GetLocalTrackFileRowsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -2643,32 +2668,6 @@ WHERE af.path IS NOT NULL
     }
 
     private sealed record LocalTrackFileRow(long TrackId, string AbsolutePath, string RelativePath);
-
-    public async Task UpsertPlexTrackMetadataAsync(
-        PlexTrackMetadataDto metadata,
-        CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-INSERT INTO track_plex_metadata
-    (track_id, plex_rating_key, user_rating, genres_json, moods_json, updated_at_utc)
-VALUES
-    (@trackId, @ratingKey, @userRating, @genresJson, @moodsJson, @updatedAt)
-ON CONFLICT(track_id) DO UPDATE SET
-    plex_rating_key = excluded.plex_rating_key,
-    user_rating = excluded.user_rating,
-    genres_json = excluded.genres_json,
-    moods_json = excluded.moods_json,
-    updated_at_utc = excluded.updated_at_utc;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(TrackIdField, metadata.TrackId);
-        command.Parameters.AddWithValue("ratingKey", (object?)metadata.PlexRatingKey ?? DBNull.Value);
-        command.Parameters.AddWithValue("userRating", (object?)metadata.UserRating ?? DBNull.Value);
-        command.Parameters.AddWithValue("genresJson", metadata.Genres.Count == 0 ? (object)DBNull.Value : JsonSerializer.Serialize(metadata.Genres));
-        command.Parameters.AddWithValue("moodsJson", metadata.Moods.Count == 0 ? (object)DBNull.Value : JsonSerializer.Serialize(metadata.Moods));
-        command.Parameters.AddWithValue("updatedAt", metadata.UpdatedAtUtc?.ToString("O") ?? (object)DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
 
     public async Task<IReadOnlyList<PlexTrackMetadataDto>> GetPlexTrackMetadataAsync(
         IReadOnlyList<long> trackIds,

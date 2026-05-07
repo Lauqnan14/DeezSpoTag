@@ -34,26 +34,13 @@ public sealed class MelodayHostedService : BackgroundService
                 effective = await _settingsStore.LoadAsync(_options);
                 if (!effective.Enabled)
                 {
-                    if (!loggedDisabledState)
-                    {
-                        _logger.LogInformation("Meloday disabled; hosted service waiting for enable.");
-                        loggedDisabledState = true;
-                    }
+                    loggedDisabledState = LogDisabledStateOnce(loggedDisabledState);
                     await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
                     continue;
                 }
                 loggedDisabledState = false;
 
-                var period = MelodayService.GetCurrentPeriodName();
-                if (!string.Equals(period, _lastPeriod, StringComparison.OrdinalIgnoreCase))
-                {
-                    var result = await _melodayService.RunAsync(stoppingToken);
-                    if (_logger.IsEnabled(LogLevel.Information))
-                    {
-                        _logger.LogInformation("Meloday update: {Message}", result.Message);
-                    }
-                    _lastPeriod = period;
-                }
+                await RunCurrentPeriodUpdateIfNeededAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -74,5 +61,32 @@ public sealed class MelodayHostedService : BackgroundService
                 break;
             }
         }
+    }
+
+    private bool LogDisabledStateOnce(bool loggedDisabledState)
+    {
+        if (loggedDisabledState)
+        {
+            return true;
+        }
+
+        _logger.LogInformation("Meloday disabled; hosted service waiting for enable.");
+        return true;
+    }
+
+    private async Task RunCurrentPeriodUpdateIfNeededAsync(CancellationToken stoppingToken)
+    {
+        var period = MelodayService.GetCurrentPeriodName();
+        if (string.Equals(period, _lastPeriod, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var result = await _melodayService.RunAsync(stoppingToken);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Meloday update: {Message}", result.Message);
+        }
+        _lastPeriod = period;
     }
 }
