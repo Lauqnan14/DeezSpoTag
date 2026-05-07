@@ -1,8 +1,12 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -103,5 +107,54 @@ public sealed class ProviderIntegrationSurfaceTests
 
         Assert.True(success);
         Assert.Equal("https://example.test/data.flac", args[1] as string);
+    }
+
+    [Fact]
+    public async Task QobuzReadProviderResponseBody_RejectsEmptyBodyWithProviderLabel()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(" ")
+        };
+        var method = typeof(QobuzDownloadService).GetMethod(
+            "ReadProviderResponseBodyAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = Assert.IsAssignableFrom<Task<string>>(method!.Invoke(null, [response, "MusicDL provider", CancellationToken.None]));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => task);
+        Assert.Equal("MusicDL provider returned an empty response.", exception.Message);
+    }
+
+    [Fact]
+    public void QobuzTryExtractCommonProviderUrlPayload_RejectsHtmlWithProviderLabel()
+    {
+        var method = typeof(QobuzDownloadService).GetMethod(
+            "TryExtractCommonProviderUrlPayload",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var args = new object?[] { "<html></html>", "Provider", null };
+        var exception = Assert.Throws<TargetInvocationException>(() => method!.Invoke(null, args));
+        Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.Equal("Provider returned HTML instead of JSON.", exception.InnerException!.Message);
+    }
+
+    [Fact]
+    public void QobuzTryExtractCommonProviderUrlPayload_AcceptsDirectUrlPayload()
+    {
+        var method = typeof(QobuzDownloadService).GetMethod(
+            "TryExtractCommonProviderUrlPayload",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var args = new object?[] { "\"https://example.test/file.flac\"", "Provider", null };
+        var success = (bool)method!.Invoke(null, args)!;
+
+        Assert.True(success);
+        Assert.Equal("https://example.test/file.flac", args[2] as string);
     }
 }

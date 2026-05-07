@@ -706,20 +706,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new InvalidOperationException($"Provider returned HTTP {(int)response.StatusCode}");
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            throw new InvalidOperationException("Provider returned an empty response.");
-        }
-
-        if (TryExtractDirectUrlPayload(body, out var directUrl))
+        var body = await ReadProviderResponseBodyAsync(response, "Provider", cancellationToken);
+        if (TryExtractCommonProviderUrlPayload(body, "Provider", out var directUrl))
         {
             return directUrl;
-        }
-
-        if (LooksLikeHtml(body))
-        {
-            throw new InvalidOperationException("Provider returned HTML instead of JSON.");
         }
 
         try
@@ -923,20 +913,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new InvalidOperationException($"MusicDL provider returned HTTP {(int)response.StatusCode}");
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            throw new InvalidOperationException("MusicDL provider returned an empty response.");
-        }
-
-        if (TryExtractDirectUrlPayload(body, out var directUrl))
+        var body = await ReadProviderResponseBodyAsync(response, "MusicDL provider", cancellationToken);
+        if (TryExtractCommonProviderUrlPayload(body, "MusicDL provider", out var directUrl))
         {
             return directUrl;
-        }
-
-        if (LooksLikeHtml(body))
-        {
-            throw new InvalidOperationException("MusicDL provider returned HTML instead of JSON.");
         }
 
         try
@@ -990,6 +970,38 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             "7" => "hi-res",
             _ => "cd"
         };
+    }
+
+    private static async Task<string> ReadProviderResponseBodyAsync(
+        HttpResponseMessage response,
+        string providerLabel,
+        CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            throw new InvalidOperationException($"{providerLabel} returned an empty response.");
+        }
+
+        return body;
+    }
+
+    private static bool TryExtractCommonProviderUrlPayload(
+        string body,
+        string providerLabel,
+        out string? directUrl)
+    {
+        if (TryExtractDirectUrlPayload(body, out directUrl))
+        {
+            return true;
+        }
+
+        if (LooksLikeHtml(body))
+        {
+            throw new InvalidOperationException($"{providerLabel} returned HTML instead of JSON.");
+        }
+
+        return false;
     }
 
     private static bool TryExtractProviderUrl(JsonElement root, out string? url)

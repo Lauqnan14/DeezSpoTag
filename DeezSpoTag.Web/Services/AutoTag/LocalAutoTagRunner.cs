@@ -3192,14 +3192,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 return null;
             }
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ffprobePath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            var startInfo = ExternalToolProcessStartInfo.CreateRedirected(ffprobePath);
             startInfo.ArgumentList.Add("-v");
             startInfo.ArgumentList.Add("error");
             startInfo.ArgumentList.Add("-show_entries");

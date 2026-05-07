@@ -368,128 +368,106 @@ public sealed class TidalDownloadService
 
     private async Task<List<TidalTrack>> SearchTracksViaOauthAsync(string query, int limit, CancellationToken cancellationToken)
     {
-        try
-        {
-            var token = await GetAccessTokenAsync(cancellationToken);
-            var baseUrl = Encoding.UTF8.GetString(Convert.FromBase64String("aHR0cHM6Ly9hcGkudGlkYWwuY29tL3YxL3NlYXJjaC90cmFja3M/cXVlcnk9"));
-            var url = $"{baseUrl}{WebUtility.UrlEncode(query)}&limit={limit}&offset=0&countryCode={TidalPublicCountryCode}";
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            using var response = await _client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+        return await SendTidalJsonOrDefaultAsync<TidalSearchResponse, List<TidalTrack>>(
+            async _ =>
             {
-                return new List<TidalTrack>();
-            }
-
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            var payload = JsonSerializer.Deserialize<TidalSearchResponse>(body, SerializerOptions);
-            return payload?.Items ?? new List<TidalTrack>();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Tidal OAuth search failed for query {Query}.", query);
-            }
-
-            return new List<TidalTrack>();
-        }
+                var token = await GetAccessTokenAsync(cancellationToken);
+                var baseUrl = Encoding.UTF8.GetString(Convert.FromBase64String("aHR0cHM6Ly9hcGkudGlkYWwuY29tL3YxL3NlYXJjaC90cmFja3M/cXVlcnk9"));
+                var url = $"{baseUrl}{WebUtility.UrlEncode(query)}&limit={limit}&offset=0&countryCode={TidalPublicCountryCode}";
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                return request;
+            },
+            static payload => payload?.Items ?? new List<TidalTrack>(),
+            new List<TidalTrack>(),
+            "Tidal OAuth search failed for query {Query}.",
+            query,
+            cancellationToken);
     }
 
     private async Task<List<TidalTrack>> SearchTracksViaPublicApiAsync(string query, int limit, CancellationToken cancellationToken)
     {
-        try
-        {
-            var url = BuildTidalPublicApiUrl(
-                "search/tracks",
-                new Dictionary<string, string>
-                {
-                    ["query"] = query,
-                    ["limit"] = limit > 0 ? limit.ToString() : "20",
-                    ["offset"] = "0"
-                });
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
-            request.Headers.TryAddWithoutValidation("Accept", "application/json");
-            using var response = await _client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+        return await SendTidalJsonOrDefaultAsync<TidalSearchResponse, List<TidalTrack>>(
+            _ =>
             {
-                return new List<TidalTrack>();
-            }
+                var url = BuildTidalPublicApiUrl(
+                    "search/tracks",
+                    new Dictionary<string, string>
+                    {
+                        ["query"] = query,
+                        ["limit"] = limit > 0 ? limit.ToString() : "20",
+                        ["offset"] = "0"
+                    });
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            var payload = JsonSerializer.Deserialize<TidalSearchResponse>(body, SerializerOptions);
-            return payload?.Items ?? new List<TidalTrack>();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Tidal public API search failed for query {Query}.", query);
-            }
-
-            return new List<TidalTrack>();
-        }
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
+                request.Headers.TryAddWithoutValidation("Accept", "application/json");
+                return Task.FromResult(request);
+            },
+            static payload => payload?.Items ?? new List<TidalTrack>(),
+            new List<TidalTrack>(),
+            "Tidal public API search failed for query {Query}.",
+            query,
+            cancellationToken);
     }
 
     private async Task<TidalTrack?> TryGetTrackInfoByIdViaOauthAsync(long trackId, CancellationToken cancellationToken)
     {
-        try
-        {
-            var token = await GetAccessTokenAsync(cancellationToken);
-            var baseUrl = Encoding.UTF8.GetString(Convert.FromBase64String("aHR0cHM6Ly9hcGkudGlkYWwuY29tL3YxL3RyYWNrcy8="));
-            var url = $"{baseUrl}{trackId}?countryCode={TidalPublicCountryCode}";
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            using var response = await _client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+        return await SendTidalJsonOrDefaultAsync<TidalTrack, TidalTrack?>(
+            async _ =>
             {
-                return null;
-            }
-
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            return JsonSerializer.Deserialize<TidalTrack>(body, SerializerOptions);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Tidal OAuth track lookup failed for track ID {TrackId}.", trackId);
-            }
-
-            return null;
-        }
+                var token = await GetAccessTokenAsync(cancellationToken);
+                var baseUrl = Encoding.UTF8.GetString(Convert.FromBase64String("aHR0cHM6Ly9hcGkudGlkYWwuY29tL3YxL3RyYWNrcy8="));
+                var url = $"{baseUrl}{trackId}?countryCode={TidalPublicCountryCode}";
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                return request;
+            },
+            static payload => payload,
+            null,
+            "Tidal OAuth track lookup failed for track ID {TrackId}.",
+            trackId,
+            cancellationToken);
     }
 
     private async Task<TidalTrack?> TryGetTrackInfoByIdViaPublicApiAsync(long trackId, CancellationToken cancellationToken)
     {
+        return await SendTidalJsonOrDefaultAsync<TidalTrack, TidalTrack?>(
+            _ =>
+            {
+                var url = BuildTidalPublicApiUrl($"tracks/{trackId}");
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
+                request.Headers.TryAddWithoutValidation("Accept", "application/json");
+                return Task.FromResult(request);
+            },
+            static payload => payload,
+            null,
+            "Tidal public API track lookup failed for track ID {TrackId}.",
+            trackId,
+            cancellationToken);
+    }
+
+    private async Task<TResult> SendTidalJsonOrDefaultAsync<TPayload, TResult>(
+        Func<CancellationToken, Task<HttpRequestMessage>> requestFactory,
+        Func<TPayload?, TResult> mapPayload,
+        TResult fallback,
+        string debugMessage,
+        object logValue,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            var url = BuildTidalPublicApiUrl($"tracks/{trackId}");
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
-            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+            using var request = await requestFactory(cancellationToken);
             using var response = await _client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return fallback;
             }
 
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            return JsonSerializer.Deserialize<TidalTrack>(body, SerializerOptions);
+            var payload = JsonSerializer.Deserialize<TPayload>(body, SerializerOptions);
+            return mapPayload(payload);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -499,10 +477,10 @@ public sealed class TidalDownloadService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Tidal public API track lookup failed for track ID {TrackId}.", trackId);
+                _logger.LogDebug(ex, debugMessage, logValue);
             }
 
-            return null;
+            return fallback;
         }
     }
 

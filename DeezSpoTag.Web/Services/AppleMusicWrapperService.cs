@@ -908,16 +908,21 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return;
         }
 
+        var result = ProbeSharedWrapperControl(".wrapper-health-probe-data", ".wrapper-health-probe-session");
+        context.SharedControlReady = result.Ready;
+        context.SharedControlDetails = result.Details;
+    }
+
+    private static SharedControlProbeResult ProbeSharedWrapperControl(string dataProbeFileName, string sessionProbeFileName)
+    {
         var dataPath = ResolveExternalWrapperSharedDataDir();
         var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
-        var dataReady = TryProbeSharedControlPath(dataPath, ".wrapper-health-probe-data", out var dataError);
-        var sessionReady = TryProbeSharedControlPath(sessionPath, ".wrapper-health-probe-session", out var sessionError);
-
-        context.SharedControlReady = dataReady && sessionReady;
-        if (context.SharedControlReady)
+        var dataReady = TryProbeSharedControlPath(dataPath, dataProbeFileName, out var dataError);
+        var sessionReady = TryProbeSharedControlPath(sessionPath, sessionProbeFileName, out var sessionError);
+        var ready = dataReady && sessionReady;
+        if (ready)
         {
-            context.SharedControlDetails = $"Shared wrapper control paths writable ({dataPath}, {sessionPath}).";
-            return;
+            return new SharedControlProbeResult(true, $"Shared wrapper control paths writable ({dataPath}, {sessionPath}).");
         }
 
         var parts = new List<string>();
@@ -931,9 +936,10 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             parts.Add($"session path not writable: {sessionPath} ({sessionError})");
         }
 
-        context.SharedControlDetails = parts.Count > 0
+        var details = parts.Count > 0
             ? string.Join("; ", parts)
             : "Shared wrapper control paths unavailable.";
+        return new SharedControlProbeResult(false, details);
     }
 
     private static bool TryProbeSharedControlPath(string path, string probeFileName, out string? error)
@@ -2196,32 +2202,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return;
         }
 
-        var dataPath = ResolveExternalWrapperSharedDataDir();
-        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
-        var dataReady = TryProbeSharedControlPath(dataPath, ".wrapper-status-probe-data", out var dataError);
-        var sessionReady = TryProbeSharedControlPath(sessionPath, ".wrapper-status-probe-session", out var sessionError);
-
-        context.SharedControlReady = dataReady && sessionReady;
-        if (context.SharedControlReady)
-        {
-            context.SharedControlDetails = $"Shared wrapper control paths writable ({dataPath}, {sessionPath}).";
-            return;
-        }
-
-        var parts = new List<string>();
-        if (!dataReady)
-        {
-            parts.Add($"data path not writable: {dataPath} ({dataError})");
-        }
-
-        if (!sessionReady)
-        {
-            parts.Add($"session path not writable: {sessionPath} ({sessionError})");
-        }
-
-        context.SharedControlDetails = parts.Count > 0
-            ? string.Join("; ", parts)
-            : "Shared wrapper control paths unavailable.";
+        var result = ProbeSharedWrapperControl(".wrapper-status-probe-data", ".wrapper-status-probe-session");
+        context.SharedControlReady = result.Ready;
+        context.SharedControlDetails = result.Details;
     }
 
     private void ResolveAuthenticationState(ExternalStatusContext context)
@@ -3159,6 +3142,8 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         public static ExternalAccountInfo Empty { get; } = new(false, false, null);
     }
+
+    private sealed record SharedControlProbeResult(bool Ready, string Details);
 
     private static void EnsureExecutable(string path)
     {

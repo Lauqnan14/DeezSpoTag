@@ -125,14 +125,7 @@ public sealed class AudioQualitySignalAnalyzer
     {
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ffprobePath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            var startInfo = ExternalToolProcessStartInfo.CreateRedirected(ffprobePath);
             startInfo.ArgumentList.Add("-v");
             startInfo.ArgumentList.Add("error");
             startInfo.ArgumentList.Add("-select_streams");
