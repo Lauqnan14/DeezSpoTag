@@ -56,6 +56,9 @@ public class DeezSpoTagSettings
     public string PlaylistFilenameTemplate { get; set; } = "playlist";
     public bool SyncedLyrics { get; set; } = true;
     public string QueueOrder { get; set; } = "fifo";
+    public bool EnableQueuePreResolution { get; set; } = true;
+    public int QueuePreResolutionWindow { get; set; } = 10;
+    public int QueuePreResolutionRetryMinutes { get; set; } = 2;
 
     // Lyrics preference + fallback
     public bool LyricsFallbackEnabled { get; set; } = true;

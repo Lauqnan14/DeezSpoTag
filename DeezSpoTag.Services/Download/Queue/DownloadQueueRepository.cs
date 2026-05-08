@@ -455,6 +455,34 @@ WHERE queue_uuid = @queueUuid;";
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<bool> TryUpdateQueuedPayloadIfCurrentAsync(
+        string queueUuid,
+        string? expectedPayloadJson,
+        string payloadJson,
+        string? engine = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, payloadJson);
+        const string sql = @"
+UPDATE download_task
+SET payload = @payload,
+    engine = COALESCE(@engine, engine),
+    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid
+  AND status = 'queued'
+  AND ((payload IS NULL AND @expectedPayload IS NULL) OR payload = @expectedPayload);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("payload", payloadJson);
+        command.Parameters.AddWithValue("engine", (object?)engine ?? DBNull.Value);
+        command.Parameters.AddWithValue("lyricsStatus", (object?)lyricsStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("expectedPayload", (object?)expectedPayloadJson ?? DBNull.Value);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
     public async Task UpdateFinalDestinationsAsync(
         string queueUuid,
         string? finalDestinationsJson,

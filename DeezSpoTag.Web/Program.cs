@@ -1400,6 +1400,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWrapperDecryptor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleEngineProcessor>();
         services.AddSingleton<DeezSpoTag.Web.Services.IDownloadIntentBackgroundQueue, DeezSpoTag.Web.Services.DownloadIntentBackgroundQueue>();
+        services.AddHostedService<DeezSpoTag.Web.Services.DownloadQueuePreResolutionService>();
         services.AddHostedService<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>();
         services.AddScoped<DeezSpoTag.Web.Services.DownloadIntentService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyIdResolver, DeezSpoTag.Web.Services.SpotifyIdResolver>();

@@ -66,6 +66,13 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public List<DeezSpoTag.Services.Download.Fallback.FallbackPlanStep> FallbackPlan { get; set; } = new();
     public List<DeezSpoTag.Services.Download.Fallback.FallbackAttempt> FallbackHistory { get; set; } = new();
     public bool FallbackQueuedExternally { get; set; }
+    public string ResolutionStatus { get; set; } = "";
+    public DateTimeOffset? ResolvedAtUtc { get; set; }
+    public string ResolvedEngine { get; set; } = "";
+    public string ResolvedSourceUrl { get; set; } = "";
+    public string ResolvedQuality { get; set; } = "";
+    public int? ResolvedAutoIndex { get; set; }
+    public string ResolutionError { get; set; } = "";
 
     protected Dictionary<string, object> BuildQueuePayload(string mappedStatus, Dictionary<string, object?>? extra = null)
     {
@@ -75,7 +82,14 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["autoIndex"] = AutoIndex,
             ["fallbackPlan"] = FallbackPlan,
             ["fallbackHistory"] = FallbackHistory,
-            ["fallbackQueuedExternally"] = FallbackQueuedExternally
+            ["fallbackQueuedExternally"] = FallbackQueuedExternally,
+            ["resolutionStatus"] = ResolutionStatus,
+            ["resolvedAtUtc"] = ResolvedAtUtc,
+            ["resolvedEngine"] = ResolvedEngine,
+            ["resolvedSourceUrl"] = ResolvedSourceUrl,
+            ["resolvedQuality"] = ResolvedQuality,
+            ["resolvedAutoIndex"] = ResolvedAutoIndex,
+            ["resolutionError"] = ResolutionError
         };
 
         if (extra != null)

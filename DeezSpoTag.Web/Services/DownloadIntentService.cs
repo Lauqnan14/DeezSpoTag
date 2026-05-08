@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Linq;
 using System.Buffers;
 using System.Globalization;
@@ -457,6 +458,124 @@ public sealed class DownloadIntentService
             SkipReasonCodes = skipReasonCodes,
             SkipReasons = skipReasons
         };
+    }
+
+    public async Task<QueuePreResolutionPayload.ResolutionResult> ResolveQueuedPayloadAsync(
+        DownloadQueueItem item,
+        CancellationToken cancellationToken)
+    {
+        var intent = BuildIntentFromQueueItem(item);
+        var resolution = await TryPrepareEnqueueResolutionAsync(intent, preferIsrcOnly: false, cancellationToken);
+        if (resolution.Failure != null)
+        {
+            return new QueuePreResolutionPayload.ResolutionResult(
+                item.Engine,
+                null,
+                null,
+                null,
+                null,
+                resolution.Failure.Message);
+        }
+
+        var state = resolution.State!;
+        var target = state.ResolvedTarget;
+        var selectedQuality = ApplyResolvedQuality(intent, state.Settings, target.Engine, target.SelectedQuality);
+        var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
+            intent,
+            state.Settings,
+            target.Engine,
+            selectedQuality,
+            IsMusicIntent(intent),
+            target.AllowCrossEngineFallback,
+            state.Routing.UseAtmosStereoDual,
+            target.AutoSources,
+            state.Routing.Availability));
+
+        var sourceUrl = target.Resolution.SourceUrl;
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            sourceUrl = intent.SourceUrl;
+        }
+
+        return new QueuePreResolutionPayload.ResolutionResult(
+            string.IsNullOrWhiteSpace(target.Engine) ? item.Engine : target.Engine,
+            sourceUrl,
+            selectedQuality,
+            fallbackInfo.AutoIndex,
+            fallbackInfo.FallbackPlan,
+            target.Resolution.Message);
+    }
+
+    private static DownloadIntent BuildIntentFromQueueItem(DownloadQueueItem item)
+    {
+        var payload = QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson);
+        return new DownloadIntent
+        {
+            SourceService = ReadPayloadString(payload, "SourceService", "sourceService") ?? item.Engine,
+            SourceUrl = ReadPayloadString(payload, "SourceUrl", "sourceUrl") ?? string.Empty,
+            Url = ReadPayloadString(payload, "Url", "url") ?? string.Empty,
+            PreferredEngine = ReadPayloadString(payload, "Engine", "engine") ?? item.Engine,
+            Quality = ReadPayloadString(payload, "Quality", "quality") ?? string.Empty,
+            ContentType = ReadPayloadString(payload, "ContentType", "contentType") ?? item.ContentType ?? string.Empty,
+            SpotifyId = FirstNonEmpty(
+                ReadPayloadString(payload, "SpotifyId", "spotifyId"),
+                item.SpotifyTrackId) ?? string.Empty,
+            DeezerId = FirstNonEmpty(
+                ReadPayloadString(payload, "DeezerId", "deezerId"),
+                item.DeezerTrackId) ?? string.Empty,
+            DeezerAlbumId = FirstNonEmpty(
+                ReadPayloadString(payload, "DeezerAlbumId", "deezerAlbumId"),
+                item.DeezerAlbumId) ?? string.Empty,
+            DeezerArtistId = FirstNonEmpty(
+                ReadPayloadString(payload, "DeezerArtistId", "deezerArtistId"),
+                item.DeezerArtistId) ?? string.Empty,
+            AppleId = FirstNonEmpty(
+                ReadPayloadString(payload, "AppleId", "appleId"),
+                item.AppleTrackId) ?? string.Empty,
+            Isrc = FirstNonEmpty(
+                ReadPayloadString(payload, "Isrc", "isrc"),
+                item.Isrc) ?? string.Empty,
+            Title = ReadPayloadString(payload, "Title", "title") ?? item.TrackTitle,
+            Artist = ReadPayloadString(payload, "Artist", "artist") ?? item.ArtistName,
+            Album = ReadPayloadString(payload, "Album", "album") ?? string.Empty,
+            AlbumArtist = ReadPayloadString(payload, "AlbumArtist", "albumArtist") ?? string.Empty,
+            Cover = ReadPayloadString(payload, "Cover", "cover") ?? string.Empty,
+            ReleaseDate = ReadPayloadString(payload, "ReleaseDate", "releaseDate") ?? string.Empty,
+            DurationMs = item.DurationMs ?? ResolvePayloadDurationMs(payload),
+            DestinationFolderId = item.DestinationFolderId ?? ReadPayloadInt64(payload, "DestinationFolderId", "destinationFolderId"),
+            WatchlistSource = ReadPayloadString(payload, "WatchlistSource", "watchlistSource") ?? string.Empty,
+            WatchlistPlaylistId = ReadPayloadString(payload, "WatchlistPlaylistId", "watchlistPlaylistId") ?? string.Empty,
+            WatchlistTrackId = ReadPayloadString(payload, "WatchlistTrackId", "watchlistTrackId") ?? string.Empty
+        };
+    }
+
+    private static string? ReadPayloadString(JsonObject payload, string pascalKey, string camelKey)
+    {
+        var node = payload[pascalKey] ?? payload[camelKey];
+        var value = node?.ToString();
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static long? ReadPayloadInt64(JsonObject payload, string pascalKey, string camelKey)
+    {
+        var value = ReadPayloadString(payload, pascalKey, camelKey);
+        return long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static int ResolvePayloadDurationMs(JsonObject payload)
+    {
+        var durationMs = ReadPayloadInt64(payload, "DurationMs", "durationMs");
+        if (durationMs.HasValue)
+        {
+            return (int)Math.Clamp(durationMs.Value, 0, int.MaxValue);
+        }
+
+        var durationSeconds = ReadPayloadInt64(payload, "DurationSeconds", "durationSeconds");
+        return durationSeconds.HasValue
+            ? (int)Math.Clamp(durationSeconds.Value * 1000, 0, int.MaxValue)
+            : 0;
     }
 
     private async Task HydrateIntentAppleIdForLyricsAsync(
