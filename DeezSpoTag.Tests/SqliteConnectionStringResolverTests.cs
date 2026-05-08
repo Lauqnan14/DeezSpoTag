@@ -7,6 +7,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("Settings Config Isolation")]
 public sealed class SqliteConnectionStringResolverTests
 {
     [Fact]
