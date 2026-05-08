@@ -1,6 +1,7 @@
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
@@ -2138,6 +2139,12 @@ public static partial class EngineAudioPostDownloadHelper
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
+            var failedEngine = string.IsNullOrWhiteSpace(payload.Engine)
+                ? context.EngineName
+                : payload.Engine;
+            context.ServiceProvider
+                .GetService<IDownloadApiHealthTracker>()
+                ?.ReportFailure(failedEngine, exception.Message);
             context.ActivityLog.Warn($"Download failed (engine={context.EngineName} quality={quality}): {queueUuid} {exception.Message}");
             var advanced = await context.TryAdvanceAsync(
                 queueUuid,

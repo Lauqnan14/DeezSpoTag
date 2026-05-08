@@ -20,6 +20,7 @@ public sealed class EngineFallbackCoordinator
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly IActivityLogWriter _activityLog;
+    private readonly IDownloadApiHealthTracker _apiHealthTracker;
     private sealed record FallbackAdvanceRequest(
         string QueueUuid,
         string CurrentEngine,
@@ -69,7 +70,8 @@ public sealed class EngineFallbackCoordinator
         SongLinkResolver songLinkResolver,
         DeezerIsrcResolver deezerIsrcResolver,
         AppleMusicCatalogService appleCatalogService,
-        IActivityLogWriter activityLog)
+        IActivityLogWriter activityLog,
+        IDownloadApiHealthTracker? apiHealthTracker = null)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
@@ -77,6 +79,7 @@ public sealed class EngineFallbackCoordinator
         _deezerIsrcResolver = deezerIsrcResolver;
         _appleCatalogService = appleCatalogService;
         _activityLog = activityLog;
+        _apiHealthTracker = apiHealthTracker ?? new DownloadApiHealthTracker();
     }
 
     public Task<bool> TryAdvanceAsync<TPayload>(
@@ -130,7 +133,6 @@ public sealed class EngineFallbackCoordinator
     {
         var settings = _settingsService.LoadSettings();
         var planSteps = BuildPlanSteps(request.FallbackPlan, request.AutoSources, settings);
-        mutators.ApplyAutoSources(EncodePlanSteps(planSteps));
 
         var resolvedIsrc = await ResolveIsrcForFallbackAsync(request, cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolvedIsrc))
@@ -139,6 +141,8 @@ public sealed class EngineFallbackCoordinator
         }
 
         var nextIndex = ResolveNextPlanIndex(planSteps, request);
+        planSteps = PrioritizeRemainingPlanSteps(planSteps, nextIndex);
+        mutators.ApplyAutoSources(EncodePlanSteps(planSteps));
         var userCountry = settings.DeezerCountry;
         var resolvedSpotifyId = await ResolveSpotifyIdForFallbackAsync(request, userCountry, cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolvedSpotifyId))
@@ -186,6 +190,29 @@ public sealed class EngineFallbackCoordinator
         => planSteps
             .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Source, step.Quality))
             .ToList();
+
+    private List<(string Source, string? Quality)> PrioritizeRemainingPlanSteps(
+        List<(string Source, string? Quality)> planSteps,
+        int nextIndex)
+    {
+        if (planSteps.Count <= 1 || nextIndex >= planSteps.Count - 1)
+        {
+            return planSteps;
+        }
+
+        var completedSteps = nextIndex > 0
+            ? planSteps.Take(nextIndex).ToList()
+            : new List<(string Source, string? Quality)>();
+        var prioritizedRemaining = _apiHealthTracker
+            .PrioritizeSources(EncodePlanSteps(planSteps.Skip(nextIndex).ToList()))
+            .Select(DownloadSourceOrder.DecodeAutoSource)
+            .Where(static step => !string.IsNullOrWhiteSpace(step.Source))
+            .Select(static step => (step.Source, step.Quality))
+            .ToList();
+
+        completedSteps.AddRange(prioritizedRemaining);
+        return completedSteps;
+    }
 
     private async Task<string?> ResolveIsrcForFallbackAsync(
         FallbackAdvanceRequest request,

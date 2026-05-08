@@ -89,6 +89,7 @@ public static class DownloadServiceExtensions
             TidalDownloadService = sp.GetService<Download.Tidal.TidalDownloadService>()
         });
         services.AddSingleton<SongLinkResolver>();
+        services.AddSingleton<IDownloadApiHealthTracker, DownloadApiHealthTracker>();
         services.AddSingleton<EngineFallbackCoordinator>();
         services.AddSingleton<DeezerIsrcResolver>();
         services.AddSingleton<Download.Tidal.TidalApiProviderSource>();

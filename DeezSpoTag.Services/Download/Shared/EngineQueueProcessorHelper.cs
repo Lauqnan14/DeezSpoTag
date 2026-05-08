@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -391,6 +392,12 @@ internal static class EngineQueueProcessorHelper
             "completed",
             workContext.Deps.ServiceProvider,
             workContext.ItemToken);
+        var completedEngine = string.IsNullOrWhiteSpace(workContext.Payload.Engine)
+            ? workContext.EngineName
+            : workContext.Payload.Engine;
+        workContext.Deps.ServiceProvider
+            .GetService<IDownloadApiHealthTracker>()
+            ?.ReportSuccess(completedEngine);
         workContext.Deps.RetryScheduler.Clear(workContext.Item.QueueUuid);
         workContext.Deps.Listener.Send("updateQueue", new
         {

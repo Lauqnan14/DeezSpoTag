@@ -234,6 +234,7 @@ public sealed class DownloadIntentService
     private readonly ArtistPageCacheRepository _artistPageCacheRepository;
     private readonly IDownloadTagSettingsResolver _downloadTagSettingsResolver;
     private readonly BoomplayMetadataService _boomplayMetadataService;
+    private readonly IDownloadApiHealthTracker _apiHealthTracker;
     private readonly ILogger<DownloadIntentService> _logger;
     private IReadOnlyDictionary<string, string>? _genreAliasMap;
     private bool _genreTagNormalizationEnabled;
@@ -259,6 +260,7 @@ public sealed class DownloadIntentService
         _artistPageCacheRepository = serviceProvider.GetRequiredService<ArtistPageCacheRepository>();
         _downloadTagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
         _boomplayMetadataService = serviceProvider.GetRequiredService<BoomplayMetadataService>();
+        _apiHealthTracker = serviceProvider.GetRequiredService<IDownloadApiHealthTracker>();
         _logger = logger;
     }
 
@@ -879,7 +881,7 @@ public sealed class DownloadIntentService
         return (null, new EnqueueResolutionState(settings, routing, resolvedTarget));
     }
 
-    private static (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) BuildEnqueueFallbackInfo(
+    private (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) BuildEnqueueFallbackInfo(
         EnqueueFallbackRequest request)
     {
         var intent = request.Intent;
@@ -915,6 +917,10 @@ public sealed class DownloadIntentService
                 engine,
                 quality,
                 strict: UseStrictQualityFallback(settings, engine, quality));
+        payloadSources = _apiHealthTracker.PrioritizeSources(
+                payloadSources,
+                allowCrossEngineFallback ? null : engine)
+            .ToList();
 
         if (useAtmosStereoDual
             && string.Equals(engine, ApplePlatform, StringComparison.OrdinalIgnoreCase)
@@ -1673,6 +1679,7 @@ public sealed class DownloadIntentService
             ? DownloadSourceOrder.ResolveEngineQualitySources(normalizedPreferredEngine, DownloadContentTypes.Podcast, strict: true)
             : DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
         autoSources = FilterAutoSourcesByAvailability(autoSources, availability, normalizedPreferredEngine);
+        autoSources = PrioritizeAutoSourcesByHealth(autoSources, intentRequestsAuto, normalizedPreferredEngine);
         var preferredEngine = ResolvePreferredEngine(normalizedPreferredEngine, intentRequestsAuto, appleOnlyRequired, preparation.IsPodcastIntent, autoSources);
         targetQuality = NormalizeTargetQuality(intent, settings, preferredEngine, targetQuality, explicitStereoRequest, useAtmosStereoDual);
         if (useAtmosStereoDual)
@@ -1808,6 +1815,7 @@ public sealed class DownloadIntentService
                 continue;
             }
 
+            _apiHealthTracker.ReportSuccess(step.Source);
             return new ResolvedEnqueueTarget(step.Source, step.Quality ?? routing.TargetQuality, i, true, string.Empty, candidate, routing.AutoSources);
         }
 
@@ -4144,6 +4152,15 @@ public sealed class DownloadIntentService
         }
 
         return filtered.Count == 0 ? sourceList : filtered;
+    }
+
+    private List<string> PrioritizeAutoSourcesByHealth(
+        IEnumerable<string> sources,
+        bool intentRequestsAuto,
+        string? normalizedPreferredEngine)
+    {
+        var protectedEngine = intentRequestsAuto ? null : normalizedPreferredEngine;
+        return _apiHealthTracker.PrioritizeSources(sources, protectedEngine).ToList();
     }
 
     private static bool HasAnyResolvedAvailability(SongLinkResult? availability)
