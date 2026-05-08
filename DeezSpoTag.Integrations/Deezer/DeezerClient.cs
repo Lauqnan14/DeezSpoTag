@@ -34,6 +34,7 @@ public sealed class DeezerClient : IDisposable
     public DeezerUser? CurrentUser => _sessionManager?.CurrentUser;
     public List<DeezerUser> Children => _sessionManager?.Children ?? new List<DeezerUser>();
     public int SelectedAccount => _sessionManager?.SelectedAccount ?? 0;
+    public string? LastLoginFailureReason => _sessionManager?.LastLoginFailureReason;
 
     // Compatibility properties for existing code that expects Api and Gw properties
     public DeezerClient Api { get; private set; }

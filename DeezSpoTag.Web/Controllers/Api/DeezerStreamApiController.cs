@@ -3,6 +3,7 @@ using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Crypto;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
@@ -28,12 +29,11 @@ public class DeezerStreamApiController : ControllerBase
         new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, CachedPreparedMediaResult> PreparedMediaCache =
         new(StringComparer.Ordinal);
-    private static readonly SemaphoreSlim LoginGate = new(1, 1);
-
     private readonly DeezerClient _deezerClient;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly DeezerGatewayService _gatewayService;
     private readonly ILoginStorageService _loginStorage;
+    private readonly DeezerLoginCoordinator _loginCoordinator;
     private readonly DecryptionStreamProcessor _streamProcessor;
     private readonly ILogger<DeezerStreamApiController> _logger;
 
@@ -42,6 +42,7 @@ public class DeezerStreamApiController : ControllerBase
         IHttpClientFactory httpClientFactory,
         DeezerGatewayService gatewayService,
         ILoginStorageService loginStorage,
+        DeezerLoginCoordinator loginCoordinator,
         DecryptionStreamProcessor streamProcessor,
         ILogger<DeezerStreamApiController> logger)
     {
@@ -49,6 +50,7 @@ public class DeezerStreamApiController : ControllerBase
         _httpClientFactory = httpClientFactory;
         _gatewayService = gatewayService;
         _loginStorage = loginStorage;
+        _loginCoordinator = loginCoordinator;
         _streamProcessor = streamProcessor;
         _logger = logger;
     }
@@ -856,7 +858,6 @@ public class DeezerStreamApiController : ControllerBase
             return;
         }
 
-        await LoginGate.WaitAsync();
         try
         {
             if (_deezerClient.LoggedIn)
@@ -867,16 +868,12 @@ public class DeezerStreamApiController : ControllerBase
             var loginData = await _loginStorage.LoadLoginCredentialsAsync();
             if (!string.IsNullOrWhiteSpace(loginData?.Arl))
             {
-                await _deezerClient.LoginViaArlAsync(loginData.Arl);
+                await _loginCoordinator.LoginViaArlAsync(loginData.Arl);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to auto-login Deezer client for streaming.");
-        }
-        finally
-        {
-            LoginGate.Release();
         }
     }
 }

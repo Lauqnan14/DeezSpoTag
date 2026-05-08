@@ -39,6 +39,7 @@ public sealed class DeezerSessionManager : IDisposable
     public List<DeezerUser> Children { get; private set; } = new();
     public IReadOnlyList<string> ChildAccounts { get; private set; } = Array.Empty<string>();
     public int SelectedAccount { get; private set; }
+    public string? LastLoginFailureReason { get; private set; }
 
     // Shared authentication state
     public CookieContainer CookieContainer => _sharedCookieContainer;
@@ -86,6 +87,7 @@ public sealed class DeezerSessionManager : IDisposable
 
         try
         {
+            LastLoginFailureReason = null;
             // EXACT PORT: Create and set ARL cookie like deezspotag
             var cookie = new Cookie("arl", arl.Trim(), "/", ".deezer.com")
             {
@@ -104,6 +106,7 @@ public sealed class DeezerSessionManager : IDisposable
             if (userData?.User?.UserId == null || userData.User.UserId == 0)
             {
                 _logger.LogWarning("Invalid ARL - USER_ID is null or 0");
+                LastLoginFailureReason = "invalid_user";
                 LoggedIn = false;
                 return false;
             }
@@ -123,6 +126,7 @@ public sealed class DeezerSessionManager : IDisposable
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Failed to login with ARL");
+            LastLoginFailureReason = "exception";
             LoggedIn = false;
             CurrentUser = null;
             return false;

@@ -1082,6 +1082,7 @@ public partial class Program
         services.AddDownloadEngine();
         services.AddSingleton<DeezSpoTag.Services.Download.IActivityLogWriter, DeezSpoTag.Web.Services.ActivityLogWriter>();
         services.AddSingleton<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.DeezerLoginCoordinator>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.SpotifyMetadataResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.AppleMusicWrapperService>();
         services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>());
@@ -1405,7 +1406,6 @@ public partial class Program
         services.AddScoped<DeezSpoTag.Web.Services.DownloadIntentService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyIdResolver, DeezSpoTag.Web.Services.SpotifyIdResolver>();
         services.AddHostedService<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.DeezerLoginWarmupService>();
         services.AddSingleton<LibraryDbService>();
         services.AddHostedService<DeezSpoTag.Web.Services.LibrarySchemaHostedService>();
         services.AddSingleton<DeezSpoTag.Services.Library.LibraryRepository>();

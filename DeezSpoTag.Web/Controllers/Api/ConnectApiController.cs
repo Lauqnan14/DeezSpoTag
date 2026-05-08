@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DeezSpoTag.Web.Controllers.Api;
@@ -22,19 +23,22 @@ public sealed class ConnectApiController : ControllerBase
     private readonly ILoginStorageService _loginStorage;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly DeezerLoginCoordinator _loginCoordinator;
 
     public ConnectApiController(
         ILogger<ConnectApiController> logger,
         DeezerClient deezerClient,
         ILoginStorageService loginStorage,
         DeezSpoTagSettingsService settingsService,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        DeezerLoginCoordinator loginCoordinator)
     {
         _logger = logger;
         _deezerClient = deezerClient;
         _loginStorage = loginStorage;
         _settingsService = settingsService;
         _httpClientFactory = httpClientFactory;
+        _loginCoordinator = loginCoordinator;
     }
 
     [HttpGet]
@@ -121,7 +125,7 @@ public sealed class ConnectApiController : ControllerBase
             if (!string.IsNullOrWhiteSpace(credentials?.Arl))
             {
                 DeezerStreamApiController.ClearPlaybackContextCache();
-                await _deezerClient.LoginViaArlAsync(credentials.Arl);
+                await _loginCoordinator.LoginViaArlAsync(credentials.Arl);
             }
 
             return Ok(new

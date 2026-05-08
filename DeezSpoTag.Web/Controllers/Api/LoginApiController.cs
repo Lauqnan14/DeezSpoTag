@@ -25,6 +25,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         private readonly DeezSpoTagSettingsService _settingsService;
         private readonly DeezerAuthUtils _authUtils;
         private readonly AppleMusicWrapperService _appleWrapperService;
+        private readonly DeezerLoginCoordinator _loginCoordinator;
 
         // Login status constants exactly like deezspotag
         private const int LOGIN_STATUS_NOT_AVAILABLE = -1;
@@ -32,6 +33,10 @@ namespace DeezSpoTag.Web.Controllers.Api
         private const int LOGIN_STATUS_SUCCESS = 1;
         private const int LOGIN_STATUS_ALREADY_LOGGED = 2;
         private const string IsSingleUserSetting = "IsSingleUser";
+        private const string AuthStateDisconnected = "disconnected";
+        private const string AuthStateStored = "stored";
+        private const string AuthStateLive = "live";
+        private const string AuthStateValidated = "validated";
         public LoginApiController(
             ILogger<LoginApiController> logger,
             DeezerClient deezerClient,
@@ -39,7 +44,8 @@ namespace DeezSpoTag.Web.Controllers.Api
             IConfiguration configuration,
             DeezSpoTagSettingsService settingsService,
             DeezerAuthUtils authUtils,
-            AppleMusicWrapperService appleWrapperService)
+            AppleMusicWrapperService appleWrapperService,
+            DeezerLoginCoordinator loginCoordinator)
         {
             _logger = logger;
             _deezerClient = deezerClient;
@@ -48,13 +54,14 @@ namespace DeezSpoTag.Web.Controllers.Api
             _settingsService = settingsService;
             _authUtils = authUtils;
             _appleWrapperService = appleWrapperService;
+            _loginCoordinator = loginCoordinator;
         }
 
         /// <summary>
         /// Get login status - exact port from deezspotag connect.ts
         /// </summary>
         [HttpGet("status")]
-        public async Task<IActionResult> Status()
+        public async Task<IActionResult> Status([FromQuery] bool validate = false, CancellationToken cancellationToken = default)
         {
             var gate = EnsureAccess();
             if (gate != null)
@@ -68,37 +75,84 @@ namespace DeezSpoTag.Web.Controllers.Api
 
                 if (loginData?.Arl == null || loginData.User == null)
                 {
-                    return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false));
+                    return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
                 }
 
                 var normalizedArl = DeezSpoTag.Services.Utils.DeezerAuthUtils.NormalizeArl(loginData.Arl);
+                var hasStoredCredentials = !string.IsNullOrWhiteSpace(normalizedArl);
                 var hasLiveSession = _deezerClient.LoggedIn && _deezerClient.CurrentUser != null;
-                if (!hasLiveSession)
+                if (hasLiveSession)
                 {
-                    if (string.IsNullOrEmpty(normalizedArl))
-                    {
-                        await _loginStorage.ResetLoginCredentialsAsync();
-                        return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false));
-                    }
+                    return Ok(BuildStatusResponse(
+                        LOGIN_STATUS_SUCCESS,
+                        hasStoredCredentials,
+                        loginData.User,
+                        live: true,
+                        authState: AuthStateLive));
+                }
 
+                if (string.IsNullOrEmpty(normalizedArl))
+                {
+                    await _loginStorage.ResetLoginCredentialsAsync();
+                    return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
+                }
+
+                if (!validate)
+                {
+                    return Ok(BuildStatusResponse(
+                        LOGIN_STATUS_SUCCESS,
+                        hasStoredCredentials,
+                        loginData.User,
+                        live: false,
+                        authState: AuthStateStored));
+                }
+
+                try
+                {
                     DeezerStreamApiController.ClearPlaybackContextCache();
-                    var refreshSuccess = await _deezerClient.LoginViaArlAsync(normalizedArl, 0);
-                    if (!refreshSuccess || _deezerClient.CurrentUser == null)
+                    var refreshResult = await _loginCoordinator.LoginViaArlAsync(normalizedArl, 0, cancellationToken);
+                    if (!refreshResult.Success || _deezerClient.CurrentUser == null)
                     {
+                        if (string.Equals(refreshResult.FailureReason, "exception", StringComparison.Ordinal))
+                        {
+                            return Ok(BuildStatusResponse(
+                                LOGIN_STATUS_SUCCESS,
+                                hasStoredCredentials,
+                                loginData.User,
+                                live: false,
+                                authState: AuthStateStored,
+                                error: "validation_unavailable"));
+                        }
+
                         _logger.LogInformation("Stored Deezer session is no longer valid. Clearing persisted login state.");
                         await _loginStorage.ResetLoginCredentialsAsync();
-                        return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false));
+                        return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateValidated));
                     }
 
                     await _loginStorage.SaveLoginCredentialsAsync(CreateLoginData(normalizedArl, loginData.AccessToken, _deezerClient.CurrentUser));
                 }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    return Ok(BuildStatusResponse(
+                        LOGIN_STATUS_SUCCESS,
+                        hasStoredCredentials,
+                        loginData.User,
+                        live: false,
+                        authState: AuthStateStored,
+                        error: "validation_cancelled"));
+                }
 
-                return Ok(BuildStatusResponse(LOGIN_STATUS_SUCCESS, !string.IsNullOrWhiteSpace(normalizedArl ?? loginData.Arl), loginData.User));
+                return Ok(BuildStatusResponse(
+                    LOGIN_STATUS_SUCCESS,
+                    hasStoredCredentials,
+                    loginData.User,
+                    live: true,
+                    authState: AuthStateValidated));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Error getting login status");
-                return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false));
+                return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
             }
         }
 
@@ -144,7 +198,8 @@ namespace DeezSpoTag.Web.Controllers.Api
                     try
                     {
                         // Use DeezerClient directly to validate ARL and get user info
-                        var success = await _deezerClient.LoginViaArlAsync(normalizedArl, request.Child ?? 0);
+                        var loginResult = await _loginCoordinator.LoginViaArlAsync(normalizedArl, request.Child ?? 0);
+                        var success = loginResult.Success;
                         response = success ? LOGIN_STATUS_SUCCESS : LOGIN_STATUS_FAILED;
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
@@ -220,7 +275,8 @@ namespace DeezSpoTag.Web.Controllers.Api
                     return Ok(new { status = LOGIN_STATUS_FAILED });
                 }
 
-                var success = await _deezerClient.LoginViaArlAsync(normalizedArl);
+                var loginResult = await _loginCoordinator.LoginViaArlAsync(normalizedArl);
+                var success = loginResult.Success;
                 var response = success ? LOGIN_STATUS_SUCCESS : LOGIN_STATUS_FAILED;
 
                 if (!(await _authUtils.IsDeezerAvailableAsync()))
@@ -265,7 +321,8 @@ namespace DeezSpoTag.Web.Controllers.Api
                 }
                 else
                 {
-                    response = await _deezerClient.LoginViaArlAsync(normalizedArl, 0)
+                    response = (await _loginCoordinator.LoginViaArlAsync(normalizedArl, 0))
+                        .Success
                         ? LOGIN_STATUS_SUCCESS
                         : LOGIN_STATUS_FAILED;
                 }
@@ -320,7 +377,13 @@ namespace DeezSpoTag.Web.Controllers.Api
             };
         }
 
-        private object BuildStatusResponse(int status, bool hasStoredCredentials, UserData? fallbackUser = null)
+        private object BuildStatusResponse(
+            int status,
+            bool hasStoredCredentials,
+            UserData? fallbackUser = null,
+            bool live = true,
+            string authState = AuthStateLive,
+            string? error = null)
         {
             var currentUser = _deezerClient.CurrentUser;
             var user = currentUser != null || fallbackUser != null
@@ -339,18 +402,27 @@ namespace DeezSpoTag.Web.Controllers.Api
             {
                 status,
                 hasStoredCredentials,
+                live,
+                authState,
                 user,
                 childs = _deezerClient.ChildAccounts ?? Array.Empty<string>(),
-                currentChild = _deezerClient.SelectedAccount
+                currentChild = _deezerClient.SelectedAccount,
+                error
             };
         }
 
-        private static object BuildFailedLoginResponse(int status, bool hasStoredCredentials, string? error = null)
+        private static object BuildFailedLoginResponse(
+            int status,
+            bool hasStoredCredentials,
+            string? error = null,
+            string authState = AuthStateDisconnected)
         {
             return new
             {
                 status,
                 hasStoredCredentials,
+                live = false,
+                authState,
                 user = default(object),
                 childs = Array.Empty<string>(),
                 currentChild = 0,

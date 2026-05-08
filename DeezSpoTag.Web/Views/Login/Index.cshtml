@@ -1623,6 +1623,9 @@ async function checkPersistentLoginState() {
             console.log('Found persistent login state from server for user:', data.user.name);
             localStorage.setItem('loginUser', JSON.stringify(data.user));
             showLoggedInInfo(data.user);
+            if (data.live !== true) {
+                void validatePersistentLoginState();
+            }
             return;
         }
     } catch (error) {
@@ -1633,6 +1636,29 @@ async function checkPersistentLoginState() {
     localStorage.removeItem('loginUser');
     document.getElementById('login_input_arl').value = '';
     showLoginForm();
+}
+
+async function validatePersistentLoginState() {
+    try {
+        const response = await fetch('/api/login/status?validate=true', { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error(`status ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data && data.status > 0 && data.user) {
+            localStorage.setItem('loginUser', JSON.stringify(data.user));
+            showLoggedInInfo(data.user);
+            return;
+        }
+
+        localStorage.removeItem('arl');
+        localStorage.removeItem('loginUser');
+        document.getElementById('login_input_arl').value = '';
+        showLoginForm();
+    } catch (error) {
+        console.warn('Live Deezer login validation unavailable; keeping stored login view', error);
+    }
 }
 
 async function loadPlatformAuthState() {

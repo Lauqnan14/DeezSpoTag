@@ -16,6 +16,7 @@ namespace DeezSpoTag.Web.Services
     {
         private readonly ILogger<StartupLoginService> _logger;
         private readonly DeezerClient _deezerClient;
+        private readonly DeezerLoginCoordinator _loginCoordinator;
         private readonly ILoginStorageService _loginStorage;
         private readonly DeezSpoTagSettingsService _settingsService;
         private readonly DeezerAuthUtils _authUtils;
@@ -24,6 +25,7 @@ namespace DeezSpoTag.Web.Services
             IServiceProvider serviceProvider,
             ILogger<StartupLoginService> logger,
             DeezerClient deezerClient,
+            DeezerLoginCoordinator loginCoordinator,
             ILoginStorageService loginStorage,
             DeezSpoTagSettingsService settingsService,
             DeezerAuthUtils authUtils)
@@ -31,6 +33,7 @@ namespace DeezSpoTag.Web.Services
             _ = serviceProvider;
             _logger = logger;
             _deezerClient = deezerClient;
+            _loginCoordinator = loginCoordinator;
             _loginStorage = loginStorage;
             _settingsService = settingsService;
             _authUtils = authUtils;
@@ -88,8 +91,8 @@ namespace DeezSpoTag.Web.Services
 
                 // EXACT PORT: Attempt to login with saved ARL like deezspotag connect.ts
                 DeezSpoTag.Web.Controllers.Api.DeezerStreamApiController.ClearPlaybackContextCache();
-                var success = await _deezerClient.LoginViaArlAsync(normalizedArl);
-                if (!success || _deezerClient.CurrentUser == null)
+                var loginResult = await _loginCoordinator.LoginViaArlAsync(normalizedArl, cancellationToken: cancellationToken);
+                if (!loginResult.Success || _deezerClient.CurrentUser == null)
                 {
                     _logger.LogWarning("Automatic login failed - invalid ARL or user data");
                     await _loginStorage.ResetLoginCredentialsAsync();
