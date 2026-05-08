@@ -3,6 +3,7 @@ using System.Linq;
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
@@ -27,6 +28,7 @@ public class SpotifyResolveDeezerApiController : ControllerBase
     private readonly SpotifyDeezerAlbumResolver _spotifyDeezerAlbumResolver;
     private readonly DeezerClient _deezerClient;
     private readonly SongLinkResolver _songLinkResolver;
+    private readonly ISettingsService _settingsService;
     private readonly ILogger<SpotifyResolveDeezerApiController> _logger;
 
     public SpotifyResolveDeezerApiController(
@@ -34,12 +36,14 @@ public class SpotifyResolveDeezerApiController : ControllerBase
         SpotifyDeezerAlbumResolver spotifyDeezerAlbumResolver,
         DeezerClient deezerClient,
         SongLinkResolver songLinkResolver,
+        ISettingsService settingsService,
         ILogger<SpotifyResolveDeezerApiController> logger)
     {
         _metadataService = metadataService;
         _spotifyDeezerAlbumResolver = spotifyDeezerAlbumResolver;
         _deezerClient = deezerClient;
         _songLinkResolver = songLinkResolver;
+        _settingsService = settingsService;
         _logger = logger;
     }
 
@@ -80,15 +84,17 @@ public class SpotifyResolveDeezerApiController : ControllerBase
 
         try
         {
+            var strictMode = _settingsService.LoadSettings().StrictSpotifyDeezerMode;
+            var allowFallbackSearch = !strictMode;
             var resolved = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
                 _deezerClient,
                 _songLinkResolver,
                 track,
                 new SpotifyTrackResolveOptions(
-                    AllowFallbackSearch: true,
-                    PreferIsrcOnly: false,
-                    UseSongLink: true,
-                    StrictMode: true,
+                    AllowFallbackSearch: allowFallbackSearch,
+                    PreferIsrcOnly: !allowFallbackSearch,
+                    UseSongLink: allowFallbackSearch,
+                    StrictMode: strictMode,
                     BypassNegativeCanonicalCache: false,
                     Logger: _logger,
                     CancellationToken: cancellationToken));

@@ -1669,6 +1669,21 @@ public sealed class SpotifyMetadataService
             missing,
             cancellationToken,
             maxConcurrency);
+
+        if (isrcMap.Count < missing.Count)
+        {
+            var librespotIsrcMap = await FetchMissingTrackIsrcsWithLibrespotAsync(
+                missing.Where(id => !isrcMap.ContainsKey(id)).ToList(),
+                cancellationToken);
+            foreach (var (trackId, isrc) in librespotIsrcMap)
+            {
+                if (!isrcMap.ContainsKey(trackId) && IsValidIsrc(isrc))
+                {
+                    isrcMap[trackId] = isrc;
+                }
+            }
+        }
+
         if (isrcMap.Count == 0)
         {
             return tracks;
@@ -1689,6 +1704,44 @@ public sealed class SpotifyMetadataService
         }
 
         return updated;
+    }
+
+    private async Task<Dictionary<string, string>> FetchMissingTrackIsrcsWithLibrespotAsync(
+        List<string> trackIds,
+        CancellationToken cancellationToken)
+    {
+        var results = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (trackIds.Count == 0)
+        {
+            return results;
+        }
+
+        var blobPath = await TryResolveActiveLibrespotBlobPathAsync();
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return results;
+        }
+
+        try
+        {
+            var hydrated = await HydrateTrackDetailsWithLibrespotAsync(
+                blobPath,
+                trackIds.Select(CreatePlaceholderTrackSummary).ToList(),
+                cancellationToken);
+            foreach (var track in hydrated)
+            {
+                if (!string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc))
+                {
+                    results[track.Id] = track.Isrc!;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify librespot ISRC hydration fallback failed.");
+        }
+
+        return results;
     }
 
     public async Task<List<SpotifyTrackSummary>> HydrateTrackAudioFeaturesAsync(

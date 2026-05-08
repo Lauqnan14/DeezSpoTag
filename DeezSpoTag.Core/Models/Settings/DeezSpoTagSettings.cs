@@ -185,7 +185,7 @@ public class DeezSpoTagSettings
     public int SpotifyHomeFeedAutoRefreshHours { get; set; } = 2;
     public int SpotifyBrowseCacheMinutes { get; set; } = 30;
     public int SpotifyArtistMetadataFetchBatchSize { get; set; } = 25;
-    public bool StrictSpotifyDeezerMode { get; set; } = false;
+    public bool StrictSpotifyDeezerMode { get; set; } = true;
 
     // UI preferences
     public bool RememberTabsPreference { get; set; } = true;

@@ -3153,7 +3153,7 @@ function loadSettings(settings) {
     setMaxBitrateValue(settings.maxBitrate);
     setCheckboxValue('fallbackBitrate', settings.fallbackBitrate);
     setCheckboxValue('fallbackSearch', settings.fallbackSearch);
-    setCheckboxValue('strictSpotifyDeezerMode', settings.strictSpotifyDeezerMode);
+    setCheckboxValue('strictSpotifyDeezerMode', settings.strictSpotifyDeezerMode ?? true);
     setCheckboxValue('autoMaxBitrate', settings.autoMaxBitrate);
     setCheckboxValue('logErrors', settings.logErrors);
     setFieldValue('maxConcurrentDownloads', settings.maxConcurrentDownloads);
@@ -3455,7 +3455,7 @@ function collectFormData() {
         feelingLucky: baseSettings.feelingLucky ?? false,
         fallbackBitrate: getChecked('fallbackBitrate', baseSettings.fallbackBitrate ?? true),
         fallbackSearch: getChecked('fallbackSearch', baseSettings.fallbackSearch ?? false),
-        strictSpotifyDeezerMode: getChecked('strictSpotifyDeezerMode', baseSettings.strictSpotifyDeezerMode ?? false),
+        strictSpotifyDeezerMode: getChecked('strictSpotifyDeezerMode', baseSettings.strictSpotifyDeezerMode ?? true),
         autoMaxBitrate: getChecked('autoMaxBitrate', baseSettings.autoMaxBitrate ?? true),
         fallbackISRC: baseSettings.fallbackISRC ?? false,
         logErrors: getChecked('logErrors', baseSettings.logErrors ?? true),

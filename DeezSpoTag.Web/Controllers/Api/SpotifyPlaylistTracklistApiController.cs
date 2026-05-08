@@ -113,9 +113,10 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
             return Ok(new { available = false });
         }
 
-        var allowFallbackSearch = settings.FallbackSearch
+        var allowFallbackSearch = !settings.StrictSpotifyDeezerMode && (
+            settings.FallbackSearch
             || string.Equals(settings.SpotifyPlaylistTrackSource, LibrespotTrackSource, StringComparison.OrdinalIgnoreCase)
-            || IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource);
+            || IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource));
 
         // Render-first: return mapped Spotify rows immediately, then warm Deezer matches in background.
         var tracks = SpotifyTracklistMapper.MapTracks(page.Tracks.ToList(), offset);
