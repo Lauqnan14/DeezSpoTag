@@ -9,10 +9,11 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 {
     private static readonly TimeSpan[] RetryDelays =
     [
-        TimeSpan.FromSeconds(20),
-        TimeSpan.FromSeconds(45),
-        TimeSpan.FromSeconds(90),
-        TimeSpan.FromMinutes(3),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(15),
+        TimeSpan.FromSeconds(30),
+        TimeSpan.FromMinutes(1),
+        TimeSpan.FromMinutes(2),
         TimeSpan.FromMinutes(5)
     ];
 
@@ -174,6 +175,39 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 playlist.SourceId,
                 cancellationToken);
             var syncService = scope.ServiceProvider.GetRequiredService<PlaylistSyncService>();
+            var readiness = await CheckCompletedTrackReadinessAsync(
+                syncService,
+                playlist,
+                preference,
+                candidates,
+                request,
+                cancellationToken);
+            if (!readiness.Ready)
+            {
+                if (readiness.Terminal)
+                {
+                    _logger.LogWarning(
+                        "Watchlist post-download sync stopped for {Source}:{PlaylistId} after completed track {TrackId}: {Message}",
+                        request.Source,
+                        request.PlaylistId,
+                        request.TrackId,
+                        readiness.Message);
+                    return true;
+                }
+
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Watchlist post-download sync waiting for readiness for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
+                        request.Source,
+                        request.PlaylistId,
+                        request.TrackId,
+                        attempt,
+                        readiness.Message);
+                }
+                return false;
+            }
+
             var result = await syncService.SyncPlaylistAsync(
                 playlist,
                 preference,
@@ -223,6 +257,40 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 request.TrackId);
             return false;
         }
+    }
+
+    private async Task<PlaylistSyncService.PlaylistTrackSyncReadiness> CheckCompletedTrackReadinessAsync(
+        PlaylistSyncService syncService,
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> candidates,
+        SyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        var candidate = candidates.FirstOrDefault(candidate =>
+            string.Equals(candidate.TrackSourceId, request.TrackId, StringComparison.OrdinalIgnoreCase));
+        if (candidate == null)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Completed watchlist track {TrackId} is no longer present in playlist {Source}:{PlaylistId}; syncing current playlist state.",
+                    request.TrackId,
+                    request.Source,
+                    request.PlaylistId);
+            }
+
+            return new PlaylistSyncService.PlaylistTrackSyncReadiness(
+                Ready: true,
+                Terminal: false,
+                Message: "Completed track is no longer present in the source playlist.");
+        }
+
+        return await syncService.CheckTrackReadyForAutomaticSyncAsync(
+            playlist,
+            preference,
+            candidate,
+            cancellationToken);
     }
 
     private static async Task<PlaylistWatchlistDto?> FindPlaylistAsync(

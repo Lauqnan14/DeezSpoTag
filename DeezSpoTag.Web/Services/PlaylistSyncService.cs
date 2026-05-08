@@ -111,6 +111,14 @@ public sealed class PlaylistSyncService
         int MergedTracks,
         IReadOnlyList<PlaylistMergeTargetResult> Targets);
 
+    public sealed record PlaylistTrackSyncReadiness(
+        bool Ready,
+        bool Terminal,
+        string Message,
+        string? Service = null,
+        long? LocalTrackId = null,
+        string? TargetId = null);
+
     public async Task<PlaylistMergeSyncResult> MergeAndSyncPlaylistsAsync(
         IReadOnlyList<PlaylistMergeSourceInput> mergeSources,
         PlaylistMergeSyncRequest request,
@@ -375,6 +383,47 @@ public sealed class PlaylistSyncService
             PlexService => await SyncToPlexAsync(playlist, preference, tracks, cancellationToken),
             JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, cancellationToken),
             _ => PlaylistSyncResult.Failed("Unsupported playlist sync target.")
+        };
+    }
+
+    public async Task<PlaylistTrackSyncReadiness> CheckTrackReadyForAutomaticSyncAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        if (playlist == null || candidate == null)
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "Playlist or track candidate is unavailable.");
+        }
+
+        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
+        if (string.IsNullOrWhiteSpace(service))
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "No target server selected.");
+        }
+
+        if (string.Equals(service, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "Playlist sync target is disabled.", service);
+        }
+
+        var track = ToSyncTrackSummary(candidate);
+        var localTrackId = await ResolveLocalTrackIdAsync(playlist.Source, track, cancellationToken);
+        if (!localTrackId.HasValue)
+        {
+            return new PlaylistTrackSyncReadiness(
+                false,
+                false,
+                "Track is not visible in the DeezSpoTag library yet.",
+                service);
+        }
+
+        return service switch
+        {
+            PlexService => await CheckPlexTrackReadyAsync(localTrackId.Value, track, cancellationToken),
+            JellyfinService => await CheckJellyfinTrackReadyAsync(localTrackId.Value, track, cancellationToken),
+            _ => new PlaylistTrackSyncReadiness(false, true, "Unsupported playlist sync target.", service, localTrackId)
         };
     }
 
@@ -1060,6 +1109,126 @@ public sealed class PlaylistSyncService
                         : 0L;
             })
             .ToList();
+    }
+
+    private async Task<long?> ResolveLocalTrackIdAsync(
+        string playlistSource,
+        SyncTrackSummary track,
+        CancellationToken cancellationToken)
+    {
+        var source = NormalizeSource(playlistSource);
+        if (!string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(track.SourceTrackId))
+        {
+            var bySource = await _libraryRepository.GetTrackIdsBySourceIdsAsync(
+                source,
+                new[] { track.SourceTrackId },
+                cancellationToken);
+            if (bySource.TryGetValue(track.SourceTrackId, out var sourceTrackId))
+            {
+                return sourceTrackId;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.Isrc))
+        {
+            var byIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync(
+                IsrcSource,
+                new[] { track.Isrc },
+                cancellationToken);
+            if (byIsrc.TryGetValue(track.Isrc, out var isrcTrackId))
+            {
+                return isrcTrackId;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<PlaylistTrackSyncReadiness> CheckPlexTrackReadyAsync(
+        long localTrackId,
+        SyncTrackSummary track,
+        CancellationToken cancellationToken)
+    {
+        var (plex, configurationError) = await TryLoadConfiguredPlexAsync();
+        if (configurationError != null)
+        {
+            return new PlaylistTrackSyncReadiness(false, true, configurationError.Message, PlexService, localTrackId);
+        }
+
+        if (plex == null)
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "Plex is not configured.", PlexService, localTrackId);
+        }
+
+        var mapped = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
+            new[] { localTrackId },
+            cancellationToken);
+        if (mapped.TryGetValue(localTrackId, out var mappedRatingKey)
+            && !string.IsNullOrWhiteSpace(mappedRatingKey))
+        {
+            return new PlaylistTrackSyncReadiness(
+                true,
+                false,
+                "Track is visible in Plex metadata mapping.",
+                PlexService,
+                localTrackId,
+                mappedRatingKey);
+        }
+
+        var ratingKey = await ResolvePlexRatingKeyAsync(
+            plex,
+            track,
+            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(ratingKey))
+        {
+            return new PlaylistTrackSyncReadiness(
+                false,
+                false,
+                "Track is not visible in Plex yet.",
+                PlexService,
+                localTrackId);
+        }
+
+        await _libraryRepository.UpsertPlexTrackMetadataAsync(
+            new[]
+            {
+                new PlexTrackMetadataUpsertDto(localTrackId, ratingKey, DateTimeOffset.UtcNow)
+            },
+            cancellationToken);
+        return new PlaylistTrackSyncReadiness(
+            true,
+            false,
+            "Track is visible in Plex search.",
+            PlexService,
+            localTrackId,
+            ratingKey);
+    }
+
+    private async Task<PlaylistTrackSyncReadiness> CheckJellyfinTrackReadyAsync(
+        long localTrackId,
+        SyncTrackSummary track,
+        CancellationToken cancellationToken)
+    {
+        var (jellyfin, configurationError) = await TryLoadConfiguredJellyfinAsync();
+        if (configurationError != null)
+        {
+            return new PlaylistTrackSyncReadiness(false, true, configurationError.Message, JellyfinService, localTrackId);
+        }
+
+        if (jellyfin == null)
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "Jellyfin is not configured.", JellyfinService, localTrackId);
+        }
+
+        var itemId = await ResolveJellyfinItemIdAsync(
+            jellyfin,
+            track,
+            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(itemId)
+            ? new PlaylistTrackSyncReadiness(false, false, "Track is not visible in Jellyfin yet.", JellyfinService, localTrackId)
+            : new PlaylistTrackSyncReadiness(true, false, "Track is visible in Jellyfin search.", JellyfinService, localTrackId, itemId);
     }
 
     private async Task<SyncMatchSummary> ResolvePlexRatingKeysAsync(
