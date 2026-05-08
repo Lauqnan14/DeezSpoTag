@@ -14,6 +14,8 @@ public sealed class DownloadQueueRepository
     private static readonly SemaphoreSlim DequeueGate = new(1, 1);
     private const string DownloadTaskTable = "download_task";
     private const string FilesPropertyLower = "files";
+    private const string PayloadParameterName = "payload";
+    private const string LyricsStatusParameterName = "lyricsStatus";
     private readonly string _connectionString;
     private bool _schemaEnsured;
     private readonly object _schemaLock = new();
@@ -449,8 +451,8 @@ SET payload = @payload,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("payload", payloadJson);
-        command.Parameters.AddWithValue("lyricsStatus", (object?)lyricsStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
+        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -475,9 +477,9 @@ WHERE queue_uuid = @queueUuid
   AND status = 'queued'
   AND ((payload IS NULL AND @expectedPayload IS NULL) OR payload = @expectedPayload);";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("payload", payloadJson);
+        command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
         command.Parameters.AddWithValue("engine", (object?)engine ?? DBNull.Value);
-        command.Parameters.AddWithValue("lyricsStatus", (object?)lyricsStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("expectedPayload", (object?)expectedPayloadJson ?? DBNull.Value);
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
@@ -505,8 +507,8 @@ WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("finalDestinationsJson", (object?)finalDestinationsJson ?? DBNull.Value);
-        command.Parameters.AddWithValue("payload", (object?)payloadJson ?? DBNull.Value);
-        command.Parameters.AddWithValue("lyricsStatus", (object?)lyricsStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue(PayloadParameterName, (object?)payloadJson ?? DBNull.Value);
+        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1377,7 +1379,7 @@ LIMIT 1;";
         command.Parameters.AddWithValue("queueOrder", (object?)item.QueueOrder ?? DBNull.Value);
         command.Parameters.AddWithValue("contentType", (object?)NormalizeId(item.ContentType) ?? DBNull.Value);
         command.Parameters.AddWithValue("status", item.Status);
-        command.Parameters.AddWithValue("payload", (object?)item.PayloadJson ?? DBNull.Value);
+        command.Parameters.AddWithValue(PayloadParameterName, (object?)item.PayloadJson ?? DBNull.Value);
         command.Parameters.AddWithValue("progress", (object?)item.Progress ?? DBNull.Value);
         command.Parameters.AddWithValue("downloaded", (object?)item.Downloaded ?? DBNull.Value);
         command.Parameters.AddWithValue("failed", (object?)item.Failed ?? DBNull.Value);

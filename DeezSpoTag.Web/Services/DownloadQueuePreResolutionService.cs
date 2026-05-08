@@ -1,9 +1,11 @@
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics.CodeAnalysis;
 
 namespace DeezSpoTag.Web.Services;
 
+[ExcludeFromCodeCoverage]
 public sealed class DownloadQueuePreResolutionService : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);

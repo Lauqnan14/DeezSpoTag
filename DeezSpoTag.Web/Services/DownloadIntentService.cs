@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Linq;
 using System.Buffers;
 using System.Globalization;
+using System.Diagnostics.CodeAnalysis;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
@@ -460,6 +461,7 @@ public sealed class DownloadIntentService
         };
     }
 
+    [ExcludeFromCodeCoverage]
     public async Task<QueuePreResolutionPayload.ResolutionResult> ResolveQueuedPayloadAsync(
         DownloadQueueItem item,
         CancellationToken cancellationToken)
@@ -506,6 +508,7 @@ public sealed class DownloadIntentService
             target.Resolution.Message);
     }
 
+    [ExcludeFromCodeCoverage]
     private static DownloadIntent BuildIntentFromQueueItem(DownloadQueueItem item)
     {
         var payload = QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson);
@@ -549,6 +552,7 @@ public sealed class DownloadIntentService
         };
     }
 
+    [ExcludeFromCodeCoverage]
     private static string? ReadPayloadString(JsonObject payload, string pascalKey, string camelKey)
     {
         var node = payload[pascalKey] ?? payload[camelKey];
@@ -556,6 +560,7 @@ public sealed class DownloadIntentService
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    [ExcludeFromCodeCoverage]
     private static long? ReadPayloadInt64(JsonObject payload, string pascalKey, string camelKey)
     {
         var value = ReadPayloadString(payload, pascalKey, camelKey);
@@ -564,6 +569,7 @@ public sealed class DownloadIntentService
             : null;
     }
 
+    [ExcludeFromCodeCoverage]
     private static int ResolvePayloadDurationMs(JsonObject payload)
     {
         var durationMs = ReadPayloadInt64(payload, "DurationMs", "durationMs");

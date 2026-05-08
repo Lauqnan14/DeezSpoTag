@@ -7,6 +7,11 @@ namespace DeezSpoTag.Services.Download.Queue;
 
 public static class QueuePreResolutionPayload
 {
+    private const string ResolutionStatusPascalKey = "ResolutionStatus";
+    private const string ResolutionStatusCamelKey = "resolutionStatus";
+    private const string ResolutionErrorPascalKey = "ResolutionError";
+    private const string ResolutionErrorCamelKey = "resolutionError";
+
     public const string Pending = "pending";
     public const string Resolving = "resolving";
     public const string Resolved = "resolved";
@@ -38,8 +43,8 @@ public static class QueuePreResolutionPayload
     }
 
     public static string ReadStatus(JsonObject payload)
-        => ReadString(payload, "ResolutionStatus")
-           ?? ReadString(payload, "resolutionStatus")
+        => ReadString(payload, ResolutionStatusPascalKey)
+           ?? ReadString(payload, ResolutionStatusCamelKey)
            ?? Pending;
 
     public static DateTimeOffset? ReadResolvedAt(JsonObject payload)
@@ -81,19 +86,19 @@ public static class QueuePreResolutionPayload
 
     public static void MarkResolving(JsonObject payload, DateTimeOffset now)
     {
-        SetResolutionPair(payload, "ResolutionStatus", "resolutionStatus", Resolving);
+        SetResolutionPair(payload, ResolutionStatusPascalKey, ResolutionStatusCamelKey, Resolving);
         SetResolutionPair(payload, "ResolutionStartedAtUtc", "resolutionStartedAtUtc", now);
-        SetResolutionPair(payload, "ResolutionError", "resolutionError", string.Empty);
+        SetResolutionPair(payload, ResolutionErrorPascalKey, ResolutionErrorCamelKey, string.Empty);
     }
 
     public static void ApplyResolved(JsonObject payload, ResolutionResult result, DateTimeOffset now)
     {
-        SetResolutionPair(payload, "ResolutionStatus", "resolutionStatus", Resolved);
+        SetResolutionPair(payload, ResolutionStatusPascalKey, ResolutionStatusCamelKey, Resolved);
         SetResolutionPair(payload, "ResolvedAtUtc", "resolvedAtUtc", now);
         SetResolutionPair(payload, "ResolvedEngine", "resolvedEngine", result.Engine);
         SetResolutionPair(payload, "Engine", "engine", result.Engine);
         SetResolutionPair(payload, "SourceService", "sourceService", result.Engine);
-        SetResolutionPair(payload, "ResolutionError", "resolutionError", string.Empty);
+        SetResolutionPair(payload, ResolutionErrorPascalKey, ResolutionErrorCamelKey, string.Empty);
 
         if (!string.IsNullOrWhiteSpace(result.SourceUrl))
         {
@@ -123,9 +128,9 @@ public static class QueuePreResolutionPayload
 
     public static void ApplyFailed(JsonObject payload, string error, DateTimeOffset now)
     {
-        SetResolutionPair(payload, "ResolutionStatus", "resolutionStatus", Failed);
+        SetResolutionPair(payload, ResolutionStatusPascalKey, ResolutionStatusCamelKey, Failed);
         SetResolutionPair(payload, "ResolutionFailedAtUtc", "resolutionFailedAtUtc", now);
-        SetResolutionPair(payload, "ResolutionError", "resolutionError", error);
+        SetResolutionPair(payload, ResolutionErrorPascalKey, ResolutionErrorCamelKey, error);
     }
 
     private static string? ReadString(JsonObject payload, string key)
