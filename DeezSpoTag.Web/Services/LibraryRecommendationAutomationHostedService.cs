@@ -61,9 +61,13 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
                 _logger.LogInformation("Library recommendations refreshed ({Reason}).", reason);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Library recommendation refresh timed out ({Reason}).", reason);
         }
         catch (Exception ex)
         {

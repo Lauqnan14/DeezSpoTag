@@ -994,9 +994,21 @@ public sealed class LibraryRecommendationService
                 normalizedTracks,
                 payload.GeneratedAtUtc);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Daily recommendation build timed out for scope {ScopeKey}.",
+                    scope.ScopeKey);
+            }
+
+            return null;
         }
         catch (Exception ex)
         {
@@ -1034,9 +1046,19 @@ public sealed class LibraryRecommendationService
                 JsonSerializer.Serialize(payload),
                 cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Persisting recommendation daily pool timed out for scope {ScopeKey}.",
+                    scope.ScopeKey);
+            }
         }
         catch (Exception ex)
         {
@@ -1375,9 +1397,34 @@ public sealed class LibraryRecommendationService
         {
             return _shazamRecognitionService.RecognizeWithDetails(filePath, cancellationToken: cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Shazam recognition timed out for track {TrackId} ({FilePath}).",
+                    trackId,
+                    filePath);
+            }
+
+            await _repository.UpsertTrackShazamCacheAsync(
+                new LibraryRepository.TrackShazamCacheUpsertInput(
+                    trackId,
+                    StatusError,
+                    null,
+                    null,
+                    null,
+                    null,
+                    Array.Empty<RecommendationTrackDto>(),
+                    scannedAtUtc,
+                    "Shazam recognition timed out."),
+                cancellationToken);
+            return null;
         }
         catch (Exception ex)
         {
@@ -1470,9 +1517,28 @@ public sealed class LibraryRecommendationService
                 offset: 0,
                 cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Shazam related-track fetch timed out for track {TrackId} ({ShazamTrackId}).",
+                    trackId,
+                    recognizedTrack.ShazamTrackId);
+            }
+
+            await PersistMatchedShazamCacheAsync(
+                trackId,
+                recognizedTrack,
+                Array.Empty<RecommendationTrackDto>(),
+                scannedAtUtc,
+                cancellationToken);
+            return null;
         }
         catch (Exception ex)
         {

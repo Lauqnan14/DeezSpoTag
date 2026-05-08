@@ -2865,6 +2865,11 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return $"Wrapper is running, but account endpoint {context.Host}:30020 is not ready yet. Authentication may still be in progress.";
         }
 
+        if (context.HasDevToken && !context.HasMusicToken)
+        {
+            return "Wrapper reachable, but Apple Music did not return a music token. The Apple ID may not have an active Apple Music subscription.";
+        }
+
         if (!context.HasDevToken || !context.HasMusicToken)
         {
             return "Wrapper reachable, but auth tokens are missing. Login not completed.";

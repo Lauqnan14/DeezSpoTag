@@ -346,9 +346,18 @@ public sealed partial class ShazamDiscoveryService
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam request timed out for {Url}", url);
+            }
+
+            return null;
         }
         catch (Exception ex)
         {
