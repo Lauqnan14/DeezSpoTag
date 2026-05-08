@@ -147,10 +147,12 @@ class ZeroconfServer(Closeable):
         s = None
         ip_address = self.__any_interface_ip # Default to all interfaces if specific IP cannot be found
         try:
-            # Attempt to connect to an external address to find the appropriate local IP
+            # UDP connect does not send packets; it asks the OS which local
+            # address would be used for this routable host.
+            probe_host = os.environ.get("SPOTIFY_ZEROCONF_IP_PROBE_HOST", "dns.google")
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(0.1) # Short timeout for the connect attempt
-            s.connect(("8.8.8.8", 80)) # Google's public DNS server
+            s.connect((probe_host, 80))
             ip_address = s.getsockname()[0]
             self.logger.info(f"Determined local IP via connect trick: {ip_address}")
         except OSError as e: # Catches socket errors like [Errno 101] Network is unreachable

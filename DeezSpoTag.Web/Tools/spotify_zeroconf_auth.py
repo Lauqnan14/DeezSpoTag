@@ -3,7 +3,7 @@ import argparse
 import json
 import os
 import pathlib
-import random
+import secrets
 import shutil
 import string
 import sys
@@ -76,7 +76,7 @@ def _create_zeroconf_server(zeroconf_server_cls, base_device_name: str):
         except Exception as exc:
             if "NonUniqueNameException" not in exc.__class__.__name__:
                 return None, f"Failed to start Spotify Connect listener: {exc}"
-            suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+            suffix = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
             device_name = f"{base_device_name}-{suffix}"
             time.sleep(0.2)
     return None, "Failed to allocate a unique Spotify Connect device name."

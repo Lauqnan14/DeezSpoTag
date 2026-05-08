@@ -120,15 +120,17 @@ public sealed class DeezerLoginStatusBehaviorTests
             })
             .Build();
         var coordinator = new DeezerLoginCoordinator(client, NullLogger<DeezerLoginCoordinator>.Instance);
+        var services = new LoginApiServices(
+            configuration,
+            settings: null!,
+            auth: null!,
+            appleWrapper: null!,
+            coordinator);
         var controller = new LoginApiController(
             NullLogger<LoginApiController>.Instance,
             client,
             loginStorage,
-            configuration,
-            settingsService: null!,
-            authUtils: null!,
-            appleWrapperService: null!,
-            coordinator);
+            services);
         controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext()

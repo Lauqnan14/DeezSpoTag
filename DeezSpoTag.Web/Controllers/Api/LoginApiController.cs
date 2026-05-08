@@ -41,20 +41,16 @@ namespace DeezSpoTag.Web.Controllers.Api
             ILogger<LoginApiController> logger,
             DeezerClient deezerClient,
             ILoginStorageService loginStorage,
-            IConfiguration configuration,
-            DeezSpoTagSettingsService settingsService,
-            DeezerAuthUtils authUtils,
-            AppleMusicWrapperService appleWrapperService,
-            DeezerLoginCoordinator loginCoordinator)
+            LoginApiServices services)
         {
             _logger = logger;
             _deezerClient = deezerClient;
             _loginStorage = loginStorage;
-            _configuration = configuration;
-            _settingsService = settingsService;
-            _authUtils = authUtils;
-            _appleWrapperService = appleWrapperService;
-            _loginCoordinator = loginCoordinator;
+            _configuration = services.Configuration;
+            _settingsService = services.Settings;
+            _authUtils = services.Auth;
+            _appleWrapperService = services.AppleWrapper;
+            _loginCoordinator = services.DeezerLogin;
         }
 
         /// <summary>

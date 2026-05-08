@@ -1083,6 +1083,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Download.IActivityLogWriter, DeezSpoTag.Web.Services.ActivityLogWriter>();
         services.AddSingleton<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DeezerLoginCoordinator>();
+        services.AddTransient<DeezSpoTag.Web.Services.LoginApiServices>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.SpotifyMetadataResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.AppleMusicWrapperService>();
         services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>());
