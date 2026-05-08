@@ -1013,8 +1013,19 @@
                         <input type="number" id="watchPollIntervalSeconds" min="1" max="86400" value="3600">
                     </div>
                     <div class="form-group">
-                        <label for="watchMaxItemsPerRun">Max Items Per Run</label>
+                        <label for="watchMaxItemsPerRun">Max Monitored Items Per Run</label>
                         <input type="number" id="watchMaxItemsPerRun" min="1" max="50" value="50">
+                        <div class="warning-text">Limits monitored artists/playlists processed in one scheduler cycle.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="watchMaxReleasesPerArtist">Max Releases Per Artist Check</label>
+                        <input type="number" id="watchMaxReleasesPerArtist" min="1" max="100" value="50">
+                        <div class="warning-text">Limits release pages fetched inside one monitored artist check.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="watchMaxTracksPerPlaylistCheck">Max Tracks Per Playlist Check</label>
+                        <input type="number" id="watchMaxTracksPerPlaylistCheck" min="1" max="500" value="50">
+                        <div class="warning-text">Limits track pages fetched inside playlist checks that use a bounded feed.</div>
                     </div>
                     <div class="form-group">
                         <label for="watchDelayBetweenPlaylistsSeconds">Delay Between Playlists (seconds)</label>
@@ -1031,6 +1042,7 @@
                 </div>
                 <div class="form-group">
                         <div class="form-label">Artist Album Groups</div>
+                    <div class="warning-text">Select at least one release group for artist watchlist monitoring.</div>
                     <div class="form-row-3">
                         <div class="checkbox-group">
                             <input type="checkbox" id="watchAlbumGroupAlbum">
@@ -3231,6 +3243,8 @@ function loadSettings(settings) {
     setCheckboxValue('watchEnabled', settings.watchEnabled);
     setFieldValue('watchPollIntervalSeconds', settings.watchPollIntervalSeconds);
     setFieldValue('watchMaxItemsPerRun', settings.watchMaxItemsPerRun);
+    setFieldValue('watchMaxReleasesPerArtist', settings.watchMaxReleasesPerArtist ?? 50);
+    setFieldValue('watchMaxTracksPerPlaylistCheck', settings.watchMaxTracksPerPlaylistCheck ?? 50);
     setFieldValue('watchDelayBetweenPlaylistsSeconds', settings.watchDelayBetweenPlaylistsSeconds);
     setFieldValue('watchDelayBetweenArtistsSeconds', settings.watchDelayBetweenArtistsSeconds);
     setCheckboxValue('watchUseSnapshotIdChecking', settings.watchUseSnapshotIdChecking);
@@ -3410,6 +3424,7 @@ function collectFormData() {
         }
         return groups;
     };
+    const selectedAlbumGroups = getAlbumGroups();
 
     const formData = {
         downloadLocation: getValue('downloadLocation'),
@@ -3556,10 +3571,12 @@ function collectFormData() {
         watchEnabled: getChecked('watchEnabled', baseSettings.watchEnabled ?? false),
         watchPollIntervalSeconds: getNumber('watchPollIntervalSeconds', baseSettings.watchPollIntervalSeconds ?? 3600),
         watchMaxItemsPerRun: getNumber('watchMaxItemsPerRun', baseSettings.watchMaxItemsPerRun ?? 50),
+        watchMaxReleasesPerArtist: getNumber('watchMaxReleasesPerArtist', baseSettings.watchMaxReleasesPerArtist ?? 50),
+        watchMaxTracksPerPlaylistCheck: getNumber('watchMaxTracksPerPlaylistCheck', baseSettings.watchMaxTracksPerPlaylistCheck ?? 50),
         watchDelayBetweenPlaylistsSeconds: getNumber('watchDelayBetweenPlaylistsSeconds', baseSettings.watchDelayBetweenPlaylistsSeconds ?? 2),
         watchDelayBetweenArtistsSeconds: getNumber('watchDelayBetweenArtistsSeconds', baseSettings.watchDelayBetweenArtistsSeconds ?? 5),
         watchUseSnapshotIdChecking: getChecked('watchUseSnapshotIdChecking', baseSettings.watchUseSnapshotIdChecking ?? true),
-        watchedArtistAlbumGroup: getAlbumGroups(),
+        watchedArtistAlbumGroup: selectedAlbumGroups,
 
         tags: {
             title: getChecked('tagTitle', baseTags.title ?? true),
@@ -3606,6 +3623,10 @@ async function saveSettings(showSuccessToast = true) {
     settingsSaveInFlight = true;
     try {
         const settings = collectFormData();
+        if (Array.isArray(settings.watchedArtistAlbumGroup) && settings.watchedArtistAlbumGroup.length === 0) {
+            showToast('Select at least one artist album group.', 'error');
+            return;
+        }
         
         const response = await fetch('/api/settings', {
             method: 'POST',

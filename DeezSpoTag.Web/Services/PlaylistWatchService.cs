@@ -1188,13 +1188,13 @@ public sealed class PlaylistWatchService
         CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
-        var maxItems = Math.Clamp(settings.WatchMaxItemsPerRun, 1, 50);
+        var maxTracks = Math.Clamp(settings.WatchMaxTracksPerPlaylistCheck, 1, 500);
         var state = await _libraryRepository.GetPlaylistWatchStateAsync(SpotifySource, playlist.SourceId, cancellationToken);
 
         var fetchedTracks = await _spotifyPathfinderMetadataClient.FetchBrowseSectionTrackSummariesWithBlobAsync(
             SpotifyTrendingSongsSectionUri,
             0,
-            maxItems,
+            maxTracks,
             cancellationToken);
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

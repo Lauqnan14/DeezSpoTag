@@ -39,11 +39,14 @@ public sealed class ArtistWatchService
 
     private const string AlbumGroup = "album";
     private const string SingleGroup = "single";
+    private const string CompilationGroup = "compilation";
+    private const string AppearsOnGroup = "appears_on";
     private const string ArtistEntityType = "artist";
     private const string QueuedStatus = "queued";
     private const string AppleSource = "apple";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
+    internal const int MaxReleasesPerArtistLimit = 100;
 
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyArtistService _spotifyArtistService;
@@ -91,7 +94,7 @@ public sealed class ArtistWatchService
             return;
         }
 
-        var albumGroups = BuildAlbumGroupSet(settings.WatchedArtistAlbumGroup);
+        var albumGroups = NormalizeAlbumGroups(settings.WatchedArtistAlbumGroup);
         await CheckSpotifyArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckAppleArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckDeezerArtistAsync(artist, settings, albumGroups, cancellationToken);
@@ -100,10 +103,9 @@ public sealed class ArtistWatchService
     private async Task CheckSpotifyArtistAsync(
         WatchlistArtistDto artist,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        ISet<string> albumGroups,
+        IReadOnlyCollection<string> albumGroups,
         CancellationToken cancellationToken)
     {
-        _ = albumGroups;
         var spotifyId = artist.SpotifyId;
         if (string.IsNullOrWhiteSpace(spotifyId))
         {
@@ -125,12 +127,11 @@ public sealed class ArtistWatchService
         var state = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
         var offset = Math.Max(0, state?.BatchNextOffset ?? 0);
 
-        var groups = settings.WatchedArtistAlbumGroup ?? new List<string>();
         var page = await _spotifyArtistService.FetchArtistAlbumsPageAsync(
             spotifyId,
-            groups,
+            albumGroups,
             offset,
-            Math.Clamp(settings.WatchMaxItemsPerRun, 1, 50),
+            Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit),
             cancellationToken);
         if (page == null)
         {
@@ -197,7 +198,7 @@ public sealed class ArtistWatchService
     private async Task CheckAppleArtistAsync(
         WatchlistArtistDto artist,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        ISet<string> albumGroups,
+        IReadOnlyCollection<string> albumGroups,
         CancellationToken cancellationToken)
     {
         var appleId = await ResolveArtistSourceIdAsync(artist.ArtistId, AppleSource, artist.AppleId, cancellationToken);
@@ -264,7 +265,7 @@ public sealed class ArtistWatchService
     private async Task CheckDeezerArtistAsync(
         WatchlistArtistDto artist,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        ISet<string> albumGroups,
+        IReadOnlyCollection<string> albumGroups,
         CancellationToken cancellationToken)
     {
         var deezerId = await ResolveArtistSourceIdAsync(artist.ArtistId, DeezerSource, artist.DeezerId, cancellationToken);
@@ -332,7 +333,7 @@ public sealed class ArtistWatchService
                 appleId,
                 storefront,
                 "en-US",
-                Math.Clamp(settings.WatchMaxItemsPerRun, 1, 100),
+                Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit),
                 0,
                 cancellationToken);
         }
@@ -349,7 +350,7 @@ public sealed class ArtistWatchService
     private async Task<string?> ProcessAppleAlbumAsync(
         WatchlistArtistDto artist,
         JsonElement album,
-        ISet<string> albumGroups,
+        IReadOnlyCollection<string> albumGroups,
         string storefront,
         ISet<string> existing,
         CancellationToken cancellationToken)
@@ -429,7 +430,7 @@ public sealed class ArtistWatchService
             return await _deezerClient.GetArtistDiscographyAsync(
                 deezerId,
                 index: 0,
-                limit: Math.Clamp(settings.WatchMaxItemsPerRun, 1, 100));
+                limit: Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -444,7 +445,7 @@ public sealed class ArtistWatchService
     private async Task<string?> ProcessDeezerReleaseAsync(
         WatchlistArtistDto artist,
         GwAlbumRelease release,
-        ISet<string> albumGroups,
+        IReadOnlyCollection<string> albumGroups,
         ISet<string> existing,
         CancellationToken cancellationToken)
     {
@@ -492,7 +493,7 @@ public sealed class ArtistWatchService
 
     private static bool TryGetAppleAlbumCandidate(
         JsonElement album,
-        ISet<string> albumGroups,
+        IReadOnlyCollection<string> albumGroups,
         ISet<string> existing,
         out string albumId,
         out string albumName)
@@ -653,7 +654,7 @@ public sealed class ArtistWatchService
 
     private static bool TryGetDeezerReleaseCandidate(
         GwAlbumRelease release,
-        ISet<string> albumGroups,
+        IReadOnlyCollection<string> albumGroups,
         ISet<string> existing,
         out string albumId,
         out string albumName)
@@ -717,21 +718,18 @@ public sealed class ArtistWatchService
         await _libraryRepository.AddArtistWatchAlbumsAsync(artistId, insertedAlbums, cancellationToken);
     }
 
-    private static HashSet<string> BuildAlbumGroupSet(List<string>? configuredGroups)
+    internal static IReadOnlyList<string> NormalizeAlbumGroups(IEnumerable<string>? configuredGroups)
     {
-        var groups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (configuredGroups == null || configuredGroups.Count == 0)
-        {
-            groups.Add(AlbumGroup);
-            groups.Add(SingleGroup);
-            return groups;
-        }
+        var groups = new SortedSet<string>(StringComparer.Ordinal);
 
-        foreach (var normalized in configuredGroups
-            .Select(NormalizeAlbumGroup)
-            .Where(static group => !string.IsNullOrWhiteSpace(group)))
+        if (configuredGroups != null)
         {
-            groups.Add(normalized!);
+            foreach (var normalized in configuredGroups
+                .Select(NormalizeAlbumGroup)
+                .Where(static group => !string.IsNullOrWhiteSpace(group)))
+            {
+                groups.Add(normalized!);
+            }
         }
 
         if (groups.Count == 0)
@@ -740,10 +738,10 @@ public sealed class ArtistWatchService
             groups.Add(SingleGroup);
         }
 
-        return groups;
+        return groups.ToList();
     }
 
-    private static bool ShouldIncludeAlbumGroup(string? albumGroup, ISet<string> groups)
+    private static bool ShouldIncludeAlbumGroup(string? albumGroup, IReadOnlyCollection<string> groups)
     {
         if (groups.Count == 0)
         {
@@ -767,10 +765,16 @@ public sealed class ArtistWatchService
 
         return normalized switch
         {
-            "compile" => "compilation",
-            "compilations" => "compilation",
-            "appearson" => "appears_on",
-            _ => normalized
+            AlbumGroup => AlbumGroup,
+            SingleGroup => SingleGroup,
+            CompilationGroup => CompilationGroup,
+            "compile" => CompilationGroup,
+            "compilations" => CompilationGroup,
+            "appears-on" => AppearsOnGroup,
+            "appears on" => AppearsOnGroup,
+            AppearsOnGroup => AppearsOnGroup,
+            "appearson" => AppearsOnGroup,
+            _ => string.Empty
         };
     }
 
@@ -778,14 +782,14 @@ public sealed class ArtistWatchService
     {
         if (release.RoleId == 5)
         {
-            return "appears_on";
+            return AppearsOnGroup;
         }
 
         return release.Type switch
         {
-            0 => "single",
+            0 => SingleGroup,
             1 => AlbumGroup,
-            2 => "compilation",
+            2 => CompilationGroup,
             _ => AlbumGroup
         };
     }

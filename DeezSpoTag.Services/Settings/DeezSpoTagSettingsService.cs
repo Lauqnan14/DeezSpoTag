@@ -32,6 +32,13 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string AppleLyricsProvider = "apple";
     private const string LRCLibLyricsProvider = "lrclib";
+    private const int MaxWatchItemsPerRunLimit = 50;
+    private const int MaxWatchReleasesPerArtistLimit = 100;
+    private const int MaxWatchTracksPerPlaylistCheckLimit = 500;
+    private const string WatchAlbumGroup = "album";
+    private const string WatchSingleGroup = "single";
+    private const string WatchCompilationGroup = "compilation";
+    private const string WatchAppearsOnGroup = "appears_on";
     private static readonly string[] CanonicalLyricsProviders = { AppleLyricsProvider, "deezer", "spotify", LRCLibLyricsProvider, "musixmatch" };
     private static readonly string[] CanonicalLyricsTypes = { "lyrics", SyllableLyricsType, UnsyncedLyricsType };
     private static readonly string[] CanonicalLyricsFormats = { "both", "lrc", "ttml" };
@@ -817,10 +824,22 @@ public class DeezSpoTagSettingsService : ISettingsService
             nameof(settings.WatchPollIntervalSeconds));
 
         ApplyFixIf(
-            settings.WatchMaxItemsPerRun < 1 || settings.WatchMaxItemsPerRun > 50,
+            settings.WatchMaxItemsPerRun < 1 || settings.WatchMaxItemsPerRun > MaxWatchItemsPerRunLimit,
             () => settings.WatchMaxItemsPerRun = defaultSettings.WatchMaxItemsPerRun,
             fixes,
             nameof(settings.WatchMaxItemsPerRun));
+
+        ApplyFixIf(
+            settings.WatchMaxReleasesPerArtist < 1 || settings.WatchMaxReleasesPerArtist > MaxWatchReleasesPerArtistLimit,
+            () => settings.WatchMaxReleasesPerArtist = defaultSettings.WatchMaxReleasesPerArtist,
+            fixes,
+            nameof(settings.WatchMaxReleasesPerArtist));
+
+        ApplyFixIf(
+            settings.WatchMaxTracksPerPlaylistCheck < 1 || settings.WatchMaxTracksPerPlaylistCheck > MaxWatchTracksPerPlaylistCheckLimit,
+            () => settings.WatchMaxTracksPerPlaylistCheck = defaultSettings.WatchMaxTracksPerPlaylistCheck,
+            fixes,
+            nameof(settings.WatchMaxTracksPerPlaylistCheck));
 
         ApplyFixIf(
             settings.WatchDelayBetweenPlaylistsSeconds < 1,
@@ -839,6 +858,59 @@ public class DeezSpoTagSettingsService : ISettingsService
             () => settings.WatchedArtistAlbumGroup = new List<string>(defaultSettings.WatchedArtistAlbumGroup),
             fixes,
             nameof(settings.WatchedArtistAlbumGroup));
+
+        settings.WatchedArtistAlbumGroup ??= new List<string>(defaultSettings.WatchedArtistAlbumGroup);
+        var normalizedGroups = NormalizeWatchedArtistAlbumGroups(settings.WatchedArtistAlbumGroup);
+        ApplyFixIf(
+            !settings.WatchedArtistAlbumGroup.SequenceEqual(normalizedGroups, StringComparer.Ordinal),
+            () => settings.WatchedArtistAlbumGroup = normalizedGroups,
+            fixes,
+            nameof(settings.WatchedArtistAlbumGroup));
+    }
+
+    private static List<string> NormalizeWatchedArtistAlbumGroups(IEnumerable<string>? configuredGroups)
+    {
+        var groups = new SortedSet<string>(StringComparer.Ordinal);
+        if (configuredGroups != null)
+        {
+            foreach (var group in configuredGroups)
+            {
+                var normalized = NormalizeWatchedArtistAlbumGroup(group);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                {
+                    groups.Add(normalized);
+                }
+            }
+        }
+
+        if (groups.Count == 0)
+        {
+            groups.Add(WatchAlbumGroup);
+            groups.Add(WatchSingleGroup);
+        }
+
+        return groups.ToList();
+    }
+
+    private static string? NormalizeWatchedArtistAlbumGroup(string? value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().ToLowerInvariant();
+
+        return normalized switch
+        {
+            WatchAlbumGroup => WatchAlbumGroup,
+            WatchSingleGroup => WatchSingleGroup,
+            WatchCompilationGroup => WatchCompilationGroup,
+            "compile" => WatchCompilationGroup,
+            "compilations" => WatchCompilationGroup,
+            WatchAppearsOnGroup => WatchAppearsOnGroup,
+            "appears-on" => WatchAppearsOnGroup,
+            "appears on" => WatchAppearsOnGroup,
+            "appearson" => WatchAppearsOnGroup,
+            _ => null
+        };
     }
 
     private static void NormalizeRegionalAndLyricsSettings(
