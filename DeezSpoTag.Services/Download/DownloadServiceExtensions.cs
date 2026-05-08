@@ -28,6 +28,7 @@ public static class DownloadServiceExtensions
 {
     private const string DesktopChromeUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36";
     private static readonly TimeSpan LongDownloadTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ResolveProxyTimeout = TimeSpan.FromSeconds(8);
 
     /// <summary>
     /// Register all download engine services
@@ -86,8 +87,10 @@ public static class DownloadServiceExtensions
             PersistentCacheStore = sp.GetService<SongLinkPersistentCacheStore>(),
             SpotifyTrackMetadataResolver = sp.GetService<SpotifyTrackMetadataResolver>(),
             SpotifyIdResolver = sp.GetService<ISpotifyIdResolver>(),
-            TidalDownloadService = sp.GetService<Download.Tidal.TidalDownloadService>()
+            TidalDownloadService = sp.GetService<Download.Tidal.TidalDownloadService>(),
+            ResolveProxyClient = sp.GetService<ResolveProxyClient>()
         });
+        services.AddSingleton<ResolveProxyClient>();
         services.AddSingleton<SongLinkResolver>();
         services.AddSingleton<IDownloadApiHealthTracker, DownloadApiHealthTracker>();
         services.AddSingleton<EngineFallbackCoordinator>();
@@ -121,6 +124,12 @@ public static class DownloadServiceExtensions
         services.AddHttpClient("TidalProviderList", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
+        });
+
+        services.AddHttpClient("ResolveProxy", client =>
+        {
+            client.Timeout = ResolveProxyTimeout;
             client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
         });
 

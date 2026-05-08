@@ -74,6 +74,7 @@ public sealed class SongLinkResolver
     private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
     private readonly ISpotifyIdResolver? _spotifyIdResolver;
     private readonly TidalDownloadService? _tidalDownloadService;
+    private readonly ResolveProxyClient? _resolveProxyClient;
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
 
     public sealed class Dependencies
@@ -87,6 +88,7 @@ public sealed class SongLinkResolver
         public SpotifyTrackMetadataResolver? SpotifyTrackMetadataResolver { get; init; }
         public ISpotifyIdResolver? SpotifyIdResolver { get; init; }
         public TidalDownloadService? TidalDownloadService { get; init; }
+        public ResolveProxyClient? ResolveProxyClient { get; init; }
     }
 
     public SongLinkResolver(Dependencies dependencies)
@@ -100,6 +102,7 @@ public sealed class SongLinkResolver
         _spotifyTrackMetadataResolver = dependencies.SpotifyTrackMetadataResolver;
         _spotifyIdResolver = dependencies.SpotifyIdResolver;
         _tidalDownloadService = dependencies.TidalDownloadService;
+        _resolveProxyClient = dependencies.ResolveProxyClient;
     }
 
     public Task<SongLinkResult?> ResolveSpotifyTrackAsync(string spotifyTrackId, CancellationToken cancellationToken)
@@ -164,11 +167,7 @@ public sealed class SongLinkResolver
         var source = TryParseSource(normalizedUrl);
         if (source is { Platform: SpotifyPlatform })
         {
-            result = await ResolveExternalSongLinkAsync(normalizedUrl, source.TrackId, cancellationToken);
-            if (result != null && _logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", normalizedUrl);
-            }
+            result = await ResolveViaProxyOrSongLinkAsync(normalizedUrl, source.TrackId, cancellationToken);
         }
 
         result ??= await ResolveNativeAsync(normalizedUrl, cancellationToken);
@@ -186,6 +185,58 @@ public sealed class SongLinkResolver
 
         var deezerUrl = $"https://www.deezer.com/track/{normalized}";
         return ResolveByUrlAsync(deezerUrl, cancellationToken);
+    }
+
+    private async Task<SongLinkResult?> ResolveViaProxyOrSongLinkAsync(
+        string normalizedUrl,
+        string spotifyTrackId,
+        CancellationToken cancellationToken)
+    {
+        var result = await ResolveViaProxyAsync(normalizedUrl, spotifyTrackId, cancellationToken);
+        if (result != null)
+        {
+            return result;
+        }
+
+        result = await ResolveExternalSongLinkAsync(normalizedUrl, spotifyTrackId, cancellationToken);
+        if (result != null && _logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", normalizedUrl);
+        }
+
+        return result;
+    }
+
+    private async Task<SongLinkResult?> ResolveViaProxyAsync(
+        string normalizedUrl,
+        string spotifyTrackId,
+        CancellationToken cancellationToken)
+    {
+        if (_resolveProxyClient == null)
+        {
+            return null;
+        }
+
+        var result = await _resolveProxyClient.ResolveUrlAsync(normalizedUrl, cancellationToken)
+                     ?? await _resolveProxyClient.ResolvePlatformIdAsync(
+                         SpotifyPlatform,
+                         "song",
+                         spotifyTrackId,
+                         cancellationToken);
+        if (result == null)
+        {
+            return null;
+        }
+
+        result.SpotifyId ??= spotifyTrackId;
+        result.SpotifyUrl ??= BuildSpotifyTrackUrl(spotifyTrackId);
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Resolved Spotify link via resolve proxy for {Url}", normalizedUrl);
+        }
+
+        return result;
     }
 
     private async Task<SongLinkResult?> ResolveNativeAsync(string normalizedUrl, CancellationToken cancellationToken)
@@ -289,7 +340,8 @@ public sealed class SongLinkResolver
                || !string.IsNullOrWhiteSpace(result.TidalUrl)
                || !string.IsNullOrWhiteSpace(result.QobuzUrl)
                || !string.IsNullOrWhiteSpace(result.AppleMusicUrl)
-               || !string.IsNullOrWhiteSpace(result.AmazonUrl);
+               || !string.IsNullOrWhiteSpace(result.AmazonUrl)
+               || !string.IsNullOrWhiteSpace(result.YouTubeUrl);
     }
 
     private async Task<SongLinkResult?> ResolveExternalSongLinkAsync(
@@ -1771,6 +1823,8 @@ public sealed class SongLinkResult
     public string? AppleMusicUrl { get; set; }
     public string? SpotifyUrl { get; set; }
     public string? SpotifyId { get; set; }
+    public string? YouTubeUrl { get; set; }
+    public string? YouTubeId { get; set; }
     public string? Isrc { get; set; }
     public string? SourceType { get; set; }
     public string? SourceTitle { get; set; }
