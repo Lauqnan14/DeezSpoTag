@@ -4,6 +4,7 @@
     const STATUS_TAGGED = "tagged";
     const STATUS_TAGGING = "tagging";
     const STATUS_ERROR = "error";
+    const STATUS_REVIEW = "review";
     const STATUS_SKIPPED = "skipped";
     const STATUS_RUNNING = "running";
     const STATUS_COMPLETED = "completed";
@@ -134,6 +135,8 @@
                 return "text-info";
             case STATUS_ERROR:
                 return "text-danger";
+            case STATUS_REVIEW:
+                return "text-warning";
             case STATUS_SKIPPED:
                 return "text-warning";
             default:
@@ -325,6 +328,7 @@
         setText("autotag-last-accuracy", typeof accuracy === "number" ? accuracy.toFixed(2) : "--");
         setText("autotag-ok-count", String(job?.okCount ?? 0));
         setText("autotag-error-count", String(job?.errorCount ?? 0));
+        setText("autotag-review-count", String(job?.reviewCount ?? 0));
         setText("autotag-skipped-count", String(job?.skippedCount ?? 0));
 
         const lastLogEl = el("autotag-last-log");
@@ -370,6 +374,7 @@
         setText("autotag-last-accuracy", typeof lastStatus.accuracy === "number" ? lastStatus.accuracy.toFixed(2) : "--");
         setText("autotag-ok-count", String(summary.okCount ?? 0));
         setText("autotag-error-count", String(summary.errorCount ?? 0));
+        setText("autotag-review-count", String(summary.reviewCount ?? 0));
         setText("autotag-skipped-count", String(summary.skippedCount ?? 0));
         setText("autotag-last-log", logs.length ? stripAnsi(logs[logs.length - 1]) : "No recent log lines.");
         updateLogs(logs);
@@ -429,6 +434,7 @@
         const statuses = Array.isArray(state.historyStatus) ? state.historyStatus : [];
         let ok = 0;
         let error = 0;
+        let review = 0;
         let skipped = 0;
 
         statuses.forEach((entry) => {
@@ -437,6 +443,8 @@
                 ok += 1;
             } else if (result === STATUS_ERROR) {
                 error += 1;
+            } else if (result === STATUS_REVIEW) {
+                review += 1;
             } else if (result === STATUS_SKIPPED) {
                 skipped += 1;
             }
@@ -444,6 +452,7 @@
 
         setText("autotag-filter-ok-count", String(ok));
         setText("autotag-filter-error-count", String(error));
+        setText("autotag-filter-review-count", String(review));
         setText("autotag-filter-skipped-count", String(skipped));
     }
 
@@ -489,18 +498,19 @@
             const accuracy = typeof inner.accuracy === "number" ? inner.accuracy.toFixed(2) : "--";
             const track = toFileName(inner.path);
             const usedShazam = inner.usedShazam ? '<i class="fas fa-music ms-1" title="Identified with Shazam"></i>' : "";
+            const message = inner.message ? ` <span class="text-muted" title="${escapeHtml(inner.message)}">(${escapeHtml(inner.message)})</span>` : "";
             const encodedPath = inner.path ? encodeURIComponent(inner.path) : "";
             const encodedPlatform = platform && platform !== "--" ? encodeURIComponent(platform) : "";
             const canDiff = inner.path
                 && encodedPlatform
-                && (resultNormalized === STATUS_TAGGED || resultNormalized === STATUS_OK);
+                && (resultNormalized === STATUS_TAGGED || resultNormalized === STATUS_OK || resultNormalized === STATUS_REVIEW);
             const diffButton = canDiff
                 ? `<button type="button" class="action-btn action-btn-sm autotag-diff-btn" data-path="${encodedPath}" data-platform="${encodedPlatform}">Diff</button>`
                 : '<span class="text-muted">--</span>';
             return `<tr>
                 <td>${escapeHtml(time)}</td>
                 <td>${escapeHtml(platform)}</td>
-                <td class="${statusClass}">${escapeHtml(result)}${usedShazam}</td>
+                <td class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}</td>
                 <td>${escapeHtml(accuracy)}</td>
                 <td title="${escapeHtml(inner.path || "")}">${escapeHtml(track)}</td>
                 <td>${diffButton}</td>
@@ -578,6 +588,7 @@
             trigger: job.trigger || "manual",
             okCount: job.okCount ?? 0,
             errorCount: job.errorCount ?? 0,
+            reviewCount: job.reviewCount ?? 0,
             skippedCount: job.skippedCount ?? 0,
             logCount,
             statusEntryCount,

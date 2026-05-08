@@ -18,6 +18,7 @@
         ("Accuracy", "autotag-last-accuracy", "--"),
         ("Tagged", "autotag-ok-count", "0"),
         ("Errors", "autotag-error-count", "0"),
+        ("Review", "autotag-review-count", "0"),
         ("Skipped", "autotag-skipped-count", "0")
     };
 }
@@ -2914,6 +2915,9 @@
                                         </button>
                                         <button type="button" class="btn btn-outline-danger" data-filter="error" id="autotag-filter-error">
                                             <i class="fas fa-times me-1"></i>Error <span class="badge bg-danger ms-1" id="autotag-filter-error-count">0</span>
+                                        </button>
+                                        <button type="button" class="btn btn-outline-warning" data-filter="review" id="autotag-filter-review">
+                                            <i class="fas fa-exclamation-triangle me-1"></i>Review <span class="badge bg-warning text-dark ms-1" id="autotag-filter-review-count">0</span>
                                         </button>
                                         <button type="button" class="btn btn-outline-warning" data-filter="skipped" id="autotag-filter-skipped">
                                             <i class="fas fa-forward me-1"></i>Skipped <span class="badge bg-warning text-dark ms-1" id="autotag-filter-skipped-count">0</span>

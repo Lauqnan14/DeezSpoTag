@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -99,5 +100,47 @@ public sealed class AutoTagServiceEligibilityTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void EvaluateIdentityReviewGuard_FlagsSharpTitleAndArtistReplacement()
+    {
+        var diff = new AutoTagTagDiff
+        {
+            Before = Snapshot("Mema Meni So", ["Obaapa Christy"], ["Obaapa Christy"]),
+            After = Snapshot("Oba Ha Mema", ["T M Jayarathna"], ["T M Jayarathna"])
+        };
+
+        var reason = InvokeStatic<string?>("EvaluateIdentityReviewGuard", diff);
+
+        Assert.NotNull(reason);
+        Assert.Contains("requires user review", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateIdentityReviewGuard_AllowsSameArtistTitleCleanup()
+    {
+        var diff = new AutoTagTagDiff
+        {
+            Before = Snapshot("Mema Meni So", ["Obaapa Christy"], ["Obaapa Christy"]),
+            After = Snapshot("Mema Meni So - Remastered", ["Obaapa Christy"], ["Obaapa Christy"])
+        };
+
+        var reason = InvokeStatic<string?>("EvaluateIdentityReviewGuard", diff);
+
+        Assert.Null(reason);
+    }
+
+    private static AutoTagTagSnapshot Snapshot(string title, string[] artists, string[] albumArtists)
+    {
+        return new AutoTagTagSnapshot
+        {
+            Meta = new QuickTagDumpMeta
+            {
+                Title = title,
+                Artists = artists.ToList(),
+                AlbumArtists = albumArtists.ToList()
+            }
+        };
     }
 }

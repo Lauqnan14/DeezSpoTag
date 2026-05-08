@@ -25,6 +25,7 @@ internal static class AutoTagLiterals
     internal const string TaggingStatus = "tagging";
     internal const string OkStatus = "ok";
     internal const string TaggedStatus = "tagged";
+    internal const string ReviewStatus = "review";
     internal const string SkippedStatus = "skipped";
     internal const string ErrorStatus = "error";
     internal const string ManualTrigger = "manual";
@@ -77,6 +78,7 @@ public abstract class AutoTagRunState
     public double Progress { get; set; }
     public int OkCount { get; set; }
     public int ErrorCount { get; set; }
+    public int ReviewCount { get; set; }
     public int SkippedCount { get; set; }
     public string? RootPath { get; set; }
     public string Trigger { get; set; } = AutoTagLiterals.ManualTrigger;
@@ -375,6 +377,8 @@ public partial class AutoTagService
         "artworkDescription",
         "artworkType"
     };
+    private const double IdentityReviewTitleSimilarityThreshold = 0.55d;
+    private const double IdentityReviewArtistSimilarityThreshold = 0.50d;
     private sealed record PlatformTagCapabilities(HashSet<string> SupportedTags, bool RequiresAuth);
     private sealed record AutoTagStageConfig(string Name, string ConfigPath, int TagCount, string ConfigHash);
     private sealed class FileTagOutcome
@@ -709,6 +713,7 @@ public partial class AutoTagService
     {
         target.OkCount = source.OkCount;
         target.ErrorCount = source.ErrorCount;
+        target.ReviewCount = source.ReviewCount;
         target.SkippedCount = source.SkippedCount;
         target.Progress = source.Progress;
         target.ExitCode = null;
@@ -4458,9 +4463,10 @@ public partial class AutoTagService
         job.LastStatus = status;
         job.Progress = ScaleProgress(status.Progress, stageIndex, stageCount);
         job.CurrentPlatform = status.Platform;
+        TryCaptureTagDiff(job, status);
+        ApplyIdentityReviewGuard(job, status);
         AppendStatusHistory(job, status);
         TrackFileOutcome(fileOutcomes, status);
-        TryCaptureTagDiff(job, status);
         switch (status.Status.Status)
         {
             case AutoTagLiterals.OkStatus:
@@ -4469,6 +4475,9 @@ public partial class AutoTagService
                 break;
             case AutoTagLiterals.ErrorStatus:
                 job.ErrorCount += 1;
+                break;
+            case AutoTagLiterals.ReviewStatus:
+                job.ReviewCount += 1;
                 break;
             case AutoTagLiterals.SkippedStatus:
                 job.SkippedCount += 1;
@@ -4484,6 +4493,7 @@ public partial class AutoTagService
         {
             AutoTagLiterals.OkStatus => true,
             AutoTagLiterals.TaggedStatus => true,
+            AutoTagLiterals.ReviewStatus => true,
             AutoTagLiterals.ErrorStatus => true,
             AutoTagLiterals.SkippedStatus => true,
             _ => false
@@ -4588,6 +4598,96 @@ public partial class AutoTagService
             var platformDiff = GetOrCreatePlatformDiff(diff, status.Platform, normalizedStatus, captureBefore, captureAfter);
             ApplyCapturedDiffSnapshot(diff, platformDiff, snapshot, status.Platform, normalizedStatus, captureBefore, captureAfter);
         }
+    }
+
+    private static void ApplyIdentityReviewGuard(AutoTagJob job, TaggingStatusWrap status)
+    {
+        if (status.Status == null
+            || string.IsNullOrWhiteSpace(status.Status.Path)
+            || !IsSuccessfulTagStatus(status.Status.Status))
+        {
+            return;
+        }
+
+        var normalizedPath = NormalizeDiffPath(status.Status.Path);
+        AutoTagTagDiff? diff;
+        lock (job.TagDiffs)
+        {
+            job.TagDiffs.TryGetValue(normalizedPath, out diff);
+        }
+
+        var reviewReason = EvaluateIdentityReviewGuard(diff);
+        if (string.IsNullOrWhiteSpace(reviewReason))
+        {
+            return;
+        }
+
+        status.Status.Status = AutoTagLiterals.ReviewStatus;
+        status.Status.Message = reviewReason;
+    }
+
+    private static bool IsSuccessfulTagStatus(string? status)
+    {
+        return string.Equals(status, AutoTagLiterals.OkStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.TaggedStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? EvaluateIdentityReviewGuard(AutoTagTagDiff? diff)
+    {
+        if (diff?.Before == null || diff.After == null)
+        {
+            return null;
+        }
+
+        var beforeTitle = GetMetaFieldValue(diff.Before, "title");
+        var afterTitle = GetMetaFieldValue(diff.After, "title");
+        if (!HasMeaningfulIdentityChange(beforeTitle, afterTitle))
+        {
+            return null;
+        }
+
+        var titleSimilarity = ComputeIdentitySimilarity(beforeTitle, afterTitle);
+        if (titleSimilarity >= IdentityReviewTitleSimilarityThreshold)
+        {
+            return null;
+        }
+
+        var beforeArtists = GetMetaFieldValue(diff.Before, "artists");
+        var afterArtists = GetMetaFieldValue(diff.After, "artists");
+        var beforeAlbumArtists = GetMetaFieldValue(diff.Before, "albumArtists");
+        var afterAlbumArtists = GetMetaFieldValue(diff.After, "albumArtists");
+        var artistChanged = HasMeaningfulIdentityChange(beforeArtists, afterArtists)
+            || HasMeaningfulIdentityChange(beforeAlbumArtists, afterAlbumArtists);
+        if (!artistChanged)
+        {
+            return null;
+        }
+
+        var artistSimilarity = Math.Max(
+            ComputeIdentitySimilarity(beforeArtists, afterArtists),
+            ComputeIdentitySimilarity(beforeAlbumArtists, afterAlbumArtists));
+        if (artistSimilarity >= IdentityReviewArtistSimilarityThreshold)
+        {
+            return null;
+        }
+
+        return $"requires user review: identity changed sharply (title similarity {titleSimilarity:0.000}, artist similarity {artistSimilarity:0.000})";
+    }
+
+    private static bool HasMeaningfulIdentityChange(object? before, object? after)
+    {
+        var normalizedBefore = NormalizeCompareValue(before);
+        var normalizedAfter = NormalizeCompareValue(after);
+        return !string.IsNullOrWhiteSpace(normalizedBefore)
+            && !string.IsNullOrWhiteSpace(normalizedAfter)
+            && !string.Equals(normalizedBefore, normalizedAfter, StringComparison.Ordinal);
+    }
+
+    private static double ComputeIdentitySimilarity(object? before, object? after)
+    {
+        var normalizedBefore = AutoTagSimilarity.NormalizeText(NormalizeCompareValue(before));
+        var normalizedAfter = AutoTagSimilarity.NormalizeText(NormalizeCompareValue(after));
+        return AutoTagSimilarity.ComputeScore(normalizedBefore, normalizedAfter);
     }
 
     private static bool TryResolveCaptureMode(
@@ -5230,6 +5330,7 @@ public partial class AutoTagService
             Progress = job.Progress,
             OkCount = job.OkCount,
             ErrorCount = job.ErrorCount,
+            ReviewCount = job.ReviewCount,
             SkippedCount = job.SkippedCount,
             RootPath = job.RootPath,
             Trigger = string.IsNullOrWhiteSpace(job.Trigger) ? AutoTagLiterals.ManualTrigger : job.Trigger,
