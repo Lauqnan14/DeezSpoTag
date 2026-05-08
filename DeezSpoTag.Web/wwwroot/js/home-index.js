@@ -856,6 +856,57 @@ function showHomeTrendingPlaybackMessage(message) {
     showToast(message, 'warning');
 }
 
+function getValidHomeTrendingDeezerId(button) {
+    const deezerId = String(button?.dataset?.deezerId || '').trim();
+    return /^\d+$/.test(deezerId) ? deezerId : '';
+}
+
+async function resolveClickedHomeTrendingButtonToDeezer(playButton, spotifyUrl) {
+    const link = String(spotifyUrl || '').trim();
+    if (!playButton || !link) {
+        return false;
+    }
+
+    const request = buildSpotifyTrackResolveRequestFromTrendingCard(playButton) || { link };
+    const resolveKey = buildHomeTrendingResolveKey(playButton);
+    playButton.dataset.mappingState = 'mapping';
+
+    await startHomeTrendingPlaylistStyleMatching([{
+        button: playButton,
+        url: link,
+        isVisible: true,
+        resolveKey
+    }]);
+    if (getValidHomeTrendingDeezerId(playButton)) {
+        return true;
+    }
+
+    try {
+        const resolved = await resolveHomeTrendingSpotifyTrackToDeezer(request);
+        const deezerId = String(resolved?.deezerId || '').trim();
+        if (/^\d+$/.test(deezerId)) {
+            playButton.dataset.deezerId = deezerId;
+            playButton.dataset.mappingState = 'mapped';
+            if (resolveKey) {
+                homeTrendingUnmappedCooldownUntil.delete(resolveKey);
+            }
+            await warmHomeTrendingPlaybackContext(playButton, deezerId);
+            return true;
+        }
+    } catch {
+        // Fall through to the normal unmatched warning.
+    }
+
+    playButton.dataset.mappingState = 'unmapped';
+    if (resolveKey) {
+        homeTrendingUnmappedCooldownUntil.set(
+            resolveKey,
+            Date.now() + HOME_TRENDING_UNMAPPED_RETRY_COOLDOWN_MS
+        );
+    }
+    return false;
+}
+
 async function ensureHomeTrendingButtonReadyForPlayback(playButton, options = {}) {
     if (!playButton) {
         return false;
@@ -865,11 +916,10 @@ async function ensureHomeTrendingButtonReadyForPlayback(playButton, options = {}
     const spotifyUrl = String(playButton.dataset.spotifyUrl || '').trim();
     const previewUrl = String(playButton.dataset.previewUrl || '').trim();
     const existingDeezerId = String(playButton.dataset.deezerId || '').trim();
-    const hasValidExistingDeezerId = /^\d+$/.test(existingDeezerId);
-    if (existingDeezerId && hasValidExistingDeezerId) {
+    if (getValidHomeTrendingDeezerId(playButton)) {
         return true;
     }
-    if (existingDeezerId && !hasValidExistingDeezerId) {
+    if (existingDeezerId) {
         playButton.dataset.deezerId = '';
     }
 
@@ -879,6 +929,18 @@ async function ensureHomeTrendingButtonReadyForPlayback(playButton, options = {}
         }
         // Keep non-spotify, preview-only rows playable as a fallback.
         return Boolean(previewUrl);
+    }
+
+    if (homeTrendingMatchStartPromise) {
+        await homeTrendingMatchStartPromise;
+        if (getValidHomeTrendingDeezerId(playButton)) {
+            return true;
+        }
+    }
+
+    const resolvedOnDemand = await resolveClickedHomeTrendingButtonToDeezer(playButton, spotifyUrl);
+    if (resolvedOnDemand) {
+        return true;
     }
 
     if (notifyOnUnmatched) {
