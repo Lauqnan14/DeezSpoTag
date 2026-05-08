@@ -147,13 +147,27 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 return true;
             }
 
-            await RunLocalLibraryScanAsync(scope.ServiceProvider, request, cancellationToken);
-            await RefreshMediaServerAsync(scope.ServiceProvider, request, cancellationToken);
-
             var preference = await repository.GetPlaylistWatchPreferenceAsync(
                 playlist.Source,
                 playlist.SourceId,
                 cancellationToken);
+            var effectiveRequest = request;
+            if (!effectiveRequest.DestinationFolderId.HasValue && preference?.DestinationFolderId.HasValue == true)
+            {
+                effectiveRequest = request with { DestinationFolderId = preference.DestinationFolderId };
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Watchlist post-download sync recovered destination folder {DestinationFolderId} from playlist preference for {Source}:{PlaylistId}.",
+                        preference.DestinationFolderId.Value,
+                        request.Source,
+                        request.PlaylistId);
+                }
+            }
+
+            await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken);
+            await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
+
             var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchService>();
             var candidates = await watcher.GetPlaylistTrackCandidatesAsync(
                 playlist.Source,
@@ -250,14 +264,9 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
     private static async Task RefreshMediaServerAsync(
         IServiceProvider services,
-        SyncRequest request,
+        PlaylistWatchPreferenceDto? preference,
         CancellationToken cancellationToken)
     {
-        var repository = services.GetRequiredService<LibraryRepository>();
-        var preference = await repository.GetPlaylistWatchPreferenceAsync(
-            request.Source,
-            request.PlaylistId,
-            cancellationToken);
         var service = (preference?.Service ?? string.Empty).Trim().ToLowerInvariant();
         if (service == "none")
         {

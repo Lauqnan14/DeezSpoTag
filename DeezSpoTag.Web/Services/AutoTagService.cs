@@ -269,9 +269,9 @@ public partial class AutoTagService
     };
     private static readonly Dictionary<string, string> SupportedTagKeyMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["title"] = "title",
+        [AutoTagTitleKey] = AutoTagTitleKey,
         [AutoTagLiterals.ArtistTag] = AutoTagLiterals.ArtistTag,
-        ["artists"] = AutoTagLiterals.ArtistTag,
+        [AutoTagArtistsKey] = AutoTagLiterals.ArtistTag,
         ["albumArtist"] = "albumArtist",
         ["album"] = "album",
         ["albumArt"] = "albumArt",
@@ -356,10 +356,12 @@ public partial class AutoTagService
     private const string AutoTagFolderName = "autotag";
     private const string HistoryFolderName = "history";
     private const string TracknameTemplateKey = "tracknameTemplate";
+    private const string AutoTagTitleKey = "title";
+    private const string AutoTagArtistsKey = "artists";
     private static readonly string[] DiffMetaKeys =
     {
-        "title",
-        "artists",
+        AutoTagTitleKey,
+        AutoTagArtistsKey,
         "album",
         "albumArtists",
         "composers",
@@ -4639,8 +4641,8 @@ public partial class AutoTagService
             return null;
         }
 
-        var beforeTitle = GetMetaFieldValue(diff.Before, "title");
-        var afterTitle = GetMetaFieldValue(diff.After, "title");
+        var beforeTitle = GetMetaFieldValue(diff.Before, AutoTagTitleKey);
+        var afterTitle = GetMetaFieldValue(diff.After, AutoTagTitleKey);
         if (!HasMeaningfulIdentityChange(beforeTitle, afterTitle))
         {
             return null;
@@ -4652,8 +4654,8 @@ public partial class AutoTagService
             return null;
         }
 
-        var beforeArtists = GetMetaFieldValue(diff.Before, "artists");
-        var afterArtists = GetMetaFieldValue(diff.After, "artists");
+        var beforeArtists = GetMetaFieldValue(diff.Before, AutoTagArtistsKey);
+        var afterArtists = GetMetaFieldValue(diff.After, AutoTagArtistsKey);
         var beforeAlbumArtists = GetMetaFieldValue(diff.Before, "albumArtists");
         var afterAlbumArtists = GetMetaFieldValue(diff.After, "albumArtists");
         var artistChanged = HasMeaningfulIdentityChange(beforeArtists, afterArtists)

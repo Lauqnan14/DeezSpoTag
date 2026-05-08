@@ -2266,10 +2266,15 @@ public sealed class DownloadOrchestrationService : BackgroundService
     {
         EnsureProcessedCompletionStateLoaded();
         var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
-        var completedItems = queueItems
-            .Where(item =>
-                item.DestinationFolderId.HasValue
-                && string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase))
+        var completedItems = await RecoverMissingDestinationFoldersAsync(
+            queueItems
+                .Where(item => string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(item => item.UpdatedAt)
+                .ThenByDescending(item => item.Id)
+                .ToList(),
+            cancellationToken);
+        completedItems = completedItems
+            .Where(item => item.DestinationFolderId.HasValue)
             .OrderByDescending(item => item.UpdatedAt)
             .ThenByDescending(item => item.Id)
             .ToList();
@@ -2293,6 +2298,142 @@ public sealed class DownloadOrchestrationService : BackgroundService
             .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
             .ToList();
         return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
+    }
+
+    private async Task<List<DownloadQueueItem>> RecoverMissingDestinationFoldersAsync(
+        List<DownloadQueueItem> completedItems,
+        CancellationToken cancellationToken)
+    {
+        if (completedItems.Count == 0 || !_libraryRepository.IsConfigured)
+        {
+            return completedItems;
+        }
+
+        var preferencesByPlaylist = new Dictionary<string, PlaylistWatchPreferenceDto?>(StringComparer.OrdinalIgnoreCase);
+        var recoveredItems = new List<DownloadQueueItem>(completedItems.Count);
+        foreach (var item in completedItems)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (item.DestinationFolderId.HasValue
+                || string.IsNullOrWhiteSpace(item.PayloadJson)
+                || string.IsNullOrWhiteSpace(item.QueueUuid)
+                || !TryReadWatchlistContext(item.PayloadJson, out var source, out var playlistId))
+            {
+                recoveredItems.Add(item);
+                continue;
+            }
+
+            var preferenceKey = $"{source.Trim().ToLowerInvariant()}|{playlistId.Trim()}";
+            if (!preferencesByPlaylist.TryGetValue(preferenceKey, out var preference))
+            {
+                preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+                    source,
+                    playlistId,
+                    cancellationToken);
+                preferencesByPlaylist[preferenceKey] = preference;
+            }
+
+            if (preference?.DestinationFolderId is not long destinationFolderId)
+            {
+                recoveredItems.Add(item);
+                continue;
+            }
+
+            await _queueRepository.UpdateQueueMetadataAsync(
+                item.QueueUuid,
+                item.QualityRank,
+                item.ContentType,
+                destinationFolderId,
+                cancellationToken);
+
+            if (TryRewritePayloadDestinationFolderId(item.PayloadJson, destinationFolderId, out var payloadJson))
+            {
+                await _queueRepository.UpdatePayloadAsync(item.QueueUuid, payloadJson, cancellationToken);
+            }
+            else
+            {
+                payloadJson = item.PayloadJson;
+            }
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Recovered destination folder {DestinationFolderId} for completed monitored download {QueueUuid} from playlist preference {Source}:{PlaylistId}.",
+                    destinationFolderId,
+                    item.QueueUuid,
+                    source,
+                    playlistId);
+            }
+
+            recoveredItems.Add(item with
+            {
+                DestinationFolderId = destinationFolderId,
+                PayloadJson = payloadJson
+            });
+        }
+
+        return recoveredItems;
+    }
+
+    private static bool TryReadWatchlistContext(string payloadJson, out string source, out string playlistId)
+    {
+        source = string.Empty;
+        playlistId = string.Empty;
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (TryGetPropertyIgnoreCase(root, "sourceIds", out var sourceIds)
+                && sourceIds.ValueKind == JsonValueKind.Object
+                && TryReadStringPropertyIgnoreCase(sourceIds, "watchlist_source", out source)
+                && TryReadStringPropertyIgnoreCase(sourceIds, "watchlist_playlist", out playlistId))
+            {
+                return !string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(playlistId);
+            }
+
+            var hasSource = TryReadStringPropertyIgnoreCase(root, "watchlistSource", out source)
+                || TryReadStringPropertyIgnoreCase(root, "watchlist_source", out source);
+            var hasPlaylist = TryReadStringPropertyIgnoreCase(root, "watchlistPlaylistId", out playlistId)
+                || TryReadStringPropertyIgnoreCase(root, "watchlist_playlist", out playlistId);
+            return hasSource && hasPlaylist
+                && !string.IsNullOrWhiteSpace(source)
+                && !string.IsNullOrWhiteSpace(playlistId);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryRewritePayloadDestinationFolderId(
+        string payloadJson,
+        long destinationFolderId,
+        out string updatedPayloadJson)
+    {
+        updatedPayloadJson = payloadJson;
+        try
+        {
+            var node = JsonNode.Parse(payloadJson) as JsonObject;
+            if (node == null)
+            {
+                return false;
+            }
+
+            node["destinationFolderId"] = destinationFolderId;
+            node["DestinationFolderId"] = destinationFolderId;
+            updatedPayloadJson = node.ToJsonString(ScheduleJsonOptions);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private bool IsCompletedItemUnprocessed(DownloadQueueItem item)

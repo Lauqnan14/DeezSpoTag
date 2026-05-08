@@ -942,6 +942,11 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         payload.Status = AppleDownloadStatus.Completed;
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: itemToken);
         _deezspotagListener.Send(UpdateQueueEvent, payload.ToQueuePayload());
+        await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(
+            payload,
+            CompletedStatus,
+            _serviceProvider,
+            itemToken);
         _retryScheduler.Clear(queueUuid);
     }
 

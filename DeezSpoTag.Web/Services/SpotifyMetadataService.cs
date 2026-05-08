@@ -1728,12 +1728,9 @@ public sealed class SpotifyMetadataService
                 blobPath,
                 trackIds.Select(CreatePlaceholderTrackSummary).ToList(),
                 cancellationToken);
-            foreach (var track in hydrated)
+            foreach (var track in hydrated.Where(track => !string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc)))
             {
-                if (!string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc))
-                {
-                    results[track.Id] = track.Isrc!;
-                }
+                results[track.Id] = track.Isrc!;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
