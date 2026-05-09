@@ -1610,7 +1610,7 @@ public sealed class PlaylistSyncService
             track.ReleaseYear?.ToString(CultureInfo.InvariantCulture),
             track.Explicit,
             NormalizeGenres(track.Genres),
-            null);
+            track.DurationMs);
     }
 
     private static IReadOnlyList<string> NormalizeGenres(IReadOnlyList<string>? genres)

@@ -139,6 +139,7 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             Artist: "Artist One",
             Album: "Album One",
             ReleaseYear: 2024,
+            DurationMs: 180000,
             Explicit: false,
             Genres: Array.Empty<string>());
 

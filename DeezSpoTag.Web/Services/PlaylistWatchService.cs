@@ -153,6 +153,7 @@ public sealed class PlaylistWatchService
         string Artist,
         string Album,
         int? ReleaseYear,
+        int? DurationMs,
         bool? Explicit,
         IReadOnlyList<string> Genres);
 
@@ -339,6 +340,7 @@ public sealed class PlaylistWatchService
                     track.Artists,
                     track.Album,
                     track.ReleaseDate,
+                    track.DurationMs,
                     track.Explicit,
                     track.Genres));
         }
@@ -375,6 +377,7 @@ public sealed class PlaylistWatchService
                     artistPage?.Artist?.Name,
                     track.AlbumName,
                     track.ReleaseDate,
+                    track.DurationMs,
                     ExplicitFlag: null,
                     Genres: null));
         }
@@ -415,6 +418,7 @@ public sealed class PlaylistWatchService
                         track.Artists,
                         track.Album,
                         track.ReleaseDate,
+                        track.DurationMs,
                         track.Explicit,
                         track.Genres));
                 if (candidates.Count >= hardCap)
@@ -460,6 +464,7 @@ public sealed class PlaylistWatchService
             seed.Artist?.Trim() ?? string.Empty,
             seed.Album?.Trim() ?? string.Empty,
             releaseYear,
+            seed.DurationMs,
             seed.ExplicitFlag,
             NormalizeGenres(seed.Genres)));
     }
@@ -499,6 +504,7 @@ public sealed class PlaylistWatchService
                 track.ArtName?.Trim() ?? string.Empty,
                 track.AlbTitle?.Trim() ?? string.Empty,
                 ParseFirstYear(track.PhysicalReleaseDate, track.DigitalReleaseDate),
+                track.Duration > 0 ? track.Duration * 1000 : null,
                 track.ExplicitLyrics,
                 Array.Empty<string>()));
         }
@@ -513,6 +519,7 @@ public sealed class PlaylistWatchService
         string? Artist,
         string? Album,
         string? ReleaseDate,
+        int? DurationMs,
         bool? ExplicitFlag,
         IReadOnlyList<string>? Genres);
 
@@ -588,6 +595,7 @@ public sealed class PlaylistWatchService
                 track.Artist?.Name?.Trim() ?? string.Empty,
                 track.Album?.Title?.Trim() ?? string.Empty,
                 null,
+                track.Duration > 0 ? track.Duration * 1000 : null,
                 null,
                 Array.Empty<string>()));
         }
@@ -620,6 +628,7 @@ public sealed class PlaylistWatchService
                 track.Intent.Artist?.Trim() ?? string.Empty,
                 track.Intent.Album?.Trim() ?? string.Empty,
                 ParseFirstYear(track.Intent.ReleaseDate),
+                track.Intent.DurationMs > 0 ? track.Intent.DurationMs : null,
                 track.Intent.Explicit,
                 NormalizeGenres(track.Intent.Genres)));
         }
