@@ -32,6 +32,12 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.PreserveRicherArtistCreditsFromSource not found.");
 
+    private static readonly MethodInfo EvaluateGlobalMismatchGuardMethod =
+        typeof(LocalAutoTagRunner).GetMethod(
+            "EvaluateGlobalMismatchGuard",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("LocalAutoTagRunner.EvaluateGlobalMismatchGuard not found.");
+
     private static readonly MethodInfo ApplyPreferenceAwareArtistGuardsMethod =
         typeof(LocalAutoTagRunner).GetMethod(
             "ApplyPreferenceAwareArtistGuards",
@@ -252,6 +258,72 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
 
         Assert.Equal(Artist2BabaOnly, track.Artists);
         Assert.Equal(Artist2BabaOnly, track.AlbumArtists);
+    }
+
+    [Fact]
+    public void EvaluateGlobalMismatchGuard_RejectsSameTitleArtistReplacementBeforeWrite()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "All Over You",
+            Artist = "Deobi",
+            Artists = new List<string> { "Deobi" },
+            HasEmbeddedTitle = true,
+            HasEmbeddedArtist = true
+        };
+        var match = new AutoTagMatchResult
+        {
+            Track = new AutoTagTrack
+            {
+                Title = "All Over You",
+                Artists = new List<string> { "O.B.I" },
+                AlbumArtists = new List<string> { "O.B.I" }
+            }
+        };
+
+        var reason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 }
+            });
+
+        Assert.Equal("match rejected by quality guard (artist mismatch)", reason);
+    }
+
+    [Fact]
+    public void EvaluateGlobalMismatchGuard_AllowsArtistCasingCleanupBeforeWrite()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "Steppas",
+            Artist = "A Boogie wit da Hoodie",
+            Artists = new List<string> { "A Boogie wit da Hoodie" },
+            HasEmbeddedTitle = true,
+            HasEmbeddedArtist = true
+        };
+        var match = new AutoTagMatchResult
+        {
+            Track = new AutoTagTrack
+            {
+                Title = "Steppas",
+                Artists = new List<string> { "A Boogie Wit da Hoodie" },
+                AlbumArtists = new List<string> { "A Boogie Wit da Hoodie" }
+            }
+        };
+
+        var reason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 }
+            });
+
+        Assert.Null(reason);
     }
 
     [Fact]
@@ -604,8 +676,8 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
                 "Rise Up (feat. Falz)"
             });
 
-        Assert.True(effective.Artist);
-        Assert.True(effective.AlbumArtist);
+        Assert.False(effective.Artist);
+        Assert.False(effective.AlbumArtist);
         Assert.Equal(Artist2BabaOnly, incoming.Artists);
         Assert.Equal(Artist2BabaOnly, incoming.AlbumArtists);
     }

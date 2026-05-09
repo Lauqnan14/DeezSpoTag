@@ -617,6 +617,12 @@ public sealed class TidalDownloadService
                     outputPath,
                     expectedDurationSeconds,
                     actualDurationSeconds);
+                DeleteCandidateArtifacts(candidateOutputPath);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                DeleteCandidateArtifacts(candidateOutputPath);
+                throw;
             }
             finally
             {

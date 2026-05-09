@@ -4643,32 +4643,28 @@ public partial class AutoTagService
 
         var beforeTitle = GetMetaFieldValue(diff.Before, AutoTagTitleKey);
         var afterTitle = GetMetaFieldValue(diff.After, AutoTagTitleKey);
+        var beforeArtists = GetMetaFieldValue(diff.Before, AutoTagArtistsKey);
+        var afterArtists = GetMetaFieldValue(diff.After, AutoTagArtistsKey);
+        var beforeAlbumArtists = GetMetaFieldValue(diff.Before, "albumArtists");
+        var afterAlbumArtists = GetMetaFieldValue(diff.After, "albumArtists");
+
+        var artistSimilarity = Math.Max(
+            ComputeIdentitySimilarity(beforeArtists, afterArtists),
+            ComputeIdentitySimilarity(beforeAlbumArtists, afterAlbumArtists));
+        var artistChanged = HasMeaningfulIdentityChange(beforeArtists, afterArtists)
+            || HasMeaningfulIdentityChange(beforeAlbumArtists, afterAlbumArtists);
+        if (artistChanged && artistSimilarity < IdentityReviewArtistSimilarityThreshold)
+        {
+            return $"requires user review: artist identity changed sharply (artist similarity {artistSimilarity:0.000})";
+        }
+
         if (!HasMeaningfulIdentityChange(beforeTitle, afterTitle))
         {
             return null;
         }
 
         var titleSimilarity = ComputeIdentitySimilarity(beforeTitle, afterTitle);
-        if (titleSimilarity >= IdentityReviewTitleSimilarityThreshold)
-        {
-            return null;
-        }
-
-        var beforeArtists = GetMetaFieldValue(diff.Before, AutoTagArtistsKey);
-        var afterArtists = GetMetaFieldValue(diff.After, AutoTagArtistsKey);
-        var beforeAlbumArtists = GetMetaFieldValue(diff.Before, "albumArtists");
-        var afterAlbumArtists = GetMetaFieldValue(diff.After, "albumArtists");
-        var artistChanged = HasMeaningfulIdentityChange(beforeArtists, afterArtists)
-            || HasMeaningfulIdentityChange(beforeAlbumArtists, afterAlbumArtists);
-        if (!artistChanged)
-        {
-            return null;
-        }
-
-        var artistSimilarity = Math.Max(
-            ComputeIdentitySimilarity(beforeArtists, afterArtists),
-            ComputeIdentitySimilarity(beforeAlbumArtists, afterAlbumArtists));
-        if (artistSimilarity >= IdentityReviewArtistSimilarityThreshold)
+        if (titleSimilarity >= IdentityReviewTitleSimilarityThreshold || !artistChanged)
         {
             return null;
         }

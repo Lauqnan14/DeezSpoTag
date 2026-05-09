@@ -131,6 +131,35 @@ public sealed class AutoTagServiceEligibilityTests
         Assert.Null(reason);
     }
 
+    [Fact]
+    public void EvaluateIdentityReviewGuard_FlagsSameTitleArtistReplacement()
+    {
+        var diff = new AutoTagTagDiff
+        {
+            Before = Snapshot("All Over You", ["Deobi"], ["Deobi"]),
+            After = Snapshot("All Over You", ["O.B.I"], ["O.B.I"])
+        };
+
+        var reason = InvokeStatic<string?>("EvaluateIdentityReviewGuard", diff);
+
+        Assert.NotNull(reason);
+        Assert.Contains("artist identity changed sharply", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EvaluateIdentityReviewGuard_AllowsArtistCasingCleanup()
+    {
+        var diff = new AutoTagTagDiff
+        {
+            Before = Snapshot("Steppas", ["A Boogie wit da Hoodie"], ["A Boogie wit da Hoodie"]),
+            After = Snapshot("Steppas", ["A Boogie Wit da Hoodie"], ["A Boogie Wit da Hoodie"])
+        };
+
+        var reason = InvokeStatic<string?>("EvaluateIdentityReviewGuard", diff);
+
+        Assert.Null(reason);
+    }
+
     private static AutoTagTagSnapshot Snapshot(string title, string[] artists, string[] albumArtists)
     {
         return new AutoTagTagSnapshot

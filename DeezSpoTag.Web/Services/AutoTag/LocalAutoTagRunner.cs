@@ -758,17 +758,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
-        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
-        {
-            return null;
-        }
-
-        var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
-        var incomingTitle = AutoTagSimilarity.NormalizeText(
-            OneTaggerMatching.CleanTitleMatching(
-                OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version)));
-        var titleSimilarity = AutoTagSimilarity.ComputeScore(sourceTitle, incomingTitle);
-
         List<string> sourceArtists;
         if (info.Artists.Count > 0)
         {
@@ -787,7 +776,23 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var artistStrictness = Math.Clamp(matchingConfig.Strictness - 0.05d, 0.45d, 0.95d);
         var artistCompatible = sourceArtists.Count == 0
             || incomingArtists.Count == 0
-            || OneTaggerMatching.MatchArtist(sourceArtists, incomingArtists, artistStrictness);
+            || AreArtistIdentitiesCompatibleForOverwrite(sourceArtists, incomingArtists, artistStrictness);
+
+        if (!artistCompatible)
+        {
+            return "match rejected by quality guard (artist mismatch)";
+        }
+
+        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
+        {
+            return null;
+        }
+
+        var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
+        var incomingTitle = AutoTagSimilarity.NormalizeText(
+            OneTaggerMatching.CleanTitleMatching(
+                OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version)));
+        var titleSimilarity = AutoTagSimilarity.ComputeScore(sourceTitle, incomingTitle);
 
         var durationMismatch = HasDurationMismatch(info.DurationSeconds, match.Track.Duration, matchingConfig.MaxDurationDifferenceSeconds);
         var minTitleSimilarity = Math.Clamp(matchingConfig.Strictness - 0.08d, 0.62d, 0.95d);
@@ -797,17 +802,47 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return $"match rejected by quality guard (title similarity {titleSimilarity:0.000} < {minTitleSimilarity:0.000})";
         }
 
-        if (!artistCompatible && titleSimilarity < 0.90d)
-        {
-            return "match rejected by quality guard (artist mismatch)";
-        }
-
         if (durationMismatch && titleSimilarity < 0.90d)
         {
             return "match rejected by quality guard (duration mismatch)";
         }
 
         return null;
+    }
+
+    private static bool AreArtistIdentitiesCompatibleForOverwrite(
+        IReadOnlyList<string> sourceArtists,
+        IReadOnlyList<string> incomingArtists,
+        double strictness)
+    {
+        var normalizedSource = SplitArtistCredits(sourceArtists)
+            .Select(NormalizeArtistIdentity)
+            .Where(artist => !string.IsNullOrWhiteSpace(artist))
+            .ToList();
+        var normalizedIncoming = SplitArtistCredits(incomingArtists)
+            .Select(NormalizeArtistIdentity)
+            .Where(artist => !string.IsNullOrWhiteSpace(artist))
+            .ToList();
+
+        if (normalizedSource.Count == 0 || normalizedIncoming.Count == 0)
+        {
+            return true;
+        }
+
+        if (normalizedSource.Any(source => normalizedIncoming.Contains(source, StringComparer.Ordinal)))
+        {
+            return true;
+        }
+
+        var sourceJoined = string.Join(" ", normalizedSource);
+        var incomingJoined = string.Join(" ", normalizedIncoming);
+        var similarity = AutoTagSimilarity.ComputeScore(sourceJoined, incomingJoined);
+        return similarity >= Math.Clamp(strictness + 0.15d, 0.80d, 0.98d);
+    }
+
+    private static string NormalizeArtistIdentity(string value)
+    {
+        return AutoTagSimilarity.NormalizeText(value);
     }
 
     private static bool HasMatchingIsrc(string? sourceIsrc, string? incomingIsrc)
@@ -7368,6 +7403,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             || (!keepSingleArtistOnly && ShouldPreferSourceArtistCredits(normalizedExistingArtists, normalizedIncomingArtists));
         if (!artistsMatchOrPreferred)
         {
+            effectiveTagSettings.Artist = false;
+            effectiveTagSettings.AlbumArtist = false;
             return;
         }
 

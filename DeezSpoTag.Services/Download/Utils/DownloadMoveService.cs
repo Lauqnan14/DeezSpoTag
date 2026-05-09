@@ -10,6 +10,24 @@ namespace DeezSpoTag.Services.Download.Utils;
 public sealed class DownloadMoveService
 {
     private const char SmbPathSeparator = '/';
+    private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac",
+        ".mp3",
+        ".m4a",
+        ".mp4",
+        ".aac",
+        ".alac",
+        ".wav",
+        ".aif",
+        ".aiff",
+        ".ogg",
+        ".oga",
+        ".opus",
+        ".wma",
+        ".mka",
+        ".webm"
+    };
 
     private readonly ILogger<DownloadMoveService> _logger;
     private readonly LibraryRepository _libraryRepository;
@@ -148,7 +166,14 @@ public sealed class DownloadMoveService
                 continue;
             }
 
-            var overwritePolicy = trackedPaths.Contains(sourcePath) ? trackedOverwritePolicy : "y";
+            var isTracked = trackedPaths.Contains(sourcePath);
+            if (!isTracked && IsKnownAudioFile(sourcePath))
+            {
+                skipped++;
+                continue;
+            }
+
+            var overwritePolicy = isTracked ? trackedOverwritePolicy : "y";
             var movedPath = MoveFileWithPolicy(sourceIoPath, stagingRootIo, destinationRootIo, overwritePolicy);
             if (!string.IsNullOrWhiteSpace(movedPath))
             {
@@ -157,6 +182,11 @@ public sealed class DownloadMoveService
         }
 
         return new MoveOutcome(moved, skipped);
+    }
+
+    private static bool IsKnownAudioFile(string path)
+    {
+        return KnownAudioExtensions.Contains(Path.GetExtension(path));
     }
 
     private async Task<string?> ResolveDestinationRootAsync(long? destinationFolderId, CancellationToken cancellationToken)

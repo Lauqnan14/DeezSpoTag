@@ -497,6 +497,7 @@ public class TrackDownloader
             context.CancellationToken);
 
         EnsureTrackOutputExists(context.WritePath);
+        ValidateDownloadedTrackDuration(context);
         await TagTrackIfNeededAsync(context);
         FinalizeTrackDownloadResult(context);
         context.Listener?.OnDownloadInfo(context.DownloadObject, "Track downloaded successfully", "downloaded");
@@ -582,6 +583,20 @@ public class TrackDownloader
         {
             throw new DownloadException("File was not written to disk or is empty", "downloadError");
         }
+    }
+
+    private static void ValidateDownloadedTrackDuration(TrackDownloadExecutionContext context)
+    {
+        var durationValidation = AudioDurationGuard.ValidateAgainstPreview(
+            context.WritePath,
+            context.Track.Duration);
+        if (durationValidation.Success)
+        {
+            return;
+        }
+
+        DownloadFileUtilities.TryDeleteFile(context.WritePath);
+        throw new DownloadException(durationValidation.Message, "previewDownloadRejected", context.Track);
     }
 
     private async Task TagTrackIfNeededAsync(TrackDownloadExecutionContext context)

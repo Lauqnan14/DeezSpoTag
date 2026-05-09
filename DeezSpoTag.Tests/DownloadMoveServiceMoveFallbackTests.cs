@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Threading;
 using DeezSpoTag.Services.Download.Utils;
 using Xunit;
 
@@ -49,6 +51,66 @@ public sealed class DownloadMoveServiceMoveFallbackTests
             Assert.False(File.Exists(sourcePath));
             Assert.True(File.Exists(destinationPath));
             Assert.Equal("lyrics", File.ReadAllText(destinationPath));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempRoot))
+                {
+                    Directory.Delete(tempRoot, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best-effort test cleanup.
+            }
+        }
+    }
+
+    [Fact]
+    public void MoveFiles_SkipsUntrackedAudioFiles()
+    {
+        var method = GetPrivateStaticMethod("MoveFiles");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-download-move-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "staging");
+        var destinationRoot = Path.Combine(tempRoot, "library");
+        var albumDir = Path.Combine(stagingRoot, "Deobi", "All Over You");
+        Directory.CreateDirectory(albumDir);
+        Directory.CreateDirectory(destinationRoot);
+
+        var trackedMp3 = Path.Combine(albumDir, "Deobi - All Over You.mp3");
+        var stalePreviewFlac = Path.Combine(albumDir, "Deobi - All Over You.flac");
+        var cover = Path.Combine(albumDir, "cover.jpg");
+        File.WriteAllText(trackedMp3, "full");
+        File.WriteAllText(stalePreviewFlac, "preview");
+        File.WriteAllText(cover, "cover");
+
+        var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [trackedMp3] = trackedMp3,
+            [stalePreviewFlac] = stalePreviewFlac,
+            [cover] = cover
+        };
+        var trackedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            trackedMp3
+        };
+
+        try
+        {
+            var outcome = method.Invoke(
+                null,
+                new object[] { sourcePaths, trackedPaths, stagingRoot, destinationRoot, "y", CancellationToken.None })!;
+            var moved = (IReadOnlyDictionary<string, string>)outcome.GetType().GetProperty("Moved")!.GetValue(outcome)!;
+
+            Assert.True(moved.ContainsKey(trackedMp3));
+            Assert.True(moved.ContainsKey(cover));
+            Assert.False(moved.ContainsKey(stalePreviewFlac));
+            Assert.False(File.Exists(trackedMp3));
+            Assert.True(File.Exists(stalePreviewFlac));
+            Assert.True(File.Exists(Path.Combine(destinationRoot, "Deobi", "All Over You", "Deobi - All Over You.mp3")));
+            Assert.False(File.Exists(Path.Combine(destinationRoot, "Deobi", "All Over You", "Deobi - All Over You.flac")));
         }
         finally
         {
