@@ -1,5 +1,7 @@
 using System.Reflection;
+using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Download.Deezer;
+using DeezSpoTag.Services.Utils;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -67,5 +69,28 @@ public sealed class DeezerEngineProcessorPayloadPreferenceTests
 
         var actual = Assert.IsType<string>(method!.Invoke(null, new object?[] { payload, resolvedTagSource }));
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void ApplyTrackUrlsFromPayload_PreservesSpotifyIdentity_WhenDeezerCompletesSpotifyOriginDownload()
+    {
+        var method = typeof(DeezerEngineProcessor).GetMethod(
+            "ApplyTrackUrlsFromPayload",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var track = new Track();
+        var payload = new DeezerQueueItem
+        {
+            SpotifyId = "6EzsUkZqhkXet4vVTc7kKv",
+            DeezerId = "3915340901"
+        };
+
+        method!.Invoke(null, new object?[] { track, payload });
+
+        Assert.Equal("6EzsUkZqhkXet4vVTc7kKv", track.Urls["spotify_track_id"]);
+        Assert.Equal("https://open.spotify.com/track/6EzsUkZqhkXet4vVTc7kKv", track.Urls["spotify"]);
+        Assert.True(TrackIdNormalization.TryResolveSpotifyTrackId(track, out var resolved));
+        Assert.Equal("6EzsUkZqhkXet4vVTc7kKv", resolved);
     }
 }

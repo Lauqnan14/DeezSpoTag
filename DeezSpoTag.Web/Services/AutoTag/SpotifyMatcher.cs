@@ -2,6 +2,10 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class SpotifyMatcher
 {
+    private const int TrackIdAuthority = 3;
+    private const int IsrcAuthority = 2;
+    private const int SearchAuthority = 1;
+
     private static readonly string[] TrackIdTagKeys =
     {
         "SPOTIFY_TRACK_ID",
@@ -30,57 +34,147 @@ public sealed class SpotifyMatcher
     public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, CancellationToken cancellationToken)
     {
         var seededTrackId = TryResolveTrackId(info);
+        var candidates = new List<SpotifyCandidate>();
         if (!string.IsNullOrWhiteSpace(seededTrackId))
         {
-            var byTrackId = await MatchByTrackIdAsync(seededTrackId, info, cancellationToken);
+            var byTrackId = await GetTrackIdCandidateAsync(seededTrackId, info, cancellationToken);
             if (byTrackId != null)
             {
-                return byTrackId;
+                candidates.Add(new SpotifyCandidate(byTrackId, TrackIdAuthority));
             }
         }
 
         if (!string.IsNullOrWhiteSpace(info.Isrc))
         {
             var isrcResults = await _client.SearchTracksAsync($"isrc:{info.Isrc}", 20, cancellationToken);
-            var byIsrc = isrcResults.FirstOrDefault();
-            if (byIsrc != null)
-            {
-                byIsrc = await _client.EnrichTrackWithPathfinderAsync(byIsrc, cancellationToken);
-                EnsureTrackIdentity(byIsrc, seededTrackId, info);
-                return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(byIsrc) };
-            }
+            candidates.AddRange(isrcResults.Select(track => new SpotifyCandidate(track, IsrcAuthority)));
         }
 
         var query = $"{info.Artist} {OneTaggerMatching.CleanTitle(info.Title)}";
         var tracks = await _client.SearchTracksAsync(query, 20, cancellationToken);
-        if (tracks.Count == 0)
-        {
-            return null;
-        }
-
-        var match = OneTaggerMatching.MatchTrack(
-            info,
-            tracks,
-            config,
-            new OneTaggerMatching.TrackSelectors<SpotifyTrackInfo>(
-                track => track.Title,
-                _ => null,
-                track => track.Artists,
-                track => track.Duration,
-                track => track.ReleaseDate),
-            matchArtist: true);
+        candidates.AddRange(tracks.Select(track => new SpotifyCandidate(track, SearchAuthority)));
+        var match = SelectBestCandidate(info, candidates, config);
 
         if (match == null)
         {
             return null;
         }
 
-        var enriched = await _client.EnrichTrackWithPathfinderAsync(match.Track, cancellationToken);
+        var enriched = await _client.EnrichTrackWithPathfinderAsync(match.Track.Track, cancellationToken);
         EnsureTrackIdentity(enriched, seededTrackId, info);
         return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(enriched) };
     }
 
-    private async Task<AutoTagMatchResult?> MatchByTrackIdAsync(string trackId, AutoTagAudioInfo info, CancellationToken cancellationToken)
+    private static SpotifyTrackInfo? SelectBestCandidate(
+        AutoTagAudioInfo info,
+        IReadOnlyList<SpotifyTrackInfo> tracks,
+        AutoTagMatchingConfig config)
+    {
+        return SelectBestCandidate(
+                info,
+                tracks.Select(track => new SpotifyCandidate(track, SearchAuthority)).ToList(),
+                config)
+            ?.Track.Track;
+    }
+
+    private static OneTaggerMatching.MatchSelection<SpotifyCandidate>? SelectBestCandidate(
+        AutoTagAudioInfo info,
+        IReadOnlyList<SpotifyCandidate> candidates,
+        AutoTagMatchingConfig config)
+    {
+        var deduped = DeduplicateCandidates(candidates)
+            .OrderByDescending(candidate => candidate.Authority)
+            .ToList();
+        return MatchCandidate(info, deduped, config);
+    }
+
+    private static OneTaggerMatching.MatchSelection<SpotifyCandidate>? MatchCandidate(
+        AutoTagAudioInfo info,
+        IReadOnlyList<SpotifyCandidate> candidates,
+        AutoTagMatchingConfig config)
+    {
+        var compatibleTracks = candidates
+            .Where(candidate => HasCompatibleArtistIdentity(info, candidate.Track.Artists, config))
+            .ToList();
+        if (compatibleTracks.Count == 0)
+        {
+            return null;
+        }
+
+        return OneTaggerMatching.MatchTrack(
+            info,
+            compatibleTracks,
+            config,
+            new OneTaggerMatching.TrackSelectors<SpotifyCandidate>(
+                candidate => candidate.Track.Title,
+                _ => null,
+                candidate => candidate.Track.Artists,
+                candidate => candidate.Track.Duration,
+                candidate => candidate.Track.ReleaseDate),
+            matchArtist: true);
+    }
+
+    private static List<SpotifyCandidate> DeduplicateCandidates(IReadOnlyList<SpotifyCandidate> candidates)
+    {
+        var deduped = new Dictionary<string, SpotifyCandidate>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in candidates)
+        {
+            var key = NormalizeTrackId(candidate.Track.TrackId)
+                ?? NormalizeTrackId(candidate.Track.Url)
+                ?? $"{candidate.Track.Title}|{string.Join(',', candidate.Track.Artists)}|{candidate.Track.Duration.TotalSeconds:0}";
+            if (deduped.TryGetValue(key, out var existing) && existing.Authority >= candidate.Authority)
+            {
+                continue;
+            }
+
+            deduped[key] = candidate;
+        }
+
+        return deduped.Values.ToList();
+    }
+
+    private static bool HasCompatibleArtistIdentity(
+        AutoTagAudioInfo info,
+        IReadOnlyList<string> candidateArtists,
+        AutoTagMatchingConfig config)
+    {
+        var sourceArtists = info.Artists.Count > 0
+            ? info.Artists
+            : string.IsNullOrWhiteSpace(info.Artist)
+                ? []
+                : [info.Artist];
+        var normalizedSource = sourceArtists
+            .Select(NormalizeArtistIdentity)
+            .Where(artist => !string.IsNullOrWhiteSpace(artist))
+            .ToList();
+        var normalizedCandidate = candidateArtists
+            .Select(NormalizeArtistIdentity)
+            .Where(artist => !string.IsNullOrWhiteSpace(artist))
+            .ToList();
+
+        if (normalizedSource.Count == 0 || normalizedCandidate.Count == 0)
+        {
+            return true;
+        }
+
+        if (normalizedSource.Any(source => normalizedCandidate.Contains(source, StringComparer.Ordinal)))
+        {
+            return true;
+        }
+
+        var similarity = AutoTagSimilarity.ComputeScore(
+            string.Join(" ", normalizedSource),
+            string.Join(" ", normalizedCandidate));
+        var strictness = Math.Clamp(config.Strictness - 0.05d, 0.45d, 0.95d);
+        return similarity >= Math.Clamp(strictness + 0.15d, 0.80d, 0.98d);
+    }
+
+    private static string NormalizeArtistIdentity(string value)
+    {
+        return AutoTagSimilarity.NormalizeText(value);
+    }
+
+    private async Task<SpotifyTrackInfo?> GetTrackIdCandidateAsync(string trackId, AutoTagAudioInfo info, CancellationToken cancellationToken)
     {
         var seeded = new SpotifyTrackInfo
         {
@@ -96,8 +190,10 @@ public sealed class SpotifyMatcher
             return null;
         }
 
-        return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(enriched) };
+        return enriched;
     }
+
+    private sealed record SpotifyCandidate(SpotifyTrackInfo Track, int Authority);
 
     private static string? TryResolveTrackId(AutoTagAudioInfo info)
     {

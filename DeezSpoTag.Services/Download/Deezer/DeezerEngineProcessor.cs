@@ -685,6 +685,12 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
 
     private static void ApplyTrackUrlsFromPayload(CoreTrack track, DeezerQueueItem payload)
     {
+        if (!string.IsNullOrWhiteSpace(payload.SpotifyId))
+        {
+            track.Urls["spotify_track_id"] = payload.SpotifyId;
+            track.Urls[SpotifySource] = $"https://open.spotify.com/track/{payload.SpotifyId}";
+        }
+
         if (!string.IsNullOrWhiteSpace(payload.DeezerId))
         {
             track.Urls["deezer_track_id"] = payload.DeezerId;
