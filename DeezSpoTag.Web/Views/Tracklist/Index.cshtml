@@ -359,7 +359,7 @@
 .tracks-table col.col-number { width: 60px; }
 .tracks-table col.col-quality { width: 170px; }
 .tracks-table col.col-duration { width: 72px; }
-.tracks-table col.col-availability { width: 208px; }
+.tracks-table col.col-availability { width: 240px; }
 .tracks-table col.col-actions { width: 72px; }
 .tracks-table.tracks-table--playlistlike col.col-title { width: 28%; }
 .tracks-table.tracks-table--playlistlike col.col-artist { width: 21%; }
@@ -3821,6 +3821,10 @@ function applyLibrespotTrackDetailsToRow(row, track) {
         row.dataset.availabilityUrl = track.link || '';
         row.dataset.availabilityIsrc = track.isrc || '';
         row.dataset.availabilitySpotifyId = getSpotifyTrackId(track) || '';
+        row.dataset.availabilityAppleId = track.appleId || track.apple_id || '';
+        row.dataset.availabilityTidalId = track.tidalId || track.tidal_id || '';
+        row.dataset.availabilityQobuzId = track.qobuzId || track.qobuz_id || '';
+        row.dataset.availabilityAmazonId = track.amazonId || track.amazon_id || track.amazonMusicId || track.amazon_music_id || '';
         row.dataset.availabilityDeezerId = track.id || '';
         row.dataset.availabilityTitle = track.title || '';
         row.dataset.availabilityArtist = (track.artist && track.artist.name) || track.artists || track.artist_name || '';
@@ -4244,6 +4248,10 @@ function applyMatchedRowState(row, deezerId) {
     if (deezerId) {
         const availabilityTrack = buildAvailabilityTrackFromRow(row, deezerId);
         if (availabilityTrack) {
+            const availabilityKey = buildAvailabilityKeyFromTrack(availabilityTrack);
+            if (availabilityKey) {
+                row.dataset.availabilityKey = availabilityKey;
+            }
             scheduleAvailabilityChecks([availabilityTrack], false);
         }
         void ensureDeezerPlaybackContextForRow(row, deezerId);
@@ -4380,6 +4388,10 @@ function buildAvailabilityTrackFromRow(row, deezerId) {
         link: row.dataset.availabilityUrl || '',
         isrc: row.dataset.availabilityIsrc || '',
         spotifyId: row.dataset.availabilitySpotifyId || '',
+        appleId: row.dataset.availabilityAppleId || '',
+        tidalId: row.dataset.availabilityTidalId || '',
+        qobuzId: row.dataset.availabilityQobuzId || '',
+        amazonId: row.dataset.availabilityAmazonId || '',
         title: row.dataset.availabilityTitle || '',
         artist: row.dataset.availabilityArtist || '',
         durationMs: row.dataset.availabilityDuration ? Number(row.dataset.availabilityDuration) : 0
@@ -4933,12 +4945,10 @@ function shouldShowQualityColumn() {
 }
 
 function renderAvailabilityCell() {
-    const useSpotifyBadge = isDeezerStyleAvailabilitySource();
-    const primaryClass = useSpotifyBadge ? 'availability-spotify' : 'availability-deezer';
-    const primaryTitle = useSpotifyBadge ? 'Spotify' : 'Deezer';
     return `
         <div class="availability-icons">
-            <span class="availability-icon ${primaryClass} is-loading" data-platform="deezer" title="${primaryTitle}"></span>
+            <span class="availability-icon availability-deezer is-loading" data-platform="deezer" title="Deezer"></span>
+            <span class="availability-icon availability-spotify is-loading" data-platform="spotify" title="Spotify"></span>
             <span class="availability-icon availability-tidal is-loading" data-platform="tidal" title="Tidal"></span>
             <span class="availability-icon availability-amazon is-loading" data-platform="amazon" title="Amazon Music"></span>
             <span class="availability-icon availability-qobuz is-loading" data-platform="qobuz" title="Qobuz"></span>
@@ -4982,15 +4992,28 @@ async function getApiToken() {
 
 function buildAvailabilityKeyFromTrack(track, spotifyIdOverride) {
     const currentSource = (tracklistSource || requestSource || '').toLowerCase();
-    const deezerId = currentSource === 'boomplay'
-        ? String(track.deezerId || track.deezer_id || '').trim()
-        : String(track.id || track.deezerId || track.deezer_id || '').trim();
-    if (deezerId) {
-        return `deezer:${deezerId}`;
+    const ids = resolveTrackPlatformIds(track, spotifyIdOverride);
+    const keyParts = [];
+    if (ids.deezerId) {
+        keyParts.push(`deezer:${ids.deezerId}`);
     }
-    const spotifyId = spotifyIdOverride || getSpotifyTrackId(track);
-    if (spotifyId) {
-        return `spotify:${spotifyId}`;
+    if (ids.spotifyId) {
+        keyParts.push(`spotify:${ids.spotifyId}`);
+    }
+    if (ids.appleId) {
+        keyParts.push(`apple:${ids.appleId}`);
+    }
+    if (ids.tidalId) {
+        keyParts.push(`tidal:${ids.tidalId}`);
+    }
+    if (ids.qobuzId) {
+        keyParts.push(`qobuz:${ids.qobuzId}`);
+    }
+    if (ids.amazonId) {
+        keyParts.push(`amazon:${ids.amazonId}`);
+    }
+    if (keyParts.length > 0) {
+        return keyParts.join('|');
     }
     const link = String(track.link || track.sourceUrl || '').trim();
     if (link) {
@@ -5081,14 +5104,16 @@ function drainAvailabilityQueue() {
         availabilityNextAllowedAt = Date.now() + availabilityMinIntervalMs;
         fetchAvailability(next.track)
             .then(result => {
-                if (result !== null && result !== undefined) {
-                    availabilityCache.set(next.key, { stamp: Date.now(), value: result });
+                const normalized = mergeAvailabilityWithTrackEvidence(next.track, result);
+                if (normalized !== null && normalized !== undefined) {
+                    availabilityCache.set(next.key, { stamp: Date.now(), value: normalized });
                 }
-                applyAvailabilityToRows(next.key, result);
+                applyAvailabilityToRows(next.key, normalized);
             })
             .catch(() => {
-                availabilityCache.set(next.key, { stamp: Date.now(), value: null });
-                applyAvailabilityToRows(next.key, null);
+                const normalized = mergeAvailabilityWithTrackEvidence(next.track, null);
+                availabilityCache.set(next.key, { stamp: Date.now(), value: normalized });
+                applyAvailabilityToRows(next.key, normalized);
             })
             .finally(() => {
                 availabilityActive--;
@@ -5116,20 +5141,35 @@ function getCachedAvailability(key) {
 }
 
 async function fetchAvailability(track) {
-    const deezerId = (track.id || track.deezerId || track.deezer_id || '').trim();
-    const spotifyId = getSpotifyTrackId(track);
+    const ids = resolveTrackPlatformIds(track);
     const link = (track.link || track.sourceUrl || '').trim();
     const isrc = (track.isrc || '').trim();
     const qs = new URLSearchParams();
-    if (deezerId) {
-        qs.set('deezerId', deezerId);
-    } else if (spotifyId) {
-        qs.set('spotifyId', spotifyId);
-    } else if (link) {
+    if (ids.deezerId) {
+        qs.set('deezerId', ids.deezerId);
+    }
+    if (ids.spotifyId) {
+        qs.set('spotifyId', ids.spotifyId);
+    }
+    if (ids.appleId) {
+        qs.set('appleId', ids.appleId);
+    }
+    if (ids.tidalId) {
+        qs.set('tidalId', ids.tidalId);
+    }
+    if (ids.qobuzId) {
+        qs.set('qobuzId', ids.qobuzId);
+    }
+    if (ids.amazonId) {
+        qs.set('amazonId', ids.amazonId);
+    }
+    if (link) {
         qs.set('url', link);
-    } else if (isrc) {
+    }
+    if (isrc) {
         qs.set('isrc', isrc);
-    } else {
+    }
+    if ([...qs.keys()].length === 0) {
         return null;
     }
     if (track.title) {
@@ -5141,18 +5181,77 @@ async function fetchAvailability(track) {
     if (artistValue) {
         qs.set('artist', artistValue);
     }
+    const albumValue = typeof track.album === 'object' && track.album !== null
+        ? (track.album.title || track.album.name || '')
+        : (track.album || '');
+    if (albumValue) {
+        qs.set('album', albumValue);
+    }
     if (track.durationMs && Number.isFinite(track.durationMs)) {
         qs.set('durationMs', String(track.durationMs));
     }
 
     const apiToken = await getApiToken();
     const headers = apiToken ? { Authorization: `Bearer ${apiToken}` } : {};
-    const endpoint = deezerId ? '/api/availability/deezer' : '/api/availability/spotify';
-    const response = await fetch(`${endpoint}?${qs.toString()}`, { headers });
+    const response = await fetch(`/api/availability/track?${qs.toString()}`, { headers });
     if (!response.ok) {
         return null;
     }
     return await response.json();
+}
+
+function mergeAvailabilityWithTrackEvidence(track, availability) {
+    const status = availability && typeof availability === 'object'
+        ? { ...availability }
+        : {};
+    const ids = resolveTrackPlatformIds(track);
+    const link = String(track?.link || track?.sourceUrl || '').trim();
+    const source = (tracklistSource || requestSource || '').toLowerCase();
+
+    if (ids.deezerId || isPlatformSourceUrl(link, 'deezer') || source === 'deezer') {
+        status.deezer = true;
+    }
+    if (ids.spotifyId || isPlatformSourceUrl(link, 'spotify') || source === 'spotify') {
+        status.spotify = true;
+    }
+    if (ids.tidalId || isPlatformSourceUrl(link, 'tidal') || source === 'tidal') {
+        status.tidal = true;
+    }
+    if (ids.qobuzId || isPlatformSourceUrl(link, 'qobuz') || source === 'qobuz') {
+        status.qobuz = true;
+    }
+    if (ids.appleId || isPlatformSourceUrl(link, 'apple') || source === 'apple') {
+        status.apple = true;
+    }
+    if (ids.amazonId || isPlatformSourceUrl(link, 'amazon') || source === 'amazon') {
+        status.amazon = true;
+    }
+
+    return status;
+}
+
+function isPlatformSourceUrl(url, platform) {
+    if (!url) {
+        return false;
+    }
+
+    const normalized = url.toLowerCase();
+    switch (platform) {
+        case 'deezer':
+            return normalized.includes('deezer.com/track/');
+        case 'spotify':
+            return normalized.includes('open.spotify.com/track/') || normalized.startsWith('spotify:track:');
+        case 'tidal':
+            return normalized.includes('tidal.com/track/') || normalized.includes('tidal.com/browse/track/');
+        case 'qobuz':
+            return normalized.includes('qobuz.com/') && normalized.includes('/track/');
+        case 'apple':
+            return normalized.includes('music.apple.com/') && (normalized.includes('/song/') || normalized.includes('?i='));
+        case 'amazon':
+            return normalized.includes('music.amazon.');
+        default:
+            return false;
+    }
 }
 
 function applyAvailabilityToRows(key, availability) {
@@ -5169,28 +5268,90 @@ function applyAvailabilityToRow(row, availability) {
         return;
     }
     const status = availability || {};
-    if (isDeezerStyleAvailabilitySource()) {
-        const spotifyAvailable = !!status.spotifyId || !!status.spotifyUrl;
-        updateAvailabilityTag(container, 'deezer', spotifyAvailable);
-    } else {
-        const preview = row.querySelector('.preview-controls')?.getAttribute('data-preview') || '';
-        const deezerId = row.querySelector('.track-checkbox')?.getAttribute('data-track-id') || '';
-        const deezerAvailable = !!status.deezer || !!preview || !!deezerId;
-        updateAvailabilityTag(container, 'deezer', deezerAvailable);
+    updateAvailabilityTag(container, 'deezer', resolvePlatformAvailability(row, status, 'deezer'));
+    updateAvailabilityTag(container, 'spotify', resolvePlatformAvailability(row, status, 'spotify'));
+    updateAvailabilityTag(container, 'tidal', resolvePlatformAvailability(row, status, 'tidal'));
+    updateAvailabilityTag(container, 'amazon', resolvePlatformAvailability(row, status, 'amazon'));
+    updateAvailabilityTag(container, 'qobuz', resolvePlatformAvailability(row, status, 'qobuz'));
+    updateAvailabilityTag(container, 'apple', resolvePlatformAvailability(row, status, 'apple'));
+}
+
+function resolvePlatformAvailability(row, status, platform) {
+    if (!row || !status) {
+        return undefined;
     }
-    updateAvailabilityTag(container, 'tidal', status.tidal);
-    updateAvailabilityTag(container, 'amazon', status.amazon);
-    updateAvailabilityTag(container, 'qobuz', status.qobuz);
-    updateAvailabilityTag(container, 'apple', status.apple);
+
+    if (status[platform] === true) {
+        return true;
+    }
+
+    if (platform === 'spotify' && (status.spotifyId || status.spotifyUrl)) {
+        return true;
+    }
+
+    if (platform === 'deezer' && (status.deezerId || status.deezerUrl)) {
+        return true;
+    }
+
+    if (platform === 'tidal' && (status.tidalId || status.tidalUrl)) {
+        return true;
+    }
+
+    if (platform === 'amazon' && (status.amazonId || status.amazonUrl)) {
+        return true;
+    }
+
+    if (platform === 'qobuz' && (status.qobuzId || status.qobuzUrl)) {
+        return true;
+    }
+
+    if (platform === 'apple' && (status.appleId || status.appleUrl)) {
+        return true;
+    }
+
+    const rowSource = getRowTrackSource(row);
+    const sourceUrl = String(row.dataset.availabilityUrl || '').trim();
+    if (platform === 'spotify'
+        && rowSource === 'spotify'
+        && (row.dataset.availabilitySpotifyId || extractSpotifyTrackId(sourceUrl))) {
+        return true;
+    }
+
+    if (platform === 'deezer'
+        && rowSource === 'deezer'
+        && row.dataset.availabilityDeezerId) {
+        return true;
+    }
+
+    if (platform === 'tidal'
+        && rowSource === 'tidal'
+        && row.dataset.availabilityTidalId) {
+        return true;
+    }
+
+    if (platform === 'qobuz'
+        && rowSource === 'qobuz'
+        && row.dataset.availabilityQobuzId) {
+        return true;
+    }
+
+    if (platform === 'apple'
+        && rowSource === 'apple'
+        && row.dataset.availabilityAppleId) {
+        return true;
+    }
+
+    if (platform === 'amazon'
+        && (rowSource === 'amazon' || rowSource === 'amazonmusic')
+        && row.dataset.availabilityAmazonId) {
+        return true;
+    }
+
+    return status[platform] === false ? false : undefined;
 }
 
 function isDeezerSource() {
     return (currentTracklistMeta?.source || tracklistSource || '').toLowerCase() === 'deezer';
-}
-
-function isDeezerStyleAvailabilitySource() {
-    const source = (currentTracklistMeta?.source || tracklistSource || requestSource || '').toLowerCase();
-    return source === 'deezer' || source === 'boomplay';
 }
 
 function isSpotifySource() {
@@ -5235,6 +5396,46 @@ function getSpotifyTrackId(track) {
         return track.spotifyId;
     }
     return extractSpotifyTrackId(track.link || track.sourceUrl || '');
+}
+
+function resolveTrackPlatformIds(track, spotifyIdOverride = '') {
+    if (!track) {
+        return {};
+    }
+
+    const currentSource = (tracklistSource || requestSource || '').toLowerCase();
+    const deezerIdKeys = currentSource === 'deezer' || currentSource === 'spotify'
+        ? ['deezerId', 'deezer_id', 'id']
+        : ['deezerId', 'deezer_id'];
+    const appleIdKeys = currentSource === 'apple'
+        ? ['appleId', 'apple_id', 'id']
+        : ['appleId', 'apple_id'];
+    const tidalIdKeys = currentSource === 'tidal'
+        ? ['tidalId', 'tidal_id', 'id']
+        : ['tidalId', 'tidal_id'];
+    const qobuzIdKeys = currentSource === 'qobuz'
+        ? ['qobuzId', 'qobuz_id', 'id']
+        : ['qobuzId', 'qobuz_id'];
+
+    const deezerId = firstTrackValue(track, deezerIdKeys);
+    return {
+        deezerId: /^\d+$/.test(deezerId) ? deezerId : '',
+        spotifyId: spotifyIdOverride || firstTrackValue(track, ['spotifyId', 'spotify_id']) || extractSpotifyTrackId(track.link || track.sourceUrl || ''),
+        appleId: firstTrackValue(track, appleIdKeys),
+        tidalId: firstTrackValue(track, tidalIdKeys),
+        qobuzId: firstTrackValue(track, qobuzIdKeys),
+        amazonId: firstTrackValue(track, ['amazonId', 'amazon_id', 'amazonMusicId', 'amazon_music_id'])
+    };
+}
+
+function firstTrackValue(track, keys) {
+    for (const key of keys) {
+        const value = String(track?.[key] || '').trim();
+        if (value) {
+            return value;
+        }
+    }
+    return '';
 }
 
 function isBoomplayTracklistSource() {
@@ -5572,6 +5773,11 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const availabilityKey = buildAvailabilityKeyFromTrack(track, spotifyId);
         const availabilityKeyAttr = availabilityKey ? ` data-availability-key="${availabilityKey}"` : '';
         const availabilitySpotifyAttr = spotifyId ? ` data-availability-spotify-id="${spotifyId}"` : '';
+        const platformIds = resolveTrackPlatformIds(track, spotifyId);
+        const availabilityAppleAttr = platformIds.appleId ? ` data-availability-apple-id="${escapeHtml(platformIds.appleId)}"` : '';
+        const availabilityTidalAttr = platformIds.tidalId ? ` data-availability-tidal-id="${escapeHtml(platformIds.tidalId)}"` : '';
+        const availabilityQobuzAttr = platformIds.qobuzId ? ` data-availability-qobuz-id="${escapeHtml(platformIds.qobuzId)}"` : '';
+        const availabilityAmazonAttr = platformIds.amazonId ? ` data-availability-amazon-id="${escapeHtml(platformIds.amazonId)}"` : '';
         const availabilityUrlAttr = track.link ? ` data-availability-url="${escapeHtml(track.link)}"` : '';
         const availabilityIsrcAttr = track.isrc ? ` data-availability-isrc="${escapeHtml(track.isrc)}"` : '';
         const availabilityTitleAttr = track.title ? ` data-availability-title="${escapeHtml(track.title)}"` : '';
@@ -5645,7 +5851,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                 : `<td class="track-album" onclick="openAlbum('${albumId}')"><span class="track-cell-text">${albumTitle}</span></td>`)
             : '';
         return `
-        <tr${rowClass} data-track-index="${track.index ?? index}" data-track-source="${rowSourceAttr}"${spotifyId ? ` data-spotify-id="${spotifyId}"` : ''}${availabilityKeyAttr}${availabilitySpotifyAttr}${availabilityUrlAttr}${availabilityIsrcAttr}${availabilityTitleAttr}${availabilityArtistAttr}${availabilityDurationAttr}${availabilityDeezerAttr}${streamTrackIdAttr}${trackTokenAttr}${md5OriginAttr}${mediaVersionAttr}>
+        <tr${rowClass} data-track-index="${track.index ?? index}" data-track-source="${rowSourceAttr}"${spotifyId ? ` data-spotify-id="${spotifyId}"` : ''}${availabilityKeyAttr}${availabilitySpotifyAttr}${availabilityAppleAttr}${availabilityTidalAttr}${availabilityQobuzAttr}${availabilityAmazonAttr}${availabilityUrlAttr}${availabilityIsrcAttr}${availabilityTitleAttr}${availabilityArtistAttr}${availabilityDurationAttr}${availabilityDeezerAttr}${streamTrackIdAttr}${trackTokenAttr}${md5OriginAttr}${mediaVersionAttr}>
             <td class="track-number">
                 <span class="track-num">${track.track_position || index + 1}</span>
                 <span class="material-icons preview-controls${previewClass}"

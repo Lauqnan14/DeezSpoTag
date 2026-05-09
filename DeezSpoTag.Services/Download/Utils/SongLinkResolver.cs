@@ -116,6 +116,42 @@ public sealed class SongLinkResolver
         return ResolveByUrlAsync(spotifyUrl, cancellationToken);
     }
 
+    public async Task<SongLinkResult?> ResolveByPlatformIdAsync(
+        string platform,
+        string entityType,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(platform)
+            || string.IsNullOrWhiteSpace(entityType)
+            || string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var normalizedPlatform = platform.Trim();
+        var normalizedType = entityType.Trim();
+        var normalizedId = id.Trim();
+        var cacheKey = $"platform:{normalizedPlatform}:{normalizedType}:{normalizedId}";
+
+        if (TryGetFromCache(cacheKey, userCountry: null, out var cached))
+        {
+            return cached;
+        }
+
+        var result = _resolveProxyClient == null
+            ? null
+            : await _resolveProxyClient.ResolvePlatformIdAsync(
+                normalizedPlatform,
+                normalizedType,
+                normalizedId,
+                cancellationToken);
+
+        result ??= await ResolveNativePlatformIdAsync(normalizedPlatform, normalizedType, normalizedId, cancellationToken);
+        CacheResult(cacheKey, userCountry: null, result);
+        return result;
+    }
+
     public async Task<string?> ResolveDeezerIdFromSpotifyAsync(string spotifyTrackId, CancellationToken cancellationToken)
     {
         var result = await ResolveSpotifyTrackAsync(spotifyTrackId, cancellationToken);
@@ -163,11 +199,19 @@ public sealed class SongLinkResolver
             _logger.LogDebug("song.link is deactivated. Using native link regeneration for {Url}", normalizedUrl);
         }
 
-        SongLinkResult? result = null;
         var source = TryParseSource(normalizedUrl);
-        if (source is { Platform: SpotifyPlatform })
+        SongLinkResult? result = null;
+        if (source != null)
         {
-            result = await ResolveViaProxyOrSongLinkAsync(normalizedUrl, source.TrackId, cancellationToken);
+            result = await ResolveViaProxyAsync(normalizedUrl, source, cancellationToken);
+            if (result == null && string.Equals(source.Platform, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
+            {
+                result = await ResolveExternalSongLinkAsync(normalizedUrl, source.TrackId, cancellationToken);
+                if (result != null && _logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", normalizedUrl);
+                }
+            }
         }
 
         result ??= await ResolveNativeAsync(normalizedUrl, cancellationToken);
@@ -187,29 +231,36 @@ public sealed class SongLinkResolver
         return ResolveByUrlAsync(deezerUrl, cancellationToken);
     }
 
-    private async Task<SongLinkResult?> ResolveViaProxyOrSongLinkAsync(
-        string normalizedUrl,
-        string spotifyTrackId,
+    private Task<SongLinkResult?> ResolveNativePlatformIdAsync(
+        string platform,
+        string entityType,
+        string id,
         CancellationToken cancellationToken)
     {
-        var result = await ResolveViaProxyAsync(normalizedUrl, spotifyTrackId, cancellationToken);
-        if (result != null)
+        if (!string.Equals(entityType, "song", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(entityType, "track", StringComparison.OrdinalIgnoreCase))
         {
-            return result;
+            return Task.FromResult<SongLinkResult?>(null);
         }
 
-        result = await ResolveExternalSongLinkAsync(normalizedUrl, spotifyTrackId, cancellationToken);
-        if (result != null && _logger.IsEnabled(LogLevel.Debug))
+        var url = platform.ToLowerInvariant() switch
         {
-            _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", normalizedUrl);
-        }
+            DeezerPlatform => $"https://www.deezer.com/track/{id}",
+            SpotifyPlatform => $"https://open.spotify.com/track/{id}",
+            TidalPlatform => $"https://listen.tidal.com/track/{id}",
+            QobuzPlatform => $"https://open.qobuz.com/track/{id}",
+            ApplePlatform => $"https://music.apple.com/song/{id}?i={id}",
+            _ => string.Empty
+        };
 
-        return result;
+        return string.IsNullOrWhiteSpace(url)
+            ? Task.FromResult<SongLinkResult?>(null)
+            : ResolveByUrlAsync(url, cancellationToken);
     }
 
     private async Task<SongLinkResult?> ResolveViaProxyAsync(
         string normalizedUrl,
-        string spotifyTrackId,
+        SourceDescriptor source,
         CancellationToken cancellationToken)
     {
         if (_resolveProxyClient == null)
@@ -219,24 +270,50 @@ public sealed class SongLinkResolver
 
         var result = await _resolveProxyClient.ResolveUrlAsync(normalizedUrl, cancellationToken)
                      ?? await _resolveProxyClient.ResolvePlatformIdAsync(
-                         SpotifyPlatform,
+                         source.Platform,
                          "song",
-                         spotifyTrackId,
+                         source.TrackId,
                          cancellationToken);
         if (result == null)
         {
             return null;
         }
 
-        result.SpotifyId ??= spotifyTrackId;
-        result.SpotifyUrl ??= BuildSpotifyTrackUrl(spotifyTrackId);
+        ApplySourceIdentity(result, source, normalizedUrl);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Resolved Spotify link via resolve proxy for {Url}", normalizedUrl);
+            _logger.LogDebug("Resolved {Platform} link via resolve proxy for {Url}", source.Platform, normalizedUrl);
         }
 
         return result;
+    }
+
+    private static void ApplySourceIdentity(SongLinkResult result, SourceDescriptor source, string normalizedUrl)
+    {
+        switch (source.Platform)
+        {
+            case SpotifyPlatform:
+                result.SpotifyId ??= source.TrackId;
+                result.SpotifyUrl ??= BuildSpotifyTrackUrl(source.TrackId);
+                break;
+            case DeezerPlatform:
+                result.DeezerId ??= source.TrackId;
+                result.DeezerUrl ??= BuildDeezerTrackUrl(source.TrackId);
+                break;
+            case TidalPlatform:
+                result.TidalUrl ??= BuildTidalTrackUrl(source.TrackId);
+                break;
+            case QobuzPlatform:
+                result.QobuzUrl ??= BuildQobuzTrackUrl(source.TrackId);
+                break;
+            case ApplePlatform:
+                result.AppleMusicUrl ??= normalizedUrl;
+                break;
+            case AmazonPlatform:
+                result.AmazonUrl ??= normalizedUrl;
+                break;
+        }
     }
 
     private async Task<SongLinkResult?> ResolveNativeAsync(string normalizedUrl, CancellationToken cancellationToken)

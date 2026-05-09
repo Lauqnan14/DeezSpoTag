@@ -1405,6 +1405,7 @@ public partial class Program
         services.AddHostedService<DeezSpoTag.Web.Services.DownloadQueuePreResolutionService>();
         services.AddHostedService<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>();
         services.AddScoped<DeezSpoTag.Web.Services.DownloadIntentService>();
+        services.AddScoped<DeezSpoTag.Web.Services.TrackAvailabilityService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyIdResolver, DeezSpoTag.Web.Services.SpotifyIdResolver>();
         services.AddHostedService<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>();
         services.AddSingleton<LibraryDbService>();

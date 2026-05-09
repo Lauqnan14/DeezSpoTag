@@ -81,6 +81,81 @@ public sealed class ResolveProxyClientTests
     }
 
     [Fact]
+    public async Task ResolveByPlatformIdAsync_UsesResolveProxyPlatformLookup()
+    {
+        string? requestBody = null;
+        var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.NotFound)),
+            Logger = NullLogger<SongLinkResolver>.Instance,
+            ResolveProxyClient = CreateClient(request =>
+            {
+                requestBody = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+                return Json("""
+{
+  "success": true,
+  "isrc": "USRC17607839",
+  "songUrls": {
+    "Spotify": "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+    "Deezer": "https://www.deezer.com/track/3135556",
+    "Tidal": "https://listen.tidal.com/track/202",
+    "Qobuz": "https://open.qobuz.com/track/303",
+    "AmazonMusic": "https://music.amazon.com/tracks/amz1",
+    "AppleMusic": "https://music.apple.com/us/song/name/1440857781?i=1440857781"
+  }
+}
+""");
+            })
+        });
+
+        var result = await resolver.ResolveByPlatformIdAsync("qobuz", "song", "303", CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Contains("\"platform\":\"qobuz\"", requestBody, StringComparison.Ordinal);
+        Assert.Contains("\"type\":\"song\"", requestBody, StringComparison.Ordinal);
+        Assert.Contains("\"id\":\"303\"", requestBody, StringComparison.Ordinal);
+        Assert.Equal(SpotifyTrackId, result!.SpotifyId);
+        Assert.Equal("3135556", result.DeezerId);
+        Assert.Equal("https://listen.tidal.com/track/202", result.TidalUrl);
+        Assert.Equal("https://music.amazon.com/tracks/amz1", result.AmazonUrl);
+        Assert.Equal("https://music.apple.com/us/song/name/1440857781?i=1440857781", result.AppleMusicUrl);
+        Assert.Equal("USRC17607839", result.Isrc);
+    }
+
+    [Fact]
+    public async Task ResolveByUrlAsync_UsesResolveProxyForDeezerUrl()
+    {
+        string? requestBody = null;
+        var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.NotFound)),
+            Logger = NullLogger<SongLinkResolver>.Instance,
+            ResolveProxyClient = CreateClient(request =>
+            {
+                requestBody = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+                return Json("""
+{
+  "success": true,
+  "songUrls": {
+    "Spotify": "https://open.spotify.com/track/4S8PxReB1UiDR2F5x1lyIR",
+    "Deezer": "https://www.deezer.com/track/3021278461",
+    "AmazonMusic": "https://music.amazon.com/tracks/B0D4QF7ABC"
+  }
+}
+""");
+            })
+        });
+
+        var result = await resolver.ResolveByUrlAsync("https://www.deezer.com/track/3021278461", CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Contains("\"url\":\"https://www.deezer.com/track/3021278461\"", requestBody, StringComparison.Ordinal);
+        Assert.Equal("3021278461", result!.DeezerId);
+        Assert.Equal("4S8PxReB1UiDR2F5x1lyIR", result.SpotifyId);
+        Assert.Equal("https://music.amazon.com/tracks/B0D4QF7ABC", result.AmazonUrl);
+    }
+
+    [Fact]
     public async Task ResolveUrlAsync_ReturnsNull_WhenProxyFails()
     {
         var client = CreateClient(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));

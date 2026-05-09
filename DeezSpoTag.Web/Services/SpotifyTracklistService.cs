@@ -886,6 +886,7 @@ public sealed class SpotifyTracklistService
         return new SpotifyTracklistTrack
         {
             Id = id,
+            SpotifyId = ExtractSpotifyTrackId(track),
             Index = index,
             Title = track.Name ?? string.Empty,
             Isrc = track.Isrc ?? string.Empty,
@@ -916,6 +917,7 @@ public sealed class SpotifyTracklistService
         return new SpotifyTracklistTrack
         {
             Id = deezerId,
+            SpotifyId = track.SpotifyId,
             Index = track.Index,
             Title = track.Title,
             Isrc = track.Isrc,
@@ -1096,6 +1098,8 @@ public sealed class SpotifyTracklistTrack
 {
     [JsonPropertyName("id")]
     public string Id { get; init; } = string.Empty;
+    [JsonPropertyName("spotifyId")]
+    public string SpotifyId { get; init; } = string.Empty;
     [JsonPropertyName("index")]
     public int Index { get; init; }
     [JsonPropertyName("title")]

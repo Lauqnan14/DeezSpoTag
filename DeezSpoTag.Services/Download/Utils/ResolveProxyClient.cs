@@ -40,6 +40,19 @@ public sealed partial class ResolveProxyClient
         }, cancellationToken);
     }
 
+    public Task<ResolveProxyLookupResult> ResolveUrlWithStatusAsync(string url, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return Task.FromResult(ResolveProxyLookupResult.NotAttempted("URL is required."));
+        }
+
+        return ResolveWithStatusAsync(new Dictionary<string, string>
+        {
+            ["url"] = url.Trim()
+        }, cancellationToken);
+    }
+
     public Task<SongLinkResult?> ResolvePlatformIdAsync(
         string platform,
         string entityType,
@@ -54,6 +67,27 @@ public sealed partial class ResolveProxyClient
         }
 
         return ResolveAsync(new Dictionary<string, string>
+        {
+            ["platform"] = platform.Trim(),
+            ["type"] = entityType.Trim(),
+            ["id"] = id.Trim()
+        }, cancellationToken);
+    }
+
+    public Task<ResolveProxyLookupResult> ResolvePlatformIdWithStatusAsync(
+        string platform,
+        string entityType,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(platform)
+            || string.IsNullOrWhiteSpace(entityType)
+            || string.IsNullOrWhiteSpace(id))
+        {
+            return Task.FromResult(ResolveProxyLookupResult.NotAttempted("Platform, type, and ID are required."));
+        }
+
+        return ResolveWithStatusAsync(new Dictionary<string, string>
         {
             ["platform"] = platform.Trim(),
             ["type"] = entityType.Trim(),
@@ -86,6 +120,39 @@ public sealed partial class ResolveProxyClient
             }
 
             return null;
+        }
+    }
+
+    private async Task<ResolveProxyLookupResult> ResolveWithStatusAsync(
+        Dictionary<string, string> payload,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = _httpClientFactory.CreateClient(ClientName);
+            using var response = await client.PostAsJsonAsync(ResolveEndpoint, payload, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return ResolveProxyLookupResult.Failed($"Resolve proxy returned HTTP {(int)response.StatusCode}.");
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (TryReadError(document.RootElement, out var error))
+            {
+                return ResolveProxyLookupResult.Failed(error);
+            }
+
+            return ResolveProxyLookupResult.Succeeded(ParseResponse(document.RootElement));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Resolve proxy lookup failed.");
+            }
+
+            return ResolveProxyLookupResult.Failed(ex.Message);
         }
     }
 
@@ -137,6 +204,18 @@ public sealed partial class ResolveProxyClient
         }
 
         return success.ValueKind == JsonValueKind.True;
+    }
+
+    private static bool TryReadError(JsonElement root, out string error)
+    {
+        error = string.Empty;
+        if (!root.TryGetProperty("error", out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        error = value.GetString() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(error);
     }
 
     private static string? ReadSongUrl(JsonElement songUrls, string propertyName)
@@ -248,4 +327,22 @@ public sealed partial class ResolveProxyClient
 
     [GeneratedRegex(@"spotify\.com\/track\/(?<id>[A-Za-z0-9]+)", RegexOptions.IgnoreCase, 250)]
     private static partial Regex SpotifyTrackRegex();
+}
+
+public sealed record ResolveProxyLookupResult(bool Attempted, bool Completed, SongLinkResult? Result, string? Error)
+{
+    public static ResolveProxyLookupResult NotAttempted(string error)
+    {
+        return new ResolveProxyLookupResult(Attempted: false, Completed: false, Result: null, Error: error);
+    }
+
+    public static ResolveProxyLookupResult Failed(string error)
+    {
+        return new ResolveProxyLookupResult(Attempted: true, Completed: false, Result: null, Error: error);
+    }
+
+    public static ResolveProxyLookupResult Succeeded(SongLinkResult? result)
+    {
+        return new ResolveProxyLookupResult(Attempted: true, Completed: true, Result: result, Error: null);
+    }
 }
