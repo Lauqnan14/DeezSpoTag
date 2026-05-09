@@ -917,10 +917,12 @@ public sealed class DownloadIntentService
                 engine,
                 quality,
                 strict: UseStrictQualityFallback(settings, engine, quality));
-        payloadSources = _apiHealthTracker.PrioritizeSources(
-                payloadSources,
-                allowCrossEngineFallback ? null : engine)
-            .ToList();
+        payloadSources = PrioritizeFallbackSourcesByHealth(
+            payloadSources,
+            settings,
+            allowCrossEngineFallback,
+            engine,
+            _apiHealthTracker);
 
         if (useAtmosStereoDual
             && string.Equals(engine, ApplePlatform, StringComparison.OrdinalIgnoreCase)
@@ -4159,9 +4161,40 @@ public sealed class DownloadIntentService
         bool intentRequestsAuto,
         string? normalizedPreferredEngine)
     {
+        if (intentRequestsAuto)
+        {
+            return sources
+                .Where(source => !string.IsNullOrWhiteSpace(source))
+                .ToList();
+        }
+
         var protectedEngine = intentRequestsAuto ? null : normalizedPreferredEngine;
         return _apiHealthTracker.PrioritizeSources(sources, protectedEngine).ToList();
     }
+
+    private static List<string> PrioritizeFallbackSourcesByHealth(
+        IEnumerable<string> sources,
+        DeezSpoTagSettings settings,
+        bool allowCrossEngineFallback,
+        string engine,
+        IDownloadApiHealthTracker apiHealthTracker)
+    {
+        var sourceList = sources
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .ToList();
+        if (IsAutoService(settings.Service))
+        {
+            return sourceList;
+        }
+
+        return apiHealthTracker.PrioritizeSources(
+                sourceList,
+                allowCrossEngineFallback ? null : engine)
+            .ToList();
+    }
+
+    private static bool IsAutoService(string? service)
+        => string.Equals(service?.Trim(), AutoService, StringComparison.OrdinalIgnoreCase);
 
     private static bool HasAnyResolvedAvailability(SongLinkResult? availability)
     {

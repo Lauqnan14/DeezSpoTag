@@ -106,6 +106,28 @@ public sealed class EngineFallbackCoordinatorParityTests
     }
 
     [Fact]
+    public void PrioritizeRemainingPlanSteps_KeepsCanonicalOrder_WhenServiceIsAuto()
+    {
+        var tracker = new DownloadApiHealthTracker();
+        tracker.ReportSuccess("qobuz");
+        var settings = new DeezSpoTagSettings { Service = "auto" };
+        var planSteps = new List<(string Source, string? Quality)>
+        {
+            ("qobuz", "27"),
+            ("tidal", "HI_RES_LOSSLESS"),
+            ("apple", "ALAC"),
+            ("qobuz", "7"),
+            ("qobuz", "6")
+        };
+
+        var steps = InvokePrioritizeRemainingPlanSteps(planSteps, nextIndex: 1, settings, tracker);
+
+        Assert.Equal(
+            new[] { "qobuz|27", "tidal|HI_RES_LOSSLESS", "apple|ALAC", "qobuz|7", "qobuz|6" },
+            steps);
+    }
+
+    [Fact]
     public void FindStepIndex_UsesEngineAndQuality_ForRetryResumeProgress()
     {
         var autoSources = new List<string>
@@ -190,6 +212,31 @@ public sealed class EngineFallbackCoordinatorParityTests
         var result = method!.Invoke(null, new[] { planSteps, engine, quality });
         Assert.NotNull(result);
         return (int)result!;
+    }
+
+    private static List<string> InvokePrioritizeRemainingPlanSteps(
+        List<(string Source, string? Quality)> planSteps,
+        int nextIndex,
+        DeezSpoTagSettings settings,
+        IDownloadApiHealthTracker tracker)
+    {
+        var method = typeof(EngineFallbackCoordinator).GetMethod(
+            "PrioritizeRemainingPlanSteps",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+
+        var coordinator = new EngineFallbackCoordinator(
+            queueRepository: null!,
+            settingsService: null!,
+            songLinkResolver: null!,
+            deezerIsrcResolver: null!,
+            appleCatalogService: null!,
+            activityLog: new NullActivityLogWriter(),
+            apiHealthTracker: tracker);
+        var result = method!.Invoke(coordinator, new object[] { planSteps, nextIndex, settings });
+        Assert.NotNull(result);
+        Assert.IsAssignableFrom<System.Collections.IEnumerable>(result);
+        return ((System.Collections.IEnumerable)result!).Cast<object>().Select(ToStepString).ToList();
     }
 
     private static string ToStepString(object step)

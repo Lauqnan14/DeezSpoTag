@@ -141,7 +141,7 @@ public sealed class EngineFallbackCoordinator
         }
 
         var nextIndex = ResolveNextPlanIndex(planSteps, request);
-        planSteps = PrioritizeRemainingPlanSteps(planSteps, nextIndex);
+        planSteps = PrioritizeRemainingPlanSteps(planSteps, nextIndex, settings);
         mutators.ApplyAutoSources(EncodePlanSteps(planSteps));
         var userCountry = settings.DeezerCountry;
         var resolvedSpotifyId = await ResolveSpotifyIdForFallbackAsync(request, userCountry, cancellationToken);
@@ -193,9 +193,15 @@ public sealed class EngineFallbackCoordinator
 
     private List<(string Source, string? Quality)> PrioritizeRemainingPlanSteps(
         List<(string Source, string? Quality)> planSteps,
-        int nextIndex)
+        int nextIndex,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
         if (planSteps.Count <= 1 || nextIndex >= planSteps.Count - 1)
+        {
+            return planSteps;
+        }
+
+        if (string.Equals(settings.Service?.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
         {
             return planSteps;
         }

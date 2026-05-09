@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -57,6 +58,31 @@ public sealed class DownloadIntentFallbackParityTests
         Assert.False(settings.FallbackBitrate);
     }
 
+    [Fact]
+    public void PrioritizeFallbackSourcesByHealth_KeepsCanonicalOrder_ForAutoService()
+    {
+        var settings = CreateAutoSettings();
+        var tracker = new DownloadApiHealthTracker();
+        tracker.ReportSuccess("qobuz");
+        var sources = new List<string>
+        {
+            "qobuz|27",
+            "tidal|HI_RES_LOSSLESS",
+            "apple|ALAC",
+            "qobuz|7",
+            "qobuz|6"
+        };
+
+        var resolved = InvokePrioritizeFallbackSourcesByHealth(
+            sources,
+            settings,
+            allowCrossEngineFallback: true,
+            engine: "qobuz",
+            tracker);
+
+        Assert.Equal(sources, resolved);
+    }
+
     private static DeezSpoTagSettings CreateAutoSettings()
     {
         return new DeezSpoTagSettings
@@ -96,5 +122,22 @@ public sealed class DownloadIntentFallbackParityTests
         Assert.NotNull(method);
 
         method!.Invoke(null, new object[] { settings });
+    }
+
+    private static List<string> InvokePrioritizeFallbackSourcesByHealth(
+        List<string> sources,
+        DeezSpoTagSettings settings,
+        bool allowCrossEngineFallback,
+        string engine,
+        IDownloadApiHealthTracker tracker)
+    {
+        var method = typeof(DownloadIntentService).GetMethod(
+            "PrioritizeFallbackSourcesByHealth",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object[] { sources, settings, allowCrossEngineFallback, engine, tracker });
+        Assert.NotNull(result);
+        return Assert.IsAssignableFrom<List<string>>(result);
     }
 }
