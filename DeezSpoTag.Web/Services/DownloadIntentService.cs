@@ -5478,6 +5478,12 @@ public sealed class DownloadIntentService
         }
 
         var context = BuildEnqueueItemContext(payload, allowQualityUpgrade, requestedQualityRank);
+        var payloadFailure = TryValidateResolvedQueuePayload(payload, context);
+        if (payloadFailure != null)
+        {
+            return payloadFailure;
+        }
+
         var destinationFailure = await TryValidateEnqueueDestinationAsync(payload, context, cancellationToken);
         if (destinationFailure != null)
         {
@@ -5521,6 +5527,54 @@ public sealed class DownloadIntentService
             requestedQualityRank ?? int.MinValue,
             requestedLocalQualityRank,
             allowQualityUpgrade && requestedLocalQualityRank.HasValue);
+    }
+
+    private static EnqueueItemDecision? TryValidateResolvedQueuePayload<TPayload>(
+        TPayload payload,
+        EnqueueItemContext context)
+        where TPayload : class
+    {
+        var identity = context.Identity;
+        if (RequiresResolvedMusicMetadata(identity)
+            && (string.IsNullOrWhiteSpace(identity.TrackTitle) || string.IsNullOrWhiteSpace(identity.TrackArtist)))
+        {
+            return EnqueueItemDecision.Fail(
+                "unresolved_metadata",
+                "Skipped: track metadata could not be resolved for this download.");
+        }
+
+        var sourceUrl = TryGetPayloadString(payload, "SourceUrl");
+        if (!HasRequiredEngineIdentity(identity, sourceUrl))
+        {
+            return EnqueueItemDecision.Fail(
+                "unresolved_engine_identity",
+                $"Skipped: {identity.Engine} download could not be matched to a valid source.");
+        }
+
+        return null;
+    }
+
+    private static bool RequiresResolvedMusicMetadata(PayloadIdentity identity)
+    {
+        var contentType = NormalizeContentType(identity.ContentType);
+        return !string.Equals(contentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(contentType, DownloadContentTypes.Video, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasRequiredEngineIdentity(PayloadIdentity identity, string? sourceUrl)
+    {
+        return identity.Engine switch
+        {
+            DeezerPlatform => !string.IsNullOrWhiteSpace(identity.DeezerTrackId)
+                || IsServiceUrlMatch(sourceUrl ?? string.Empty, DeezerPlatform),
+            ApplePlatform => !string.IsNullOrWhiteSpace(identity.AppleTrackId)
+                || IsServiceUrlMatch(sourceUrl ?? string.Empty, ApplePlatform),
+            TidalPlatform => IsServiceUrlMatch(sourceUrl ?? string.Empty, TidalPlatform),
+            AmazonPlatform => IsServiceUrlMatch(sourceUrl ?? string.Empty, AmazonPlatform),
+            QobuzPlatform => !string.IsNullOrWhiteSpace(identity.Isrc)
+                || IsServiceUrlMatch(sourceUrl ?? string.Empty, QobuzPlatform),
+            _ => true
+        };
     }
 
     private async Task<EnqueueItemDecision?> TryValidateEnqueueDestinationAsync<TPayload>(
