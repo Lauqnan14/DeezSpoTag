@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using DeezSpoTag.Web.Services.AutoTag;
@@ -73,18 +74,27 @@ public sealed class SpotifyMatcherCandidateSelectionTests
         AutoTagAudioInfo source,
         IReadOnlyList<SpotifyTrackInfo> candidates)
     {
+        var candidateType = typeof(SpotifyMatcher).GetNestedType("SpotifyCandidate", BindingFlags.NonPublic);
+        Assert.NotNull(candidateType);
+        var candidateListType = typeof(List<>).MakeGenericType(candidateType!);
+        var wrappedCandidates = (IList)Activator.CreateInstance(candidateListType)!;
+        foreach (var candidate in candidates)
+        {
+            wrappedCandidates.Add(Activator.CreateInstance(candidateType!, candidate, 1));
+        }
+
         var method = typeof(SpotifyMatcher).GetMethod(
             "SelectBestCandidate",
             BindingFlags.NonPublic | BindingFlags.Static,
             binder: null,
-            types: new[] { typeof(AutoTagAudioInfo), typeof(IReadOnlyList<SpotifyTrackInfo>), typeof(AutoTagMatchingConfig) },
+            types: new[] { typeof(AutoTagAudioInfo), typeof(IReadOnlyList<>).MakeGenericType(candidateType!), typeof(AutoTagMatchingConfig) },
             modifiers: null);
         Assert.NotNull(method);
 
-        return (SpotifyTrackInfo?)method!.Invoke(null, new object[]
+        var selection = method!.Invoke(null, new object[]
         {
             source,
-            candidates,
+            wrappedCandidates,
             new AutoTagMatchingConfig
             {
                 MatchDuration = true,
@@ -92,5 +102,13 @@ public sealed class SpotifyMatcherCandidateSelectionTests
                 Strictness = 0.7
             }
         });
+        if (selection == null)
+        {
+            return null;
+        }
+
+        var selectedCandidate = selection.GetType().GetProperty("Track")?.GetValue(selection);
+        Assert.NotNull(selectedCandidate);
+        return selectedCandidate!.GetType().GetProperty("Track")?.GetValue(selectedCandidate) as SpotifyTrackInfo;
     }
 }

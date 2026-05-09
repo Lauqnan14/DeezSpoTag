@@ -25,6 +25,14 @@ public sealed class EngineFallbackCoordinatorParityTests
     private static readonly string[] ExpectedAutoSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "deezer|9" };
     private static readonly string[] ExpectedAutoPlusFallbackPlanSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "apple|ALAC", "qobuz|7" };
     private static readonly string[] ExpectedForcedDeezerFallbackSteps = { "deezer|9", "deezer|3", "deezer|1" };
+    private static readonly string[] ExpectedCanonicalAutoRemainingSteps =
+    {
+        "qobuz|27",
+        "tidal|HI_RES_LOSSLESS",
+        "apple|ALAC",
+        "qobuz|7",
+        "qobuz|6"
+    };
 
     [Fact]
     public void BuildPlanSteps_PrefersAutoSources_ThenAppendsFallbackPlan()
@@ -122,9 +130,7 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = InvokePrioritizeRemainingPlanSteps(planSteps, nextIndex: 1, settings, tracker);
 
-        Assert.Equal(
-            new[] { "qobuz|27", "tidal|HI_RES_LOSSLESS", "apple|ALAC", "qobuz|7", "qobuz|6" },
-            steps);
+        Assert.Equal(ExpectedCanonicalAutoRemainingSteps, steps);
     }
 
     [Fact]

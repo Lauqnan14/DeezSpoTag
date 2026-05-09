@@ -65,18 +65,6 @@ public sealed class SpotifyMatcher
         return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(enriched) };
     }
 
-    private static SpotifyTrackInfo? SelectBestCandidate(
-        AutoTagAudioInfo info,
-        IReadOnlyList<SpotifyTrackInfo> tracks,
-        AutoTagMatchingConfig config)
-    {
-        return SelectBestCandidate(
-                info,
-                tracks.Select(track => new SpotifyCandidate(track, SearchAuthority)).ToList(),
-                config)
-            ?.Track.Track;
-    }
-
     private static OneTaggerMatching.MatchSelection<SpotifyCandidate>? SelectBestCandidate(
         AutoTagAudioInfo info,
         IReadOnlyList<SpotifyCandidate> candidates,
@@ -138,11 +126,20 @@ public sealed class SpotifyMatcher
         IReadOnlyList<string> candidateArtists,
         AutoTagMatchingConfig config)
     {
-        var sourceArtists = info.Artists.Count > 0
-            ? info.Artists
-            : string.IsNullOrWhiteSpace(info.Artist)
-                ? []
-                : [info.Artist];
+        IReadOnlyList<string> sourceArtists;
+        if (info.Artists.Count > 0)
+        {
+            sourceArtists = info.Artists;
+        }
+        else if (string.IsNullOrWhiteSpace(info.Artist))
+        {
+            sourceArtists = [];
+        }
+        else
+        {
+            sourceArtists = [info.Artist];
+        }
+
         var normalizedSource = sourceArtists
             .Select(NormalizeArtistIdentity)
             .Where(artist => !string.IsNullOrWhiteSpace(artist))
