@@ -208,12 +208,14 @@ public sealed class AppleTracklistApiController : ControllerBase
 
     private static object BuildTrackEntry(JsonElement track, JsonElement attributes, string title, string artistName, string albumName)
     {
+        var durationMs = attributes.TryGetProperty("durationInMillis", out var d) ? d.GetInt32() : 0;
         return new
         {
             id = track.GetProperty("id").GetString() ?? "",
             title,
             isrc = attributes.TryGetProperty("isrc", out var isrcEl) ? isrcEl.GetString() ?? "" : "",
-            duration = attributes.TryGetProperty("durationInMillis", out var d) ? (d.GetInt32() / 1000) : 0,
+            duration = durationMs > 0 ? durationMs / 1000 : 0,
+            durationMs,
             artist = new { name = artistName },
             album = new
             {

@@ -890,6 +890,7 @@ public sealed class SpotifyTracklistService
             Title = track.Name ?? string.Empty,
             Isrc = track.Isrc ?? string.Empty,
             Duration = track.DurationMs.HasValue ? (int)Math.Round(track.DurationMs.Value / 1000d) : 0,
+            DurationMs = track.DurationMs.GetValueOrDefault(),
             TrackPosition = index + 1,
             Link = track.SourceUrl,
             Preview = preview,
@@ -920,6 +921,7 @@ public sealed class SpotifyTracklistService
             Isrc = track.Isrc,
             Preview = $"/api/deezer/stream/{deezerId}",
             Duration = track.Duration,
+            DurationMs = track.DurationMs,
             TrackPosition = track.TrackPosition,
             Link = track.Link,
             ArtistIds = track.ArtistIds,
@@ -1104,6 +1106,8 @@ public sealed class SpotifyTracklistTrack
     public string Preview { get; init; } = string.Empty;
     [JsonPropertyName("duration")]
     public int Duration { get; init; }
+    [JsonPropertyName("durationMs")]
+    public int DurationMs { get; init; }
     [JsonPropertyName("track_position")]
     public int TrackPosition { get; init; }
     [JsonPropertyName("link")]

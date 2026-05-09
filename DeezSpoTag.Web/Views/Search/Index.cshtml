@@ -2289,9 +2289,22 @@ function buildLibraryCheckKey(item) {
     if (isrc) return `isrc:${isrc.toLowerCase()}`;
     const title = (item.name || '').trim().toLowerCase();
     const artist = (item.artist || '').trim().toLowerCase();
-    const duration = Number(item.durationMs || item.duration || 0) || 0;
+    const duration = resolveSearchItemDurationMs(item);
     if (!title || !artist) return '';
     return `track:${title}|artist:${artist}|dur:${duration || 0}`;
+}
+
+function resolveSearchItemDurationMs(item) {
+    if (!item) return 0;
+    const durationMs = Number(item.durationMs || item.duration_ms || 0);
+    if (Number.isFinite(durationMs) && durationMs > 0) {
+        return Math.round(durationMs);
+    }
+
+    const durationSeconds = Number(item.duration || item.durationSeconds || item.duration_seconds || 0);
+    return Number.isFinite(durationSeconds) && durationSeconds > 0
+        ? Math.round(durationSeconds * 1000)
+        : 0;
 }
 
 async function refreshLibraryExistence(sourcesToCheck) {
@@ -2343,7 +2356,7 @@ async function updateLibraryStatusForTracks(items) {
             isrc: item.isrc || '',
             trackTitle: item.name || '',
             artistName: item.artist || '',
-            durationMs: Number(item.durationMs || item.duration || 0) || null
+            durationMs: resolveSearchItemDurationMs(item) || null
         };
         requests.push(req);
     }

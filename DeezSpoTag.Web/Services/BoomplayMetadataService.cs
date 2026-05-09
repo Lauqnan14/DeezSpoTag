@@ -105,6 +105,9 @@ public sealed class BoomplayMetadataService
     private static readonly Regex StreamNumericPrefixRegex = CreateRegex(
         @"^\s*\d{1,2}\s*[\.\-_)]\s*",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex ClockDurationRegex = CreateRegex(
+        @"(?<!\d)(?:(?<hours>\d{1,2}):)?(?<minutes>\d{1,2}):(?<seconds>\d{2})(?!\d)",
+        RegexOptions.Compiled);
     private static readonly Regex StreamMasterSuffixRegex = CreateRegex(
         @"\s*(?:[-_:]\s*)?(?:\(\s*)?master(?:\s*\))?\s*(?:\(\s*\d+\s*\)|\d+)?\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -2644,6 +2647,11 @@ public sealed class BoomplayMetadataService
             return millis;
         }
 
+        if (TryParseClockDurationMilliseconds(raw, out var clockMillis))
+        {
+            return clockMillis;
+        }
+
         if (TryParseTimeSpanMilliseconds(raw, out var timeSpanMillis))
         {
             return timeSpanMillis;
@@ -2663,6 +2671,31 @@ public sealed class BoomplayMetadataService
         milliseconds = parsed > 0 ? parsed : 0;
         return true;
     }
+
+    private static bool TryParseClockDurationMilliseconds(string raw, out int milliseconds)
+    {
+        milliseconds = 0;
+        var match = ClockDurationRegex.Match(raw.Trim());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var hours = ParseClockPart(match.Groups["hours"].Value);
+        var minutes = ParseClockPart(match.Groups["minutes"].Value);
+        var seconds = ParseClockPart(match.Groups["seconds"].Value);
+        if (seconds > 59)
+        {
+            return false;
+        }
+
+        var totalSeconds = hours * 3600 + minutes * 60 + seconds;
+        milliseconds = totalSeconds > 0 ? totalSeconds * 1000 : 0;
+        return milliseconds > 0;
+    }
+
+    private static int ParseClockPart(string raw)
+        => int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
 
     private static bool TryParseTimeSpanMilliseconds(string raw, out int milliseconds)
     {
@@ -3033,6 +3066,12 @@ public sealed class BoomplayMetadataService
 
     private static void TryApplySongDetailField(BoomplayTrackMetadata track, string normalizedLabel, string valueText)
     {
+        if (track.DurationMs <= 0 && IsDurationLabel(normalizedLabel))
+        {
+            track.DurationMs = ParseDurationMs(valueText);
+            return;
+        }
+
         if (normalizedLabel == "genre" || normalizedLabel.Contains("genre", StringComparison.Ordinal))
         {
             AddGenre(track, valueText);
@@ -3058,6 +3097,15 @@ public sealed class BoomplayMetadataService
                || normalizedLabel == "release year"
                || normalizedLabel == "year of release"
                || normalizedLabel.Contains("release date", StringComparison.Ordinal);
+    }
+
+    private static bool IsDurationLabel(string normalizedLabel)
+    {
+        return normalizedLabel == "duration"
+               || normalizedLabel == "length"
+               || normalizedLabel == "time"
+               || normalizedLabel.Contains("duration", StringComparison.Ordinal)
+               || normalizedLabel.Contains("length", StringComparison.Ordinal);
     }
 
     private static void AddGenre(BoomplayTrackMetadata target, string? genre)

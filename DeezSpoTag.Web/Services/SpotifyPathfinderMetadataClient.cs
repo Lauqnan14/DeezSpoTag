@@ -5118,7 +5118,7 @@ public sealed class SpotifyPathfinderMetadataClient
         string? releaseType = NormalizeReleaseType(TryGetString(trackUnion, AlbumOfTrackKey, "type"));
         string albumGroup = MapReleaseTypeToAlbumGroup(releaseType);
         string? releaseDate = TryGetString(trackUnion, AlbumOfTrackKey, "date", IsoStringKey) ?? TryGetString(trackUnion, AlbumOfTrackKey, ReleaseDateKey) ?? TryGetString(trackUnion, AlbumOfTrackKey, ReleaseDateSnakeKey) ?? ExtractYearFromDate(trackUnion, AlbumOfTrackKey);
-        int? durationMs = TryGetInt(trackUnion, DurationKey, TotalMillisecondsKey);
+        int? durationMs = ResolveTrackDurationMs(trackUnion);
         string? imageUrl = ExtractCoverUrl(trackUnion, "visualIdentity") ?? ExtractCoverUrl(trackUnion, AlbumOfTrackKey, CoverArtKey);
         string? isrc = ExtractIsrc(trackUnion);
         int? trackNumber = TryGetInt(trackUnion, "trackNumber") ?? TryGetInt(trackUnion, "track_number") ?? TryGetInt(trackUnion, "number");
@@ -5394,7 +5394,7 @@ public sealed class SpotifyPathfinderMetadataClient
         foreach (PlaylistTrackProjection item in EnumeratePlaylistTrackProjections(items))
         {
             string? album = item.Summary.Album ?? TryGetString(item.TrackData, AlbumOfTrackKey, "name") ?? TryGetString(item.TrackData, AlbumType, "name");
-            int? durationMs = item.Summary.DurationMs ?? TryGetInt(item.TrackData, "trackDuration", TotalMillisecondsKey) ?? TryGetInt(item.TrackData, DurationKey, TotalMillisecondsKey) ?? TryGetInt(item.TrackData, DurationKey, "milliseconds");
+            int? durationMs = item.Summary.DurationMs ?? ResolveTrackDurationMs(item.TrackData);
             string? imageUrl = item.Summary.ImageUrl ?? ExtractCoverUrl(item.TrackData, AlbumOfTrackKey, CoverArtKey) ?? ExtractCoverUrl(item.TrackData, AlbumType, CoverArtKey) ?? ExtractCoverUrl(item.TrackData, CoverArtKey);
             string? isrc = item.Summary.Isrc ?? ExtractIsrc(item.TrackData);
             int? trackNumber = item.Summary.TrackNumber ?? TryGetInt(item.TrackData, "trackNumber") ?? TryGetInt(item.TrackData, "track_number") ?? TryGetInt(item.TrackData, "number");
@@ -6601,6 +6601,30 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
         return (value.ValueKind == JsonValueKind.Number) ? new int?(value.GetInt32()) : ((int?)null);
+    }
+
+    private static int? ResolveTrackDurationMs(JsonElement track)
+    {
+        var explicitMilliseconds =
+            TryGetInt(track, "durationMs")
+            ?? TryGetInt(track, "duration_ms")
+            ?? TryGetInt(track, "trackDuration", TotalMillisecondsKey)
+            ?? TryGetInt(track, DurationKey, TotalMillisecondsKey)
+            ?? TryGetInt(track, DurationKey, "milliseconds");
+        if (explicitMilliseconds is > 0)
+        {
+            return explicitMilliseconds;
+        }
+
+        var directDuration = TryGetInt(track, DurationKey);
+        if (directDuration is not > 0)
+        {
+            return null;
+        }
+
+        return directDuration >= 10_000
+            ? directDuration
+            : directDuration * 1000;
     }
 
     private static bool? TryGetBool(JsonElement root, params string[] path)

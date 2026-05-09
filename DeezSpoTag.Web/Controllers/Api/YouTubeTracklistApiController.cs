@@ -180,11 +180,13 @@ public sealed class YouTubeTracklistApiController : ControllerBase
             artistName = metadata.CreatorName;
         }
 
+        var duration = GetInt(entry, "duration");
         return new
         {
             id = videoId,
             title,
-            duration = GetInt(entry, "duration"),
+            duration,
+            durationMs = Math.Max(0, duration) * 1000L,
             track_position = trackPosition,
             link = sourceUrl,
             sourceUrl,

@@ -2603,6 +2603,7 @@ function mapLibraryStyleTracks(tracks) {
         artist: { name: track.artistName || 'Unknown', id: '' },
         album: { title: track.albumTitle || 'Unknown', cover_medium: normalizeCoverUrl(track.coverPath || '') },
         duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
+        durationMs: track.durationMs || 0,
         preview: '',
         track_position: index + 1
     }));
@@ -2658,6 +2659,9 @@ function mapRecommendationsTracklist(payload) {
             cover_medium: normalizeCoverUrl(track.album?.coverMedium || track.album?.cover_medium || '')
         },
         duration: Number.isFinite(track.duration) ? track.duration : 0,
+        durationMs: Number.isFinite(track.durationMs)
+            ? track.durationMs
+            : (Number.isFinite(track.duration) ? track.duration * 1000 : 0),
         isrc: track.isrc || '',
         preview: '',
         track_position: track.trackPosition || track.track_position || index + 1
@@ -2694,6 +2698,7 @@ function mapPlexTracklist(playlist) {
         artist: { name: track.artist || 'Unknown', id: '' },
         album: { title: track.album || 'Unknown', cover_medium: normalizeCoverUrl(track.coverUrl || '') },
         duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
+        durationMs: track.durationMs || 0,
         preview: track.streamUrl || '',
         track_position: index + 1,
         link: track.streamUrl || ''
@@ -3741,6 +3746,7 @@ async function hydrateLibrespotTrackDetails(tracks) {
                 artist: { name: track.artists || 'Unknown', id: '' },
                 album: { title: track.album || 'Unknown', cover_medium: normalizeCoverUrl(track.imageUrl || '') },
                 duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
+                durationMs: track.durationMs || 0,
                 isrc: track.isrc || '',
                 link: track.sourceUrl || `https://open.spotify.com/track/${track.id}`
             };
@@ -3770,6 +3776,9 @@ function applyLibrespotTrackDetailsToRow(row, track) {
         return;
     }
 
+    const durationSeconds = resolveTrackDurationSeconds(track);
+    const durationMs = durationSeconds > 0 ? durationSeconds * 1000 : 0;
+
     const titleCell = row.querySelector('.track-title');
     if (titleCell) {
         titleCell.innerHTML = renderTrackTitleHtml(track);
@@ -3787,7 +3796,7 @@ function applyLibrespotTrackDetailsToRow(row, track) {
 
     const durationCell = row.querySelector('.track-duration');
     if (durationCell) {
-        durationCell.textContent = formatDuration(track.duration || 0);
+        durationCell.textContent = formatTrackDurationSeconds(durationSeconds);
     }
 
     const checkbox = row.querySelector('.track-checkbox');
@@ -3798,7 +3807,7 @@ function applyLibrespotTrackDetailsToRow(row, track) {
         checkbox.setAttribute('data-track-album', escapeHtml(track.album?.title || ''));
         checkbox.setAttribute('data-track-cover', escapeHtml(normalizeCoverUrl(track.album?.cover_medium || '')));
         checkbox.setAttribute('data-track-isrc', escapeHtml(track.isrc || ''));
-        checkbox.setAttribute('data-track-duration-ms', track.duration ? track.duration * 1000 : 0);
+        checkbox.setAttribute('data-track-duration-ms', durationMs);
     }
 
     const ignoreButton = row.querySelector('.track-ignore-btn');
@@ -3815,7 +3824,7 @@ function applyLibrespotTrackDetailsToRow(row, track) {
         row.dataset.availabilityDeezerId = track.id || '';
         row.dataset.availabilityTitle = track.title || '';
         row.dataset.availabilityArtist = (track.artist && track.artist.name) || track.artists || track.artist_name || '';
-        row.dataset.availabilityDuration = track.duration ? String(Math.round(track.duration * 1000)) : '';
+        row.dataset.availabilityDuration = durationMs > 0 ? String(durationMs) : '';
         scheduleAvailabilityChecks([track], false);
     }
 }
@@ -3975,7 +3984,7 @@ function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
         artist: resolveArtistName(track) || '',
         album: track.album?.title || '',
         isrc: track.isrc || '',
-        durationMs: track.duration ? Math.round(track.duration * 1000) : 0
+        durationMs: resolveTrackDurationMs(track)
     };
 }
 
@@ -4265,12 +4274,12 @@ function applyDeezerMetadataToRow(row, metadata) {
     if (!row || !metadata) {
         return;
     }
-    const durationMs = Number(metadata.durationMs || metadata.duration || 0);
+    const durationMs = resolveMetadataDurationMs(metadata);
     if (durationMs > 0) {
         const durationSeconds = Math.round(durationMs / 1000);
         const durationCell = row.querySelector('.track-duration');
         if (durationCell) {
-            durationCell.textContent = formatDuration(durationSeconds);
+            durationCell.textContent = formatTrackDurationSeconds(durationSeconds);
         }
         row.dataset.availabilityDuration = String(durationMs);
         const checkbox = row.querySelector('.track-checkbox');
@@ -4344,6 +4353,22 @@ function applyDeezerMetadataToRow(row, metadata) {
             checkbox.setAttribute('data-track-cover', escapeHtml(cover));
         }
     }
+}
+
+function resolveMetadataDurationMs(metadata) {
+    if (!metadata) {
+        return 0;
+    }
+
+    const explicitMilliseconds = Number(metadata.durationMs || metadata.duration_ms || 0);
+    if (Number.isFinite(explicitMilliseconds) && explicitMilliseconds > 0) {
+        return Math.round(explicitMilliseconds);
+    }
+
+    const seconds = Number(metadata.duration || metadata.durationSeconds || metadata.duration_seconds || 0);
+    return Number.isFinite(seconds) && seconds > 0
+        ? Math.round(seconds * 1000)
+        : 0;
 }
 
 function buildAvailabilityTrackFromRow(row, deezerId) {
@@ -5551,7 +5576,8 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const availabilityIsrcAttr = track.isrc ? ` data-availability-isrc="${escapeHtml(track.isrc)}"` : '';
         const availabilityTitleAttr = track.title ? ` data-availability-title="${escapeHtml(track.title)}"` : '';
         const availabilityArtistAttr = artistName ? ` data-availability-artist="${escapeHtml(artistName)}"` : '';
-        const availabilityDurationAttr = track.duration ? ` data-availability-duration="${Math.round(track.duration * 1000)}"` : '';
+        const durationSeconds = resolveTrackDurationSeconds(track);
+        const availabilityDurationAttr = durationSeconds > 0 ? ` data-availability-duration="${Math.round(durationSeconds * 1000)}"` : '';
         const deezerId = playbackSource === 'deezer'
             ? String(track.deezerId || track.deezer_id || track.id || '').trim()
             : resolveExternalDeezerId(track);
@@ -5636,7 +5662,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             <td class="track-artist" onclick="openArtist('${artistId}')"><span class="track-cell-text">${escapeHtml(artistDisplayName)}</span></td>
             ${collectionCell}
             ${shouldShowQualityColumn() ? `<td class="track-quality">${renderQualityCell(track)}</td>` : ''}
-            <td class="track-duration">${formatDuration(track.duration || 0)}</td>
+            <td class="track-duration">${formatTrackDurationSeconds(durationSeconds)}</td>
             ${shouldShowAvailabilityColumn(isLocalSource) ? `<td class="track-availability">${renderAvailabilityCell()}</td>` : ''}
             <td class="track-actions">
                 <div class="track-actions-row">
@@ -5660,7 +5686,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                            data-track-has-atmos="${track.hasAtmos ? 'true' : 'false'}"
                            data-track-has-apple-digital-master="${track.hasAppleDigitalMaster ? 'true' : 'false'}"
                            data-track-is-video="${track.isVideo ? 'true' : 'false'}"
-                           data-track-duration-ms="${track.duration ? track.duration * 1000 : 0}"
+                           data-track-duration-ms="${durationSeconds > 0 ? durationSeconds * 1000 : 0}"
                            data-track-position="${track.track_position || index + 1}"${checkboxDisabledAttr}>`}
                     <button class="track-ignore-btn ${ignoreToggleClass}" type="button"
                         data-ignore-track-id="${track.id}"
@@ -5745,11 +5771,37 @@ function renderQualityCell(track) {
         </div>`;
 }
 
-function formatDuration(seconds) {
-    if (!seconds) return '--:--';
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
+function formatTrackDurationSeconds(seconds) {
+    const normalizedSeconds = Number(seconds);
+    if (!Number.isFinite(normalizedSeconds) || normalizedSeconds <= 0) {
+        return '--:--';
+    }
+
+    const roundedSeconds = Math.round(normalizedSeconds);
+    const minutes = Math.floor(roundedSeconds / 60);
+    const remainingSeconds = roundedSeconds % 60;
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+}
+
+function resolveTrackDurationSeconds(track) {
+    if (!track) {
+        return 0;
+    }
+
+    const seconds = Number(track.duration || 0);
+    if (Number.isFinite(seconds) && seconds > 0) {
+        return Math.round(seconds);
+    }
+
+    const milliseconds = Number(track.durationMs || track.duration_ms || 0);
+    return Number.isFinite(milliseconds) && milliseconds > 0
+        ? Math.round(milliseconds / 1000)
+        : 0;
+}
+
+function resolveTrackDurationMs(track) {
+    const seconds = resolveTrackDurationSeconds(track);
+    return seconds > 0 ? Math.round(seconds * 1000) : 0;
 }
 
 function getTrackRowsByIndices(indices) {
