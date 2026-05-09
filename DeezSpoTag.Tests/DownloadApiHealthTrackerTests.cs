@@ -6,6 +6,12 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadApiHealthTrackerTests
 {
+    private static readonly string[] HealthyFallbackSources =
+    [
+        "tidal|HI_RES_LOSSLESS",
+        "deezer|9"
+    ];
+
     [Fact]
     public void PrioritizeSources_MovesCoolingApiOutOfImmediateAutoPath()
     {
@@ -15,7 +21,7 @@ public sealed class DownloadApiHealthTrackerTests
 
         var prioritized = tracker.PrioritizeSources(sources);
 
-        Assert.Equal(new[] { "tidal|HI_RES_LOSSLESS", "deezer|9" }, prioritized);
+        Assert.Equal(HealthyFallbackSources, prioritized);
     }
 
     [Fact]

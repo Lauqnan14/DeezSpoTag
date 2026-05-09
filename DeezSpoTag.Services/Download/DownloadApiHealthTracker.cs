@@ -38,8 +38,9 @@ public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
         }
     }
 
-    public void ReportFailure(string engine, string? _)
+    public void ReportFailure(string engine, string? reason)
     {
+        _ = reason;
         var normalized = NormalizeEngine(engine);
         if (string.IsNullOrWhiteSpace(normalized))
         {

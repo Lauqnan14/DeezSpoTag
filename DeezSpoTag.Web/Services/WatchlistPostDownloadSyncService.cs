@@ -141,10 +141,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             var playlist = await FindPlaylistAsync(repository, request, cancellationToken);
             if (playlist == null)
             {
-                _logger.LogWarning(
-                    "Watchlist post-download sync skipped because playlist no longer exists: {Source}:{PlaylistId}.",
-                    request.Source,
-                    request.PlaylistId);
+                LogPlaylistMissing(request);
                 return true;
             }
 
@@ -152,19 +149,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 playlist.Source,
                 playlist.SourceId,
                 cancellationToken);
-            var effectiveRequest = request;
-            if (!effectiveRequest.DestinationFolderId.HasValue && preference?.DestinationFolderId.HasValue == true)
-            {
-                effectiveRequest = request with { DestinationFolderId = preference.DestinationFolderId };
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation(
-                        "Watchlist post-download sync recovered destination folder {DestinationFolderId} from playlist preference for {Source}:{PlaylistId}.",
-                        preference.DestinationFolderId.Value,
-                        request.Source,
-                        request.PlaylistId);
-                }
-            }
+            var effectiveRequest = ResolveEffectiveRequest(request, preference);
 
             await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken);
             await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
@@ -184,28 +169,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken);
             if (!readiness.Ready)
             {
-                if (readiness.Terminal)
-                {
-                    _logger.LogWarning(
-                        "Watchlist post-download sync stopped for {Source}:{PlaylistId} after completed track {TrackId}: {Message}",
-                        request.Source,
-                        request.PlaylistId,
-                        request.TrackId,
-                        readiness.Message);
-                    return true;
-                }
-
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation(
-                        "Watchlist post-download sync waiting for readiness for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
-                        request.Source,
-                        request.PlaylistId,
-                        request.TrackId,
-                        attempt,
-                        readiness.Message);
-                }
-                return false;
+                return HandleNotReady(request, attempt, readiness);
             }
 
             var result = await syncService.SyncPlaylistAsync(
@@ -217,29 +181,11 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
             if (result.Success)
             {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation(
-                        "Watchlist post-download sync completed for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
-                        request.Source,
-                        request.PlaylistId,
-                        request.TrackId,
-                        attempt,
-                        result.SyncedTracks);
-                }
+                LogSyncCompleted(request, attempt, result.SyncedTracks);
                 return true;
             }
 
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation(
-                    "Watchlist post-download sync not ready for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
-                    request.Source,
-                    request.PlaylistId,
-                    request.TrackId,
-                    attempt,
-                    result.Message);
-            }
+            LogSyncNotReady(request, attempt, result.Message);
             return false;
         }
         catch (OperationCanceledException)
@@ -257,6 +203,97 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 request.TrackId);
             return false;
         }
+    }
+
+    private void LogPlaylistMissing(SyncRequest request)
+    {
+        _logger.LogWarning(
+            "Watchlist post-download sync skipped because playlist no longer exists: {Source}:{PlaylistId}.",
+            request.Source,
+            request.PlaylistId);
+    }
+
+    private SyncRequest ResolveEffectiveRequest(SyncRequest request, PlaylistWatchPreferenceDto? preference)
+    {
+        var preferenceDestinationFolderId = preference?.DestinationFolderId;
+        if (request.DestinationFolderId.HasValue || !preferenceDestinationFolderId.HasValue)
+        {
+            return request;
+        }
+
+        var destinationFolderId = preferenceDestinationFolderId.Value;
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Watchlist post-download sync recovered destination folder {DestinationFolderId} from playlist preference for {Source}:{PlaylistId}.",
+                destinationFolderId,
+                request.Source,
+                request.PlaylistId);
+        }
+
+        return request with { DestinationFolderId = destinationFolderId };
+    }
+
+    private bool HandleNotReady(
+        SyncRequest request,
+        int attempt,
+        PlaylistSyncService.PlaylistTrackSyncReadiness readiness)
+    {
+        if (readiness.Terminal)
+        {
+            _logger.LogWarning(
+                "Watchlist post-download sync stopped for {Source}:{PlaylistId} after completed track {TrackId}: {Message}",
+                request.Source,
+                request.PlaylistId,
+                request.TrackId,
+                readiness.Message);
+            return true;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Watchlist post-download sync waiting for readiness for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
+                request.Source,
+                request.PlaylistId,
+                request.TrackId,
+                attempt,
+                readiness.Message);
+        }
+
+        return false;
+    }
+
+    private void LogSyncCompleted(SyncRequest request, int attempt, int syncedTracks)
+    {
+        if (!_logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "Watchlist post-download sync completed for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
+            request.Source,
+            request.PlaylistId,
+            request.TrackId,
+            attempt,
+            syncedTracks);
+    }
+
+    private void LogSyncNotReady(SyncRequest request, int attempt, string message)
+    {
+        if (!_logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "Watchlist post-download sync not ready for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
+            request.Source,
+            request.PlaylistId,
+            request.TrackId,
+            attempt,
+            message);
     }
 
     private async Task<PlaylistSyncService.PlaylistTrackSyncReadiness> CheckCompletedTrackReadinessAsync(
