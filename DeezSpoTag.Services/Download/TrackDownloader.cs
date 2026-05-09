@@ -618,6 +618,7 @@ public class TrackDownloader
         context.Listener?.OnDownloadInfo(context.DownloadObject, "Tagging track", "tagging");
         try
         {
+            EnsureTrackEmbeddedCoverPathForTagging(context.Track, context.Album);
             await EnsureLyricsForTaggingAsync(
                 context.Track,
                 context.Settings,
@@ -1013,7 +1014,7 @@ public class TrackDownloader
         await TryDownloadEmbeddedCoverAsync(embeddedPath, embeddedUrl, coverIsApple, settings, embeddedSize, cancellationToken);
         if (System.IO.File.Exists(embeddedPath))
         {
-            coverAlbum.EmbeddedCoverPath = embeddedPath;
+            ApplyEmbeddedCoverPathForTagging(track, coverAlbum, embeddedPath);
         }
 
         PopulateAlbumArtworkResult(
@@ -1029,6 +1030,37 @@ public class TrackDownloader
                 AlbumMd5 = albumMd5
             });
         PopulateArtistArtworkResult(result, settings, pathResult, coverAlbum, resolvedArtistUrl, artistIsApple, useDeezerArtist);
+    }
+
+    private static void EnsureTrackEmbeddedCoverPathForTagging(Track track, Album? contextAlbum)
+    {
+        if (!string.IsNullOrWhiteSpace(track.Album?.EmbeddedCoverPath))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(contextAlbum?.EmbeddedCoverPath))
+        {
+            return;
+        }
+
+        ApplyEmbeddedCoverPathForTagging(track, contextAlbum, contextAlbum.EmbeddedCoverPath);
+    }
+
+    private static void ApplyEmbeddedCoverPathForTagging(Track track, Album? coverAlbum, string? embeddedPath)
+    {
+        if (string.IsNullOrWhiteSpace(embeddedPath))
+        {
+            return;
+        }
+
+        if (coverAlbum is not null)
+        {
+            coverAlbum.EmbeddedCoverPath = embeddedPath;
+        }
+
+        track.Album ??= coverAlbum ?? new Album("Unknown Album");
+        track.Album.EmbeddedCoverPath = embeddedPath;
     }
 
     private async Task<DeezerClient?> TryGetDeezerArtworkClientAsync(
