@@ -17,6 +17,7 @@ namespace DeezSpoTag.Services.Download.Tidal;
 public sealed class TidalDownloadService
 {
     private const string AudioKeyword = "audio";
+    private const string ManifestPrefix = "MANIFEST:";
     private const string TidalPublicApiHost = "tidal.com";
     private const string TidalPublicApiBasePath = "v1";
     private const string TidalListenHost = "listen.tidal.com";
@@ -618,7 +619,7 @@ public sealed class TidalDownloadService
                 return null;
             }
 
-            return "MANIFEST:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifestText));
+            return ManifestPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifestText));
         }
         catch (OperationCanceledException)
         {
@@ -655,9 +656,9 @@ public sealed class TidalDownloadService
 
     private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
     {
-        if (url.StartsWith("MANIFEST:", StringComparison.OrdinalIgnoreCase))
+        if (url.StartsWith(ManifestPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            await DownloadFromManifestAsync(url.Substring("MANIFEST:".Length), outputPath, progressCallback, cancellationToken);
+            await DownloadFromManifestAsync(url.Substring(ManifestPrefix.Length), outputPath, progressCallback, cancellationToken);
             return;
         }
 
@@ -1251,7 +1252,7 @@ public sealed class TidalDownloadService
             var v2 = JsonSerializer.Deserialize<TidalApiResponseV2>(body, SerializerOptions);
             if (!string.IsNullOrWhiteSpace(v2?.Data?.Manifest))
             {
-                manifest = "MANIFEST:" + v2.Data.Manifest;
+                manifest = ManifestPrefix + v2.Data.Manifest;
                 return true;
             }
         }
@@ -1294,35 +1295,62 @@ public sealed class TidalDownloadService
 
     private static bool TryFindManifestUri(JsonElement element, out string manifestUri)
     {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Object => TryFindManifestUriInObject(element, out manifestUri),
+            JsonValueKind.Array => TryFindManifestUriInArray(element, out manifestUri),
+            _ => NoManifestUri(out manifestUri)
+        };
+    }
+
+    private static bool TryFindManifestUriInObject(JsonElement element, out string manifestUri)
+    {
+        if (TryReadManifestUriProperty(element, out manifestUri))
+        {
+            return true;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (TryFindManifestUri(property.Value, out manifestUri))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryReadManifestUriProperty(JsonElement element, out string manifestUri)
+    {
         manifestUri = "";
-        if (element.ValueKind == JsonValueKind.Object)
+        if (!element.TryGetProperty("uri", out var uriProperty)
+            || uriProperty.ValueKind != JsonValueKind.String)
         {
-            if (element.TryGetProperty("uri", out var uriProperty)
-                && uriProperty.ValueKind == JsonValueKind.String)
-            {
-                manifestUri = uriProperty.GetString() ?? "";
-                return !string.IsNullOrWhiteSpace(manifestUri);
-            }
-
-            foreach (var property in element.EnumerateObject())
-            {
-                if (TryFindManifestUri(property.Value, out manifestUri))
-                {
-                    return true;
-                }
-            }
+            return false;
         }
-        else if (element.ValueKind == JsonValueKind.Array)
+
+        manifestUri = uriProperty.GetString() ?? "";
+        return !string.IsNullOrWhiteSpace(manifestUri);
+    }
+
+    private static bool TryFindManifestUriInArray(JsonElement element, out string manifestUri)
+    {
+        foreach (var item in element.EnumerateArray())
         {
-            foreach (var item in element.EnumerateArray())
+            if (TryFindManifestUri(item, out manifestUri))
             {
-                if (TryFindManifestUri(item, out manifestUri))
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
+        manifestUri = "";
+        return false;
+    }
+
+    private static bool NoManifestUri(out string manifestUri)
+    {
+        manifestUri = "";
         return false;
     }
 
