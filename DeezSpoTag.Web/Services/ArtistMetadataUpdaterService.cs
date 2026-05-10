@@ -25,6 +25,8 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
     private const string PlexTarget = "plex";
     private const string JellyfinTarget = "jellyfin";
     private const string BothTargets = "both";
+    private const string AvatarSlot = "avatar";
+    private const string BackgroundSlot = "background";
 
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyArtistService _spotifyArtistService;
@@ -118,7 +120,11 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         {
             tracked.Source = NormalizeMetadataSource(request.Source);
         }
-        tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        var nowUtc = DateTimeOffset.UtcNow;
+        tracked.LastPushedAtUtc = nowUtc;
+        tracked.UpdatedAtUtc = nowUtc;
+        tracked.AvatarRotationIndex = 0;
+        tracked.BackgroundRotationIndex = 0;
         await SaveStateAsync(state, cancellationToken);
     }
 
@@ -842,26 +848,12 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         Directory.CreateDirectory(managedRoot);
 
-        var candidates = sourceCandidates.ToList();
+        var sourceCandidatesNormalized = NormalizeCandidates(sourceCandidates);
 
-        var avatarSlot = ResolveSlotCandidate(managedRoot, "avatar");
-        if (!string.IsNullOrWhiteSpace(avatarSlot))
-        {
-            candidates.Insert(0, ArtworkCandidate.FromLocal(avatarSlot, $"slot:avatar:{Path.GetFullPath(avatarSlot)}", "managed"));
-        }
-        var backgroundSlot = ResolveSlotCandidate(managedRoot, "background");
-        if (!string.IsNullOrWhiteSpace(backgroundSlot))
-        {
-            candidates.Insert(0, ArtworkCandidate.FromLocal(backgroundSlot, $"slot:background:{Path.GetFullPath(backgroundSlot)}", "managed"));
-        }
-
-        candidates = candidates
-            .Select(NormalizeCandidate)
-            .Where(candidate => candidate is not null)
-            .Select(candidate => candidate!)
-            .GroupBy(candidate => candidate.Identity, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .ToList();
+        var avatarSlot = ResolveSlotCandidate(managedRoot, AvatarSlot);
+        var backgroundSlot = ResolveSlotCandidate(managedRoot, BackgroundSlot);
+        var avatarCandidates = BuildSlotCandidates(avatarSlot, AvatarSlot, sourceCandidatesNormalized);
+        var backgroundCandidates = BuildSlotCandidates(backgroundSlot, BackgroundSlot, sourceCandidatesNormalized);
 
         var nextAvatarIndex = tracked.AvatarRotationIndex;
         var nextBackgroundIndex = tracked.BackgroundRotationIndex;
@@ -872,37 +864,55 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         if (tracked.IncludeAvatar)
         {
             var avatarSelection = await RotateAndMaterializeSlotAsync(
-                candidates,
+                avatarCandidates,
                 tracked.AvatarRotationIndex,
                 managedRoot,
-                "avatar",
+                AvatarSlot,
                 excludedIdentity: null,
                 cancellationToken);
             avatarPath = avatarSelection.Path;
             selectedAvatarCandidate = avatarSelection.Candidate;
             if (!string.IsNullOrWhiteSpace(avatarPath))
             {
-                nextAvatarIndex = (tracked.AvatarRotationIndex + 1) % Math.Max(1, candidates.Count);
+                nextAvatarIndex = (tracked.AvatarRotationIndex + 1) % Math.Max(1, avatarCandidates.Count);
             }
         }
 
         if (tracked.IncludeBackground)
         {
             var backgroundSelection = await RotateAndMaterializeSlotAsync(
-                candidates,
+                backgroundCandidates,
                 tracked.BackgroundRotationIndex,
                 managedRoot,
-                "background",
+                BackgroundSlot,
                 selectedAvatarCandidate?.Identity,
                 cancellationToken);
             backgroundPath = backgroundSelection.Path;
             if (!string.IsNullOrWhiteSpace(backgroundPath))
             {
-                nextBackgroundIndex = (tracked.BackgroundRotationIndex + 1) % Math.Max(1, candidates.Count);
+                nextBackgroundIndex = (tracked.BackgroundRotationIndex + 1) % Math.Max(1, backgroundCandidates.Count);
             }
         }
 
         return new PreparedVisuals(avatarPath, backgroundPath, nextAvatarIndex, nextBackgroundIndex);
+    }
+
+    private static List<ArtworkCandidate> BuildSlotCandidates(
+        string? slotPath,
+        string slot,
+        IReadOnlyList<ArtworkCandidate> sourceCandidates)
+    {
+        var candidates = new List<ArtworkCandidate>();
+        if (!string.IsNullOrWhiteSpace(slotPath))
+        {
+            candidates.Add(ArtworkCandidate.FromLocal(
+                slotPath,
+                $"slot:{slot}:{Path.GetFullPath(slotPath)}",
+                "managed"));
+        }
+
+        candidates.AddRange(sourceCandidates);
+        return NormalizeCandidates(candidates);
     }
 
     private async Task<(string? Path, ArtworkCandidate? Candidate)> RotateAndMaterializeSlotAsync(
@@ -1016,6 +1026,15 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         return null;
     }
+
+    private static List<ArtworkCandidate> NormalizeCandidates(IEnumerable<ArtworkCandidate> candidates)
+        => candidates
+            .Select(NormalizeCandidate)
+            .Where(candidate => candidate is not null)
+            .Select(candidate => candidate!)
+            .GroupBy(candidate => candidate.Identity, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
 
     private async Task<PushOutcome> PushArtistMetadataAsync(
         PushMetadataRequest request,
@@ -1278,6 +1297,11 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         var extension = ImageFileExtensionResolver.NormalizeStandardImageExtension(Path.GetExtension(sourcePath));
         var destination = Path.Join(managedRoot, $"{slot}{extension}");
+        if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase))
+        {
+            return destination;
+        }
+
         await using (var sourceStream = File.Open(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
         await using (var destinationStream = File.Create(destination))
         {
