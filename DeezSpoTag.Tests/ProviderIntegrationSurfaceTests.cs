@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.Tidal;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -38,6 +39,8 @@ public sealed class ProviderIntegrationSurfaceTests
         Assert.Contains("qobuz.spotbye.qzz.io", names);
         Assert.Contains("dl.musicdl.me", names);
         Assert.Contains("api.zarz.moe/dl/qbz", names);
+        Assert.Contains("monochrome-qobuz:trypt-hifi-dl-456461932686.us-west1.run.app", names);
+        Assert.Contains("monochrome-qobuz:qobuz.kennyy.com.br", names);
     }
 
     [Fact]
@@ -156,5 +159,84 @@ public sealed class ProviderIntegrationSurfaceTests
 
         Assert.True(success);
         Assert.Equal("https://example.test/file.flac", args[2] as string);
+    }
+
+    [Fact]
+    public void QobuzTryExtractMonochromeQobuzTrackId_PrefersIsrcMatch()
+    {
+        var method = typeof(QobuzDownloadService).GetMethod(
+            "TryExtractMonochromeQobuzTrackId",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var args = new object?[]
+        {
+            """{"data":{"tracks":{"items":[{"id":111,"isrc":"BAD"},{"id":"222","isrc":"GOOD"}]}}}""",
+            "GOOD",
+            0L
+        };
+        var success = (bool)method!.Invoke(null, args)!;
+
+        Assert.True(success);
+        Assert.Equal(222L, args[2]);
+    }
+
+    [Fact]
+    public void QobuzTryExtractMonochromeQobuzTrackId_UsesTrackItemsWhenAlbumItemsAppearFirst()
+    {
+        var method = typeof(QobuzDownloadService).GetMethod(
+            "TryExtractMonochromeQobuzTrackId",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var args = new object?[]
+        {
+            """{"success":true,"data":{"albums":{"items":[]},"tracks":{"items":[{"id":333,"isrc":"LIVE"}]}}}""",
+            "LIVE",
+            0L
+        };
+        var success = (bool)method!.Invoke(null, args)!;
+
+        Assert.True(success);
+        Assert.Equal(333L, args[2]);
+    }
+
+    [Fact]
+    public void TidalBuildTrackManifestsUrl_UsesMonochromeRouteAndFormats()
+    {
+        var method = typeof(TidalDownloadService).GetMethod(
+            "BuildTrackManifestsUrl",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var url = Assert.IsType<string>(method!.Invoke(null, ["https://arran.monochrome.tf/", 123L, "LOSSLESS"]));
+
+        Assert.StartsWith("https://arran.monochrome.tf/trackManifests/?", url);
+        Assert.Contains("id=123", url);
+        Assert.Contains("quality=LOSSLESS", url);
+        Assert.Contains("formats=FLAC", url);
+    }
+
+    [Fact]
+    public void TidalTryExtractManifestUri_ReadsNestedMonochromeResponse()
+    {
+        var method = typeof(TidalDownloadService).GetMethod(
+            "TryExtractManifestUri",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var args = new object?[]
+        {
+            """{"data":{"data":{"attributes":{"uri":"https://manifest.example.test/signed.mpd"}}}}""",
+            null
+        };
+        var success = (bool)method!.Invoke(null, args)!;
+
+        Assert.True(success);
+        Assert.Equal("https://manifest.example.test/signed.mpd", args[1] as string);
     }
 }

@@ -543,6 +543,16 @@ public sealed class TidalDownloadService
         string quality,
         CancellationToken cancellationToken)
     {
+        return await FetchManifestFromLegacyTrackEndpointAsync(apiBase, trackId, quality, cancellationToken)
+            ?? await FetchManifestFromTrackManifestsEndpointAsync(apiBase, trackId, quality, cancellationToken);
+    }
+
+    private async Task<string?> FetchManifestFromLegacyTrackEndpointAsync(
+        string apiBase,
+        long trackId,
+        string quality,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var url = $"{apiBase}/track/?id={trackId}&quality={quality}";
@@ -563,9 +573,84 @@ public sealed class TidalDownloadService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Tidal API {Api} failed for track {TrackId}", apiBase, trackId);            }
+                _logger.LogDebug(ex, "Tidal legacy API {Api} failed for track {TrackId}", apiBase, trackId);
+            }
+
             return null;
         }
+    }
+
+    private async Task<string?> FetchManifestFromTrackManifestsEndpointAsync(
+        string apiBase,
+        long trackId,
+        string quality,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = BuildTrackManifestsUrl(apiBase, trackId, quality);
+            using var response = await _client.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (TryParseManifest(body, out var manifest))
+            {
+                return manifest;
+            }
+
+            if (!TryExtractManifestUri(body, out var manifestUri))
+            {
+                return null;
+            }
+
+            using var manifestResponse = await _client.GetAsync(manifestUri, cancellationToken);
+            if (!manifestResponse.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var manifestText = await manifestResponse.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(manifestText))
+            {
+                return null;
+            }
+
+            return "MANIFEST:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifestText));
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Tidal trackManifests API {Api} failed for track {TrackId}", apiBase, trackId);
+            }
+
+            return null;
+        }
+    }
+
+    private static string BuildTrackManifestsUrl(string apiBase, long trackId, string quality)
+    {
+        var query = new List<KeyValuePair<string, string>>
+        {
+            new("id", trackId.ToString()),
+            new("quality", string.IsNullOrWhiteSpace(quality) ? "LOSSLESS" : quality),
+            new("adaptive", "false"),
+            new("formats", "FLAC_HIRES"),
+            new("formats", "FLAC"),
+            new("formats", "AACLC")
+        };
+
+        var encodedQuery = string.Join(
+            "&",
+            query.Select(pair => $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"));
+        return $"{apiBase.TrimEnd('/')}/trackManifests/?{encodedQuery}";
     }
 
     private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
@@ -1188,6 +1273,54 @@ public sealed class TidalDownloadService
         catch (JsonException)
         {
             manifest = "";
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractManifestUri(string body, out string manifestUri)
+    {
+        manifestUri = "";
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return TryFindManifestUri(document.RootElement, out manifestUri);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryFindManifestUri(JsonElement element, out string manifestUri)
+    {
+        manifestUri = "";
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty("uri", out var uriProperty)
+                && uriProperty.ValueKind == JsonValueKind.String)
+            {
+                manifestUri = uriProperty.GetString() ?? "";
+                return !string.IsNullOrWhiteSpace(manifestUri);
+            }
+
+            foreach (var property in element.EnumerateObject())
+            {
+                if (TryFindManifestUri(property.Value, out manifestUri))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindManifestUri(item, out manifestUri))
+                {
+                    return true;
+                }
+            }
         }
 
         return false;

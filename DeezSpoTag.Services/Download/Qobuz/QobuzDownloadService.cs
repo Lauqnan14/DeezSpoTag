@@ -31,6 +31,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private static readonly TimeSpan ProviderCooldown = TimeSpan.FromMinutes(10);
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] ProviderUrlPropertyNames = ["url", "download_url", "link"];
+    private static readonly string[] MonochromeQobuzProviderBases =
+    [
+        "https://trypt-hifi-dl-456461932686.us-west1.run.app",
+        "https://qobuz.kennyy.com.br"
+    ];
     private static readonly Uri JumoReferrerUri = new UriBuilder(Uri.UriSchemeHttps, "jumo-dl.pages.dev").Uri;
     private static readonly (int Start, int End)[] ExtendedLatinRanges =
     {
@@ -146,7 +151,24 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             cancellationToken);
         if (resolution == null)
         {
-            throw new InvalidOperationException("Qobuz track not found for ISRC or metadata.");
+            var monochromeUrl = await TryGetMonochromeQobuzStreamUrlByIsrcAsync(
+                resolvedIsrc ?? string.Empty,
+                request.Quality,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(monochromeUrl))
+            {
+                throw new InvalidOperationException("Qobuz track not found for ISRC or metadata.");
+            }
+
+            request.Quality = NormalizeQobuzQualityCode(request.Quality);
+            await NotifySelectedQualityAsync(request, request.Quality);
+            await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
+            {
+                DownloadUrl = monochromeUrl,
+                OutputPath = expectedPath,
+                Request = request
+            }, cancellationToken);
+            return expectedPath;
         }
 
         var track = resolution.Track;
@@ -870,8 +892,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var spotByeBase = "https://qobuz.spotbye.qzz.io/api/track/";
         var qbzBase = "https://qbz.afkarxyz.qzz.io/api/track/";
 
-        return
-        [
+        var providers = new List<ProviderCandidate>
+        {
             new ProviderCandidate("dl.musicdl.me", ct => TryGetMusicDlStreamUrlAsync(musicDlBase, trackId, qualityCode, ct)),
             new ProviderCandidate("api.zarz.moe/dl/qbz", ct => TryGetMusicDlStreamUrlAsync(zarzMusicDlBase, trackId, qualityCode, ct)),
             new ProviderCandidate("dab.yeet.su", ct => TryGetStreamUrlAsync($"{primaryBase}{trackId}&quality={qualityCode}", ct)),
@@ -881,10 +903,246 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             new ProviderCandidate("qobuz.squid.wtf/us", ct => TryGetStreamUrlAsync($"{squidBase}{trackId}&quality={qualityCode}&country=US", ct)),
             new ProviderCandidate("qobuz.squid.wtf/fr", ct => TryGetStreamUrlAsync($"{squidBase}{trackId}&quality={qualityCode}&country=FR", ct)),
             new ProviderCandidate("jumo-dl", ct => TryGetJumoStreamUrlAsync(trackId, qualityCode, ct))
-        ];
+        };
+
+        foreach (var providerBase in MonochromeQobuzProviderBases)
+        {
+            var normalizedBase = providerBase.TrimEnd('/');
+            providers.Add(new ProviderCandidate(
+                $"monochrome-qobuz:{new Uri(normalizedBase).Host}",
+                ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(normalizedBase, trackId, qualityCode, ct)));
+        }
+
+        return providers.ToArray();
     }
 
     private sealed record ProviderCandidate(string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
+
+    private async Task<string?> TryGetMonochromeQobuzStreamUrlByIsrcAsync(
+        string isrc,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return null;
+        }
+
+        var normalizedQuality = NormalizeQobuzQualityCode(qualityCode);
+        foreach (var providerBase in MonochromeQobuzProviderBases.OrderBy(_ => Random.Shared.Next()))
+        {
+            var normalizedBase = providerBase.TrimEnd('/');
+            var providerName = $"monochrome-qobuz:{new Uri(normalizedBase).Host}";
+            if (IsProviderCoolingDown(providerName))
+            {
+                continue;
+            }
+
+            try
+            {
+                var trackId = await TryGetMonochromeQobuzTrackIdByIsrcAsync(normalizedBase, isrc, cancellationToken);
+                if (trackId == null || trackId <= 0)
+                {
+                    continue;
+                }
+
+                return await TryGetMonochromeQobuzStreamUrlByTrackIdAsync(
+                    normalizedBase,
+                    trackId.Value,
+                    normalizedQuality,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (ShouldApplyProviderCooldown(ex))
+                {
+                    MarkProviderCoolingDown(providerName);
+                }
+
+                _logger.LogWarning(ex, "Monochrome Qobuz provider {Provider} failed for ISRC {Isrc}", providerName, isrc);
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<long?> TryGetMonochromeQobuzTrackIdByIsrcAsync(
+        string providerBase,
+        string isrc,
+        CancellationToken cancellationToken)
+    {
+        var url = $"{providerBase}/api/get-music?q={Uri.EscapeDataString(isrc)}&offset=0";
+        using var response = await SendProviderRequestWithRetryAsync(url, null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Monochrome Qobuz search returned HTTP {(int)response.StatusCode}");
+        }
+
+        var body = await ReadProviderResponseBodyAsync(response, "Monochrome Qobuz search", cancellationToken);
+        return TryExtractMonochromeQobuzTrackId(body, isrc, out var trackId) ? trackId : null;
+    }
+
+    private async Task<string?> TryGetMonochromeQobuzStreamUrlByTrackIdAsync(
+        string providerBase,
+        long trackId,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
+        var url = $"{providerBase.TrimEnd('/')}/api/download-music?track_id={trackId}&quality={NormalizeQobuzQualityCode(qualityCode)}";
+        using var response = await SendProviderRequestWithRetryAsync(url, null, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Monochrome Qobuz download returned HTTP {(int)response.StatusCode}");
+        }
+
+        var body = await ReadProviderResponseBodyAsync(response, "Monochrome Qobuz download", cancellationToken);
+        if (TryExtractCommonProviderUrlPayload(body, "Monochrome Qobuz download", out var directUrl))
+        {
+            return directUrl;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("success", out var successProp)
+                && successProp.ValueKind == JsonValueKind.False)
+            {
+                throw new InvalidOperationException("Monochrome Qobuz download reported success=false.");
+            }
+
+            if (TryExtractProviderUrl(doc.RootElement, out var providerUrl))
+            {
+                return providerUrl;
+            }
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException("Monochrome Qobuz download response was not valid JSON.");
+        }
+
+        throw new InvalidOperationException("Monochrome Qobuz download response did not contain a usable stream URL.");
+    }
+
+    private static bool TryExtractMonochromeQobuzTrackId(string body, string isrc, out long trackId)
+    {
+        trackId = 0;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var tracks = TryGetNestedProperty(doc.RootElement, ["data", "tracks", "items"], out var nestedTracks)
+                ? nestedTracks
+                : FindProperty(doc.RootElement, "items");
+            if (tracks.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            JsonElement? fallback = null;
+            foreach (var track in tracks.EnumerateArray())
+            {
+                if (fallback == null)
+                {
+                    fallback = track;
+                }
+
+                var candidateIsrc = TryReadStringProperty(track, "isrc");
+                if (string.Equals(candidateIsrc, isrc, StringComparison.OrdinalIgnoreCase)
+                    && TryReadLongProperty(track, "id", out trackId))
+                {
+                    return trackId > 0;
+                }
+            }
+
+            return fallback.HasValue
+                && TryReadLongProperty(fallback.Value, "id", out trackId)
+                && trackId > 0;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetNestedProperty(
+        JsonElement element,
+        IReadOnlyList<string> path,
+        out JsonElement value)
+    {
+        value = element;
+        foreach (var propertyName in path)
+        {
+            if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(propertyName, out value))
+            {
+                value = default;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static JsonElement FindProperty(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty(propertyName, out var property))
+            {
+                return property;
+            }
+
+            foreach (var child in element.EnumerateObject())
+            {
+                var found = FindProperty(child.Value, propertyName);
+                if (found.ValueKind != JsonValueKind.Undefined)
+                {
+                    return found;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in element.EnumerateArray())
+            {
+                var found = FindProperty(child, propertyName);
+                if (found.ValueKind != JsonValueKind.Undefined)
+                {
+                    return found;
+                }
+            }
+        }
+
+        return default;
+    }
+
+    private static string TryReadStringProperty(JsonElement element, string propertyName)
+    {
+        return element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+            ? property.GetString() ?? string.Empty
+            : string.Empty;
+    }
+
+    private static bool TryReadLongProperty(JsonElement element, string propertyName, out long value)
+    {
+        value = 0;
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var property))
+        {
+            return false;
+        }
+
+        if (property.ValueKind == JsonValueKind.Number)
+        {
+            return property.TryGetInt64(out value);
+        }
+
+        return property.ValueKind == JsonValueKind.String
+            && long.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    }
 
     private async Task<string?> TryGetMusicDlStreamUrlAsync(
         string endpoint,
