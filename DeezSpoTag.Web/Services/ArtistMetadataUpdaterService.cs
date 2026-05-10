@@ -189,16 +189,9 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             }
 
             var nowUtc = DateTimeOffset.UtcNow;
-            var dueArtists = state.Artists.Where(artist =>
-            {
-                var intervalDays = NormalizeIntervalDays(artist.IntervalDays);
-                if (intervalDays <= 0 || !artist.LastPushedAtUtc.HasValue)
-                {
-                    return true;
-                }
-
-                return nowUtc - artist.LastPushedAtUtc.Value >= TimeSpan.FromDays(intervalDays);
-            }).ToList();
+            var dueArtists = state.Artists
+                .Where(artist => IsTrackedArtistDueForAutomaticRun(artist, nowUtc))
+                .ToList();
             if (dueArtists.Count == 0)
             {
                 return;
@@ -418,13 +411,46 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         int effectiveIntervalDays,
         DateTimeOffset nowUtc)
     {
-        if (request.Force == true || effectiveIntervalDays <= 0 || !tracked.LastPushedAtUtc.HasValue)
+        if (request.Force == true)
         {
             return false;
         }
 
-        var elapsed = nowUtc - tracked.LastPushedAtUtc.Value;
-        return elapsed < TimeSpan.FromDays(effectiveIntervalDays);
+        return !IsTrackedArtistDue(tracked, effectiveIntervalDays, nowUtc);
+    }
+
+    private static bool IsTrackedArtistDueForAutomaticRun(
+        MetadataUpdaterTrackedArtist tracked,
+        DateTimeOffset nowUtc)
+        => IsTrackedArtistDue(tracked, NormalizeIntervalDays(tracked.IntervalDays), nowUtc);
+
+    private static bool IsTrackedArtistDue(
+        MetadataUpdaterTrackedArtist tracked,
+        int intervalDays,
+        DateTimeOffset nowUtc)
+    {
+        if (intervalDays <= 0)
+        {
+            return false;
+        }
+
+        var baseline = ResolveScheduleBaselineUtc(tracked);
+        if (!baseline.HasValue)
+        {
+            return true;
+        }
+
+        return nowUtc - baseline.Value >= TimeSpan.FromDays(intervalDays);
+    }
+
+    private static DateTimeOffset? ResolveScheduleBaselineUtc(MetadataUpdaterTrackedArtist tracked)
+    {
+        if (tracked.LastPushedAtUtc.HasValue)
+        {
+            return tracked.LastPushedAtUtc.Value;
+        }
+
+        return tracked.UpdatedAtUtc == default ? null : tracked.UpdatedAtUtc;
     }
 
     private static void ApplyRequestOverrides(

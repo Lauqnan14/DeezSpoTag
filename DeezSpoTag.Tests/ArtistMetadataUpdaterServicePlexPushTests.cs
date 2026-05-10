@@ -217,6 +217,58 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         Assert.Equal(0, tracked.BackgroundRotationIndex);
     }
 
+    [Fact]
+    public void ScheduleEligibility_UsesRegistrationTime_WhenArtistHasNotBeenPushedYet()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var tracked = new MetadataUpdaterTrackedArtist
+        {
+            ArtistId = 42,
+            ArtistName = "Artist",
+            IntervalDays = 30,
+            LastPushedAtUtc = null,
+            UpdatedAtUtc = now.AddDays(-1)
+        };
+
+        Assert.True(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest(), 30, now));
+        Assert.False(InvokeIsTrackedArtistDueForAutomaticRun(tracked, now));
+    }
+
+    [Fact]
+    public void ScheduleEligibility_TreatsZeroIntervalAsManualForceOnly()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var tracked = new MetadataUpdaterTrackedArtist
+        {
+            ArtistId = 42,
+            ArtistName = "Artist",
+            IntervalDays = 0,
+            LastPushedAtUtc = now.AddDays(-365),
+            UpdatedAtUtc = now.AddDays(-365)
+        };
+
+        Assert.True(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest(), 0, now));
+        Assert.False(InvokeIsTrackedArtistDueForAutomaticRun(tracked, now));
+        Assert.False(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest { Force = true }, 0, now));
+    }
+
+    [Fact]
+    public void ScheduleEligibility_AllowsAutomaticRunOnlyAfterIntervalElapses()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var tracked = new MetadataUpdaterTrackedArtist
+        {
+            ArtistId = 42,
+            ArtistName = "Artist",
+            IntervalDays = 30,
+            LastPushedAtUtc = now.AddDays(-31),
+            UpdatedAtUtc = now.AddDays(-1)
+        };
+
+        Assert.False(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest(), 30, now));
+        Assert.True(InvokeIsTrackedArtistDueForAutomaticRun(tracked, now));
+    }
+
     public void Dispose()
     {
         foreach (var path in _tempPaths)
@@ -448,6 +500,26 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         var property = prepared.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(property);
         return Assert.IsType<string?>(property!.GetValue(prepared));
+    }
+
+    private static bool InvokeShouldSkipTrackedArtist(
+        MetadataUpdaterTrackedArtist tracked,
+        MetadataUpdaterRunRequest request,
+        int effectiveIntervalDays,
+        DateTimeOffset nowUtc)
+    {
+        var method = typeof(ArtistMetadataUpdaterService).GetMethod("ShouldSkipTrackedArtist", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return Assert.IsType<bool>(method!.Invoke(null, [tracked, request, effectiveIntervalDays, nowUtc]));
+    }
+
+    private static bool InvokeIsTrackedArtistDueForAutomaticRun(
+        MetadataUpdaterTrackedArtist tracked,
+        DateTimeOffset nowUtc)
+    {
+        var method = typeof(ArtistMetadataUpdaterService).GetMethod("IsTrackedArtistDueForAutomaticRun", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return Assert.IsType<bool>(method!.Invoke(null, [tracked, nowUtc]));
     }
 
     private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
