@@ -13,7 +13,6 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 {
     private const string WatchMaxItemsPerRunName = "WatchMaxItemsPerRun";
     private const string WatchMaxReleasesPerArtistName = "WatchMaxReleasesPerArtist";
-    private const string WatchMaxTracksPerPlaylistCheckName = "WatchMaxTracksPerPlaylistCheck";
     private const string WatchMaxReleasesPerArtistJsonName = "watchMaxReleasesPerArtist";
     private const string WatchMaxTracksPerPlaylistCheckJsonName = "watchMaxTracksPerPlaylistCheck";
     private const string AlbumGroup = "album";
@@ -141,7 +140,6 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain(WatchMaxItemsPerRunName, playlistWatchSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxItemsPerRunName, hostedSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxReleasesPerArtistName, artistWatchSource, StringComparison.Ordinal);
-        Assert.Contains(WatchMaxTracksPerPlaylistCheckName, playlistWatchSource, StringComparison.Ordinal);
     }
 
     public void Dispose()

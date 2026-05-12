@@ -2326,33 +2326,36 @@ public partial class AutoTagService
         var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
         foreach (var destinationRoot in autoMoveSummary.DestinationRoots)
         {
-            if (string.IsNullOrWhiteSpace(destinationRoot))
-            {
-                continue;
-            }
-
-            foreach (var folder in folders)
-            {
-                if (folder.Id <= 0 || string.IsNullOrWhiteSpace(folder.RootPath))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    if (IsPathUnderRoot(destinationRoot, folder.RootPath))
-                    {
-                        changed.Add(folder.Id);
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // Ignore paths the runtime cannot normalize; explicit changed folder ids remain authoritative.
-                }
-            }
+            AddMatchingLibraryFolders(destinationRoot, folders, changed);
         }
 
         return changed.OrderBy(folderId => folderId).ToList();
+    }
+
+    private static void AddMatchingLibraryFolders(
+        string destinationRoot,
+        IReadOnlyCollection<FolderDto> folders,
+        HashSet<long> changed)
+    {
+        if (string.IsNullOrWhiteSpace(destinationRoot))
+        {
+            return;
+        }
+
+        foreach (var folder in folders.Where(static folder => folder.Id > 0 && !string.IsNullOrWhiteSpace(folder.RootPath)))
+        {
+            try
+            {
+                if (IsPathUnderRoot(destinationRoot, folder.RootPath))
+                {
+                    changed.Add(folder.Id);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Ignore paths the runtime cannot normalize; explicit changed folder ids remain authoritative.
+            }
+        }
     }
 
     private static List<long> ParseFolderIds(JsonObject node, string propertyName)

@@ -81,7 +81,9 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 DeezerGatewayService = null!,
                 AppleCatalogService = null!,
                 BoomplayMetadataService = null!,
-                LibraryRecommendationService = null!
+                LibraryRecommendationService = null!,
+                HttpClientFactory = new StubHttpClientFactory(),
+                TidalAccessTokenProvider = new StubTidalAccessTokenProvider()
             },
             _settingsService,
             serviceProvider: null!,
@@ -307,6 +309,16 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     private sealed class StubHttpClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();
+    }
+
+    private sealed class StubTidalAccessTokenProvider : ITidalAccessTokenProvider
+    {
+        public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
+            => Task.FromResult("test-token");
+
+        public void Invalidate()
+        {
+        }
     }
 
     private sealed class ListLogger<T> : ILogger<T>

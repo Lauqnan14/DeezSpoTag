@@ -130,6 +130,14 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             "info",
             $"Playlist watchlist added: {request.Name}."));
 
+        if (_playlistWatchService != null)
+        {
+            await _playlistWatchService.ReconcilePlaylistAsync(
+                added,
+                CancellationToken.None,
+                forceMediaServerSync: true);
+        }
+
         return Ok(added);
     }
 
@@ -299,29 +307,29 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound("Playlist watchlist entry not found.");
         }
 
-        var preference = await _repository.GetPlaylistWatchPreferenceAsync(item.Source, item.SourceId, cancellationToken);
-        var candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
-            item.Source,
-            item.SourceId,
-            cancellationToken);
-        var result = await _playlistSyncService.SyncPlaylistAsync(
+        var reconciliation = await _playlistWatchService.ReconcilePlaylistAsync(
             item,
-            preference,
-            candidates,
-            force: true,
-            cancellationToken);
+            CancellationToken.None,
+            forceMediaServerSync: true);
+        var result = reconciliation.SyncResult;
         return Ok(new
         {
-            result.Success,
-            result.Message,
-            result.PlaylistId,
-            result.SyncedTracks,
-            result.SourceTracks,
-            result.LocalMatches,
-            result.TargetMatches,
-            result.MissingTracks,
-            result.MetadataMatches,
-            result.SearchMatches
+            reconciliation.Success,
+            reconciliation.Message,
+            reconciliation.SourceTracks,
+            reconciliation.IgnoredTracks,
+            reconciliation.LocalTracks,
+            reconciliation.QueuedTracks,
+            reconciliation.CompletedTracks,
+            reconciliation.FailedTracks,
+            PlaylistId = result?.PlaylistId,
+            SyncedTracks = result?.SyncedTracks ?? 0,
+            LocalMatches = result?.LocalMatches ?? 0,
+            TargetMatches = result?.TargetMatches ?? 0,
+            MissingTracks = result?.MissingTracks ?? 0,
+            MetadataMatches = result?.MetadataMatches ?? 0,
+            SearchMatches = result?.SearchMatches ?? 0,
+            SyncMessage = result?.Message
         });
     }
 

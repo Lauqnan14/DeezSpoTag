@@ -1,12 +1,11 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download.Shared.Models;
+using HtmlAgilityPack;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
 using ApiPlaylist = DeezSpoTag.Core.Models.Deezer.ApiPlaylist;
@@ -32,11 +31,16 @@ public sealed class PlaylistWatchService
     private const string AppleSource = "apple";
     private const string BoomplaySource = "boomplay";
     private const string RecommendationsSource = "recommendations";
-    private const string QueuedStatus = "queued";
+    private const string QobuzSource = "qobuz";
+    private const string TidalSource = "tidal";
     private const string AlbumField = "album";
+    private const string JsonTitleProperty = "title";
+    private const string JsonItemsProperty = "items";
+    private const string JsonAlbumProperty = "album";
+    private const string SpotifyLabel = "Spotify";
+    private const string DeezerLabel = "Deezer";
     private const string SpotifyHomeTrendingSourceId = "home-trending-songs";
     private const string SpotifyTrendingSongsSectionUri = "spotify:section:0JQ5DB5E8N831KzFzsBBQ2";
-    private const int SpotifyPlaylistWatchPageSize = 200;
     private static readonly string[] JsonStringObjectPropertyNames = ["standard", "short", "text"];
     private static readonly TimeSpan PlaylistMediaSyncCooldown = TimeSpan.FromMinutes(2);
     private readonly LibraryRepository _libraryRepository;
@@ -48,6 +52,8 @@ public sealed class PlaylistWatchService
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly LibraryRecommendationService _libraryRecommendationService;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
     private readonly PlaylistSyncService _playlistSyncService;
@@ -65,6 +71,8 @@ public sealed class PlaylistWatchService
         public required AppleMusicCatalogService AppleCatalogService { get; init; }
         public required BoomplayMetadataService BoomplayMetadataService { get; init; }
         public required LibraryRecommendationService LibraryRecommendationService { get; init; }
+        public required IHttpClientFactory HttpClientFactory { get; init; }
+        public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
     }
 
     public PlaylistWatchService(
@@ -85,20 +93,13 @@ public sealed class PlaylistWatchService
         _appleCatalogService = platformServices.AppleCatalogService;
         _boomplayMetadataService = platformServices.BoomplayMetadataService;
         _libraryRecommendationService = platformServices.LibraryRecommendationService;
+        _httpClientFactory = platformServices.HttpClientFactory;
+        _tidalAccessTokenProvider = platformServices.TidalAccessTokenProvider;
         _settingsService = settingsService;
         _serviceProvider = serviceProvider;
         _playlistSyncService = playlistSyncService;
         _playlistVisualService = playlistVisualService;
         _logger = logger;
-    }
-
-    private Task UpsertPlaylistWatchStateAsync(
-        LibraryRepository.PlaylistWatchStateUpsertInput state,
-        CancellationToken cancellationToken)
-    {
-        return _libraryRepository.UpsertPlaylistWatchStateAsync(
-            state,
-            cancellationToken);
     }
 
     public async Task CheckWatchlistAsync(CancellationToken cancellationToken)
@@ -157,21 +158,136 @@ public sealed class PlaylistWatchService
         bool? Explicit,
         IReadOnlyList<string> Genres);
 
-    private async Task<string?> ResolvePlaylistImageUrlAsync(
-        string source,
-        string sourceId,
-        string? playlistName,
-        string? imageUrl,
-        PlaylistWatchPreferenceDto? preference,
-        CancellationToken cancellationToken)
+    public sealed record PlaylistReconciliationResult(
+        bool Success,
+        string Message,
+        int SourceTracks,
+        int IgnoredTracks,
+        int LocalTracks,
+        int QueuedTracks,
+        int CompletedTracks,
+        int FailedTracks,
+        PlaylistSyncResult? SyncResult);
+
+    public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
+        PlaylistWatchlistDto playlist,
+        CancellationToken cancellationToken,
+        bool forceMediaServerSync = false)
     {
-        return await _playlistVisualService.ResolveManagedVisualUrlAsync(
+        if (playlist == null)
+        {
+            return new PlaylistReconciliationResult(false, "Playlist not available.", 0, 0, 0, 0, 0, 0, null);
+        }
+
+        var source = NormalizeWatchSource(playlist.Source);
+        var sourceId = (playlist.SourceId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return new PlaylistReconciliationResult(false, "Playlist source is not available.", 0, 0, 0, 0, 0, 0, null);
+        }
+
+        var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
+        var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
+        var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
+        var candidates = await FetchLivePlaylistTrackCandidatesAsync(source, sourceId, cancellationToken);
+        if (candidates.Count == 0)
+        {
+            return new PlaylistReconciliationResult(false, "No playlist tracks were available to reconcile.", 0, 0, 0, 0, 0, 0, null);
+        }
+
+        await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
             source,
             sourceId,
-            playlistName,
-            imageUrl,
-            preference?.ReuseSavedArtwork == true,
+            snapshotId: null,
+            JsonSerializer.Serialize(candidates),
             cancellationToken);
+        await _libraryRepository.AddPlaylistWatchTracksAsync(
+            source,
+            sourceId,
+            candidates.Select(candidate => new PlaylistWatchTrackInsert(candidate.TrackSourceId, candidate.Isrc)).ToList(),
+            cancellationToken);
+
+        var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(source, sourceId, cancellationToken);
+        var localTrackIds = await ResolveLocalCandidateIdsAsync(source, candidates, cancellationToken);
+        var missingTracks = new List<WatchIntentTrack>();
+        var ignoredCount = 0;
+        var localCount = 0;
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (ignored.Contains(candidate.TrackSourceId))
+            {
+                ignoredCount++;
+                await TryMarkWatchTrackCompletedAsync(source, sourceId, candidate.TrackSourceId, cancellationToken);
+                continue;
+            }
+
+            if (localTrackIds.Contains(candidate.TrackSourceId))
+            {
+                localCount++;
+                await TryMarkWatchTrackCompletedAsync(source, sourceId, candidate.TrackSourceId, cancellationToken);
+                continue;
+            }
+
+            var watchTrack = BuildWatchIntentTrackFromCandidate(source, candidate);
+            if (watchTrack != null)
+            {
+                missingTracks.Add(watchTrack);
+            }
+        }
+
+        var queueResult = await QueueWatchIntentTracksAsync(
+            missingTracks,
+            preference?.DestinationFolderId,
+            BuildQueueWatchOptions(
+                ResolveSourceLabel(source),
+                source,
+                sourceId,
+                preference?.PreferredEngine,
+                preference?.DownloadVariantMode,
+                preference?.AtmosDestinationFolderId,
+                new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
+            cancellationToken);
+
+        PlaylistSyncResult? syncResult = null;
+        if (forceMediaServerSync)
+        {
+            syncResult = await _playlistSyncService.SyncPlaylistAsync(
+                playlist,
+                preference,
+                candidates,
+                force: true,
+                cancellationToken);
+        }
+        else
+        {
+            await TrySyncPlaylistToMediaServerAsync(playlist, preference, false, cancellationToken);
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Playlist watch reconciled {Source}:{SourceId}. sourceTracks={SourceTracks}, ignored={IgnoredTracks}, local={LocalTracks}, queued={QueuedTracks}, completed={CompletedTracks}, failed={FailedTracks}",
+                source,
+                sourceId,
+                candidates.Count,
+                ignoredCount,
+                localCount,
+                queueResult.QueuedCount,
+                queueResult.CompletedCount,
+                queueResult.FailedCount);
+        }
+
+        return new PlaylistReconciliationResult(
+            queueResult.FailedCount == 0,
+            queueResult.FailedCount == 0 ? "Playlist reconciled." : "Playlist reconciled with queue failures.",
+            candidates.Count,
+            ignoredCount,
+            localCount,
+            queueResult.QueuedCount,
+            queueResult.CompletedCount,
+            queueResult.FailedCount,
+            syncResult);
     }
 
     public async Task<IReadOnlyList<PlaylistTrackCandidate>> GetPlaylistTrackCandidatesAsync(
@@ -199,6 +315,13 @@ public sealed class PlaylistWatchService
 
         var watchState = await _libraryRepository.GetPlaylistWatchStateAsync(normalizedSource, normalizedSourceId, cancellationToken);
         var currentSnapshotId = NormalizeSnapshotId(watchState?.SnapshotId);
+        if (string.IsNullOrWhiteSpace(currentSnapshotId)
+            && (string.Equals(normalizedSource, QobuzSource, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedSource, TidalSource, StringComparison.OrdinalIgnoreCase)))
+        {
+            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, cancellationToken);
+        }
+
         var cached = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, normalizedSourceId, cancellationToken);
         if (cached is not null)
         {
@@ -238,6 +361,8 @@ public sealed class PlaylistWatchService
             AppleSource => await GetAppleTrackCandidatesAsync(normalizedSourceId, cancellationToken),
             BoomplaySource => await GetBoomplayTrackCandidatesAsync(normalizedSourceId, cancellationToken),
             RecommendationsSource => await GetRecommendationTrackCandidatesAsync(normalizedSourceId, cancellationToken),
+            QobuzSource => await GetQobuzTrackCandidatesAsync(normalizedSourceId, cancellationToken),
+            TidalSource => await GetTidalTrackCandidatesAsync(normalizedSourceId, cancellationToken),
             _ => Array.Empty<PlaylistTrackCandidate>()
         };
     }
@@ -265,33 +390,6 @@ public sealed class PlaylistWatchService
     private static string? NormalizeSnapshotId(string? snapshotId)
     {
         return string.IsNullOrWhiteSpace(snapshotId) ? null : snapshotId.Trim();
-    }
-
-    private async Task AddPlaylistWatchHistoryAsync(
-        string source,
-        string sourceId,
-        string playlistName,
-        int trackCount,
-        string status,
-        CancellationToken cancellationToken,
-        string? artistName = null)
-    {
-        if (trackCount <= 0)
-        {
-            return;
-        }
-
-        await _libraryRepository.AddWatchlistHistoryAsync(
-            new WatchlistHistoryInsert(
-                source,
-                "playlist",
-                sourceId,
-                playlistName,
-                "playlist",
-                trackCount,
-                status,
-                ArtistName: artistName),
-            cancellationToken);
     }
 
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetSpotifyTrackCandidatesAsync(
@@ -603,6 +701,163 @@ public sealed class PlaylistWatchService
         return candidates;
     }
 
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetTidalTrackCandidatesAsync(
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var playlistId = ResolveTidalPlaylistId(sourceId);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        var client = _httpClientFactory.CreateClient();
+        var candidates = new List<PlaylistTrackCandidate>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var offset = 0;
+        var total = int.MaxValue;
+        while (offset < total)
+        {
+            var page = await FetchTidalPlaylistItemsPageAsync(client, playlistId, token, offset, cancellationToken);
+            if (page.Items.ValueKind != JsonValueKind.Array || page.Items.GetArrayLength() == 0)
+            {
+                break;
+            }
+
+            total = page.Total > 0 ? page.Total : total;
+            foreach (var wrapper in page.Items.EnumerateArray())
+            {
+                TryAddTidalTrackCandidate(wrapper, seen, candidates);
+            }
+
+            offset += page.Items.GetArrayLength();
+        }
+
+        return candidates;
+    }
+
+    private static async Task<TidalPlaylistItemsPage> FetchTidalPlaylistItemsPageAsync(
+        HttpClient client,
+        string playlistId,
+        string token,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"https://api.tidal.com/v1/playlists/{Uri.EscapeDataString(playlistId)}/items?countryCode=US&limit=100&offset={offset}");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var response = await client.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return default;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var root = doc.RootElement;
+        var total = root.TryGetProperty("totalNumberOfItems", out var totalElement)
+            && totalElement.TryGetInt32(out var parsedTotal)
+            ? parsedTotal
+            : 0;
+        var items = root.TryGetProperty(JsonItemsProperty, out var itemsElement)
+            ? itemsElement.Clone()
+            : default;
+        return new TidalPlaylistItemsPage(items, total);
+    }
+
+    private static void TryAddTidalTrackCandidate(
+        JsonElement wrapper,
+        HashSet<string> seen,
+        List<PlaylistTrackCandidate> candidates)
+    {
+        var track = wrapper.TryGetProperty("item", out var item) && item.ValueKind == JsonValueKind.Object
+            ? item
+            : wrapper;
+        var trackId = GetJsonString(track, "id");
+        if (string.IsNullOrWhiteSpace(trackId) || !seen.Add(trackId))
+        {
+            return;
+        }
+
+        var album = track.TryGetProperty(JsonAlbumProperty, out var albumElement) && albumElement.ValueKind == JsonValueKind.Object
+            ? albumElement
+            : default;
+        var duration = GetJsonInt(track, "duration");
+        candidates.Add(new PlaylistTrackCandidate(
+            trackId,
+            EmptyToNull(GetJsonString(track, "isrc")),
+            GetJsonString(track, JsonTitleProperty) ?? string.Empty,
+            ResolveTidalArtistName(track),
+            album.ValueKind == JsonValueKind.Object ? GetJsonString(album, JsonTitleProperty) ?? string.Empty : string.Empty,
+            null,
+            duration > 0 ? duration * 1000 : null,
+            null,
+            Array.Empty<string>()));
+    }
+
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetQobuzTrackCandidatesAsync(
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var playlistUrl = ResolveQobuzPlaylistUrl(sourceId);
+        if (string.IsNullOrWhiteSpace(playlistUrl))
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        using var response = await client.GetAsync(playlistUrl, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        var document = new HtmlDocument();
+        document.LoadHtml(html);
+        var rows = document.DocumentNode.SelectNodes("//div[contains(@class,'track') and @data-track]");
+        if (rows == null || rows.Count == 0)
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new List<PlaylistTrackCandidate>(rows.Count);
+        foreach (var row in rows)
+        {
+            var trackId = row.GetAttributeValue("data-track", string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trackId) || !seen.Add(trackId))
+            {
+                continue;
+            }
+
+            var title = GetHtmlText(row, ".//div[contains(@class,'track__item--name')]");
+            var artist = GetHtmlText(row, ".//span[contains(@class,'track__item--artist')]");
+            var album = GetHtmlText(row, ".//span[contains(@class,'track__item--album')]");
+            var durationText = GetHtmlText(row, ".//span[contains(@class,'track__item--duration')]");
+            var durationSeconds = ParseClockDurationSeconds(durationText);
+            candidates.Add(new PlaylistTrackCandidate(
+                trackId,
+                null,
+                title,
+                string.IsNullOrWhiteSpace(artist) ? "Unknown Artist" : artist,
+                album,
+                null,
+                durationSeconds > 0 ? durationSeconds * 1000 : null,
+                null,
+                Array.Empty<string>()));
+        }
+
+        return candidates;
+    }
+
     private static IReadOnlyList<PlaylistTrackCandidate> MapWatchIntentTrackCandidates(
         IReadOnlyCollection<WatchIntentTrack>? tracks)
     {
@@ -676,274 +931,16 @@ public sealed class PlaylistWatchService
         CancellationToken cancellationToken,
         bool forceMediaServerSync = false)
     {
-        var source = NormalizeWatchSource(playlist.Source);
-        if (string.IsNullOrWhiteSpace(source))
-        {
-            return;
-        }
-
-        var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, playlist.SourceId, cancellationToken);
-        var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
-        var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
-
-        switch (source)
-        {
-            case SpotifySource:
-                await CheckSpotifyPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
-                break;
-            case DeezerSource:
-                await CheckDeezerPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
-                break;
-            case SmartTracklistSource:
-                await CheckSmartTracklistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
-                break;
-            case AppleSource:
-                await CheckApplePlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
-                break;
-            case BoomplaySource:
-                await CheckBoomplayPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
-                break;
-            case RecommendationsSource:
-                await CheckRecommendationsPlaylistAsync(playlist, preference, effectiveBlockRules, cancellationToken);
-                break;
-            default:
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Playlist watch skipped for unsupported source: {Source}", source);
-                }
-                return;
-        }
-
-        await TrySyncPlaylistToMediaServerAsync(
+        await ReconcilePlaylistAsync(
             playlist,
-            preference,
-            forceMediaServerSync,
-            cancellationToken);
-    }
-
-    private async Task<HashSet<string>> GetIgnoredTrackIdsForSourceAsync(
-        string source,
-        CancellationToken cancellationToken)
-    {
-        return await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsBySourceAsync(source, cancellationToken);
+            cancellationToken,
+            forceMediaServerSync);
     }
 
     private async Task<IReadOnlyList<PlaylistTrackBlockRule>> GetGlobalPlaylistBlockRulesAsync(CancellationToken cancellationToken)
     {
         var preferences = await _libraryRepository.GetPlaylistWatchPreferencesAsync(cancellationToken);
         return PlaylistTrackBlockRuleHelper.BuildGlobalRules(preferences);
-    }
-
-    private async Task CheckSpotifyPlaylistAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        CancellationToken cancellationToken)
-    {
-        if (IsSpotifyHomeTrendingSourceId(playlist.SourceId))
-        {
-            await CheckSpotifyHomeTrendingSongsAsync(playlist, preference, effectiveBlockRules, cancellationToken);
-            return;
-        }
-
-        if (TryGetSpotifyArtistTopTracksSourceId(playlist.SourceId, out var artistId))
-        {
-            await CheckSpotifyArtistTopTracksAsync(playlist, preference, effectiveBlockRules, artistId, cancellationToken);
-            return;
-        }
-
-        var settings = _settingsService.LoadSettings();
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(SpotifySource, playlist.SourceId, cancellationToken);
-        var page = await _spotifyMetadataService.FetchPlaylistPageAsync(
-            playlist.SourceId,
-            0,
-            SpotifyPlaylistWatchPageSize,
-            cancellationToken);
-        if (await TryHandleMissingSpotifyPlaylistPageAsync(playlist.SourceId, state, page, cancellationToken))
-        {
-            return;
-        }
-
-        var loadedPage = page!;
-        await UpdateSpotifyPlaylistMetadataIfPresentAsync(playlist, preference, loadedPage, cancellationToken);
-
-        if (ShouldSkipSpotifySnapshotProcessing(settings.WatchUseSnapshotIdChecking, loadedPage, state, batchSnapshot: null))
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    SpotifySource,
-                    playlist.SourceId,
-                    loadedPage.SnapshotId,
-                    loadedPage.TotalTracks,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var scanResult = await CollectSpotifyPlaylistScanResultAsync(playlist.SourceId, loadedPage, cancellationToken);
-        if (scanResult.NewTracks.Count > 0)
-        {
-            var queueResult = await PersistAndQueueSpotifyTracksAsync(
-                playlist,
-                preference,
-                effectiveBlockRules,
-                loadedPage.Name,
-                scanResult.NewTracks,
-                cancellationToken);
-            if (ShouldDeferPlaylistWatchStateUpdate(
-                    SpotifySource,
-                    playlist.SourceId,
-                    loadedPage.Name ?? playlist.Name ?? "Playlist",
-                    scanResult.NewTracks.Count,
-                    queueResult))
-            {
-                return;
-            }
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                SpotifySource,
-                playlist.SourceId,
-                loadedPage.SnapshotId,
-                scanResult.TotalTracks,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-
-    }
-
-    private async Task<bool> TryHandleMissingSpotifyPlaylistPageAsync(
-        string sourceId,
-        PlaylistWatchStateDto? state,
-        SpotifyPlaylistPage? page,
-        CancellationToken cancellationToken)
-    {
-        if (page != null)
-        {
-            return false;
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                SpotifySource,
-                sourceId,
-                state?.SnapshotId,
-                state?.TrackCount,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-        return true;
-    }
-
-    private sealed record SpotifyPlaylistScanResult(List<SpotifyTrackSummary> NewTracks, int? TotalTracks);
-
-    private async Task<SpotifyPlaylistScanResult> CollectSpotifyPlaylistScanResultAsync(
-        string sourceId,
-        SpotifyPlaylistPage page,
-        CancellationToken cancellationToken)
-    {
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, sourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
-        var newTracks = new List<SpotifyTrackSummary>();
-        var scanPage = page;
-        var offset = 0;
-        var totalTracks = page.TotalTracks;
-        while (scanPage != null)
-        {
-            CollectSpotifyPageNewTracks(scanPage, existing, ignored, newTracks);
-            if (!scanPage.HasMore)
-            {
-                break;
-            }
-
-            offset += scanPage.Tracks.Count;
-            if (scanPage.TotalTracks.HasValue && offset >= scanPage.TotalTracks.Value)
-            {
-                break;
-            }
-
-            scanPage = await _spotifyMetadataService.FetchPlaylistPageAsync(
-                sourceId,
-                offset,
-                SpotifyPlaylistWatchPageSize,
-                cancellationToken);
-            if (scanPage != null)
-            {
-                totalTracks = scanPage.TotalTracks ?? totalTracks;
-            }
-        }
-
-        return new SpotifyPlaylistScanResult(newTracks, totalTracks);
-    }
-
-    private static void CollectSpotifyPageNewTracks(
-        SpotifyPlaylistPage page,
-        HashSet<string> existing,
-        HashSet<string> ignored,
-        List<SpotifyTrackSummary> output)
-    {
-        foreach (var track in page.Tracks)
-        {
-            if (string.IsNullOrWhiteSpace(track.Id)
-                || existing.Contains(track.Id)
-                || ignored.Contains(track.Id))
-            {
-                continue;
-            }
-
-            existing.Add(track.Id);
-            output.Add(track);
-        }
-    }
-
-    private async Task<QueueWatchResult> PersistAndQueueSpotifyTracksAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        string? pageName,
-        List<SpotifyTrackSummary> newTracks,
-        CancellationToken cancellationToken)
-    {
-        var trackInserts = newTracks
-            .Select(track => new PlaylistWatchTrackInsert(track.Id, track.Isrc))
-            .ToList();
-        await _libraryRepository.AddPlaylistWatchTracksAsync(
-            SpotifySource,
-            playlist.SourceId,
-            trackInserts,
-            cancellationToken);
-
-        var queueResult = await QueueSpotifyTracksAsync(
-            newTracks,
-            preference?.DestinationFolderId,
-            BuildQueueWatchOptions(
-                "Spotify",
-                SpotifySource,
-                playlist.SourceId,
-                preference?.PreferredEngine,
-                preference?.DownloadVariantMode,
-                preference?.AtmosDestinationFolderId,
-                new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
-            cancellationToken);
-        if (queueResult.QueuedCount <= 0)
-        {
-            return queueResult;
-        }
-
-        var historyName = pageName ?? playlist.Name ?? "Playlist";
-        await AddPlaylistWatchHistoryAsync(
-            SpotifySource,
-            playlist.SourceId,
-            historyName,
-            newTracks.Count,
-            QueuedStatus,
-            cancellationToken);
-        return queueResult;
     }
 
     private async Task TrySyncPlaylistToMediaServerAsync(
@@ -1014,923 +1011,6 @@ public sealed class PlaylistWatchService
         }
     }
 
-    private async Task UpdateSpotifyPlaylistMetadataIfPresentAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        SpotifyPlaylistPage page,
-        CancellationToken cancellationToken)
-    {
-        if (!HasSpotifyPlaylistMetadataPayload(page))
-        {
-            return;
-        }
-
-        var imageUrl = await ResolvePlaylistImageUrlAsync(
-            SpotifySource,
-            playlist.SourceId,
-            page.Name ?? playlist.Name,
-            page.ImageUrl,
-            preference,
-            cancellationToken);
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            SpotifySource,
-            playlist.SourceId,
-            page.Name,
-            imageUrl,
-            page.Description,
-            page.TotalTracks,
-            cancellationToken);
-    }
-
-    private static bool HasSpotifyPlaylistMetadataPayload(SpotifyPlaylistPage page)
-    {
-        return !string.IsNullOrWhiteSpace(page.Name)
-               || !string.IsNullOrWhiteSpace(page.Description)
-               || !string.IsNullOrWhiteSpace(page.ImageUrl)
-               || page.TotalTracks.HasValue;
-    }
-
-    private static bool ShouldSkipSpotifySnapshotProcessing(
-        bool useSnapshotIdChecking,
-        SpotifyPlaylistPage page,
-        PlaylistWatchStateDto? state,
-        string? batchSnapshot)
-    {
-        return useSnapshotIdChecking
-               && !string.IsNullOrWhiteSpace(page.SnapshotId)
-               && string.Equals(page.SnapshotId, state?.SnapshotId, StringComparison.Ordinal)
-               && string.IsNullOrWhiteSpace(batchSnapshot);
-    }
-
-    private async Task CheckSpotifyArtistTopTracksAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        string artistId,
-        CancellationToken cancellationToken)
-    {
-        _ = preference;
-        _ = effectiveBlockRules;
-        var artistPage = await _spotifyArtistService.GetArtistPageBySpotifyIdAsync(
-            artistId,
-            artistId,
-            forceRefresh: true,
-            cancellationToken);
-
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(SpotifySource, playlist.SourceId, cancellationToken);
-        if (artistPage?.Artist == null)
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    SpotifySource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var artistName = string.IsNullOrWhiteSpace(artistPage.Artist.Name)
-            ? (playlist.Name ?? "Top Songs")
-            : artistPage.Artist.Name.Trim();
-        var listName = $"{artistName} - Top Songs";
-        var imageUrl = artistPage.Artist.Images?
-            .OrderByDescending(image => image.Width ?? 0)
-            .ThenByDescending(image => image.Height ?? 0)
-            .Select(image => image.Url)
-            .FirstOrDefault(url => !string.IsNullOrWhiteSpace(url));
-
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var topTracks = (artistPage.TopTracks ?? new List<SpotifyTrack>())
-            .Where(track => !string.IsNullOrWhiteSpace(track.Id))
-            .Select(track => new
-            {
-                Id = track.Id.Trim(),
-                Isrc = string.IsNullOrWhiteSpace(track.Isrc) ? null : track.Isrc.Trim()
-            })
-            .Where(track => seen.Add(track.Id))
-            .ToList();
-
-        var snapshotId = BuildSpotifyTopTracksSnapshot(topTracks.Select(track => track.Id));
-        var trackTotal = topTracks.Count;
-        imageUrl = await ResolvePlaylistImageUrlAsync(
-            SpotifySource,
-            playlist.SourceId,
-            listName,
-            imageUrl,
-            preference,
-            cancellationToken);
-
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            SpotifySource,
-            playlist.SourceId,
-            listName,
-            imageUrl,
-            "Spotify artist top tracks",
-            trackTotal,
-            cancellationToken);
-
-        var settings = _settingsService.LoadSettings();
-        if (settings.WatchUseSnapshotIdChecking
-            && !string.IsNullOrWhiteSpace(snapshotId)
-            && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    SpotifySource,
-                    playlist.SourceId,
-                    snapshotId,
-                    trackTotal,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
-        var newTracks = topTracks
-            .Where(track => !existing.Contains(track.Id) && !ignored.Contains(track.Id))
-            .ToList();
-
-        if (newTracks.Count > 0)
-        {
-            var trackInserts = newTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.Id, track.Isrc))
-                .ToList();
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                SpotifySource,
-                playlist.SourceId,
-                trackInserts,
-                cancellationToken);
-
-            await AddPlaylistWatchHistoryAsync(
-                SpotifySource,
-                playlist.SourceId,
-                listName,
-                newTracks.Count,
-                "detected",
-                cancellationToken,
-                artistName);
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                SpotifySource,
-                playlist.SourceId,
-                snapshotId,
-                trackTotal,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-    }
-
-    private async Task CheckSpotifyHomeTrendingSongsAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        CancellationToken cancellationToken)
-    {
-        var settings = _settingsService.LoadSettings();
-        var maxTracks = Math.Clamp(settings.WatchMaxTracksPerPlaylistCheck, 1, 500);
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(SpotifySource, playlist.SourceId, cancellationToken);
-
-        var fetchedTracks = await _spotifyPathfinderMetadataClient.FetchBrowseSectionTrackSummariesWithBlobAsync(
-            SpotifyTrendingSongsSectionUri,
-            0,
-            maxTracks,
-            cancellationToken);
-
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var tracks = fetchedTracks
-            .Where(track => !string.IsNullOrWhiteSpace(track.Id))
-            .Select(track => new
-            {
-                Track = track,
-                Id = track.Id.Trim(),
-                Isrc = string.IsNullOrWhiteSpace(track.Isrc) ? null : track.Isrc.Trim()
-            })
-            .Where(item => seen.Add(item.Id))
-            .ToList();
-
-        if (tracks.Count == 0)
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    SpotifySource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var listName = string.IsNullOrWhiteSpace(playlist.Name)
-            ? "Trending songs"
-            : playlist.Name.Trim();
-        var imageUrl = tracks
-            .Select(item => item.Track.ImageUrl)
-            .FirstOrDefault(url => !string.IsNullOrWhiteSpace(url))
-            ?? playlist.ImageUrl;
-        var description = "Spotify home feed trending songs";
-        var snapshotId = BuildSpotifyTopTracksSnapshot(tracks.Select(item => item.Id));
-        var trackTotal = tracks.Count;
-        imageUrl = await ResolvePlaylistImageUrlAsync(
-            SpotifySource,
-            playlist.SourceId,
-            listName,
-            imageUrl,
-            preference,
-            cancellationToken);
-
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            SpotifySource,
-            playlist.SourceId,
-            listName,
-            imageUrl,
-            description,
-            trackTotal,
-            cancellationToken);
-
-        if (settings.WatchUseSnapshotIdChecking
-            && !string.IsNullOrWhiteSpace(snapshotId)
-            && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    SpotifySource,
-                    playlist.SourceId,
-                    snapshotId,
-                    trackTotal,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(SpotifySource, playlist.SourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(SpotifySource, cancellationToken);
-        var newTracks = tracks
-            .Where(track => !existing.Contains(track.Id) && !ignored.Contains(track.Id))
-            .ToList();
-
-        if (newTracks.Count > 0)
-        {
-            var trackInserts = newTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.Id, track.Isrc))
-                .ToList();
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                SpotifySource,
-                playlist.SourceId,
-                trackInserts,
-                cancellationToken);
-
-            var queueResult = await QueueSpotifyTracksAsync(
-                newTracks.Select(track => track.Track).ToList(),
-                preference?.DestinationFolderId,
-                BuildQueueWatchOptions(
-                    "Spotify",
-                    SpotifySource,
-                    playlist.SourceId,
-                    preference?.PreferredEngine,
-                    preference?.DownloadVariantMode,
-                    preference?.AtmosDestinationFolderId,
-                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
-                cancellationToken);
-
-            await AddPlaylistWatchHistoryAsync(
-                SpotifySource,
-                playlist.SourceId,
-                listName,
-                newTracks.Count,
-                queueResult.QueuedCount > 0 ? QueuedStatus : "detected",
-                cancellationToken);
-            if (ShouldDeferPlaylistWatchStateUpdate(
-                    SpotifySource,
-                    playlist.SourceId,
-                    listName,
-                    newTracks.Count,
-                    queueResult))
-            {
-                return;
-            }
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                SpotifySource,
-                playlist.SourceId,
-                snapshotId,
-                trackTotal,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-    }
-
-    private async Task CheckDeezerPlaylistAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        CancellationToken cancellationToken)
-    {
-        if (!_deezerClient.LoggedIn)
-        {
-            _logger.LogDebug("Deezer playlist watch skipped - not logged in.");
-            return;
-        }
-
-        ApiPlaylist playlistInfo;
-        try
-        {
-            playlistInfo = await _deezerClient.GetPlaylistAsync(playlist.SourceId);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Deezer playlist watch failed for {SourceId}; attempting smarttracklist mode.", playlist.SourceId);
-            }
-            await CheckSmartTracklistAsync(playlist, preference, effectiveBlockRules, DeezerSource, cancellationToken);
-            return;
-        }
-
-        var snapshotId = string.IsNullOrWhiteSpace(playlistInfo.Checksum) ? null : playlistInfo.Checksum;
-        var trackTotal = playlistInfo.NbTracks;
-        await UpdateDeezerPlaylistMetadataAsync(playlist, playlistInfo, preference, trackTotal, cancellationToken);
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(DeezerSource, playlist.SourceId, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(snapshotId)
-            && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
-        {
-            await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
-            return;
-        }
-
-        var tracks = await _deezerClient.GetPlaylistTracksAsync(playlist.SourceId);
-        if (tracks.Count == 0)
-        {
-            await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
-            return;
-        }
-
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(DeezerSource, playlist.SourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(DeezerSource, cancellationToken);
-        var newTracks = tracks
-            .Where(track => track.SngId > 0
-                            && !existing.Contains(track.SngId.ToString())
-                            && !ignored.Contains(track.SngId.ToString()))
-            .ToList();
-
-        if (newTracks.Count == 0)
-        {
-            await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
-            return;
-        }
-
-        var trackInserts = newTracks
-            .Select(track => new PlaylistWatchTrackInsert(track.SngId.ToString(), track.Isrc))
-            .ToList();
-        await _libraryRepository.AddPlaylistWatchTracksAsync(
-            DeezerSource,
-            playlist.SourceId,
-            trackInserts,
-            cancellationToken);
-
-        var playlistName = playlistInfo.Title ?? playlist.Name ?? "Playlist";
-        var queueResult = await QueueDeezerTracksAsync(
-            newTracks,
-            preference?.DestinationFolderId,
-            BuildQueueWatchOptions(
-                "Deezer",
-                DeezerSource,
-                playlist.SourceId,
-                preference?.PreferredEngine,
-                preference?.DownloadVariantMode,
-                preference?.AtmosDestinationFolderId,
-                new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
-            cancellationToken);
-
-        if (queueResult.QueuedCount > 0)
-        {
-            await AddPlaylistWatchHistoryAsync(
-                DeezerSource,
-                playlist.SourceId,
-                playlistName,
-                newTracks.Count,
-                QueuedStatus,
-                cancellationToken);
-        }
-        if (ShouldDeferPlaylistWatchStateUpdate(
-                DeezerSource,
-                playlist.SourceId,
-                playlistName,
-                newTracks.Count,
-                queueResult))
-        {
-            return;
-        }
-
-        await UpsertDeezerPlaylistWatchStateAsync(playlist.SourceId, snapshotId, trackTotal, cancellationToken);
-    }
-
-    private async Task UpdateDeezerPlaylistMetadataAsync(
-        PlaylistWatchlistDto playlist,
-        ApiPlaylist playlistInfo,
-        PlaylistWatchPreferenceDto? preference,
-        int? trackTotal,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(playlistInfo.Title)
-            && string.IsNullOrWhiteSpace(playlistInfo.Description)
-            && string.IsNullOrWhiteSpace(playlistInfo.PictureXl)
-            && !trackTotal.HasValue)
-        {
-            return;
-        }
-
-        var imageUrl = !string.IsNullOrWhiteSpace(playlistInfo.PictureXl)
-            ? playlistInfo.PictureXl
-            : playlistInfo.PictureBig;
-        imageUrl = await ResolvePlaylistImageUrlAsync(
-            DeezerSource,
-            playlist.SourceId,
-            playlistInfo.Title ?? playlist.Name,
-            imageUrl,
-            preference,
-            cancellationToken);
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            DeezerSource,
-            playlist.SourceId,
-            playlistInfo.Title,
-            imageUrl,
-            playlistInfo.Description,
-            trackTotal,
-            cancellationToken);
-    }
-
-    private Task UpsertDeezerPlaylistWatchStateAsync(
-        string sourceId,
-        string? snapshotId,
-        int? trackTotal,
-        CancellationToken cancellationToken)
-    {
-        return UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                DeezerSource,
-                sourceId,
-                snapshotId,
-                trackTotal,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-    }
-
-    private async Task CheckApplePlaylistAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        CancellationToken cancellationToken)
-    {
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(AppleSource, playlist.SourceId, cancellationToken);
-        ApplePlaylistWatchData? playlistData;
-        try
-        {
-            playlistData = await GetApplePlaylistWatchDataAsync(playlist.SourceId, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Apple playlist watch failed to load playlist {SourceId}.", playlist.SourceId);
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    AppleSource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        if (playlistData == null)
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    AppleSource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var appleImageUrl = await ResolvePlaylistImageUrlAsync(
-            AppleSource,
-            playlist.SourceId,
-            playlistData.Name,
-            playlistData.ImageUrl,
-            preference,
-            cancellationToken);
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            AppleSource,
-            playlist.SourceId,
-            playlistData.Name,
-            appleImageUrl,
-            playlistData.Description,
-            playlistData.TrackCount,
-            cancellationToken);
-
-        var snapshotId = BuildTrackIdSnapshot(playlistData.Tracks.Select(track => track.TrackId));
-        var settings = _settingsService.LoadSettings();
-        if (settings.WatchUseSnapshotIdChecking
-            && !string.IsNullOrWhiteSpace(snapshotId)
-            && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    AppleSource,
-                    playlist.SourceId,
-                    snapshotId,
-                    playlistData.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(AppleSource, playlist.SourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(AppleSource, cancellationToken);
-        var newTracks = playlistData.Tracks
-            .Where(track => !existing.Contains(track.TrackId)
-                            && !ignored.Contains(track.TrackId))
-            .ToList();
-
-        if (newTracks.Count > 0)
-        {
-            var trackInserts = newTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
-                .ToList();
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                AppleSource,
-                playlist.SourceId,
-                trackInserts,
-                cancellationToken);
-
-            var queueResult = await QueueAppleTracksAsync(
-                newTracks,
-                preference?.DestinationFolderId,
-                BuildQueueWatchOptions(
-                    "Apple Music",
-                    AppleSource,
-                    playlist.SourceId,
-                    preference?.PreferredEngine,
-                    preference?.DownloadVariantMode,
-                    preference?.AtmosDestinationFolderId,
-                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
-                cancellationToken);
-
-            if (queueResult.QueuedCount > 0)
-            {
-                await AddPlaylistWatchHistoryAsync(
-                    AppleSource,
-                    playlist.SourceId,
-                    playlistData.Name,
-                    newTracks.Count,
-                    QueuedStatus,
-                    cancellationToken);
-            }
-            if (ShouldDeferPlaylistWatchStateUpdate(
-                    AppleSource,
-                    playlist.SourceId,
-                    playlistData.Name,
-                    newTracks.Count,
-                    queueResult))
-            {
-                return;
-            }
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                AppleSource,
-                playlist.SourceId,
-                snapshotId,
-                playlistData.TrackCount,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-    }
-
-    private async Task CheckBoomplayPlaylistAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        CancellationToken cancellationToken)
-    {
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(BoomplaySource, playlist.SourceId, cancellationToken);
-        BoomplayPlaylistWatchData? playlistData;
-        try
-        {
-            playlistData = await GetBoomplayPlaylistWatchDataAsync(playlist.SourceId, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Boomplay playlist watch failed to load playlist {SourceId}.", playlist.SourceId);
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    BoomplaySource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        if (playlistData == null)
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    BoomplaySource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var boomplayImageUrl = await ResolvePlaylistImageUrlAsync(
-            BoomplaySource,
-            playlist.SourceId,
-            playlistData.Name,
-            playlistData.ImageUrl,
-            preference,
-            cancellationToken);
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            BoomplaySource,
-            playlist.SourceId,
-            playlistData.Name,
-            boomplayImageUrl,
-            playlistData.Description,
-            playlistData.TrackCount,
-            cancellationToken);
-
-        var snapshotId = BuildTrackIdSnapshot(playlistData.Tracks.Select(track => track.TrackId));
-        var settings = _settingsService.LoadSettings();
-        if (settings.WatchUseSnapshotIdChecking
-            && !string.IsNullOrWhiteSpace(snapshotId)
-            && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    BoomplaySource,
-                    playlist.SourceId,
-                    snapshotId,
-                    playlistData.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(BoomplaySource, playlist.SourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(BoomplaySource, cancellationToken);
-        var newTracks = playlistData.Tracks
-            .Where(track => !existing.Contains(track.TrackId)
-                            && !ignored.Contains(track.TrackId))
-            .ToList();
-
-        if (newTracks.Count > 0)
-        {
-            var trackInserts = newTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
-                .ToList();
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                BoomplaySource,
-                playlist.SourceId,
-                trackInserts,
-                cancellationToken);
-
-            var queueResult = await QueueBoomplayTracksAsync(
-                newTracks,
-                preference?.DestinationFolderId,
-                BuildQueueWatchOptions(
-                    "Boomplay",
-                    BoomplaySource,
-                    playlist.SourceId,
-                    preference?.PreferredEngine,
-                    preference?.DownloadVariantMode,
-                    preference?.AtmosDestinationFolderId,
-                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
-                cancellationToken);
-
-            await AddPlaylistWatchHistoryAsync(
-                BoomplaySource,
-                playlist.SourceId,
-                playlistData.Name,
-                queueResult.QueuedCount,
-                QueuedStatus,
-                cancellationToken);
-            if (ShouldDeferPlaylistWatchStateUpdate(
-                    BoomplaySource,
-                    playlist.SourceId,
-                    playlistData.Name,
-                    newTracks.Count,
-                    queueResult))
-            {
-                return;
-            }
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                BoomplaySource,
-                playlist.SourceId,
-                snapshotId,
-                playlistData.TrackCount,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-    }
-
-    private Task CheckSmartTracklistAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        CancellationToken cancellationToken)
-    {
-        return CheckSmartTracklistAsync(playlist, preference, effectiveBlockRules, SmartTracklistSource, cancellationToken);
-    }
-
-    private async Task CheckSmartTracklistAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        string persistedSource,
-        CancellationToken cancellationToken)
-    {
-        if (!_deezerClient.LoggedIn)
-        {
-            _logger.LogDebug("Smarttracklist watch skipped - not logged in to Deezer.");
-            return;
-        }
-
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(persistedSource, playlist.SourceId, cancellationToken);
-        SmartTracklistWatchData? playlistData;
-        try
-        {
-            playlistData = await GetSmartTracklistWatchDataAsync(playlist.SourceId, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Smarttracklist watch failed to load playlist {SourceId}.", playlist.SourceId);
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    persistedSource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        if (playlistData == null)
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    persistedSource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var smartTracklistImageUrl = await ResolvePlaylistImageUrlAsync(
-            persistedSource,
-            playlist.SourceId,
-            playlistData.Name,
-            playlistData.ImageUrl,
-            preference,
-            cancellationToken);
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            persistedSource,
-            playlist.SourceId,
-            playlistData.Name,
-            smartTracklistImageUrl,
-            playlistData.Description,
-            playlistData.TrackCount,
-            cancellationToken);
-
-        var snapshotId = BuildTrackIdSnapshot(playlistData.Tracks.Select(track => track.TrackId));
-        var settings = _settingsService.LoadSettings();
-        if (settings.WatchUseSnapshotIdChecking
-            && !string.IsNullOrWhiteSpace(snapshotId)
-            && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    persistedSource,
-                    playlist.SourceId,
-                    snapshotId,
-                    playlistData.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(persistedSource, playlist.SourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(persistedSource, cancellationToken);
-        var newTracks = playlistData.Tracks
-            .Where(track => !existing.Contains(track.TrackId)
-                            && !ignored.Contains(track.TrackId))
-            .ToList();
-
-        if (newTracks.Count > 0)
-        {
-            var trackInserts = newTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
-                .ToList();
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                persistedSource,
-                playlist.SourceId,
-                trackInserts,
-                cancellationToken);
-
-            var queueResult = await QueueSmartTracklistTracksAsync(
-                newTracks,
-                preference?.DestinationFolderId,
-                BuildQueueWatchOptions(
-                    "Deezer",
-                    persistedSource,
-                    playlist.SourceId,
-                    preference?.PreferredEngine,
-                    preference?.DownloadVariantMode,
-                    preference?.AtmosDestinationFolderId,
-                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
-                cancellationToken);
-
-            await AddPlaylistWatchHistoryAsync(
-                persistedSource,
-                playlist.SourceId,
-                playlistData.Name,
-                queueResult.QueuedCount,
-                QueuedStatus,
-                cancellationToken);
-            if (ShouldDeferPlaylistWatchStateUpdate(
-                    persistedSource,
-                    playlist.SourceId,
-                    playlistData.Name,
-                    newTracks.Count,
-                    queueResult))
-            {
-                return;
-            }
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                persistedSource,
-                playlist.SourceId,
-                snapshotId,
-                playlistData.TrackCount,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-    }
-
     private async Task<SmartTracklistWatchData?> GetSmartTracklistWatchDataAsync(
         string smartTracklistId,
         CancellationToken cancellationToken)
@@ -1983,7 +1063,7 @@ public sealed class PlaylistWatchService
                 ?? track["artist"]?.Value<string>("name")
                 ?? string.Empty;
             var albumTitle = track.Value<string>("ALB_TITLE")
-                ?? track[AlbumField]?.Value<string>("title")
+                ?? track[AlbumField]?.Value<string>(JsonTitleProperty)
                 ?? string.Empty;
             var albumCoverId = track.Value<string>("ALB_PICTURE")
                 ?? track[AlbumField]?.Value<string>("md5_image")
@@ -2006,7 +1086,7 @@ public sealed class PlaylistWatchService
                 DeezerId = trackId,
                 Isrc = isrc,
                 Title = track.Value<string>("SNG_TITLE")
-                    ?? track.Value<string>("title")
+                    ?? track.Value<string>(JsonTitleProperty)
                     ?? string.Empty,
                 Artist = artistName,
                 Album = albumTitle,
@@ -2030,169 +1110,7 @@ public sealed class PlaylistWatchService
             tracks);
     }
 
-    private async Task CheckRecommendationsPlaylistAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackBlockRule>? effectiveBlockRules,
-        CancellationToken cancellationToken)
-    {
-        var persistedSource = RecommendationsSource;
-        var state = await _libraryRepository.GetPlaylistWatchStateAsync(persistedSource, playlist.SourceId, cancellationToken);
-
-        var resolvedLibraryId = 0L;
-        if (!TryParseRecommendationLibraryId(playlist.SourceId, out resolvedLibraryId))
-        {
-            var libraries = await _libraryRepository.GetLibrariesAsync(cancellationToken);
-            resolvedLibraryId = libraries.Count > 0 ? libraries[0].Id : 0;
-        }
-
-        if (resolvedLibraryId <= 0)
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    persistedSource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        RecommendationDetailDto? detail;
-        try
-        {
-            detail = await _libraryRecommendationService.GetRecommendationsAsync(
-                resolvedLibraryId,
-                stationId: playlist.SourceId,
-                limit: 50,
-                cancellationToken: cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Recommendations watch failed to load station {SourceId}.", playlist.SourceId);
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    persistedSource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        if (detail == null)
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    persistedSource,
-                    playlist.SourceId,
-                    state?.SnapshotId,
-                    state?.TrackCount,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var playlistName = string.IsNullOrWhiteSpace(detail.Station.Name) ? (playlist.Name ?? "Recommendations") : detail.Station.Name;
-        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
-            persistedSource,
-            playlist.SourceId,
-            playlistName,
-            detail.Station.ImageUrl ?? playlist.ImageUrl,
-            detail.Station.Description,
-            detail.Tracks.Count,
-            cancellationToken);
-
-        var snapshotId = BuildTrackIdSnapshot(detail.Tracks.Select(track => track.Id));
-        var settings = _settingsService.LoadSettings();
-        if (settings.WatchUseSnapshotIdChecking
-            && !string.IsNullOrWhiteSpace(snapshotId)
-            && string.Equals(snapshotId, state?.SnapshotId, StringComparison.Ordinal))
-        {
-            await UpsertPlaylistWatchStateAsync(
-                new LibraryRepository.PlaylistWatchStateUpsertInput(
-                    persistedSource,
-                    playlist.SourceId,
-                    snapshotId,
-                    detail.Tracks.Count,
-                    null,
-                    null,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
-            return;
-        }
-
-        var existing = await _libraryRepository.GetPlaylistWatchTrackIdsAsync(persistedSource, playlist.SourceId, cancellationToken);
-        var ignored = await GetIgnoredTrackIdsForSourceAsync(persistedSource, cancellationToken);
-        var newTracks = detail.Tracks
-            .Where(track => !string.IsNullOrWhiteSpace(track.Id)
-                            && !existing.Contains(track.Id)
-                            && !ignored.Contains(track.Id))
-            .ToList();
-
-        if (newTracks.Count > 0)
-        {
-            var trackInserts = newTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.Id, track.Isrc))
-                .ToList();
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                persistedSource,
-                playlist.SourceId,
-                trackInserts,
-                cancellationToken);
-
-            var queueResult = await QueueRecommendationTracksAsync(
-                newTracks,
-                preference?.DestinationFolderId,
-                BuildQueueWatchOptions(
-                    "Recommendations",
-                    persistedSource,
-                    playlist.SourceId,
-                    preference?.PreferredEngine,
-                    preference?.DownloadVariantMode,
-                    preference?.AtmosDestinationFolderId,
-                    new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
-                cancellationToken);
-
-            await AddPlaylistWatchHistoryAsync(
-                persistedSource,
-                playlist.SourceId,
-                playlistName,
-                queueResult.QueuedCount,
-                QueuedStatus,
-                cancellationToken);
-            if (ShouldDeferPlaylistWatchStateUpdate(
-                    persistedSource,
-                    playlist.SourceId,
-                    playlistName,
-                    newTracks.Count,
-                    queueResult))
-            {
-                return;
-            }
-        }
-
-        await UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                persistedSource,
-                playlist.SourceId,
-                snapshotId,
-                detail.Tracks.Count,
-                null,
-                null,
-                DateTimeOffset.UtcNow),
-            cancellationToken);
-    }
-
-    private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
+private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string playlistId,
         CancellationToken cancellationToken)
     {
@@ -2434,7 +1352,7 @@ public sealed class PlaylistWatchService
         long? destinationFolderId,
         CancellationToken cancellationToken)
     {
-        var sourceLabel = BuildQueueSourceLabel("Spotify", collectionType, collectionName);
+        var sourceLabel = BuildQueueSourceLabel(SpotifyLabel, collectionType, collectionName);
         var result = await QueueSpotifyTracksAsync(
             tracks,
             destinationFolderId,
@@ -2450,7 +1368,7 @@ public sealed class PlaylistWatchService
         long? destinationFolderId,
         CancellationToken cancellationToken)
     {
-        var sourceLabel = BuildQueueSourceLabel("Deezer", collectionType, collectionName);
+        var sourceLabel = BuildQueueSourceLabel(DeezerLabel, collectionType, collectionName);
         var result = await QueueDeezerTracksAsync(
             tracks,
             destinationFolderId,
@@ -2598,87 +1516,99 @@ public sealed class PlaylistWatchService
             cancellationToken);
     }
 
-    private Task<QueueWatchResult> QueueAppleTracksAsync(
-        IReadOnlyCollection<WatchIntentTrack> tracks,
-        long? destinationFolderId,
-        QueueWatchOptions options,
+    private async Task<HashSet<string>> ResolveLocalCandidateIdsAsync(
+        string source,
+        IReadOnlyCollection<PlaylistTrackCandidate> candidates,
         CancellationToken cancellationToken)
     {
-        return QueueWatchIntentTracksAsync(
-            tracks,
-            destinationFolderId,
-            options,
-            cancellationToken);
-    }
-
-    private Task<QueueWatchResult> QueueBoomplayTracksAsync(
-        IReadOnlyCollection<WatchIntentTrack> tracks,
-        long? destinationFolderId,
-        QueueWatchOptions options,
-        CancellationToken cancellationToken)
-    {
-        return QueueWatchIntentTracksAsync(
-            tracks,
-            destinationFolderId,
-            options,
-            cancellationToken);
-    }
-
-    private Task<QueueWatchResult> QueueSmartTracklistTracksAsync(
-        IReadOnlyCollection<WatchIntentTrack> tracks,
-        long? destinationFolderId,
-        QueueWatchOptions options,
-        CancellationToken cancellationToken)
-    {
-        return QueueWatchIntentTracksAsync(
-            tracks,
-            destinationFolderId,
-            options,
-            cancellationToken);
-    }
-
-    private Task<QueueWatchResult> QueueRecommendationTracksAsync(
-        List<RecommendationTrackDto> tracks,
-        long? destinationFolderId,
-        QueueWatchOptions options,
-        CancellationToken cancellationToken)
-    {
-        if (tracks.Count == 0)
+        var local = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sourceIds = candidates
+            .Select(static candidate => candidate.TrackSourceId)
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var bySource = await _libraryRepository.GetTrackIdsBySourceIdsAsync(source, sourceIds, cancellationToken);
+        foreach (var candidate in candidates.Where(candidate => bySource.ContainsKey(candidate.TrackSourceId)))
         {
-            return Task.FromResult(default(QueueWatchResult));
+            local.Add(candidate.TrackSourceId);
         }
 
-        var watchTracks = tracks
-            .Where(track => !string.IsNullOrWhiteSpace(track.Id))
-            .Select(track =>
-            {
-                var trackId = track.Id.Trim();
-                var artist = track.Artist?.Name ?? string.Empty;
-                var intent = new DownloadIntent
-                {
-                    SourceService = DeezerSource,
-                    SourceUrl = BuildDeezerTrackUrl(trackId),
-                    DeezerId = trackId,
-                    Isrc = track.Isrc ?? string.Empty,
-                    Title = track.Title ?? string.Empty,
-                    Artist = artist,
-                    Album = track.Album?.Title ?? string.Empty,
-                    AlbumArtist = artist,
-                    Cover = track.Album?.CoverMedium ?? string.Empty,
-                    DurationMs = track.Duration > 0 ? track.Duration * 1000 : 0,
-                    Position = track.TrackPosition > 0 ? track.TrackPosition : 0,
-                    TrackNumber = track.TrackPosition > 0 ? track.TrackPosition : 0
-                };
-                return new WatchIntentTrack(trackId, track.Isrc, intent);
-            })
+        var isrcs = candidates
+            .Select(static candidate => candidate.Isrc)
+            .Where(static isrc => !string.IsNullOrWhiteSpace(isrc))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var byIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync("isrc", isrcs, cancellationToken);
+        foreach (var candidate in candidates.Where(candidate =>
+                     !string.IsNullOrWhiteSpace(candidate.Isrc) && byIsrc.ContainsKey(candidate.Isrc)))
+        {
+            local.Add(candidate.TrackSourceId);
+        }
 
-        return QueueWatchIntentTracksAsync(
-            watchTracks,
-            destinationFolderId,
-            options,
-            cancellationToken);
+        return local;
     }
+
+    private static WatchIntentTrack? BuildWatchIntentTrackFromCandidate(string source, PlaylistTrackCandidate candidate)
+    {
+        var trackId = (candidate.TrackSourceId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            return null;
+        }
+
+        var sourceService = source == RecommendationsSource ? DeezerSource : source;
+        var intent = new DownloadIntent
+        {
+            SourceService = sourceService,
+            SourceUrl = BuildCandidateSourceUrl(source, trackId),
+            Isrc = candidate.Isrc ?? string.Empty,
+            Title = candidate.Title ?? string.Empty,
+            Artist = candidate.Artist ?? string.Empty,
+            Album = candidate.Album ?? string.Empty,
+            AlbumArtist = candidate.Artist ?? string.Empty,
+            DurationMs = candidate.DurationMs ?? 0,
+            Explicit = candidate.Explicit,
+            ReleaseDate = candidate.ReleaseYear?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            Genres = candidate.Genres?
+                .Where(static genre => !string.IsNullOrWhiteSpace(genre))
+                .Select(static genre => genre.Trim())
+                .ToList() ?? new List<string>()
+        };
+
+        switch (source)
+        {
+            case SpotifySource:
+                intent.SpotifyId = trackId;
+                break;
+            case DeezerSource:
+            case RecommendationsSource:
+                intent.DeezerId = trackId;
+                break;
+            case AppleSource:
+                intent.AppleId = trackId;
+                break;
+            case QobuzSource:
+                intent.PreferredEngine = QobuzSource;
+                break;
+            case TidalSource:
+                intent.PreferredEngine = TidalSource;
+                break;
+        }
+
+        return new WatchIntentTrack(trackId, candidate.Isrc, intent);
+    }
+
+    private static string BuildCandidateSourceUrl(string source, string trackId)
+        => source switch
+        {
+            SpotifySource => BuildSpotifyTrackUrl(trackId, null),
+            DeezerSource or RecommendationsSource => BuildDeezerTrackUrl(trackId),
+            AppleSource => $"https://music.apple.com/song/{Uri.EscapeDataString(trackId)}",
+            QobuzSource => BuildQobuzTrackUrl(trackId),
+            TidalSource => BuildTidalTrackUrl(trackId),
+            _ => string.Empty
+        };
 
     private static string BuildQueueSourceLabel(string defaultLabel, string collectionType, string collectionName)
     {
@@ -2692,30 +1622,6 @@ public sealed class PlaylistWatchService
         return string.IsNullOrWhiteSpace(normalizedName)
             ? $"{defaultLabel} {normalizedType}"
             : $"{defaultLabel} {normalizedType}:{normalizedName}";
-    }
-
-    private bool ShouldDeferPlaylistWatchStateUpdate(
-        string source,
-        string sourceId,
-        string playlistName,
-        int detectedTrackCount,
-        QueueWatchResult queueResult)
-    {
-        if (detectedTrackCount <= 0 || queueResult.FailedCount <= 0)
-        {
-            return false;
-        }
-
-        _logger.LogWarning(
-            "Playlist watch deferred snapshot update for {Source} playlist {SourceId} ({PlaylistName}) because {FailedCount} of {DetectedTrackCount} detected tracks were not queued or marked handled. queued={QueuedCount}, completed={CompletedCount}",
-            source,
-            sourceId,
-            playlistName,
-            queueResult.FailedCount,
-            detectedTrackCount,
-            queueResult.QueuedCount,
-            queueResult.CompletedCount);
-        return true;
     }
 
     private static QueueWatchOptions BuildQueueWatchOptions(
@@ -3384,6 +2290,130 @@ public sealed class PlaylistWatchService
         return $"https://www.deezer.com/track/{trackId}";
     }
 
+    private static string BuildQobuzTrackUrl(string trackId)
+    {
+        return $"https://open.qobuz.com/track/{Uri.EscapeDataString(trackId)}";
+    }
+
+    private static string BuildTidalTrackUrl(string trackId)
+    {
+        return $"https://tidal.com/browse/track/{Uri.EscapeDataString(trackId)}";
+    }
+
+    private static string ResolveSourceLabel(string source)
+        => source switch
+        {
+            SpotifySource => SpotifyLabel,
+            DeezerSource => DeezerLabel,
+            AppleSource => "Apple Music",
+            BoomplaySource => "Boomplay",
+            SmartTracklistSource => "Smart Tracklist",
+            RecommendationsSource => "Recommendations",
+            QobuzSource => "Qobuz",
+            TidalSource => "Tidal",
+            _ => source
+        };
+
+    private static string? EmptyToNull(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static string ResolveTidalPlaylistId(string sourceId)
+    {
+        var value = (sourceId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            return value;
+        }
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (segments[i].Equals("playlist", StringComparison.OrdinalIgnoreCase))
+            {
+                return segments[i + 1];
+            }
+        }
+
+        return segments.Length > 0 ? segments[^1] : string.Empty;
+    }
+
+    private static string ResolveQobuzPlaylistUrl(string sourceId)
+    {
+        var value = (sourceId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return Uri.TryCreate(value, UriKind.Absolute, out _)
+            ? value
+            : $"https://open.qobuz.com/playlist/{Uri.EscapeDataString(value)}";
+    }
+
+    private static string ResolveTidalArtistName(JsonElement track)
+    {
+        if (track.TryGetProperty("artist", out var artist) && artist.ValueKind == JsonValueKind.Object)
+        {
+            var name = GetJsonString(artist, "name");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name.Trim();
+            }
+        }
+
+        if (track.TryGetProperty("artists", out var artists) && artists.ValueKind == JsonValueKind.Array)
+        {
+            var names = artists.EnumerateArray()
+                .Select(artist => artist.ValueKind == JsonValueKind.Object ? GetJsonString(artist, "name") : null)
+                .Where(static name => !string.IsNullOrWhiteSpace(name))
+                .Select(static name => name!.Trim())
+                .ToList();
+            if (names.Count > 0)
+            {
+                return string.Join(", ", names);
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string GetHtmlText(HtmlNode node, string xpath)
+    {
+        var text = node.SelectSingleNode(xpath)?.InnerText ?? string.Empty;
+        return HtmlEntity.DeEntitize(text).Trim();
+    }
+
+    private static int ParseClockDurationSeconds(string? value)
+    {
+        var parts = (value ?? string.Empty)
+            .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+        {
+            return 0;
+        }
+
+        var total = 0;
+        foreach (var part in parts)
+        {
+            if (!int.TryParse(part, out var parsed))
+            {
+                return 0;
+            }
+
+            total = (total * 60) + parsed;
+        }
+
+        return total;
+    }
+
     private static string BuildDeezerCoverUrl(string? coverId)
     {
         if (string.IsNullOrWhiteSpace(coverId))
@@ -3486,27 +2516,6 @@ public sealed class PlaylistWatchService
                    sourceId.Trim(),
                    SpotifyHomeTrendingSourceId,
                    StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string BuildSpotifyTopTracksSnapshot(IEnumerable<string> trackIds)
-    {
-        var materialized = trackIds
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Select(id => id.Trim())
-            .ToArray();
-        if (materialized.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        var payload = string.Join("|", materialized);
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
-        return Convert.ToHexString(hash);
-    }
-
-    private static string BuildTrackIdSnapshot(IEnumerable<string> trackIds)
-    {
-        return BuildSpotifyTopTracksSnapshot(trackIds);
     }
 
     private static string? GetJsonString(JsonElement element, string propertyName)
@@ -3634,6 +2643,8 @@ public sealed class PlaylistWatchService
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
 
     private sealed record WatchIntentTrack(string TrackId, string? Isrc, DownloadIntent Intent);
+
+    private readonly record struct TidalPlaylistItemsPage(JsonElement Items, int Total);
 
     private sealed record ApplePlaylistWatchData(
         string Name,

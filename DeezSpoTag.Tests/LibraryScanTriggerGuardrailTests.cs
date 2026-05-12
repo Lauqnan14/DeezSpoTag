@@ -7,6 +7,8 @@ namespace DeezSpoTag.Tests;
 
 public sealed class LibraryScanTriggerGuardrailTests
 {
+    private static readonly long[] ExpectedChangedFolderIds = [5L];
+
     [Fact]
     public void DownloadOrchestration_UsesScopedChangedFolderScans()
     {
@@ -44,8 +46,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         summary.MarkChangedFolder(0);
         var clone = summary.Clone();
 
-        Assert.Equal(new[] { 5L }, summary.ChangedFolderIds);
-        Assert.Equal(new[] { 5L }, clone.ChangedFolderIds);
+        Assert.Equal(ExpectedChangedFolderIds, summary.ChangedFolderIds);
+        Assert.Equal(ExpectedChangedFolderIds, clone.ChangedFolderIds);
     }
 
     private static string ReadSource(params string[] pathParts)

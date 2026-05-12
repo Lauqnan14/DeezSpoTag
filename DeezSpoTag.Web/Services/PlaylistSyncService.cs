@@ -427,6 +427,47 @@ public sealed class PlaylistSyncService
         };
     }
 
+    public async Task<PlaylistTrackSyncReadiness> CheckPlaylistReadyForAutomaticSyncAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (candidates.Count == 0)
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "Playlist has no track candidates.");
+        }
+
+        var eligibleTracks = await FilterTracksForSyncAsync(
+            playlist,
+            preference,
+            candidates.Select(ToSyncTrackSummary).ToList(),
+            cancellationToken);
+        var eligibleIds = eligibleTracks
+            .Select(static track => track.SourceTrackId)
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (eligibleIds.Count == 0)
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "No eligible tracks after blocked/ignored filtering.");
+        }
+
+        foreach (var candidate in candidates.Where(candidate => eligibleIds.Contains(candidate.TrackSourceId)))
+        {
+            var readiness = await CheckTrackReadyForAutomaticSyncAsync(
+                playlist,
+                preference,
+                candidate,
+                cancellationToken);
+            if (!readiness.Ready)
+            {
+                return readiness;
+            }
+        }
+
+        return new PlaylistTrackSyncReadiness(true, false, "All playlist tracks are visible in the target server.");
+    }
+
     private async Task<(IReadOnlyList<SyncTrackSummary> Tracks, string? ErrorMessage)> LoadTracksForSyncAsync(
         PlaylistWatchlistDto playlist,
         IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
@@ -497,6 +538,20 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+        if (!appendMissingOnly && ShouldBlockUnsafeMirrorSync(matchSummary))
+        {
+            _logger.LogWarning(
+                "Blocked unsafe Plex mirror sync for playlist {Source}:{SourceId}. sourceTracks={SourceTracks}, localMatches={LocalMatches}, targetMatches={TargetMatches}",
+                playlist.Source,
+                playlist.SourceId,
+                matchSummary.SourceTracks,
+                matchSummary.LocalMatches,
+                matchSummary.TargetMatches);
+            return BuildFailedResult(
+                BuildSyncMessage("Mirror sync blocked because the target server sees fewer tracks than the local library.", matchSummary),
+                matchSummary);
+        }
+
         var playlistId = await _plexApiClient.CreateOrUpdatePlaylistAsync(
             plex.Url,
             plex.Token,
@@ -569,6 +624,20 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+        if (!appendMissingOnly && ShouldBlockUnsafeMirrorSync(matchSummary))
+        {
+            _logger.LogWarning(
+                "Blocked unsafe Jellyfin mirror sync for playlist {Source}:{SourceId}. sourceTracks={SourceTracks}, localMatches={LocalMatches}, targetMatches={TargetMatches}",
+                playlist.Source,
+                playlist.SourceId,
+                matchSummary.SourceTracks,
+                matchSummary.LocalMatches,
+                matchSummary.TargetMatches);
+            return BuildFailedResult(
+                BuildSyncMessage("Mirror sync blocked because the target server sees fewer tracks than the local library.", matchSummary),
+                matchSummary);
+        }
+
         var playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
             jellyfin.Url,
             jellyfin.ApiKey,
@@ -657,6 +726,13 @@ public sealed class PlaylistSyncService
         }
 
         return await ReplaceJellyfinPlaylistItemsAsync(url, apiKey, userId, playlistId, itemIds, entries, cancellationToken);
+    }
+
+    private static bool ShouldBlockUnsafeMirrorSync(SyncMatchSummary matchSummary)
+    {
+        return matchSummary.LocalMatches > 0
+               && matchSummary.TargetMatches > 0
+               && matchSummary.TargetMatches < matchSummary.LocalMatches;
     }
 
     private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> AppendMissingJellyfinItemsAsync(

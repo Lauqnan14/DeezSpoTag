@@ -1352,7 +1352,9 @@ public partial class Program
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 AppleCatalogService = sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
                 BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
-                LibraryRecommendationService = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRecommendationService>()
+                LibraryRecommendationService = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRecommendationService>(),
+                HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
+                TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Web.Services.ITidalAccessTokenProvider>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();

@@ -160,12 +160,10 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 playlist.SourceId,
                 cancellationToken);
             var syncService = scope.ServiceProvider.GetRequiredService<PlaylistSyncService>();
-            var readiness = await CheckCompletedTrackReadinessAsync(
-                syncService,
+            var readiness = await syncService.CheckPlaylistReadyForAutomaticSyncAsync(
                 playlist,
                 preference,
                 candidates,
-                request,
                 cancellationToken);
             if (!readiness.Ready)
             {
@@ -294,40 +292,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             request.TrackId,
             attempt,
             message);
-    }
-
-    private async Task<PlaylistSyncService.PlaylistTrackSyncReadiness> CheckCompletedTrackReadinessAsync(
-        PlaylistSyncService syncService,
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> candidates,
-        SyncRequest request,
-        CancellationToken cancellationToken)
-    {
-        var candidate = candidates.FirstOrDefault(candidate =>
-            string.Equals(candidate.TrackSourceId, request.TrackId, StringComparison.OrdinalIgnoreCase));
-        if (candidate == null)
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation(
-                    "Completed watchlist track {TrackId} is no longer present in playlist {Source}:{PlaylistId}; syncing current playlist state.",
-                    request.TrackId,
-                    request.Source,
-                    request.PlaylistId);
-            }
-
-            return new PlaylistSyncService.PlaylistTrackSyncReadiness(
-                Ready: true,
-                Terminal: false,
-                Message: "Completed track is no longer present in the source playlist.");
-        }
-
-        return await syncService.CheckTrackReadyForAutomaticSyncAsync(
-            playlist,
-            preference,
-            candidate,
-            cancellationToken);
     }
 
     private static async Task<PlaylistWatchlistDto?> FindPlaylistAsync(
