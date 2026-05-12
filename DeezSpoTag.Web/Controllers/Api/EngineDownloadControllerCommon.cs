@@ -437,7 +437,7 @@ internal static class EngineDownloadControllerCommon
         BatchEnqueueContext<TTrack, TPayload> context)
         where TPayload : EngineQueueItemBase
     {
-        var cancellationToken = controller.HttpContext.RequestAborted;
+        var cancellationToken = CancellationToken.None;
         var downloadGate = await context.OrchestrationService.EvaluateDownloadGateAsync(cancellationToken);
         if (!downloadGate.Allowed)
         {

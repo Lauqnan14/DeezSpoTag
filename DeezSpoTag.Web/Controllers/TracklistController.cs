@@ -684,7 +684,7 @@ namespace DeezSpoTag.Web.Controllers
                     ContentType = "music"
                 };
 
-                var result = await _intentService.EnqueueAsync(intent, HttpContext.RequestAborted);
+                var result = await _intentService.EnqueueAsync(intent, CancellationToken.None);
                 queued.AddRange(result.Queued.Select(static uuid => new Dictionary<string, object> { ["uuid"] = uuid }));
             }
 

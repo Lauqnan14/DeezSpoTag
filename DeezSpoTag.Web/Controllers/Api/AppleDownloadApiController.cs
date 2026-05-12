@@ -31,12 +31,12 @@ public sealed class AppleDownloadApiController : ControllerBase
     }
 
     [HttpPost("download")]
-    public async Task<IActionResult> Download([FromBody] JsonElement payload, CancellationToken cancellationToken)
-        => await HandleDownloadAsync(payload, videosOnly: false, cancellationToken);
+    public async Task<IActionResult> Download([FromBody] JsonElement payload)
+        => await HandleDownloadAsync(payload, videosOnly: false, CancellationToken.None);
 
     [HttpPost("videos/download")]
-    public async Task<IActionResult> DownloadVideo([FromBody] JsonElement payload, CancellationToken cancellationToken)
-        => await HandleDownloadAsync(payload, videosOnly: true, cancellationToken);
+    public async Task<IActionResult> DownloadVideo([FromBody] JsonElement payload)
+        => await HandleDownloadAsync(payload, videosOnly: true, CancellationToken.None);
 
     private async Task<IActionResult> HandleDownloadAsync(
         JsonElement payload,

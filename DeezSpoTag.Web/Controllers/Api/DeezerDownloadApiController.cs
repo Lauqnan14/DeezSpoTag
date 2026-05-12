@@ -59,8 +59,9 @@ namespace DeezSpoTag.Web.Controllers.Api
         }
 
         [HttpPost("add-with-settings")]
-        public async Task<IActionResult> AddWithSettings([FromBody] JsonElement payload, CancellationToken cancellationToken)
+        public async Task<IActionResult> AddWithSettings([FromBody] JsonElement payload)
         {
+            var cancellationToken = CancellationToken.None;
             var downloadGate = await _orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
             if (!downloadGate.Allowed)
             {
@@ -281,14 +282,13 @@ namespace DeezSpoTag.Web.Controllers.Api
         {
             var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(request.Settings, 0);
 
-            var abortToken = HttpContext.RequestAborted;
             var normalizedConcurrency = Math.Max(1, Math.Min(DirectPodcastQueueConcurrency, urls.Count));
             using var gate = new SemaphoreSlim(normalizedConcurrency, normalizedConcurrency);
             var queueSync = new object();
             var uniqueQueued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var tasks = urls.Select(async url =>
             {
-                await gate.WaitAsync(abortToken);
+                await gate.WaitAsync(CancellationToken.None);
                 try
                 {
                     var intent = BuildFallbackIntent(url, request, DeezerSource);
@@ -296,7 +296,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                     intent.PreferredEngine = DeezerSource;
                     intent.Quality = resolvedBitrate.ToString();
                     intent.DestinationFolderId = request.DestinationFolderId;
-                    var result = await _intentService.EnqueueAsync(intent, abortToken);
+                    var result = await _intentService.EnqueueAsync(intent, CancellationToken.None);
 
                     lock (queueSync)
                     {

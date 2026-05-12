@@ -23,7 +23,7 @@ public sealed class DownloadIntentApiController : ControllerBase
     }
 
     [HttpPost]
-    public async Task<IActionResult> Enqueue([FromBody] DownloadIntentBatchRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> Enqueue([FromBody] DownloadIntentBatchRequest request)
     {
         var validationResult = ValidateRequest(request);
         if (validationResult is not null)
@@ -36,7 +36,7 @@ public sealed class DownloadIntentApiController : ControllerBase
             return Ok(EnqueueDeferred(request));
         }
 
-        var immediateResponse = await EnqueueImmediatelyAsync(request, cancellationToken);
+        var immediateResponse = await EnqueueImmediatelyAsync(request, CancellationToken.None);
         return Ok(immediateResponse);
     }
 
