@@ -461,7 +461,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return;
         }
 
-        await RunPostAutoTagStagesAsync(cancellationToken);
+        await RunPostAutoTagStagesAsync(context, cancellationToken);
         MarkCompletedItemsAsProcessed(context.PendingCompletionMarkers);
         _lastPipelineCompletedAt = context.PipelineStartedAt;
     }
@@ -1349,29 +1349,33 @@ public sealed class DownloadOrchestrationService : BackgroundService
             out error);
     }
 
-    private async Task RunPostAutoTagStagesAsync(CancellationToken cancellationToken)
+    private async Task RunPostAutoTagStagesAsync(PipelineRunContext context, CancellationToken cancellationToken)
     {
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            "Automation: library scan starting after AutoTag."));
-
-        if (_scanRunner.GetStatus().IsRunning)
+        var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
+            context.PendingQueueUuids,
+            cancellationToken);
+        var changedFolderIds = movedFilesByDestination.Keys
+            .Where(folderId => folderId > 0)
+            .OrderBy(folderId => folderId)
+            .ToList();
+        if (changedFolderIds.Count == 0)
         {
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Automation: waiting for active library scan before post-scan stages."));
-            await _scanRunner.WaitForCurrentScanAsync(cancellationToken);
+                "Automation: post-download library scan skipped (no moved library files detected)."));
+            return;
         }
 
-        await _scanRunner.RunAsync(
-            refreshImages: false,
-            reset: false,
-            folderId: null,
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: post-download library scan starting for folder(s): {string.Join(", ", changedFolderIds)}."));
+
+        await _scanRunner.RunChangedFoldersAsync(
+            changedFolderIds,
             skipSpotifyFetch: false,
-            cacheSpotifyImages: false,
-            cancellationToken: cancellationToken);
+            cancellationToken);
 
         await TriggerPlexScanAsync(cancellationToken);
 

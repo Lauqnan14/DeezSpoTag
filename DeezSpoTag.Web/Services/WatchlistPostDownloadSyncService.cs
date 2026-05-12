@@ -357,13 +357,9 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             return;
         }
 
-        await scanner.WaitForCurrentScanAsync(cancellationToken);
-        await scanner.RunAsync(
-            refreshImages: false,
-            reset: false,
-            folderId: request.DestinationFolderId.Value,
+        await scanner.RunChangedFoldersAsync(
+            [request.DestinationFolderId.Value],
             skipSpotifyFetch: true,
-            cacheSpotifyImages: false,
             cancellationToken);
     }
 

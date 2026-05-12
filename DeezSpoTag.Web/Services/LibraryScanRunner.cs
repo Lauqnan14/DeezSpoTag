@@ -128,6 +128,36 @@ public sealed class LibraryScanRunner
             CancellationToken.None));
     }
 
+    public async Task RunChangedFoldersAsync(
+        IEnumerable<long> folderIds,
+        bool skipSpotifyFetch,
+        CancellationToken cancellationToken)
+    {
+        var changedFolderIds = folderIds
+            .Where(folderId => folderId > 0)
+            .Distinct()
+            .OrderBy(folderId => folderId)
+            .ToList();
+        if (changedFolderIds.Count == 0)
+        {
+            AddInfoLog("Post-download library scan skipped (no changed destination folders).");
+            return;
+        }
+
+        foreach (var folderId in changedFolderIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await WaitForCurrentScanAsync(cancellationToken);
+            await RunAsync(
+                refreshImages: false,
+                reset: false,
+                folderId: folderId,
+                skipSpotifyFetch: skipSpotifyFetch,
+                cacheSpotifyImages: false,
+                cancellationToken: cancellationToken);
+        }
+    }
+
     public async Task RunAsync(
         bool refreshImages,
         bool reset,

@@ -2110,6 +2110,7 @@ public partial class AutoTagService
         }
         await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
             job,
+            autoMove.Summary,
             autoMove.Completed && (plexTriggeredByEnhancement || plexRefreshRequestedAfterMove),
             CancellationToken.None);
     }
@@ -2196,6 +2197,7 @@ public partial class AutoTagService
             var plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
             await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
                 job,
+                autoMove.Summary,
                 plexRefreshRequestedAfterMove,
                 CancellationToken.None);
         }
@@ -2267,6 +2269,7 @@ public partial class AutoTagService
 
     private async Task TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
         AutoTagJob job,
+        AutoTagMoveSummary autoMoveSummary,
         bool plexRefreshRequested,
         CancellationToken cancellationToken)
     {
@@ -2285,18 +2288,71 @@ public partial class AutoTagService
             return;
         }
 
+        var changedFolderIds = await ResolveChangedLibraryFolderIdsAsync(autoMoveSummary, cancellationToken);
+        if (changedFolderIds.Count == 0)
+        {
+            AppendLog(job, "post auto-move library scan skipped (no moved library folders).");
+            _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Post auto-move library scan skipped because no changed library folders were detected."));
+            return;
+        }
+
         _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            "Post auto-move library scan enqueued after Plex metadata refresh request."));
-        AppendLog(job, "post auto-move library scan enqueued (Spotify artist metadata fetch enabled).");
+            $"Post auto-move library scan enqueued for folder(s): {string.Join(", ", changedFolderIds)}."));
+        AppendLog(job, $"post auto-move library scan enqueued for folder(s): {string.Join(", ", changedFolderIds)}");
 
-        _ = _libraryScanRunner.EnqueueAsync(
-            refreshImages: false,
-            reset: false,
-            folderId: null,
+        _ = _libraryScanRunner.RunChangedFoldersAsync(
+            changedFolderIds,
             skipSpotifyFetch: false,
-            cacheSpotifyImages: false);
+            CancellationToken.None);
+    }
+
+    private async Task<List<long>> ResolveChangedLibraryFolderIdsAsync(
+        AutoTagMoveSummary autoMoveSummary,
+        CancellationToken cancellationToken)
+    {
+        var changed = autoMoveSummary.ChangedFolderIds
+            .Where(folderId => folderId > 0)
+            .ToHashSet();
+        if (autoMoveSummary.MovedCount <= 0 || autoMoveSummary.DestinationRoots.Count == 0 || !_libraryRepository.IsConfigured)
+        {
+            return changed.OrderBy(folderId => folderId).ToList();
+        }
+
+        var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
+        foreach (var destinationRoot in autoMoveSummary.DestinationRoots)
+        {
+            if (string.IsNullOrWhiteSpace(destinationRoot))
+            {
+                continue;
+            }
+
+            foreach (var folder in folders)
+            {
+                if (folder.Id <= 0 || string.IsNullOrWhiteSpace(folder.RootPath))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (IsPathUnderRoot(destinationRoot, folder.RootPath))
+                    {
+                        changed.Add(folder.Id);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Ignore paths the runtime cannot normalize; explicit changed folder ids remain authoritative.
+                }
+            }
+        }
+
+        return changed.OrderBy(folderId => folderId).ToList();
     }
 
     private static List<long> ParseFolderIds(JsonObject node, string propertyName)
@@ -6325,6 +6381,7 @@ public partial class AutoTagService
                 var plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
                 await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
                     job,
+                    summary,
                     plexRefreshRequestedAfterMove,
                     CancellationToken.None);
             }

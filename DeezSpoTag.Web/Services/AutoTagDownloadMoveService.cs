@@ -23,6 +23,7 @@ public sealed class AutoTagMoveSummary
     public int SkippedCount { get; set; }
     public int FailedCount { get; set; }
     public List<string> DestinationRoots { get; set; } = new();
+    public List<long> ChangedFolderIds { get; set; } = new();
     public bool RecoveryCleanup { get; set; }
     public string? Error { get; set; }
 
@@ -42,6 +43,16 @@ public sealed class AutoTagMoveSummary
         DestinationRoots.Add(normalized);
     }
 
+    public void MarkChangedFolder(long folderId)
+    {
+        if (folderId <= 0 || ChangedFolderIds.Contains(folderId))
+        {
+            return;
+        }
+
+        ChangedFolderIds.Add(folderId);
+    }
+
     public AutoTagMoveSummary Clone()
     {
         return new AutoTagMoveSummary
@@ -50,6 +61,7 @@ public sealed class AutoTagMoveSummary
             SkippedCount = SkippedCount,
             FailedCount = FailedCount,
             DestinationRoots = DestinationRoots.ToList(),
+            ChangedFolderIds = ChangedFolderIds.ToList(),
             RecoveryCleanup = RecoveryCleanup,
             Error = Error
         };
@@ -1022,6 +1034,7 @@ public sealed class AutoTagDownloadMoveService
             if (DidPathChange(sourceDisplay, movedPath))
             {
                 summary.MovedCount++;
+                summary.MarkChangedFolder(context.DestinationKey);
                 return;
             }
 
@@ -1061,6 +1074,7 @@ public sealed class AutoTagDownloadMoveService
             }
 
             summary.MovedCount += movedPaths.Count;
+            summary.MarkChangedFolder(context.DestinationKey);
             if (candidateCount > movedPaths.Count)
             {
                 summary.SkippedCount += candidateCount - movedPaths.Count;
