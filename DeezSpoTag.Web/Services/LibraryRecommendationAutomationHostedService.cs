@@ -29,8 +29,6 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
             }
         }
 
-        await RefreshDailyRecommendationsAsync("startup", stoppingToken);
-
         while (!stoppingToken.IsCancellationRequested)
         {
             var delay = GetDelayUntilNextLocalMidnight(DateTimeOffset.Now);

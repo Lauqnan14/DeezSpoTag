@@ -77,10 +77,10 @@ public sealed class DeezerTrackRecommendationService
         }
 
         var cappedLimit = Math.Clamp(limit, 1, DailyLimit);
-        var todayUtc = DateOnly.FromDateTime(DateTime.UtcNow);
-        PruneOldCache(todayUtc);
+        var todayLocal = DateOnly.FromDateTime(DateTimeOffset.Now.DateTime);
+        PruneOldCache(todayLocal);
 
-        var cacheKey = BuildCacheKey(libraryId, folderId, todayUtc, cappedLimit);
+        var cacheKey = BuildCacheKey(libraryId, folderId, todayLocal, cappedLimit);
         if (_dailyCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -92,14 +92,14 @@ public sealed class DeezerTrackRecommendationService
             return null;
         }
 
-        var orderedSeeds = OrderSeedsForDay(normalizedLibraryIds, todayUtc);
+        var orderedSeeds = OrderSeedsForDay(normalizedLibraryIds, todayLocal);
         var tracks = await BuildDailyRecommendationTracksAsync(
             orderedSeeds,
             normalizedLibraryIds,
             cappedLimit,
             cancellationToken);
 
-        var station = BuildStation(todayUtc, tracks.Count);
+        var station = BuildStation(todayLocal, tracks.Count);
         var detail = new RecommendationDetailDto(station, tracks, DateTimeOffset.UtcNow);
         _dailyCache[cacheKey] = detail;
         return detail;

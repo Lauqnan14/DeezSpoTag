@@ -99,7 +99,8 @@ public sealed class LibraryRecommendationService
     private sealed record RecommendationArtworkCandidate(string Url, string DayKey);
     private sealed record PersistedDailyPoolDto(
         DateTimeOffset GeneratedAtUtc,
-        IReadOnlyList<RecommendationTrackDto> Tracks);
+        IReadOnlyList<RecommendationTrackDto> Tracks,
+        string? StationImageUrl = null);
 
     private async Task<IReadOnlyList<FolderDto>> GetRecommendationEligibleFoldersAsync(CancellationToken cancellationToken)
     {
@@ -236,9 +237,8 @@ public sealed class LibraryRecommendationService
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
-        var sixHourBucket = Math.Clamp(nowLocal.Hour / 6, 0, 3);
         var orderedCandidates = windowCandidates
-            .OrderBy(candidate => ComputeStableHash($"{nowLocal:yyyyMMdd}|b{sixHourBucket}|{candidate.Url}"))
+            .OrderBy(candidate => ComputeStableHash($"{nowLocal:yyyyMMdd}|{candidate.Url}"))
             .ThenBy(candidate => candidate.Url, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -522,14 +522,14 @@ public sealed class LibraryRecommendationService
             : ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
 
         var cappedLimit = Math.Clamp(limit, 1, MaxDailyRecommendations);
-        var dayUtc = DateOnly.FromDateTime(DateTime.UtcNow);
-        PruneOldCache(dayUtc);
+        var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
+        PruneOldCache(dayLocal);
 
-        var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayUtc);
-        var basePool = await GetOrBuildDailyPoolAsync(
+        var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
+        var basePool = await GetDailyPoolAsync(
             cacheKey,
             scope,
-            dayUtc,
+            dayLocal,
             stationImageUrl,
             cancellationToken);
         if (basePool == null)
@@ -542,15 +542,15 @@ public sealed class LibraryRecommendationService
             scope.StationId,
             cancellationToken);
 
-        var basePoolTrackCount = basePool.Tracks.Count;
-        var eligible = basePool.Tracks
-            .Where(track => !ignoredTrackIds.Contains(track.Id))
-            .ToList();
-        var eligibleTrackCount = eligible.Count;
+        var visibleTracks = BuildVisibleDailySelection(
+            basePool.Tracks,
+            ignoredTrackIds,
+            cappedLimit,
+            dayLocal);
         IReadOnlyList<RecommendationTrackDto> enriched;
         try
         {
-            enriched = await EnrichRecommendationMetadataAsync(eligible, cancellationToken);
+            enriched = await EnrichRecommendationMetadataAsync(visibleTracks, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -558,41 +558,22 @@ public sealed class LibraryRecommendationService
                 ex,
                 "Failed to enrich recommendation metadata for station {StationId}. Returning base recommendation tracks.",
                 scope.StationId);
-            enriched = eligible;
-        }
-        enriched = await ExcludeTracksAlreadyInLibraryAsync(
-            scope.LibraryId,
-            scope.FolderId,
-            enriched,
-            cancellationToken);
-        var nonLibraryTrackCount = enriched.Count;
-        var cappedTracks = BuildDiversifiedTrackSelection(
-            enriched,
-            cappedLimit,
-            dayUtc);
-        if (cappedTracks.Count < cappedLimit && eligibleTrackCount > cappedTracks.Count)
-        {
-            cappedTracks = TopUpRecommendationSelection(
-                cappedTracks,
-                eligible,
-                cappedLimit,
-                dayUtc);
+            enriched = visibleTracks;
         }
 
-        if (cappedTracks.Count < cappedLimit && _logger.IsEnabled(LogLevel.Information))
+        if (enriched.Count < cappedLimit && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Recommendation result underfilled for station {StationId}: requested={Requested}, returned={Returned}, basePool={BasePool}, afterIgnore={AfterIgnore}, afterLibraryExclusion={AfterLibraryExclusion}.",
+                "Recommendation result underfilled for station {StationId}: requested={Requested}, returned={Returned}, dailySelection={DailySelection}, ignored={Ignored}.",
                 scope.StationId,
                 cappedLimit,
-                cappedTracks.Count,
-                basePoolTrackCount,
-                eligibleTrackCount,
-                nonLibraryTrackCount);
+                enriched.Count,
+                Math.Min(cappedLimit, basePool.Tracks.Count),
+                ignoredTrackIds.Count);
         }
 
         var imageUrl = stationImageUrl
-            ?? cappedTracks
+            ?? enriched
                 .Select(track => track.Album?.CoverMedium)
                 .FirstOrDefault(cover => !string.IsNullOrWhiteSpace(cover))
             ?? basePool.Station.ImageUrl;
@@ -600,17 +581,17 @@ public sealed class LibraryRecommendationService
         return new RecommendationDetailDto(
             basePool.Station with
             {
-                TrackCount = cappedTracks.Count,
+                TrackCount = enriched.Count,
                 ImageUrl = imageUrl
             },
-            cappedTracks,
+            enriched,
             basePool.GeneratedAtUtc);
     }
 
-    private async Task<RecommendationDetailDto?> GetOrBuildDailyPoolAsync(
+    private async Task<RecommendationDetailDto?> GetDailyPoolAsync(
         string cacheKey,
         RecommendationScope scope,
-        DateOnly dayUtc,
+        DateOnly dayLocal,
         string? stationImageUrl,
         CancellationToken cancellationToken)
     {
@@ -619,19 +600,12 @@ public sealed class LibraryRecommendationService
             return cachedPool;
         }
 
-        var basePool = await TryLoadPersistedDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
-        if (basePool == null)
+        var basePool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+        if (basePool != null)
         {
-            basePool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
-            if (basePool == null)
-            {
-                return null;
-            }
-
-            await PersistDailyPoolAsync(scope, dayUtc, basePool, cancellationToken);
+            _dailyPoolCache[cacheKey] = basePool;
         }
 
-        _dailyPoolCache[cacheKey] = basePool;
         return basePool;
     }
 
@@ -693,11 +667,11 @@ public sealed class LibraryRecommendationService
         }
 
         var nowLocal = DateTimeOffset.Now;
-        var dayUtc = DateOnly.FromDateTime(DateTime.UtcNow);
+        var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
         var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
         var watchlistMap = await GetRecommendationWatchlistMapAsync(cancellationToken);
 
-        PruneOldCache(dayUtc);
+        PruneOldCache(dayLocal);
 
         foreach (var folder in allRecommendationFolders
                      .Where(folder => folder.LibraryId.HasValue && folder.LibraryId.Value > 0)
@@ -714,15 +688,20 @@ public sealed class LibraryRecommendationService
 
             try
             {
+                var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
+                var existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+                if (existingPool is not null)
+                {
+                    _dailyPoolCache[cacheKey] = existingPool;
+                    continue;
+                }
+
                 await RefreshShazamScopeAsync(scope, cancellationToken);
 
-                var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayUtc);
-                _dailyPoolCache.TryRemove(cacheKey, out _);
-
-                var dailyPool = await BuildDailyPoolAsync(scope, dayUtc, stationImageUrl, cancellationToken);
+                var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
                 if (dailyPool is not null)
                 {
-                    await PersistDailyPoolAsync(scope, dayUtc, dailyPool, cancellationToken);
+                    await PersistDailyPoolAsync(scope, dayLocal, dailyPool, cancellationToken);
                     _dailyPoolCache[cacheKey] = dailyPool;
                 }
             }
@@ -930,7 +909,7 @@ public sealed class LibraryRecommendationService
         var station = new RecommendationStationDto(
             scope.StationId,
             $"Recommendations - {scope.FolderName}",
-            BuildDailyRecommendationDescription(scope.FolderName, DateTime.UtcNow.DayOfWeek),
+            BuildDailyRecommendationDescription(scope.FolderName, dayUtc.DayOfWeek),
             RecommendationSourceId,
             scope.FolderName,
             Math.Min(MaxDailyRecommendations, merged.Count),
@@ -983,11 +962,11 @@ public sealed class LibraryRecommendationService
             var station = new RecommendationStationDto(
                 scope.StationId,
                 $"Recommendations - {scope.FolderName}",
-                BuildDailyRecommendationDescription(scope.FolderName, DateTime.UtcNow.DayOfWeek),
+                BuildDailyRecommendationDescription(scope.FolderName, dayUtc.DayOfWeek),
                 RecommendationSourceId,
                 scope.FolderName,
                 Math.Min(MaxDailyRecommendations, normalizedTracks.Count),
-                stationImageUrl);
+                string.IsNullOrWhiteSpace(payload.StationImageUrl) ? stationImageUrl : payload.StationImageUrl);
 
             return new RecommendationDetailDto(
                 station,
@@ -1037,7 +1016,8 @@ public sealed class LibraryRecommendationService
                     .Select(NormalizeRecommendationTrack)
                     .Where(track => !string.IsNullOrWhiteSpace(track.Id))
                     .Select((track, index) => track with { TrackPosition = index + 1 })
-                    .ToList());
+                    .ToList(),
+                detail.Station.ImageUrl);
 
             await _repository.UpsertPlaylistTrackCandidateCacheAsync(
                 DailyPoolCacheSource,
@@ -2697,6 +2677,24 @@ public sealed class LibraryRecommendationService
         }
 
         return selected
+            .Select((track, index) => track with { TrackPosition = index + 1 })
+            .ToList();
+    }
+
+    private static List<RecommendationTrackDto> BuildVisibleDailySelection(
+        IReadOnlyList<RecommendationTrackDto> tracks,
+        HashSet<string> ignoredTrackIds,
+        int limit,
+        DateOnly dayUtc)
+    {
+        var dailySelection = BuildDiversifiedTrackSelection(tracks, limit, dayUtc);
+        if (ignoredTrackIds.Count == 0)
+        {
+            return dailySelection;
+        }
+
+        return dailySelection
+            .Where(track => !ignoredTrackIds.Contains(track.Id))
             .Select((track, index) => track with { TrackPosition = index + 1 })
             .ToList();
     }

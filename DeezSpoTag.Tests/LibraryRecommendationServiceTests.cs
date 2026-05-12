@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -20,6 +24,12 @@ public sealed class LibraryRecommendationServiceTests
     private static readonly MethodInfo ResolveFolderContentTypeMethod = typeof(LibraryRecommendationService).GetMethod(
         "ResolveFolderContentType",
         BindingFlags.NonPublic | BindingFlags.Static)!;
+    private static readonly MethodInfo BuildVisibleDailySelectionMethod = typeof(LibraryRecommendationService).GetMethod(
+        "BuildVisibleDailySelection",
+        BindingFlags.NonPublic | BindingFlags.Static)!;
+    private static readonly MethodInfo BuildRecommendationArtworkAssignmentsMethod = typeof(LibraryRecommendationService).GetMethod(
+        "BuildRecommendationArtworkAssignments",
+        BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     [Fact]
     public void MergeRotating_UsesRecommendationPoolLimit()
@@ -92,6 +102,62 @@ public sealed class LibraryRecommendationServiceTests
         Assert.Equal("atmos", contentType);
     }
 
+    [Fact]
+    public void BuildVisibleDailySelection_DoesNotTopUpIgnoredTracks()
+    {
+        var day = new DateOnly(2026, 4, 12);
+        var tracks = CreateTracks("daily", 80, 1);
+        var baseline = (List<RecommendationTrackDto>)BuildVisibleDailySelectionMethod.Invoke(
+            null,
+            [tracks, new HashSet<string>(StringComparer.Ordinal), 50, day])!;
+        var ignored = new HashSet<string>(StringComparer.Ordinal) { baseline[0].Id };
+
+        var result = (List<RecommendationTrackDto>)BuildVisibleDailySelectionMethod.Invoke(
+            null,
+            [tracks, ignored, 50, day])!;
+
+        Assert.Equal(49, result.Count);
+        Assert.DoesNotContain(result, track => track.Id == baseline[0].Id);
+        Assert.Subset(
+            new HashSet<string>(baseline.Select(track => track.Id), StringComparer.Ordinal),
+            new HashSet<string>(result.Select(track => track.Id), StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void BuildRecommendationArtworkAssignments_IsStableAcrossSameLocalDay()
+    {
+        var webRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-recommendations-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(webRoot, "images", "recommendations", "set-a"));
+            Directory.CreateDirectory(Path.Combine(webRoot, "images", "recommendations", "set-b"));
+            File.WriteAllText(Path.Combine(webRoot, "images", "recommendations", "set-a", "sunday.jpg"), string.Empty);
+            File.WriteAllText(Path.Combine(webRoot, "images", "recommendations", "set-b", "sunday.jpg"), string.Empty);
+            var service = CreateRecommendationService(webRoot);
+            var folders = new List<FolderDto>
+            {
+                CreateFolder(1, "Main Music"),
+                CreateFolder(2, "Second Music")
+            };
+
+            var early = (Dictionary<string, string>)BuildRecommendationArtworkAssignmentsMethod.Invoke(
+                service,
+                [folders, new DateTimeOffset(2026, 4, 12, 1, 0, 0, TimeSpan.Zero)])!;
+            var late = (Dictionary<string, string>)BuildRecommendationArtworkAssignmentsMethod.Invoke(
+                service,
+                [folders, new DateTimeOffset(2026, 4, 12, 23, 0, 0, TimeSpan.Zero)])!;
+
+            Assert.Equal(early, late);
+        }
+        finally
+        {
+            if (Directory.Exists(webRoot))
+            {
+                Directory.Delete(webRoot, recursive: true);
+            }
+        }
+    }
+
     private static List<RecommendationTrackDto> CreateTracks(string prefix, int count, int idStart)
     {
         var tracks = new List<RecommendationTrackDto>(count);
@@ -114,5 +180,57 @@ public sealed class LibraryRecommendationServiceTests
         }
 
         return tracks;
+    }
+
+    private static FolderDto CreateFolder(long id, string name)
+    {
+        return new FolderDto(
+            Id: id,
+            RootPath: $"/music/{id}",
+            DisplayName: name,
+            Enabled: true,
+            LibraryId: 1,
+            LibraryName: "Library",
+            DesiredQuality: "0",
+            AutoTagProfileId: null,
+            AutoTagEnabled: false,
+            ConvertEnabled: false,
+            ConvertFormat: null,
+            ConvertBitrate: null);
+    }
+
+    private static LibraryRecommendationService CreateRecommendationService(string webRootPath)
+    {
+        return new LibraryRecommendationService(
+            new LibraryRecommendationService.LibraryRecommendationCollaborators
+            {
+                DeezerRecommendations = null!,
+                Repository = null!,
+                ShazamRecognitionService = null!,
+                ShazamDiscoveryService = null!,
+                DeezerClient = null!,
+                DeezerGatewayService = null!,
+                SongLinkResolver = null!
+            },
+            new TestWebHostEnvironment(webRootPath),
+            NullLogger<LibraryRecommendationService>.Instance);
+    }
+
+    private sealed class TestWebHostEnvironment : IWebHostEnvironment
+    {
+        public TestWebHostEnvironment(string webRootPath)
+        {
+            WebRootPath = webRootPath;
+            ContentRootPath = webRootPath;
+            WebRootFileProvider = new PhysicalFileProvider(webRootPath);
+            ContentRootFileProvider = WebRootFileProvider;
+        }
+
+        public string ApplicationName { get; set; } = "DeezSpoTag.Tests";
+        public IFileProvider ContentRootFileProvider { get; set; }
+        public string ContentRootPath { get; set; }
+        public string EnvironmentName { get; set; } = "Development";
+        public string WebRootPath { get; set; }
+        public IFileProvider WebRootFileProvider { get; set; }
     }
 }
