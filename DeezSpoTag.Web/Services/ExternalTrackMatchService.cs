@@ -18,7 +18,7 @@ public sealed class ExternalTrackMatchService
     private static readonly ResolvedPlatformLinks EmptyResolvedPlatformLinks = new(null, null, null, null);
     private readonly DeezerClient _deezerClient;
     private readonly SongLinkResolver _songLinkResolver;
-    private readonly IQobuzMetadataService _qobuzMetadataService;
+    private readonly QobuzTrackResolver _qobuzTrackResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IAcousticIdMatcher _acousticIdMatcher;
@@ -27,7 +27,7 @@ public sealed class ExternalTrackMatchService
     public ExternalTrackMatchService(
         DeezerClient deezerClient,
         SongLinkResolver songLinkResolver,
-        IQobuzMetadataService qobuzMetadataService,
+        QobuzTrackResolver qobuzTrackResolver,
         AppleMusicCatalogService appleCatalogService,
         DeezSpoTagSettingsService settingsService,
         IAcousticIdMatcher acousticIdMatcher,
@@ -35,7 +35,7 @@ public sealed class ExternalTrackMatchService
     {
         _deezerClient = deezerClient;
         _songLinkResolver = songLinkResolver;
-        _qobuzMetadataService = qobuzMetadataService;
+        _qobuzTrackResolver = qobuzTrackResolver;
         _appleCatalogService = appleCatalogService;
         _settingsService = settingsService;
         _acousticIdMatcher = acousticIdMatcher;
@@ -75,7 +75,7 @@ public sealed class ExternalTrackMatchService
         var isrc = NormalizeIsrc(spotifyTrack.Isrc);
         if (!string.IsNullOrWhiteSpace(isrc))
         {
-            var isrcResolution = await ResolveIsrcMatchesAsync(request, isrc, cancellationToken);
+            var isrcResolution = await ResolveIsrcMatchesAsync(request, spotifyTrack, isrc, cancellationToken);
             links = isrcResolution.Links;
             var byIsrc = isrcResolution.DeezerTrackId;
             if (!string.IsNullOrWhiteSpace(byIsrc))
@@ -122,12 +122,13 @@ public sealed class ExternalTrackMatchService
 
     private async Task<(string? DeezerTrackId, ResolvedPlatformLinks Links)> ResolveIsrcMatchesAsync(
         ExternalMatchRequest request,
+        SpotifyTrackSummary spotifyTrack,
         string isrc,
         CancellationToken cancellationToken)
     {
         var deezerTask = TryResolveDeezerByIsrcAsync(isrc);
         var qobuzTask = request.AllowQobuzIsrcLookup
-            ? TryResolveQobuzByIsrcAsync(isrc, cancellationToken)
+            ? TryResolveQobuzAsync(spotifyTrack, isrc, cancellationToken)
             : Task.FromResult<(string Id, string Url)?>(null);
         var appleTask = request.AllowAppleIsrcLookup
             ? TryResolveAppleByIsrcAsync(isrc, cancellationToken)
@@ -246,16 +247,26 @@ public sealed class ExternalTrackMatchService
             : null;
     }
 
-    private async Task<(string Id, string Url)?> TryResolveQobuzByIsrcAsync(string isrc, CancellationToken cancellationToken)
+    private async Task<(string Id, string Url)?> TryResolveQobuzAsync(
+        SpotifyTrackSummary spotifyTrack,
+        string isrc,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var track = await _qobuzMetadataService.FindTrackByISRC(isrc, cancellationToken);
-            if (track == null || track.Id <= 0)
+            var resolution = await _qobuzTrackResolver.ResolveTrackAsync(
+                isrc,
+                spotifyTrack.Name,
+                spotifyTrack.Artists,
+                spotifyTrack.Album,
+                spotifyTrack.DurationMs,
+                cancellationToken);
+            if (resolution?.Track.Id is not > 0)
             {
                 return null;
             }
-            return (track.Id.ToString(), $"https://play.qobuz.com/track/{track.Id}");
+
+            return (resolution.Track.Id.ToString(), $"https://play.qobuz.com/track/{resolution.Track.Id}");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

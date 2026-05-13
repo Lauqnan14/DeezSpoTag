@@ -46,18 +46,17 @@ public sealed class QobuzTrackResolver
         if (!string.IsNullOrWhiteSpace(isrc))
         {
             var exact = await _metadataService.FindTrackByISRC(isrc, cancellationToken);
-            if (exact != null)
+            if (exact != null
+                && IsExactIsrcMatch(exact, isrc)
+                && !HasContradictoryMetadata(exact, title, artist, expectedDurationSec))
             {
                 var exactScore = ScoreCandidate(exact, title, artist, album, expectedDurationSec, preferHiRes: true);
-                if (exactScore >= 11)
-                {
-                    return BuildResolution(exact, "isrc", exactScore);
-                }
+                return BuildResolution(exact, "isrc", Math.Max(exactScore, 20));
             }
         }
 
         var candidates = new Dictionary<int, QobuzTrack>();
-        await CollectCandidatesAsync(candidates, title, artist, cancellationToken);
+        await CollectCandidatesAsync(candidates, title, artist, album, cancellationToken);
 
         if (!string.IsNullOrWhiteSpace(isrc))
         {
@@ -86,9 +85,10 @@ public sealed class QobuzTrackResolver
         Dictionary<int, QobuzTrack> candidates,
         string? title,
         string? artist,
+        string? album,
         CancellationToken cancellationToken)
     {
-        foreach (var query in BuildQueries(title, artist))
+        foreach (var query in BuildQueries(title, artist, album))
         {
             await CollectQueryAsync(candidates, query, cancellationToken);
 
@@ -152,7 +152,8 @@ public sealed class QobuzTrackResolver
                     bestTrack.Id,
                     bestScore,
                     hasStrictTitle,
-                    hasStrictArtist);            }
+                    hasStrictArtist);
+            }
             return null;
         }
 
@@ -244,13 +245,54 @@ public sealed class QobuzTrackResolver
         }
     }
 
-    private static HashSet<string> BuildQueries(string? title, string? artist)
+    private static bool IsExactIsrcMatch(QobuzTrack track, string isrc)
+    {
+        return track.Id > 0
+            && !string.IsNullOrWhiteSpace(track.ISRC)
+            && string.Equals(track.ISRC.Trim(), isrc.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasContradictoryMetadata(
+        QobuzTrack track,
+        string? expectedTitle,
+        string? expectedArtist,
+        int expectedDurationSec)
+    {
+        var hasTitle = !string.IsNullOrWhiteSpace(expectedTitle);
+        var hasArtist = !string.IsNullOrWhiteSpace(expectedArtist);
+        if (hasTitle && !TitlesMatch(expectedTitle, track.Title))
+        {
+            return true;
+        }
+
+        if (hasArtist && !ArtistsMatch(expectedArtist, GetTrackArtist(track)))
+        {
+            return true;
+        }
+
+        if (expectedDurationSec <= 0 || track.Duration <= 0)
+        {
+            return false;
+        }
+
+        return Math.Abs(track.Duration - expectedDurationSec) > 20;
+    }
+
+    private static HashSet<string> BuildQueries(string? title, string? artist, string? album)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
         {
             seen.Add($"{artist.Trim()} {title.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(artist)
+            && !string.IsNullOrWhiteSpace(title)
+            && !string.IsNullOrWhiteSpace(album))
+        {
+            seen.Add($"{artist.Trim()} {title.Trim()} {album.Trim()}");
+            seen.Add($"{title.Trim()} {artist.Trim()} {album.Trim()}");
         }
 
         if (!string.IsNullOrWhiteSpace(title))

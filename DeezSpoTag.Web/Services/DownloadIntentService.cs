@@ -19,6 +19,7 @@ using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Core.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -222,6 +223,7 @@ public sealed class DownloadIntentService
     private readonly DownloadOrchestrationService _orchestrationService;
     private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly SongLinkResolver _songLinkResolver;
+    private readonly QobuzTrackResolver _qobuzTrackResolver;
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly IActivityLogWriter _activityLog;
     private readonly DeezerClient _deezerClient;
@@ -248,6 +250,7 @@ public sealed class DownloadIntentService
         _orchestrationService = serviceProvider.GetRequiredService<DownloadOrchestrationService>();
         _deezspotagListener = serviceProvider.GetRequiredService<IDeezSpoTagListener>();
         _songLinkResolver = serviceProvider.GetRequiredService<SongLinkResolver>();
+        _qobuzTrackResolver = serviceProvider.GetRequiredService<QobuzTrackResolver>();
         _spotifyIdResolver = serviceProvider.GetRequiredService<ISpotifyIdResolver>();
         _activityLog = serviceProvider.GetRequiredService<IActivityLogWriter>();
         _deezerClient = serviceProvider.GetRequiredService<DeezerClient>();
@@ -2375,6 +2378,15 @@ public sealed class DownloadIntentService
             }
         }
 
+        if (string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            var qobuzUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(intent, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(qobuzUrl))
+            {
+                return (engine, qobuzUrl, string.Empty, "qobuz-metadata");
+            }
+        }
+
         if (!string.Equals(engine, ApplePlatform, StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -2465,16 +2477,14 @@ public sealed class DownloadIntentService
             return songLink;
         }
 
-        if (songLink == null && !string.IsNullOrWhiteSpace(intent.Isrc))
-        {
-            return null;
-        }
-
-        var qobuzUrl = await _songLinkResolver.ResolveQobuzUrlByMetadataAsync(
-            intent.Title,
-            intent.Artist,
-            intent.DurationMs > 0 ? intent.DurationMs : null,
-            cancellationToken);
+        var qobuzUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(intent, cancellationToken)
+            ?? await _songLinkResolver.ResolveQobuzUrlByMetadataAsync(
+                intent.Isrc,
+                intent.Title,
+                intent.Artist,
+                intent.Album,
+                intent.DurationMs > 0 ? intent.DurationMs : null,
+                cancellationToken);
         if (string.IsNullOrWhiteSpace(qobuzUrl))
         {
             LogQobuzFallbackMiss(intent, songLink);
@@ -2508,8 +2518,31 @@ public sealed class DownloadIntentService
 
     private static bool CanResolveQobuzByMetadata(DownloadIntent intent)
     {
-        return !string.IsNullOrWhiteSpace(intent.Title)
-            && !string.IsNullOrWhiteSpace(intent.Artist);
+        return !string.IsNullOrWhiteSpace(intent.Isrc)
+            || (!string.IsNullOrWhiteSpace(intent.Title)
+                && !string.IsNullOrWhiteSpace(intent.Artist));
+    }
+
+    private async Task<string?> ResolveQobuzUrlFromBuiltInLookupAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(intent.Isrc)
+            && (string.IsNullOrWhiteSpace(intent.Title) || string.IsNullOrWhiteSpace(intent.Artist)))
+        {
+            return null;
+        }
+
+        var resolution = await _qobuzTrackResolver.ResolveTrackAsync(
+            intent.Isrc,
+            intent.Title,
+            intent.Artist,
+            intent.Album,
+            intent.DurationMs > 0 ? intent.DurationMs : null,
+            cancellationToken);
+        return resolution?.Track.Id > 0
+            ? $"https://play.qobuz.com/track/{resolution.Track.Id}"
+            : null;
     }
 
     private async Task TryHydrateAtmosCapabilityAsync(
@@ -2890,7 +2923,8 @@ public sealed class DownloadIntentService
 
         if (string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
         {
-            return await _songLinkResolver.ResolveQobuzUrlByIsrcAsync(intent.Isrc, cancellationToken);
+            return await ResolveQobuzUrlFromBuiltInLookupAsync(intent, cancellationToken)
+                ?? await _songLinkResolver.ResolveQobuzUrlByIsrcAsync(intent.Isrc, cancellationToken);
         }
 
         if (string.Equals(engine, ApplePlatform, StringComparison.OrdinalIgnoreCase))

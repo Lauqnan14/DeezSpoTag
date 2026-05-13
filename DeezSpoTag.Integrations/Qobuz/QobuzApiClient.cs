@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Qobuz;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -9,6 +10,8 @@ namespace DeezSpoTag.Integrations.Qobuz;
 public interface IQobuzApiClient
 {
     Task<QobuzAutosuggestResponse?> SearchAutosuggestAsync(string store, string query, CancellationToken cancellationToken);
+    Task<QobuzCatalogSearchResponse?> SearchCatalogAsync(string query, int limit, int offset, CancellationToken cancellationToken);
+    Task<List<int>> GetAlbumPageTrackIdsAsync(string albumUrl, CancellationToken cancellationToken);
     Task<QobuzArtist?> GetArtistAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken);
     Task<QobuzTrackSearchResponse?> SearchTracksAsync(string query, int limit, int offset, CancellationToken cancellationToken);
     Task<QobuzAlbumSearchResponse?> SearchAlbumsAsync(string query, int limit, int offset, CancellationToken cancellationToken);
@@ -18,6 +21,7 @@ public interface IQobuzApiClient
 
 public sealed class QobuzApiClient : IQobuzApiClient
 {
+    private static readonly Regex AlbumTrackIdRegex = new("data-track=\"(?<id>\\d+)\"", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
     private readonly HttpClient _httpClient;
     private readonly IMemoryCache _cache;
     private readonly QobuzApiConfig _config;
@@ -59,6 +63,47 @@ public sealed class QobuzApiClient : IQobuzApiClient
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonSerializer.DeserializeAsync<QobuzAutosuggestResponse>(stream, _serializerOptions, cancellationToken);
+    }
+
+    public async Task<QobuzCatalogSearchResponse?> SearchCatalogAsync(
+        string query,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        var url = $"/api.json/0.2/catalog/search?query={Uri.EscapeDataString(query)}&limit={limit}&offset={offset}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("x-app-id", _config.AppId);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonSerializer.DeserializeAsync<QobuzCatalogSearchResponse>(stream, _serializerOptions, cancellationToken);
+    }
+
+    public async Task<List<int>> GetAlbumPageTrackIdsAsync(string albumUrl, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(albumUrl, UriKind.Absolute, out var uri)
+            || !uri.Host.EndsWith("qobuz.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return new List<int>();
+        }
+
+        var html = await _httpClient.GetStringAsync(uri, cancellationToken);
+        var trackIds = new List<int>();
+        foreach (Match match in AlbumTrackIdRegex.Matches(html))
+        {
+            if (int.TryParse(match.Groups["id"].Value, out var trackId))
+            {
+                trackIds.Add(trackId);
+            }
+        }
+
+        return trackIds.Distinct().ToList();
     }
 
     public async Task<QobuzArtist?> GetArtistAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken)

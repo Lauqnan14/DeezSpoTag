@@ -8,6 +8,9 @@ public sealed class QobuzAlbum
     [JsonConverter(typeof(QobuzStringIdConverter))]
     public string? Id { get; set; }
 
+    [JsonPropertyName("qobuz_id")]
+    public int QobuzId { get; set; }
+
     [JsonPropertyName("title")]
     public string? Title { get; set; }
 

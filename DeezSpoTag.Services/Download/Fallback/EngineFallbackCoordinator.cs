@@ -1,6 +1,7 @@
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Apple;
 
@@ -18,6 +19,7 @@ public sealed class EngineFallbackCoordinator
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly SongLinkResolver _songLinkResolver;
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
+    private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly IActivityLogWriter _activityLog;
     private readonly IDownloadApiHealthTracker _apiHealthTracker;
@@ -71,12 +73,14 @@ public sealed class EngineFallbackCoordinator
         DeezerIsrcResolver deezerIsrcResolver,
         AppleMusicCatalogService appleCatalogService,
         IActivityLogWriter activityLog,
-        IDownloadApiHealthTracker? apiHealthTracker = null)
+        IDownloadApiHealthTracker? apiHealthTracker = null,
+        QobuzTrackResolver? qobuzTrackResolver = null)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
         _songLinkResolver = songLinkResolver;
         _deezerIsrcResolver = deezerIsrcResolver;
+        _qobuzTrackResolver = qobuzTrackResolver;
         _appleCatalogService = appleCatalogService;
         _activityLog = activityLog;
         _apiHealthTracker = apiHealthTracker ?? new DownloadApiHealthTracker();
@@ -503,10 +507,13 @@ public sealed class EngineFallbackCoordinator
             return resolvedUrl;
         }
 
-        if (string.Equals(request.Engine, QobuzEngine, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(request.Isrc))
+        if (string.Equals(request.Engine, QobuzEngine, StringComparison.OrdinalIgnoreCase))
         {
-            var qobuzUrl = await _songLinkResolver.ResolveQobuzUrlByIsrcAsync(request.Isrc, cancellationToken);
+            var qobuzUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(request, cancellationToken);
+            if (string.IsNullOrWhiteSpace(qobuzUrl) && !string.IsNullOrWhiteSpace(request.Isrc))
+            {
+                qobuzUrl = await _songLinkResolver.ResolveQobuzUrlByIsrcAsync(request.Isrc, cancellationToken);
+            }
             if (!string.IsNullOrWhiteSpace(qobuzUrl))
             {
                 return qobuzUrl;
@@ -514,6 +521,30 @@ public sealed class EngineFallbackCoordinator
         }
 
         return resolvedUrl;
+    }
+
+    private async Task<string?> ResolveQobuzUrlFromBuiltInLookupAsync(
+        SourceResolutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_qobuzTrackResolver == null
+            || (string.IsNullOrWhiteSpace(request.Isrc)
+                && (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Artist))))
+        {
+            return null;
+        }
+
+        var resolution = await _qobuzTrackResolver.ResolveTrackAsync(
+            request.Isrc,
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.DurationMs,
+            cancellationToken);
+
+        return resolution?.Track.Id > 0
+            ? $"https://play.qobuz.com/track/{resolution.Track.Id}"
+            : null;
     }
 
     private async Task<string?> TryBuildAppleFallbackUrlAsync(

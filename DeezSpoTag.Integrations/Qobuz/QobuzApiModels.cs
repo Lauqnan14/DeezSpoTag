@@ -37,6 +37,18 @@ public sealed class QobuzArtistSearchResponse
     public QobuzSearchList<QobuzArtist>? Artists { get; set; }
 }
 
+public sealed class QobuzCatalogSearchResponse
+{
+    [JsonPropertyName("albums")]
+    public QobuzSearchList<QobuzAlbum>? Albums { get; set; }
+
+    [JsonPropertyName("tracks")]
+    public QobuzSearchList<QobuzTrack>? Tracks { get; set; }
+
+    [JsonPropertyName("artists")]
+    public QobuzSearchList<QobuzArtist>? Artists { get; set; }
+}
+
 public sealed class QobuzAutosuggestResponse
 {
     [JsonPropertyName("query")]

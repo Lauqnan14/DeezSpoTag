@@ -917,8 +917,10 @@ public sealed class SongLinkResolver
         }
 
         return await ResolveQobuzUrlByMetadataAsync(
+            metadata.Isrc,
             metadata.Title,
             metadata.Artist,
+            metadata.Album,
             metadata.DurationMs,
             cancellationToken);
     }
@@ -952,6 +954,23 @@ public sealed class SongLinkResolver
         int? durationMs,
         CancellationToken cancellationToken)
     {
+        return await ResolveQobuzUrlByMetadataAsync(
+            isrc: null,
+            title,
+            artist,
+            album: null,
+            durationMs,
+            cancellationToken);
+    }
+
+    public async Task<string?> ResolveQobuzUrlByMetadataAsync(
+        string? isrc,
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        CancellationToken cancellationToken)
+    {
         if (_qobuzMetadataService == null && _qobuzTrackResolver == null)
         {
             return null;
@@ -967,10 +986,10 @@ public sealed class SongLinkResolver
             : 0;
 
         var resolverResult = await TryResolveQobuzUrlViaResolverAsync(
-            isrc: null,
+            isrc,
             title,
             artist,
-            album: null,
+            album,
             durationMs,
             cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolverResult))
