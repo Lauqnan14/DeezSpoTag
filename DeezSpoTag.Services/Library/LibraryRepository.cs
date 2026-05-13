@@ -6827,6 +6827,102 @@ SELECT EXISTS(
 
     public sealed record LibraryExistenceInput(string? Isrc, string? TrackTitle, string? ArtistName, int? DurationMs);
 
+    private sealed record LocalTrackMetadataCandidate(
+        long TrackId,
+        string Title,
+        string Artist,
+        string Album,
+        int? DurationMs,
+        int? QualityRank);
+
+    public async Task<long?> FindLocalTrackIdByMetadataAsync(
+        string? trackTitle,
+        string? artistName,
+        string? albumTitle,
+        int? durationMs = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(trackTitle) || string.IsNullOrWhiteSpace(artistName))
+        {
+            return null;
+        }
+
+        var primaryArtist = ArtistNameNormalizer.ExtractPrimaryArtist(artistName.Trim());
+        var artistSearch = $"%{(string.IsNullOrWhiteSpace(primaryArtist) ? artistName : primaryArtist).Trim()}%";
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = $@"
+SELECT DISTINCT
+       t.id,
+       COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
+       COALESCE(NULLIF(t.tag_album, ''), al.title) AS match_album,
+       COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) AS match_duration_ms,
+       af.quality_rank
+FROM track t
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.enabled = TRUE
+  AND (
+      LOWER(ar.name) LIKE LOWER(@artistSearch)
+      OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(@artistSearch)
+      OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(@artistSearch)
+  )
+  AND (@{DurationMsField} IS NULL OR COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) IS NULL OR ABS(COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) - @{DurationMsField}) <= 2000)
+ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
+LIMIT 100;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistSearch", artistSearch);
+        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        LocalTrackMetadataCandidate? best = null;
+        var bestScore = int.MinValue;
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var candidate = new LocalTrackMetadataCandidate(
+                reader.GetInt64(0),
+                await ReadNullableStringAsync(reader, 1, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 2, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 3, cancellationToken) ?? string.Empty,
+                await ReadNullableIntAsync(reader, 4, cancellationToken),
+                await ReadNullableIntAsync(reader, 5, cancellationToken));
+
+            if (!TrackTitleMatcher.ArtistsMatch(artistName, candidate.Artist)
+                || !TrackTitleMatcher.TitlesMatch(trackTitle, candidate.Title))
+            {
+                continue;
+            }
+
+            var score = 1000;
+            if (!string.IsNullOrWhiteSpace(albumTitle)
+                && TrackTitleMatcher.TitlesMatch(albumTitle, candidate.Album))
+            {
+                score += 100;
+            }
+
+            if (durationMs.HasValue
+                && candidate.DurationMs.HasValue
+                && Math.Abs(durationMs.Value - candidate.DurationMs.Value) <= 2000)
+            {
+                score += 25;
+            }
+
+            score += Math.Clamp(candidate.QualityRank ?? 0, 0, 100);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+
+        return best?.TrackId;
+    }
+
     public async Task<IReadOnlyList<bool>> ExistsInLibraryAsync(
         IReadOnlyList<LibraryExistenceInput> inputs,
         CancellationToken cancellationToken = default)

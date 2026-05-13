@@ -1146,45 +1146,13 @@ public sealed class PlaylistSyncService
         IReadOnlyList<SyncTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
-        var source = NormalizeSource(playlistSource);
-        var trackIdBySource = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(source))
+        var orderedTrackIds = new List<long>(tracks.Count);
+        foreach (var track in tracks)
         {
-            var sourceIds = tracks
-                .Select(track => track.SourceTrackId)
-                .Where(static trackId => !string.IsNullOrWhiteSpace(trackId))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var sourceLookup = await _libraryRepository.GetTrackIdsBySourceIdsAsync(source, sourceIds, cancellationToken);
-            foreach (var pair in sourceLookup)
-            {
-                trackIdBySource[pair.Key] = pair.Value;
-            }
+            orderedTrackIds.Add(await ResolveLocalTrackIdAsync(playlistSource, track, cancellationToken) ?? 0L);
         }
 
-        var isrcs = tracks
-            .Select(track => track.Isrc)
-            .Where(static isrc => !string.IsNullOrWhiteSpace(isrc))
-            .Cast<string>()
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var trackIdByIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync(IsrcSource, isrcs, cancellationToken);
-
-        return tracks
-            .Select(track =>
-            {
-                if (!string.IsNullOrWhiteSpace(track.SourceTrackId)
-                    && trackIdBySource.TryGetValue(track.SourceTrackId, out var sourceTrackId))
-                {
-                    return sourceTrackId;
-                }
-
-                return !string.IsNullOrWhiteSpace(track.Isrc)
-                    && trackIdByIsrc.TryGetValue(track.Isrc, out var isrcTrackId)
-                        ? isrcTrackId
-                        : 0L;
-            })
-            .ToList();
+        return orderedTrackIds;
     }
 
     private async Task<long?> ResolveLocalTrackIdAsync(
@@ -1192,6 +1160,29 @@ public sealed class PlaylistSyncService
         SyncTrackSummary track,
         CancellationToken cancellationToken)
     {
+        if (!string.IsNullOrWhiteSpace(track.Isrc))
+        {
+            var byIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync(
+                IsrcSource,
+                new[] { track.Isrc },
+                cancellationToken);
+            if (byIsrc.TryGetValue(track.Isrc, out var isrcTrackId))
+            {
+                return isrcTrackId;
+            }
+        }
+
+        var byMetadata = await _libraryRepository.FindLocalTrackIdByMetadataAsync(
+            track.Name,
+            track.Artists,
+            track.Album,
+            track.DurationMs,
+            cancellationToken);
+        if (byMetadata.HasValue)
+        {
+            return byMetadata;
+        }
+
         var source = NormalizeSource(playlistSource);
         if (!string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(track.SourceTrackId))
         {
@@ -1202,18 +1193,6 @@ public sealed class PlaylistSyncService
             if (bySource.TryGetValue(track.SourceTrackId, out var sourceTrackId))
             {
                 return sourceTrackId;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(track.Isrc))
-        {
-            var byIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync(
-                IsrcSource,
-                new[] { track.Isrc },
-                cancellationToken);
-            if (byIsrc.TryGetValue(track.Isrc, out var isrcTrackId))
-            {
-                return isrcTrackId;
             }
         }
 

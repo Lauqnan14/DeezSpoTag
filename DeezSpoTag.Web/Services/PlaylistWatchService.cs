@@ -1522,17 +1522,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         CancellationToken cancellationToken)
     {
         var local = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var sourceIds = candidates
-            .Select(static candidate => candidate.TrackSourceId)
-            .Where(static id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var bySource = await _libraryRepository.GetTrackIdsBySourceIdsAsync(source, sourceIds, cancellationToken);
-        foreach (var candidate in candidates.Where(candidate => bySource.ContainsKey(candidate.TrackSourceId)))
-        {
-            local.Add(candidate.TrackSourceId);
-        }
-
         var isrcs = candidates
             .Select(static candidate => candidate.Isrc)
             .Where(static isrc => !string.IsNullOrWhiteSpace(isrc))
@@ -1542,6 +1531,33 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var byIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync("isrc", isrcs, cancellationToken);
         foreach (var candidate in candidates.Where(candidate =>
                      !string.IsNullOrWhiteSpace(candidate.Isrc) && byIsrc.ContainsKey(candidate.Isrc)))
+        {
+            local.Add(candidate.TrackSourceId);
+        }
+
+        foreach (var candidate in candidates.Where(candidate => !local.Contains(candidate.TrackSourceId)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var localTrackId = await _libraryRepository.FindLocalTrackIdByMetadataAsync(
+                candidate.Title,
+                candidate.Artist,
+                candidate.Album,
+                candidate.DurationMs,
+                cancellationToken);
+            if (localTrackId.HasValue)
+            {
+                local.Add(candidate.TrackSourceId);
+            }
+        }
+
+        var sourceIds = candidates
+            .Where(candidate => !local.Contains(candidate.TrackSourceId))
+            .Select(static candidate => candidate.TrackSourceId)
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var bySource = await _libraryRepository.GetTrackIdsBySourceIdsAsync(source, sourceIds, cancellationToken);
+        foreach (var candidate in candidates.Where(candidate => bySource.ContainsKey(candidate.TrackSourceId)))
         {
             local.Add(candidate.TrackSourceId);
         }
