@@ -2627,8 +2627,12 @@ DeezSpoTag.Download = {
         const status = Number(response?.status || 0);
         const { payload, rawText } = await this.readApiBody(response);
         const reasonCodes = this.getReasonCodes(payload);
-        const defaultMessage = fallbackMessage || rawText || `HTTP error! status: ${status}`;
-        const message = this.resolveApiMessage(payload ?? rawText, defaultMessage);
+        const htmlResponse = /^\s*</.test(String(rawText || ''));
+        const defaultMessage = fallbackMessage
+            || (htmlResponse ? `Download API returned an HTML error page (${status || 'unknown status'}).` : rawText)
+            || `HTTP error! status: ${status}`;
+        const messageSource = htmlResponse ? payload : (payload ?? rawText);
+        const message = this.resolveApiMessage(messageSource, defaultMessage);
         const error = new Error(message);
         error.status = status;
         error.reasonCodes = reasonCodes;

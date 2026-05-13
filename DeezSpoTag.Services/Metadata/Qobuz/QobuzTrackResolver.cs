@@ -45,7 +45,7 @@ public sealed class QobuzTrackResolver
 
         if (!string.IsNullOrWhiteSpace(isrc))
         {
-            var exact = await _metadataService.FindTrackByISRC(isrc, cancellationToken);
+            var exact = await TryFindTrackByISRCAsync(isrc, cancellationToken);
             if (exact != null
                 && IsExactIsrcMatch(exact, isrc)
                 && !HasContradictoryMetadata(exact, title, artist, expectedDurationSec))
@@ -94,7 +94,7 @@ public sealed class QobuzTrackResolver
 
             foreach (var store in ResolveStores())
             {
-                var autosuggest = await _metadataService.SearchTracksAutosuggest(query, store, cancellationToken);
+                var autosuggest = await SearchAutosuggestSafeAsync(query, store, cancellationToken);
                 foreach (var track in autosuggest.Where(static t => t.Id > 0))
                 {
                     candidates[track.Id] = track;
@@ -103,15 +103,57 @@ public sealed class QobuzTrackResolver
         }
     }
 
+    private async Task<QobuzTrack?> TryFindTrackByISRCAsync(string isrc, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _metadataService.FindTrackByISRC(isrc, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Qobuz ISRC lookup failed for {Isrc}", isrc);
+            return null;
+        }
+    }
+
     private async Task CollectQueryAsync(
         Dictionary<int, QobuzTrack> candidates,
         string query,
         CancellationToken cancellationToken)
     {
-        var results = await _metadataService.SearchTracks(query, cancellationToken);
+        var results = await SearchTracksSafeAsync(query, cancellationToken);
         foreach (var track in results.Where(static t => t.Id > 0))
         {
             candidates[track.Id] = track;
+        }
+    }
+
+    private async Task<List<QobuzTrack>> SearchTracksSafeAsync(string query, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _metadataService.SearchTracks(query, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Qobuz track search failed for query {Query}", query);
+            return new List<QobuzTrack>();
+        }
+    }
+
+    private async Task<List<QobuzTrack>> SearchAutosuggestSafeAsync(
+        string query,
+        string store,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _metadataService.SearchTracksAutosuggest(query, store, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Qobuz autosuggest failed for query {Query} store {Store}", query, store);
+            return new List<QobuzTrack>();
         }
     }
 
