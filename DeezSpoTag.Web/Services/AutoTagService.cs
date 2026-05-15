@@ -2299,6 +2299,31 @@ public partial class AutoTagService
             return;
         }
 
+        if (autoMoveSummary.ChangedFilePaths.Count > 0)
+        {
+            var changedFilesByFolder = await ResolveChangedLibraryFilesByFolderAsync(
+                autoMoveSummary,
+                changedFolderIds,
+                cancellationToken);
+            if (changedFilesByFolder.Count == 0)
+            {
+                changedFilesByFolder = changedFolderIds.ToDictionary(
+                    folderId => folderId,
+                    _ => autoMoveSummary.ChangedFilePaths.ToList());
+            }
+
+            _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Post auto-move targeted library scan enqueued for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
+            AppendLog(job, $"post auto-move targeted library scan enqueued for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}");
+            _ = _libraryScanRunner.RunChangedFilesAsync(
+                changedFilesByFolder,
+                skipSpotifyFetch: false,
+                CancellationToken.None);
+            return;
+        }
+
         _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
@@ -2330,6 +2355,54 @@ public partial class AutoTagService
         }
 
         return changed.OrderBy(folderId => folderId).ToList();
+    }
+
+    private async Task<Dictionary<long, List<string>>> ResolveChangedLibraryFilesByFolderAsync(
+        AutoTagMoveSummary autoMoveSummary,
+        IReadOnlyCollection<long> changedFolderIds,
+        CancellationToken cancellationToken)
+    {
+        var grouped = new Dictionary<long, List<string>>();
+        if (autoMoveSummary.ChangedFilePaths.Count == 0
+            || changedFolderIds.Count == 0
+            || !_libraryRepository.IsConfigured)
+        {
+            return grouped;
+        }
+
+        var changedFolderIdSet = changedFolderIds.ToHashSet();
+        var folders = (await _libraryRepository.GetFoldersAsync(cancellationToken))
+            .Where(folder => changedFolderIdSet.Contains(folder.Id))
+            .ToList();
+
+        foreach (var path in autoMoveSummary.ChangedFilePaths)
+        {
+            foreach (var folder in folders)
+            {
+                try
+                {
+                    if (IsPathUnderRoot(path, folder.RootPath))
+                    {
+                        if (!grouped.TryGetValue(folder.Id, out var paths))
+                        {
+                            paths = new List<string>();
+                            grouped[folder.Id] = paths;
+                        }
+
+                        if (!paths.Contains(path, StringComparer.OrdinalIgnoreCase))
+                        {
+                            paths.Add(path);
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Ignore paths the runtime cannot normalize; folder-level fallback remains available.
+                }
+            }
+        }
+
+        return grouped;
     }
 
     private static void AddMatchingLibraryFolders(

@@ -47,6 +47,7 @@ public sealed class LocalLibraryScanner
     }
 
     private sealed record FolderScanBaseline(int ArtistCount, int AlbumCount, int TrackCount);
+    private sealed record TargetFileScanItem(string FilePath, string ArtistDir, string AlbumDir);
 
     private sealed class TrackScanData
     {
@@ -180,6 +181,52 @@ public sealed class LocalLibraryScanner
         return context.Snapshot;
     }
 
+    public LibraryConfigStore.LocalLibrarySnapshot ScanFiles(
+        FolderDto folder,
+        IEnumerable<string> filePaths,
+        IProgress<ScanProgress>? progress,
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, LocalScanFileState>? existingFiles = null)
+    {
+        var context = CreateScanContext(progress, snapshotPublished: null, existingFiles);
+        var targets = ResolveTargetFileScanItems(folder, filePaths, cancellationToken);
+        context.TotalFiles = targets.Count;
+        ReportProgress(context, currentFile: null, force: true);
+
+        foreach (var albumGroup in targets.GroupBy(item => item.AlbumDir, StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var first = albumGroup.First();
+            var artistNameRaw = Path.GetFileName(first.ArtistDir);
+            var artistName = NormalizePrimaryArtistName(artistNameRaw, context.UsePrimaryArtistFolders);
+            if (string.IsNullOrWhiteSpace(artistName))
+            {
+                continue;
+            }
+
+            var artist = GetOrCreateArtist(context, artistName, first.ArtistDir);
+            var albumTitle = Path.GetFileName(first.AlbumDir);
+            if (string.IsNullOrWhiteSpace(albumTitle))
+            {
+                continue;
+            }
+
+            var album = GetOrCreateAlbum(context, artist, albumTitle, first.AlbumDir, folder.DisplayName);
+            foreach (var target in albumGroup)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ScanTrackFile(target.FilePath, artistName, album, context);
+            }
+        }
+
+        ReportProgress(context, currentFile: null, force: true);
+        context.Snapshot.ArtistGenres = context.ArtistGenres.ToDictionary(
+            kvp => kvp.Key,
+            kvp => kvp.Value.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList(),
+            StringComparer.OrdinalIgnoreCase);
+        return context.Snapshot;
+    }
+
     private ScanContext CreateScanContext(
         IProgress<ScanProgress>? progress,
         Action<LibraryConfigStore.LocalLibrarySnapshot>? snapshotPublished,
@@ -285,6 +332,70 @@ public sealed class LocalLibraryScanner
         }
 
         return totalFiles;
+    }
+
+    private static List<TargetFileScanItem> ResolveTargetFileScanItems(
+        FolderDto folder,
+        IEnumerable<string> filePaths,
+        CancellationToken cancellationToken)
+    {
+        var root = NormalizePath(folder.RootPath);
+        if (root is null || !Directory.Exists(root))
+        {
+            return new List<TargetFileScanItem>();
+        }
+
+        var targets = new List<TargetFileScanItem>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var filePath in filePaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalizedFile = NormalizePath(filePath);
+            if (normalizedFile is null
+                || !seen.Add(normalizedFile)
+                || !System.IO.File.Exists(normalizedFile)
+                || !AudioExtensions.Contains(Path.GetExtension(normalizedFile), StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!TryResolveLibraryAlbumPath(root, normalizedFile, out var artistDir, out var albumDir))
+            {
+                continue;
+            }
+
+            targets.Add(new TargetFileScanItem(normalizedFile, artistDir, albumDir));
+        }
+
+        return targets;
+    }
+
+    private static bool TryResolveLibraryAlbumPath(
+        string rootPath,
+        string filePath,
+        out string artistDir,
+        out string albumDir)
+    {
+        artistDir = string.Empty;
+        albumDir = string.Empty;
+        var relativePath = Path.GetRelativePath(rootPath, filePath);
+        if (string.IsNullOrWhiteSpace(relativePath)
+            || relativePath.StartsWith("..", StringComparison.Ordinal)
+            || Path.IsPathRooted(relativePath))
+        {
+            return false;
+        }
+
+        var segments = relativePath
+            .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 3)
+        {
+            return false;
+        }
+
+        artistDir = Path.Combine(rootPath, segments[0]);
+        albumDir = Path.Combine(artistDir, segments[1]);
+        return Directory.Exists(artistDir) && Directory.Exists(albumDir);
     }
 
     private void ScanFolder(FolderDto folder, ScanContext context, CancellationToken cancellationToken)

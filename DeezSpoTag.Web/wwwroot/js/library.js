@@ -2850,7 +2850,6 @@ async function loadLibraryScanStatus() {
 async function refreshArtistsDuringActiveScan(status) {
     const hasArtistsGrid = !!document.getElementById('artistsGrid');
     const running = !!status?.running;
-    const policy = getLibraryRefreshPolicy();
 
     if (!hasArtistsGrid) {
         libraryState.wasScanRunning = running;
@@ -2874,35 +2873,6 @@ async function refreshArtistsDuringActiveScan(status) {
     }
 
     libraryState.wasScanRunning = true;
-    const progress = status?.progress || {};
-    const refreshKey = [
-        progress?.processedFiles ?? 0,
-        progress?.artistsDetected ?? 0,
-        progress?.albumsDetected ?? 0,
-        progress?.tracksDetected ?? 0
-    ].join(':');
-
-    if (libraryState.scanArtistsRefreshInFlight || libraryState.lastActiveScanRefreshKey === refreshKey) {
-        return;
-    }
-
-    const now = Date.now();
-    if ((now - libraryState.lastArtistRefreshAtMs) < policy.minArtistRefreshMs) {
-        console.debug('Library artist refresh skipped due to throttle window.', {
-            minArtistRefreshMs: policy.minArtistRefreshMs,
-            elapsedMs: now - libraryState.lastArtistRefreshAtMs
-        });
-        return;
-    }
-
-    libraryState.scanArtistsRefreshInFlight = true;
-    try {
-        await loadArtists();
-        libraryState.lastActiveScanRefreshKey = refreshKey;
-        libraryState.lastArtistRefreshAtMs = Date.now();
-    } finally {
-        libraryState.scanArtistsRefreshInFlight = false;
-    }
 }
 
 async function saveLibrarySettings() {

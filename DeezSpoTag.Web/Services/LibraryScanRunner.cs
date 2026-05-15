@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,8 +21,12 @@ public sealed class LibraryScanRunner
     private readonly string _scanCheckpointPath;
     private readonly object _scanLock = new();
     private readonly object _previewIngestLock = new();
+    private readonly object _changedFileScanLock = new();
+    private readonly Dictionary<long, HashSet<string>> _pendingChangedFileScans = new();
     private CancellationTokenSource? _activeScanCts;
     private TaskCompletionSource<object?>? _activeScanCompletion;
+    private bool _changedFileScanDrainRunning;
+    private bool _pendingChangedFileScanRequiresSpotifyFetch;
     private ScanStatus _status = new(false, null, 0, 0, 0, null, 0, 0, 0);
 
     public LibraryScanRunner(
@@ -158,6 +163,52 @@ public sealed class LibraryScanRunner
         }
     }
 
+    public async Task RunChangedFilesAsync(
+        IReadOnlyDictionary<long, List<string>> changedFilesByFolder,
+        bool skipSpotifyFetch,
+        CancellationToken cancellationToken)
+    {
+        var pending = NormalizeChangedFilesByFolder(changedFilesByFolder);
+        if (pending.Count == 0)
+        {
+            AddInfoLog("Targeted library scan skipped (no changed files).");
+            return;
+        }
+
+        var ownsDrain = false;
+        lock (_changedFileScanLock)
+        {
+            foreach (var (folderId, paths) in pending)
+            {
+                if (!_pendingChangedFileScans.TryGetValue(folderId, out var existing))
+                {
+                    existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    _pendingChangedFileScans[folderId] = existing;
+                }
+
+                foreach (var path in paths)
+                {
+                    existing.Add(path);
+                }
+            }
+
+            _pendingChangedFileScanRequiresSpotifyFetch |= !skipSpotifyFetch;
+            if (!_changedFileScanDrainRunning)
+            {
+                _changedFileScanDrainRunning = true;
+                ownsDrain = true;
+            }
+        }
+
+        if (!ownsDrain)
+        {
+            AddInfoLog($"Targeted library scan merged into pending queue ({pending.Sum(pair => pair.Value.Count)} file(s)).");
+            return;
+        }
+
+        await DrainChangedFileScansAsync(cancellationToken);
+    }
+
     public async Task RunAsync(
         bool refreshImages,
         bool reset,
@@ -267,6 +318,254 @@ public sealed class LibraryScanRunner
                     _status = _status with { IsRunning = false, CurrentFile = null };
                 }
             }
+        }
+    }
+
+    private async Task DrainChangedFileScansAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (true)
+            {
+                Dictionary<long, List<string>> batch;
+                bool skipSpotifyFetch;
+                lock (_changedFileScanLock)
+                {
+                    if (_pendingChangedFileScans.Count == 0)
+                    {
+                        _changedFileScanDrainRunning = false;
+                        _pendingChangedFileScanRequiresSpotifyFetch = false;
+                        return;
+                    }
+
+                    batch = _pendingChangedFileScans.ToDictionary(
+                        pair => pair.Key,
+                        pair => pair.Value.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList());
+                    _pendingChangedFileScans.Clear();
+                    skipSpotifyFetch = !_pendingChangedFileScanRequiresSpotifyFetch;
+                    _pendingChangedFileScanRequiresSpotifyFetch = false;
+                }
+
+                await WaitForCurrentScanAsync(cancellationToken);
+                await RunChangedFilesBatchAsync(batch, skipSpotifyFetch, cancellationToken);
+            }
+        }
+        catch
+        {
+            lock (_changedFileScanLock)
+            {
+                _changedFileScanDrainRunning = false;
+                _pendingChangedFileScanRequiresSpotifyFetch = false;
+            }
+
+            throw;
+        }
+    }
+
+    private async Task RunChangedFilesBatchAsync(
+        IReadOnlyDictionary<long, List<string>> changedFilesByFolder,
+        bool skipSpotifyFetch,
+        CancellationToken cancellationToken)
+    {
+        CancellationTokenSource? cts = null;
+        var ownsActiveScan = false;
+        try
+        {
+            if (!TryStartScan(cancellationToken, ref cts, ref ownsActiveScan))
+            {
+                RequeueChangedFiles(changedFilesByFolder, skipSpotifyFetch);
+                return;
+            }
+
+            var activeCts = cts!;
+            using (activeCts)
+            {
+                var enabledFolders = await LoadEnabledFoldersAsync(folderId: null, activeCts.Token);
+                if (enabledFolders is null)
+                {
+                    return;
+                }
+
+                var foldersById = enabledFolders.ToDictionary(static folder => folder.Id);
+                var aggregatedGenres = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                var processedFolders = 0;
+                var totalFiles = changedFilesByFolder.Sum(pair => pair.Value.Count);
+                _status = _status with { TotalFiles = totalFiles };
+                AddInfoLog($"Targeted library scan started ({totalFiles} changed file(s)).");
+
+                foreach (var (folderId, filePaths) in changedFilesByFolder.OrderBy(pair => pair.Key))
+                {
+                    activeCts.Token.ThrowIfCancellationRequested();
+                    if (!foldersById.TryGetValue(folderId, out var folder) || !folder.Enabled)
+                    {
+                        AddWarnLog($"Targeted library scan skipped unknown or disabled folder id={folderId}.");
+                        continue;
+                    }
+
+                    var existingFiles = _repository.IsConfigured
+                        ? await _repository.GetLocalScanFileStatesAsync(folder.Id, activeCts.Token)
+                        : null;
+                    var folderSnapshot = ScanChangedFileSnapshot(folder, filePaths, existingFiles, activeCts.Token);
+                    MergeGenres(aggregatedGenres, folderSnapshot.ArtistGenres);
+
+                    if (_repository.IsConfigured && folderSnapshot.Tracks.Count > 0)
+                    {
+                        await IngestSnapshotAsync(
+                            [folder],
+                            folderSnapshot,
+                            reset: false,
+                            logCompletion: true,
+                            cancellationToken: activeCts.Token);
+                    }
+
+                    processedFolders++;
+                    AddInfoLog($"Targeted folder indexed ({processedFolders}/{changedFilesByFolder.Count}): {folder.DisplayName}.");
+                }
+
+                var finalCounts = await ResolveFinalCountsAsync(activeCts.Token);
+                _status = _status with
+                {
+                    ArtistsDetected = finalCounts.Artists,
+                    AlbumsDetected = finalCounts.Albums,
+                    TracksDetected = finalCounts.Tracks,
+                    CurrentFile = null
+                };
+
+                var artistGenres = aggregatedGenres.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList(),
+                    StringComparer.OrdinalIgnoreCase);
+                await StoreLocalGenresAsync(artistGenres, activeCts.Token);
+                if (!skipSpotifyFetch)
+                {
+                    await EnqueueSpotifyArtistMetadataAsync(activeCts.Token);
+                }
+
+                PersistScanInfo(finalCounts.Artists, finalCounts.Albums, finalCounts.Tracks);
+                AddInfoLog($"Targeted library scan completed ({finalCounts.Artists} artists, {finalCounts.Albums} albums, {finalCounts.Tracks} tracks).");
+                await PublishLibraryUpdatedAsync(
+                    new IncrementalScanResult(finalCounts.Artists, finalCounts.Albums, finalCounts.Tracks, artistGenres),
+                    folderId: null,
+                    activeCts.Token);
+            }
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Targeted library scan cancelled.");
+            AddWarnLog("Targeted library scan cancelled.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Targeted library scan failed.");
+            AddErrorLog($"Targeted library scan failed: {ex.Message}");
+        }
+        finally
+        {
+            lock (_scanLock)
+            {
+                if (ownsActiveScan && cts != null && ReferenceEquals(_activeScanCts, cts))
+                {
+                    _activeScanCts = null;
+                    _activeScanCompletion?.TrySetResult(null);
+                    _activeScanCompletion = null;
+                    _status = _status with { IsRunning = false, CurrentFile = null };
+                }
+            }
+        }
+    }
+
+    private LibraryConfigStore.LocalLibrarySnapshot ScanChangedFileSnapshot(
+        FolderDto folder,
+        IReadOnlyCollection<string> filePaths,
+        IReadOnlyDictionary<string, LocalScanFileState>? existingFiles,
+        CancellationToken cancellationToken)
+    {
+        var progress = new Progress<LocalLibraryScanner.ScanProgress>(progressUpdate =>
+        {
+            var currentStatus = _status;
+            _status = currentStatus with
+            {
+                ProcessedFiles = progressUpdate.ProcessedFiles,
+                TotalFiles = Math.Max(currentStatus.TotalFiles, progressUpdate.TotalFiles),
+                ErrorCount = progressUpdate.ErrorCount,
+                CurrentFile = progressUpdate.CurrentFile,
+                ArtistsDetected = Math.Max(currentStatus.ArtistsDetected, progressUpdate.ArtistsDetected),
+                AlbumsDetected = Math.Max(currentStatus.AlbumsDetected, progressUpdate.AlbumsDetected),
+                TracksDetected = Math.Max(currentStatus.TracksDetected, progressUpdate.TracksDetected)
+            };
+        });
+
+        return _scanner.ScanFiles(folder, filePaths, progress, cancellationToken, existingFiles);
+    }
+
+    private void RequeueChangedFiles(IReadOnlyDictionary<long, List<string>> changedFilesByFolder, bool skipSpotifyFetch)
+    {
+        lock (_changedFileScanLock)
+        {
+            foreach (var (folderId, paths) in changedFilesByFolder)
+            {
+                if (!_pendingChangedFileScans.TryGetValue(folderId, out var existing))
+                {
+                    existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    _pendingChangedFileScans[folderId] = existing;
+                }
+
+                foreach (var path in paths)
+                {
+                    existing.Add(path);
+                }
+            }
+
+            _pendingChangedFileScanRequiresSpotifyFetch |= !skipSpotifyFetch;
+        }
+    }
+
+    private static Dictionary<long, List<string>> NormalizeChangedFilesByFolder(
+        IReadOnlyDictionary<long, List<string>> changedFilesByFolder)
+    {
+        var normalized = new Dictionary<long, List<string>>();
+        foreach (var (folderId, paths) in changedFilesByFolder)
+        {
+            if (folderId <= 0 || paths.Count == 0)
+            {
+                continue;
+            }
+
+            var normalizedPaths = paths
+                .Select(NormalizeChangedFilePath)
+                .Where(static path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedPaths.Count > 0)
+            {
+                normalized[folderId] = normalizedPaths!;
+            }
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeChangedFilePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(path);
+        if (string.IsNullOrWhiteSpace(ioPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(ioPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return DownloadPathResolver.NormalizeDisplayPath(ioPath);
         }
     }
 

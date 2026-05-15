@@ -10,20 +10,39 @@ public sealed class LibraryScanTriggerGuardrailTests
     private static readonly long[] ExpectedChangedFolderIds = [5L];
 
     [Fact]
-    public void DownloadOrchestration_UsesScopedChangedFolderScans()
+    public void DownloadOrchestration_UsesTargetedChangedFileScans()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
-        Assert.Contains("RunChangedFoldersAsync", source);
+        Assert.Contains("GetRecentMovedAudioFilesByDestinationAsync", source);
+        Assert.Contains("_scanRunner.RunChangedFilesAsync", source);
         Assert.DoesNotContain("_scanRunner.RunAsync(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _scanRunner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AutoTagPostMoveScan_UsesScopedChangedFolderScans()
+    public void LibraryStatusPolling_DoesNotReloadArtistsDuringActiveScans()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library.js");
+        var methodStart = source.IndexOf("async function refreshArtistsDuringActiveScan", StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        var activeScanStart = source.IndexOf("libraryState.wasScanRunning = true;", methodStart, StringComparison.Ordinal);
+        Assert.True(activeScanStart >= 0);
+        var methodEnd = source.IndexOf("\n}\n\nasync function saveLibrarySettings", activeScanStart, StringComparison.Ordinal);
+        Assert.True(methodEnd > activeScanStart);
+        var activeScanBody = source.Substring(activeScanStart, methodEnd - activeScanStart);
+
+        Assert.DoesNotContain("loadArtists()", activeScanBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagPostMoveScan_UsesTargetedChangedFileScansWhenPathsAreKnown()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("ResolveChangedLibraryFolderIdsAsync", source);
+        Assert.Contains("autoMoveSummary.ChangedFilePaths", source);
+        Assert.Contains("_libraryScanRunner.RunChangedFilesAsync", source);
         Assert.Contains("_libraryScanRunner.RunChangedFoldersAsync", source);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync(", source, StringComparison.Ordinal);
     }
@@ -37,17 +56,21 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void AutoTagMoveSummary_TracksChangedFolderIds()
+    public void AutoTagMoveSummary_TracksChangedFolderIdsAndFilePaths()
     {
         var summary = new AutoTagMoveSummary();
 
         summary.MarkChangedFolder(5);
         summary.MarkChangedFolder(5);
         summary.MarkChangedFolder(0);
+        summary.MarkChangedFile("/music/Artist/Album/Track.flac");
+        summary.MarkChangedFile("/music/Artist/Album/Track.flac");
         var clone = summary.Clone();
 
         Assert.Equal(ExpectedChangedFolderIds, summary.ChangedFolderIds);
         Assert.Equal(ExpectedChangedFolderIds, clone.ChangedFolderIds);
+        Assert.Equal(["/music/Artist/Album/Track.flac"], summary.ChangedFilePaths);
+        Assert.Equal(["/music/Artist/Album/Track.flac"], clone.ChangedFilePaths);
     }
 
     private static string ReadSource(params string[] pathParts)

@@ -24,6 +24,7 @@ public sealed class AutoTagMoveSummary
     public int FailedCount { get; set; }
     public List<string> DestinationRoots { get; set; } = new();
     public List<long> ChangedFolderIds { get; set; } = new();
+    public List<string> ChangedFilePaths { get; set; } = new();
     public bool RecoveryCleanup { get; set; }
     public string? Error { get; set; }
 
@@ -53,6 +54,22 @@ public sealed class AutoTagMoveSummary
         ChangedFolderIds.Add(folderId);
     }
 
+    public void MarkChangedFile(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return;
+        }
+
+        var normalized = DownloadPathResolver.NormalizeDisplayPath(filePath);
+        if (ChangedFilePaths.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        ChangedFilePaths.Add(normalized);
+    }
+
     public AutoTagMoveSummary Clone()
     {
         return new AutoTagMoveSummary
@@ -62,6 +79,7 @@ public sealed class AutoTagMoveSummary
             FailedCount = FailedCount,
             DestinationRoots = DestinationRoots.ToList(),
             ChangedFolderIds = ChangedFolderIds.ToList(),
+            ChangedFilePaths = ChangedFilePaths.ToList(),
             RecoveryCleanup = RecoveryCleanup,
             Error = Error
         };
@@ -1035,6 +1053,7 @@ public sealed class AutoTagDownloadMoveService
             {
                 summary.MovedCount++;
                 summary.MarkChangedFolder(context.DestinationKey);
+                summary.MarkChangedFile(finalPath);
                 return;
             }
 
@@ -1108,6 +1127,7 @@ public sealed class AutoTagDownloadMoveService
                 summary,
                 isRootItem: true);
             RememberTransitionsForOwners(context.TransitionsByQueue, owners, transition.Key, finalPath);
+            summary.MarkChangedFile(finalPath);
         }
     }
 
@@ -1189,6 +1209,10 @@ public sealed class AutoTagDownloadMoveService
             if (moved.Count > movedBefore)
             {
                 summary.MovedCount += moved.Count - movedBefore;
+                foreach (var movedPath in moved.Values.Skip(movedBefore).Where(IsAudioExtension))
+                {
+                    summary.MarkChangedFile(movedPath);
+                }
             }
             else
             {
