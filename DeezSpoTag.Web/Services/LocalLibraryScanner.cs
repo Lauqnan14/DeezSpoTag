@@ -39,6 +39,7 @@ public sealed class LocalLibraryScanner
         public required bool EnableSignalAnalysis { get; init; }
         public required IProgress<ScanProgress>? Progress { get; init; }
         public required Action<LibraryConfigStore.LocalLibrarySnapshot>? SnapshotPublished { get; init; }
+        public required IReadOnlyDictionary<string, LocalScanFileState> ExistingFiles { get; init; }
         public int ProcessedFiles { get; set; }
         public int TotalFiles { get; set; }
         public int ErrorCount { get; set; }
@@ -156,9 +157,10 @@ public sealed class LocalLibraryScanner
         IEnumerable<DeezSpoTag.Services.Library.FolderDto> folders,
         IProgress<ScanProgress>? progress,
         Action<LibraryConfigStore.LocalLibrarySnapshot>? snapshotPublished,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, LocalScanFileState>? existingFiles = null)
     {
-        var context = CreateScanContext(progress, snapshotPublished);
+        var context = CreateScanContext(progress, snapshotPublished, existingFiles);
         var (excludedFolders, scannableFolders) = SplitScannableFolders(folders);
         LogExcludedFolders(excludedFolders);
         InitializeProgressState(context, scannableFolders, cancellationToken);
@@ -180,7 +182,8 @@ public sealed class LocalLibraryScanner
 
     private ScanContext CreateScanContext(
         IProgress<ScanProgress>? progress,
-        Action<LibraryConfigStore.LocalLibrarySnapshot>? snapshotPublished)
+        Action<LibraryConfigStore.LocalLibrarySnapshot>? snapshotPublished,
+        IReadOnlyDictionary<string, LocalScanFileState>? existingFiles)
     {
         return new ScanContext
         {
@@ -191,7 +194,8 @@ public sealed class LocalLibraryScanner
             UsePrimaryArtistFolders = ResolveUsePrimaryArtistFolders(),
             EnableSignalAnalysis = ResolveEnableSignalAnalysis(),
             Progress = progress,
-            SnapshotPublished = snapshotPublished
+            SnapshotPublished = snapshotPublished,
+            ExistingFiles = existingFiles ?? new Dictionary<string, LocalScanFileState>(StringComparer.OrdinalIgnoreCase)
         };
     }
 
@@ -458,6 +462,14 @@ public sealed class LocalLibraryScanner
         LibraryConfigStore.LibraryAlbum album,
         ScanContext context)
     {
+        if (TryReuseUnchangedTrack(file, artistName, album, context, out var unchangedScan))
+        {
+            CollectArtistGenres(context.ArtistGenres, artistName, unchangedScan.TagGenres);
+            AddTrackToSnapshot(context.Snapshot, album, unchangedScan);
+            ReportProgress(context, file, force: false);
+            return;
+        }
+
         var trackData = CreateInitialTrackData(file);
         PopulateTrackDataFromTags(file, trackData, context);
         MergeSidecarLyrics(file, trackData);
@@ -467,6 +479,48 @@ public sealed class LocalLibraryScanner
         CollectArtistGenres(context.ArtistGenres, artistName, trackData.Genres);
         AddTrackToSnapshot(context.Snapshot, artistName, album, trackData);
         ReportProgress(context, file, force: false);
+    }
+
+    private static bool TryReuseUnchangedTrack(
+        string file,
+        string artistName,
+        LibraryConfigStore.LibraryAlbum album,
+        ScanContext context,
+        out LocalTrackScanDto unchangedScan)
+    {
+        unchangedScan = default!;
+        var normalizedPath = NormalizePath(file);
+        if (normalizedPath is null || !context.ExistingFiles.TryGetValue(normalizedPath, out var existing))
+        {
+            return false;
+        }
+
+        FileInfo fileInfo;
+        try
+        {
+            fileInfo = new FileInfo(file);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
+        if (!fileInfo.Exists
+            || fileInfo.Length != existing.Size
+            || !IsSameLastWrite(fileInfo.LastWriteTimeUtc, existing.LastWriteUtc)
+            || HasLyricsSidecar(file))
+        {
+            return false;
+        }
+
+        unchangedScan = existing.Scan with
+        {
+            ArtistName = artistName,
+            AlbumTitle = album.Title,
+            FilePath = file,
+            IsUnchanged = true
+        };
+        return true;
     }
 
     private static TrackScanData CreateInitialTrackData(string file)
@@ -798,9 +852,9 @@ public sealed class LocalLibraryScanner
     private static void CollectArtistGenres(
         Dictionary<string, HashSet<string>> artistGenres,
         string artistName,
-        string[]? genres)
+        IEnumerable<string>? genres)
     {
-        if (genres is not { Length: > 0 })
+        if (genres is null)
         {
             return;
         }
@@ -888,6 +942,56 @@ public sealed class LocalLibraryScanner
                 trackData.ArtistIds.AppleArtistId,
                 trackData.Source,
                 trackData.SourceId)));
+    }
+
+    private static void AddTrackToSnapshot(
+        LibraryConfigStore.LocalLibrarySnapshot snapshot,
+        LibraryConfigStore.LibraryAlbum album,
+        LocalTrackScanDto scan)
+    {
+        var trackId = ComputeStableId($"track|{album.Id}|{scan.FilePath}");
+        snapshot.Tracks.Add(new LibraryConfigStore.LibraryTrack(
+            trackId,
+            album.Id,
+            true,
+            scan));
+    }
+
+    private static bool IsSameLastWrite(DateTime leftUtc, DateTime rightUtc)
+    {
+        var left = leftUtc.Kind == DateTimeKind.Utc ? leftUtc : DateTime.SpecifyKind(leftUtc, DateTimeKind.Utc);
+        var right = rightUtc.Kind == DateTimeKind.Utc ? rightUtc : DateTime.SpecifyKind(rightUtc, DateTimeKind.Utc);
+        return left == right;
+    }
+
+    private static bool HasLyricsSidecar(string file)
+    {
+        var directory = Path.GetDirectoryName(file);
+        var fileName = Path.GetFileNameWithoutExtension(file);
+        if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+        {
+            return false;
+        }
+
+        return LyricsSidecarExtensions.Any(extension => System.IO.File.Exists(Path.Combine(directory, fileName + extension)));
+    }
+
+    private static string? NormalizePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     private static void ReportProgress(ScanContext context, string? currentFile, bool force)

@@ -632,4 +632,12 @@ public sealed record LocalTrackScanDto(
     string? AppleAlbumId,
     string? AppleArtistId,
     string? Source,
-    string? SourceId);
+    string? SourceId,
+    bool IsUnchanged = false);
+
+public sealed record LocalScanFileState(
+    string FilePath,
+    string RelativePath,
+    long Size,
+    DateTime LastWriteUtc,
+    LocalTrackScanDto Scan);

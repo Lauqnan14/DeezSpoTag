@@ -1623,6 +1623,183 @@ LIMIT 1;";
         return resolved;
     }
 
+    public async Task<IReadOnlyDictionary<string, LocalScanFileState>> GetLocalScanFileStatesAsync(
+        long folderId,
+        CancellationToken cancellationToken = default)
+    {
+        if (folderId <= 0)
+        {
+            return new Dictionary<string, LocalScanFileState>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT af.path,
+       af.relative_path,
+       f.root_path,
+       COALESCE(af.size, 0),
+       af.mtime,
+       ar.name,
+       al.title,
+       t.title,
+       t.tag_title,
+       t.tag_artist,
+       t.tag_album,
+       t.tag_album_artist,
+       t.tag_version,
+       t.tag_label,
+       t.tag_catalog_number,
+       t.tag_bpm,
+       t.tag_key,
+       t.tag_track_total,
+       t.tag_duration_ms,
+       t.tag_year,
+       t.tag_track_no,
+       t.tag_disc,
+       t.tag_genre,
+       t.tag_isrc,
+       t.tag_release_date,
+       t.tag_publish_date,
+       t.tag_url,
+       t.tag_release_id,
+       t.tag_track_id,
+       t.tag_meta_tagged_date,
+       t.lyrics_unsynced,
+       t.lyrics_synced,
+       (SELECT group_concat(value, char(31)) FROM track_genre WHERE track_id = t.id),
+       (SELECT group_concat(value, char(31)) FROM track_style WHERE track_id = t.id),
+       (SELECT group_concat(value, char(31)) FROM track_mood WHERE track_id = t.id),
+       (SELECT group_concat(value, char(31)) FROM track_remixer WHERE track_id = t.id),
+       t.track_no,
+       t.disc,
+       COALESCE(af.duration_ms, t.duration_ms),
+       t.lyrics_status,
+       t.lyrics_type,
+       af.codec,
+       af.bitrate_kbps,
+       af.sample_rate_hz,
+       af.bits_per_sample,
+       af.channels,
+       af.quality_rank,
+       af.audio_variant,
+       COALESCE((SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) = 'deezer' LIMIT 1), t.deezer_id),
+       COALESCE((SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) = 'isrc' LIMIT 1), t.tag_isrc),
+       (SELECT source_id FROM album_source WHERE album_id = al.id AND LOWER(source) = 'deezer' LIMIT 1),
+       (SELECT source_id FROM artist_source WHERE artist_id = ar.id AND LOWER(source) = 'deezer' LIMIT 1),
+       (SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) = 'spotify' LIMIT 1),
+       (SELECT source_id FROM album_source WHERE album_id = al.id AND LOWER(source) = 'spotify' LIMIT 1),
+       (SELECT source_id FROM artist_source WHERE artist_id = ar.id AND LOWER(source) = 'spotify' LIMIT 1),
+       (SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) = 'apple' LIMIT 1),
+       (SELECT source_id FROM album_source WHERE album_id = al.id AND LOWER(source) = 'apple' LIMIT 1),
+       (SELECT source_id FROM artist_source WHERE artist_id = ar.id AND LOWER(source) = 'apple' LIMIT 1),
+       (SELECT source FROM track_source WHERE track_id = t.id AND LOWER(source) NOT IN ('deezer', 'spotify', 'apple', 'isrc') ORDER BY source LIMIT 1),
+       (SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) NOT IN ('deezer', 'spotify', 'apple', 'isrc') ORDER BY source LIMIT 1)
+FROM audio_file af
+JOIN folder f ON f.id = af.folder_id
+JOIN track_local tl ON tl.audio_file_id = af.id
+JOIN track t ON t.id = tl.track_id
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+WHERE af.folder_id = @folderId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("folderId", folderId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        var states = new Dictionary<string, LocalScanFileState>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var rawPath = await ReadNullableStringAsync(reader, 0, cancellationToken);
+            var relativePath = await ReadNullableStringAsync(reader, 1, cancellationToken);
+            var rootPath = await ReadNullableStringAsync(reader, 2, cancellationToken);
+            var filePath = BuildAbsolutePath(rootPath, relativePath, rawPath);
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                continue;
+            }
+
+            var mtimeText = await ReadNullableStringAsync(reader, 4, cancellationToken);
+            var lastWriteUtc = ParseDateTimeOffsetOrNull(mtimeText)?.UtcDateTime;
+            if (!lastWriteUtc.HasValue)
+            {
+                continue;
+            }
+
+            var normalizedPath = NormalizeScanFilePath(filePath);
+            if (string.IsNullOrWhiteSpace(normalizedPath))
+            {
+                continue;
+            }
+
+            var scan = new LocalTrackScanDto(
+                await ReadNullableStringAsync(reader, 5, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 6, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 7, cancellationToken) ?? Path.GetFileNameWithoutExtension(filePath),
+                filePath,
+                await ReadNullableStringAsync(reader, 8, cancellationToken),
+                await ReadNullableStringAsync(reader, 9, cancellationToken),
+                await ReadNullableStringAsync(reader, 10, cancellationToken),
+                await ReadNullableStringAsync(reader, 11, cancellationToken),
+                await ReadNullableStringAsync(reader, 12, cancellationToken),
+                await ReadNullableStringAsync(reader, 13, cancellationToken),
+                await ReadNullableStringAsync(reader, 14, cancellationToken),
+                await ReadNullableIntAsync(reader, 15, cancellationToken),
+                await ReadNullableStringAsync(reader, 16, cancellationToken),
+                await ReadNullableIntAsync(reader, 17, cancellationToken),
+                await ReadNullableIntAsync(reader, 18, cancellationToken),
+                await ReadNullableIntAsync(reader, 19, cancellationToken),
+                await ReadNullableIntAsync(reader, 20, cancellationToken),
+                await ReadNullableIntAsync(reader, 21, cancellationToken),
+                await ReadNullableStringAsync(reader, 22, cancellationToken),
+                await ReadNullableStringAsync(reader, 23, cancellationToken),
+                await ReadNullableStringAsync(reader, 24, cancellationToken),
+                await ReadNullableStringAsync(reader, 25, cancellationToken),
+                await ReadNullableStringAsync(reader, 26, cancellationToken),
+                await ReadNullableStringAsync(reader, 27, cancellationToken),
+                await ReadNullableStringAsync(reader, 28, cancellationToken),
+                await ReadNullableStringAsync(reader, 29, cancellationToken),
+                await ReadNullableStringAsync(reader, 30, cancellationToken),
+                await ReadNullableStringAsync(reader, 31, cancellationToken),
+                ReadDelimitedValues(await ReadNullableStringAsync(reader, 32, cancellationToken)),
+                ReadDelimitedValues(await ReadNullableStringAsync(reader, 33, cancellationToken)),
+                ReadDelimitedValues(await ReadNullableStringAsync(reader, 34, cancellationToken)),
+                ReadDelimitedValues(await ReadNullableStringAsync(reader, 35, cancellationToken)),
+                Array.Empty<LocalTrackOtherTag>(),
+                await ReadNullableIntAsync(reader, 36, cancellationToken),
+                await ReadNullableIntAsync(reader, 37, cancellationToken),
+                await ReadNullableIntAsync(reader, 38, cancellationToken),
+                await ReadNullableStringAsync(reader, 39, cancellationToken),
+                await ReadNullableStringAsync(reader, 40, cancellationToken),
+                await ReadNullableStringAsync(reader, 41, cancellationToken),
+                await ReadNullableIntAsync(reader, 42, cancellationToken),
+                await ReadNullableIntAsync(reader, 43, cancellationToken),
+                await ReadNullableIntAsync(reader, 44, cancellationToken),
+                await ReadNullableIntAsync(reader, 45, cancellationToken),
+                await ReadNullableIntAsync(reader, 46, cancellationToken),
+                await ReadNullableStringAsync(reader, 47, cancellationToken),
+                await ReadNullableStringAsync(reader, 48, cancellationToken),
+                await ReadNullableStringAsync(reader, 49, cancellationToken),
+                await ReadNullableStringAsync(reader, 50, cancellationToken),
+                await ReadNullableStringAsync(reader, 51, cancellationToken),
+                await ReadNullableStringAsync(reader, 52, cancellationToken),
+                await ReadNullableStringAsync(reader, 53, cancellationToken),
+                await ReadNullableStringAsync(reader, 54, cancellationToken),
+                await ReadNullableStringAsync(reader, 55, cancellationToken),
+                await ReadNullableStringAsync(reader, 56, cancellationToken),
+                await ReadNullableStringAsync(reader, 57, cancellationToken),
+                await ReadNullableStringAsync(reader, 58, cancellationToken),
+                await ReadNullableStringAsync(reader, 59, cancellationToken));
+
+            states[normalizedPath] = new LocalScanFileState(
+                filePath,
+                relativePath ?? string.Empty,
+                reader.GetInt64(3),
+                lastWriteUtc.Value,
+                scan);
+        }
+
+        return states;
+    }
+
     public async Task<IReadOnlyDictionary<long, ShazamTrackCacheDto>> GetShazamTrackCacheByTrackIdForLibraryAsync(
         long libraryId,
         long? folderId = null,
@@ -7495,7 +7672,10 @@ SELECT EXISTS(
                 cancellationToken);
             await IngestTrackSourcesAsync(connection, transaction, trackId, track, cancellationToken);
             await EnsureArtistAndAlbumSourcesAsync(connection, transaction, artistId, albumId, track, cancellationToken);
-            await ReplaceTrackMultiTagsAsync(connection, transaction, trackId, track, cancellationToken);
+            if (!track.IsUnchanged)
+            {
+                await ReplaceTrackMultiTagsAsync(connection, transaction, trackId, track, cancellationToken);
+            }
         }
     }
 
@@ -7537,7 +7717,8 @@ SELECT EXISTS(
                 track.BitsPerSample,
                 track.Channels,
                 track.QualityRank,
-                track.AudioVariant),
+                track.AudioVariant,
+                track.IsUnchanged),
             cancellationToken);
         await EnsureTrackLocalAsync(connection, transaction, trackId, audioFileId, cancellationToken);
         return trackId;
@@ -7847,7 +8028,8 @@ WHERE folder_id IN (SELECT id FROM purge_non_library_folder);";
         int? BitsPerSample,
         int? Channels,
         int? QualityRank,
-        string? AudioVariant);
+        string? AudioVariant,
+        bool PreserveUnchangedTimestamp);
 
     private sealed record SourceUpsertInput(
         long EntityId,
@@ -8361,6 +8543,37 @@ RETURNING id;";
         return await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetString(ordinal);
     }
 
+    private static IReadOnlyList<string> ReadDelimitedValues(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Array.Empty<string>();
+        }
+
+        return value
+            .Split('\u001f', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static item => !string.IsNullOrWhiteSpace(item))
+            .ToArray();
+    }
+
+    private static string? NormalizeScanFilePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
     private static async Task<int?> ReadNullableIntAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
     {
         return await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetInt32(ordinal);
@@ -8475,7 +8688,10 @@ SET path = EXCLUDED.path,
     channels = COALESCE(EXCLUDED.channels, audio_file.channels),
     quality_rank = COALESCE(EXCLUDED.quality_rank, audio_file.quality_rank),
     audio_variant = COALESCE(EXCLUDED.audio_variant, audio_file.audio_variant),
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = CASE
+        WHEN @preserveUnchangedTimestamp THEN audio_file.updated_at
+        ELSE CURRENT_TIMESTAMP
+    END
         RETURNING id;";
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("path", input.FilePath);
@@ -8492,6 +8708,7 @@ SET path = EXCLUDED.path,
         command.Parameters.AddWithValue("channels", (object?)input.Channels ?? DBNull.Value);
         command.Parameters.AddWithValue("qualityRank", (object?)input.QualityRank ?? DBNull.Value);
         command.Parameters.AddWithValue("audioVariant", (object?)NormalizeAudioVariant(input.AudioVariant) ?? DBNull.Value);
+        command.Parameters.AddWithValue("preserveUnchangedTimestamp", input.PreserveUnchangedTimestamp);
         var insertedId = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt64(insertedId);
     }

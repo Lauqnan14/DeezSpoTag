@@ -379,10 +379,15 @@ public sealed class LibraryScanRunner
             var folder = foldersToScan[i];
             AddInfoLog($"Scanning folder {i + 1}/{foldersToScan.Count}: {folder.DisplayName}.");
 
+            var existingFiles = _repository.IsConfigured
+                ? await _repository.GetLocalScanFileStatesAsync(folder.Id, cancellationToken)
+                : null;
+
             var folderSnapshot = ScanSingleFolderSnapshot(
                 folder,
                 progressOffset,
                 livePreviewIngestEnabled,
+                existingFiles,
                 out var folderProcessed,
                 out var folderTotal,
                 out var folderErrors,
@@ -606,6 +611,7 @@ public sealed class LibraryScanRunner
         FolderDto folder,
         ScanProgressOffset progressOffset,
         bool livePreviewIngestEnabled,
+        IReadOnlyDictionary<string, LocalScanFileState>? existingFiles,
         out int folderProcessed,
         out int folderTotal,
         out int folderErrors,
@@ -639,7 +645,8 @@ public sealed class LibraryScanRunner
             livePreviewIngestEnabled
                 ? partialSnapshot => TryIngestLiveFolderSnapshot(folder, partialSnapshot, cancellationToken)
                 : null,
-            cancellationToken);
+            cancellationToken,
+            existingFiles);
         folderProcessed = latestProcessed;
         folderTotal = latestTotal;
         folderErrors = latestErrors;

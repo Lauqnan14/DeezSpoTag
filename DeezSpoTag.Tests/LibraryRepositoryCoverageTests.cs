@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -31,6 +32,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         IReadOnlyDictionary<string, string> TrackPathsByTitle);
 
     private string _tempRoot = string.Empty;
+    private string _dbPath = string.Empty;
     private LibraryRepository _repository = default!;
 
     public async Task InitializeAsync()
@@ -38,11 +40,11 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         _tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-library-tests-" + Path.GetRandomFileName());
         Directory.CreateDirectory(_tempRoot);
 
-        var dbPath = Path.Join(_tempRoot, "library.db");
+        _dbPath = Path.Join(_tempRoot, "library.db");
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Library"] = $"Data Source={dbPath}"
+                ["ConnectionStrings:Library"] = $"Data Source={_dbPath}"
             })
             .Build();
 
@@ -569,6 +571,65 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task LocalScanFileStates_RoundTrip_And_UnchangedIngestPreservesAudioTimestamp()
+    {
+        var root = Path.Join(_tempRoot, "music-library");
+        var albumDir = Path.Join(root, "Artist One", "Album One");
+        Directory.CreateDirectory(albumDir);
+        var filePath = Path.Join(albumDir, "01 - Cached Song.flac");
+        await File.WriteAllTextAsync(filePath, "audio placeholder");
+
+        var folder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: root,
+                DisplayName: "Music Library",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null));
+
+        var artists = new List<LocalArtistScanDto> { new("Artist One", null) };
+        var albums = new List<LocalAlbumScanDto>
+        {
+            new("Artist One", "Album One", null, new[] { folder.DisplayName })
+        };
+        var track = CreateTrackScan(
+            title: "Cached Song",
+            filePath: filePath,
+            deezerTrackId: "dz-cached",
+            spotifyTrackId: "sp-cached",
+            appleTrackId: "ap-cached");
+
+        await _repository.IngestLocalScanAsync(
+            await _repository.GetFoldersAsync(),
+            artists,
+            albums,
+            new[] { track },
+            pruneMissingArtists: false);
+
+        var states = await _repository.GetLocalScanFileStatesAsync(folder.Id);
+        var state = Assert.Single(states.Values);
+        Assert.Equal(new FileInfo(filePath).Length, state.Size);
+        Assert.Equal("Cached Song", state.Scan.Title);
+        Assert.Equal("sp-cached", state.Scan.SpotifyTrackId);
+        Assert.Contains("Soundtrack", state.Scan.TagGenres);
+
+        var updatedAt = await ReadAudioFileUpdatedAtAsync(filePath);
+        await Task.Delay(1100);
+
+        await _repository.IngestLocalScanAsync(
+            await _repository.GetFoldersAsync(),
+            artists,
+            albums,
+            new[] { track with { IsUnchanged = true } },
+            pruneMissingArtists: false);
+
+        Assert.Equal(updatedAt, await ReadAudioFileUpdatedAtAsync(filePath));
+    }
+
+    [Fact]
     public async Task ExistsInLibrary_ScopedToLibrary_DoesNotLeakAcrossOtherLibraries()
     {
         var primary = await SeedLibraryAsync(
@@ -1041,6 +1102,18 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             AppleArtistId: "am-artist-1",
             Source: "spotify",
             SourceId: spotifyTrackId);
+    }
+
+    private async Task<string> ReadAudioFileUpdatedAtAsync(string filePath)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(
+            "SELECT updated_at FROM audio_file WHERE path = @path LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("path", filePath);
+        var result = await command.ExecuteScalarAsync();
+        return Assert.IsType<string>(result);
     }
 
     private static RecommendationTrackDto CreateRecommendationTrack(string id, string title)
