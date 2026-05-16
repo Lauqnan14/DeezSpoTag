@@ -116,7 +116,7 @@
             ? `<div class="shz-actions__links">${links.join('')}</div>`
             : '';
 
-        const hasDownloadSource = !!(item.spotifyUrl || item.appleMusicUrl || item.isrc);
+        const hasDownloadSource = !!(item.spotifyUrl || item.appleMusicUrl || item.isrc || item.url || item.title);
         const downloadLabel = hasDownloadSource ? 'Download' : 'Unavailable';
         const downloadDisabled = hasDownloadSource ? '' : 'disabled';
         const cardClasses = ['shz-card'];
@@ -176,12 +176,39 @@
         element.classList.toggle('is-hidden', !enabled);
     };
 
+    const fetchWithTimeout = async (url, timeoutMs = 12000) => {
+        const controller = new AbortController();
+        const timer = globalThis.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000));
+        try {
+            return await fetch(url, { signal: controller.signal });
+        } finally {
+            globalThis.clearTimeout(timer);
+        }
+    };
+
     const fetchJson = async (url) => {
-        const response = await fetch(url);
+        const response = await fetchWithTimeout(url);
         if (!response.ok) {
             throw new Error(`Request failed (${response.status})`);
         }
         return response.json();
+    };
+
+    const normalizeText = (value) => {
+        if (typeof value === 'string') {
+            return value.trim();
+        }
+        if (value === null || value === undefined) {
+            return '';
+        }
+        return String(value).trim();
+    };
+
+    const normalizeLoose = (value) => {
+        return normalizeText(value)
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
     };
 
     const normalizeRecognitionCard = (recognition) => {
@@ -189,14 +216,14 @@
             return null;
         }
 
-        const titleValue = (recognition.title || '').trim();
-        const artistValue = (recognition.artist || '').trim();
+        const titleValue = normalizeText(recognition.title);
+        const artistValue = normalizeText(recognition.artist);
         if (!titleValue) {
             return null;
         }
 
         return {
-            id: (recognition.trackId || '').trim(),
+            id: normalizeText(recognition.trackId),
             title: titleValue,
             artist: artistValue || 'Unknown Artist',
             album: recognition.album || null,
@@ -234,13 +261,14 @@
                 return null;
             }
 
-            const payloadTrackId = (payload?.track?.id || payload?.recognition?.trackId || '').trim();
+            const payloadTrackId = normalizeText(payload?.track?.id || payload?.recognition?.trackId);
             if (trackId && payloadTrackId && payloadTrackId !== trackId) {
                 return null;
             }
 
-            const payloadQuery = (payload?.query || '').trim();
-            if (query && payloadQuery && payloadQuery.toLowerCase() !== query.toLowerCase()) {
+            const payloadQuery = normalizeText(payload?.query);
+            const effectiveQuery = normalizeText(query || [title, artist].filter(Boolean).join(' '));
+            if (effectiveQuery && payloadQuery && normalizeLoose(payloadQuery) !== normalizeLoose(effectiveQuery)) {
                 return null;
             }
 
@@ -276,18 +304,55 @@
         }
     };
 
+    const buildCardIdentity = (item) => {
+        const id = normalizeText(item?.id);
+        if (id) {
+            return `id:${id}`;
+        }
+
+        const t = normalizeText(item?.title).toLowerCase();
+        const a = normalizeText(item?.artist).toLowerCase();
+        if (t || a) {
+            return `ta:${t}|${a}`;
+        }
+
+        return '';
+    };
+
+    const dedupeCards = (items) => {
+        if (!Array.isArray(items) || items.length === 0) {
+            return [];
+        }
+
+        const seen = new Set();
+        const output = [];
+        for (const item of items) {
+            if (!item || typeof item !== 'object') {
+                continue;
+            }
+            const key = buildCardIdentity(item);
+            if (!key || seen.has(key)) {
+                continue;
+            }
+            seen.add(key);
+            output.push(item);
+        }
+
+        return output;
+    };
+
     async function load() {
-        if (!trackId && !query) {
+        if (!trackId && !query && !title && !artist) {
             setStatus('No Shazam context was provided. Trigger search from the logo to populate this page.');
             return;
         }
 
         try {
             let match = null;
+            let usedLivePayload = false;
             let similar = [];
             let searched = [];
-            let usedLivePayload = false;
-            let refreshPromise = null;
+            const effectiveQuery = normalizeText(query || [title, artist].filter(Boolean).join(' '));
 
             const livePayload = readLiveCapturePayload();
             if (livePayload) {
@@ -295,34 +360,85 @@
                 similar = Array.isArray(livePayload.similar)
                     ? livePayload.similar
                     : Array.isArray(livePayload.related) ? livePayload.related : [];
-                searched = [];
+                searched = Array.isArray(livePayload.searchResults)
+                    ? livePayload.searchResults
+                    : [];
                 usedLivePayload = true;
-                renderPayload(match, similar, searched);
-                setStatus('Shazam results loaded from live capture.');
             }
 
-            const fetchTrackAndRelated = async () => {
-                const [trackPayload, relatedPayload] = await Promise.all([
-                    fetchJson(`/api/shazam/track/${encodeURIComponent(trackId)}`),
-                    fetchJson(`/api/shazam/related/${encodeURIComponent(trackId)}?limit=20`)
-                ]);
+            const tasks = [];
+            if (trackId && (!match || similar.length === 0)) {
+                tasks.push((async () => {
+                    const [trackResult, relatedResult] = await Promise.allSettled([
+                        fetchJson(`/api/shazam/track/${encodeURIComponent(trackId)}`),
+                        fetchJson(`/api/shazam/related/${encodeURIComponent(trackId)}?limit=20`)
+                    ]);
 
-                if (trackPayload?.available && trackPayload.track) {
-                    match = trackPayload.track;
-                }
+                    if (trackResult.status === 'fulfilled') {
+                        const trackPayload = trackResult.value;
+                        if (trackPayload?.available && trackPayload.track) {
+                            if (!match) {
+                                match = trackPayload.track;
+                            }
+                        }
+                    }
 
-                if (Array.isArray(relatedPayload?.tracks)) {
-                    similar = relatedPayload.tracks;
-                }
-            };
+                    if (relatedResult.status === 'fulfilled') {
+                        const relatedPayload = relatedResult.value;
+                        if (Array.isArray(relatedPayload?.tracks)) {
+                            similar = relatedPayload.tracks;
+                        }
+                    }
 
-            if (trackId) {
-                if (!match || similar.length === 0) {
-                    await fetchTrackAndRelated();
-                } else {
-                    refreshPromise = fetchTrackAndRelated().catch(() => null);
-                }
+                    if (trackResult.status === 'rejected') {
+                        console.warn('Shazam track lookup failed on results page.', trackResult.reason);
+                    }
+                    if (relatedResult.status === 'rejected') {
+                        console.warn('Shazam related lookup failed on results page.', relatedResult.reason);
+                    }
+                })());
             }
+
+            if (effectiveQuery && searched.length === 0) {
+                tasks.push((async () => {
+                    try {
+                        const searchPayload = await fetchJson(`/api/shazam/search?query=${encodeURIComponent(effectiveQuery)}&limit=20`);
+                        if (Array.isArray(searchPayload?.tracks)) {
+                            searched = searchPayload.tracks;
+                        }
+                    } catch (error) {
+                        console.warn('Shazam search lookup failed on results page.', error);
+                    }
+                })());
+            }
+
+            if (tasks.length > 0) {
+                await Promise.all(tasks);
+            }
+
+            if (!match && title) {
+                match = {
+                    id: normalizeText(trackId),
+                    title: normalizeText(title) || 'Unknown Track',
+                    artist: normalizeText(artist) || 'Unknown Artist',
+                    album: null,
+                    genre: null,
+                    label: null,
+                    releaseDate: null,
+                    artworkUrl: null,
+                    url: null,
+                    appleMusicUrl: null,
+                    spotifyUrl: null,
+                    isrc: null,
+                    durationMs: null
+                };
+            }
+
+            const matchIdentity = buildCardIdentity(match);
+            similar = dedupeCards(similar)
+                .filter((item) => buildCardIdentity(item) !== matchIdentity);
+            searched = dedupeCards(searched)
+                .filter((item) => buildCardIdentity(item) !== matchIdentity);
 
             renderPayload(match, similar, searched);
 
@@ -331,15 +447,9 @@
                 return;
             }
 
-            if (!usedLivePayload) {
-                setStatus('Shazam results loaded.');
-            }
-
-            if (refreshPromise) {
-                refreshPromise.then(() => {
-                    renderPayload(match, similar, searched);
-                });
-            }
+            setStatus(usedLivePayload
+                ? 'Shazam results loaded from live capture.'
+                : 'Shazam results loaded.');
         } catch (error) {
             console.error(error);
             setStatus(`Failed to load Shazam results: ${error.message || error}`);
@@ -365,7 +475,7 @@
 
     const fetchJsonOptional = async (url) => {
         try {
-            const response = await fetch(url);
+            const response = await fetchWithTimeout(url);
             if (!response.ok) {
                 return null;
             }

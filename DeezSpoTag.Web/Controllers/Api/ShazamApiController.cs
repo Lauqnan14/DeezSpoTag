@@ -263,22 +263,30 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             related = relatedTask.Result;
         }
 
-        return BuildMatchPayload(recognition, query, track, related);
+        var searchResults = await SafeSearchTracksAsync(query, cancellationToken);
+        return BuildMatchPayload(recognition, query, track, related, searchResults);
     }
 
     private static object BuildMinimalMatchPayload(ShazamRecognitionInfo recognition)
     {
         var query = BuildQuery(recognition);
-        return BuildMatchPayload(recognition, query, track: null, related: Array.Empty<ShazamTrackCard>());
+        return BuildMatchPayload(
+            recognition,
+            query,
+            track: null,
+            related: Array.Empty<ShazamTrackCard>(),
+            searchResults: Array.Empty<ShazamTrackCard>());
     }
 
     private static object BuildMatchPayload(
         ShazamRecognitionInfo recognition,
         string? query,
         ShazamTrackCard? track,
-        IReadOnlyList<ShazamTrackCard> related)
+        IReadOnlyList<ShazamTrackCard> related,
+        IReadOnlyList<ShazamTrackCard> searchResults)
     {
-        var similar = related;
+        var relatedList = related ?? Array.Empty<ShazamTrackCard>();
+        var searchList = searchResults ?? Array.Empty<ShazamTrackCard>();
 
         return new
         {
@@ -302,11 +310,32 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             },
             query,
             track,
-            related,
-            similar,
-            fallbackSearch = Array.Empty<ShazamTrackCard>(),
-            relatedFallbackUsed = false
+            related = relatedList,
+            similar = relatedList,
+            searchResults = searchList
         };
+    }
+
+    private async Task<IReadOnlyList<ShazamTrackCard>> SafeSearchTracksAsync(string? query, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return Array.Empty<ShazamTrackCard>();
+        }
+
+        try
+        {
+            return await _discoveryService.SearchTracksAsync(query, limit: 20, offset: 0, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Shazam search lookup failed for query '{Query}'.", query);
+            return Array.Empty<ShazamTrackCard>();
+        }
     }
 
     private async Task<ShazamTrackCard?> SafeGetTrackAsync(string trackId, CancellationToken cancellationToken)

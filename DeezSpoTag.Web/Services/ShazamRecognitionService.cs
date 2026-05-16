@@ -820,6 +820,15 @@ public sealed class ShazamRecognitionService
                 };
             }
 
+            if (root.TryGetProperty("matched", out var matchedElement)
+                && matchedElement.ValueKind == JsonValueKind.False)
+            {
+                return new PortedRecognizerExecution
+                {
+                    State = PortedRecognizerState.NoMatch
+                };
+            }
+
             var result = new PortedRecognitionResult();
 
             if (root.TryGetProperty("summary", out var summary) && summary.ValueKind == JsonValueKind.Object)

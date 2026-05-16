@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -37,12 +38,15 @@ public sealed partial class ShazamDiscoveryService
     private const string Language = "en-US";
     private const string Country = "US";
     private const string AppleMusicIdPrefix = "am:";
+    private const string ToolsDirectory = "Tools";
+    private const string ShazamPortDirectory = "shazam_port";
     private const string UnknownArtist = "Unknown Artist";
     private const string AttributesPropertyName = "attributes";
     private const int MaxTrackLimit = 20;
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<ShazamDiscoveryService> _logger;
+    private readonly IWebHostEnvironment _environment;
     private static readonly ConcurrentDictionary<string, ShazamTrackCard> SessionCardCache = new(StringComparer.OrdinalIgnoreCase);
 
     [GeneratedRegex(@"([?&]startFrom=)\d+", RegexOptions.IgnoreCase)]
@@ -51,10 +55,14 @@ public sealed partial class ShazamDiscoveryService
     [GeneratedRegex(@"([?&]pageSize=)\d+", RegexOptions.IgnoreCase)]
     private static partial Regex PageSizeRegex();
 
-    public ShazamDiscoveryService(HttpClient httpClient, ILogger<ShazamDiscoveryService> logger)
+    public ShazamDiscoveryService(
+        HttpClient httpClient,
+        ILogger<ShazamDiscoveryService> logger,
+        IWebHostEnvironment environment)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _environment = environment;
         if (_httpClient.Timeout <= TimeSpan.Zero)
         {
             _httpClient.Timeout = TimeSpan.FromSeconds(15);
@@ -79,20 +87,13 @@ public sealed partial class ShazamDiscoveryService
             return null;
         }
 
-        var url = $"https://www.shazam.com/discovery/v5/{Language}/{Country}/web/-/track/{Uri.EscapeDataString(trackId)}?shazamapiversion=v3&video=v3";
-        using var doc = await GetJsonAsync(url, cancellationToken);
-        if (doc == null)
+        var parsed = await GetTrackViaPortedDiscoveryAsync(trackId, cancellationToken);
+        if (parsed != null)
         {
-            return null;
+            CacheCard(parsed);
+            return parsed;
         }
-
-        var root = doc.RootElement.Clone();
-        if (TryGetObject(root, "track", out var trackElement))
-        {
-            return ParseTrack(trackElement);
-        }
-
-        return ParseTrack(root);
+        return null;
     }
 
     public async Task<IReadOnlyList<ShazamTrackCard>> GetRelatedTracksAsync(
@@ -115,40 +116,66 @@ public sealed partial class ShazamDiscoveryService
         limit = Math.Clamp(limit, 1, MaxTrackLimit);
         offset = Math.Max(0, offset);
 
-        var url = await ResolveRelatedTracksUrlAsync(trackId, cancellationToken);
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        url = ApplyRelatedTracksPaging(url, limit, offset);
-        using var doc = await GetJsonAsync(url, cancellationToken);
-        if (doc == null)
-        {
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        var root = doc.RootElement.Clone();
-        return ParseTrackList(root, limit);
+        return await GetRelatedTracksViaPortedDiscoveryAsync(trackId, limit, offset, cancellationToken);
     }
 
     private async Task<string?> ResolveRelatedTracksUrlAsync(string trackId, CancellationToken cancellationToken)
     {
-        var trackUrl = $"https://www.shazam.com/discovery/v5/{Language}/{Country}/iphone/-/track/{Uri.EscapeDataString(trackId)}?shazamapiversion=v3&video=v3";
-        using var trackDoc = await GetJsonAsync(trackUrl, cancellationToken);
-        if (trackDoc == null)
+        var encodedTrackId = Uri.EscapeDataString(trackId);
+        var candidateTrackUrls = new[]
         {
-            return null;
+            $"https://www.shazam.com/discovery/v5/{Language}/{Country}/web/-/track/{encodedTrackId}?shazamapiversion=v3&video=v3",
+            $"https://www.shazam.com/discovery/v5/{Language}/{Country}/iphone/-/track/{encodedTrackId}?shazamapiversion=v3&video=v3"
+        };
+
+        foreach (var trackUrl in candidateTrackUrls)
+        {
+            using var trackDoc = await GetJsonAsync(trackUrl, cancellationToken);
+            if (trackDoc == null)
+            {
+                continue;
+            }
+
+            var root = trackDoc.RootElement;
+            var relatedUrl = TryResolveRelatedTracksUrlFromTrackPayload(root);
+            if (!string.IsNullOrWhiteSpace(relatedUrl))
+            {
+                return relatedUrl;
+            }
         }
 
-        var root = trackDoc.RootElement;
-        var relatedUrl = TryGetString(root, "relatedtracksurl");
-        if (!string.IsNullOrWhiteSpace(relatedUrl))
+        return null;
+    }
+
+    private static string? TryResolveRelatedTracksUrlFromTrackPayload(JsonElement root)
+    {
+        var direct = TryGetString(root, "relatedtracksurl");
+        if (!string.IsNullOrWhiteSpace(direct))
         {
-            return relatedUrl;
+            return direct;
         }
 
-        if (!TryGetArray(root, "sections", out var sections))
+        if (TryGetObject(root, "track", out var trackObject))
+        {
+            var nested = TryGetString(trackObject, "relatedtracksurl");
+            if (!string.IsNullOrWhiteSpace(nested))
+            {
+                return nested;
+            }
+
+            var fromNestedSections = TryResolveRelatedTracksUrlFromSections(trackObject);
+            if (!string.IsNullOrWhiteSpace(fromNestedSections))
+            {
+                return fromNestedSections;
+            }
+        }
+
+        return TryResolveRelatedTracksUrlFromSections(root);
+    }
+
+    private static string? TryResolveRelatedTracksUrlFromSections(JsonElement container)
+    {
+        if (!TryGetArray(container, "sections", out var sections))
         {
             return null;
         }
@@ -161,7 +188,7 @@ public sealed partial class ShazamDiscoveryService
                 continue;
             }
 
-            relatedUrl = TryGetString(section, "url");
+            var relatedUrl = TryGetString(section, "url");
             if (!string.IsNullOrWhiteSpace(relatedUrl))
             {
                 return relatedUrl;
@@ -221,13 +248,35 @@ public sealed partial class ShazamDiscoveryService
         limit = Math.Clamp(limit, 1, MaxTrackLimit);
         offset = Math.Max(0, offset);
 
-        var legacy = await SearchTracksLegacyAsync(query, limit, offset, cancellationToken);
-        if (legacy.Count > 0)
+        var discovered = await SearchTracksViaPortedDiscoveryAsync(query, limit, offset, cancellationToken);
+        return discovered;
+    }
+
+    private async Task<IReadOnlyList<ShazamTrackCard>> SearchTracksViaPortedDiscoveryAsync(
+        string query,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        using var doc = await RunPortedDiscoverAsync("search", trackId: null, query, limit, offset, cancellationToken);
+        if (doc == null)
         {
-            return legacy;
+            return Array.Empty<ShazamTrackCard>();
         }
 
-        return await SearchTracksViaAppleCatalogAsync(query, limit, offset, cancellationToken);
+        var root = doc.RootElement;
+        if (!TryGetBool(root, "ok", out var ok) || !ok)
+        {
+            return Array.Empty<ShazamTrackCard>();
+        }
+
+        var parsed = ParseTrackList(root, limit);
+        foreach (var card in parsed)
+        {
+            CacheCard(card);
+        }
+
+        return parsed;
     }
 
     private async Task<IReadOnlyList<ShazamTrackCard>> SearchTracksLegacyAsync(
@@ -367,6 +416,214 @@ public sealed partial class ShazamDiscoveryService
             }
             return null;
         }
+    }
+
+    private static string ResolveShazamPortPython(string scriptPath)
+    {
+        var scriptDirectory = Path.GetDirectoryName(scriptPath) ?? string.Empty;
+        var venvPython = Path.Combine(scriptDirectory, ".venv", "bin", "python");
+        if (File.Exists(venvPython))
+        {
+            return venvPython;
+        }
+
+        return "python3";
+    }
+
+    private static string? ResolveShazamPortDiscoverScriptPath(string? contentRootPath)
+    {
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(contentRootPath))
+        {
+            candidates.Add(Path.Combine(contentRootPath, ToolsDirectory, ShazamPortDirectory, "discover.py"));
+            candidates.Add(Path.Combine(contentRootPath, "..", "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, "discover.py"));
+        }
+
+        var current = Directory.GetCurrentDirectory();
+        candidates.Add(Path.Combine(current, ToolsDirectory, ShazamPortDirectory, "discover.py"));
+        candidates.Add(Path.Combine(current, "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, "discover.py"));
+
+        var baseDir = AppContext.BaseDirectory;
+        candidates.Add(Path.Combine(baseDir, ToolsDirectory, ShazamPortDirectory, "discover.py"));
+        candidates.Add(Path.Combine(baseDir, "..", "..", "..", "..", ToolsDirectory, ShazamPortDirectory, "discover.py"));
+
+        foreach (var candidate in candidates)
+        {
+            var full = Path.GetFullPath(candidate);
+            if (File.Exists(full))
+            {
+                return full;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<JsonDocument?> RunPortedDiscoverAsync(
+        string mode,
+        string? trackId,
+        string? query,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var projectRoot = _environment?.ContentRootPath;
+            if (string.IsNullOrWhiteSpace(projectRoot))
+            {
+                var baseDir = AppContext.BaseDirectory;
+                projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", ".."));
+            }
+            var scriptPath = ResolveShazamPortDiscoverScriptPath(projectRoot);
+            if (string.IsNullOrWhiteSpace(scriptPath))
+            {
+                _logger.LogWarning("Shazam port discovery script not found. contentRoot={ContentRoot}", projectRoot);
+                return null;
+            }
+
+            var python = ResolveShazamPortPython(scriptPath);
+            var start = new ProcessStartInfo
+            {
+                FileName = python,
+                WorkingDirectory = Path.GetDirectoryName(scriptPath) ?? projectRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            start.ArgumentList.Add(scriptPath);
+            start.ArgumentList.Add(mode);
+            if (!string.IsNullOrWhiteSpace(trackId))
+            {
+                start.ArgumentList.Add("--track-id");
+                start.ArgumentList.Add(trackId);
+            }
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                start.ArgumentList.Add("--query");
+                start.ArgumentList.Add(query);
+            }
+            start.ArgumentList.Add("--limit");
+            start.ArgumentList.Add(limit.ToString());
+            start.ArgumentList.Add("--offset");
+            start.ArgumentList.Add(offset.ToString());
+            start.ArgumentList.Add("--language");
+            start.ArgumentList.Add(Language);
+            start.ArgumentList.Add("--country");
+            start.ArgumentList.Add(Country);
+            start.ArgumentList.Add("--timeout");
+            start.ArgumentList.Add("20");
+            start.Environment["PYTHONUNBUFFERED"] = "1";
+
+            using var process = new Process { StartInfo = start };
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+            var stdout = (await stdoutTask).Trim();
+            var stderr = (await stderrTask).Trim();
+            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
+            {
+                _logger.LogWarning(
+                    "Shazam port discovery failed: mode={Mode} code={Code} python={Python} script={Script} stderr={Stderr}",
+                    mode,
+                    process.ExitCode,
+                    python,
+                    scriptPath,
+                    string.IsNullOrWhiteSpace(stderr) ? "none" : stderr);
+                return null;
+            }
+
+            return JsonDocument.Parse(stdout);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Shazam port discovery bridge failed for mode {Mode}.", mode);
+            }
+            return null;
+        }
+    }
+
+    private async Task<ShazamTrackCard?> GetTrackViaPortedDiscoveryAsync(string trackId, CancellationToken cancellationToken)
+    {
+        using var doc = await RunPortedDiscoverAsync("track", trackId, query: null, limit: 1, offset: 0, cancellationToken);
+        if (doc == null)
+        {
+            return null;
+        }
+
+        var root = doc.RootElement;
+        if (!TryGetBool(root, "ok", out var ok) || !ok)
+        {
+            return null;
+        }
+
+        if (!TryGetObject(root, "track", out var trackObject))
+        {
+            return null;
+        }
+
+        var parsed = ParseTrack(trackObject);
+        if (parsed != null)
+        {
+            CacheCard(parsed);
+        }
+
+        return parsed;
+    }
+
+    private async Task<IReadOnlyList<ShazamTrackCard>> GetRelatedTracksViaPortedDiscoveryAsync(
+        string trackId,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        using var doc = await RunPortedDiscoverAsync("related", trackId, query: null, limit, offset, cancellationToken);
+        if (doc == null)
+        {
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning("Shazam port related lookup returned null document for trackId {TrackId}.", trackId);
+            }
+            return Array.Empty<ShazamTrackCard>();
+        }
+
+        var root = doc.RootElement;
+        if (!TryGetBool(root, "ok", out var ok) || !ok)
+        {
+            if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning("Shazam port related lookup returned non-ok payload for trackId {TrackId}.", trackId);
+            }
+            return Array.Empty<ShazamTrackCard>();
+        }
+
+        var parsed = ParseTrackList(root, limit);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Shazam port related lookup produced {Count} tracks for trackId {TrackId}.", parsed.Count, trackId);
+        }
+        foreach (var card in parsed)
+        {
+            CacheCard(card);
+        }
+
+        return parsed;
+    }
+
+    private static bool TryGetBool(JsonElement source, string propertyName, out bool value)
+    {
+        value = false;
+        if (!source.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.True && property.ValueKind != JsonValueKind.False)
+        {
+            return false;
+        }
+
+        value = property.GetBoolean();
+        return true;
     }
 
     private static List<ShazamTrackCard> ParseTrackList(JsonElement root, int limit)

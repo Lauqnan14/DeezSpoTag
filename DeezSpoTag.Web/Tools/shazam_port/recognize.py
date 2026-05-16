@@ -81,8 +81,13 @@ async def recognize_async(args: argparse.Namespace) -> Dict[str, Any]:
     except asyncio.TimeoutError as ex:
         raise RuntimeError(f"Shazam recognize timeout after {timeout_seconds}s") from ex
 
+    matches = response.get("matches") if isinstance(response, dict) else None
+    matched = isinstance(matches, list) and len(matches) > 0
+
     return {
         "ok": True,
+        "matched": matched,
+        "matchesCount": len(matches) if isinstance(matches, list) else 0,
         "summary": summarize_response(response),
         "response": response,
     }
