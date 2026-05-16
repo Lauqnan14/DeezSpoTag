@@ -33,6 +33,8 @@ public sealed class PlaylistWatchService
     private const string RecommendationsSource = "recommendations";
     private const string QobuzSource = "qobuz";
     private const string TidalSource = "tidal";
+    private const string PlaylistWatchType = "playlist";
+    private const string QueuedStatus = "queued";
     private const string AlbumField = "album";
     private const string JsonTitleProperty = "title";
     private const string JsonItemsProperty = "items";
@@ -248,6 +250,7 @@ public sealed class PlaylistWatchService
                 preference?.AtmosDestinationFolderId,
                 new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
             cancellationToken);
+        await AddPlaylistWatchHistoryAsync(source, sourceId, playlist.Name, queueResult.QueuedCount, cancellationToken);
 
         PlaylistSyncResult? syncResult = null;
         if (forceMediaServerSync)
@@ -288,6 +291,31 @@ public sealed class PlaylistWatchService
             queueResult.CompletedCount,
             queueResult.FailedCount,
             syncResult);
+    }
+
+    private async Task AddPlaylistWatchHistoryAsync(
+        string source,
+        string sourceId,
+        string? playlistName,
+        int queuedCount,
+        CancellationToken cancellationToken)
+    {
+        if (queuedCount <= 0)
+        {
+            return;
+        }
+
+        await _libraryRepository.AddWatchlistHistoryAsync(
+            new WatchlistHistoryInsert(
+                source,
+                PlaylistWatchType,
+                sourceId,
+                string.IsNullOrWhiteSpace(playlistName) ? "Playlist" : playlistName,
+                PlaylistWatchType,
+                queuedCount,
+                QueuedStatus,
+                ArtistName: null),
+            cancellationToken);
     }
 
     public async Task<IReadOnlyList<PlaylistTrackCandidate>> GetPlaylistTrackCandidatesAsync(

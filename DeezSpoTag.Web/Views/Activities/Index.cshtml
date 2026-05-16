@@ -6928,6 +6928,7 @@ function bindActivitiesTabSwitchRefresh() {
 	                void loadQueueFromServer({ force: true });
 	                startQueuePolling();
 	                scheduleRenderTasks({ immediate: true });
+                    globalThis.DeezSpoTagWatchlistHistory?.syncAutoRefresh?.();
 	                break;
 	            case '#media-operations-content':
 	                initMediaOperationsSection();
@@ -6938,11 +6939,14 @@ function bindActivitiesTabSwitchRefresh() {
             case '#history-content':
                 void globalThis.DeezSpoTagAutoTagStatus?.refresh?.({ loadCalendar: true, resetLiveFollow: true });
                 void globalThis.DeezSpoTagWatchlistHistory?.refresh?.();
+                globalThis.DeezSpoTagWatchlistHistory?.syncAutoRefresh?.();
                 break;
             case '#logs-content':
                 void loadLibraryLogs();
+                globalThis.DeezSpoTagWatchlistHistory?.syncAutoRefresh?.();
                 break;
             default:
+                globalThis.DeezSpoTagWatchlistHistory?.syncAutoRefresh?.();
                 break;
         }
     };

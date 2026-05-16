@@ -2,6 +2,7 @@
     const TABLE_BODY_ID = "watchlist-history-body";
     const DOM_CONTENT_LOADED = "DOMContentLoaded";
     const WATCHLIST_HISTORY_URL = "/api/history/watchlist?limit=50&offset=0";
+    const REFRESH_INTERVAL_MS = 10000;
     const EMPTY_HISTORY_HTML = "<tr><td colspan=\"6\">No watchlist history yet.</td></tr>";
     const ERROR_PREFIX = "Failed to load watchlist history: ";
     const TABLE_COLSPAN = "6";
@@ -9,6 +10,7 @@
     if (!tableBody) {
         return;
     }
+    let refreshTimerId = null;
 
     const escapeHtml = (value) => {
         if (value === null || value === undefined) {
@@ -39,6 +41,38 @@
         }
         return date.toLocaleString();
     };
+
+    function isHistoryTabActive() {
+        const historyPane = document.getElementById("history-content");
+        return historyPane?.classList.contains("show") && historyPane?.classList.contains("active");
+    }
+
+    function stopAutoRefresh() {
+        if (refreshTimerId !== null) {
+            clearInterval(refreshTimerId);
+            refreshTimerId = null;
+        }
+    }
+
+    function startAutoRefresh() {
+        if (refreshTimerId !== null) {
+            return;
+        }
+        refreshTimerId = setInterval(() => {
+            if (document.hidden || !isHistoryTabActive()) {
+                return;
+            }
+            void loadHistory();
+        }, REFRESH_INTERVAL_MS);
+    }
+
+    function syncAutoRefreshState() {
+        if (!document.hidden && isHistoryTabActive()) {
+            startAutoRefresh();
+            return;
+        }
+        stopAutoRefresh();
+    }
 
     async function loadHistory() {
         try {
@@ -76,8 +110,15 @@
     }
 
     globalThis.DeezSpoTagWatchlistHistory = {
-        refresh: () => loadHistory()
+        refresh: () => loadHistory(),
+        syncAutoRefresh: () => syncAutoRefreshState()
     };
 
-    document.addEventListener(DOM_CONTENT_LOADED, loadHistory);
+    document.addEventListener(DOM_CONTENT_LOADED, () => {
+        void loadHistory();
+        syncAutoRefreshState();
+    });
+    document.addEventListener("visibilitychange", syncAutoRefreshState);
+    document.addEventListener("shown.bs.tab", syncAutoRefreshState);
+    globalThis.addEventListener("beforeunload", stopAutoRefresh);
 })();
