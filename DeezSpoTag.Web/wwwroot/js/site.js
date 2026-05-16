@@ -11,9 +11,11 @@
     globalThis.__deezspotCsrfFetchShimInstalled = true;
     const originalFetch = globalThis.fetch.bind(globalThis);
     const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    const csrfRefreshEndpoint = '/api/security/csrf-token';
     const clientIdHeaderName = 'X-DeezSpoTag-ClientId';
     const clientIdStorageKey = 'deezspotag-client-id';
     const clientId = resolveClientId();
+    let csrfRefreshPromise = null;
     if (clientId) {
         globalThis.DeezSpoTagClientId = clientId;
     }
@@ -63,6 +65,21 @@
         return typeof token === 'string' ? token.trim() : '';
     }
 
+    function writeCsrfToken(token) {
+        const normalized = typeof token === 'string' ? token.trim() : '';
+        if (!normalized) {
+            return;
+        }
+
+        let tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
+        if (!tokenMeta) {
+            tokenMeta = document.createElement('meta');
+            tokenMeta.setAttribute('name', 'deezspotag-csrf-token');
+            document.head?.appendChild(tokenMeta);
+        }
+        tokenMeta.setAttribute('content', normalized);
+    }
+
     function resolveUrl(resource) {
         if (resource instanceof Request) {
             return resource.url;
@@ -91,7 +108,65 @@
         };
     }
 
-    globalThis.fetch = (resource, init) => {
+    function isAntiforgeryFailureResponse(response) {
+        if (!(response instanceof Response) || response.status !== 400) {
+            return false;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.toLowerCase().includes('application/json')) {
+            return false;
+        }
+
+        return true;
+    }
+
+    async function responseContainsAntiforgeryError(response) {
+        try {
+            const payload = await response.clone().json();
+            const errorText = String(payload?.error || payload?.message || '').toLowerCase();
+            return errorText.includes('anti-forgery') || errorText.includes('antiforgery');
+        } catch {
+            return false;
+        }
+    }
+
+    async function refreshCsrfToken() {
+        if (csrfRefreshPromise) {
+            return csrfRefreshPromise;
+        }
+
+        csrfRefreshPromise = (async () => {
+            const response = await originalFetch(csrfRefreshEndpoint, {
+                method: 'GET',
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            if (!response.ok) {
+                throw new Error(`Failed to refresh CSRF token (${response.status})`);
+            }
+
+            const payload = await response.json();
+            const token = typeof payload?.requestToken === 'string' ? payload.requestToken.trim() : '';
+            if (!token) {
+                throw new Error('CSRF token refresh endpoint returned no token.');
+            }
+
+            writeCsrfToken(token);
+            return token;
+        })();
+
+        try {
+            return await csrfRefreshPromise;
+        } finally {
+            csrfRefreshPromise = null;
+        }
+    }
+
+    globalThis.fetch = async (resource, init) => {
         const method = (init?.method || (resource instanceof Request ? resource.method : 'GET') || 'GET').toUpperCase();
         const requestInit = buildFetchInit(resource, init);
         const sameOriginUrl = resolveSameOriginUrl(resource);
@@ -115,7 +190,27 @@
             requestInit.headers = headers;
         }
 
-        return originalFetch(resource, requestInit);
+        const response = await originalFetch(resource, requestInit);
+        const shouldRetryForCsrf =
+            sameOriginUrl
+            && unsafeMethods.has(method)
+            && !(resource instanceof Request)
+            && sameOriginUrl.pathname !== csrfRefreshEndpoint
+            && isAntiforgeryFailureResponse(response)
+            && await responseContainsAntiforgeryError(response);
+
+        if (!shouldRetryForCsrf) {
+            return response;
+        }
+
+        try {
+            const refreshedToken = await refreshCsrfToken();
+            const retryHeaders = new Headers(requestInit.headers || {});
+            retryHeaders.set('X-CSRF-TOKEN', refreshedToken);
+            return await originalFetch(resource, { ...requestInit, headers: retryHeaders });
+        } catch {
+            return response;
+        }
     };
 })();
 
