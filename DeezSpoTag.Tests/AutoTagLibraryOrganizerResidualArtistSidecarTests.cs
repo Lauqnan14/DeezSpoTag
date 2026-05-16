@@ -35,9 +35,13 @@ public sealed class AutoTagLibraryOrganizerResidualArtistSidecarTests : IDisposa
         settings.Tags.SingleAlbumArtist = true;
         settingsService.SaveSettings(settings);
 
-        var shazamDiscovery = new ShazamDiscoveryService(new HttpClient(), NullLogger<ShazamDiscoveryService>.Instance);
+        var environment = new StubWebHostEnvironment(_tempRoot);
+        var shazamDiscovery = new ShazamDiscoveryService(
+            new HttpClient(),
+            NullLogger<ShazamDiscoveryService>.Instance,
+            environment);
         var shazamRecognition = new ShazamRecognitionService(
-            new StubWebHostEnvironment(_tempRoot),
+            environment,
             shazamDiscovery,
             NullLogger<ShazamRecognitionService>.Instance);
 
