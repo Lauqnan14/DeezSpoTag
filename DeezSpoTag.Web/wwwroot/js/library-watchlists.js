@@ -18,6 +18,31 @@ function escapeHtml(text) {
         .replaceAll("'", '&#39;');
 }
 
+function emitActivitiesLiveUpdate(source, context = {}) {
+    if (typeof globalThis.dispatchEvent !== 'function') {
+        return;
+    }
+
+    globalThis.dispatchEvent(new CustomEvent('deezspotag:activities-live-update', {
+        detail: {
+            source: String(source || 'watchlist'),
+            ...context
+        }
+    }));
+}
+
+function normalizeWatchlistHistoryEntries(historyRaw) {
+    if (Array.isArray(historyRaw)) {
+        return historyRaw;
+    }
+
+    if (historyRaw && Array.isArray(historyRaw.entries)) {
+        return historyRaw.entries;
+    }
+
+    return [];
+}
+
 async function loadWatchlist() {
     const container = document.getElementById('watchlistContainer');
     if (!container) {
@@ -36,7 +61,7 @@ async function loadWatchlist() {
         }
         const [items, historyRaw] = await Promise.all([
             fetchJson('/api/library/watchlist'),
-            fetchJson('/api/history/watchlist?limit=500&offset=0').catch(() => [])
+            fetchJson('/api/history/watchlist?limit=500&offset=0').catch(() => ({ entries: [] }))
         ]);
 
         if (!Array.isArray(items) || items.length === 0) {
@@ -46,12 +71,11 @@ async function loadWatchlist() {
 
         // Build detected-count map from history
         const detectedByName = {};
-        if (Array.isArray(historyRaw)) {
-            for (const h of historyRaw) {
-                if (h.watchType === 'artist' && h.artistName) {
-                    const key = h.artistName.toLowerCase();
-                    detectedByName[key] = (detectedByName[key] || 0) + 1;
-                }
+        const historyEntries = normalizeWatchlistHistoryEntries(historyRaw);
+        for (const h of historyEntries) {
+            if (h.watchType === 'artist' && h.artistName) {
+                const key = h.artistName.toLowerCase();
+                detectedByName[key] = (detectedByName[key] || 0) + 1;
             }
         }
 
@@ -130,6 +154,7 @@ async function loadWatchlist() {
                 }
                 try {
                     await fetchJson(`/api/library/watchlist/${artistId}`, { method: 'DELETE' });
+                    emitActivitiesLiveUpdate('watchlist', { action: 'remove', artistId });
                     if (card) {
                         card.remove();
                     }
@@ -2202,6 +2227,7 @@ async function initWatchlistToggle() {
                 if (currentlyWatching) {
                     await fetchJson(`/api/library/watchlist/${artistIdValue}`, { method: 'DELETE' });
                     showToast('Artist removed from watchlist.');
+                    emitActivitiesLiveUpdate('watchlist', { action: 'remove', artistId: artistIdValue });
                 } else {
                     const artistName = await resolveWatchlistArtistName(artistIdValue);
                     await fetchJson('/api/library/watchlist', {
@@ -2210,6 +2236,7 @@ async function initWatchlistToggle() {
                         body: JSON.stringify({ artistId: Number(artistIdValue), artistName })
                     });
                     showToast('Artist added to watchlist.');
+                    emitActivitiesLiveUpdate('watchlist', { action: 'add', artistId: artistIdValue, artistName });
                 }
                 applyWatchlistToggleState(button, nextWatching, false);
             } catch (error) {
