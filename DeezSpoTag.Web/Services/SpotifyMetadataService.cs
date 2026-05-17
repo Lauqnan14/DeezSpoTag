@@ -225,7 +225,7 @@ public sealed class SpotifyMetadataService
         {
             _logger.LogInformation(
                 "Spotify track metadata fallback used: source=librespot trackId={TrackId}.",
-                parsed.Id);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(parsed.Id));
         }
 
         return new SpotifyUrlMetadata(
@@ -459,7 +459,7 @@ public sealed class SpotifyMetadataService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify artist page fallback fetch failed for {ArtistId}.", artistId);
+                _logger.LogDebug(ex, "Spotify artist page fallback fetch failed for {ArtistId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistId));
             }
             return null;
         }
@@ -903,7 +903,7 @@ public sealed class SpotifyMetadataService
                 ex,
                 "Spotify playlist metadata lookup timed out after {TimeoutMs}ms for {PlaylistId}; returning lightweight metadata.",
                 (int)metadataTimeout.TotalMilliseconds,
-                playlistId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
         }
 
         var lightweightMetadata = BuildLightweightPlaylistMetadata(playlistId);

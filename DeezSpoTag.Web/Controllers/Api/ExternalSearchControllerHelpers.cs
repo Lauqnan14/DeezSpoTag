@@ -101,7 +101,7 @@ internal static class ExternalSearchControllerHelpers
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, "External search failed for query {Query}", query);
+            logger.LogWarning(ex, "External search failed for query {Query}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             return new ObjectResult(new { available = false, error = failureMessage }) { StatusCode = 500 };
         }
     }

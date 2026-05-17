@@ -47,7 +47,7 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Shazam track lookup failed for trackId {TrackId}.", trackId);
+            _logger.LogWarning(ex, "Shazam track lookup failed for trackId {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
             return Ok(new { available = false });
         }
     }
@@ -79,7 +79,7 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
+            _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
             return Ok(new
             {
                 available = false,
@@ -115,7 +115,7 @@ public sealed class ShazamDiscoveryApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Shazam search failed for query '{Query}'.", query);
+            _logger.LogWarning(ex, "Shazam search failed for query '{Query}'.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             return Ok(new
             {
                 available = false,

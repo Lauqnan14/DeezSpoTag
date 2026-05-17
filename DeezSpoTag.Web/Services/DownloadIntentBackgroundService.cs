@@ -31,7 +31,7 @@ public sealed class DownloadIntentBackgroundService : BackgroundService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Background intent enqueue failed for {SourceUrl}", intent.SourceUrl);
+                _logger.LogWarning(ex, "Background intent enqueue failed for {SourceUrl}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.SourceUrl));
             }
         }
     }

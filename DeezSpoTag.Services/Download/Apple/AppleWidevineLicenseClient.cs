@@ -156,7 +156,7 @@ public sealed class AppleWidevineLicenseClient
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Apple license: Using station key server endpoint for adamId={AdamId}", adamId);            }
+                _logger.LogDebug("Apple license: Using station key server endpoint for adamId={AdamId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId));            }
             return licenseEndpointOverride;
         }
 
@@ -164,7 +164,7 @@ public sealed class AppleWidevineLicenseClient
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Apple license: Using radio station endpoint for adamId={AdamId}", adamId);            }
+                _logger.LogDebug("Apple license: Using radio station endpoint for adamId={AdamId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId));            }
             return RadioLicenseEndpoint;
         }
 
@@ -236,7 +236,7 @@ public sealed class AppleWidevineLicenseClient
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Apple license acquired successfully for adamId={AdamId}", adamId);        }
+            _logger.LogDebug("Apple license acquired successfully for adamId={AdamId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId));        }
         return AppleWidevineCdm.ExtractContentKey(licenseBytes, licenseRequestMsg);
     }
 

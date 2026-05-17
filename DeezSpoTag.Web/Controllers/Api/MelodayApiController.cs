@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/meloday")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class MelodayApiController : ControllerBase
 {
     private readonly MelodayService _melodayService;

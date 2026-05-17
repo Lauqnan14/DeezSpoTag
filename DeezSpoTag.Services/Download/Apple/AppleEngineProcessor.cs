@@ -278,7 +278,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         if (!await PersistOutputMetadataIfPresentAsync(next.QueueUuid, queueContext.Payload, outputPath, itemToken))
         {
             const string verificationError = "Downloaded file missing or empty after transfer.";
-            _logger.LogWarning("Apple download verification failed for {QueueUuid}: {OutputPath}", next.QueueUuid, outputPath);
+            _logger.LogWarning("Apple download verification failed for {QueueUuid}: {OutputPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(next.QueueUuid), DeezSpoTag.Core.Security.LogSanitizer.OneLine(outputPath));
             await HandleDownloadFailureAsync(next, queueContext.Payload, verificationError, stoppingToken, itemToken);
             return queueContext;
         }
@@ -916,9 +916,9 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         _logger.LogWarning(
             "Apple final audio decode validation failed for {QueueUuid}: {OutputPath}. {Reason}",
-            next.QueueUuid,
-            outputPath,
-            validation.Message);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(next.QueueUuid),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(outputPath),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(validation.Message));
         await HandleDownloadFailureAsync(next, payload, validation.Message, stoppingToken, itemToken);
         return false;
     }

@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/shazam")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class ShazamRecognitionApiController : ControllerBase
 {
     private const long MaxUploadBytes = 128 * 1024 * 1024;

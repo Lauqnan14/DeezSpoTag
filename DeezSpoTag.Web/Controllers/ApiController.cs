@@ -719,8 +719,8 @@ namespace DeezSpoTag.Web.Controllers
                     {
                         _logger.LogDebug(
                             "Serving fallback tracklist cache. type={TracklistType} id={TracklistId} status={StatusCode}",
-                            tracklistTypeKey,
-                            normalizedId,
+                            DeezSpoTag.Core.Security.LogSanitizer.OneLine(tracklistTypeKey),
+                            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedId),
                             ResolveStatusCode(liveResponse));
                     }
                     return fallbackResponse;

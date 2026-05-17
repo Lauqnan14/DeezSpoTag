@@ -14,6 +14,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/analysis")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryAnalysisApiController : ControllerBase
 {
     private sealed record AudioVariantResolutionResult(
@@ -413,7 +414,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 "Local track playback request mismatch for track {TrackId}: audioFileId={AudioFileId}, path='{RequestedPath}' did not match a known variant.",
                 trackId,
                 audioFileId,
-                filePath);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(filePath));
             return NotFound();
         }
 

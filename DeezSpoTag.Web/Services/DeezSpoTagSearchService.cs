@@ -1056,7 +1056,7 @@ public sealed class DeezSpoTagSearchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Deezer search failed for type {Type}", type);
+            _logger.LogWarning(ex, "Deezer search failed for type {Type}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(type));
             return null;
         }
     }

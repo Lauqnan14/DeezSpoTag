@@ -18,6 +18,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/deezer/stream")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class DeezerStreamApiController : ControllerBase
 {
     private const string Mp3128Format = "MP3_128";
@@ -349,13 +350,13 @@ public class DeezerStreamApiController : ControllerBase
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer playback context not found for track {TrackId}", deezerId);
+                _logger.LogDebug(ex, "Deezer playback context not found for track {TrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(deezerId));
             }
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to resolve Deezer playback context for track {TrackId}", deezerId);
+            _logger.LogWarning(ex, "Failed to resolve Deezer playback context for track {TrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(deezerId));
             return null;
         }
 

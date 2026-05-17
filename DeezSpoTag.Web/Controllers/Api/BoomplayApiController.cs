@@ -1152,7 +1152,7 @@ public sealed class BoomplayApiController : ControllerBase
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed hydrating Deezer metadata for track {DeezerId}", deezerId);
+                _logger.LogDebug(ex, "Failed hydrating Deezer metadata for track {DeezerId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(deezerId));
             }
         }
 

@@ -483,7 +483,10 @@ public partial class Program
         {
             options.Level = CompressionLevel.Fastest;
         });
-        services.AddControllersWithViews();
+        services.AddControllersWithViews(options =>
+        {
+            options.Filters.Add(new Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryTokenAttribute());
+        });
         services.AddRazorPages();
         services.AddHttpClient();
         services.AddAntiforgery(options =>

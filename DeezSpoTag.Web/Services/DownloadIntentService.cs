@@ -643,12 +643,12 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(
-                    ex,
-                    "Apple ID hydration for lyrics failed: title='{Title}' artist='{Artist}' isrc='{Isrc}'",
-                    intent.Title ?? string.Empty,
-                    intent.Artist ?? string.Empty,
-                    intent.Isrc ?? string.Empty);
+                    _logger.LogDebug(
+                        ex,
+                        "Apple ID hydration for lyrics failed: title='{Title}' artist='{Artist}' isrc='{Isrc}'",
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Isrc));
             }
         }
     }
@@ -1435,7 +1435,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple catalog video lookup failed for {AppleId}", appleId);
+                _logger.LogDebug(ex, "Apple catalog video lookup failed for {AppleId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             }
             return appleId;
         }
@@ -1456,7 +1456,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple catalog song lookup failed for {AppleId}", appleId);
+                _logger.LogDebug(ex, "Apple catalog song lookup failed for {AppleId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             }
             return null;
         }
@@ -1464,7 +1464,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple catalog song payload could not be parsed for {AppleId}", appleId);
+                _logger.LogDebug(ex, "Apple catalog song payload could not be parsed for {AppleId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             }
             return null;
         }
@@ -2085,10 +2085,10 @@ public sealed class DownloadIntentService
             {
                 _logger.LogInformation(
                     "Download intent blocked by global blocklist ({Field}={Value}): {Title} - {Artist}",
-                    blocklistMatch.Field,
-                    blocklistMatch.Value,
-                    intent.Title,
-                    intent.Artist);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(blocklistMatch.Field),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(blocklistMatch.Value),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist));
             }
             return new DownloadIntentResult
             {
@@ -2725,7 +2725,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple MV metadata lookup failed for {Url}", sourceUrl);
+                _logger.LogDebug(ex, "Apple MV metadata lookup failed for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceUrl));
             }
             return null;
         }
@@ -2947,7 +2947,7 @@ public sealed class DownloadIntentService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Deezer ISRC URL resolve failed for {Isrc}", intent.Isrc);
+                    _logger.LogDebug(ex, "Deezer ISRC URL resolve failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Isrc));
                 }
             }
 
@@ -3011,7 +3011,11 @@ public sealed class DownloadIntentService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Apple catalog search failed for {Title} - {Artist}", intent.Title, intent.Artist);
+            _logger.LogWarning(
+                ex,
+                "Apple catalog search failed for {Title} - {Artist}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist));
             return null;
         }
     }
@@ -3167,7 +3171,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer ID ISRC lookup failed for {Isrc}", isrc);
+                _logger.LogDebug(ex, "Deezer ID ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             }
 
             return null;
@@ -3199,8 +3203,8 @@ public sealed class DownloadIntentService
                 _logger.LogDebug(
                     ex,
                     "Deezer ID metadata lookup failed for '{Title}' by '{Artist}'",
-                    intent.Title ?? string.Empty,
-                    intent.Artist ?? string.Empty);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist));
             }
 
             return null;
@@ -3415,7 +3419,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify metadata lookup failed for intent url {Url}", sourceUrl);
+                _logger.LogDebug(ex, "Spotify metadata lookup failed for intent url {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceUrl));
             }
         }
     }
@@ -3623,7 +3627,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple metadata lookup failed for intent url {Url}", sourceUrl);
+                _logger.LogDebug(ex, "Apple metadata lookup failed for intent url {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceUrl));
             }
         }
     }
@@ -3801,7 +3805,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", stationId);
+                _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stationId));
             }
         }
     }
@@ -3880,7 +3884,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Boomplay metadata lookup failed for intent url {Url}", sourceUrl);
+                _logger.LogDebug(ex, "Boomplay metadata lookup failed for intent url {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceUrl));
             }
         }
     }
@@ -3925,7 +3929,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer metadata lookup failed for intent url {Url}", sourceUrl);
+                _logger.LogDebug(ex, "Deezer metadata lookup failed for intent url {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceUrl));
             }
         }
     }

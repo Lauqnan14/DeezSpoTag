@@ -6,6 +6,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
 {
     private const string DefaultProfileUserId = "default";
@@ -232,7 +233,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         await _userAuthStore.SaveAsync(userId, state);
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Saved Spotify blob for account {AccountName}", name);
+            _logger.LogInformation("Saved Spotify blob for account {AccountName}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(name));
         }
         await UpdatePlatformSpotifyAccountAsync(name, blobPath, blobPath, state.ActiveAccount);
 
@@ -631,7 +632,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Saving Spotify web player cookies for account {Account}. Target blob: {BlobPath}",
-                    effectiveAccountName, targetBlobPath);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(effectiveAccountName), DeezSpoTag.Core.Security.LogSanitizer.OneLine(targetBlobPath));
             }
             var lastKnownGood = BackupExistingBlob(targetBlobPath, effectiveAccountName);
             var blobResult = await PersistWebPlayerBlobAsync(
@@ -783,38 +784,38 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         switch (ex)
         {
             case TaskCanceledException timeoutException when !cancellationToken.IsCancellationRequested:
-                _logger.LogWarning(timeoutException, "Spotify credentials generation timed out for account {AccountName}.", accountName);
+                _logger.LogWarning(timeoutException, "Spotify credentials generation timed out for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = StatusCode(StatusCodes.Status504GatewayTimeout, "Spotify credentials generation timed out.");
                 return true;
             case UnauthorizedAccessException unauthorizedAccessException:
-                _logger.LogWarning(unauthorizedAccessException, "Spotify credentials generation could not access data path for account {AccountName}.", accountName);
+                _logger.LogWarning(unauthorizedAccessException, "Spotify credentials generation could not access data path for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify data directory is not writable.");
                 return true;
             case FileNotFoundException fileNotFoundException:
-                _logger.LogWarning(fileNotFoundException, "Spotify credentials generation dependencies are missing for account {AccountName}.", accountName);
+                _logger.LogWarning(fileNotFoundException, "Spotify credentials generation dependencies are missing for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = StatusCode(StatusCodes.Status500InternalServerError, fileNotFoundException.Message);
                 return true;
             case IOException ioException:
-                _logger.LogWarning(ioException, "Spotify credentials generation failed due to I/O error for account {AccountName}.", accountName);
+                _logger.LogWarning(ioException, "Spotify credentials generation failed due to I/O error for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed due to an I/O error.");
                 return true;
             case InvalidOperationException invalidOperationException:
-                _logger.LogWarning(invalidOperationException, "Spotify credentials generation failed for account {AccountName}.", accountName);
+                _logger.LogWarning(invalidOperationException, "Spotify credentials generation failed for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = BadRequest(invalidOperationException.Message);
                 return true;
             case HttpRequestException httpRequestException:
-                _logger.LogWarning(httpRequestException, "Spotify credentials generation request failed for account {AccountName}.", accountName);
+                _logger.LogWarning(httpRequestException, "Spotify credentials generation request failed for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = StatusCode(StatusCodes.Status502BadGateway, "Spotify credentials generation request failed.");
                 return true;
             case System.Text.Json.JsonException jsonException:
-                _logger.LogWarning(jsonException, "Spotify credentials generation returned malformed JSON for account {AccountName}.", accountName);
+                _logger.LogWarning(jsonException, "Spotify credentials generation returned malformed JSON for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = BadRequest("Spotify credentials generation returned malformed output.");
                 return true;
             case OperationCanceledException:
                 mappedResult = null!;
                 return false;
             default:
-                _logger.LogError(ex, "Spotify credentials generation failed unexpectedly for account {AccountName}.", accountName);
+                _logger.LogError(ex, "Spotify credentials generation failed unexpectedly for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 var detail = string.IsNullOrWhiteSpace(ex.Message)
                     ? ex.GetType().Name
                     : $"{ex.GetType().Name}: {ex.Message}";

@@ -90,7 +90,7 @@ public sealed class TidalDownloadService
             }
             catch (Exception ex) when (ex is HttpRequestException || ex is InvalidOperationException)
             {
-                _logger.LogWarning(ex, "Tidal URL download failed. Url={Url}", tidalUrl);
+                _logger.LogWarning(ex, "Tidal URL download failed. Url={Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(tidalUrl));
             }
         }
 
@@ -121,7 +121,11 @@ public sealed class TidalDownloadService
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Tidal metadata resolution failed for {Title} - {Artist}", trackTitle, artistName);
+            _logger.LogWarning(
+                ex,
+                "Tidal metadata resolution failed for {Title} - {Artist}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             return null;
         }
     }
@@ -306,7 +310,7 @@ public sealed class TidalDownloadService
         var match = allTracks.FirstOrDefault(track => string.Equals(track.Isrc, isrc, StringComparison.OrdinalIgnoreCase));
         if (match == null && _logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("No ISRC match for {Isrc}, falling back to duration/title matching", isrc);
+            _logger.LogDebug("No ISRC match for {Isrc}, falling back to duration/title matching", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
         }
 
         return match;
@@ -385,7 +389,7 @@ public sealed class TidalDownloadService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Tidal OAuth search failed for query {Query}.", query);
+                    _logger.LogDebug(ex, "Tidal OAuth search failed for query {Query}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
                 }
             },
             cancellationToken);
@@ -416,7 +420,7 @@ public sealed class TidalDownloadService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Tidal public API search failed for query {Query}.", query);
+                    _logger.LogDebug(ex, "Tidal public API search failed for query {Query}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
                 }
             },
             cancellationToken);

@@ -63,7 +63,7 @@ internal static class AtlTagHelper
         {
             if (logger?.IsEnabled(LogLevel.Debug) == true)
             {
-                logger?.LogDebug(ex, "ATL failed to capture chapters for {Path}", path);
+                logger?.LogDebug(ex, "ATL failed to capture chapters for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             }
             return null;
         }
@@ -103,7 +103,7 @@ internal static class AtlTagHelper
         {
             if (logger?.IsEnabled(LogLevel.Debug) == true)
             {
-                logger?.LogDebug(ex, "ATL failed to restore chapters for {Path}", path);
+                logger?.LogDebug(ex, "ATL failed to restore chapters for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             }
         }
     }

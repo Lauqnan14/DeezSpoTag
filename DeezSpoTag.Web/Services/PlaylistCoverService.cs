@@ -48,13 +48,13 @@ public sealed class PlaylistCoverService
 
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var sourceUri) || !IsAllowedScheme(sourceUri))
         {
-            _logger.LogWarning("Rejected playlist cover URL with invalid scheme: {Url}", url);
+            _logger.LogWarning("Rejected playlist cover URL with invalid scheme: {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));
             return null;
         }
 
         if (!await IsAllowedRemoteUriAsync(sourceUri, cancellationToken))
         {
-            _logger.LogWarning("Rejected playlist cover URL by remote host policy: {Url}", sourceUri);
+            _logger.LogWarning("Rejected playlist cover URL by remote host policy: {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceUri.ToString()));
             return null;
         }
 
@@ -216,14 +216,14 @@ public sealed class PlaylistCoverService
             using var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to download playlist cover Url (Status): {Url}", url);
+                _logger.LogWarning("Failed to download playlist cover Url (Status): {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));
                 return null;
             }
 
             var finalUri = response.RequestMessage?.RequestUri;
             if (finalUri != null && !await IsAllowedRemoteUriAsync(finalUri, cancellationToken))
             {
-                _logger.LogWarning("Rejected redirected playlist cover URL by remote host policy: {Url}", finalUri);
+                _logger.LogWarning("Rejected redirected playlist cover URL by remote host policy: {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(finalUri.ToString()));
                 return null;
             }
 
@@ -284,7 +284,7 @@ public sealed class PlaylistCoverService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to query playlist cover HEAD metadata for {Url}.", url);
+                _logger.LogDebug(ex, "Failed to query playlist cover HEAD metadata for {Url}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));
             }
             return null;
         }
@@ -558,7 +558,7 @@ public sealed class PlaylistCoverService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to resolve host for playlist cover URL validation: {Host}", host);
+            _logger.LogWarning(ex, "Failed to resolve host for playlist cover URL validation: {Host}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(host));
             return false;
         }
 

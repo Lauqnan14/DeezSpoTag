@@ -1397,7 +1397,7 @@ public sealed class SpotifyArtistService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Spotify artist librespot fallback enrichment failed for {ArtistId}", spotifyId);
+                    _logger.LogDebug(ex, "Spotify artist librespot fallback enrichment failed for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
                 }
             }
         });
@@ -1436,7 +1436,7 @@ public sealed class SpotifyArtistService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Spotify artist top-track ISRC enrichment failed for {ArtistId}", spotifyId);
+                    _logger.LogDebug(ex, "Spotify artist top-track ISRC enrichment failed for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
                 }
             }
         });
@@ -1733,7 +1733,7 @@ public sealed class SpotifyArtistService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(fallbackEx, "Shazam fallback after Pathfinder failure also failed for {ArtistName}.", artistName);
+                _logger.LogDebug(fallbackEx, "Shazam fallback after Pathfinder failure also failed for {ArtistName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             }
         }
 
@@ -1764,7 +1764,7 @@ public sealed class SpotifyArtistService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed reading local Spotify match signals for artist {ArtistId}.", localArtistId.Value);
+                _logger.LogDebug(ex, "Failed reading local Spotify match signals for artist {ArtistId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(localArtistId.Value.ToString()));
             }
 
             return Array.Empty<ArtistSpotifyMatchSignalDto>();
@@ -1816,7 +1816,7 @@ public sealed class SpotifyArtistService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed collecting local Spotify match evidence candidates for {ArtistName}.", artistName);
+                _logger.LogDebug(ex, "Failed collecting local Spotify match evidence candidates for {ArtistName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             }
         }
 
@@ -2575,7 +2575,7 @@ public sealed class SpotifyArtistService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Shazam recognition failed while resolving Spotify artist id for {ArtistName}.", artistName);
+                _logger.LogDebug(ex, "Shazam recognition failed while resolving Spotify artist id for {ArtistName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             }
             return null;
         }

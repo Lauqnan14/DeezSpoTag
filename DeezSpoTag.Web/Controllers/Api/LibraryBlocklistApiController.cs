@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/blocklist")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class LibraryBlocklistApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;

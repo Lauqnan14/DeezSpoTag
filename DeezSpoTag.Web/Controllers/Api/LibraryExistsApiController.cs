@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/library/exists")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryExistsApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;

@@ -69,7 +69,7 @@ public sealed class AppleWebPlaybackClient
         {
             _logger.LogDebug(
                 "Apple webPlayback request starting: adamId={AdamId}, authToken={AuthTokenLength}chars, mediaUserToken={MediaUserTokenLength}chars",
-                adamId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId),
                 authorizationToken.Length,
                 mediaUserToken.Length);        }
 
@@ -108,7 +108,7 @@ public sealed class AppleWebPlaybackClient
             response.StatusCode,
             attempt + 1,
             maxAttempts,
-            errorBody.Length > 500 ? errorBody[..500] + "..." : errorBody);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(errorBody.Length > 500 ? errorBody[..500] + "..." : errorBody));
         LogPlaybackAuthFailure(response.StatusCode);
     }
 
@@ -219,9 +219,9 @@ public sealed class AppleWebPlaybackClient
 
             _logger.LogWarning(
                 "Apple webPlayback returned error for adamId={AdamId}: failureType={FailureType}, message={Message}",
-                adamId,
-                failureCode,
-                customerMessage);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(failureCode),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(customerMessage));
 
             if (failureCode == "3077")
             {
@@ -236,8 +236,8 @@ public sealed class AppleWebPlaybackClient
         {
             _logger.LogWarning(
                 "Apple webPlayback response missing songList for adamId={AdamId}. Response: {Response}",
-                adamId,
-                responseBody.Length > 500 ? responseBody[..500] + "..." : responseBody);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(responseBody.Length > 500 ? responseBody[..500] + "..." : responseBody));
             return false;
         }
 
@@ -245,7 +245,7 @@ public sealed class AppleWebPlaybackClient
         {
             _logger.LogWarning(
                 "Apple webPlayback returned empty songList for adamId={AdamId}. This may indicate an invalid/expired mediaUserToken or regional restriction.",
-                adamId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId));
             return false;
         }
 

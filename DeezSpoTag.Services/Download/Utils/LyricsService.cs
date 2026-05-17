@@ -1578,7 +1578,7 @@ public class LyricsService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify lyrics request failed for {Url}", url);            }
+                _logger.LogDebug(ex, "Spotify lyrics request failed for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));            }
             return null;
         }
     }
@@ -2180,7 +2180,7 @@ public class LyricsService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Lyrics have error message, skipping LRC creation: {Error}", lyrics.ErrorMessage);            }
+                _logger.LogDebug("Lyrics have error message, skipping LRC creation: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(lyrics.ErrorMessage));            }
             return false;
         }
 
@@ -2373,7 +2373,7 @@ public class LyricsService
             var lyrics = await ResolveLyricsAsync(track, settings, cancellationToken);
             if (lyrics == null)
             {
-                _logger.LogWarning("Lyrics resolution returned null for track {TrackId}", track.Id);
+            _logger.LogWarning("Lyrics resolution returned null for track {TrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id));
                 return;
             }
 
@@ -2410,7 +2410,7 @@ public class LyricsService
 
         if (lyrics == null || !string.IsNullOrEmpty(lyrics.ErrorMessage))
         {
-            _logger.LogWarning("Failed to fetch lyrics for track {TrackId}: {Error}", track.Id, lyrics?.ErrorMessage ?? "Unknown error");
+            _logger.LogWarning("Failed to fetch lyrics for track {TrackId}: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id), DeezSpoTag.Core.Security.LogSanitizer.OneLine(lyrics?.ErrorMessage ?? "Unknown error"));
             return;
         }
 
@@ -2430,7 +2430,7 @@ public class LyricsService
         if (!saveState.SavedLyrics)
         {
             _logger.LogWarning("No lyrics saved for track {TrackId} - SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}, HasSynced: {HasSynced}, HasUnsynced: {HasUnsynced}",
-                track.Id, settings.SaveLyrics, settings.SyncedLyrics, lyrics.IsSynced(), !string.IsNullOrEmpty(lyrics.UnsyncedLyrics));
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id), settings.SaveLyrics, settings.SyncedLyrics, lyrics.IsSynced(), !string.IsNullOrEmpty(lyrics.UnsyncedLyrics));
         }
     }
 

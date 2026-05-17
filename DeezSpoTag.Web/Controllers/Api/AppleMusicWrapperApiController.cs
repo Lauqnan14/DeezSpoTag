@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/apple-music/wrapper-ref")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class AppleMusicWrapperApiController : ControllerBase
 {
     private readonly AppleMusicWrapperService _wrapperService;

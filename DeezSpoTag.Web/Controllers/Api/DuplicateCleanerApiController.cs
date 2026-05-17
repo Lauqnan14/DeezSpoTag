@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/library/duplicates")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class DuplicateCleanerApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;

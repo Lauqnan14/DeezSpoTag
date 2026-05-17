@@ -13,6 +13,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/login-fix")]
 [LocalApiAuthorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LoginFixApiController : ControllerBase
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);

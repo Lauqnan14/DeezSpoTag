@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/qobuz")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class QobuzResolveController : ControllerBase
 {
     private readonly IQobuzMetadataService _metadataService;

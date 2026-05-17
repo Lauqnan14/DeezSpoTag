@@ -53,7 +53,7 @@ LIMIT 1;";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Artist cache lookup failed (source={Source}, id={Id})", source, sourceId);
+            _logger.LogWarning(ex, "Artist cache lookup failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
             return null;
         }
     }
@@ -87,7 +87,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Artist cache upsert failed (source={Source}, id={Id})", source, sourceId);
+            _logger.LogWarning(ex, "Artist cache upsert failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
         }
     }
 
@@ -116,7 +116,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Artist cache clear failed (source={Source})", source);
+            _logger.LogWarning(ex, "Artist cache clear failed (source={Source})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source));
         }
     }
 
@@ -155,7 +155,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Artist cache clear failed (source={Source}, id={Id})", source, sourceId);
+            _logger.LogWarning(ex, "Artist cache clear failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
         }
     }
 
@@ -241,7 +241,7 @@ GROUP BY source;";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Artist genre upsert failed (source={Source}, id={Id})", source, sourceId);
+            _logger.LogWarning(ex, "Artist genre upsert failed (source={Source}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(source), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
         }
     }
 
@@ -270,7 +270,7 @@ ORDER BY genre;";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to read local genres for artist {ArtistName}", artistName);
+            _logger.LogWarning(ex, "Failed to read local genres for artist {ArtistName}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             return new List<string>();
         }
     }

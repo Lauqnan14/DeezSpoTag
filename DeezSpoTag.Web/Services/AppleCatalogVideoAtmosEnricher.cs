@@ -195,7 +195,11 @@ public sealed class AppleCatalogVideoAtmosEnricher
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "{FailureLogMessage}. AppleId={AppleId}", failureLogMessage, id);
+                    _logger.LogDebug(
+                        ex,
+                        "{FailureLogMessage}. AppleId={AppleId}",
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(failureLogMessage),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(id));
                 }
             }
             finally

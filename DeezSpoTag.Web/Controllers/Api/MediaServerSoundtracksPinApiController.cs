@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/media-server/soundtracks/pin")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class MediaServerSoundtracksPinApiController : ControllerBase
 {
     private const int LibraryPinMinLength = 4;

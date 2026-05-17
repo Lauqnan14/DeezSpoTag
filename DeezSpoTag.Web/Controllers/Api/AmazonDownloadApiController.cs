@@ -14,6 +14,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/amazon/download")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class AmazonDownloadApiController : ControllerBase
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);

@@ -20,6 +20,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/account")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class AccountApiController : ControllerBase
 {
     private const string MustChangePasswordClaim = "must_change_password";

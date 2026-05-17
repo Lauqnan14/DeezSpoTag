@@ -1776,7 +1776,7 @@ public class AutoTagLibraryOrganizer
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("AutoTag organizer moved {Reason} folder {SourceDir} -> {DestinationDir}", reason, sourceDir, targetDirectory);
+                _logger.LogInformation("AutoTag organizer moved {Reason} folder {SourceDir} -> {DestinationDir}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(reason), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceDir), DeezSpoTag.Core.Security.LogSanitizer.OneLine(targetDirectory));
             }
             moveContext.Log?.Invoke($"organizer moved {reason} folder: {sourceDir} -> {targetDirectory}");
             moveContext.Report?.Entries.Add($"move-{reason.Replace(' ', '-')}-folder: {sourceDir} -> {targetDirectory}");
@@ -2528,7 +2528,7 @@ public class AutoTagLibraryOrganizer
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("AutoTag organizer moved sidecar {SourcePath} -> {DestinationPath}", sourcePath, target);
+                _logger.LogInformation("AutoTag organizer moved sidecar {SourcePath} -> {DestinationPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourcePath), DeezSpoTag.Core.Security.LogSanitizer.OneLine(target));
             }
             context.Log?.Invoke($"organizer moved sidecar: {sourcePath} -> {target}");
             context.Report?.Entries.Add($"move-sidecar: {sourcePath} -> {target}");
@@ -3008,13 +3008,13 @@ public class AutoTagLibraryOrganizer
                 Directory.Delete(current);
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    _logger.LogInformation("AutoTag organizer deleted empty folder {SourceDir}", current);
+                    _logger.LogInformation("AutoTag organizer deleted empty folder {SourceDir}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(current));
                 }
                 log?.Invoke($"organizer deleted empty folder: {current}");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "AutoTag organizer failed deleting empty folder {SourceDir}", current);
+                _logger.LogWarning(ex, "AutoTag organizer failed deleting empty folder {SourceDir}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(current));
                 log?.Invoke($"organizer failed deleting empty folder: {current} ({ex.Message})");
                 break;
             }
@@ -3132,7 +3132,12 @@ public class AutoTagLibraryOrganizer
         var logLine = string.IsNullOrWhiteSpace(destinationPath)
             ? $"organizer failed to {action}: {sourcePath} ({ex.Message})"
             : $"organizer failed to {action}: {sourcePath} -> {destinationPath} ({ex.Message})";
-        _logger.LogWarning(ex, "AutoTag organizer failed to {Action} {SourcePath} -> {DestinationPath}", action, sourcePath, destinationPath);
+        _logger.LogWarning(
+            ex,
+            "AutoTag organizer failed to {Action} {SourcePath} -> {DestinationPath}",
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(action),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourcePath),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(destinationPath));
         log?.Invoke(logLine);
         report?.Entries.Add(logLine);
     }

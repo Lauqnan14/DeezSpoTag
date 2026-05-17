@@ -1387,7 +1387,7 @@ public sealed partial class MediaServerSoundtrackService
                 return FilterCachedTvShowEpisodes(cached, normalizedSeasonId, episodeLimit);
             }
 
-            _logger.LogWarning(ex, "Failed loading media server TV show soundtrack episodes for {ShowId}.", normalizedShowId);
+            _logger.LogWarning(ex, "Failed loading media server TV show soundtrack episodes for {ShowId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedShowId));
             return new MediaServerTvShowEpisodesResponseDto
             {
                 ServerType = NormalizeServerType(target.ServerType),
@@ -2353,7 +2353,7 @@ public sealed partial class MediaServerSoundtrackService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed resolving soundtrack for {Title}", item.Title);
+                _logger.LogDebug(ex, "Failed resolving soundtrack for {Title}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(item.Title));
             }
             return defaultMatch;
         }
@@ -2426,7 +2426,7 @@ public sealed partial class MediaServerSoundtrackService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify soundtrack candidate search failed for {Title}", itemTitle);
+                _logger.LogDebug(ex, "Spotify soundtrack candidate search failed for {Title}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(itemTitle));
             }
             return null;
         }
@@ -2729,7 +2729,7 @@ public sealed partial class MediaServerSoundtrackService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "MusicBrainz soundtrack candidate search failed for {Title}", itemTitle);
+                _logger.LogDebug(ex, "MusicBrainz soundtrack candidate search failed for {Title}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(itemTitle));
             }
             return null;
         }

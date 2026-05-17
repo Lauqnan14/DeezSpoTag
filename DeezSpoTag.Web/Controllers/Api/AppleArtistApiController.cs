@@ -275,11 +275,11 @@ public sealed class AppleArtistApiController : ControllerBase
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "Apple artist video Atmos enrichment timed out for {ArtistId}", artistId);
+            _logger.LogWarning(ex, "Apple artist video Atmos enrichment timed out for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistId));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Apple artist video Atmos enrichment failed for {ArtistId}", artistId);
+            _logger.LogWarning(ex, "Apple artist video Atmos enrichment failed for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistId));
         }
     }
 

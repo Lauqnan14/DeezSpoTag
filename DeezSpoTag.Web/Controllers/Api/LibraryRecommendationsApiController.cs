@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/recommendations")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryRecommendationsApiController : ControllerBase
 {
     private const string MissingLibraryIdMessage = "libraryId is required.";

@@ -735,7 +735,7 @@ public sealed class BoomplayMetadataService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Boomplay returned not-found page for song {SongId}", songId);
+                _logger.LogDebug("Boomplay returned not-found page for song {SongId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(songId));
             }
 
             return new SongAttemptOutcome(

@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/analysis/settings")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class VibeAnalysisSettingsApiController : ControllerBase
 {
     private readonly VibeAnalysisSettingsStore _store;

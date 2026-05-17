@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/quicktag/tag-sources")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class QuickTagTagSourcesApiController : ControllerBase
 {
     private readonly QuickTagTagSourceService _tagSources;

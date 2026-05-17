@@ -6,6 +6,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/spotify/tracklist")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class SpotifyPlaylistTracklistApiController : ControllerBase
 {
     private const string PlaylistType = "playlist";

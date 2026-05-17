@@ -66,7 +66,7 @@ LIMIT 1;", connection);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Failed to deserialize song-link cache payload for key {CacheKey}", cacheKey);
+                _logger.LogWarning(ex, "Failed to deserialize song-link cache payload for key {CacheKey}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(cacheKey));
                 await DeleteByKeyAsync(connection, cacheKey, cancellationToken);
                 return null;
             }
@@ -82,7 +82,7 @@ LIMIT 1;", connection);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Song-link cache lookup failed for key {CacheKey}", cacheKey);
+            _logger.LogWarning(ex, "Song-link cache lookup failed for key {CacheKey}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(cacheKey));
             return null;
         }
     }
@@ -146,7 +146,7 @@ ON CONFLICT(cache_key) DO UPDATE SET
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Song-link cache upsert failed for key {CacheKey}", cacheKey);
+            _logger.LogWarning(ex, "Song-link cache upsert failed for key {CacheKey}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(cacheKey));
         }
     }
 

@@ -196,7 +196,7 @@ public sealed class SongLinkResolver
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("song.link is deactivated. Using native link regeneration for {Url}", normalizedUrl);
+            _logger.LogDebug("song.link is deactivated. Using native link regeneration for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
         }
 
         var source = TryParseSource(normalizedUrl);
@@ -209,7 +209,7 @@ public sealed class SongLinkResolver
                 result = await ResolveExternalSongLinkAsync(normalizedUrl, source.TrackId, cancellationToken);
                 if (result != null && _logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", normalizedUrl);
+                    _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
                 }
             }
         }
@@ -283,7 +283,10 @@ public sealed class SongLinkResolver
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Resolved {Platform} link via resolve proxy for {Url}", source.Platform, normalizedUrl);
+            _logger.LogDebug(
+                "Resolved {Platform} link via resolve proxy for {Url}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(source.Platform),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
         }
 
         return result;
@@ -471,7 +474,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "External song.link lookup failed for {Url}", normalizedUrl);
+                _logger.LogDebug(ex, "External song.link lookup failed for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
             }
 
             return null;
@@ -553,7 +556,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer track metadata lookup failed for {TrackId}", deezerTrackId);
+                _logger.LogDebug(ex, "Deezer track metadata lookup failed for {TrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(deezerTrackId));
             }
 
             return TrackMetadata.Empty;
@@ -606,7 +609,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", isrc);
+                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             }
 
             return null;
@@ -773,7 +776,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer metadata search failed for query \"{Query}\"", query);
+                _logger.LogDebug(ex, "Deezer metadata search failed for query \"{Query}\"", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             }
 
             return new List<DeezerSearchCandidate>();
@@ -860,7 +863,11 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify ID regeneration failed for {Title} - {Artist}", metadata.Title, metadata.Artist);
+                _logger.LogDebug(
+                    ex,
+                    "Spotify ID regeneration failed for {Title} - {Artist}",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadata.Title),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadata.Artist));
             }
 
             return null;
@@ -893,7 +900,11 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Tidal URL regeneration failed for {Title} - {Artist}", metadata.Title, metadata.Artist);
+                _logger.LogDebug(
+                    ex,
+                    "Tidal URL regeneration failed for {Title} - {Artist}",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadata.Title),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadata.Artist));
             }
 
             return null;
@@ -1038,7 +1049,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Qobuz resolver lookup failed for {Isrc}", isrc);
+                _logger.LogDebug(ex, "Qobuz resolver lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             }
 
             return null;
@@ -1071,7 +1082,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Qobuz metadata ISRC lookup failed for {Isrc}", isrc);
+                _logger.LogDebug(ex, "Qobuz metadata ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             }
 
             return null;
@@ -1107,7 +1118,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Qobuz public ISRC lookup failed for {Isrc}", isrc);
+                _logger.LogDebug(ex, "Qobuz public ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             }
 
             return null;
@@ -1434,7 +1445,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Persistent link cache lookup failed for key {CacheKey}", cacheKey);
+                _logger.LogDebug(ex, "Persistent link cache lookup failed for key {CacheKey}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(cacheKey));
             }
 
             return null;
@@ -1461,7 +1472,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Persistent link cache upsert failed for key {CacheKey}", cacheKey);
+                _logger.LogDebug(ex, "Persistent link cache upsert failed for key {CacheKey}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(cacheKey));
             }
         }
     }
@@ -1676,7 +1687,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple lookup metadata resolution failed for {AppleTrackId}", appleTrackId);
+                _logger.LogDebug(ex, "Apple lookup metadata resolution failed for {AppleTrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleTrackId));
             }
 
             return TrackMetadata.Empty;
@@ -1729,7 +1740,7 @@ public sealed class SongLinkResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple page metadata resolution failed for {Url}", appleUrl);
+                _logger.LogDebug(ex, "Apple page metadata resolution failed for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleUrl));
             }
 
             return TrackMetadata.Empty;

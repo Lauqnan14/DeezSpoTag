@@ -13,6 +13,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/spotify/home-feed")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class SpotifyHomeFeedApiController : ControllerBase
 {
     private const string ArtistType = "artist";
@@ -210,14 +211,14 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetHomeFeed([FromQuery] string? timeZone, [FromQuery] bool debug, [FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> GetHomeFeed([FromQuery] string? timeZone, [FromQuery] bool debug, CancellationToken cancellationToken = default)
     {
         try
         {
             _logger.LogInformation("Spotify home feed requested. tz=TimeZone");
             var cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
-            if (!refresh && settings.SpotifyHomeFeedCacheEnabled && !debug &&
+            if (settings.SpotifyHomeFeedCacheEnabled &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
             {
                 return Ok(new
@@ -263,13 +264,13 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     }
 
     [HttpGet("sections")]
-    public async Task<IActionResult> GetHomeFeedSections([FromQuery] string? timeZone, [FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> GetHomeFeedSections([FromQuery] string? timeZone, CancellationToken cancellationToken = default)
     {
         try
         {
             var cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
-            if (!refresh && settings.SpotifyHomeFeedCacheEnabled &&
+            if (settings.SpotifyHomeFeedCacheEnabled &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
             {
                 var mapped = await MapHomeSectionsAsync(cachedFeed.Sections, cancellationToken);

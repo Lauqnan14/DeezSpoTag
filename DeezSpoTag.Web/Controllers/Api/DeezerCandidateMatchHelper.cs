@@ -115,7 +115,7 @@ internal static class DeezerCandidateMatchHelper
         {
             if (logger.IsEnabled(LogLevel.Debug))
             {
-                logger.LogDebug(ex, CandidateValidationFailureTemplate, options.FailureLogMessage, deezerId);
+                logger.LogDebug(ex, CandidateValidationFailureTemplate, DeezSpoTag.Core.Security.LogSanitizer.OneLine(options.FailureLogMessage), DeezSpoTag.Core.Security.LogSanitizer.OneLine(deezerId));
             }
             return false;
         }

@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Authorize]
 [Route("api/mixes")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class MoodMixesApiController : ControllerBase
 {
     private readonly MoodMixService _service;
@@ -34,6 +35,7 @@ public sealed class MoodMixesApiController : ControllerBase
 [ApiController]
 [Authorize]
 [Route("api/mixes/mood")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class MoodMixPreferencesApiController : ControllerBase
 {
     private readonly MoodMixPreferencesStore _preferencesStore;

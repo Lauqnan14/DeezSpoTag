@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/watchlist")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryWatchlistApiController : ControllerBase
 {
     private const string SpotifySource = "spotify";

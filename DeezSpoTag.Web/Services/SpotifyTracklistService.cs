@@ -303,7 +303,7 @@ public sealed class SpotifyTracklistService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to prepare Spotify playlist matching for token {Token}.", token);
+            _logger.LogWarning(ex, "Failed to prepare Spotify playlist matching for token {Token}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(token));
             _matchStore.Start(token, pendingCount: 0, signature: null);
         }
     }

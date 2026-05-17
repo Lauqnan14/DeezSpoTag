@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/settings/artist-cache")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryArtistCacheApiController : ControllerBase
 {
     private readonly ArtistPageCacheRepository _artistPageCache;

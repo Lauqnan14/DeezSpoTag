@@ -166,7 +166,7 @@ public sealed class SpotifySearchService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify Pathfinder typed search failed. type={Type}", type);
+                _logger.LogDebug(ex, "Spotify Pathfinder typed search failed. type={Type}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(type));
             }
             return null;
         }

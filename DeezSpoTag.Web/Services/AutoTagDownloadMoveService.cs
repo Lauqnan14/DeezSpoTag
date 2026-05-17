@@ -628,7 +628,7 @@ public sealed class AutoTagDownloadMoveService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to read audio tags for post-enrichment routing from {Path}", audioFilePath);
+                _logger.LogDebug(ex, "Failed to read audio tags for post-enrichment routing from {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(audioFilePath));
             }
             return (Array.Empty<string>(), null);
         }
@@ -1066,7 +1066,7 @@ public sealed class AutoTagDownloadMoveService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             summary.FailedCount++;
-            _logger.LogWarning(ex, "Auto-move destination file failed for {Path}", filePath);
+            _logger.LogWarning(ex, "Auto-move destination file failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(filePath));
         }
     }
 
@@ -1109,7 +1109,7 @@ public sealed class AutoTagDownloadMoveService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             summary.FailedCount += Math.Max(1, candidateCount);
-            _logger.LogWarning(ex, "Auto-move destination root failed for {Root}", root);
+            _logger.LogWarning(ex, "Auto-move destination root failed for {Root}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(root));
         }
     }
 
@@ -1153,11 +1153,11 @@ public sealed class AutoTagDownloadMoveService
             summary.FailedCount++;
             if (isRootItem)
             {
-                _logger.LogWarning(ex, "Auto-move conversion failed for destination root item {Path}", movedPath);
+                _logger.LogWarning(ex, "Auto-move conversion failed for destination root item {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(movedPath));
             }
             else
             {
-                _logger.LogWarning(ex, "Auto-move conversion failed for destination file {Path}", movedPath);
+                _logger.LogWarning(ex, "Auto-move conversion failed for destination file {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(movedPath));
             }
 
             return movedPath;
@@ -1202,7 +1202,7 @@ public sealed class AutoTagDownloadMoveService
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 summary.FailedCount++;
-                _logger.LogWarning(ex, "Auto-move residual processing failed for {Path}", file);
+                _logger.LogWarning(ex, "Auto-move residual processing failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(file));
                 continue;
             }
 
@@ -1579,9 +1579,9 @@ public sealed class AutoTagDownloadMoveService
             {
                 _logger.LogWarning(
                     "Converted tag clone warning for {Source} -> {Output}: {Reason}",
-                    sourceIo,
-                    convertedIo,
-                    cloneResult.Error ?? "unknown");
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceIo),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(convertedIo),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(cloneResult.Error ?? "unknown"));
                 TryDeleteFileSilently(convertedIo);
                 return movedPath;
             }
@@ -1590,8 +1590,8 @@ public sealed class AutoTagDownloadMoveService
             {
                 _logger.LogWarning(
                     "Converted tag verification failed for {Source} -> {Output}; keeping source file as final output.",
-                    sourceIo,
-                    convertedIo);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceIo),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(convertedIo));
                 TryDeleteFileSilently(convertedIo);
                 return movedPath;
             }
@@ -1601,13 +1601,16 @@ public sealed class AutoTagDownloadMoveService
             var convertedDisplay = DownloadPathResolver.NormalizeDisplayPath(convertedIo);
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Destination conversion completed: {Input} -> {Output}", movedPath, convertedDisplay);
+                _logger.LogInformation(
+                    "Destination conversion completed: {Input} -> {Output}",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(movedPath),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(convertedDisplay));
             }
             return convertedDisplay;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Destination conversion failed for {Path}", movedPath);
+            _logger.LogWarning(ex, "Destination conversion failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(movedPath));
             return movedPath;
         }
     }
@@ -1727,7 +1730,7 @@ public sealed class AutoTagDownloadMoveService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to delete temporary converted file {Path}", path);
+                _logger.LogDebug(ex, "Failed to delete temporary converted file {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             }
         }
     }
@@ -1744,8 +1747,8 @@ public sealed class AutoTagDownloadMoveService
         {
             _logger.LogInformation(
                 "Destination conversion skipped for {Path}: {Reason}",
-                movedPath,
-                conversion.Error);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(movedPath),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(conversion.Error));
         }
 
         convertedIo = string.Empty;
@@ -1768,7 +1771,7 @@ public sealed class AutoTagDownloadMoveService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to delete source after destination conversion: {Path}", sourceIo);
+            _logger.LogWarning(ex, "Failed to delete source after destination conversion: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceIo));
         }
     }
 

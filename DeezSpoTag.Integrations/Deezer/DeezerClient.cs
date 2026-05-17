@@ -165,7 +165,11 @@ public sealed class DeezerClient : IDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Failed to get {EntityName} {EntityId}", entityName, entityId);
+            _logger.LogError(
+                ex,
+                "Failed to get {EntityName} {EntityId}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(entityName),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(entityId));
             return null;
         }
     }

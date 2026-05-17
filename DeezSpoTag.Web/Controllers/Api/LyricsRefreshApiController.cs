@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/library/lyrics-refresh")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class LyricsRefreshApiController : ControllerBase
 {
     private readonly LyricsRefreshQueueService _queueService;

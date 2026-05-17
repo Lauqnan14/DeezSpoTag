@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/autotag/defaults")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class AutoTagDefaultsApiController : ControllerBase
 {
     private readonly AutoTagDefaultsStore _store;

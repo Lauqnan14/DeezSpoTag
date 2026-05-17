@@ -9,6 +9,7 @@ using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers
 {
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
     public class TracklistController : Controller
     {
         private const string DeezerSource = "deezer";

@@ -65,7 +65,7 @@ public sealed class DeezerLinkMappingService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Song.link mapping failed for url {Url}", normalizedUrl);
+                _logger.LogDebug(ex, "Song.link mapping failed for url {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
             }
         }
 

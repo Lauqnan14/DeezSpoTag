@@ -111,7 +111,7 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Qobuz ISRC lookup failed for {Isrc}", isrc);
+            _logger.LogWarning(ex, "Qobuz ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             return null;
         }
     }
@@ -136,7 +136,7 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Qobuz track search failed for query {Query}", query);
+            _logger.LogWarning(ex, "Qobuz track search failed for query {Query}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             return new List<QobuzTrack>();
         }
     }
@@ -152,7 +152,7 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Qobuz autosuggest failed for query {Query} store {Store}", query, store);
+            _logger.LogWarning(ex, "Qobuz autosuggest failed for query {Query} store {Store}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query), DeezSpoTag.Core.Security.LogSanitizer.OneLine(store));
             return new List<QobuzTrack>();
         }
     }

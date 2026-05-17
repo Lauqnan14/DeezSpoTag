@@ -45,8 +45,7 @@ public sealed class AppleExternalToolRunner
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = toolPath,
-            WorkingDirectory = Directory.Exists(outputDir) ? outputDir! : Environment.CurrentDirectory,
+            FileName = EnsureSafeExecutablePath(toolPath),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -99,8 +98,7 @@ public sealed class AppleExternalToolRunner
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = toolPath,
-            WorkingDirectory = Directory.Exists(outputDir) ? outputDir! : Environment.CurrentDirectory,
+            FileName = EnsureSafeExecutablePath(toolPath),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -231,7 +229,7 @@ public sealed class AppleExternalToolRunner
         {
             _logger.LogWarning(
                 "ffmpeg executable not found; Apple decode validation failed for {MediaPath}.",
-                mediaPath);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(mediaPath));
             return AudioDecodeValidationResult.Fail("Audio validation failed: ffmpeg executable not found.");
         }
 
@@ -243,8 +241,8 @@ public sealed class AppleExternalToolRunner
         var reason = BuildValidationFailureMessage(ffmpegResult.Output);
         _logger.LogWarning(
             "Apple audio decode validation failed for {MediaPath}: {Reason}",
-            mediaPath,
-            reason);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(mediaPath),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(reason));
         return AudioDecodeValidationResult.Fail(reason);
     }
 
@@ -340,7 +338,7 @@ public sealed class AppleExternalToolRunner
         {
             var startInfo = new ProcessStartInfo
             {
-                FileName = resolvedToolPath,
+                FileName = EnsureSafeExecutablePath(resolvedToolPath),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -523,6 +521,22 @@ public sealed class AppleExternalToolRunner
     private static bool IsExecutableFile(string? path)
     {
         return !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+    }
+
+    private static string EnsureSafeExecutablePath(string executablePath)
+    {
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            throw new ArgumentException("Executable path is required.", nameof(executablePath));
+        }
+
+        var fullPath = Path.GetFullPath(executablePath);
+        if (!Path.IsPathRooted(fullPath) || !File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("Executable path is invalid or missing.", fullPath);
+        }
+
+        return fullPath;
     }
 
     private sealed record ToolRunResult(bool Success, string Output, bool ToolFound);

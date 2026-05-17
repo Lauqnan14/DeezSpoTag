@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/scan")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryScanApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;

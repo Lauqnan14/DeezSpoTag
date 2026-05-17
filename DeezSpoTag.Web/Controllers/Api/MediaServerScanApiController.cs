@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/media-server")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class MediaServerScanApiController : ControllerBase
 {
     private readonly PlatformAuthService _authService;

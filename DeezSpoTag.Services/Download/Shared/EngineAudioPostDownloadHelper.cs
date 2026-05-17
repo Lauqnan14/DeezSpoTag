@@ -1037,7 +1037,7 @@ public static partial class EngineAudioPostDownloadHelper
         {
             if (request.Logger.IsEnabled(LogLevel.Debug))
             {
-                request.Logger.LogDebug(ex, "{Engine} failed lyrics hydration for {Path}", request.Engine, request.OutputPath);
+                request.Logger.LogDebug(ex, "{Engine} failed lyrics hydration for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.Engine), DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.OutputPath));
             }
         }
     }

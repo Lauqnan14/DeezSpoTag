@@ -58,23 +58,31 @@ public sealed class FfmpegConversionService
 
         if (options.WarnLossyToLossless)
         {
-            _logger.LogWarning("Lossy to lossless conversion requested for {Input}", inputPath);
+            _logger.LogWarning("Lossy to lossless conversion requested for {Input}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(inputPath));
         }
 
         return false;
     }
 
-    private static ProcessStartInfo BuildProcessStartInfo(string ffmpegPath, string arguments)
+    private static ProcessStartInfo BuildProcessStartInfo(string ffmpegPath, IReadOnlyList<string> arguments)
     {
-        return new ProcessStartInfo
+        ValidateExecutablePath(ffmpegPath, nameof(ffmpegPath));
+
+        var startInfo = new ProcessStartInfo
         {
             FileName = ffmpegPath,
-            Arguments = arguments,
             RedirectStandardError = true,
             RedirectStandardOutput = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        return startInfo;
     }
 
     private static string NormalizeFormat(string? convertTo)
@@ -211,9 +219,9 @@ public sealed class FfmpegConversionService
         {
             _logger.LogInformation(
                 "FFmpeg conversion started: {Input} -> {Output} ({Format})",
-                context.InputPath,
-                context.OutputPath,
-                context.Format);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.InputPath),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.OutputPath),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.Format));
         }
 
         using var process = Process.Start(startInfo);
@@ -230,15 +238,15 @@ public sealed class FfmpegConversionService
             DeleteOutputIfExists(context.OutputPath);
             _logger.LogWarning(
                 "FFmpeg conversion failed: {Input} -> {Output}. Error: {Error}",
-                context.InputPath,
-                context.OutputPath,
-                stderr);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.InputPath),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.OutputPath),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderr));
             return ConversionResult.Failed(stderr);
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("FFmpeg conversion completed: {Output}", context.OutputPath);
+            _logger.LogInformation("FFmpeg conversion completed: {Output}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.OutputPath));
         }
 
         return ConversionResult.ConvertedTo(context.OutputPath);
@@ -278,12 +286,12 @@ public sealed class FfmpegConversionService
         }
     }
 
-    private static string BuildArguments(string inputPath, string outputPath, string format, string bitrate, string? extraArgs)
+    private static IReadOnlyList<string> BuildArguments(string inputPath, string outputPath, string format, string bitrate, string? extraArgs)
     {
         var args = new List<string>
         {
             "-y",
-            "-i", Quote(inputPath),
+            "-i", inputPath,
             "-map", "0:a",
             "-map_metadata", "0"
         };
@@ -392,11 +400,14 @@ public sealed class FfmpegConversionService
 
         if (!string.IsNullOrWhiteSpace(extraArgs))
         {
-            args.Add(extraArgs.Trim());
+            foreach (var token in SplitExtraArguments(extraArgs))
+            {
+                args.Add(token);
+            }
         }
 
-        args.Add(Quote(outputPath));
-        return string.Join(" ", args);
+        args.Add(outputPath);
+        return args;
     }
 
     private static string GetInputFormat(string inputPath)
@@ -444,14 +455,46 @@ public sealed class FfmpegConversionService
             or "alac";
     }
 
-    private static string Quote(string value) => $"\"{value}\"";
+    private static IEnumerable<string> SplitExtraArguments(string extraArgs)
+    {
+        if (string.IsNullOrWhiteSpace(extraArgs))
+        {
+            yield break;
+        }
+
+        if (extraArgs.IndexOfAny(['\r', '\n', ';', '|', '&', '`']) >= 0)
+        {
+            throw new InvalidOperationException("Extra ffmpeg arguments contain unsafe control characters.");
+        }
+
+        var tokens = extraArgs
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var token in tokens)
+        {
+            yield return token;
+        }
+    }
+
+    private static void ValidateExecutablePath(string path, string paramName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("Executable path is required.", paramName);
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        if (!Path.IsPathRooted(fullPath) || !File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("Executable path is invalid or missing.", fullPath);
+        }
+    }
 
     private sealed record ConversionExecutionContext(
         string InputPath,
         string OutputPath,
         string Format,
         string FfmpegPath,
-        string Arguments);
+        IReadOnlyList<string> Arguments);
 
     private sealed record ConversionSetup(ConversionExecutionContext? Context, ConversionResult? Result)
     {

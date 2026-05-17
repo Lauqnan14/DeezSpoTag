@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/media-server/soundtracks")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class MediaServerSoundtracksApiController : ControllerBase
 {
     private const char UrlPathSeparator = '/';

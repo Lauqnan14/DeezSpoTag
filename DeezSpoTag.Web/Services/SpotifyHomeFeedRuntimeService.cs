@@ -27,8 +27,13 @@ public sealed class SpotifyHomeFeedRuntimeService
         bool refresh,
         CancellationToken cancellationToken)
     {
+        if (refresh)
+        {
+            SpotifyHomeFeedApiController.ClearRuntimeAndPersistedCaches();
+        }
+
         var controller = CreateController();
-        var result = await controller.GetHomeFeedSections(timeZone, refresh, cancellationToken);
+        var result = await controller.GetHomeFeedSections(timeZone, cancellationToken);
         return ExtractSections(result);
     }
 

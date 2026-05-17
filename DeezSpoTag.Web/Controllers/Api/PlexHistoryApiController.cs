@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/plex/history")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class PlexHistoryApiController : ControllerBase
 {
     private readonly PlexHistoryImportService _importService;

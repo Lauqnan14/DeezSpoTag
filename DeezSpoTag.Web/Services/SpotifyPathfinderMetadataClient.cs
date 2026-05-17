@@ -322,6 +322,13 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return null;
         }
+
+        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        if (context is null)
+        {
+            return null;
+        }
+
         string type = parsed.Type;
         if (type == ShowType || type == EpisodeType)
         {
@@ -329,11 +336,7 @@ public sealed class SpotifyPathfinderMetadataClient
                 ? await FetchEpisodeAsync(parsed.Id, cancellationToken)
                 : await FetchShowAsync(parsed.Id, cancellationToken);
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
-        if (context is null)
-        {
-            return null;
-        }
+
         return parsed.Type switch
         {
             TrackType => await FetchTrackAsync(context, parsed.Id, cancellationToken),
@@ -526,13 +529,13 @@ public sealed class SpotifyPathfinderMetadataClient
         string? blobPath = await TryResolveActiveLibrespotBlobPathAsync();
         if (string.IsNullOrWhiteSpace(blobPath))
         {
-            _logger.LogWarning("Spotify burst metadata unavailable: missing librespot blob. type={Type} id={Id}", metadataType, spotifyId);
+            _logger.LogWarning("Spotify burst metadata unavailable: missing librespot blob. type={Type} id={Id}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadataType), DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
             return null;
         }
         SpotifyBlobService.SpotifyLibrespotPodcastResult result = await _blobService.GetLibrespotPodcastMetadataAsync(blobPath, metadataType, spotifyId, cancellationToken);
         if (string.IsNullOrWhiteSpace(result.PayloadJson))
         {
-            _logger.LogWarning("Spotify burst metadata unavailable. type={Type} id={Id} error={Error}", metadataType, spotifyId, result.Error ?? "unknown_error");
+            _logger.LogWarning("Spotify burst metadata unavailable. type={Type} id={Id} error={Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadataType), DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId), DeezSpoTag.Core.Security.LogSanitizer.OneLine(result.Error ?? "unknown_error"));
             return null;
         }
         try
@@ -541,7 +544,7 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         catch (Exception ex) when (!(ex is OperationCanceledException))
         {
-            _logger.LogWarning(ex, "Spotify burst metadata parse failed. type={Type} id={Id}", metadataType, spotifyId);
+            _logger.LogWarning(ex, "Spotify burst metadata parse failed. type={Type} id={Id}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadataType), DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
             return null;
         }
     }

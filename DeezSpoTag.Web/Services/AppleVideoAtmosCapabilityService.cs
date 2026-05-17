@@ -145,7 +145,7 @@ public sealed class AppleVideoAtmosCapabilityService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple video Atmos probe worker failed for {AppleId}", appleId);
+                _logger.LogDebug(ex, "Apple video Atmos probe worker failed for {AppleId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             }
             return null;
         }
@@ -234,7 +234,7 @@ public sealed class AppleVideoAtmosCapabilityService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple video Atmos capability probe failed for {AppleId}", appleId);
+                _logger.LogDebug(ex, "Apple video Atmos capability probe failed for {AppleId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             }
             return null;
         }
@@ -291,7 +291,7 @@ public sealed class AppleVideoAtmosCapabilityService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple master manifest fetch failed for {PlaylistUrl}", playlistUrl);
+                _logger.LogDebug(ex, "Apple master manifest fetch failed for {PlaylistUrl}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistUrl));
             }
             return null;
         }
@@ -333,7 +333,7 @@ public sealed class AppleVideoAtmosCapabilityService
                     _logger.LogDebug(
                         "Apple master manifest fetch returned {StatusCode} for {PlaylistUrl} (authHeaders={AuthHeaders}).",
                         response.StatusCode,
-                        playlistUrl,
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistUrl),
                         includeAuthHeaders);
                 }
                 return null;

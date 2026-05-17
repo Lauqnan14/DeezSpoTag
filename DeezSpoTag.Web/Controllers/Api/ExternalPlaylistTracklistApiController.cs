@@ -111,8 +111,8 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             _logger.LogWarning(
                 ex,
                 "{Source} external playlist tracklist fetch failed for {Url}.",
-                normalizedSource,
-                playlistUrl);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedSource),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistUrl));
             return StatusCode(500, new { available = false, error = "Failed to load external playlist." });
         }
     }

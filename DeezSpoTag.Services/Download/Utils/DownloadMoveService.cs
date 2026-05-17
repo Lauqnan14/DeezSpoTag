@@ -63,7 +63,7 @@ public sealed class DownloadMoveService
             var stagingFull = DownloadPathResolver.IsSmbPath(stagingRootIo) ? stagingRootIo : Path.GetFullPath(stagingRootIo);
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Download move skipped because staging and destination match: {Path}", stagingFull);            }
+                _logger.LogDebug("Download move skipped because staging and destination match: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stagingFull));            }
             return null;
         }
 

@@ -651,9 +651,9 @@ public partial class AutoTagService
         AppendActivityLog(blockedJob.Id, "autotag blocked: invalid enhancement trigger");
         _logger.LogWarning(
             "AutoTag enhancement run blocked by trigger policy. intent={Intent}, trigger={Trigger}, path={Path}",
-            normalizedRunIntent,
-            normalizedTrigger,
-            normalizedPath);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedRunIntent),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedTrigger),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPath));
         return blockedJob;
     }
 
@@ -704,10 +704,10 @@ public partial class AutoTagService
         AppendActivityLog(blockedJob.Id, $"autotag blocked: {runIntentScopeError}");
         _logger.LogWarning(
             "AutoTag blocked by scope policy. intent={Intent}, trigger={Trigger}, path={Path}, reason={Reason}",
-            normalizedRunIntent,
-            normalizedTrigger,
-            normalizedPath,
-            runIntentScopeError);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedRunIntent),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedTrigger),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPath),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(runIntentScopeError));
         return blockedJob;
     }
 
@@ -5488,7 +5488,7 @@ public partial class AutoTagService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to load AutoTag run summary for {JobId}", jobId);
+                _logger.LogDebug(ex, "Failed to load AutoTag run summary for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
             return null;
         }
@@ -5540,7 +5540,7 @@ public partial class AutoTagService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to read archived AutoTag logs for {JobId}", jobId);
+                _logger.LogDebug(ex, "Failed to read archived AutoTag logs for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
             return new List<string>();
         }
@@ -5583,7 +5583,7 @@ public partial class AutoTagService
                 _logger.LogWarning(
                     "Skipped {SkippedMalformed} malformed AutoTag status entries for {JobId} while reading archive history.",
                     skippedMalformed,
-                    jobId);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
 
             return entries;
@@ -5592,7 +5592,7 @@ public partial class AutoTagService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to read archived AutoTag status history for {JobId}", jobId);
+                _logger.LogDebug(ex, "Failed to read archived AutoTag status history for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
             return new List<TaggingStatusSnapshot>();
         }
@@ -5621,7 +5621,7 @@ public partial class AutoTagService
             {
                 _logger.LogInformation(
                     "Recovered archived AutoTag logs for {JobId} from job snapshot ({Count} lines).",
-                    jobId,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId),
                     logs.Count);
             }
             return logs;
@@ -5630,7 +5630,7 @@ public partial class AutoTagService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to recover archived AutoTag logs for {JobId}", jobId);
+                _logger.LogDebug(ex, "Failed to recover archived AutoTag logs for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
             return new List<string>();
         }
@@ -5660,7 +5660,7 @@ public partial class AutoTagService
             {
                 _logger.LogInformation(
                     "Recovered archived AutoTag status history for {JobId} from job snapshot ({Count} entries).",
-                    jobId,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId),
                     statusHistory.Count);
             }
             return statusHistory;
@@ -5669,7 +5669,7 @@ public partial class AutoTagService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to recover archived AutoTag status history for {JobId}", jobId);
+                _logger.LogDebug(ex, "Failed to recover archived AutoTag status history for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
             return new List<TaggingStatusSnapshot>();
         }
@@ -5771,7 +5771,7 @@ public partial class AutoTagService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to read archived AutoTag tag diffs for {JobId}", jobId);
+                _logger.LogDebug(ex, "Failed to read archived AutoTag tag diffs for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
             return new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
         }
@@ -5796,7 +5796,7 @@ public partial class AutoTagService
             {
                 _logger.LogInformation(
                     "Recovered archived AutoTag tag diffs for {JobId} from job snapshot ({Count} entries).",
-                    jobId,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId),
                     repaired.Count);
             }
             return repaired;
@@ -5805,7 +5805,7 @@ public partial class AutoTagService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to recover archived AutoTag tag diffs for {JobId}", jobId);
+                _logger.LogDebug(ex, "Failed to recover archived AutoTag tag diffs for {JobId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(jobId));
             }
             return new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
         }

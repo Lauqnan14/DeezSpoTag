@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/platform-auth")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class PlatformAuthApiController : ControllerBase
 {
     private readonly PlatformAuthService _authService;

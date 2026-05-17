@@ -73,7 +73,7 @@ public sealed class AppleWrapperDecryptor
 
             if (process.ExitCode != 0)
             {
-                _logger.LogWarning("Apple wrapper decrypt failed: {Error}", stderr);
+                _logger.LogWarning("Apple wrapper decrypt failed: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderr));
                 return false;
             }
 
@@ -89,7 +89,7 @@ public sealed class AppleWrapperDecryptor
                 ex,
                 "Apple wrapper decrypt timed out after {Timeout} for adam id {AdamId}.",
                 DecryptTimeout,
-                adamId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId));
             return false;
         }
     }

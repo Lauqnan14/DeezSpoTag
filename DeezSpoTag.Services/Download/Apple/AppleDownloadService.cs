@@ -137,7 +137,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 _logger.LogInformation(
                     "Apple AAC-LC requested for {AppleId} - using WebPlayback API directly (matching GUI runv3 behavior).",
-                    appleId);            }
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));            }
             return await DownloadAacLcFromWebPlaybackAsync(request, appleId, cancellationToken);
         }
 
@@ -219,8 +219,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogWarning(
                 "Apple enhanced HLS unavailable for {AppleId} (requested {Profile}). Device wrapper not available - falling back to AAC-LC via WebPlayback.",
-                appleId,
-                request.PreferredProfile ?? "default");
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.PreferredProfile ?? "default"));
             return await DownloadAacLcFromWebPlaybackAsync(request, appleId, cancellationToken);
         }
 
@@ -231,7 +231,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
     {
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Apple manifest resolved for {AppleId}", appleId);
+            _logger.LogInformation("Apple manifest resolved for {AppleId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
         }
     }
 
@@ -239,7 +239,10 @@ public sealed class AppleDownloadService : IAppleDownloadService
     {
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Apple variant selected: {Uri} (AudioGroup: {AudioGroup})", variantUri, streamGroup);
+            _logger.LogInformation(
+                "Apple variant selected: {Uri} (AudioGroup: {AudioGroup})",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(variantUri),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(streamGroup));
         }
 
         if (request.ProgressCallback != null)
@@ -296,8 +299,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 _logger.LogInformation(
                     "Apple ID overridden from source URL query parameter: {OriginalId} -> {ResolvedId}",
-                    appleId,
-                    queryAppleId);            }
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(queryAppleId));            }
             return queryAppleId;
         }
 
@@ -354,8 +357,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 _logger.LogInformation(
                     "Apple ID resolved: {OriginalId} -> {ResolvedId}",
-                    currentAppleId,
-                    resolvedAppleId);            }
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(currentAppleId),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId));            }
         }
         else
         {
@@ -363,9 +366,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 _logger.LogInformation(
                     "Apple ID resolved via fallback storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                    storefront,
-                    currentAppleId,
-                    resolvedAppleId);            }
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(currentAppleId),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId));            }
         }
 
         return resolvedAppleId;
@@ -390,8 +393,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 var atmosGroupCount = BuildAtmosAudioGroupSet(masterManifest.Media).Count;
                 _logger.LogWarning(
                     "Apple variant selection failed for manifest {ManifestUrl}. profile={Profile}, variants={VariantCount}, audioEntries={AudioEntries}, atmosGroups={AtmosGroups}, atmosMax={AtmosMax}.",
-                    manifestUrl,
-                    request.PreferredProfile ?? string.Empty,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(manifestUrl),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.PreferredProfile ?? string.Empty),
                     masterManifest.Variants.Count,
                     masterManifest.Media.Count,
                     atmosGroupCount,
@@ -419,7 +422,10 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Attempting Apple wrapper decrypt for {AppleId} using playlist {PlaylistUrl}.", appleId, variant.Uri);        }
+            _logger.LogInformation(
+                "Attempting Apple wrapper decrypt for {AppleId} using playlist {PlaylistUrl}.",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(variant.Uri));        }
         var outputPath = BuildOutputPath(request, appleId);
         await ReportProgressAsync(request.ProgressCallback, 8);
         var success = await _wrapperDecryptor.TryDecryptAsync(
@@ -435,8 +441,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 _logger.LogWarning(
                     "Apple wrapper decrypt produced invalid audio for {AppleId}; continuing with internal decrypt pipeline. {Reason}",
-                    appleId,
-                    validation.Message);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(validation.Message));
                 TryDelete(outputPath);
                 return null;
             }
@@ -444,7 +450,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             await ReportProgressAsync(request.ProgressCallback, 98);
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Apple wrapper decrypt succeeded for {AppleId}.", appleId);            }
+                _logger.LogInformation("Apple wrapper decrypt succeeded for {AppleId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));            }
             return AppleDownloadResult.Ok(outputPath, variant.AudioGroup);
         }
 
@@ -452,13 +458,13 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogWarning(
                 "Apple wrapper decrypt failed for Atmos stream {AppleId}; falling back to internal decrypt pipeline.",
-                appleId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
         }
         else
         {
             _logger.LogWarning(
                 "Apple wrapper decrypt failed for {AppleId}; continuing with internal decrypt pipeline.",
-                appleId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
         }
 
         return null;
@@ -513,7 +519,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Apple station assets lookup failed for {StationId}", stationId);
+            _logger.LogWarning(ex, "Apple station assets lookup failed for {StationId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stationId));
             return AppleDownloadResult.Fail("Apple station assets request failed.");
         }
 
@@ -836,8 +842,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogInformation(
                 "Apple AAC-LC download starting: appleId={AppleId}, storefront={Storefront}, authToken={AuthLen}chars, mediaUserToken={MutLen}chars",
-                resolvedAppleId,
-                storefront,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront),
                 request.AuthorizationToken.Length,
                 request.MediaUserToken.Length);        }
 
@@ -849,14 +855,14 @@ public sealed class AppleDownloadService : IAppleDownloadService
         if (playback == null)
         {
             _logger.LogError("Apple AAC-LC download failed: webPlayback returned null for {AppleId} (resolved from {OriginalId}). Check logs above for specific error.",
-                resolvedAppleId, appleId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId), DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             return AppleDownloadResult.Fail("Apple web playback failed. Track may not be available through AAC-LC API (try ALAC/Atmos with device wrapper), or there may be regional restrictions. Check logs for details.");
         }
 
         if (string.IsNullOrWhiteSpace(playback.AssetUrl))
         {
             _logger.LogError("Apple AAC-LC download failed: webPlayback returned but AssetUrl is empty for {AppleId}. The track may not be available in AAC format or your account region.",
-                resolvedAppleId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId));
             return AppleDownloadResult.Fail("Apple web playback returned no AAC asset URL. Track may be unavailable in your region or AAC format not available.");
         }
 
@@ -864,7 +870,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogWarning(
                 "Apple AAC-LC playback returned preview asset for {AppleId}; refusing preview download.",
-                resolvedAppleId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId));
             return AppleDownloadResult.Fail("Apple playback returned a preview asset. Refusing to download previews.");
         }
 
@@ -895,13 +901,13 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 "mp4decrypt failed.",
                 null,
                 new WidevineDownloadFailureHandlers(
-                    message => _logger.LogError("Apple AAC-LC download failed: HLS download error: {Message}", message),
+                    message => _logger.LogError("Apple AAC-LC download failed: HLS download error: {Message}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(message)),
                     () => _logger.LogError("Apple AAC-LC download failed: Widevine key acquisition returned empty key."),
-                    outputPath => _logger.LogError("Apple AAC-LC download failed: mp4decrypt failed for {OutputPath}.", outputPath))),
+                    outputPath => _logger.LogError("Apple AAC-LC download failed: mp4decrypt failed for {OutputPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(outputPath)))),
             cancellationToken);
         if (result.Success && _logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Apple AAC-LC download complete: {OutputPath}", result.OutputPath);
+            _logger.LogInformation("Apple AAC-LC download complete: {OutputPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(result.OutputPath));
         }
 
         return result;
@@ -1209,9 +1215,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogInformation(
                 "Apple catalog ID resolved via ISRC for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                storefront,
-                currentResolvedAppleId,
-                resolvedId);        }
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(currentResolvedAppleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedId));        }
         return resolvedId;
     }
 
@@ -1244,9 +1250,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogInformation(
                 "Apple catalog ID resolved via ISRC (second pass) for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                storefront,
-                resolvedAppleId,
-                updatedResolvedId);        }
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(updatedResolvedId));        }
         return (isrcEnhanced, updatedResolvedId);
     }
 
@@ -1331,15 +1337,15 @@ public sealed class AppleDownloadService : IAppleDownloadService
             _logger.LogWarning(
                 ex,
                 "Apple device M3U8 probe timed out for {AppleId} via {Endpoint}.",
-                appleId,
-                hostAndPort);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(hostAndPort));
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple device M3U8 probe failed for {AppleId} via {Endpoint}.", appleId, hostAndPort);
+                _logger.LogDebug(ex, "Apple device M3U8 probe failed for {AppleId} via {Endpoint}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId), DeezSpoTag.Core.Security.LogSanitizer.OneLine(hostAndPort));
             }
             return null;
         }
@@ -1487,7 +1493,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
     {
         if (string.IsNullOrWhiteSpace(request.MediaUserToken))
         {
-            _logger.LogWarning("Apple Music video download skipped: MediaUserToken is missing for {AppleId}.", appleId);
+            _logger.LogWarning("Apple Music video download skipped: MediaUserToken is missing for {AppleId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             return AppleDownloadResult.Fail("Apple Music video download skipped: MediaUserToken is missing.");
         }
 
@@ -1496,13 +1502,13 @@ public sealed class AppleDownloadService : IAppleDownloadService
             _logger.LogWarning(
                 "Apple Music video download skipped: MediaUserToken appears invalid (length={Length}) for {AppleId}.",
                 request.MediaUserToken.Length,
-                appleId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             return AppleDownloadResult.Fail("Apple Music video download skipped: MediaUserToken appears invalid.");
         }
 
         if (!AppleExternalToolRunner.HasMp4Decrypt() || !AppleExternalToolRunner.HasMp4Box())
         {
-            _logger.LogWarning("Apple Music video download skipped: mp4decrypt/MP4Box not available for {AppleId}.", appleId);
+            _logger.LogWarning("Apple Music video download skipped: mp4decrypt/MP4Box not available for {AppleId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));
             return AppleDownloadResult.Fail("Apple Music video download skipped: mp4decrypt/MP4Box not available.");
         }
 
@@ -1519,10 +1525,10 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogInformation(
                 "Apple MV selection for {AppleId}: video={Resolution} audioGroup={AudioGroup} requestedAudio={RequestedAudio} candidates=[{Candidates}]",
-                appleId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
                 string.IsNullOrWhiteSpace(videoVariant.Resolution) ? UnknownValue : videoVariant.Resolution,
                 string.IsNullOrWhiteSpace(videoVariant.AudioGroup) ? UnknownValue : videoVariant.AudioGroup,
-                string.IsNullOrWhiteSpace(requestedAudioType) ? "auto" : requestedAudioType,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.IsNullOrWhiteSpace(requestedAudioType) ? "auto" : requestedAudioType),
                 string.Join(", ",
                     audioCandidates
                         .Select(candidate => candidate.GroupId)
@@ -1619,8 +1625,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 _logger.LogInformation(
                     "Apple MV audio fallback succeeded for {AppleId}: selected_group={GroupId} attempt={Attempt}",
-                    context.AppleId,
-                    candidate.GroupId,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.AppleId),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate.GroupId),
                     i + 1);
             }
             break;
@@ -1663,7 +1669,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         var videoKeyUri = ResolveVideoKeyUri(attemptContext.VideoDownload.KeyUri, audioDownload.KeyUri);
         if (string.IsNullOrWhiteSpace(videoKeyUri))
         {
-            _logger.LogWarning("Apple MV missing video decryption key URI for {AppleId}.", attemptContext.DownloadContext.AppleId);
+                _logger.LogWarning("Apple MV missing video decryption key URI for {AppleId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(attemptContext.DownloadContext.AppleId));
             return new VideoCandidateAttemptResult(false, attemptContext.ResolvedVideoKeyUri, false, false, false);
         }
 
@@ -1738,9 +1744,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 "Apple MV audio candidate attempt {Attempt}/{Total} for {AppleId}: group={GroupId} name={Name}",
                 attempt,
                 total,
-                appleId,
-                string.IsNullOrWhiteSpace(candidate.GroupId) ? UnknownValue : candidate.GroupId,
-                string.IsNullOrWhiteSpace(candidate.Name) ? UnknownValue : candidate.Name);        }
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.IsNullOrWhiteSpace(candidate.GroupId) ? UnknownValue : candidate.GroupId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.IsNullOrWhiteSpace(candidate.Name) ? UnknownValue : candidate.Name));        }
     }
 
     private static void ResetVideoAudioAttemptArtifacts(VideoTempPaths tempPaths, string outputPath)
@@ -1766,9 +1772,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         _logger.LogWarning(
             "Apple MV audio candidate failed to download for {AppleId}: group={GroupId} error={Error}",
-            appleId,
-            candidate.GroupId,
-            audioDownload.Message);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate.GroupId),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(audioDownload.Message));
         return null;
     }
 
@@ -1800,7 +1806,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             cancellationToken);
         if (string.IsNullOrWhiteSpace(videoKey))
         {
-            _logger.LogWarning("Apple MV video key acquisition failed for {AppleId}.", context.AppleId);
+            _logger.LogWarning("Apple MV video key acquisition failed for {AppleId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.AppleId));
             return (false, true);
         }
 
@@ -1809,7 +1815,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return (true, false);
         }
 
-        _logger.LogWarning("Apple MV video decrypt failed for {AppleId}.", context.AppleId);
+        _logger.LogWarning("Apple MV video decrypt failed for {AppleId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.AppleId));
         return (false, false);
     }
 
@@ -1830,8 +1836,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogWarning(
                 "Apple MV audio key acquisition failed for {AppleId}: group={GroupId}",
-                attemptContext.DownloadContext.AppleId,
-                candidate.GroupId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(attemptContext.DownloadContext.AppleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate.GroupId));
             return (false, true);
         }
 
@@ -1846,8 +1852,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         _logger.LogWarning(
             "Apple MV audio decrypt failed for {AppleId}: group={GroupId}",
-            attemptContext.DownloadContext.AppleId,
-            candidate.GroupId);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(attemptContext.DownloadContext.AppleId),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate.GroupId));
         return (false, false);
     }
 
@@ -1867,8 +1873,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogWarning(
                 "Apple MV mux failed for {AppleId}: group={GroupId}",
-                context.AppleId,
-                candidate.GroupId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.AppleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate.GroupId));
             return VideoMuxStatus.Failed;
         }
 
@@ -1879,8 +1885,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         _logger.LogWarning(
             "Apple MV mux output has no audio track for {AppleId}: group={GroupId}",
-            context.AppleId,
-            candidate.GroupId);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.AppleId),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate.GroupId));
         return VideoMuxStatus.MissingAudioTrack;
     }
 
@@ -2041,7 +2047,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 request.AuthorizationToken = normalized;
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    _logger.LogInformation("Retrying Apple Widevine key acquisition with refreshed dev token for {AdamId}.", adamId);                }
+                    _logger.LogInformation("Retrying Apple Widevine key acquisition with refreshed dev token for {AdamId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId));                }
                 var refreshedLicenseRequest = new AppleWidevineLicenseClient.AppleWidevineLicenseRequest(
                     adamId,
                     request.AuthorizationToken,
@@ -2055,7 +2061,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Apple dev token refresh failed before Widevine retry for {AdamId}.", adamId);
+            _logger.LogWarning(ex, "Apple dev token refresh failed before Widevine retry for {AdamId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(adamId));
         }
 
         return keyBytes;
@@ -2098,7 +2104,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             if (!AppleExternalToolRunner.HasMp4Decrypt())
             {
                 const string mp4DecryptMissing = "mp4decrypt executable not found. Install Bento4 mp4decrypt or set DEEZSPOTAG_APPLE_MP4DECRYPT_PATH.";
-                _logger.LogWarning("Apple decryption prerequisite missing for {AdamId}: {Message}", context.AdamId, mp4DecryptMissing);
+                _logger.LogWarning("Apple decryption prerequisite missing for {AdamId}: {Message}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.AdamId), DeezSpoTag.Core.Security.LogSanitizer.OneLine(mp4DecryptMissing));
                 return AppleDownloadResult.Fail(mp4DecryptMissing);
             }
 
@@ -2599,7 +2605,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", stationId);            }
+                _logger.LogDebug(ex, "Apple station metadata lookup failed for {StationId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stationId));            }
         }
     }
 
@@ -2641,7 +2647,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple station manifest treated as media playlist for {StationId}", stationId);            }
+                _logger.LogDebug(ex, "Apple station manifest treated as media playlist for {StationId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stationId));            }
         }
 
         return (true, mediaPlaylistUrl, streamGroup, null);
@@ -2703,9 +2709,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 {
                     _logger.LogInformation(
                         "Apple AAC-LC: ID resolved via catalog for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                        storefront,
-                        originalAppleId,
-                        catalogId);                }
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(originalAppleId),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(catalogId));                }
                 resolvedAppleId = catalogId;
             }
         }
@@ -2713,7 +2719,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple AAC-LC: Direct catalog lookup failed for {AppleId}, trying ISRC fallback.", originalAppleId);            }
+                _logger.LogDebug(ex, "Apple AAC-LC: Direct catalog lookup failed for {AppleId}, trying ISRC fallback.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(originalAppleId));            }
         }
 
         if (resolvedAppleId == originalAppleId && !string.IsNullOrWhiteSpace(request.Isrc))
@@ -2726,10 +2732,10 @@ public sealed class AppleDownloadService : IAppleDownloadService
                 {
                     _logger.LogInformation(
                         "Apple AAC-LC: ID resolved via ISRC {Isrc} for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                        request.Isrc,
-                        storefront,
-                        originalAppleId,
-                        isrcResolvedId);                }
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.Isrc),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(originalAppleId),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrcResolvedId));                }
                 resolvedAppleId = isrcResolvedId;
             }
         }
@@ -2819,7 +2825,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             {
                 _logger.LogInformation(
                     "Apple Atmos request for {AppleId}: skipping device-first manifest probe to prefer catalog enhancedHls.",
-                    appleId);            }
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));            }
             return null;
         }
 
@@ -2847,8 +2853,8 @@ public sealed class AppleDownloadService : IAppleDownloadService
             _logger.LogWarning(
                 ex,
                 "Apple catalog request failed for {AppleId} storefront {Storefront}.",
-                appleId,
-                storefront);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront));
             return null;
         }
     }
@@ -2883,9 +2889,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
         {
             _logger.LogInformation(
                 "Apple Atmos candidate selected via ISRC for storefront {Storefront}: {OriginalId} -> {ResolvedId}",
-                storefront,
-                resolvedAppleId,
-                preferredAtmosId);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(storefront),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAppleId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(preferredAtmosId));
         }
 
         resolvedAppleId = preferredAtmosId ?? resolvedAppleId;

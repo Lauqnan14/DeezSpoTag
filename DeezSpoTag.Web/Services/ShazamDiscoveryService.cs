@@ -586,7 +586,7 @@ public sealed partial class ShazamDiscoveryService
         {
             if (_logger.IsEnabled(LogLevel.Warning))
             {
-                _logger.LogWarning("Shazam port related lookup returned null document for trackId {TrackId}.", trackId);
+                _logger.LogWarning("Shazam port related lookup returned null document for trackId {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
             }
             return Array.Empty<ShazamTrackCard>();
         }
@@ -596,7 +596,7 @@ public sealed partial class ShazamDiscoveryService
         {
             if (_logger.IsEnabled(LogLevel.Warning))
             {
-                _logger.LogWarning("Shazam port related lookup returned non-ok payload for trackId {TrackId}.", trackId);
+                _logger.LogWarning("Shazam port related lookup returned non-ok payload for trackId {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
             }
             return Array.Empty<ShazamTrackCard>();
         }
@@ -604,7 +604,7 @@ public sealed partial class ShazamDiscoveryService
         var parsed = ParseTrackList(root, limit);
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Shazam port related lookup produced {Count} tracks for trackId {TrackId}.", parsed.Count, trackId);
+            _logger.LogInformation("Shazam port related lookup produced {Count} tracks for trackId {TrackId}.", parsed.Count, DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
         }
         foreach (var card in parsed)
         {

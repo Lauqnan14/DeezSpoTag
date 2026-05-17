@@ -5,6 +5,7 @@ using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers;
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 
 public class ArtistController : Controller
 {

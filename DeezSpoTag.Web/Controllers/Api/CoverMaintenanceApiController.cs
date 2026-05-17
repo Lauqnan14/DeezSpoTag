@@ -10,6 +10,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/cover-maintenance")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class CoverMaintenanceApiController : ControllerBase
 {
     private readonly CoverLibraryMaintenanceService _maintenanceService;

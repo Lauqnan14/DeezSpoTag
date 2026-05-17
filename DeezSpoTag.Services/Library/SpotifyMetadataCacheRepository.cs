@@ -54,7 +54,7 @@ LIMIT 1;";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Spotify metadata cache lookup failed (type={Type}, id={Id})", type, sourceId);
+            _logger.LogWarning(ex, "Spotify metadata cache lookup failed (type={Type}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(type), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
             return null;
         }
     }
@@ -88,7 +88,7 @@ ON CONFLICT(type, source_id) DO UPDATE SET
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Spotify metadata cache upsert failed (type={Type}, id={Id})", type, sourceId);
+            _logger.LogWarning(ex, "Spotify metadata cache upsert failed (type={Type}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(type), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
         }
     }
 

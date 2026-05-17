@@ -19,6 +19,7 @@ namespace DeezSpoTag.Web.Controllers.Api
     [Route("api")]
     [ApiController]
     [LocalApiAuthorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
     public class SettingsApiController : ControllerBase
     {
         private readonly ILogger<SettingsApiController> _logger;

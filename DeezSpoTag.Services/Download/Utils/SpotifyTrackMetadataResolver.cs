@@ -115,7 +115,7 @@ public sealed class SpotifyTrackMetadataResolver
                 {
                     _logger.LogDebug(
                         "Spotify track metadata request failed: trackId={TrackId} status={Status}",
-                        spotifyTrackId,
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyTrackId),
                         (int)response.StatusCode);
                 }
 
@@ -162,7 +162,7 @@ public sealed class SpotifyTrackMetadataResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify track metadata fetch failed for {TrackId}", spotifyTrackId);
+                _logger.LogDebug(ex, "Spotify track metadata fetch failed for {TrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyTrackId));
             }
 
             return (null, TimeSpan.FromMilliseconds(500), true);

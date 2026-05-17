@@ -161,7 +161,7 @@ public static class DownloadEngineArtworkHelper
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            request.Logger.LogWarning(ex, "{Engine} tagging failed for {Path}", request.EmbedPrefix, request.OutputPath);
+            request.Logger.LogWarning(ex, "{Engine} tagging failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.EmbedPrefix), DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.OutputPath));
             throw new InvalidOperationException(
                 $"{request.EmbedPrefix} tagging failed for '{request.OutputPath}'.",
                 ex);

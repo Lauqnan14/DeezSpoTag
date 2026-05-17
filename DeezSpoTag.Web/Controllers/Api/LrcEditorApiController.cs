@@ -10,6 +10,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/lrc")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class LrcEditorApiController : ControllerBase
 {
     private const string LibraryDbNotConfiguredMessage = "Library DB not configured.";

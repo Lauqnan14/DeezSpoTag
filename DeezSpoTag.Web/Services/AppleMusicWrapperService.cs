@@ -1562,15 +1562,10 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     {
         error = null;
         var normalizedEmail = email.Trim();
-        var normalizedPassword = password;
-        if (normalizedEmail.Contains('\n', StringComparison.Ordinal) ||
-            normalizedEmail.Contains('\r', StringComparison.Ordinal) ||
-            normalizedPassword.Contains('\n', StringComparison.Ordinal) ||
-            normalizedPassword.Contains('\r', StringComparison.Ordinal))
-        {
-            error = "Apple credentials contain invalid newline characters.";
-            return false;
-        }
+        var normalizedPassword = password.Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
+        normalizedEmail = normalizedEmail.Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
 
         var emailB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(normalizedEmail));
         var passwordB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(normalizedPassword));

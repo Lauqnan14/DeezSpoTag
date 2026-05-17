@@ -13,6 +13,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/tidal/download")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class TidalDownloadApiController : ControllerBase
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);

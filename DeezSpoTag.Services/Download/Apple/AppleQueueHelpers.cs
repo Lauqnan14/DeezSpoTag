@@ -156,7 +156,7 @@ public static class AppleQueueHelpers
             {
                 if (logger.IsEnabled(LogLevel.Debug))
                 {
-                    logger.LogDebug(ex, "Apple catalog cover lookup failed for {AppleId}", appleId);                }
+                    logger.LogDebug(ex, "Apple catalog cover lookup failed for {AppleId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId));                }
             }
         }
 

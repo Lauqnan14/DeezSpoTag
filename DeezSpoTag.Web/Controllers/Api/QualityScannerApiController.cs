@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/quality-scanner")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class QualityScannerApiController : ControllerBase
 {
     private readonly QualityScannerService _qualityScannerService;

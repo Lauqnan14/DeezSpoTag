@@ -221,7 +221,11 @@ public class AudioTagger
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Tagging track: {FilePath} with extension: {Extension}", writePath, normalizedExtension);        }
+            _logger.LogDebug(
+                "Tagging track: {FilePath} with extension: {Extension}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(writePath),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedExtension));
+        }
         UpdateDownloadCapabilities(track);
 
         const int maxAttempts = 5;
@@ -250,12 +254,12 @@ public class AudioTagger
 
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Successfully tagged track: {FilePath}", writePath);                }
+                    _logger.LogDebug("Successfully tagged track: {FilePath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(writePath));                }
                 return;
             }
             catch (IOException ex) when (attempt < maxAttempts)
             {
-                _logger.LogWarning(ex, "Tagging failed (attempt {Attempt}/{MaxAttempts}) for {FilePath}, retrying", attempt, maxAttempts, writePath);
+                _logger.LogWarning(ex, "Tagging failed (attempt {Attempt}/{MaxAttempts}) for {FilePath}, retrying", attempt, maxAttempts, DeezSpoTag.Core.Security.LogSanitizer.OneLine(writePath));
                 await Task.Delay(delayMs);
             }
         }
@@ -305,7 +309,7 @@ public class AudioTagger
             RemoveId3v1WhenDisabled(file, save);
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Successfully tagged MP3 file: {Path}", path);            }
+                _logger.LogDebug("Successfully tagged MP3 file: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -615,7 +619,7 @@ public class AudioTagger
             file.Save();
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Successfully tagged FLAC file: {Path}", path);            }
+                _logger.LogDebug("Successfully tagged FLAC file: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -636,7 +640,7 @@ public class AudioTagger
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Successfully tagged MP4 file with ATL: {Path}", path);
+            _logger.LogInformation("Successfully tagged MP4 file with ATL: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
         }
     }
 
@@ -669,7 +673,7 @@ public class AudioTagger
 
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Successfully tagged MP4 file with ATL: {Path}", path);
+                _logger.LogDebug("Successfully tagged MP4 file with ATL: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -685,14 +689,14 @@ public class AudioTagger
             var file = new AtlTrack(path);
             if (!file.Remove(AtlTagType.NATIVE) && _logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("ATL did not remove existing native MP4 tags before retagging: {Path}", path);
+                _logger.LogDebug("ATL did not remove existing native MP4 tags before retagging: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Unable to clear existing native MP4 tags before retagging: {Path}", path);
+                _logger.LogDebug(ex, "Unable to clear existing native MP4 tags before retagging: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             }
         }
     }
@@ -707,7 +711,7 @@ public class AudioTagger
         _logger.LogWarning(
             "ATL reported invalid MP4 duration {Duration} for {Path}; remuxing container before tagging.",
             duration,
-            path);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
 
         RemuxMp4ContainerForTagging(
             path,
@@ -738,7 +742,7 @@ public class AudioTagger
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Normalized fragmented MP4 audio container before tagging: {Path}", path);
+            _logger.LogDebug("Normalized fragmented MP4 audio container before tagging: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
         }
     }
 
@@ -1614,7 +1618,7 @@ public class AudioTagger
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "MP4 tag verification failed for {Path}", path);            }
+            _logger.LogDebug(ex, "MP4 tag verification failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));            }
             return false;
         }
     }
@@ -1902,12 +1906,12 @@ public class AudioTagger
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Skipping custom frame {FrameId}; ID3v2 tag not available", frameId);                }
+                    _logger.LogDebug("Skipping custom frame {FrameId}; ID3v2 tag not available", DeezSpoTag.Core.Security.LogSanitizer.OneLine(frameId));                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to set custom frame {FrameId}", frameId);
+            _logger.LogWarning(ex, "Failed to set custom frame {FrameId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(frameId));
         }
     }
 
@@ -2010,12 +2014,12 @@ public class AudioTagger
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Skipping Vorbis comment {Field}; Xiph tag not available", field);                }
+                    _logger.LogDebug("Skipping Vorbis comment {Field}; Xiph tag not available", DeezSpoTag.Core.Security.LogSanitizer.OneLine(field));                }
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to set Vorbis comment {Field}", field);
+            _logger.LogWarning(ex, "Failed to set Vorbis comment {Field}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(field));
         }
     }
 
@@ -2188,7 +2192,7 @@ public class AudioTagger
             file.Save();
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Successfully tagged file via generic fallback: {Path}", path);            }
+                _logger.LogDebug("Successfully tagged file via generic fallback: {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

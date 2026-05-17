@@ -10,6 +10,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/connect")]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class ConnectApiController : ControllerBase
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);

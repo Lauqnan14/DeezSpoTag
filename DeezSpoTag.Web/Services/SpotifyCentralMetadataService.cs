@@ -296,7 +296,7 @@ public sealed class SpotifyCentralMetadataService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Spotify album librespot fallback enrichment failed for {AlbumId}", albumId);
+                    _logger.LogDebug(ex, "Spotify album librespot fallback enrichment failed for {AlbumId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(albumId));
                 }
             }
         });

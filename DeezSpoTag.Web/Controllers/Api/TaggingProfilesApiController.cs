@@ -10,6 +10,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/tagging/profiles")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class TaggingProfilesApiController : ControllerBase
 {
     private readonly TaggingProfileService _profiles;

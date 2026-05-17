@@ -11,6 +11,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/library/spotify-cache")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class SpotifyCacheApiController : ControllerBase
 {
     private const string SpotifySource = "spotify";

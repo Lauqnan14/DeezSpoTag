@@ -13,6 +13,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/playlists")]
 [ApiController]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryPlaylistWatchlistApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;

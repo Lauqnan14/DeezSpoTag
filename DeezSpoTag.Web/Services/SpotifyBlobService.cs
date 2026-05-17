@@ -87,7 +87,7 @@ public sealed class SpotifyBlobService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to check Spotify blob existence for {BlobPath}", blobPath);
+            _logger.LogWarning(ex, "Failed to check Spotify blob existence for {BlobPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
             return false;
         }
     }
@@ -156,7 +156,7 @@ public sealed class SpotifyBlobService
             var stderr = processOutput.StandardError;
             if (!string.IsNullOrWhiteSpace(stderr))
             {
-                _logger.LogWarning("Spotify credentials stderr: {Message}", stderr);
+                _logger.LogWarning("Spotify credentials stderr: {Message}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderr));
             }
 
             if (string.IsNullOrWhiteSpace(stdout))
@@ -308,7 +308,7 @@ public sealed class SpotifyBlobService
 
         if (TokenCache.TryRemove(blobPath, out _) && _logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Invalidated Spotify Web API token cache for {BlobPath}", blobPath);
+            _logger.LogDebug("Invalidated Spotify Web API token cache for {BlobPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
         }
     }
 
@@ -635,17 +635,17 @@ public sealed class SpotifyBlobService
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Spotify blob payload is invalid JSON at {BlobPath}.", blobPath);
+            _logger.LogWarning(ex, "Spotify blob payload is invalid JSON at {BlobPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
             return null;
         }
         catch (IOException ex)
         {
-            _logger.LogWarning(ex, "Failed to read Spotify blob payload at {BlobPath}.", blobPath);
+            _logger.LogWarning(ex, "Failed to read Spotify blob payload at {BlobPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
             return null;
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogWarning(ex, "Access denied reading Spotify blob payload at {BlobPath}.", blobPath);
+            _logger.LogWarning(ex, "Access denied reading Spotify blob payload at {BlobPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
             return null;
         }
     }
@@ -672,7 +672,7 @@ public sealed class SpotifyBlobService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Spotify librespot blob is invalid JSON at {BlobPath}.", blobPath);
+                _logger.LogDebug(ex, "Spotify librespot blob is invalid JSON at {BlobPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
             }
             return false;
         }
@@ -680,7 +680,7 @@ public sealed class SpotifyBlobService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to read Spotify librespot blob at {BlobPath}.", blobPath);
+                _logger.LogDebug(ex, "Failed to read Spotify librespot blob at {BlobPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
             }
             return false;
         }
@@ -688,7 +688,7 @@ public sealed class SpotifyBlobService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Access denied reading Spotify librespot blob at {BlobPath}.", blobPath);
+                _logger.LogDebug(ex, "Access denied reading Spotify librespot blob at {BlobPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath));
             }
             return false;
         }
@@ -740,7 +740,7 @@ public sealed class SpotifyBlobService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
-                blobPath, payload.Cookies.Count);
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath), payload.Cookies.Count);
         }
 
         return new SpotifyBlobResult
@@ -928,7 +928,7 @@ public sealed class SpotifyBlobService
                 _logger.LogWarning(
                     "Spotify Web Player token request failed: {Status} {Body}",
                     response.StatusCode.Value,
-                    response.ErrorSnippet ?? string.Empty);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(response.ErrorSnippet));
             }
             else
             {
@@ -1050,7 +1050,7 @@ public sealed class SpotifyBlobService
             {
                 if (!string.IsNullOrWhiteSpace(stderr))
                 {
-                    _logger.LogWarning("Spotify librespot token request failed: {Error}", stderr);
+                    _logger.LogWarning("Spotify librespot token request failed: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderr));
                 }
                 return new SpotifyAccessTokenResult(null, null, RequestFailedError);
             }
@@ -1069,7 +1069,7 @@ public sealed class SpotifyBlobService
             if (parsed == null || !parsed.Ok || string.IsNullOrWhiteSpace(parsed.AccessToken))
             {
                 var error = parsed?.Error ?? UnknownError;
-                _logger.LogWarning("Spotify librespot token unavailable: {Error}", error);
+                _logger.LogWarning("Spotify librespot token unavailable: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(error));
                 return new SpotifyAccessTokenResult(null, parsed?.ExpiresAtUnixMs, error);
             }
 
@@ -1280,17 +1280,20 @@ public sealed class SpotifyBlobService
         string workingDirectory,
         params string[] arguments)
     {
+        var validatedPythonExecutable = EnsureSafeExecutablePath(pythonExecutable);
+        var validatedScriptPath = EnsureSafeExecutablePath(scriptPath);
+        var resolvedWorkingDirectory = Path.GetDirectoryName(validatedScriptPath) ?? Environment.CurrentDirectory;
         var startInfo = new ProcessStartInfo
         {
-            FileName = pythonExecutable,
-            WorkingDirectory = workingDirectory,
+            FileName = validatedPythonExecutable,
+            WorkingDirectory = resolvedWorkingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
-        startInfo.ArgumentList.Add(scriptPath);
+        startInfo.ArgumentList.Add(validatedScriptPath);
         foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
@@ -1410,7 +1413,7 @@ public sealed class SpotifyBlobService
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    _logger.LogWarning(ex, "Failed to delete existing Spotify blob at {BlobPath}", file);
+                    _logger.LogWarning(ex, "Failed to delete existing Spotify blob at {BlobPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(file));
                 }
             }
         }
@@ -1426,9 +1429,10 @@ public sealed class SpotifyBlobService
         CancellationToken cancellationToken,
         params string[] arguments)
     {
+        var validatedFileName = ResolveAndValidateExecutable(fileName);
         var startInfo = new ProcessStartInfo
         {
-            FileName = fileName,
+            FileName = validatedFileName,
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -1501,6 +1505,57 @@ public sealed class SpotifyBlobService
         }
 
         startInfo.Environment[ProtobufRuntimeEnv] = ProtobufRuntimeValue;
+    }
+
+    private static string ResolveAndValidateExecutable(string executableNameOrPath)
+    {
+        if (string.IsNullOrWhiteSpace(executableNameOrPath))
+        {
+            throw new ArgumentException("Executable path is required.", nameof(executableNameOrPath));
+        }
+
+        if (Path.IsPathRooted(executableNameOrPath))
+        {
+            return EnsureSafeExecutablePath(executableNameOrPath);
+        }
+
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new FileNotFoundException("Unable to resolve executable from PATH.", executableNameOrPath);
+        }
+
+        var separator = OperatingSystem.IsWindows() ? ';' : ':';
+        var extensions = OperatingSystem.IsWindows() ? new[] { ".exe", ".cmd", ".bat", string.Empty } : new[] { string.Empty };
+        foreach (var directory in path.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (var extension in extensions)
+            {
+                var candidate = Path.Join(directory, executableNameOrPath + extension);
+                if (File.Exists(candidate))
+                {
+                    return EnsureSafeExecutablePath(candidate);
+                }
+            }
+        }
+
+        throw new FileNotFoundException("Unable to resolve executable from PATH.", executableNameOrPath);
+    }
+
+    private static string EnsureSafeExecutablePath(string executablePath)
+    {
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            throw new ArgumentException("Executable path is required.", nameof(executablePath));
+        }
+
+        var fullPath = Path.GetFullPath(executablePath);
+        if (!Path.IsPathRooted(fullPath) || !File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("Executable path is invalid or missing.", fullPath);
+        }
+
+        return fullPath;
     }
 
     private sealed record LibrespotTokenResult(

@@ -16,6 +16,7 @@ namespace DeezSpoTag.Web.Controllers.Api
     [Route("api/login")]
     [ApiController]
     [LocalApiAuthorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
     public class LoginApiController : ControllerBase
     {
         private readonly ILogger<LoginApiController> _logger;
@@ -57,7 +58,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         /// Get login status - exact port from deezspotag connect.ts
         /// </summary>
         [HttpGet("status")]
-        public async Task<IActionResult> Status([FromQuery] bool validate = false, CancellationToken cancellationToken = default)
+        public async Task<IActionResult> Status(CancellationToken cancellationToken = default)
         {
             var gate = EnsureAccess();
             if (gate != null)
@@ -91,16 +92,6 @@ namespace DeezSpoTag.Web.Controllers.Api
                 {
                     await _loginStorage.ResetLoginCredentialsAsync();
                     return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
-                }
-
-                if (!validate)
-                {
-                    return Ok(BuildStatusResponse(
-                        LOGIN_STATUS_SUCCESS,
-                        hasStoredCredentials,
-                        loginData.User,
-                        live: false,
-                        authState: AuthStateStored));
                 }
 
                 try
@@ -253,7 +244,7 @@ namespace DeezSpoTag.Web.Controllers.Api
 
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("LoginEmail called for email {Email}", request.Email);
+                    _logger.LogDebug("LoginEmail called for email {Email}", DeezSpoTag.Core.Security.LogSanitizer.MaskEmail(request.Email));
                 }
 
                 var arl = await _authUtils.LoginWithEmailPasswordAsync(request.Email, request.Password);

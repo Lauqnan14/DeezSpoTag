@@ -1195,7 +1195,7 @@ public sealed class AppleMusicCatalogService
                 }
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Apple catalog request retry due to HTTP failure: {Url}", url);                }
+                    _logger.LogDebug(ex, "Apple catalog request retry due to HTTP failure: {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));                }
                 await Task.Delay(GetBackoffDelay(attempt), cancellationToken);
             }
             finally
@@ -1244,7 +1244,7 @@ public sealed class AppleMusicCatalogService
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Apple catalog request failed: {StatusCode} {Url}", response.StatusCode, url);
+            _logger.LogWarning("Apple catalog request failed: {StatusCode} {Url}", response.StatusCode, DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));
         }
 
         if (response.StatusCode == HttpStatusCode.NotFound)
@@ -1269,7 +1269,7 @@ public sealed class AppleMusicCatalogService
             return payload;
         }
 
-        _logger.LogWarning("Apple catalog request returned non-JSON payload from {Url}", url);
+        _logger.LogWarning("Apple catalog request returned non-JSON payload from {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));
         InvalidateToken();
         if (attempt < maxAttempts - 1)
         {

@@ -11,6 +11,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/apple")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class AppleDownloadApiController : ControllerBase
 {
     private const string AppleSource = "apple";

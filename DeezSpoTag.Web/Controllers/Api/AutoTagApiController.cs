@@ -11,6 +11,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/autotag")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class AutoTagJobsController : ControllerBase
 {
     private readonly AutoTagService _autoTagService;

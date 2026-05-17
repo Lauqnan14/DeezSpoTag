@@ -55,16 +55,16 @@ public class PlexApiClient
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Successfully connected to Plex server at {ServerUrl}", serverUrl);                }
+                    _logger.LogDebug("Successfully connected to Plex server at {ServerUrl}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(serverUrl));                }
                 return true;
             }
 
-            _logger.LogWarning("Failed to connect to Plex server at {ServerUrl}", serverUrl);
+            _logger.LogWarning("Failed to connect to Plex server at {ServerUrl}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(serverUrl));
             return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error testing connection to Plex server at {ServerUrl}", serverUrl);
+            _logger.LogError(ex, "Error testing connection to Plex server at {ServerUrl}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(serverUrl));
             return false;
         }
     }
@@ -77,7 +77,7 @@ public class PlexApiClient
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Plex identity request failed for {ServerUrl}: {StatusCode}", serverUrl, response.StatusCode);
+                _logger.LogWarning("Plex identity request failed for {ServerUrl}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(serverUrl), response.StatusCode);
                 return null;
             }
 
@@ -440,7 +440,7 @@ public class PlexApiClient
         var response = await _httpClient.PutAsync(url, null, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Failed to update Plex biography for {RatingKey}: {StatusCode}", ratingKey, response.StatusCode);
+            _logger.LogWarning("Failed to update Plex biography for {RatingKey}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(ratingKey), response.StatusCode);
             return false;
         }
 
@@ -1372,7 +1372,7 @@ public class PlexApiClient
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to load Plex playlist {PlaylistId}: {StatusCode}", playlistId, response.StatusCode);
+                _logger.LogWarning("Failed to load Plex playlist {PlaylistId}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), response.StatusCode);
                 return null;
             }
 
@@ -1390,7 +1390,7 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error retrieving Plex playlist {PlaylistId}", playlistId);
+            _logger.LogError(ex, "Error retrieving Plex playlist {PlaylistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
             return null;
         }
     }
@@ -1403,7 +1403,7 @@ public class PlexApiClient
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to load Plex playlist items for {PlaylistId}: {StatusCode}", playlistId, response.StatusCode);
+                _logger.LogWarning("Failed to load Plex playlist items for {PlaylistId}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), response.StatusCode);
                 return new List<PlexPlaylistTrack>();
             }
 
@@ -1436,7 +1436,7 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error retrieving Plex playlist items for {PlaylistId}", playlistId);
+            _logger.LogError(ex, "Error retrieving Plex playlist items for {PlaylistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
             return new List<PlexPlaylistTrack>();
         }
     }
@@ -1458,7 +1458,7 @@ public class PlexApiClient
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to load Plex metadata {RatingKey}: {StatusCode}", ratingKey, response.StatusCode);
+                _logger.LogWarning("Failed to load Plex metadata {RatingKey}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(ratingKey), response.StatusCode);
                 return null;
             }
 
@@ -1497,7 +1497,7 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error retrieving Plex metadata for {RatingKey}", ratingKey);
+            _logger.LogError(ex, "Error retrieving Plex metadata for {RatingKey}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(ratingKey));
             return null;
         }
     }
@@ -1525,7 +1525,7 @@ public class PlexApiClient
             var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to load Plex similar tracks {RatingKey}: {StatusCode}", ratingKey, response.StatusCode);
+                _logger.LogWarning("Failed to load Plex similar tracks {RatingKey}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(ratingKey), response.StatusCode);
                 return new List<string>();
             }
 
@@ -1541,7 +1541,7 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error retrieving Plex similar tracks for {RatingKey}", ratingKey);
+            _logger.LogError(ex, "Error retrieving Plex similar tracks for {RatingKey}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(ratingKey));
             return new List<string>();
         }
     }
@@ -1642,7 +1642,7 @@ public class PlexApiClient
         var response = await _httpClient.PostAsync(createUrl, null, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Failed to create Plex playlist {PlaylistName}: {StatusCode}", playlistName, response.StatusCode);
+            _logger.LogWarning("Failed to create Plex playlist {PlaylistName}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistName), response.StatusCode);
             return null;
         }
 
@@ -1677,7 +1677,7 @@ public class PlexApiClient
         var response = await _httpClient.PutAsync(url, null, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Failed to update Plex playlist metadata for {PlaylistId}: {StatusCode}", playlistId, response.StatusCode);
+            _logger.LogWarning("Failed to update Plex playlist metadata for {PlaylistId}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), response.StatusCode);
         }
     }
 
@@ -1721,7 +1721,7 @@ public class PlexApiClient
             var response = await _httpClient.GetAsync(posterUrl, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to download playlist poster for {PlaylistId}: {StatusCode}", playlistId, response.StatusCode);
+                _logger.LogWarning("Failed to download playlist poster for {PlaylistId}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), response.StatusCode);
                 return;
             }
 
@@ -1745,7 +1745,7 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId}", playlistId);
+            _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
         }
     }
 
@@ -1788,7 +1788,7 @@ public class PlexApiClient
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId} from local file {PosterPath}", playlistId, posterPath);
+            _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId} from local file {PosterPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), DeezSpoTag.Core.Security.LogSanitizer.OneLine(posterPath));
         }
     }
 

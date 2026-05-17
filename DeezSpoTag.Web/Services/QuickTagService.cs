@@ -355,7 +355,11 @@ public sealed class QuickTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "QuickTag clone failed for {Source} -> {Destination}", sourcePath, destinationPath);
+            _logger.LogWarning(
+                ex,
+                "QuickTag clone failed for {Source} -> {Destination}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourcePath),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(destinationPath));
             return QuickTagCloneResult.Fail(ex.Message);
         }
     }
@@ -478,8 +482,8 @@ public sealed class QuickTagService
                     _logger.LogDebug(
                         ex,
                         "QuickTag clone skipped raw tag {Tag} for destination {Path}",
-                        rawName,
-                        destinationFullPath);
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(rawName),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(destinationFullPath));
                 }
             }
         }

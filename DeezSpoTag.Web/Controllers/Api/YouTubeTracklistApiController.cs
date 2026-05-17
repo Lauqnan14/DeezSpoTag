@@ -67,7 +67,7 @@ public sealed class YouTubeTracklistApiController : ControllerBase
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "YouTube playlist tracklist fetch failed for playlist id {PlaylistId}.", playlistId);
+            _logger.LogWarning(ex, "YouTube playlist tracklist fetch failed for playlist id {PlaylistId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
             return StatusCode(500, new { available = false, error = "Failed to load YouTube playlist." });
         }
     }
@@ -76,7 +76,7 @@ public sealed class YouTubeTracklistApiController : ControllerBase
     {
         _logger.LogWarning(
             "YouTube playlist ingestion is unavailable in the current build. url={PlaylistUrl}",
-            playlistUrl);
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistUrl));
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult<string?>(null);
     }
