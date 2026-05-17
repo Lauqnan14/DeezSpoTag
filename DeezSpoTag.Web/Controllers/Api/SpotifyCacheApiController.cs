@@ -128,9 +128,9 @@ public class SpotifyCacheApiController : ControllerBase
 
     private async Task<List<RefreshArtist>> GetRefreshArtistsAsync()
     {
-        if (!_libraryRepository.IsConfigured || _configStore.HasLocalLibraryData())
+        if (!_libraryRepository.IsConfigured || await _configStore.HasLocalLibraryDataAsync())
         {
-            return _configStore.GetLocalArtists()
+            return (await _configStore.GetLocalArtistsAsync())
                 .Where(artist => !string.IsNullOrWhiteSpace(artist.Name))
                 .Select(artist => new RefreshArtist(artist.Id, artist.Name))
                 .ToList();
@@ -145,9 +145,9 @@ public class SpotifyCacheApiController : ControllerBase
 
     private async Task<RefreshArtist?> ResolveRefreshArtistAsync(long artistId)
     {
-        if (!_libraryRepository.IsConfigured || _configStore.HasLocalLibraryData())
+        if (!_libraryRepository.IsConfigured || await _configStore.HasLocalLibraryDataAsync())
         {
-            var localArtist = _configStore.GetLocalArtists().FirstOrDefault(item => item.Id == artistId);
+            var localArtist = (await _configStore.GetLocalArtistsAsync()).FirstOrDefault(item => item.Id == artistId);
             if (localArtist is null || string.IsNullOrWhiteSpace(localArtist.Name))
             {
                 return null;

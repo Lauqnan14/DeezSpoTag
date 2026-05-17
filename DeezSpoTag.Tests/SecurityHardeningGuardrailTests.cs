@@ -9,15 +9,8 @@ public sealed class SecurityHardeningGuardrailTests
 {
     private static readonly string[] BlockingWaitAllowlist =
     {
-        "ResolveProxyClientTests.cs",
-        "EngineFallbackCoordinatorParityTests.cs",
         "LibraryConfigStore.cs",
-        "AudioCollisionDedupe.cs",
-        "MelodayService.cs",
-        "QuickTagService.cs",
-        "TrackAnalysisBackgroundService.cs",
-        "ShazamRecognitionService.cs",
-        "AppleMusicWrapperService.cs"
+        "ShazamRecognitionService.cs"
     };
 
     [Fact]

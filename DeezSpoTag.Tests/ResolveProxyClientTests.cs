@@ -17,9 +17,11 @@ public sealed class ResolveProxyClientTests
     public async Task ResolveUrlAsync_MapsResolveProxySongUrls()
     {
         string? requestBody = null;
-        var client = CreateClient(request =>
+        var client = CreateClient(async request =>
         {
-            requestBody = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+            requestBody = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(CancellationToken.None);
             Assert.Equal(HttpMethod.Post, request.Method);
             Assert.Equal("api.zarz.moe", request.RequestUri?.Host);
             return Json("""
@@ -58,9 +60,11 @@ public sealed class ResolveProxyClientTests
     public async Task ResolvePlatformIdAsync_SendsPlatformPayload()
     {
         string? requestBody = null;
-        var client = CreateClient(request =>
+        var client = CreateClient(async request =>
         {
-            requestBody = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+            requestBody = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(CancellationToken.None);
             return Json("""
 {
   "success": true,
@@ -86,11 +90,13 @@ public sealed class ResolveProxyClientTests
         string? requestBody = null;
         var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
         {
-            HttpClientFactory = new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.NotFound)),
+            HttpClientFactory = new StubHttpClientFactory(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound))),
             Logger = NullLogger<SongLinkResolver>.Instance,
-            ResolveProxyClient = CreateClient(request =>
+            ResolveProxyClient = CreateClient(async request =>
             {
-                requestBody = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+                requestBody = request.Content is null
+                    ? null
+                    : await request.Content.ReadAsStringAsync(CancellationToken.None);
                 return Json("""
 {
   "success": true,
@@ -128,11 +134,13 @@ public sealed class ResolveProxyClientTests
         string? requestBody = null;
         var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
         {
-            HttpClientFactory = new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.NotFound)),
+            HttpClientFactory = new StubHttpClientFactory(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound))),
             Logger = NullLogger<SongLinkResolver>.Instance,
-            ResolveProxyClient = CreateClient(request =>
+            ResolveProxyClient = CreateClient(async request =>
             {
-                requestBody = request.Content?.ReadAsStringAsync(CancellationToken.None).GetAwaiter().GetResult();
+                requestBody = request.Content is null
+                    ? null
+                    : await request.Content.ReadAsStringAsync(CancellationToken.None);
                 return Json("""
 {
   "success": true,
@@ -158,7 +166,7 @@ public sealed class ResolveProxyClientTests
     [Fact]
     public async Task ResolveUrlAsync_ReturnsNull_WhenProxyFails()
     {
-        var client = CreateClient(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));
+        var client = CreateClient(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway)));
 
         var result = await client.ResolveUrlAsync($"https://open.spotify.com/track/{SpotifyTrackId}", CancellationToken.None);
 
@@ -174,12 +182,12 @@ public sealed class ResolveProxyClientTests
             {
                 if (request.RequestUri?.Host.Equals("api.zarz.moe", StringComparison.OrdinalIgnoreCase) == true)
                 {
-                    return new HttpResponseMessage(HttpStatusCode.BadGateway);
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway));
                 }
 
                 if (request.RequestUri?.Host.Equals("api.song.link", StringComparison.OrdinalIgnoreCase) == true)
                 {
-                    return Json("""
+                    return Task.FromResult(Json("""
 {
   "linksByPlatform": {
     "spotify": { "url": "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC" },
@@ -188,16 +196,16 @@ public sealed class ResolveProxyClientTests
     "deezer": { "url": "https://www.deezer.com/track/3135556" }
   }
 }
-""");
+"""));
                 }
 
-                return new HttpResponseMessage(HttpStatusCode.NotFound);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
             }),
             Logger = NullLogger<SongLinkResolver>.Instance,
             ResolveProxyClient = CreateClient(request =>
             {
                 Assert.Equal("api.zarz.moe", request.RequestUri?.Host);
-                return new HttpResponseMessage(HttpStatusCode.BadGateway);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway));
             })
         });
 
@@ -209,7 +217,7 @@ public sealed class ResolveProxyClientTests
         Assert.Equal("3135556", result.DeezerId);
     }
 
-    private static ResolveProxyClient CreateClient(Func<HttpRequestMessage, HttpResponseMessage> responder)
+    private static ResolveProxyClient CreateClient(Func<HttpRequestMessage, Task<HttpResponseMessage>> responder)
         => new(
             new StubHttpClientFactory(responder),
             NullLogger<ResolveProxyClient>.Instance);
@@ -222,14 +230,14 @@ public sealed class ResolveProxyClientTests
         };
     }
 
-    private sealed class StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responder) : IHttpClientFactory
+    private sealed class StubHttpClientFactory(Func<HttpRequestMessage, Task<HttpResponseMessage>> responder) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(new StubHttpMessageHandler(responder), disposeHandler: true);
     }
 
-    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> responder) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Task.FromResult(responder(request));
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            responder(request);
     }
 }

@@ -25,58 +25,58 @@ public sealed class LibraryConfigStore
         _activityLogPath = Path.Join(logDir, "activities.log");
     }
 
-    public LibrarySettingsDto GetSettings()
+    public async Task<LibrarySettingsDto> GetSettingsAsync()
     {
         if (!_repository.IsConfigured)
         {
             return new LibrarySettingsDto(false, false);
         }
 
-        return _repository.GetSettingsAsync().GetAwaiter().GetResult();
+        return await _repository.GetSettingsAsync();
     }
 
-    public LibrarySettingsDto SaveSettings(LibrarySettingsDto settings)
+    public async Task<LibrarySettingsDto> SaveSettingsAsync(LibrarySettingsDto settings)
     {
         if (!_repository.IsConfigured)
         {
             return settings;
         }
 
-        return _repository.UpdateSettingsAsync(settings).GetAwaiter().GetResult();
+        return await _repository.UpdateSettingsAsync(settings);
     }
 
-    public IReadOnlyList<FolderDto> GetFolders()
+    public async Task<IReadOnlyList<FolderDto>> GetFoldersAsync()
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<FolderDto>();
         }
 
-        return _repository.GetFoldersAsync().GetAwaiter().GetResult();
+        return await _repository.GetFoldersAsync();
     }
 
-    public IReadOnlyList<LibraryArtist> GetLocalArtists()
+    public async Task<IReadOnlyList<LibraryArtist>> GetLocalArtistsAsync()
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<LibraryArtist>();
         }
 
-        var artists = _repository.GetArtistsAsync("all").GetAwaiter().GetResult();
+        var artists = await _repository.GetArtistsAsync("all");
         return artists
             .Select(artist => new LibraryArtist(artist.Id, artist.Name, artist.PreferredImagePath, artist.PreferredBackgroundPath))
             .OrderBy(artist => artist.Name)
             .ToList();
     }
 
-    public IReadOnlyList<LibraryAlbum> GetLocalAlbums(long artistId)
+    public async Task<IReadOnlyList<LibraryAlbum>> GetLocalAlbumsAsync(long artistId)
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<LibraryAlbum>();
         }
 
-        var albums = _repository.GetArtistAlbumsAsync(artistId).GetAwaiter().GetResult();
+        var albums = await _repository.GetArtistAlbumsAsync(artistId);
         return albums
             .Select(album => new LibraryAlbum(
                 album.Id,
@@ -94,14 +94,14 @@ public sealed class LibraryConfigStore
             .ToList();
     }
 
-    public LibraryAlbum? GetLocalAlbum(long albumId)
+    public async Task<LibraryAlbum?> GetLocalAlbumAsync(long albumId)
     {
         if (!_repository.IsConfigured)
         {
             return null;
         }
 
-        var album = _repository.GetAlbumAsync(albumId).GetAwaiter().GetResult();
+        var album = await _repository.GetAlbumAsync(albumId);
         return album is null
             ? null
             : new LibraryAlbum(
@@ -118,14 +118,14 @@ public sealed class LibraryConfigStore
                 0);
     }
 
-    public IReadOnlyList<LibraryTrack> GetLocalTracks(long albumId)
+    public async Task<IReadOnlyList<LibraryTrack>> GetLocalTracksAsync(long albumId)
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<LibraryTrack>();
         }
 
-        var tracks = _repository.GetAlbumTracksAsync(albumId).GetAwaiter().GetResult();
+        var tracks = await _repository.GetAlbumTracksAsync(albumId);
         return tracks
             .Select(track => new LibraryTrack(
                 track.Id,
@@ -202,7 +202,7 @@ public sealed class LibraryConfigStore
         }
     }
 
-    public void SaveLastScanInfo(LastScanInfo info)
+    public async Task SaveLastScanInfoAsync(LastScanInfo info)
     {
         if (!_repository.IsConfigured)
         {
@@ -210,19 +210,30 @@ public sealed class LibraryConfigStore
         }
 
         var scanInfo = new LibraryScanInfo(info.LastRunUtc, info.ArtistCount, info.AlbumCount, info.TrackCount);
-        _repository.SaveScanInfoAsync(scanInfo).GetAwaiter().GetResult();
+        await _repository.SaveScanInfoAsync(scanInfo);
     }
 
-    public LastScanInfo GetLastScanInfo()
+    public async Task<LastScanInfo> GetLastScanInfoAsync()
     {
         if (!_repository.IsConfigured)
         {
             return new LastScanInfo(null, 0, 0, 0);
         }
 
-        var info = _repository.GetScanInfoAsync().GetAwaiter().GetResult();
+        var info = await _repository.GetScanInfoAsync();
         return new LastScanInfo(info.LastRunUtc, info.ArtistCount, info.AlbumCount, info.TrackCount);
     }
+
+    // Compatibility shims for synchronous consumers; migrate callsites to async progressively.
+    public LibrarySettingsDto GetSettings() => GetSettingsAsync().GetAwaiter().GetResult();
+    public LibrarySettingsDto SaveSettings(LibrarySettingsDto settings) => SaveSettingsAsync(settings).GetAwaiter().GetResult();
+    public IReadOnlyList<FolderDto> GetFolders() => GetFoldersAsync().GetAwaiter().GetResult();
+    public IReadOnlyList<LibraryArtist> GetLocalArtists() => GetLocalArtistsAsync().GetAwaiter().GetResult();
+    public IReadOnlyList<LibraryAlbum> GetLocalAlbums(long artistId) => GetLocalAlbumsAsync(artistId).GetAwaiter().GetResult();
+    public LibraryAlbum? GetLocalAlbum(long albumId) => GetLocalAlbumAsync(albumId).GetAwaiter().GetResult();
+    public IReadOnlyList<LibraryTrack> GetLocalTracks(long albumId) => GetLocalTracksAsync(albumId).GetAwaiter().GetResult();
+    public void SaveLastScanInfo(LastScanInfo info) => SaveLastScanInfoAsync(info).GetAwaiter().GetResult();
+    public LastScanInfo GetLastScanInfo() => GetLastScanInfoAsync().GetAwaiter().GetResult();
 
     public void AddLog(LibraryLogEntry entry)
     {
@@ -323,55 +334,55 @@ public sealed class LibraryConfigStore
     }
 
 
-    public string? GetArtistSourceId(long artistId, string source)
+    public async Task<string?> GetArtistSourceIdAsync(long artistId, string source)
     {
         if (!_repository.IsConfigured)
         {
             return null;
         }
 
-        return _repository.GetArtistSourceIdAsync(artistId, source).GetAwaiter().GetResult();
+        return await _repository.GetArtistSourceIdAsync(artistId, source);
     }
 
 
-    public bool HasLocalLibraryData()
+    public async Task<bool> HasLocalLibraryDataAsync()
     {
         if (!_repository.IsConfigured)
         {
             return false;
         }
 
-        return _repository.HasLocalLibraryDataAsync().GetAwaiter().GetResult();
+        return await _repository.HasLocalLibraryDataAsync();
     }
 
-    public IReadOnlyList<OfflineTrackSearchDto> SearchTracksAsync(string likeQuery, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<OfflineTrackSearchDto>> SearchTracksAsync(string likeQuery, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<OfflineTrackSearchDto>();
         }
 
-        return _repository.SearchTracksAsync(likeQuery, cancellationToken).GetAwaiter().GetResult();
+        return await _repository.SearchTracksAsync(likeQuery, cancellationToken);
     }
 
-    public IReadOnlyList<OfflineAlbumSearchDto> SearchAlbumsAsync(string likeQuery, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<OfflineAlbumSearchDto>> SearchAlbumsAsync(string likeQuery, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<OfflineAlbumSearchDto>();
         }
 
-        return _repository.SearchAlbumsAsync(likeQuery, cancellationToken).GetAwaiter().GetResult();
+        return await _repository.SearchAlbumsAsync(likeQuery, cancellationToken);
     }
 
-    public IReadOnlyList<OfflineArtistSearchDto> SearchArtistsAsync(string likeQuery, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<OfflineArtistSearchDto>> SearchArtistsAsync(string likeQuery, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<OfflineArtistSearchDto>();
         }
 
-        return _repository.SearchArtistsAsync(likeQuery, cancellationToken).GetAwaiter().GetResult();
+        return await _repository.SearchArtistsAsync(likeQuery, cancellationToken);
     }
 
     public FolderDto AddFolder(FolderUpsertRequest request)
@@ -416,44 +427,44 @@ public sealed class LibraryConfigStore
             .GetResult();
     }
 
-    public bool DeleteFolder(long id)
+    public async Task<bool> DeleteFolderAsync(long id)
     {
         if (!_repository.IsConfigured)
         {
             return false;
         }
 
-        return _repository.DeleteFolderAsync(id).GetAwaiter().GetResult();
+        return await _repository.DeleteFolderAsync(id);
     }
 
-    public IReadOnlyList<FolderAliasDto> GetAliases(long folderId)
+    public async Task<IReadOnlyList<FolderAliasDto>> GetAliasesAsync(long folderId)
     {
         if (!_repository.IsConfigured)
         {
             return Array.Empty<FolderAliasDto>();
         }
 
-        return _repository.GetFolderAliasesAsync(folderId).GetAwaiter().GetResult();
+        return await _repository.GetFolderAliasesAsync(folderId);
     }
 
-    public FolderAliasDto AddAlias(long folderId, string aliasName)
+    public async Task<FolderAliasDto> AddAliasAsync(long folderId, string aliasName)
     {
         if (!_repository.IsConfigured)
         {
             throw new InvalidOperationException("Library DB not configured.");
         }
 
-        return _repository.AddFolderAliasAsync(folderId, aliasName).GetAwaiter().GetResult();
+        return await _repository.AddFolderAliasAsync(folderId, aliasName);
     }
 
-    public bool DeleteAlias(long aliasId)
+    public async Task<bool> DeleteAliasAsync(long aliasId)
     {
         if (!_repository.IsConfigured)
         {
             return false;
         }
 
-        return _repository.DeleteFolderAliasAsync(aliasId).GetAwaiter().GetResult();
+        return await _repository.DeleteFolderAliasAsync(aliasId);
     }
 
     public sealed record LibraryArtist(long Id, string Name, string? ImagePath, string? BackgroundImagePath);

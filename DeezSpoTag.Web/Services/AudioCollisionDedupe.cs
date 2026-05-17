@@ -285,9 +285,6 @@ internal static class AudioCollisionDedupe
                 return false;
             }
 
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
-
             if (!process.WaitForExit(AudioHashTimeoutMs))
             {
                 try
@@ -302,8 +299,8 @@ internal static class AudioCollisionDedupe
                 return false;
             }
 
-            var output = stdoutTask.GetAwaiter().GetResult();
-            var errors = stderrTask.GetAwaiter().GetResult();
+            var output = process.StandardOutput.ReadToEnd();
+            var errors = process.StandardError.ReadToEnd();
             if (process.ExitCode != 0)
             {
                 return false;

@@ -35,7 +35,7 @@ public class DuplicateCleanerApiController : ControllerBase
     {
         var folders = _repository.IsConfigured
             ? await _repository.GetFoldersAsync(cancellationToken)
-            : _configStore.GetFolders();
+            : await _configStore.GetFoldersAsync();
         var enabledFolders = folders.Where(folder => folder.Enabled).ToList();
 
         if (folderId.HasValue)

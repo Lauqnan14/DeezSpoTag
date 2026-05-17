@@ -48,15 +48,15 @@ public sealed class LibraryRuntimeSnapshotService : ILibraryRuntimeSnapshotProvi
 
     public async Task<LibraryRuntimeSnapshotDto> BuildSnapshotAsync(long? folderId, CancellationToken cancellationToken)
     {
-        var scanStatus = BuildScanStatus();
+        var scanStatus = await BuildScanStatusAsync();
         var stats = await BuildStatsPayloadAsync(folderId, scanStatus.Running, scanStatus.ProgressSignature, cancellationToken);
         var refreshPolicy = BuildRefreshPolicy();
         return new LibraryRuntimeSnapshotDto(scanStatus.Payload, stats, refreshPolicy);
     }
 
-    private ScanStatusSnapshot BuildScanStatus()
+    private async Task<ScanStatusSnapshot> BuildScanStatusAsync()
     {
-        var lastScan = _configStore.GetLastScanInfo();
+        var lastScan = await _configStore.GetLastScanInfoAsync();
         var scanStatus = _scanRunner.GetStatus();
         var progressSignature = string.Create(
             CultureInfo.InvariantCulture,

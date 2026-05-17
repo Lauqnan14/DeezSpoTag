@@ -70,7 +70,7 @@ public class LibraryScanApiController : ControllerBase
             var folders = await _repository.GetFoldersAsync(cancellationToken);
             folderCount = folders.Count;
         }
-        var lastScan = _configStore.GetLastScanInfo();
+        var lastScan = await _configStore.GetLastScanInfoAsync();
         var scanStatus = _scanRunner.GetStatus();
 
         return Ok(new

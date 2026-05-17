@@ -30,7 +30,7 @@ public class LibraryAlbumsApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            var localAlbum = _configStore.GetLocalAlbum(id);
+            var localAlbum = await _configStore.GetLocalAlbumAsync(id);
             if (localAlbum is null)
             {
                 return NotFound();
@@ -69,7 +69,7 @@ public class LibraryAlbumsApiController : ControllerBase
 
         if (!_repository.IsConfigured)
         {
-            var localTracks = _configStore.GetLocalTracks(id);
+            var localTracks = await _configStore.GetLocalTracksAsync(id);
             return Ok(BuildLocalTrackRows(localTracks, audioInfoByTrack, audioVariantsByTrack));
         }
 

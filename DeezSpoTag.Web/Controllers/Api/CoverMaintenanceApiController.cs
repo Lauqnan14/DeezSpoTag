@@ -117,7 +117,7 @@ public sealed class CoverMaintenanceApiController : ControllerBase
             return await _repository.GetFoldersAsync(cancellationToken);
         }
 
-        return _configStore.GetFolders();
+        return await _configStore.GetFoldersAsync();
     }
 
     private static IReadOnlyCollection<CoverSourceName>? NormalizeSourceNames(IReadOnlyCollection<string>? sources)

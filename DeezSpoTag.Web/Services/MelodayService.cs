@@ -481,9 +481,9 @@ public sealed class MelodayService
         return destination.Count > before;
     }
 
-    public MelodayStatusDto GetStatus()
+    public async Task<MelodayStatusDto> GetStatusAsync()
     {
-        var effective = _settingsStore.LoadAsync(_options).GetAwaiter().GetResult();
+        var effective = await _settingsStore.LoadAsync(_options);
         return new MelodayStatusDto(
             effective.Enabled,
             GetCurrentPeriodName(),

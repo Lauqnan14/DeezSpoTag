@@ -42,7 +42,7 @@ public sealed class LibraryStatsSnapshotService
         }
         else
         {
-            var lastScan = _configStore.GetLastScanInfo();
+            var lastScan = await _configStore.GetLastScanInfoAsync();
             scanInfo = new LibraryScanInfo(lastScan.LastRunUtc, lastScan.ArtistCount, lastScan.AlbumCount, lastScan.TrackCount);
             stats = new LibraryStatsDto(0, 0, 0, Array.Empty<LibraryStatsLibraryDto>(), 0, 0, null);
         }

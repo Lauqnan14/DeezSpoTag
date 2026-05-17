@@ -551,8 +551,6 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     private static BatchProcessExecution ExecuteBatchAnalyzerProcess(Process process, TimeSpan batchTimeout, int batchTimeoutSeconds)
     {
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
         var externalBatchTimeout = batchTimeout + TimeSpan.FromSeconds(30);
         if (!process.WaitForExit((int)Math.Clamp(externalBatchTimeout.TotalMilliseconds, 1000, int.MaxValue)))
         {
@@ -565,8 +563,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 FailureReason: $"Vibe analyzer batch timed out after {batchTimeoutSeconds}s.");
         }
 
-        var output = stdoutTask.GetAwaiter().GetResult();
-        var errorOutput = stderrTask.GetAwaiter().GetResult();
+        var output = process.StandardOutput.ReadToEnd();
+        var errorOutput = process.StandardError.ReadToEnd();
         if (process.ExitCode != 0)
         {
             var failureReason = string.IsNullOrWhiteSpace(errorOutput)
@@ -960,8 +958,6 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 return null;
             }
 
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit((int)Math.Clamp(analysisTimeout.TotalMilliseconds, 1000, int.MaxValue)))
             {
                 TryTerminate(process);
@@ -973,8 +969,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 return null;
             }
 
-            var output = stdoutTask.GetAwaiter().GetResult();
-            var errorOutput = stderrTask.GetAwaiter().GetResult();
+            var output = process.StandardOutput.ReadToEnd();
+            var errorOutput = process.StandardError.ReadToEnd();
 
             if (process.ExitCode != 0)
             {
@@ -1188,14 +1184,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         var tempPath = destinationPath + ".tmp";
         try
         {
-            using var response = MlBootstrapHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var response = MlBootstrapHttpClient.Send(request, HttpCompletionOption.ResponseHeadersRead);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Failed to download model {Url}. Status code {StatusCode}.", url, (int)response.StatusCode);
                 return false;
             }
 
-            using var networkStream = response.Content.ReadAsStreamAsync().GetAwaiter().GetResult();
+            using var networkStream = response.Content.ReadAsStream();
             using (var fileStream = File.Create(tempPath))
             {
                 networkStream.CopyTo(fileStream);
@@ -1318,8 +1315,6 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 return false;
             }
 
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit((int)Math.Clamp(timeout.TotalMilliseconds, 1000, int.MaxValue)))
             {
                 TryTerminate(process);
@@ -1327,8 +1322,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 return false;
             }
 
-            var stdout = stdoutTask.GetAwaiter().GetResult();
-            var stderr = stderrTask.GetAwaiter().GetResult();
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
             if (process.ExitCode == 0)
             {
                 return true;
@@ -1426,16 +1421,14 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 return new MlCapability(false, $"Failed to start {Python3Executable} for Essentia probe.");
             }
 
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(15000))
             {
                 TryTerminate(process);
                 return new MlCapability(false, "Essentia probe timed out.");
             }
 
-            var stdout = stdoutTask.GetAwaiter().GetResult();
-            var stderr = stderrTask.GetAwaiter().GetResult();
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
             return ParseProbeResult(process.ExitCode, stdout, stderr);
         }
         catch (Exception ex)

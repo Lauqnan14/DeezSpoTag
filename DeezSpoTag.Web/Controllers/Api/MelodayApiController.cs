@@ -30,8 +30,8 @@ public class MelodayApiController : ControllerBase
     }
 
     [HttpGet("status")]
-    public IActionResult Status()
+    public async Task<IActionResult> Status()
     {
-        return Ok(_melodayService.GetStatus());
+        return Ok(await _melodayService.GetStatusAsync());
     }
 }

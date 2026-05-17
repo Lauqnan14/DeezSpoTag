@@ -58,7 +58,7 @@ public class LibraryImagesApiController : ControllerBase
             return BadRequest("Unsupported image type.");
         }
 
-        var allowedRoots = _configStore.GetFolders()
+        var allowedRoots = (await _configStore.GetFoldersAsync())
             .Select(folder => folder.RootPath)
             .Concat(GetAllowedCacheRoots())
             .Select(Path.GetFullPath)

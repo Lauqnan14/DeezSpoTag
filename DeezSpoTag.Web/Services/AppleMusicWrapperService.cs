@@ -1962,6 +1962,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private void EnsureAuthStateBootstrapped()
     {
+        var shouldBootstrap = false;
         lock (_sync)
         {
             if (_authStateBootstrapped)
@@ -1970,25 +1971,28 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             }
 
             _authStateBootstrapped = true;
+            shouldBootstrap = true;
         }
 
+        if (shouldBootstrap)
+        {
+            _ = BootstrapAuthStateAsync();
+        }
+    }
+
+    private async Task BootstrapAuthStateAsync()
+    {
         try
         {
-            var state = _platformAuthService.LoadAsync().GetAwaiter().GetResult();
-            if (!string.IsNullOrWhiteSpace(state.AppleMusic?.Email))
+            var state = await _platformAuthService.LoadAsync();
+            lock (_sync)
             {
-                lock (_sync)
+                if (!string.IsNullOrWhiteSpace(state.AppleMusic?.Email) && string.IsNullOrWhiteSpace(_email))
                 {
-                    if (string.IsNullOrWhiteSpace(_email))
-                    {
-                        _email = state.AppleMusic.Email;
-                    }
+                    _email = state.AppleMusic.Email;
                 }
-            }
 
-            if (state.AppleMusic?.WrapperReady == true)
-            {
-                lock (_sync)
+                if (state.AppleMusic?.WrapperReady == true)
                 {
                     _authStateReady = true;
                     _authHealthyProbeCount = AuthPromotionProbeThreshold;
@@ -2969,7 +2973,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return false;
         }
 
-        var json = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+        using var stream = response.Content.ReadAsStream();
+        using var reader = new StreamReader(stream);
+        var json = reader.ReadToEnd();
         return TryParseExternalAccountInfo(json, out accountInfo);
     }
 

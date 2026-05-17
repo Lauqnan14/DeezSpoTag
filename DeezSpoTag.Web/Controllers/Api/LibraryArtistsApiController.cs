@@ -51,7 +51,7 @@ public class LibraryArtistsApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            var localArtists = _configStore.GetLocalArtists().Select(localArtist => new
+            var localArtists = (await _configStore.GetLocalArtistsAsync()).Select(localArtist => new
             {
                 localArtist.Id,
                 localArtist.Name,
@@ -94,7 +94,7 @@ public class LibraryArtistsApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            var localAlbums = _configStore.GetLocalAlbums(id);
+            var localAlbums = await _configStore.GetLocalAlbumsAsync(id);
             return Ok(localAlbums);
         }
 
@@ -152,7 +152,7 @@ public class LibraryArtistsApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            var localArtist = _configStore.GetLocalArtists().FirstOrDefault(item => item.Id == id);
+            var localArtist = (await _configStore.GetLocalArtistsAsync()).FirstOrDefault(item => item.Id == id);
             if (localArtist is null)
             {
                 return NotFound();
@@ -266,13 +266,13 @@ public class LibraryArtistsApiController : ControllerBase
                 localStereoTrackCountsByTitle);
         }
 
-        var localArtist = _configStore.GetLocalArtists().FirstOrDefault(item => item.Id == id);
+        var localArtist = (await _configStore.GetLocalArtistsAsync()).FirstOrDefault(item => item.Id == id);
         if (localArtist is null)
         {
             return null;
         }
 
-        var localAlbums = _configStore.GetLocalAlbums(id);
+        var localAlbums = await _configStore.GetLocalAlbumsAsync(id);
         var localCounts = BuildLocalStereoTrackCountsByTitle(
             localAlbums,
             album => album.Title,
@@ -876,7 +876,7 @@ public class LibraryArtistsApiController : ControllerBase
             return artist?.Name;
         }
 
-        var localArtist = _configStore.GetLocalArtists().FirstOrDefault(item => item.Id == id);
+        var localArtist = (await _configStore.GetLocalArtistsAsync()).FirstOrDefault(item => item.Id == id);
         return localArtist?.Name;
     }
 

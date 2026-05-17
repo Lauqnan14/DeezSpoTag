@@ -122,7 +122,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
         var folders = _repository.IsConfigured
             ? await _repository.GetFoldersAsync(cancellationToken)
-            : _configStore.GetFolders();
+            : await _configStore.GetFoldersAsync();
 
         var enabled = folders
             .Where(folder => folder.Enabled)
