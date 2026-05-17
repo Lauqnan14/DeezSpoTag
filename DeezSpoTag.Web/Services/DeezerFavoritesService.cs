@@ -30,8 +30,11 @@ public sealed class DeezerFavoritesService
             var tracksTask = GetFavoriteTracksAsync(limit);
 
             await Task.WhenAll(playlistsTask, albumsTask, tracksTask);
+            var playlists = await playlistsTask;
+            var albums = await albumsTask;
+            var tracks = await tracksTask;
 
-            return new FavoritesResult(true, null, albumsTask.Result, playlistsTask.Result, tracksTask.Result);
+            return new FavoritesResult(true, null, albums, playlists, tracks);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

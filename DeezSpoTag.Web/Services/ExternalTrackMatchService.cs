@@ -135,15 +135,16 @@ public sealed class ExternalTrackMatchService
             : Task.FromResult<(string Id, string Url)?>(null);
 
         await Task.WhenAll(deezerTask, qobuzTask, appleTask);
+        var deezerResult = await deezerTask;
+        var qobuzResult = await qobuzTask;
+        var appleResult = await appleTask;
 
-        var qobuzResult = qobuzTask.Result;
-        var appleResult = appleTask.Result;
         var links = new ResolvedPlatformLinks(
             QobuzTrackId: qobuzResult?.Id,
             QobuzUrl: qobuzResult?.Url,
             AppleMusicId: appleResult?.Id,
             AppleMusicUrl: appleResult?.Url);
-        return (deezerTask.Result, links);
+        return (deezerResult, links);
     }
 
     private async Task<ExternalMatchResult?> TryResolveAcousticMatchAsync(

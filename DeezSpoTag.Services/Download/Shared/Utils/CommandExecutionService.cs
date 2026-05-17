@@ -166,7 +166,7 @@ public class CommandExecutionService
             process.BeginErrorReadLine();
 
             // Wait for process to complete with cancellation support
-            var processTask = Task.Run(() => process.WaitForExit(), cancellationToken);
+            var processTask = process.WaitForExitAsync(cancellationToken);
 
             try
             {

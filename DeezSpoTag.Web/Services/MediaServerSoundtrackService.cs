@@ -745,21 +745,23 @@ public sealed partial class MediaServerSoundtrackService
     public void TriggerPersistentMediaCacheSync(bool fullRefresh = false)
     {
         Interlocked.Increment(ref _pendingSyncJobs);
-        _ = Task.Run(async () =>
+        _ = TriggerPersistentMediaCacheSyncCoreAsync(fullRefresh);
+    }
+
+    private async Task TriggerPersistentMediaCacheSyncCoreAsync(bool fullRefresh)
+    {
+        try
         {
-            try
-            {
-                await SyncPersistentMediaCacheAsync(fullRefresh, CancellationToken.None);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogDebug(ex, "Background soundtrack media cache sync failed.");
-            }
-            finally
-            {
-                Interlocked.Decrement(ref _pendingSyncJobs);
-            }
-        });
+            await SyncPersistentMediaCacheAsync(fullRefresh, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Background soundtrack media cache sync failed.");
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _pendingSyncJobs);
+        }
     }
 
     public async Task<MediaServerSoundtrackSyncStatusDto> GetSyncStatusAsync(CancellationToken cancellationToken)
@@ -1068,17 +1070,20 @@ public sealed partial class MediaServerSoundtrackService
             return;
         }
 
-        _ = Task.Run(async () =>
+        _ = QueueBackgroundSoundtrackResolutionCoreAsync(unresolved);
+    }
+
+    private async Task QueueBackgroundSoundtrackResolutionCoreAsync(
+        List<MediaServerSoundtrackItemDto> unresolved)
+    {
+        foreach (var row in unresolved)
         {
-            foreach (var row in unresolved)
+            var cacheKey = BuildSoundtrackItemCacheKey(row.ServerType, row.LibraryId, row.ItemId);
+            if (TryEnterBackgroundPersist(cacheKey))
             {
-                var cacheKey = BuildSoundtrackItemCacheKey(row.ServerType, row.LibraryId, row.ItemId);
-                if (TryEnterBackgroundPersist(cacheKey))
-                {
-                    await ResolveAndPersistBackgroundSoundtrackAsync(row, cacheKey);
-                }
+                await ResolveAndPersistBackgroundSoundtrackAsync(row, cacheKey);
             }
-        });
+        }
     }
 
     private bool TryEnterBackgroundPersist(string cacheKey)

@@ -248,7 +248,7 @@ public class LoginModel : PageModel
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Login succeeded for user {UserName} id={UserId} identityDb={IdentityDb}",
-                    user.UserName, user.Id, string.IsNullOrWhiteSpace(connection) ? UnknownValue : connection);
+                    user.UserName, user.Id, MaskConnectionString(connection));
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -259,6 +259,17 @@ public class LoginModel : PageModel
                     user.UserName, user.Id);
             }
         }
+    }
+
+    private static string MaskConnectionString(string? connection)
+    {
+        if (string.IsNullOrWhiteSpace(connection))
+        {
+            return UnknownValue;
+        }
+
+        // Avoid leaking provider credentials or file-system details into logs.
+        return "configured";
     }
 
     private async Task<bool> TryRecoverSingleUserLockoutAsync(AppUser attemptedUser, string password)

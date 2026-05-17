@@ -1447,47 +1447,13 @@ public static partial class EngineAudioPostDownloadHelper
             return Task.CompletedTask;
         }
 
-        return Task.Run(
-            async () =>
-            {
-                try
-                {
-                    runState.ArtworkResult = await RunArtworkPrefetchAsync(
-                        execution,
-                        runtime,
-                        coverUrls,
-                        appleArtworkSize,
-                        preferMaxQualityCover,
-                        token);
-                    runState.ArtworkStatus = runState.ArtworkResult.Success ? CompletedStatus : FailedStatus;
-                    if (!runState.ArtworkResult.Success && !string.IsNullOrWhiteSpace(runState.ArtworkResult.FailureReason))
-                    {
-                        execution.Request.Logger.LogWarning(
-                            "{Engine} artwork prefetch incomplete for {Path}: {Reason}",
-                            execution.Request.Engine,
-                            execution.Request.ExpectedOutputPath,
-                            runState.ArtworkResult.FailureReason);
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    runState.ArtworkResult = new PrefetchArtworkResult(false, ex.Message);
-                    runState.ArtworkStatus = FailedStatus;
-                    execution.Request.Logger.LogWarning(
-                        ex,
-                        "{Engine} artwork prefetch failed for {Path}",
-                        execution.Request.Engine,
-                        execution.Request.ExpectedOutputPath);
-                }
-                finally
-                {
-                    QueuePrefetchStatusHelper.Send(
-                        execution.Request.Listener,
-                        execution.Paths.QueueUuid,
-                        runState.ArtworkStatus,
-                        runState.LyricsStatus);
-                }
-            },
+        return RunArtworkPrefetchTaskAsync(
+            execution,
+            runtime,
+            coverUrls,
+            appleArtworkSize,
+            preferMaxQualityCover,
+            runState,
             token);
     }
 
@@ -1501,34 +1467,85 @@ public static partial class EngineAudioPostDownloadHelper
             return Task.CompletedTask;
         }
 
-        return Task.Run(
-            async () =>
+        return RunLyricsPrefetchTaskAsync(execution, runState, token);
+    }
+
+    private static async Task RunArtworkPrefetchTaskAsync(
+        PrefetchExecutionContext execution,
+        PrefetchRuntimeServices runtime,
+        IReadOnlyList<string> coverUrls,
+        int appleArtworkSize,
+        bool preferMaxQualityCover,
+        PrefetchRunState runState,
+        CancellationToken token)
+    {
+        try
+        {
+            runState.ArtworkResult = await RunArtworkPrefetchAsync(
+                execution,
+                runtime,
+                coverUrls,
+                appleArtworkSize,
+                preferMaxQualityCover,
+                token);
+            runState.ArtworkStatus = runState.ArtworkResult.Success ? CompletedStatus : FailedStatus;
+            if (!runState.ArtworkResult.Success && !string.IsNullOrWhiteSpace(runState.ArtworkResult.FailureReason))
             {
-                try
-                {
-                    runState.LyricsType = await RunLyricsPrefetchAsync(execution, token);
-                    runState.LyricsStatus = string.IsNullOrWhiteSpace(runState.LyricsType) ? NoLyricsStatus : CompletedStatus;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    runState.LyricsStatus = FailedStatus;
-                    execution.Request.Logger.LogWarning(
-                        ex,
-                        "{Engine} lyrics download failed for {Path}",
-                        execution.Request.Engine,
-                        execution.Request.ExpectedOutputPath);
-                }
-                finally
-                {
-                    QueuePrefetchStatusHelper.Send(
-                        execution.Request.Listener,
-                        execution.Paths.QueueUuid,
-                        runState.ArtworkStatus,
-                        runState.LyricsStatus,
-                        runState.LyricsType);
-                }
-            },
-            token);
+                execution.Request.Logger.LogWarning(
+                    "{Engine} artwork prefetch incomplete for {Path}: {Reason}",
+                    execution.Request.Engine,
+                    execution.Request.ExpectedOutputPath,
+                    runState.ArtworkResult.FailureReason);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            runState.ArtworkResult = new PrefetchArtworkResult(false, ex.Message);
+            runState.ArtworkStatus = FailedStatus;
+            execution.Request.Logger.LogWarning(
+                ex,
+                "{Engine} artwork prefetch failed for {Path}",
+                execution.Request.Engine,
+                execution.Request.ExpectedOutputPath);
+        }
+        finally
+        {
+            QueuePrefetchStatusHelper.Send(
+                execution.Request.Listener,
+                execution.Paths.QueueUuid,
+                runState.ArtworkStatus,
+                runState.LyricsStatus);
+        }
+    }
+
+    private static async Task RunLyricsPrefetchTaskAsync(
+        PrefetchExecutionContext execution,
+        PrefetchRunState runState,
+        CancellationToken token)
+    {
+        try
+        {
+            runState.LyricsType = await RunLyricsPrefetchAsync(execution, token);
+            runState.LyricsStatus = string.IsNullOrWhiteSpace(runState.LyricsType) ? NoLyricsStatus : CompletedStatus;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            runState.LyricsStatus = FailedStatus;
+            execution.Request.Logger.LogWarning(
+                ex,
+                "{Engine} lyrics download failed for {Path}",
+                execution.Request.Engine,
+                execution.Request.ExpectedOutputPath);
+        }
+        finally
+        {
+            QueuePrefetchStatusHelper.Send(
+                execution.Request.Listener,
+                execution.Paths.QueueUuid,
+                runState.ArtworkStatus,
+                runState.LyricsStatus,
+                runState.LyricsType);
+        }
     }
 
     private static async Task PersistPrefetchPayloadStateAsync(

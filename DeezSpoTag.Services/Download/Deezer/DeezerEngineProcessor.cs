@@ -1628,30 +1628,36 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         long totalBytes,
         EpisodeRangeTransferCounters counters,
         CancellationToken cancellationToken) =>
-        Task.Run(async () =>
+        RunEpisodeRangeProgressLoopAsync(progressReporter, totalBytes, counters, cancellationToken);
+
+    private static async Task RunEpisodeRangeProgressLoopAsync(
+        Func<double, double, Task> progressReporter,
+        long totalBytes,
+        EpisodeRangeTransferCounters counters,
+        CancellationToken cancellationToken)
+    {
+        var lastReportedProgress = 0d;
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
         {
-            var lastReportedProgress = 0d;
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            var read = Interlocked.Read(ref counters.TotalRead);
+            if (read <= 0)
             {
-                var read = Interlocked.Read(ref counters.TotalRead);
-                if (read <= 0)
-                {
-                    continue;
-                }
-
-                var windowBytes = Interlocked.Exchange(ref counters.SpeedWindowBytes, 0);
-                var progress = read * 100d / totalBytes;
-                if (progress <= lastReportedProgress)
-                {
-                    continue;
-                }
-
-                var speedMbps = (windowBytes * 8d) / 1024d / 1024d;
-                await progressReporter(progress, speedMbps);
-                lastReportedProgress = progress;
+                continue;
             }
-        }, CancellationToken.None);
+
+            var windowBytes = Interlocked.Exchange(ref counters.SpeedWindowBytes, 0);
+            var progress = read * 100d / totalBytes;
+            if (progress <= lastReportedProgress)
+            {
+                continue;
+            }
+
+            var speedMbps = (windowBytes * 8d) / 1024d / 1024d;
+            await progressReporter(progress, speedMbps);
+            lastReportedProgress = progress;
+        }
+    }
 
     private static async Task StopEpisodeRangeProgressLoopAsync(CancellationTokenSource progressCts, Task progressLoop)
     {

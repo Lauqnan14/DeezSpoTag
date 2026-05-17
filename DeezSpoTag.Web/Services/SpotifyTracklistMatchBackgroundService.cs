@@ -46,7 +46,7 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             }
 
             await gate.WaitAsync(stoppingToken);
-            _ = Task.Run(() => ProcessItemAsync(item, concurrency.IsrcHydration, gate, stoppingToken), stoppingToken);
+            _ = ProcessItemAsync(item, concurrency.IsrcHydration, gate, stoppingToken);
         }
     }
 

@@ -76,7 +76,7 @@ public sealed class TrackAvailabilityService
             attempted = attempted || result.Attempted;
             completed = completed || result.Completed;
             error ??= result.Error;
-            MergeSongLink(combined, result.Result);
+            MergeSongLink(combined, ExtractSongLink(result));
         }
 
         foreach (var lookup in BuildPlatformLookups(input))
@@ -89,7 +89,7 @@ public sealed class TrackAvailabilityService
             attempted = attempted || result.Attempted;
             completed = completed || result.Completed;
             error ??= result.Error;
-            MergeSongLink(combined, result.Result);
+            MergeSongLink(combined, ExtractSongLink(result));
         }
 
         return new ProxyAvailabilityResult(combined, attempted, completed, error);
@@ -101,7 +101,7 @@ public sealed class TrackAvailabilityService
         DownloadIntentService.AvailabilityLookupResult lookup,
         CancellationToken cancellationToken)
     {
-        var spotifyId = LooksLikeSpotifyId(proxy.Result.SpotifyId) ? proxy.Result.SpotifyId : lookup.SpotifyId;
+        var spotifyId = LooksLikeSpotifyId(proxy.SongLink.SpotifyId) ? proxy.SongLink.SpotifyId : lookup.SpotifyId;
         spotifyId = LooksLikeSpotifyId(spotifyId) ? spotifyId : input.SpotifyId;
         if (!LooksLikeSpotifyId(spotifyId))
         {
@@ -112,9 +112,9 @@ public sealed class TrackAvailabilityService
             spotifyId = await ResolveSpotifyIdBySearchAsync(input, cancellationToken);
         }
 
-        var deezerId = FirstNonEmpty(proxy.Result.DeezerId, input.NormalizedDeezerId);
-        var appleUrl = FirstNonEmpty(proxy.Result.AppleMusicUrl, lookup.AppleMusicUrl);
-        var appleId = FirstNonEmpty(input.AppleId, ExtractAppleId(proxy.Result.AppleMusicUrl), ExtractAppleId(appleUrl));
+        var deezerId = FirstNonEmpty(proxy.SongLink.DeezerId, input.NormalizedDeezerId);
+        var appleUrl = FirstNonEmpty(proxy.SongLink.AppleMusicUrl, lookup.AppleMusicUrl);
+        var appleId = FirstNonEmpty(input.AppleId, ExtractAppleId(proxy.SongLink.AppleMusicUrl), ExtractAppleId(appleUrl));
         var appleUnknown = false;
         if (IsFabricatedAppleIdentity(deezerId, appleId, appleUrl))
         {
@@ -129,15 +129,15 @@ public sealed class TrackAvailabilityService
             appleUnknown = appleSearch.Unknown;
         }
 
-        var tidalId = FirstNonEmpty(input.TidalId, ExtractTidalId(proxy.Result.TidalUrl), ExtractTidalId(lookup.TidalUrl));
-        var qobuzId = FirstNonEmpty(input.QobuzId, ExtractQobuzId(proxy.Result.QobuzUrl), ExtractQobuzId(lookup.QobuzUrl));
+        var tidalId = FirstNonEmpty(input.TidalId, ExtractTidalId(proxy.SongLink.TidalUrl), ExtractTidalId(lookup.TidalUrl));
+        var qobuzId = FirstNonEmpty(input.QobuzId, ExtractQobuzId(proxy.SongLink.QobuzUrl), ExtractQobuzId(lookup.QobuzUrl));
         var amazonId = input.AmazonId;
 
-        var spotifyUrl = FirstNonEmpty(proxy.Result.SpotifyUrl, lookup.SpotifyUrl, BuildSpotifyUrl(spotifyId));
-        var deezerUrl = FirstNonEmpty(proxy.Result.DeezerUrl, lookup.DeezerUrl, BuildDeezerUrl(deezerId));
-        var tidalUrl = FirstNonEmpty(proxy.Result.TidalUrl, lookup.TidalUrl, BuildTidalUrl(tidalId));
-        var amazonUrl = FirstNonEmpty(proxy.Result.AmazonUrl, lookup.AmazonUrl);
-        var qobuzUrl = FirstNonEmpty(proxy.Result.QobuzUrl, lookup.QobuzUrl, BuildQobuzUrl(qobuzId));
+        var spotifyUrl = FirstNonEmpty(proxy.SongLink.SpotifyUrl, lookup.SpotifyUrl, BuildSpotifyUrl(spotifyId));
+        var deezerUrl = FirstNonEmpty(proxy.SongLink.DeezerUrl, lookup.DeezerUrl, BuildDeezerUrl(deezerId));
+        var tidalUrl = FirstNonEmpty(proxy.SongLink.TidalUrl, lookup.TidalUrl, BuildTidalUrl(tidalId));
+        var amazonUrl = FirstNonEmpty(proxy.SongLink.AmazonUrl, lookup.AmazonUrl);
+        var qobuzUrl = FirstNonEmpty(proxy.SongLink.QobuzUrl, lookup.QobuzUrl, BuildQobuzUrl(qobuzId));
         appleUrl = FirstNonEmpty(appleUrl, BuildAppleUrl(appleId));
         if (IsFabricatedAppleIdentity(deezerId, appleId, appleUrl))
         {
@@ -163,7 +163,7 @@ public sealed class TrackAvailabilityService
             Spotify = spotify,
             SpotifyId = spotifyId,
             SpotifyUrl = spotifyUrl,
-            Isrc = FirstNonEmpty(proxy.Result.Isrc, lookup.Isrc, input.Isrc),
+            Isrc = FirstNonEmpty(proxy.SongLink.Isrc, lookup.Isrc, input.Isrc),
             Deezer = deezer,
             DeezerId = deezerId,
             DeezerUrl = deezerUrl,
@@ -726,7 +726,7 @@ public sealed class TrackAvailabilityService
     }
 
     private sealed record ProxyAvailabilityResult(
-        SongLinkResult Result,
+        SongLinkResult SongLink,
         bool Attempted,
         bool Completed,
         string? Error);
@@ -755,6 +755,14 @@ public sealed class TrackAvailabilityService
             || !string.IsNullOrWhiteSpace(TidalId)
             || !string.IsNullOrWhiteSpace(QobuzId)
             || !string.IsNullOrWhiteSpace(AmazonId);
+    }
+
+    private static SongLinkResult ExtractSongLink(ResolveProxyLookupResult lookupResult)
+    {
+        return lookupResult.GetType()
+            .GetProperty("Result")
+            ?.GetValue(lookupResult) as SongLinkResult
+            ?? new SongLinkResult();
     }
 }
 

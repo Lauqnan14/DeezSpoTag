@@ -45,7 +45,7 @@ public sealed class QualityScannerService
         DownloadIntentService DownloadIntentService,
         CancellationToken CancellationToken);
     private sealed record UpgradeQueueRequest(string EffectiveIsrc, string RequestedQuality, string UpgradeContentType);
-    private sealed record AtmosQueuePrecheckResult(long AtmosphereDestination, AtmosQueueResult? Result);
+    private sealed record AtmosQueuePrecheckResult(long AtmosphereDestination, AtmosQueueResult? Outcome);
 
     public QualityScannerService(
         IServiceProvider serviceProvider,
@@ -145,7 +145,7 @@ public sealed class QualityScannerService
                 MarkAutomationWindow: request.MarkAutomationWindow,
                 TechnicalProfiles: NormalizeTechnicalProfiles(request.TechnicalProfiles),
                 FolderIds: NormalizeFolderIds(request.FolderIds, request.FolderId));
-            _ = Task.Run(() => RunAsync(options, _cts.Token), _cts.Token);
+            _ = RunAsync(options, _cts.Token);
         }
 
         if (previousCts is not null)
@@ -785,9 +785,9 @@ public sealed class QualityScannerService
             options,
             folderSnapshot,
             cancellationToken);
-        if (precheck.Result != null)
+        if (precheck.Outcome != null)
         {
-            return precheck.Result;
+            return precheck.Outcome;
         }
 
         var atmosphereDestination = precheck.AtmosphereDestination;

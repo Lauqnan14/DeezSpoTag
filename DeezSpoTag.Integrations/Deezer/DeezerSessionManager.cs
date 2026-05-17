@@ -316,9 +316,9 @@ public sealed class DeezerSessionManager : IDisposable
             return jsonResponse.Data;
         }
 
-        if (!EqualityComparer<T>.Default.Equals(jsonResponse.Result, default!))
+        if (!EqualityComparer<T>.Default.Equals(jsonResponse.Payload, default!))
         {
-            return jsonResponse.Result;
+            return jsonResponse.Payload;
         }
 
         throw new InvalidOperationException($"Unable to parse response for {endpoint}");
@@ -900,7 +900,7 @@ public class DeezerGwResponse<T>
 public class DeezerApiResponse<T>
 {
     public T? Data { get; set; }
-    public T? Result { get; set; }
+    public T? Payload { get; set; }
     public DeezerApiError? Error { get; set; }
 }
 

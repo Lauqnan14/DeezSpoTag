@@ -260,8 +260,8 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             var trackTask = SafeGetTrackAsync(trackId, cancellationToken);
             var relatedTask = SafeGetRelatedTracksAsync(trackId, cancellationToken);
             await Task.WhenAll(trackTask, relatedTask);
-            track = trackTask.Result;
-            related = relatedTask.Result;
+            track = await trackTask;
+            related = await relatedTask;
         }
 
         var searchResults = await SafeSearchTracksAsync(query, cancellationToken);

@@ -110,7 +110,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             static item => !string.IsNullOrWhiteSpace(item.ArtistName),
             _logger);
 
-        _ = Task.Run(() => EnqueueMissingAsync(cancellationToken), cancellationToken);
+        _ = EnqueueMissingAsync(cancellationToken);
         return base.StartAsync(cancellationToken);
     }
 
@@ -283,11 +283,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             PersistentArtistQueueStore.PersistQueueSnapshot(_queueItems, _queueLock, QueuePath);
         }
 
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(delay);
-            _channel.Writer.TryWrite(retryItem);
-        });
+        _ = EnqueueAfterDelayAsync(retryItem, delay);
     }
 
     private void RequeueWithoutRetry(QueueItem item, TimeSpan delay)
@@ -298,11 +294,13 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             PersistentArtistQueueStore.PersistQueueSnapshot(_queueItems, _queueLock, QueuePath);
         }
 
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(delay);
-            _channel.Writer.TryWrite(item);
-        });
+        _ = EnqueueAfterDelayAsync(item, delay);
+    }
+
+    private async Task EnqueueAfterDelayAsync(QueueItem item, TimeSpan delay)
+    {
+        await Task.Delay(delay);
+        _channel.Writer.TryWrite(item);
     }
 
     private void MaybeLogAuthUnavailable(bool hasLibrespotAuth)

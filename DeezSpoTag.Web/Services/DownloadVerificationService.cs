@@ -154,44 +154,35 @@ public sealed class DownloadVerificationService
         }
     }
 
-    private static async Task<int> GetDurationAsync(string filePath)
+    private static Task<int> GetDurationAsync(string filePath)
     {
-        return await Task.Run(() =>
-        {
-            using var file = TagLib.File.Create(filePath);
-            return (int)Math.Round(file.Properties.Duration.TotalSeconds);
-        });
+        using var file = TagLib.File.Create(filePath);
+        return Task.FromResult((int)Math.Round(file.Properties.Duration.TotalSeconds));
     }
 
-    private static async Task<string?> GetIsrcFromTagsAsync(string filePath)
+    private static Task<string?> GetIsrcFromTagsAsync(string filePath)
     {
-        return await Task.Run(() =>
-        {
-            using var file = TagLib.File.Create(filePath);
-            return file.Tag.ISRC;
-        });
+        using var file = TagLib.File.Create(filePath);
+        return Task.FromResult<string?>(file.Tag.ISRC);
     }
 
-    private async Task<ShazamTrack?> ShazamRecognizeAsync(string filePath, CancellationToken cancellationToken)
+    private Task<ShazamTrack?> ShazamRecognizeAsync(string filePath, CancellationToken cancellationToken)
     {
-        return await Task.Run(() =>
+        var result = _shazamRecognitionService.Recognize(filePath, cancellationToken);
+        if (result == null)
         {
-            var result = _shazamRecognitionService.Recognize(filePath, cancellationToken);
-            if (result == null)
-            {
-                return null;
-            }
+            return Task.FromResult<ShazamTrack?>(null);
+        }
 
-            var artist = result.Artists.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a))
-                         ?? result.Artist
-                         ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(result.Title) || string.IsNullOrWhiteSpace(artist))
-            {
-                return null;
-            }
+        var artist = result.Artists.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a))
+                     ?? result.Artist
+                     ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(result.Title) || string.IsNullOrWhiteSpace(artist))
+        {
+            return Task.FromResult<ShazamTrack?>(null);
+        }
 
-            return new ShazamTrack(result.Title, artist, result.Isrc);
-        }, cancellationToken);
+        return Task.FromResult<ShazamTrack?>(new ShazamTrack(result.Title, artist, result.Isrc));
     }
 
     private static double CalculateSimilarity(string a, string b)

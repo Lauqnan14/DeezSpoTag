@@ -29,11 +29,13 @@ public sealed class FavoritesApiController : ControllerBase
         var deezerTask = _deezerFavoritesService.GetFavoritesAsync(resolvedLimit, cancellationToken);
 
         await Task.WhenAll(spotifyTask, deezerTask);
+        var spotify = await spotifyTask;
+        var deezer = await deezerTask;
 
         return Ok(new
         {
-            spotify = spotifyTask.Result,
-            deezer = deezerTask.Result
+            spotify,
+            deezer
         });
     }
 }

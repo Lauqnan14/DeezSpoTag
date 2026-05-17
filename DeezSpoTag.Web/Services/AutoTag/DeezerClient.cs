@@ -150,7 +150,7 @@ public sealed class DeezerClient
                 continue;
             }
 
-            return outcome.Result;
+            return outcome.Value;
         }
 
         return default;
@@ -299,7 +299,7 @@ public sealed class DeezerClient
 
     private static bool CanRetry(int attempt) => attempt < MaxAttempts;
 
-    private readonly record struct GetAttemptOutcome<T>(T? Result, bool RetryRequested)
+    private readonly record struct GetAttemptOutcome<T>(T? Value, bool RetryRequested)
     {
         public static GetAttemptOutcome<T> Retry() => new(default, true);
 

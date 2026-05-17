@@ -1200,45 +1200,48 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
             return false;
         }
 
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                if (explicitTrackIds is { Count: > 0 })
-                {
-                    await RefreshShazamCacheForTrackBatchAsync(explicitTrackIds, CancellationToken.None);
-                }
-                else
-                {
-                    var staleBeforeUtc = DateTimeOffset.UtcNow - ShazamCacheTtl;
-                    while (true)
-                    {
-                        var batch = await _repository.GetTrackIdsNeedingShazamRefreshAsync(
-                            scope.LibraryId,
-                            staleBeforeUtc,
-                            scope.FolderId,
-                            ShazamBackgroundBatchSize,
-                            CancellationToken.None);
-                        if (batch.Count == 0)
-                        {
-                            break;
-                        }
-
-                        await RefreshShazamCacheForTrackBatchAsync(batch, CancellationToken.None);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Background Shazam library scan failed for scope {ScopeKey}.", scope.ScopeKey);
-            }
-            finally
-            {
-                _backgroundScans.TryRemove(scope.ScopeKey, out _);
-            }
-        });
-
+        _ = StartBackgroundShazamRefreshCoreAsync(scope, explicitTrackIds);
         return true;
+    }
+
+    private async Task StartBackgroundShazamRefreshCoreAsync(
+        RecommendationScope scope,
+        IReadOnlyList<long>? explicitTrackIds)
+    {
+        try
+        {
+            if (explicitTrackIds is { Count: > 0 })
+            {
+                await RefreshShazamCacheForTrackBatchAsync(explicitTrackIds, CancellationToken.None);
+            }
+            else
+            {
+                var staleBeforeUtc = DateTimeOffset.UtcNow - ShazamCacheTtl;
+                while (true)
+                {
+                    var batch = await _repository.GetTrackIdsNeedingShazamRefreshAsync(
+                        scope.LibraryId,
+                        staleBeforeUtc,
+                        scope.FolderId,
+                        ShazamBackgroundBatchSize,
+                        CancellationToken.None);
+                    if (batch.Count == 0)
+                    {
+                        break;
+                    }
+
+                    await RefreshShazamCacheForTrackBatchAsync(batch, CancellationToken.None);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Background Shazam library scan failed for scope {ScopeKey}.", scope.ScopeKey);
+        }
+        finally
+        {
+            _backgroundScans.TryRemove(scope.ScopeKey, out _);
+        }
     }
 
     private async Task RefreshShazamCacheForTrackBatchAsync(

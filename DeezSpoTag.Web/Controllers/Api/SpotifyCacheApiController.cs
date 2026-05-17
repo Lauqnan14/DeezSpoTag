@@ -50,16 +50,16 @@ public class SpotifyCacheApiController : ControllerBase
     private ArtistMetadataUpdaterService MetadataUpdaterService => _serviceProvider.GetRequiredService<ArtistMetadataUpdaterService>();
 
     [HttpPost("refresh")]
-    public IActionResult Refresh([FromQuery] long? artistId)
+    public async Task<IActionResult> Refresh([FromQuery] long? artistId)
     {
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Spotify cache refresh requested: artistId={ArtistId}", artistId);
         }
         LogRefreshQueued(artistId);
-        _ = Task.Run(() => RunRefreshAsync(artistId));
+        await RunRefreshAsync(artistId);
 
-        return Ok(new { queued = true });
+        return Ok(new { queued = false, completed = true });
     }
 
     private void LogRefreshQueued(long? artistId)

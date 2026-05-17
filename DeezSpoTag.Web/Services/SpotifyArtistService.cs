@@ -1358,49 +1358,54 @@ public sealed class SpotifyArtistService
         string artistName,
         SpotifyArtistPageResult baseResult)
     {
-        _ = Task.Run(async () =>
+        _ = QueueArtistFallbackEnrichmentCoreAsync(spotifyId, artistName, baseResult);
+    }
+
+    private async Task QueueArtistFallbackEnrichmentCoreAsync(
+        string spotifyId,
+        string artistName,
+        SpotifyArtistPageResult baseResult)
+    {
+        try
         {
-            try
+            var fallbackArtist = await _metadataService.FetchArtistFallbackWithLibrespotAsync(
+                spotifyId,
+                CancellationToken.None);
+            if (fallbackArtist is null)
             {
-                var fallbackArtist = await _metadataService.FetchArtistFallbackWithLibrespotAsync(
-                    spotifyId,
-                    CancellationToken.None);
-                if (fallbackArtist is null)
-                {
-                    return;
-                }
-
-                var enriched = ApplyArtistFallback(baseResult, fallbackArtist);
-                if (ReferenceEquals(enriched, baseResult))
-                {
-                    return;
-                }
-
-                enriched = EnsureArtistIdentity(enriched, artistName);
-                var payloadJson = JsonSerializer.Serialize(
-                    new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, enriched),
-                    _jsonOptions);
-                await _cacheRepository.UpsertAsync(
-                    SpotifySource,
-                    spotifyId,
-                    payloadJson,
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None);
-                await _cacheRepository.UpsertGenresAsync(
-                    SpotifySource,
-                    spotifyId,
-                    enriched.Artist.Genres,
-                    CancellationToken.None);
-                AddActivity("info", $"[spotify] librespot fallback cached lazily: {artistName}.");
+                return;
             }
-            catch (Exception ex)
+
+            var enriched = ApplyArtistFallback(baseResult, fallbackArtist);
+            if (ReferenceEquals(enriched, baseResult))
             {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Spotify artist librespot fallback enrichment failed for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
-                }
+                return;
             }
-        });
+
+            enriched = EnsureArtistIdentity(enriched, artistName);
+            var payloadJson = JsonSerializer.Serialize(
+                new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, enriched),
+                _jsonOptions);
+            await _cacheRepository.UpsertAsync(
+                SpotifySource,
+                spotifyId,
+                payloadJson,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+            await _cacheRepository.UpsertGenresAsync(
+                SpotifySource,
+                spotifyId,
+                enriched.Artist.Genres,
+                CancellationToken.None);
+            AddActivity("info", $"[spotify] librespot fallback cached lazily: {artistName}.");
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify artist librespot fallback enrichment failed for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
+            }
+        }
     }
 
     private void QueueArtistTopTrackIsrcEnrichment(
@@ -1408,38 +1413,43 @@ public sealed class SpotifyArtistService
         string artistName,
         SpotifyArtistPageResult baseResult)
     {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var enrichedTopTracks = await EnrichTopTracksWithIsrcsAsync(
-                    baseResult.TopTracks,
-                    CancellationToken.None);
-                if (enrichedTopTracks.Count == 0 || !HaveTopTrackIsrcsChanged(baseResult.TopTracks, enrichedTopTracks))
-                {
-                    return;
-                }
+        _ = QueueArtistTopTrackIsrcEnrichmentCoreAsync(spotifyId, artistName, baseResult);
+    }
 
-                var enriched = baseResult with { TopTracks = enrichedTopTracks };
-                var payloadJson = JsonSerializer.Serialize(
-                    new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, enriched),
-                    _jsonOptions);
-                await _cacheRepository.UpsertAsync(
-                    SpotifySource,
-                    spotifyId,
-                    payloadJson,
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None);
-                AddActivity("info", $"[spotify] top-track ISRCs cached lazily: {artistName}.");
-            }
-            catch (Exception ex)
+    private async Task QueueArtistTopTrackIsrcEnrichmentCoreAsync(
+        string spotifyId,
+        string artistName,
+        SpotifyArtistPageResult baseResult)
+    {
+        try
+        {
+            var enrichedTopTracks = await EnrichTopTracksWithIsrcsAsync(
+                baseResult.TopTracks,
+                CancellationToken.None);
+            if (enrichedTopTracks.Count == 0 || !HaveTopTrackIsrcsChanged(baseResult.TopTracks, enrichedTopTracks))
             {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Spotify artist top-track ISRC enrichment failed for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
-                }
+                return;
             }
-        });
+
+            var enriched = baseResult with { TopTracks = enrichedTopTracks };
+            var payloadJson = JsonSerializer.Serialize(
+                new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, enriched),
+                _jsonOptions);
+            await _cacheRepository.UpsertAsync(
+                SpotifySource,
+                spotifyId,
+                payloadJson,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+            AddActivity("info", $"[spotify] top-track ISRCs cached lazily: {artistName}.");
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify artist top-track ISRC enrichment failed for {ArtistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(spotifyId));
+            }
+        }
     }
 
     private static bool HaveTopTrackIsrcsChanged(

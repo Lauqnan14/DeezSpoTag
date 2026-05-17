@@ -54,7 +54,7 @@ public class AsyncQueueProcessor<T> : IDisposable
             _logger?.LogDebug("Pushed item to queue, current length: {QueueLength}", _queue.Count);        }
 
         // Start processing if not already at capacity
-        _ = Task.Run(ProcessQueueAsync);
+        _ = ProcessQueueAsync();
     }
 
     /// <summary>
@@ -209,7 +209,7 @@ public class AsyncQueueProcessor<T> : IDisposable
     {
         if (!_queue.IsEmpty)
         {
-            _ = Task.Run(ProcessQueueAsync);
+            _ = ProcessQueueAsync();
         }
     }
 

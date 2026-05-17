@@ -84,13 +84,11 @@ public class LibraryAnalysisApiController : ControllerBase
     }
 
     [HttpPost("run")]
-    public IActionResult Run([FromQuery] int batchSize = 100, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> Run([FromQuery] int batchSize = 100, CancellationToken cancellationToken = default)
     {
         batchSize = Math.Clamp(batchSize, 10, 500);
-        _ = Task.Run(
-            () => _analysisService.AnalyzeNowAsync(batchSize, CancellationToken.None, forceWhenDisabled: true),
-            cancellationToken);
-        return Ok(new { queued = batchSize, fullScan = true });
+        await _analysisService.AnalyzeNowAsync(batchSize, cancellationToken, forceWhenDisabled: true);
+        return Ok(new { queued = false, completed = true, batchSize, fullScan = true });
     }
 
     [HttpPost("reset")]
@@ -667,9 +665,7 @@ public class LibraryAnalysisApiController : ControllerBase
             return;
         }
 
-        _ = Task.Run(
-            () => PumpFragmentedMp4IntoFfmpegAsync(filePath, process, cancellationToken),
-            cancellationToken);
+        _ = PumpFragmentedMp4IntoFfmpegAsync(filePath, process, cancellationToken);
     }
 
     private async Task PumpFragmentedMp4IntoFfmpegAsync(
@@ -704,9 +700,7 @@ public class LibraryAnalysisApiController : ControllerBase
 
     private void StartTranscodeDiagnosticsPump(Process process, string filePath, CancellationToken cancellationToken)
     {
-        _ = Task.Run(
-            () => ReadTranscodeDiagnosticsAsync(process, filePath, cancellationToken),
-            cancellationToken);
+        _ = ReadTranscodeDiagnosticsAsync(process, filePath, cancellationToken);
     }
 
     private async Task ReadTranscodeDiagnosticsAsync(

@@ -84,16 +84,18 @@ public sealed class SpotifySearchService
             var trackTask = _pathfinderMetadataClient.SearchTracksAsync(query, resolvedLimit, cancellationToken);
             var artistTask = SearchArtistsViaPathfinderAsync(query, resolvedLimit, 0, cancellationToken);
             await Task.WhenAll(trackTask, artistTask);
+            var pathfinderTracks = await trackTask;
+            var artistResponse = await artistTask;
 
-            var tracks = trackTask.Result
+            var tracks = pathfinderTracks
                 .Take(resolvedLimit)
                 .Select(MapPathfinderTrack)
                 .ToList();
-            var artists = artistTask.Result?.Items
+            var artists = artistResponse?.Items
                 .Take(resolvedLimit)
                 .ToList()
                 ?? new List<SpotifySearchItem>();
-            var albums = BuildPathfinderAlbumItems(trackTask.Result, resolvedLimit);
+            var albums = BuildPathfinderAlbumItems(pathfinderTracks, resolvedLimit);
 
             var totals = new Dictionary<string, int>
             {

@@ -623,7 +623,7 @@ public partial class AutoTagService
         var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
         TrySaveLastConfig(persistedConfigJson);
 
-        _ = Task.Run(() => RunJobAsync(job, normalizedPath, runtimeConfigPath));
+        _ = RunJobAsync(job, normalizedPath, runtimeConfigPath);
 
         return job;
     }
@@ -6408,7 +6408,7 @@ public partial class AutoTagService
         }
 
         AppendLog(job, "stale recovery: cleanup auto-move queued");
-        _ = Task.Run(() => RunStaleRecoveryCleanupAsync(job));
+        _ = RunStaleRecoveryCleanupAsync(job);
     }
 
     private async Task RunStaleRecoveryCleanupAsync(AutoTagJob job)

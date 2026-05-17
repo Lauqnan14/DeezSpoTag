@@ -102,9 +102,9 @@ public sealed class SpotifyCentralMetadataService
 
         await Task.WhenAll(relatedTask, appearsOnTask, topTracksTask);
 
-        var related = relatedTask.Result ?? new List<SpotifyRelatedArtist>();
-        var appearsOn = appearsOnTask.Result ?? new List<SpotifyAlbumSummary>();
-        var topTracks = topTracksTask.Result ?? new List<SpotifyTrack>();
+        var related = (await relatedTask) ?? new List<SpotifyRelatedArtist>();
+        var appearsOn = (await appearsOnTask) ?? new List<SpotifyAlbumSummary>();
+        var topTracks = (await topTracksTask) ?? new List<SpotifyTrack>();
 
         var appearsOnAlbums = appearsOn.Select(item => new SpotifyAlbum(
                 item.Id,
@@ -265,41 +265,43 @@ public sealed class SpotifyCentralMetadataService
 
     private void QueueAlbumFallbackEnrichment(string albumId, SpotifyAlbumDetails baseResult)
     {
-        _ = Task.Run(async () =>
+        _ = QueueAlbumFallbackEnrichmentCoreAsync(albumId, baseResult);
+    }
+
+    private async Task QueueAlbumFallbackEnrichmentCoreAsync(string albumId, SpotifyAlbumDetails baseResult)
+    {
+        try
         {
-            try
+            var fallback = await _metadataService.FetchAlbumFallbackWithLibrespotAsync(
+                albumId,
+                CancellationToken.None);
+            if (fallback is null)
             {
-                var fallback = await _metadataService.FetchAlbumFallbackWithLibrespotAsync(
-                    albumId,
-                    CancellationToken.None);
-                if (fallback is null)
-                {
-                    return;
-                }
-
-                var enriched = ApplyAlbumFallback(baseResult, fallback);
-                if (ReferenceEquals(enriched, baseResult))
-                {
-                    return;
-                }
-
-                var payloadJson = JsonSerializer.Serialize(enriched, _jsonOptions);
-                await _cacheRepository.UpsertAsync(
-                    AlbumType,
-                    albumId,
-                    payloadJson,
-                    DateTimeOffset.UtcNow,
-                    CancellationToken.None);
-                AddActivity("info", $"[spotify-central] librespot album fallback cached lazily: {albumId}.");
+                return;
             }
-            catch (Exception ex)
+
+            var enriched = ApplyAlbumFallback(baseResult, fallback);
+            if (ReferenceEquals(enriched, baseResult))
             {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Spotify album librespot fallback enrichment failed for {AlbumId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(albumId));
-                }
+                return;
             }
-        });
+
+            var payloadJson = JsonSerializer.Serialize(enriched, _jsonOptions);
+            await _cacheRepository.UpsertAsync(
+                AlbumType,
+                albumId,
+                payloadJson,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+            AddActivity("info", $"[spotify-central] librespot album fallback cached lazily: {albumId}.");
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify album librespot fallback enrichment failed for {AlbumId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(albumId));
+            }
+        }
     }
 
     private static SpotifyAlbumDetails ApplyAlbumFallback(

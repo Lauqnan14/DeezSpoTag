@@ -190,7 +190,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             if (shouldRestart)
             {
                 _logger.LogInformation("Restarting queue processor after pending start request.");
-                _ = Task.Run(StartQueueAsync);
+                _ = StartQueueAsync();
             }
         }
     }

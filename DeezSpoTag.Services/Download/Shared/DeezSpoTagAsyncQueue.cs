@@ -43,7 +43,7 @@ public class DeezSpoTagAsyncQueue<T> : IDisposable
         _queue.Enqueue(item);
 
         // Start processing if not already at capacity
-        _ = Task.Run(ProcessQueueAsync);
+        _ = ProcessQueueAsync();
     }
 
     /// <summary>
@@ -141,7 +141,7 @@ public class DeezSpoTagAsyncQueue<T> : IDisposable
             // Continue processing if there are more items
             if (!_queue.IsEmpty)
             {
-                _ = Task.Run(ProcessQueueAsync);
+                _ = ProcessQueueAsync();
             }
         }
         catch (OperationCanceledException)

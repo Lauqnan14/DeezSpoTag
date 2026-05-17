@@ -1486,14 +1486,14 @@ public sealed class SongLinkResolver
             return false;
         }
 
-        var ttl = entry.Result is null ? NegativeCacheTtl : CacheTtl;
+        var ttl = entry.Value is null ? NegativeCacheTtl : CacheTtl;
         if (DateTimeOffset.UtcNow - entry.Stamp > ttl)
         {
             _cache.TryRemove(key, out _);
             return false;
         }
 
-        result = entry.Result;
+        result = entry.Value;
         return true;
     }
 
@@ -1864,7 +1864,7 @@ public sealed class SongLinkResolver
         return trimmed.Length >= 8 ? trimmed : null;
     }
 
-    private sealed record CacheEntry(DateTimeOffset Stamp, SongLinkResult? Result);
+    private sealed record CacheEntry(DateTimeOffset Stamp, SongLinkResult? Value);
 
     private sealed record SourceDescriptor(string Platform, string TrackId);
 

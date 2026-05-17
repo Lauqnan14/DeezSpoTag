@@ -245,30 +245,32 @@ public sealed class AudioQualitySignalAnalyzer
     private static void StartFragmentedMp4InputPump(string filePath, Process process)
     {
         // Feed clean mdat payloads to FFmpeg stdin without blocking the main decode path.
-        _ = Task.Run(async () =>
+        _ = PumpFragmentedMp4InputAsync(filePath, process);
+    }
+
+    private static async Task PumpFragmentedMp4InputAsync(string filePath, Process process)
+    {
+        try
+        {
+            await FragmentedMp4DurationReader.ExtractMdatPayloadsAsync(
+                filePath,
+                process.StandardInput.BaseStream);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Best effort only.
+        }
+        finally
         {
             try
             {
-                await FragmentedMp4DurationReader.ExtractMdatPayloadsAsync(
-                    filePath,
-                    process.StandardInput.BaseStream);
+                process.StandardInput.Close();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Best effort only.
+                // Process may already be dead.
             }
-            finally
-            {
-                try
-                {
-                    process.StandardInput.Close();
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // Process may already be dead.
-                }
-            }
-        });
+        }
     }
 
     private static byte[] ReadDecodedBytes(Process process, int maxBytes)

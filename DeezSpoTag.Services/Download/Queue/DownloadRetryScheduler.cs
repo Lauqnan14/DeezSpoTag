@@ -50,7 +50,7 @@ public sealed class DownloadRetryScheduler
             return;
         }
 
-        _ = Task.Run(() => ExecuteScheduledRetryAsync(queueUuid, engine, attempt, delaySeconds));
+        _ = ExecuteScheduledRetryAsync(queueUuid, engine, attempt, delaySeconds);
     }
 
     private bool TryCreateRetrySchedule(string queueUuid, string engine, string reason, out int attempt, out int delaySeconds)

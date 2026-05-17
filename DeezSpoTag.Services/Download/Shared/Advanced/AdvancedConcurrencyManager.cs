@@ -151,14 +151,16 @@ public class AdvancedConcurrencyManager : IDisposable
                 // Decrease capacity by waiting for slots
                 for (int i = 0; i < Math.Abs(difference); i++)
                 {
-                    _ = Task.Run(async () =>
-                    {
-                        await semaphore.WaitAsync();
-                        // Don't release - this effectively reduces capacity
-                    });
+                    _ = ReduceSemaphoreCapacityAsync(semaphore);
                 }
             }
         }
+    }
+
+    private static async Task ReduceSemaphoreCapacityAsync(SemaphoreSlim semaphore)
+    {
+        await semaphore.WaitAsync();
+        // Intentionally do not release to reduce capacity.
     }
 
     /// <summary>

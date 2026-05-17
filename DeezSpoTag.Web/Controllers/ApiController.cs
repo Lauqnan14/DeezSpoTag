@@ -74,7 +74,7 @@ namespace DeezSpoTag.Web.Controllers
         private const bool HomeCacheEnabled = true;
         private static readonly TimeSpan TracklistCacheFallbackWindow = TimeSpan.FromDays(7);
         private static readonly object HomeCacheLock = new();
-        private static readonly Dictionary<string, (DateTimeOffset Stamp, object Result)> HomeCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, (DateTimeOffset Stamp, object Payload)> HomeCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan HomeCacheTtl = TimeSpan.FromMinutes(2);
         private static readonly string[] PersonalHomeSectionKeywords =
         {
@@ -631,7 +631,7 @@ namespace DeezSpoTag.Web.Controllers
                 if (HomeCache.TryGetValue(cacheKey, out var cached)
                     && DateTimeOffset.UtcNow - cached.Stamp <= HomeCacheTtl)
                 {
-                    return cached.Result;
+                    return cached.Payload;
                 }
             }
 
@@ -1544,7 +1544,7 @@ namespace DeezSpoTag.Web.Controllers
 
             if (!_artistPageCache.IsFresh(existingCache.FetchedUtc))
             {
-                _ = Task.Run(() => RefreshArtistPageCacheAsync(id, normalizedSource), cancellationToken);
+                _ = RefreshArtistPageCacheAsync(id, normalizedSource);
             }
 
             var elapsedMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds;
@@ -1779,7 +1779,7 @@ namespace DeezSpoTag.Web.Controllers
                 _logger.LogInformation("Artist cache hit (deezer). id=ArtistId fresh=IsFresh");
                 if (!_artistPageCache.IsFresh(cached.FetchedUtc))
                 {
-                    _ = Task.Run(() => RefreshDeezerArtistCacheAsync(artistId));
+                    _ = RefreshDeezerArtistCacheAsync(artistId);
                 }
 
                 return Content(cached.PayloadJson, ApplicationJsonContentType);
@@ -2877,11 +2877,7 @@ namespace DeezSpoTag.Web.Controllers
                     JsonElement element => element.GetRawText(),
                     _ => JsonSerializer.Serialize(entry)
                 };
-                return Task.Run(async () =>
-                {
-                    using var doc = JsonDocument.Parse(json);
-                    return await mapper(doc.RootElement, cancellationToken);
-                }, cancellationToken);
+                return MapGwSectionEntryAsync(json, mapper, cancellationToken);
             }));
 
             var results = await Task.WhenAll(tasks);
@@ -2925,6 +2921,15 @@ namespace DeezSpoTag.Web.Controllers
                 image,
                 url = GetString(item, "link")
             };
+        }
+
+        private static async Task<object> MapGwSectionEntryAsync(
+            string json,
+            Func<JsonElement, CancellationToken, Task<object>> mapper,
+            CancellationToken cancellationToken)
+        {
+            using var doc = JsonDocument.Parse(json);
+            return await mapper(doc.RootElement, cancellationToken);
         }
 
         private async Task<object> MapGwAlbumAsync(JsonElement item, CancellationToken cancellationToken)

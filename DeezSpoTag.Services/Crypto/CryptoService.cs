@@ -267,41 +267,35 @@ public class CryptoService
     /// <summary>
     /// Decrypt a single chunk of audio data asynchronously
     /// </summary>
-    public async Task<byte[]> DecryptChunkAsync(byte[] chunk, byte[] blowfishKey)
+    public Task<byte[]> DecryptChunkAsync(byte[] chunk, byte[] blowfishKey)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
-            {
-                // Convert byte array key to string for compatibility
-                var keyString = Encoding.GetEncoding(Latin1EncodingName).GetString(blowfishKey);
-                return DecryptChunk(chunk, keyString);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Failed to decrypt chunk asynchronously");
-                return chunk; // Return original chunk if decryption fails
-            }
-        });
+            // Convert byte array key to string for compatibility
+            var keyString = Encoding.GetEncoding(Latin1EncodingName).GetString(blowfishKey);
+            return Task.FromResult(DecryptChunk(chunk, keyString));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Failed to decrypt chunk asynchronously");
+            return Task.FromResult(chunk); // Return original chunk if decryption fails
+        }
     }
 
     /// <summary>
     /// Decrypt a single chunk of audio data asynchronously with string key
     /// </summary>
-    public async Task<byte[]> DecryptChunkAsync(byte[] chunk, string blowfishKey)
+    public Task<byte[]> DecryptChunkAsync(byte[] chunk, string blowfishKey)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
-            {
-                return DecryptChunk(chunk, blowfishKey);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Failed to decrypt chunk asynchronously");
-                return chunk; // Return original chunk if decryption fails
-            }
-        });
+            return Task.FromResult(DecryptChunk(chunk, blowfishKey));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Failed to decrypt chunk asynchronously");
+            return Task.FromResult(chunk); // Return original chunk if decryption fails
+        }
     }
 
     #endregion

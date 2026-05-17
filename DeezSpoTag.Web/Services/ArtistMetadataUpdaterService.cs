@@ -139,7 +139,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             }
 
             var normalized = request ?? new MetadataUpdaterRunRequest();
-            _activeRun = Task.Run(() => RunInternalAsync(normalized, isAutomatic: false, CancellationToken.None), CancellationToken.None);
+            _activeRun = RunInternalAsync(normalized, isAutomatic: false, CancellationToken.None);
             return true;
         }
         finally
@@ -197,16 +197,14 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
                 return;
             }
 
-            _activeRun = Task.Run(
-                () => RunInternalAsync(
-                    new MetadataUpdaterRunRequest
-                    {
-                        IntervalDays = null,
-                        IncludeAllArtists = false,
-                        Force = false
-                    },
-                    isAutomatic: true,
-                    CancellationToken.None),
+            _activeRun = RunInternalAsync(
+                new MetadataUpdaterRunRequest
+                {
+                    IntervalDays = null,
+                    IncludeAllArtists = false,
+                    Force = false
+                },
+                isAutomatic: true,
                 CancellationToken.None);
         }
         finally

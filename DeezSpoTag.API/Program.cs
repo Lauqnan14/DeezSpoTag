@@ -28,13 +28,19 @@ builder.Services.AddDownloadEngine();
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<DeezSpoTag.API.Services.DeezSpoTagSearchProxyService>();
 
+var frontendOrigin = Environment.GetEnvironmentVariable("DEEZSPOTAG_API_FRONTEND_ORIGIN");
+if (string.IsNullOrWhiteSpace(frontendOrigin))
+{
+    frontendOrigin = "http://localhost:8668";
+}
+
 // Enable CORS for frontend
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend",
-        policy => policy.WithOrigins("http://localhost:8668")
-                        .AllowAnyHeader()
-                        .AllowAnyMethod()
+        policy => policy.WithOrigins(frontendOrigin)
+                        .WithHeaders("Content-Type", "Authorization", "X-CSRF-TOKEN", "X-Requested-With")
+                        .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .AllowCredentials());
 });
 
@@ -71,6 +77,10 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+}
+else
+{
+    app.UseHsts();
 }
 
 app.UseHttpsRedirection();

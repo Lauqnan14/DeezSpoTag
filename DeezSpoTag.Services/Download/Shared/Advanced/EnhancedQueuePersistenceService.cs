@@ -502,7 +502,7 @@ public class EnhancedQueuePersistenceService : IDisposable
         {
             CleanupOldBackups();
             CleanupOrphanedFiles();
-            _ = Task.Run(async () => await CompressOldFiles());
+            _ = CompressOldFiles();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

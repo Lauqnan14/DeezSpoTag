@@ -200,7 +200,7 @@ public class AutoTagEnhancementController : ControllerBase
             SetFolderUniformityRun(runState);
         }
 
-        _ = Task.Run(() => RunFolderUniformityBackgroundAsync(runState, request));
+        _ = RunFolderUniformityBackgroundAsync(runState, request);
 
         return Ok(new
         {

@@ -236,17 +236,19 @@ public sealed class SpotifyTracklistService
             return;
         }
 
-        _ = Task.Run(async () =>
+        _ = QueuePlaylistMatchPreparationCoreAsync(token, playlistId);
+    }
+
+    private async Task QueuePlaylistMatchPreparationCoreAsync(string token, string playlistId)
+    {
+        try
         {
-            try
-            {
-                await PreparePlaylistMatchingAsync(token, playlistId);
-            }
-            finally
-            {
-                _playlistMatchPreparationInFlight.TryRemove(token, out _);
-            }
-        }, CancellationToken.None);
+            await PreparePlaylistMatchingAsync(token, playlistId);
+        }
+        finally
+        {
+            _playlistMatchPreparationInFlight.TryRemove(token, out _);
+        }
     }
 
     private async Task PreparePlaylistMatchingAsync(string token, string playlistId)
@@ -459,18 +461,7 @@ public sealed class SpotifyTracklistService
         for (var i = 0; i < tracks.Count; i++)
         {
             var index = i;
-            tasks.Add(Task.Run(async () =>
-            {
-                await gate.WaitAsync(cancellationToken);
-                try
-                {
-                    resolved[index] = await ResolveVisibleTrackAsync(tracks[index], index, context, cancellationToken);
-                }
-                finally
-                {
-                    gate.Release();
-                }
-            }, cancellationToken));
+            tasks.Add(ResolveVisibleTrackWithGateAsync(tracks[index], index, context, resolved, gate, cancellationToken));
         }
 
         await Task.WhenAll(tasks);
@@ -590,42 +581,13 @@ public sealed class SpotifyTracklistService
         for (var i = 0; i < tracks.Count; i++)
         {
             var index = i;
-            tasks.Add(Task.Run(async () =>
-            {
-                await gate.WaitAsync(cancellationToken);
-                try
-                {
-                    var track = tracks[index];
-                    if (!string.IsNullOrWhiteSpace(snapshotId)
-                        && TryGetCachedDeezerId(snapshotId, track.Id, out var cached)
-                        && !string.IsNullOrWhiteSpace(cached))
-                    {
-                        return;
-                    }
-
-                    var deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
-                        _deezerClient,
-                        _songLinkResolver,
-                        track,
-                        new SpotifyTrackResolveOptions(
-                            AllowFallbackSearch: effectiveAllowFallbackSearch,
-                            PreferIsrcOnly: !effectiveAllowFallbackSearch,
-                            UseSongLink: effectiveAllowFallbackSearch,
-                            StrictMode: strictSpotifyDeezerMode,
-                            BypassNegativeCanonicalCache: true,
-                            Logger: _logger,
-                            CancellationToken: cancellationToken));
-
-                    if (!string.IsNullOrWhiteSpace(snapshotId) && !string.IsNullOrWhiteSpace(deezerId))
-                    {
-                        CacheDeezerId(snapshotId, track.Id, deezerId);
-                    }
-                }
-                finally
-                {
-                    gate.Release();
-                }
-            }, cancellationToken));
+            tasks.Add(WarmVisibleTrackMatchWithGateAsync(
+                tracks[index],
+                snapshotId,
+                effectiveAllowFallbackSearch,
+                strictSpotifyDeezerMode,
+                gate,
+                cancellationToken));
         }
 
         await Task.WhenAll(tasks);
@@ -657,6 +619,67 @@ public sealed class SpotifyTracklistService
         }
 
         return false;
+    }
+
+    private async Task ResolveVisibleTrackWithGateAsync(
+        SpotifyTrackSummary track,
+        int index,
+        VisibleResolveContext context,
+        SpotifyTracklistTrack[] resolved,
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            resolved[index] = await ResolveVisibleTrackAsync(track, index, context, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task WarmVisibleTrackMatchWithGateAsync(
+        SpotifyTrackSummary track,
+        string? snapshotId,
+        bool allowFallbackSearch,
+        bool strictSpotifyDeezerMode,
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(snapshotId)
+                && TryGetCachedDeezerId(snapshotId, track.Id, out var cached)
+                && !string.IsNullOrWhiteSpace(cached))
+            {
+                return;
+            }
+
+            var deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
+                _deezerClient,
+                _songLinkResolver,
+                track,
+                new SpotifyTrackResolveOptions(
+                    AllowFallbackSearch: allowFallbackSearch,
+                    PreferIsrcOnly: !allowFallbackSearch,
+                    UseSongLink: allowFallbackSearch,
+                    StrictMode: strictSpotifyDeezerMode,
+                    BypassNegativeCanonicalCache: true,
+                    Logger: _logger,
+                    CancellationToken: cancellationToken));
+
+            if (!string.IsNullOrWhiteSpace(snapshotId) && !string.IsNullOrWhiteSpace(deezerId))
+            {
+                CacheDeezerId(snapshotId, track.Id, deezerId);
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private static void CacheDeezerId(string snapshotId, string trackId, string deezerId)

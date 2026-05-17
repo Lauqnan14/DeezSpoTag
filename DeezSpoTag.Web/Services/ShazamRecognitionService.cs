@@ -245,9 +245,9 @@ public sealed class ShazamRecognitionService
     {
         matchedAttempt = null;
         var portedExecution = RunPortedRecognizer(filePath, signatureWindowSeconds, cancellationToken);
-        if (portedExecution.State == PortedRecognizerState.Recognized && portedExecution.Result != null)
+        if (portedExecution.State == PortedRecognizerState.Recognized && portedExecution.Recognition != null)
         {
-            var fromPorted = ResolveFromPorted(portedExecution.Result, cancellationToken);
+            var fromPorted = ResolveFromPorted(portedExecution.Recognition, cancellationToken);
             if (fromPorted?.HasCoreMetadata == true)
             {
                 matchedAttempt = new ShazamRecognitionAttempt
@@ -870,7 +870,7 @@ public sealed class ShazamRecognitionService
             return new PortedRecognizerExecution
             {
                 State = PortedRecognizerState.Recognized,
-                Result = result
+                Recognition = result
             };
         }
         catch (Exception ex)
@@ -1452,7 +1452,7 @@ public sealed class ShazamRecognitionService
     private sealed class PortedRecognizerExecution
     {
         public PortedRecognizerState State { get; init; }
-        public PortedRecognitionResult? Result { get; init; }
+        public PortedRecognitionResult? Recognition { get; init; }
         public string? Error { get; init; }
     }
 

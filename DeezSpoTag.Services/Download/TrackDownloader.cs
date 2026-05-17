@@ -181,7 +181,7 @@ public class TrackDownloader
         public bool ShouldFetchArtwork { get; init; }
         public bool ShouldFetchLyrics { get; init; }
         public required Track Track { get; init; }
-        public required DeezSpoTagModels.TrackDownloadResult Result { get; init; }
+        public required DeezSpoTagModels.TrackDownloadResult DownloadResult { get; init; }
         public required PathGenerationResult PathResult { get; init; }
         public required DeezSpoTagSettings Settings { get; init; }
         public required string ExpectedOutputPath { get; init; }
@@ -189,7 +189,7 @@ public class TrackDownloader
 
     private sealed class AlbumArtworkPopulationRequest
     {
-        public required DeezSpoTagModels.TrackDownloadResult Result { get; init; }
+        public required DeezSpoTagModels.TrackDownloadResult DownloadResult { get; init; }
         public required DeezSpoTagSettings Settings { get; init; }
         public required DeezSpoTagModels.PathGenerationResult PathResult { get; init; }
         public required Album CoverAlbum { get; init; }
@@ -209,7 +209,7 @@ public class TrackDownloader
         public required IDownloadListener? Listener { get; init; }
         public required TagSettings TagSettings { get; init; }
         public required DeezSpoTagModels.PathGenerationResult PathResult { get; init; }
-        public required DeezSpoTagModels.TrackDownloadResult Result { get; init; }
+        public required DeezSpoTagModels.TrackDownloadResult DownloadResult { get; init; }
         public required string Extension { get; init; }
         public required string WritePath { get; set; }
         public required int SelectedFormat { get; init; }
@@ -326,7 +326,7 @@ public class TrackDownloader
                     Listener = listener,
                     TagSettings = tagSettings,
                     PathResult = pathResult,
-                    Result = result,
+                    DownloadResult = result,
                     Extension = extension,
                     WritePath = writePath,
                     SelectedFormat = selectedFormat,
@@ -443,7 +443,7 @@ public class TrackDownloader
         }
 
         ApplyKeepBothOverwriteMode(context);
-        context.Result.ItemData = BuildTrackItemData(context.Track);
+        context.DownloadResult.ItemData = BuildTrackItemData(context.Track);
         EnsureExtrasPath(context);
 
         try
@@ -453,7 +453,7 @@ public class TrackDownloader
                 context.Album,
                 context.Playlist,
                 context.Settings,
-                context.Result,
+                context.DownloadResult,
                 context.PathResult,
                 context.CancellationToken);
         }
@@ -472,7 +472,7 @@ public class TrackDownloader
                 await QueueDeferredPostDownloadTasksAsync(
                     context.DownloadObject,
                     context.Track,
-                    context.Result,
+                    context.DownloadResult,
                     context.PathResult,
                     context.Settings,
                     context.WritePath);
@@ -501,7 +501,7 @@ public class TrackDownloader
         await TagTrackIfNeededAsync(context);
         FinalizeTrackDownloadResult(context);
         context.Listener?.OnDownloadInfo(context.DownloadObject, "Track downloaded successfully", "downloaded");
-        return context.Result;
+        return context.DownloadResult;
     }
 
     private async Task<DeezSpoTagModels.TrackDownloadResult> HandleExistingTrackFileAsync(TrackDownloadExecutionContext context)
@@ -513,22 +513,22 @@ public class TrackDownloader
                 isExistingFile: true);
         }
 
-        context.Result.Path = context.WritePath;
-        context.Result.Filename = context.WritePath.Substring(context.PathResult.ExtrasPath.Length + 1);
-        context.Result.GeneratedPathResult = context.PathResult;
-        context.Result.ItemData = BuildTrackItemData(context.Track);
+        context.DownloadResult.Path = context.WritePath;
+        context.DownloadResult.Filename = context.WritePath.Substring(context.PathResult.ExtrasPath.Length + 1);
+        context.DownloadResult.GeneratedPathResult = context.PathResult;
+        context.DownloadResult.ItemData = BuildTrackItemData(context.Track);
 
         context.DownloadObject.Files.Add(new DownloadFile
         {
-            Filename = context.Result.Filename,
-            Path = context.Result.Path,
-            Data = context.Result.ItemData
+            Filename = context.DownloadResult.Filename,
+            Path = context.DownloadResult.Path,
+            Data = context.DownloadResult.ItemData
         });
 
         context.DownloadObject.CompleteTrackProgress(context.Listener);
         context.DownloadObject.Downloaded++;
         context.Listener?.OnDownloadInfo(context.DownloadObject, "File already exists", "alreadyDownloaded");
-        return context.Result;
+        return context.DownloadResult;
     }
 
     private static Dictionary<string, object> BuildTrackItemData(Track track)
@@ -647,24 +647,24 @@ public class TrackDownloader
 
     private static void FinalizeTrackDownloadResult(TrackDownloadExecutionContext context)
     {
-        context.Result.Path = context.WritePath;
-        context.Result.Filename = context.WritePath.Substring(context.PathResult.ExtrasPath.Length + 1);
-        context.Result.GeneratedPathResult = context.PathResult;
-        context.Result.Searched = context.Track.Searched;
+        context.DownloadResult.Path = context.WritePath;
+        context.DownloadResult.Filename = context.WritePath.Substring(context.PathResult.ExtrasPath.Length + 1);
+        context.DownloadResult.GeneratedPathResult = context.PathResult;
+        context.DownloadResult.Searched = context.Track.Searched;
 
         context.DownloadObject.Downloaded++;
         context.DownloadObject.Files.Add(new DownloadFile
         {
-            Filename = context.Result.Filename,
-            Path = context.Result.Path,
-            Data = context.Result.ItemData,
-            Searched = context.Result.Searched,
-            AlbumUrls = context.Result.AlbumURLs?.Select(u => new ImageUrl { Url = u.Url, Extension = u.Ext }).ToList() ?? new List<ImageUrl>(),
-            ArtistUrls = context.Result.ArtistURLs?.Select(u => new ImageUrl { Url = u.Url, Extension = u.Ext }).ToList() ?? new List<ImageUrl>(),
-            AlbumPath = context.Result.AlbumPath ?? string.Empty,
-            ArtistPath = context.Result.ArtistPath ?? string.Empty,
-            AlbumFilename = context.Result.AlbumFilename ?? string.Empty,
-            ArtistFilename = context.Result.ArtistFilename ?? string.Empty
+            Filename = context.DownloadResult.Filename,
+            Path = context.DownloadResult.Path,
+            Data = context.DownloadResult.ItemData,
+            Searched = context.DownloadResult.Searched,
+            AlbumUrls = context.DownloadResult.AlbumURLs?.Select(u => new ImageUrl { Url = u.Url, Extension = u.Ext }).ToList() ?? new List<ImageUrl>(),
+            ArtistUrls = context.DownloadResult.ArtistURLs?.Select(u => new ImageUrl { Url = u.Url, Extension = u.Ext }).ToList() ?? new List<ImageUrl>(),
+            AlbumPath = context.DownloadResult.AlbumPath ?? string.Empty,
+            ArtistPath = context.DownloadResult.ArtistPath ?? string.Empty,
+            AlbumFilename = context.DownloadResult.AlbumFilename ?? string.Empty,
+            ArtistFilename = context.DownloadResult.ArtistFilename ?? string.Empty
         });
     }
 
@@ -1020,7 +1020,7 @@ public class TrackDownloader
         PopulateAlbumArtworkResult(
             new AlbumArtworkPopulationRequest
             {
-                Result = result,
+                DownloadResult = result,
                 Settings = settings,
                 PathResult = pathResult,
                 CoverAlbum = coverAlbum,
@@ -1632,10 +1632,10 @@ public class TrackDownloader
         {
             if (!string.IsNullOrWhiteSpace(request.ResolvedCoverUrl))
             {
-                request.Result.AlbumURLs ??= new List<DeezSpoTagModels.ArtworkUrl>();
+                request.DownloadResult.AlbumURLs ??= new List<DeezSpoTagModels.ArtworkUrl>();
                 if (request.CoverIsApple || format == "jpg")
                 {
-                    request.Result.AlbumURLs.Add(new DeezSpoTagModels.ArtworkUrl { Url = request.ResolvedCoverUrl, Ext = format });
+                    request.DownloadResult.AlbumURLs.Add(new DeezSpoTagModels.ArtworkUrl { Url = request.ResolvedCoverUrl, Ext = format });
                 }
 
                 continue;
@@ -1643,12 +1643,12 @@ public class TrackDownloader
 
             var formatExt = format == "jpg" ? $"jpg-{request.Settings.JpegImageQuality}" : format;
             var url = GeneratePictureUrl(request.AlbumMd5!, request.Settings.LocalArtworkSize, formatExt);
-            request.Result.AlbumURLs ??= new List<DeezSpoTagModels.ArtworkUrl>();
-            request.Result.AlbumURLs.Add(new DeezSpoTagModels.ArtworkUrl { Url = url, Ext = format });
+            request.DownloadResult.AlbumURLs ??= new List<DeezSpoTagModels.ArtworkUrl>();
+            request.DownloadResult.AlbumURLs.Add(new DeezSpoTagModels.ArtworkUrl { Url = url, Ext = format });
         }
 
-        request.Result.AlbumPath = request.PathResult.CoverPath;
-        request.Result.AlbumFilename = _pathProcessor.GenerateAlbumName(
+        request.DownloadResult.AlbumPath = request.PathResult.CoverPath;
+        request.DownloadResult.AlbumFilename = _pathProcessor.GenerateAlbumName(
             request.Settings.CoverImageTemplate,
             request.CoverAlbum,
             request.Settings,
@@ -2016,7 +2016,7 @@ public class TrackDownloader
             ShouldFetchArtwork = shouldFetchArtwork,
             ShouldFetchLyrics = shouldFetchLyrics,
             Track = track,
-            Result = result,
+            DownloadResult = result,
             PathResult = pathResult,
             Settings = settings,
             ExpectedOutputPath = expectedOutputPath
@@ -2039,35 +2039,45 @@ public class TrackDownloader
         Task<string> artworkTask = Task.FromResult(initialArtworkStatus);
         if (request.ShouldFetchArtwork)
         {
-            artworkTask = Task.Run(async () =>
-            {
-                var artworkStatus = await DownloadArtworkAsync(request.Track, request.Result, request.Settings, cancellationToken)
-                    ? CompletedStatus
-                    : FailedStatus;
-                SendPrefetchStatus(request.QueueUuid, artworkStatus, initialLyricsStatus);
-                return artworkStatus;
-            }, cancellationToken);
+            artworkTask = RunArtworkPrefetchTaskAsync(request, initialLyricsStatus, cancellationToken);
         }
 
         Task<(string status, string lyricsType)> lyricsTask = Task.FromResult((initialLyricsStatus, string.Empty));
         if (request.ShouldFetchLyrics && !string.IsNullOrWhiteSpace(request.ExpectedOutputPath))
         {
-            lyricsTask = Task.Run(async () =>
-            {
-                var lyricsSaveResultInfo = await SaveLyricsAfterDownloadAsync(
-                    request.Track,
-                    request.PathResult,
-                    request.ExpectedOutputPath,
-                    request.Settings,
-                    request.QueueUuid,
-                    initialArtworkStatus,
-                    cancellationToken);
-                SendPrefetchStatus(request.QueueUuid, initialArtworkStatus, lyricsSaveResultInfo.status, lyricsSaveResultInfo.lyricsType);
-                return lyricsSaveResultInfo;
-            }, cancellationToken);
+            lyricsTask = RunLyricsPrefetchTaskAsync(request, initialArtworkStatus, cancellationToken);
         }
 
         await Task.WhenAll(artworkTask, lyricsTask);
+    }
+
+    private async Task<string> RunArtworkPrefetchTaskAsync(
+        DeferredPostDownloadRequest request,
+        string initialLyricsStatus,
+        CancellationToken cancellationToken)
+    {
+        var artworkStatus = await DownloadArtworkAsync(request.Track, request.DownloadResult, request.Settings, cancellationToken)
+            ? CompletedStatus
+            : FailedStatus;
+        SendPrefetchStatus(request.QueueUuid, artworkStatus, initialLyricsStatus);
+        return artworkStatus;
+    }
+
+    private async Task<(string status, string lyricsType)> RunLyricsPrefetchTaskAsync(
+        DeferredPostDownloadRequest request,
+        string initialArtworkStatus,
+        CancellationToken cancellationToken)
+    {
+        var lyricsSaveResultInfo = await SaveLyricsAfterDownloadAsync(
+            request.Track,
+            request.PathResult,
+            request.ExpectedOutputPath,
+            request.Settings,
+            request.QueueUuid,
+            initialArtworkStatus,
+            cancellationToken);
+        SendPrefetchStatus(request.QueueUuid, initialArtworkStatus, lyricsSaveResultInfo.status, lyricsSaveResultInfo.lyricsType);
+        return lyricsSaveResultInfo;
     }
 
     private void SendPrefetchStatus(string queueUuid, string? artworkStatus, string? lyricsStatus, string? lyricsType = null)

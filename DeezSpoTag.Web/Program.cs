@@ -1591,6 +1591,7 @@ public partial class Program
 
     static async Task EnforceIdentityStartupStateAsync(IServiceProvider services)
     {
+        var hostEnvironment = services.GetRequiredService<IHostEnvironment>();
         var loginConfig = services.GetRequiredService<IOptions<LoginConfiguration>>().Value;
         var userManager = services.GetRequiredService<UserManager<AppUser>>();
         var logger = services.GetRequiredService<ILogger<Program>>();
@@ -1598,8 +1599,20 @@ public partial class Program
         var bootstrapUserFromEnvironment = Environment.GetEnvironmentVariable("DEEZSPOTAG_BOOTSTRAP_USER");
         var bootstrapPassFromEnvironment = Environment.GetEnvironmentVariable("DEEZSPOTAG_BOOTSTRAP_PASS");
         var seedUsername = loginConfig.Username;
-        var seedPassword = loginConfig.Password;
+        var seedPassword = string.Empty;
         var seedEnabled = loginConfig.EnableSeeding;
+
+        // Bootstrap credentials must come from environment variables outside Development.
+        if (hostEnvironment.IsDevelopment())
+        {
+            seedPassword = loginConfig.Password;
+        }
+        else if (!string.IsNullOrWhiteSpace(loginConfig.Password))
+        {
+            logger.LogWarning(
+                "Ignoring LoginConfiguration:Password in non-development environment. Use DEEZSPOTAG_BOOTSTRAP_PASS.");
+            seedEnabled = false;
+        }
 
         if (string.IsNullOrWhiteSpace(seedUsername) || string.IsNullOrWhiteSpace(seedPassword))
         {

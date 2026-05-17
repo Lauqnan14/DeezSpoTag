@@ -28,9 +28,9 @@ public sealed class FfmpegConversionService
         CancellationToken cancellationToken)
     {
         var setup = TryBuildConversionSetup(inputPath, convertTo, bitrate, options);
-        if (setup.Result is not null)
+        if (setup.ConversionResult is not null)
         {
-            return setup.Result;
+            return setup.ConversionResult;
         }
 
         return await ExecuteConversionAsync(setup.Context!, cancellationToken);
@@ -496,7 +496,7 @@ public sealed class FfmpegConversionService
         string FfmpegPath,
         IReadOnlyList<string> Arguments);
 
-    private sealed record ConversionSetup(ConversionExecutionContext? Context, ConversionResult? Result)
+    private sealed record ConversionSetup(ConversionExecutionContext? Context, ConversionResult? ConversionResult)
     {
         public static ConversionSetup WithContext(ConversionExecutionContext context) => new(context, null);
         public static ConversionSetup WithResult(ConversionResult result) => new(null, result);

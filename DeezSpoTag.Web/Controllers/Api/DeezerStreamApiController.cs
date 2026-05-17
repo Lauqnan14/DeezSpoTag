@@ -481,7 +481,7 @@ public class DeezerStreamApiController : ControllerBase
             return false;
         }
 
-        mediaResult = entry.Result;
+        mediaResult = entry.Media;
         return !string.IsNullOrWhiteSpace(mediaResult.Url);
     }
 
@@ -599,7 +599,7 @@ public class DeezerStreamApiController : ControllerBase
         DateTimeOffset CachedAt);
 
     private sealed record CachedPreparedMediaResult(
-        DeezerMediaResult Result,
+        DeezerMediaResult Media,
         DateTimeOffset CachedAt);
 
     private readonly record struct StreamRange(long Start, long? End);

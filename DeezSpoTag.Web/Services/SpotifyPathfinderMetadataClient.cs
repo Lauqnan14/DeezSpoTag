@@ -826,8 +826,8 @@ public sealed class SpotifyPathfinderMetadataClient
         Task<JsonElement?> overviewTask = QueryArtistOverviewAsync(context, artistId, cancellationToken);
         Task<List<SpotifyAlbumSummary>> discographyTask = FetchArtistDiscographyAsync(context, artistId, cancellationToken);
         await Task.WhenAll(artistTask, overviewTask, discographyTask);
-        JsonElement? artist = artistTask.Result;
-        JsonElement? overview = overviewTask.Result;
+        JsonElement? artist = await artistTask;
+        JsonElement? overview = await overviewTask;
         if (!artist.HasValue && !overview.HasValue)
         {
             return null;
@@ -842,7 +842,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             _logger.LogDebug("Spotify Pathfinder biography hydration skipped: no alternate auth context available.");
         }
-        List<SpotifyAlbumSummary> albums = discographyTask.Result;
+        List<SpotifyAlbumSummary> albums = await discographyTask;
         SpotifyArtistOverview parsedOverview = MergeArtistOverview(artist.HasValue ? ParseArtistOverview(artistId, artist.Value) : null, overview.HasValue ? ParseArtistOverview(artistId, overview.Value) : null) ?? ParseArtistOverview(artistId, primaryArtistValue);
         List<SpotifyTrackSummary> topTracks = MergeTopTrackSummaries(artist.HasValue ? ParseArtistTopTracks(artist.Value) : null, overview.HasValue ? ParseArtistTopTracks(overview.Value) : null);
         List<SpotifyRelatedArtist> relatedArtists = ParseArtistRelatedArtists(primaryArtistValue);
@@ -904,8 +904,8 @@ public sealed class SpotifyPathfinderMetadataClient
         Task<JsonElement?> overviewTask = QueryArtistOverviewAsync(context, artistId, cancellationToken);
         await Task.WhenAll(artistTask, overviewTask);
 
-        JsonElement? artist = artistTask.Result;
-        JsonElement? overview = overviewTask.Result;
+        JsonElement? artist = await artistTask;
+        JsonElement? overview = await overviewTask;
         return !artist.HasValue && !overview.HasValue ? null : (context, artist, overview);
     }
 
@@ -946,8 +946,8 @@ public sealed class SpotifyPathfinderMetadataClient
         Task<JsonElement?> artistTask = QueryArtistAsync(context, artistId, cancellationToken);
         Task<JsonElement?> overviewTask = QueryArtistOverviewAsync(context, artistId, cancellationToken);
         await Task.WhenAll<JsonElement?>(artistTask, overviewTask);
-        JsonElement? artist = artistTask.Result;
-        JsonElement? overview = overviewTask.Result;
+        JsonElement? artist = await artistTask;
+        JsonElement? overview = await overviewTask;
         if (!artist.HasValue && !overview.HasValue)
         {
             return new List<SpotifyTrackSummary>();
@@ -1126,28 +1126,7 @@ public sealed class SpotifyPathfinderMetadataClient
             foreach (string id in distinct)
             {
                 await gate.WaitAsync(cancellationToken);
-                tasks.Add(Task.Run(async delegate
-                {
-                    try
-                    {
-                        JsonElement? trackUnion = await QueryTrackUnionAsync(context, id, cancellationToken);
-                        if (trackUnion.HasValue)
-                        {
-                            SpotifyTrackSummary? summary = ParseTrackSummary(trackUnion.Value);
-                            if (summary is not null)
-                            {
-                                lock (results)
-                                {
-                                    results[id] = summary;
-                                }
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        gate.Release();
-                    }
-                }, cancellationToken));
+                tasks.Add(FetchTrackSummaryAsync(context, id, results, gate, cancellationToken));
             }
             await Task.WhenAll(tasks);
             SpotifyTrackSummary? value;
@@ -2431,38 +2410,82 @@ public sealed class SpotifyPathfinderMetadataClient
         SemaphoreSlim gate,
         CancellationToken cancellationToken)
     {
-        return Task.Run(async () =>
+        return EnrichSearchSuggestionArtistCoreAsync(
+            context,
+            enriched,
+            index,
+            artistId,
+            sync,
+            gate,
+            cancellationToken);
+    }
+
+    private async Task EnrichSearchSuggestionArtistCoreAsync(
+        PathfinderAuthContext context,
+        SpotifyArtistSearchCandidate[] enriched,
+        int index,
+        string artistId,
+        object sync,
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
         {
-            await gate.WaitAsync(cancellationToken);
-            try
+            SpotifyArtistSearchCandidate item = enriched[index];
+            (string? name, string? imageUrl) resolved = await ResolveArtistSearchEnrichmentAsync(context, item.Id, cancellationToken);
+            RememberArtistSearchEnrichment(item.Id, resolved.name, resolved.imageUrl);
+            if (!string.IsNullOrWhiteSpace(resolved.imageUrl))
             {
-                SpotifyArtistSearchCandidate item = enriched[index];
-                (string? name, string? imageUrl) resolved = await ResolveArtistSearchEnrichmentAsync(context, item.Id, cancellationToken);
-                RememberArtistSearchEnrichment(item.Id, resolved.name, resolved.imageUrl);
-                if (!string.IsNullOrWhiteSpace(resolved.imageUrl))
+                lock (sync)
                 {
-                    lock (sync)
+                    enriched[index] = item with
                     {
-                        enriched[index] = item with
-                        {
-                            Name = string.IsNullOrWhiteSpace(resolved.name) ? item.Name : resolved.name,
-                            ImageUrl = resolved.imageUrl
-                        };
+                        Name = string.IsNullOrWhiteSpace(resolved.name) ? item.Name : resolved.name,
+                        ImageUrl = resolved.imageUrl
+                    };
+                }
+            }
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify search artist enrichment failed for {ArtistId}", artistId);
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task FetchTrackSummaryAsync(
+        PathfinderAuthContext context,
+        string id,
+        Dictionary<string, SpotifyTrackSummary> results,
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            JsonElement? trackUnion = await QueryTrackUnionAsync(context, id, cancellationToken);
+            if (trackUnion.HasValue)
+            {
+                SpotifyTrackSummary? summary = ParseTrackSummary(trackUnion.Value);
+                if (summary is not null)
+                {
+                    lock (results)
+                    {
+                        results[id] = summary;
                     }
                 }
             }
-            catch (Exception ex) when (!(ex is OperationCanceledException))
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Spotify search artist enrichment failed for {ArtistId}", artistId);
-                }
-            }
-            finally
-            {
-                gate.Release();
-            }
-        }, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task<(string? name, string? imageUrl)> ResolveArtistSearchEnrichmentAsync(

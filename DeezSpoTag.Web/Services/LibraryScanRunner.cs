@@ -124,13 +124,13 @@ public sealed class LibraryScanRunner
         bool skipSpotifyFetch,
         bool cacheSpotifyImages)
     {
-        return Task.Run(() => RunAsync(
+        return RunAsync(
             refreshImages,
             reset,
             folderId,
             skipSpotifyFetch,
             cacheSpotifyImages,
-            CancellationToken.None));
+            CancellationToken.None);
     }
 
     public async Task RunChangedFoldersAsync(
