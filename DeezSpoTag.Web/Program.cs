@@ -1445,6 +1445,7 @@ public partial class Program
         services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>());
         services.AddSingleton<DeezSpoTag.Web.Services.LyricsRefreshQueueService>();
         services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>());
+        services.AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies>(sp =>
             new DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies
             {

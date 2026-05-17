@@ -29,7 +29,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     private readonly SemaphoreSlim _signal = new(0);
     private readonly object _stateLock = new();
     private readonly Dictionary<long, WatchedFolder> _watchers = new();
-    private readonly Dictionary<long, DateTimeOffset> _pendingScans = new();
+    private readonly Dictionary<long, PendingFolderScan> _pendingScans = new();
     private readonly HashSet<long> _bootstrappingFolders = new();
 
     private DateTimeOffset _nextRefreshUtc = DateTimeOffset.MinValue;
@@ -124,7 +124,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             ? await _repository.GetFoldersAsync(cancellationToken)
             : await _configStore.GetFoldersAsync();
 
-        var enabled = folders
+        var enabledCandidates = folders
             .Where(folder => folder.Enabled)
             .Where(folder => !IsExcludedFromRealtimeLibrary(folder))
             .Select(folder => new
@@ -133,7 +133,16 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                 NormalizedRoot = NormalizePath(folder.RootPath)
             })
             .Where(item => item.NormalizedRoot != null && Directory.Exists(item.NormalizedRoot))
-            .ToDictionary(item => item.Folder.Id, item => new FolderState(item.Folder, item.NormalizedRoot!), comparer: EqualityComparer<long>.Default);
+            .ToList();
+
+        var enabled = new Dictionary<long, FolderState>();
+        foreach (var item in enabledCandidates)
+        {
+            var baselineFiles = ShouldRefreshWatcher(item.Folder.Id, item.NormalizedRoot!, item.Folder.AutoTagEnabled)
+                ? await BuildBaselineAudioFilesAsync(item.Folder.Id, item.NormalizedRoot!, cancellationToken)
+                : null;
+            enabled[item.Folder.Id] = new FolderState(item.Folder, item.NormalizedRoot!, baselineFiles);
+        }
 
         lock (_stateLock)
         {
@@ -160,6 +169,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                 _watchers[folderId] = CreateWatcher(
                     state.Folder,
                     state.NormalizedRootPath,
+                    state.BaselineFiles ?? new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase),
                     _bootstrappingFolders.Contains(folderId));
             }
         }
@@ -167,49 +177,77 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
     private async Task ProcessDueScansAsync(CancellationToken cancellationToken)
     {
-        List<long> dueFolderIds;
+        List<KeyValuePair<long, PendingFolderScan>> dueScans;
         var now = DateTimeOffset.UtcNow;
 
         lock (_stateLock)
         {
-            dueFolderIds = _pendingScans
-                .Where(item => item.Value <= now)
-                .Select(item => item.Key)
+            dueScans = _pendingScans
+                .Where(item => item.Value.DueUtc <= now)
                 .ToList();
 
-            foreach (var folderId in dueFolderIds)
+            foreach (var scan in dueScans)
             {
-                _pendingScans.Remove(folderId);
+                _pendingScans.Remove(scan.Key);
             }
         }
 
-        if (dueFolderIds.Count == 0)
+        if (dueScans.Count == 0)
         {
             return;
         }
 
-        foreach (var folderId in dueFolderIds)
+        foreach (var (folderId, pendingScan) in dueScans)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (_scanRunner.GetStatus().IsRunning)
             {
-                RequeueFolder(folderId, BusyRetryDelay);
+                RequeueFolder(folderId, BusyRetryDelay, pendingScan.ChangedFilePaths, pendingScan.DeletedFilePaths);
+                continue;
+            }
+
+            var existingPaths = new List<string>();
+            var missingPaths = new HashSet<string>(pendingScan.DeletedFilePaths, StringComparer.OrdinalIgnoreCase);
+            foreach (var path in pendingScan.ChangedFilePaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+            {
+                if (FileExists(path))
+                {
+                    existingPaths.Add(path);
+                }
+                else
+                {
+                    missingPaths.Add(path);
+                }
+            }
+
+            if (existingPaths.Count == 0 && missingPaths.Count == 0)
+            {
                 continue;
             }
 
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                $"Realtime library scan triggered for folder id={folderId}."));
+                $"Realtime targeted library scan triggered for folder id={folderId} ({existingPaths.Count} changed file(s), {missingPaths.Count} removed file(s))."));
 
-            await _scanRunner.RunAsync(
-                refreshImages: false,
-                reset: false,
-                folderId: folderId,
-                skipSpotifyFetch: false,
-                cacheSpotifyImages: false,
-                cancellationToken: cancellationToken);
+            if (_repository.IsConfigured && missingPaths.Count > 0)
+            {
+                await _repository.RemoveLocalAudioFilesByPathAsync(folderId, missingPaths.ToList(), cancellationToken);
+            }
+
+            if (existingPaths.Count > 0)
+            {
+                await _scanRunner.RunChangedFilesAsync(
+                    new Dictionary<long, List<string>>
+                    {
+                        [folderId] = existingPaths
+                    },
+                    skipSpotifyFetch: false,
+                    cancellationToken: cancellationToken);
+            }
+
+            RefreshWatcherBaseline(folderId, existingPaths.Concat(missingPaths));
         }
     }
 
@@ -225,10 +263,13 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         }
     }
 
-    private WatchedFolder CreateWatcher(FolderDto folder, string normalizedRootPath, bool isBootstrapping)
+    private WatchedFolder CreateWatcher(
+        FolderDto folder,
+        string normalizedRootPath,
+        Dictionary<string, FileBaselineState> baselineFiles,
+        bool isBootstrapping)
     {
         var folderId = folder.Id;
-        var baselineFiles = BuildBaselineAudioFiles(normalizedRootPath);
         var watcher = new FileSystemWatcher(normalizedRootPath)
         {
             IncludeSubdirectories = true,
@@ -242,9 +283,10 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
         try
         {
-            watcher.Created += (_, args) => OnFileEvent(folderId, args.FullPath);
-            watcher.Changed += (_, args) => OnFileEvent(folderId, args.FullPath);
-            watcher.Renamed += (_, args) => OnFileEvent(folderId, args.FullPath);
+            watcher.Created += (_, args) => OnFileChanged(folderId, args.FullPath);
+            watcher.Changed += (_, args) => OnFileChanged(folderId, args.FullPath);
+            watcher.Deleted += (_, args) => OnFileDeleted(folderId, args.FullPath);
+            watcher.Renamed += (_, args) => OnFileRenamed(folderId, args.OldFullPath, args.FullPath);
             watcher.Error += (_, args) => OnWatcherError(folderId, args.GetException());
 
             if (_logger.IsEnabled(LogLevel.Information))
@@ -267,7 +309,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         }
     }
 
-    private void OnFileEvent(long folderId, string fullPath)
+    private void OnFileChanged(long folderId, string fullPath)
     {
         if (!IsAudioFilePath(fullPath))
         {
@@ -280,13 +322,42 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             _watchers.TryGetValue(folderId, out watchedFolder);
         }
 
-        RequeueFolder(folderId, SettleDelay);
+        var shouldQueueScan = watchedFolder?.ShouldQueueScan(fullPath) ?? true;
+        if (!shouldQueueScan)
+        {
+            return;
+        }
+
+        RequeueFolder(folderId, SettleDelay, changedFilePath: fullPath);
         if (_taggingJobQueue != null
             && watchedFolder is not null
             && watchedFolder.AutoTagEnabled
-            && watchedFolder.ShouldQueueRetag(fullPath))
+            && shouldQueueScan)
         {
             _ = QueueRetagAsync(fullPath);
+        }
+    }
+
+    private void OnFileDeleted(long folderId, string fullPath)
+    {
+        if (!IsAudioFilePath(fullPath))
+        {
+            return;
+        }
+
+        RequeueFolder(folderId, SettleDelay, changedFilePaths: [], deletedFilePaths: [fullPath]);
+    }
+
+    private void OnFileRenamed(long folderId, string oldFullPath, string fullPath)
+    {
+        if (IsAudioFilePath(oldFullPath))
+        {
+            RequeueFolder(folderId, SettleDelay, changedFilePaths: [], deletedFilePaths: [oldFullPath]);
+        }
+
+        if (IsAudioFilePath(fullPath))
+        {
+            OnFileChanged(folderId, fullPath);
         }
     }
 
@@ -327,12 +398,67 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     }
 
     private void RequeueFolder(long folderId, TimeSpan delay)
+        => RequeueFolder(folderId, delay, changedFilePaths: [], deletedFilePaths: []);
+
+    private void RequeueFolder(long folderId, TimeSpan delay, string? changedFilePath)
+        => RequeueFolder(
+            folderId,
+            delay,
+            NormalizePath(changedFilePath) is { } path ? [path] : [],
+            deletedFilePaths: []);
+
+    private void RequeueFolder(long folderId, TimeSpan delay, IEnumerable<string> changedFilePaths)
+        => RequeueFolder(folderId, delay, changedFilePaths, deletedFilePaths: []);
+
+    private void RequeueFolder(
+        long folderId,
+        TimeSpan delay,
+        IEnumerable<string> changedFilePaths,
+        IEnumerable<string> deletedFilePaths)
     {
         lock (_stateLock)
         {
-            _pendingScans[folderId] = DateTimeOffset.UtcNow.Add(delay);
+            var dueUtc = DateTimeOffset.UtcNow.Add(delay);
+            if (!_pendingScans.TryGetValue(folderId, out var pending))
+            {
+                pending = new PendingFolderScan(
+                    dueUtc,
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                _pendingScans[folderId] = pending;
+            }
+
+            pending.DueUtc = dueUtc;
+            foreach (var path in changedFilePaths)
+            {
+                var normalizedPath = NormalizePath(path);
+                if (normalizedPath != null)
+                {
+                    pending.ChangedFilePaths.Add(normalizedPath);
+                }
+            }
+
+            foreach (var path in deletedFilePaths)
+            {
+                var normalizedPath = NormalizePath(path);
+                if (normalizedPath != null)
+                {
+                    pending.DeletedFilePaths.Add(normalizedPath);
+                }
+            }
         }
         _signal.Release();
+    }
+
+    private void RefreshWatcherBaseline(long folderId, IEnumerable<string> filePaths)
+    {
+        WatchedFolder? watchedFolder;
+        lock (_stateLock)
+        {
+            _watchers.TryGetValue(folderId, out watchedFolder);
+        }
+
+        watchedFolder?.RefreshBaseline(filePaths);
     }
 
     private void DisposeAllWatchers()
@@ -357,6 +483,18 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
         var extension = Path.GetExtension(fullPath);
         return !string.IsNullOrWhiteSpace(extension) && AudioExtensions.Contains(extension);
+    }
+
+    private static bool FileExists(string path)
+    {
+        try
+        {
+            return File.Exists(path);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
     }
 
     private static string? NormalizePath(string? path)
@@ -384,29 +522,35 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             || string.Equals(desiredQuality, "podcast", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static Dictionary<string, FileBaselineState> BuildBaselineAudioFiles(string normalizedRootPath)
+    private async Task<Dictionary<string, FileBaselineState>> BuildBaselineAudioFilesAsync(
+        long folderId,
+        string normalizedRootPath,
+        CancellationToken cancellationToken)
     {
         var baselineFiles = new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
+            if (_repository.IsConfigured)
+            {
+                var existingFiles = await _repository.GetLocalScanFileStatesAsync(folderId, cancellationToken);
+                foreach (var (path, state) in existingFiles)
+                {
+                    baselineFiles[path] = new FileBaselineState(state.LastWriteUtc, state.Size);
+                }
+
+                return baselineFiles;
+            }
+
             foreach (var filePath in Directory.EnumerateFiles(normalizedRootPath, "*.*", SearchOption.AllDirectories))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!IsAudioFilePath(filePath))
                 {
                     continue;
                 }
 
-                var normalizedPath = NormalizePath(filePath);
-                if (normalizedPath is null)
-                {
-                    continue;
-                }
-
-                if (TryReadFileBaselineState(normalizedPath, out var baselineState))
-                {
-                    baselineFiles[normalizedPath] = baselineState;
-                }
+                AddFileBaselineIfReadable(filePath, baselineFiles);
             }
         }
         catch (OperationCanceledException)
@@ -419,6 +563,32 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         }
 
         return baselineFiles;
+    }
+
+    private bool ShouldRefreshWatcher(long folderId, string normalizedRootPath, bool autoTagEnabled)
+    {
+        lock (_stateLock)
+        {
+            return !_watchers.TryGetValue(folderId, out var existing)
+                || !string.Equals(existing.NormalizedRootPath, normalizedRootPath, StringComparison.OrdinalIgnoreCase)
+                || existing.AutoTagEnabled != autoTagEnabled;
+        }
+    }
+
+    private static void AddFileBaselineIfReadable(
+        string filePath,
+        Dictionary<string, FileBaselineState> baselineFiles)
+    {
+        var normalizedPath = NormalizePath(filePath);
+        if (normalizedPath is null)
+        {
+            return;
+        }
+
+        if (TryReadFileBaselineState(normalizedPath, out var baselineState))
+        {
+            baselineFiles[normalizedPath] = baselineState;
+        }
     }
 
     private static bool TryReadFileBaselineState(string normalizedPath, out FileBaselineState baselineState)
@@ -476,7 +646,6 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             lock (_baselineLock)
             {
-                _baselineFiles = BuildBaselineAudioFiles(NormalizedRootPath);
                 _isBootstrapping = true;
             }
         }
@@ -485,12 +654,11 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             lock (_baselineLock)
             {
-                _baselineFiles = BuildBaselineAudioFiles(NormalizedRootPath);
                 _isBootstrapping = false;
             }
         }
 
-        public bool ShouldQueueRetag(string fullPath)
+        public bool ShouldQueueScan(string fullPath)
         {
             var normalizedPath = NormalizePath(fullPath);
             if (normalizedPath is null)
@@ -530,8 +698,31 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                     return false;
                 }
 
-                _baselineFiles.Remove(normalizedPath);
                 return true;
+            }
+        }
+
+        public void RefreshBaseline(IEnumerable<string> filePaths)
+        {
+            lock (_baselineLock)
+            {
+                foreach (var filePath in filePaths)
+                {
+                    var normalizedPath = NormalizePath(filePath);
+                    if (normalizedPath is null)
+                    {
+                        continue;
+                    }
+
+                    if (TryReadFileBaselineState(normalizedPath, out var currentState))
+                    {
+                        _baselineFiles[normalizedPath] = currentState;
+                    }
+                    else
+                    {
+                        _baselineFiles.Remove(normalizedPath);
+                    }
+                }
             }
         }
 
@@ -542,5 +733,25 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         }
     }
 
-    private sealed record FolderState(FolderDto Folder, string NormalizedRootPath);
+    private sealed record FolderState(
+        FolderDto Folder,
+        string NormalizedRootPath,
+        Dictionary<string, FileBaselineState>? BaselineFiles);
+
+    private sealed class PendingFolderScan
+    {
+        public PendingFolderScan(
+            DateTimeOffset dueUtc,
+            HashSet<string> changedFilePaths,
+            HashSet<string> deletedFilePaths)
+        {
+            DueUtc = dueUtc;
+            ChangedFilePaths = changedFilePaths;
+            DeletedFilePaths = deletedFilePaths;
+        }
+
+        public DateTimeOffset DueUtc { get; set; }
+        public HashSet<string> ChangedFilePaths { get; }
+        public HashSet<string> DeletedFilePaths { get; }
+    }
 }

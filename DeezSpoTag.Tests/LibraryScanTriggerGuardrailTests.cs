@@ -48,11 +48,67 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void RealtimeLibraryScanService_IsNotRegisteredAsHostedService()
+    public void RealtimeLibraryScanService_IsRegisteredAsHostedService()
     {
         var source = ReadSource("DeezSpoTag.Web", "Program.cs");
 
-        Assert.DoesNotContain("LibraryRealtimeScanService", source, StringComparison.Ordinal);
+        Assert.Contains("AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RealtimeLibraryScanService_UsesTargetedChangedFileScans()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+
+        Assert.Contains("RunChangedFilesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("Realtime targeted library scan triggered", source, StringComparison.Ordinal);
+        Assert.Contains("PendingFolderScan", source, StringComparison.Ordinal);
+        Assert.Contains("ShouldQueueScan(fullPath)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_scanRunner.RunAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RealtimeLibraryScanService_RefreshesBaselineAfterTargetedScans()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+
+        Assert.Contains("RefreshWatcherBaseline(folderId", source, StringComparison.Ordinal);
+        Assert.Contains("public void RefreshBaseline(IEnumerable<string> filePaths)", source, StringComparison.Ordinal);
+        Assert.Contains("_baselineFiles[normalizedPath] = currentState", source, StringComparison.Ordinal);
+        Assert.Contains("_baselineFiles.Remove(normalizedPath)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RealtimeLibraryScanService_HandlesDeletesAndRenameOldPathsWithoutFullFolderScans()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+
+        Assert.Contains("watcher.Deleted +=", source, StringComparison.Ordinal);
+        Assert.Contains("OnFileRenamed(folderId, args.OldFullPath, args.FullPath)", source, StringComparison.Ordinal);
+        Assert.Contains("DeletedFilePaths", source, StringComparison.Ordinal);
+        Assert.Contains("RemoveLocalAudioFilesByPathAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CleanupMissingFilesAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RealtimeLibraryScanService_UsesPersistedBaselineWhenRepositoryIsConfigured()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+
+        Assert.Contains("_repository.GetLocalScanFileStatesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("new FileBaselineState(state.LastWriteUtc, state.Size)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildBaselineAudioFiles(NormalizedRootPath)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryRepository_SupportsTargetedAudioFileDeletionByPath()
+    {
+        var source = ReadSource("DeezSpoTag.Services", "Library", "LibraryRepository.cs");
+
+        Assert.Contains("RemoveLocalAudioFilesByPathAsync", source, StringComparison.Ordinal);
+        Assert.Contains("audio_file_delete_target", source, StringComparison.Ordinal);
+        Assert.Contains("ComputeRelativePath(normalizedRoot, normalizedPath)", source, StringComparison.Ordinal);
+        Assert.Contains("DeleteEmptyAlbumLocalRowsAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]

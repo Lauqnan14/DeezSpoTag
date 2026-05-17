@@ -883,10 +883,53 @@ WHERE folder_id = @folderId;";
 
         await PopulateMissingAudioFileTempTableAsync(connection, transaction, missingIds, cancellationToken);
         await DeleteMissingAudioFileRowsAsync(connection, transaction, cancellationToken);
+        await DeleteEmptyAlbumLocalRowsAsync(connection, transaction, cancellationToken);
 
         await CleanupOrphansAsync(connection, transaction, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return missingIds.Count;
+    }
+
+    public async Task<int> RemoveLocalAudioFilesByPathAsync(
+        long folderId,
+        IReadOnlyCollection<string> filePaths,
+        CancellationToken cancellationToken = default)
+    {
+        if (folderId <= 0 || filePaths.Count == 0)
+        {
+            return 0;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        var folderRoot = await GetFolderRootPathAsync(connection, transaction, folderId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(folderRoot))
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return 0;
+        }
+
+        var normalizedRoot = NormalizeRoot(folderRoot);
+        await PopulateAudioFileDeleteTargetTempTableAsync(
+            connection,
+            transaction,
+            normalizedRoot,
+            filePaths,
+            cancellationToken);
+
+        var removed = await CountTargetedAudioFileDeletesAsync(connection, transaction, folderId, cancellationToken);
+        if (removed == 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return 0;
+        }
+
+        await DeleteTargetedAudioFileRowsAsync(connection, transaction, folderId, cancellationToken);
+        await DeleteEmptyAlbumLocalRowsAsync(connection, transaction, cancellationToken);
+        await CleanupOrphansAsync(connection, transaction, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return removed;
     }
 
     private static async Task<List<long>> FindMissingAudioFileIdsAsync(
@@ -913,6 +956,129 @@ WHERE @folderId IS NULL OR folder_id = @folderId;";
         }
 
         return missingIds;
+    }
+
+    private static async Task<string?> GetFolderRootPathAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long folderId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = "SELECT root_path FROM folder WHERE id = @folderId LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("folderId", folderId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string rootPath && !string.IsNullOrWhiteSpace(rootPath) ? rootPath : null;
+    }
+
+    private static async Task PopulateAudioFileDeleteTargetTempTableAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string normalizedRoot,
+        IReadOnlyCollection<string> filePaths,
+        CancellationToken cancellationToken)
+    {
+        const string createTempSql = @"
+CREATE TEMP TABLE IF NOT EXISTS audio_file_delete_target (
+    relative_path TEXT NOT NULL,
+    path TEXT NOT NULL,
+    PRIMARY KEY (relative_path, path)
+);";
+        await ExecuteNonQueryAsync(connection, transaction, createTempSql, cancellationToken);
+
+        const string clearTempSql = "DELETE FROM audio_file_delete_target;";
+        await ExecuteNonQueryAsync(connection, transaction, clearTempSql, cancellationToken);
+
+        const string insertTempSql = @"
+INSERT OR IGNORE INTO audio_file_delete_target (relative_path, path)
+VALUES (@relativePath, @path);";
+        foreach (var filePath in filePaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalizedPath = NormalizeScanFilePath(filePath);
+            if (string.IsNullOrWhiteSpace(normalizedPath))
+            {
+                continue;
+            }
+
+            await using var insertCommand = new SqliteCommand(insertTempSql, connection, transaction);
+            insertCommand.Parameters.AddWithValue("relativePath", ComputeRelativePath(normalizedRoot, normalizedPath));
+            insertCommand.Parameters.AddWithValue("path", normalizedPath);
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task<int> CountTargetedAudioFileDeletesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long folderId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT COUNT(*)
+FROM audio_file af
+JOIN audio_file_delete_target target
+  ON af.relative_path = target.relative_path
+  OR af.path = target.path
+WHERE af.folder_id = @folderId;";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("folderId", folderId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result == DBNull.Value ? 0 : Convert.ToInt32(result);
+    }
+
+    private static async Task DeleteTargetedAudioFileRowsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long folderId,
+        CancellationToken cancellationToken)
+    {
+        const string deleteTrackLocalSql = @"
+DELETE FROM track_local
+WHERE audio_file_id IN (
+    SELECT af.id
+    FROM audio_file af
+    JOIN audio_file_delete_target target
+      ON af.relative_path = target.relative_path
+      OR af.path = target.path
+    WHERE af.folder_id = @folderId
+);";
+        await using (var deleteTrackLocalCommand = new SqliteCommand(deleteTrackLocalSql, connection, transaction))
+        {
+            deleteTrackLocalCommand.Parameters.AddWithValue("folderId", folderId);
+            await deleteTrackLocalCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string deleteAudioSql = @"
+DELETE FROM audio_file
+WHERE folder_id = @folderId
+  AND EXISTS (
+      SELECT 1
+      FROM audio_file_delete_target target
+      WHERE audio_file.relative_path = target.relative_path
+         OR audio_file.path = target.path
+  );";
+        await using var deleteAudioCommand = new SqliteCommand(deleteAudioSql, connection, transaction);
+        deleteAudioCommand.Parameters.AddWithValue("folderId", folderId);
+        await deleteAudioCommand.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task DeleteEmptyAlbumLocalRowsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+DELETE FROM album_local
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM track t
+    JOIN track_local tl ON tl.track_id = t.id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    WHERE t.album_id = album_local.album_id
+      AND af.folder_id = album_local.folder_id
+);";
+        await ExecuteNonQueryAsync(connection, transaction, sql, cancellationToken);
     }
 
     private static async Task<LibraryClearResultDto> CountFolderLocalContentAsync(
