@@ -2,6 +2,7 @@ using DeezSpoTag.Web.Services;
 using DeezSpoTag.Services.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing;
@@ -13,6 +14,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/image")]
 [ApiController]
 [Authorize]
+[DisableRateLimiting]
 public class LibraryImagesApiController : ControllerBase
 {
     private const string LibraryArtistImagesPath = "library-artist-images";

@@ -3858,7 +3858,7 @@ function clearArtistGridVirtualization() {
     libraryState.artistVirtualizationKey = '';
 }
 
-function createArtistCardElement(artist, anchorId = '') {
+function createArtistCardElement(artist, anchorId = '', options = {}) {
     const card = document.createElement('div');
     card.className = 'artist-card ds-tile';
     if (anchorId) {
@@ -3874,8 +3874,9 @@ function createArtistCardElement(artist, anchorId = '') {
         ? `/api/library/image?path=${encodeURIComponent(artist.preferredImagePath)}&size=240`
         : '';
     const coverUrl = coverPath ? appendCacheKey(coverPath) : '';
+    const imageLoading = options.imageLoading === 'eager' ? 'eager' : 'lazy';
     const imageMarkup = artist?.preferredImagePath
-        ? `<img src="${coverUrl}" alt="${escapeHtml(artist?.name || 'Artist')}" loading="lazy" decoding="async" />`
+        ? `<img src="${coverUrl}" alt="${escapeHtml(artist?.name || 'Artist')}" loading="${imageLoading}" decoding="async" />`
         : `<div class="artist-initials">${initials || '?'}</div>`;
     card.innerHTML = `
         ${imageMarkup}
@@ -3975,8 +3976,9 @@ function renderArtistGridWindowed(container, artists, letterNav) {
     content.style.height = `${totalHeight}px`;
     container.appendChild(content);
 
-    const overscanRows = 4;
+    const overscanRows = 6;
     let lastRangeKey = '';
+    const renderedCardsByIndex = new Map();
     const renderVisibleRange = () => {
         const containerRect = container.getBoundingClientRect();
         const viewportHeight = globalThis.innerHeight || document.documentElement.clientHeight || 900;
@@ -3998,17 +4000,22 @@ function renderArtistGridWindowed(container, artists, letterNav) {
         }
         lastRangeKey = rangeKey;
 
-        content.innerHTML = '';
+        for (const [index, card] of renderedCardsByIndex) {
+            if (index < startIndex || index >= endIndex) {
+                card.remove();
+                renderedCardsByIndex.delete(index);
+            }
+        }
+
         for (let index = startIndex; index < endIndex; index++) {
+            if (renderedCardsByIndex.has(index)) {
+                continue;
+            }
             const artist = artists[index];
             if (!artist) {
                 continue;
             }
-            const letter = getAlphaJumpLetter(artist?.name);
-            const anchorId = firstIndexByLetter.get(letter) === index
-                ? anchorIdsByLetter.get(letter) || ''
-                : '';
-            const card = createArtistCardElement(artist, anchorId);
+            const card = createArtistCardElement(artist, '', { imageLoading: 'eager' });
             const row = Math.floor(index / columns);
             const col = index % columns;
             card.style.position = 'absolute';
@@ -4016,6 +4023,7 @@ function renderArtistGridWindowed(container, artists, letterNav) {
             card.style.left = `${col * (cardSize + gap)}px`;
             card.style.width = `${cardSize}px`;
             content.appendChild(card);
+            renderedCardsByIndex.set(index, card);
         }
     };
 

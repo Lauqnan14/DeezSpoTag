@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace DeezSpoTag.Web.Controllers;
 
 [Route("Library")]
+[DisableRateLimiting]
 public class LibraryController : Controller
 {
     [HttpGet("")]

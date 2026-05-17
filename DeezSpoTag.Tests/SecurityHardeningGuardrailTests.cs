@@ -84,13 +84,17 @@ public sealed class SecurityHardeningGuardrailTests
     }
 
     [Fact]
-    public void WebProgram_MustApplyDefaultApiRateLimitToControllers()
+    public void WebProgram_MustApplyDefaultApiRateLimitToControllersWithoutLimitingLibraryBrowsing()
     {
         var webProgramPath = Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Program.cs");
-        var source = File.ReadAllText(webProgramPath);
+        var webProgramSource = File.ReadAllText(webProgramPath);
+        var libraryControllerSource = File.ReadAllText(Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Controllers", "LibraryController.cs"));
+        var libraryImagesControllerSource = File.ReadAllText(Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Controllers", "Api", "LibraryImagesApiController.cs"));
 
-        Assert.Contains("options.AddPolicy(\"DefaultApi\"", source, StringComparison.Ordinal);
-        Assert.Contains("app.MapControllers().RequireRateLimiting(\"DefaultApi\")", source, StringComparison.Ordinal);
+        Assert.Contains("options.AddPolicy(\"DefaultApi\"", webProgramSource, StringComparison.Ordinal);
+        Assert.Contains("app.MapControllers().RequireRateLimiting(\"DefaultApi\")", webProgramSource, StringComparison.Ordinal);
+        Assert.Contains("[DisableRateLimiting]", libraryControllerSource, StringComparison.Ordinal);
+        Assert.Contains("[DisableRateLimiting]", libraryImagesControllerSource, StringComparison.Ordinal);
     }
 
     private static string ResolveSrcRoot()
