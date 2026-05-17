@@ -244,7 +244,7 @@ namespace DeezSpoTag.Web.Controllers.Api
 
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("LoginEmail called for email {Email}", DeezSpoTag.Core.Security.LogSanitizer.MaskEmail(request.Email));
+                    _logger.LogDebug("LoginEmail called");
                 }
 
                 var arl = await _authUtils.LoginWithEmailPasswordAsync(request.Email, request.Password);
