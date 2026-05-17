@@ -8271,15 +8271,13 @@ function isSpotifySourceUrl(url) {
     try {
         const parsed = new URL(url, globalThis.location.origin);
         const host = parsed.hostname.toLowerCase();
-        if (host.includes('spotify.com') || host.includes('scdn.co')) {
-            return true;
-        }
+        return host === 'spotify.com'
+            || host.endsWith('.spotify.com')
+            || host === 'scdn.co'
+            || host.endsWith('.scdn.co');
     } catch {
-        // Fall through to string-based check below.
+        return false;
     }
-
-    const normalized = url.toLowerCase();
-    return normalized.includes('spotify.com');
 }
 
 function resolveFavoritesLink(item) {

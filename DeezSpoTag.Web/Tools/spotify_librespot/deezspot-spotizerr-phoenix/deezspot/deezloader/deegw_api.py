@@ -4,7 +4,6 @@ import json
 import os
 from requests import Session
 from deezspot.deezloader.deezer_settings import qualities
-from deezspot.deezloader.__download_utils__ import md5hex
 from deezspot.exceptions import (
     BadCredentials,
     TrackNotFound,
@@ -60,67 +59,19 @@ class ApiGw:
 
     @classmethod
     def __login(cls):
-        if (
-            (not cls.__arl) and
-            (not cls.__email) and
-            (not cls.__password)
-        ):
-            msg = "NO LOGIN STUFF INSERTED :)))"
+        if not cls.__arl:
+            msg = "ARL token is required. Email/password login is disabled for security hardening."
+            raise BadCredentials(msg=msg)
 
-            raise BadCredentials(msg = msg)
-
-        if cls.__arl:
-            cls.__req.cookies['arl'] = cls.__arl
-        else:
-            cls.__set_arl()
+        cls.__req.cookies['arl'] = cls.__arl
 
     @classmethod
     def __set_arl(cls):
-        access_token = cls.__get_access_token()
-
-        c_headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-
-        cls.__req.get(
-            cls.__try_link,
-            headers=c_headers,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        ).json()
-        cls.__arl = cls.__get_api(cls.__get_user_get_arl)
+        raise BadCredentials(msg="Email/password login flow is disabled. Provide ARL token.")
 
     @classmethod
     def __get_access_token(cls):
-        password = md5hex(cls.__password)
-
-        to_hash = (
-            f"{cls.__client_id}{cls.__email}{password}{cls.__client_key_material}"
-        )
-
-        request_hash = md5hex(to_hash)
-
-        params = {
-            "app_id": cls.__client_id,
-            "login": cls.__email,
-            "password": password,
-            "hash": request_hash
-        }
-
-        results = req_get(
-            cls.__auth_url,
-            params=params,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        ).json()
-
-        if "error" in results:
-            raise BadCredentials(
-                email = cls.__email,
-                password = cls.__password
-            )
-
-        access_token = results['access_token']
-
-        return access_token
+        raise BadCredentials(msg="Email/password login flow is disabled. Provide ARL token.")
 
     @classmethod
     def __get_api(
@@ -269,7 +220,16 @@ class ApiGw:
 
     @staticmethod
     def __is_spreaker_link(song_link):
-        return bool(song_link and 'spreaker.com' in song_link)
+        if not song_link:
+            return False
+
+        try:
+            parsed = urlparse(song_link)
+            host = (parsed.hostname or "").lower()
+        except Exception:
+            return False
+
+        return host == "spreaker.com" or host.endswith(".spreaker.com")
 
     @staticmethod
     def __is_empty_response(response):
