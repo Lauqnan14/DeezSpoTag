@@ -463,12 +463,12 @@ public sealed class ShazamRecognitionService
             };
         }
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        process.WaitForExitAsync(cancellationToken).GetAwaiter().GetResult();
+        cancellationToken.ThrowIfCancellationRequested();
+        process.WaitForExit();
+        cancellationToken.ThrowIfCancellationRequested();
 
-        var stdout = stdoutTask.GetAwaiter().GetResult().Trim();
-        var stderr = stderrTask.GetAwaiter().GetResult().Trim();
+        var stdout = process.StandardOutput.ReadToEnd().Trim();
+        var stderr = process.StandardError.ReadToEnd().Trim();
         if (process.ExitCode != 0)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -804,67 +804,21 @@ public sealed class ShazamRecognitionService
             using var doc = JsonDocument.Parse(stdout);
             var root = doc.RootElement;
 
-            if (!root.TryGetProperty("ok", out var okElement) || okElement.ValueKind != JsonValueKind.True)
+            if (!IsOkResponse(root))
             {
-                var error = root.TryGetProperty("error", out var errElement) && errElement.ValueKind == JsonValueKind.String
-                    ? errElement.GetString()
-                    : null;
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Shazam ported recognizer did not return ok=true. error={Error}", error ?? "unknown");
-                }
-                return new PortedRecognizerExecution
-                {
-                    State = PortedRecognizerState.Error,
-                    Error = FirstNonEmpty(error, "Shazam recognizer returned a non-ok response.")
-                };
+                return BuildNonOkExecution(root);
             }
 
             if (root.TryGetProperty("matched", out var matchedElement)
                 && matchedElement.ValueKind == JsonValueKind.False)
             {
-                return new PortedRecognizerExecution
-                {
-                    State = PortedRecognizerState.NoMatch
-                };
+                return BuildNoMatchExecution();
             }
 
-            var result = new PortedRecognitionResult();
-
-            if (root.TryGetProperty("summary", out var summary) && summary.ValueKind == JsonValueKind.Object)
+            var result = ParseRecognitionResult(root);
+            if (!HasRecognizedPayload(result))
             {
-                result.TrackId = ReadString(summary, "trackId");
-                result.Title = ReadString(summary, "title");
-                result.Artist = ReadString(summary, AutoTagLiterals.ArtistTag);
-                result.Isrc = ReadString(summary, "isrc");
-                result.Url = ReadString(summary, "url");
-            }
-
-            if ((string.IsNullOrWhiteSpace(result.TrackId) || string.IsNullOrWhiteSpace(result.Title))
-                && root.TryGetProperty("response", out var response)
-                && response.ValueKind == JsonValueKind.Object
-                && response.TryGetProperty("track", out var track)
-                && track.ValueKind == JsonValueKind.Object)
-            {
-                result.TrackId ??= FirstNonEmpty(
-                    ReadString(track, "key"),
-                    ReadString(track, "id"),
-                    ReadString(track, "track_id"),
-                    ReadString(track, "trackId"));
-                result.Title ??= FirstNonEmpty(ReadString(track, "title"), ReadString(track, "name"));
-                result.Artist ??= FirstNonEmpty(ReadString(track, "subtitle"), ReadString(track, AutoTagLiterals.ArtistTag));
-                result.Isrc ??= ReadString(track, "isrc");
-                result.Url ??= FirstNonEmpty(ReadString(track, "url"), ReadNestedString(track, "share", "href"));
-            }
-
-            if (string.IsNullOrWhiteSpace(result.TrackId)
-                && string.IsNullOrWhiteSpace(result.Title)
-                && string.IsNullOrWhiteSpace(result.Artist))
-            {
-                return new PortedRecognizerExecution
-                {
-                    State = PortedRecognizerState.NoMatch
-                };
+                return BuildNoMatchExecution();
             }
 
             return new PortedRecognizerExecution
@@ -882,6 +836,92 @@ public sealed class ShazamRecognitionService
                 Error = $"Failed to parse Shazam recognizer output. {ex.Message}"
             };
         }
+    }
+
+    private static bool IsOkResponse(JsonElement root)
+    {
+        return root.TryGetProperty("ok", out var okElement)
+            && okElement.ValueKind == JsonValueKind.True;
+    }
+
+    private PortedRecognizerExecution BuildNonOkExecution(JsonElement root)
+    {
+        var error = root.TryGetProperty("error", out var errElement) && errElement.ValueKind == JsonValueKind.String
+            ? errElement.GetString()
+            : null;
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Shazam ported recognizer did not return ok=true. error={Error}", error ?? "unknown");
+        }
+
+        return new PortedRecognizerExecution
+        {
+            State = PortedRecognizerState.Error,
+            Error = FirstNonEmpty(error, "Shazam recognizer returned a non-ok response.")
+        };
+    }
+
+    private static PortedRecognizerExecution BuildNoMatchExecution()
+    {
+        return new PortedRecognizerExecution
+        {
+            State = PortedRecognizerState.NoMatch
+        };
+    }
+
+    private static bool HasRecognizedPayload(PortedRecognitionResult result)
+    {
+        return !string.IsNullOrWhiteSpace(result.TrackId)
+            || !string.IsNullOrWhiteSpace(result.Title)
+            || !string.IsNullOrWhiteSpace(result.Artist);
+    }
+
+    private static PortedRecognitionResult ParseRecognitionResult(JsonElement root)
+    {
+        var result = new PortedRecognitionResult();
+        PopulateFromSummary(root, result);
+        PopulateFromResponseTrack(root, result);
+        return result;
+    }
+
+    private static void PopulateFromSummary(JsonElement root, PortedRecognitionResult result)
+    {
+        if (!root.TryGetProperty("summary", out var summary) || summary.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        result.TrackId = ReadString(summary, "trackId");
+        result.Title = ReadString(summary, "title");
+        result.Artist = ReadString(summary, AutoTagLiterals.ArtistTag);
+        result.Isrc = ReadString(summary, "isrc");
+        result.Url = ReadString(summary, "url");
+    }
+
+    private static void PopulateFromResponseTrack(JsonElement root, PortedRecognitionResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.TrackId) && !string.IsNullOrWhiteSpace(result.Title))
+        {
+            return;
+        }
+
+        if (!root.TryGetProperty("response", out var response)
+            || response.ValueKind != JsonValueKind.Object
+            || !response.TryGetProperty("track", out var track)
+            || track.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        result.TrackId ??= FirstNonEmpty(
+            ReadString(track, "key"),
+            ReadString(track, "id"),
+            ReadString(track, "track_id"),
+            ReadString(track, "trackId"));
+        result.Title ??= FirstNonEmpty(ReadString(track, "title"), ReadString(track, "name"));
+        result.Artist ??= FirstNonEmpty(ReadString(track, "subtitle"), ReadString(track, AutoTagLiterals.ArtistTag));
+        result.Isrc ??= ReadString(track, "isrc");
+        result.Url ??= FirstNonEmpty(ReadString(track, "url"), ReadNestedString(track, "share", "href"));
     }
 
     private static string? ReadString(JsonElement source, string propertyName)

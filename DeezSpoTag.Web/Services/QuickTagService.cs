@@ -110,18 +110,15 @@ public sealed class QuickTagService
     };
 
     private readonly ILogger<QuickTagService> _logger;
-    private readonly LibraryRepository _libraryRepository;
     private readonly LibraryConfigStore _configStore;
     private readonly DeezSpoTagSettingsService _settingsService;
 
     public QuickTagService(
         ILogger<QuickTagService> logger,
-        LibraryRepository libraryRepository,
         LibraryConfigStore configStore,
         DeezSpoTagSettingsService settingsService)
     {
         _logger = logger;
-        _libraryRepository = libraryRepository;
         _configStore = configStore;
         _settingsService = settingsService;
     }
@@ -1111,9 +1108,7 @@ public sealed class QuickTagService
 
         try
         {
-            folders = _libraryRepository.IsConfigured
-                ? _libraryRepository.GetFoldersAsync().GetAwaiter().GetResult()
-                : _configStore.GetFolders();
+            folders = _configStore.GetFolders();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

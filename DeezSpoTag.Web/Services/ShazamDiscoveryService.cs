@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -40,20 +39,16 @@ public sealed partial class ShazamDiscoveryService
     private const string AppleMusicIdPrefix = "am:";
     private const string ToolsDirectory = "Tools";
     private const string ShazamPortDirectory = "shazam_port";
+    private const string DiscoverScriptName = "discover.py";
     private const string UnknownArtist = "Unknown Artist";
     private const string AttributesPropertyName = "attributes";
+    private const string TrackType = "track";
     private const int MaxTrackLimit = 20;
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<ShazamDiscoveryService> _logger;
     private readonly IWebHostEnvironment _environment;
     private static readonly ConcurrentDictionary<string, ShazamTrackCard> SessionCardCache = new(StringComparer.OrdinalIgnoreCase);
-
-    [GeneratedRegex(@"([?&]startFrom=)\d+", RegexOptions.IgnoreCase)]
-    private static partial Regex StartFromRegex();
-
-    [GeneratedRegex(@"([?&]pageSize=)\d+", RegexOptions.IgnoreCase)]
-    private static partial Regex PageSizeRegex();
 
     public ShazamDiscoveryService(
         HttpClient httpClient,
@@ -119,121 +114,6 @@ public sealed partial class ShazamDiscoveryService
         return await GetRelatedTracksViaPortedDiscoveryAsync(trackId, limit, offset, cancellationToken);
     }
 
-    private async Task<string?> ResolveRelatedTracksUrlAsync(string trackId, CancellationToken cancellationToken)
-    {
-        var encodedTrackId = Uri.EscapeDataString(trackId);
-        var candidateTrackUrls = new[]
-        {
-            $"https://www.shazam.com/discovery/v5/{Language}/{Country}/web/-/track/{encodedTrackId}?shazamapiversion=v3&video=v3",
-            $"https://www.shazam.com/discovery/v5/{Language}/{Country}/iphone/-/track/{encodedTrackId}?shazamapiversion=v3&video=v3"
-        };
-
-        foreach (var trackUrl in candidateTrackUrls)
-        {
-            using var trackDoc = await GetJsonAsync(trackUrl, cancellationToken);
-            if (trackDoc == null)
-            {
-                continue;
-            }
-
-            var root = trackDoc.RootElement;
-            var relatedUrl = TryResolveRelatedTracksUrlFromTrackPayload(root);
-            if (!string.IsNullOrWhiteSpace(relatedUrl))
-            {
-                return relatedUrl;
-            }
-        }
-
-        return null;
-    }
-
-    private static string? TryResolveRelatedTracksUrlFromTrackPayload(JsonElement root)
-    {
-        var direct = TryGetString(root, "relatedtracksurl");
-        if (!string.IsNullOrWhiteSpace(direct))
-        {
-            return direct;
-        }
-
-        if (TryGetObject(root, "track", out var trackObject))
-        {
-            var nested = TryGetString(trackObject, "relatedtracksurl");
-            if (!string.IsNullOrWhiteSpace(nested))
-            {
-                return nested;
-            }
-
-            var fromNestedSections = TryResolveRelatedTracksUrlFromSections(trackObject);
-            if (!string.IsNullOrWhiteSpace(fromNestedSections))
-            {
-                return fromNestedSections;
-            }
-        }
-
-        return TryResolveRelatedTracksUrlFromSections(root);
-    }
-
-    private static string? TryResolveRelatedTracksUrlFromSections(JsonElement container)
-    {
-        if (!TryGetArray(container, "sections", out var sections))
-        {
-            return null;
-        }
-
-        foreach (var section in sections.EnumerateArray())
-        {
-            var type = TryGetString(section, "type");
-            if (!string.Equals(type, "RELATED", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var relatedUrl = TryGetString(section, "url");
-            if (!string.IsNullOrWhiteSpace(relatedUrl))
-            {
-                return relatedUrl;
-            }
-        }
-
-        return null;
-    }
-
-    private static string ApplyRelatedTracksPaging(string url, int limit, int offset)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return url;
-        }
-
-        var updated = StartFromRegex().Replace(
-            url,
-            match => $"{match.Groups[1].Value}{offset}");
-        updated = PageSizeRegex().Replace(
-            updated,
-            match => $"{match.Groups[1].Value}{limit}");
-
-        var hasStart = updated.Contains("startFrom=", StringComparison.OrdinalIgnoreCase);
-        var hasSize = updated.Contains("pageSize=", StringComparison.OrdinalIgnoreCase);
-        if (hasStart && hasSize)
-        {
-            return updated;
-        }
-
-        var separator = updated.Contains('?') ? "&" : "?";
-        if (!hasStart)
-        {
-            updated += $"{separator}startFrom={offset}";
-            separator = "&";
-        }
-
-        if (!hasSize)
-        {
-            updated += $"{separator}pageSize={limit}";
-        }
-
-        return updated;
-    }
-
     public async Task<IReadOnlyList<ShazamTrackCard>> SearchTracksAsync(
         string query,
         int limit = MaxTrackLimit,
@@ -279,145 +159,6 @@ public sealed partial class ShazamDiscoveryService
         return parsed;
     }
 
-    private async Task<IReadOnlyList<ShazamTrackCard>> SearchTracksLegacyAsync(
-        string query,
-        int limit,
-        int offset,
-        CancellationToken cancellationToken)
-    {
-        var urls = new[]
-        {
-            $"https://www.shazam.com/services/search/v4/{Language}/{Country}/web/search?term={Uri.EscapeDataString(query)}&numResults={limit}&offset={offset}&types=songs&limit={limit}",
-            $"https://www.shazam.com/services/search/v3/{Language}/{Country}/web/search?query={Uri.EscapeDataString(query)}&numResults={limit}&offset={offset}&types=songs"
-        };
-
-        foreach (var url in urls)
-        {
-            using var doc = await GetJsonAsync(url, cancellationToken);
-            if (doc == null)
-            {
-                continue;
-            }
-
-            var root = doc.RootElement.Clone();
-            var cards = ParseTrackList(root, limit);
-            if (cards.Count > 0)
-            {
-                foreach (var card in cards)
-                {
-                    CacheCard(card);
-                }
-
-                return cards;
-            }
-        }
-
-        return Array.Empty<ShazamTrackCard>();
-    }
-
-    private async Task<IReadOnlyList<ShazamTrackCard>> SearchTracksViaAppleCatalogAsync(
-        string query,
-        int limit,
-        int offset,
-        CancellationToken cancellationToken)
-    {
-        var country = Country.ToLowerInvariant();
-        var url = $"https://www.shazam.com/services/amapi/v1/catalog/{country}/search?types=songs,artists&term={Uri.EscapeDataString(query)}&limit={limit}";
-        if (offset > 0)
-        {
-            url += $"&offset={offset}";
-        }
-
-        using var doc = await GetJsonAsync(url, cancellationToken);
-        if (doc == null)
-        {
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        var cards = new List<ShazamTrackCard>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var root = doc.RootElement.Clone();
-        if (!TryGetObject(root, "results", out var results)
-            || !TryGetObject(results, "songs", out var songs)
-            || !TryGetArray(songs, "data", out var data))
-        {
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            var card = ParseAppleMusicSongCard(item);
-            if (card == null)
-            {
-                continue;
-            }
-
-            var key = !string.IsNullOrWhiteSpace(card.Id)
-                ? card.Id
-                : $"{card.Title}|{card.Artist}";
-            if (!seen.Add(key))
-            {
-                continue;
-            }
-
-            cards.Add(card);
-            CacheCard(card);
-
-            if (cards.Count >= limit)
-            {
-                break;
-            }
-        }
-
-        return cards;
-    }
-
-    private async Task<JsonDocument?> GetJsonAsync(string url, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
-            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
-            request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
-
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Shazam request failed: {Status} {Url}", (int)response.StatusCode, url);
-                }
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException ex)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Shazam request timed out for {Url}", url);
-            }
-
-            return null;
-        }
-        catch (Exception ex)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Shazam request failed for {Url}", url);
-            }
-            return null;
-        }
-    }
-
     private static string ResolveShazamPortPython(string scriptPath)
     {
         var scriptDirectory = Path.GetDirectoryName(scriptPath) ?? string.Empty;
@@ -435,17 +176,17 @@ public sealed partial class ShazamDiscoveryService
         var candidates = new List<string>();
         if (!string.IsNullOrWhiteSpace(contentRootPath))
         {
-            candidates.Add(Path.Combine(contentRootPath, ToolsDirectory, ShazamPortDirectory, "discover.py"));
-            candidates.Add(Path.Combine(contentRootPath, "..", "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, "discover.py"));
+            candidates.Add(Path.Combine(contentRootPath, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+            candidates.Add(Path.Combine(contentRootPath, "..", "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
         }
 
         var current = Directory.GetCurrentDirectory();
-        candidates.Add(Path.Combine(current, ToolsDirectory, ShazamPortDirectory, "discover.py"));
-        candidates.Add(Path.Combine(current, "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, "discover.py"));
+        candidates.Add(Path.Combine(current, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+        candidates.Add(Path.Combine(current, "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
 
         var baseDir = AppContext.BaseDirectory;
-        candidates.Add(Path.Combine(baseDir, ToolsDirectory, ShazamPortDirectory, "discover.py"));
-        candidates.Add(Path.Combine(baseDir, "..", "..", "..", "..", ToolsDirectory, ShazamPortDirectory, "discover.py"));
+        candidates.Add(Path.Combine(baseDir, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+        candidates.Add(Path.Combine(baseDir, "..", "..", "..", "..", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
 
         foreach (var candidate in candidates)
         {
@@ -549,7 +290,7 @@ public sealed partial class ShazamDiscoveryService
 
     private async Task<ShazamTrackCard?> GetTrackViaPortedDiscoveryAsync(string trackId, CancellationToken cancellationToken)
     {
-        using var doc = await RunPortedDiscoverAsync("track", trackId, query: null, limit: 1, offset: 0, cancellationToken);
+        using var doc = await RunPortedDiscoverAsync(TrackType, trackId, query: null, limit: 1, offset: 0, cancellationToken);
         if (doc == null)
         {
             return null;
@@ -561,7 +302,7 @@ public sealed partial class ShazamDiscoveryService
             return null;
         }
 
-        if (!TryGetObject(root, "track", out var trackObject))
+        if (!TryGetObject(root, TrackType, out var trackObject))
         {
             return null;
         }
@@ -681,7 +422,7 @@ public sealed partial class ShazamDiscoveryService
             yield break;
         }
 
-        if (TryGetObject(element, "track", out var trackObject))
+        if (TryGetObject(element, TrackType, out var trackObject))
         {
             yield return trackObject;
         }
@@ -730,7 +471,7 @@ public sealed partial class ShazamDiscoveryService
     private static ShazamTrackCard? ParseTrack(JsonElement source)
     {
         var track = source;
-        if (TryGetObject(source, "track", out var nestedTrack))
+        if (TryGetObject(source, TrackType, out var nestedTrack))
         {
             track = nestedTrack;
         }
@@ -888,131 +629,6 @@ public sealed partial class ShazamDiscoveryService
             artistIds,
             artistAdamIds,
             tags);
-    }
-
-    private static ShazamTrackCard? ParseAppleMusicSongCard(JsonElement source)
-    {
-        if (!TryGetObject(source, AttributesPropertyName, out var attributes))
-        {
-            return null;
-        }
-
-        var rawId = TryGetString(source, "id");
-        var title = TryGetString(attributes, "name");
-        if (string.IsNullOrWhiteSpace(rawId) || string.IsNullOrWhiteSpace(title))
-        {
-            return null;
-        }
-
-        var artist = FirstNonEmpty(TryGetString(attributes, "artistName"), UnknownArtist);
-        var album = TryGetString(attributes, "albumName");
-        var releaseDate = TryGetString(attributes, "releaseDate");
-        var genre = ExtractAppleGenre(attributes);
-        var isrc = TryGetString(attributes, "isrc");
-        var durationMs = ParseDurationMs(TryGetString(attributes, "durationInMillis"));
-        var appleUrl = TryGetString(attributes, "url");
-        var artwork = BuildAppleArtworkUrl(attributes);
-        var tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        AddTagValue(tags, "SHAZAM_TRACK_ID", rawId);
-        AddTagValue(tags, "SHAZAM_APPLE_MUSIC_URL", appleUrl);
-        AddTagValue(tags, "SHAZAM_URL", appleUrl);
-        AddTagValue(tags, "SHAZAM_TITLE", title);
-        AddTagValue(tags, "SHAZAM_ARTIST", artist);
-        AddTagValue(tags, "SHAZAM_ALBUM", album);
-        AddTagValue(tags, "SHAZAM_GENRE", genre);
-        AddTagValue(tags, "SHAZAM_RELEASE_DATE", releaseDate);
-        AddTagValue(tags, "SHAZAM_ISRC", isrc);
-        if (durationMs.HasValue && durationMs.Value > 0)
-        {
-            AddTagValue(tags, "SHAZAM_DURATION_MS", durationMs.Value.ToString());
-        }
-
-        return new ShazamTrackCard(
-            $"{AppleMusicIdPrefix}{rawId}",
-            title.Trim(),
-            artist ?? UnknownArtist,
-            album,
-            genre,
-            null,
-            releaseDate,
-            artwork,
-            appleUrl,
-            appleUrl,
-            null,
-            isrc,
-            durationMs,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            new List<string>(),
-            new List<string>(),
-            tags);
-    }
-
-    private static string? ExtractAppleGenre(JsonElement attributes)
-    {
-        if (!TryGetArray(attributes, "genreNames", out var genres))
-        {
-            return null;
-        }
-
-        foreach (var item in genres.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.String)
-            {
-                continue;
-            }
-
-            var value = item.GetString()?.Trim();
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                continue;
-            }
-
-            if (string.Equals(value, "Music", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            return value;
-        }
-
-        return null;
-    }
-
-    private static string? BuildAppleArtworkUrl(JsonElement attributes)
-    {
-        if (!TryGetObject(attributes, "artwork", out var artwork))
-        {
-            return null;
-        }
-
-        var template = TryGetString(artwork, "url");
-        if (string.IsNullOrWhiteSpace(template))
-        {
-            return null;
-        }
-
-        var width = ParseArtworkDimension(TryGetString(artwork, "width"));
-        var height = ParseArtworkDimension(TryGetString(artwork, "height"));
-
-        return template
-            .Replace("{w}", width.ToString(), StringComparison.OrdinalIgnoreCase)
-            .Replace("{h}", height.ToString(), StringComparison.OrdinalIgnoreCase)
-            .Trim();
-    }
-
-    private static int ParseArtworkDimension(string? raw)
-    {
-        return int.TryParse(raw, out var value) && value > 0
-            ? Math.Min(value, 2000)
-            : 1200;
     }
 
     private static void CacheCard(ShazamTrackCard card)

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Union
+from typing import Dict, Any, List
 
 from .types import ExternalUrls, _str, _int
 from .track import Track as TrackModel
@@ -27,10 +27,10 @@ def _user_like_from_dict(obj: Any, default_type: str = "user") -> Dict[str, Any]
 
 def _user_like_to_dict(
 	*,
-	id_value: Optional[str],
+	id_value: str | None,
 	type_value: str,
-	uri_value: Optional[str],
-	display_name_value: Optional[str],
+	uri_value: str | None,
+	display_name_value: str | None,
 	external_urls_value: ExternalUrls,
 ) -> Dict[str, Any]:
 	out = {
@@ -45,10 +45,10 @@ def _user_like_to_dict(
 
 @dataclass
 class UserMini:
-	id: Optional[str] = None
+	id: str | None = None
 	type: str = "user"
-	uri: Optional[str] = None
-	display_name: Optional[str] = None
+	uri: str | None = None
+	display_name: str | None = None
 	external_urls: ExternalUrls = field(default_factory=ExternalUrls)
 
 	@staticmethod
@@ -67,9 +67,9 @@ class UserMini:
 
 @dataclass
 class TrackStub:
-	id: Optional[str] = None
+	id: str | None = None
 	type: str = "track"
-	uri: Optional[str] = None
+	uri: str | None = None
 	external_urls: ExternalUrls = field(default_factory=ExternalUrls)
 
 	@staticmethod
@@ -95,11 +95,11 @@ class TrackStub:
 
 @dataclass
 class PlaylistItem:
-	added_at: Optional[str] = None
+	added_at: str | None = None
 	added_by: UserMini = field(default_factory=UserMini)
 	is_local: bool = False
-	track: Optional[Union[TrackModel, TrackStub]] = None
-	item_id: Optional[str] = None
+	track: TrackModel | TrackStub | None = None
+	item_id: str | None = None
 
 	@staticmethod
 	def from_dict(obj: Any) -> "PlaylistItem":

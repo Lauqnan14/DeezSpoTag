@@ -144,7 +144,6 @@ public sealed class SpotifyBlobService
             var startInfo = CreatePythonScriptStartInfo(
                 pythonExecutable,
                 helperPath,
-                authWorkingDir,
                 "--output", blobPath,
                 "--device-name", "DeezSpoTag",
                 "--timeout", timeoutSeconds.ToString());
@@ -406,7 +405,6 @@ public sealed class SpotifyBlobService
         }
 
         var result = await RequestLibrespotPayloadAsync(
-            blobPath,
             "playlist",
             ResolveLibrespotPlaylistScriptPath,
             cancellationToken,
@@ -436,7 +434,6 @@ public sealed class SpotifyBlobService
 
         var ids = string.Join(",", trackIds);
         var result = await RequestLibrespotPayloadAsync(
-            blobPath,
             "tracks",
             ResolveLibrespotTracksScriptPath,
             cancellationToken,
@@ -472,7 +469,6 @@ public sealed class SpotifyBlobService
         }
 
         var result = await RequestLibrespotPayloadAsync(
-            blobPath,
             "album",
             ResolveLibrespotAlbumScriptPath,
             cancellationToken,
@@ -496,7 +492,6 @@ public sealed class SpotifyBlobService
         }
 
         var result = await RequestLibrespotPayloadAsync(
-            blobPath,
             "artist",
             ResolveLibrespotArtistScriptPath,
             cancellationToken,
@@ -533,7 +528,6 @@ public sealed class SpotifyBlobService
         }
 
         var result = await RequestLibrespotPayloadAsync(
-            blobPath,
             "podcast",
             ResolveLibrespotPodcastScriptPath,
             cancellationToken,
@@ -544,7 +538,6 @@ public sealed class SpotifyBlobService
     }
 
     private async Task<LibrespotPayloadResult> RequestLibrespotPayloadAsync(
-        string blobPath,
         string helperName,
         Func<string, string?> resolveScriptPath,
         CancellationToken cancellationToken,
@@ -564,7 +557,6 @@ public sealed class SpotifyBlobService
             var executionResult = await RunPythonScriptAsync(
                 pythonExecutable,
                 scriptPath,
-                Path.GetDirectoryName(blobPath) ?? _environment.ContentRootPath,
                 cancellationToken,
                 arguments);
 
@@ -1031,7 +1023,6 @@ public sealed class SpotifyBlobService
             var startInfo = CreatePythonScriptStartInfo(
                 pythonExecutable,
                 scriptPath,
-                Path.GetDirectoryName(blobPath) ?? _environment.ContentRootPath,
                 CredentialsArg, blobPath,
                 "--scopes",
                 "playlist-read",
@@ -1277,7 +1268,6 @@ public sealed class SpotifyBlobService
     private static ProcessStartInfo CreatePythonScriptStartInfo(
         string pythonExecutable,
         string scriptPath,
-        string workingDirectory,
         params string[] arguments)
     {
         var validatedPythonExecutable = EnsureSafeExecutablePath(pythonExecutable);
@@ -1466,14 +1456,12 @@ public sealed class SpotifyBlobService
     private static async Task<ProcessOutputResult> RunPythonScriptAsync(
         string pythonExecutable,
         string scriptPath,
-        string workingDirectory,
         CancellationToken cancellationToken,
         params string[] arguments)
     {
         var startInfo = CreatePythonScriptStartInfo(
             pythonExecutable,
             scriptPath,
-            workingDirectory,
             arguments);
         using var process = new Process { StartInfo = startInfo };
         process.Start();

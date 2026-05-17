@@ -1,6 +1,7 @@
 using DeezSpoTag.Core.Models;
 using Microsoft.Extensions.Logging;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -195,6 +196,7 @@ public sealed class LrclibLyricsService
         }
 
         var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var unsyncedBuilder = new StringBuilder();
         foreach (var line in lines
             .Select(static rawLine => rawLine.Trim())
             .Where(static line => line.Length > 0))
@@ -205,15 +207,18 @@ public sealed class LrclibLyricsService
             }
             else
             {
-                if (lyrics.UnsyncedLyrics == null)
+                if (unsyncedBuilder.Length > 0)
                 {
-                    lyrics.UnsyncedLyrics = line;
+                    unsyncedBuilder.Append('\n');
                 }
-                else
-                {
-                    lyrics.UnsyncedLyrics += "\n" + line;
-                }
+
+                unsyncedBuilder.Append(line);
             }
+        }
+
+        if (unsyncedBuilder.Length > 0)
+        {
+            lyrics.UnsyncedLyrics = unsyncedBuilder.ToString();
         }
 
         if (lyrics.SyncedLyrics?.Count == 0 && string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))

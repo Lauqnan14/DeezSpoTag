@@ -59,7 +59,6 @@ public sealed class PlaylistWatchService
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
     private readonly PlaylistSyncService _playlistSyncService;
-    private readonly PlaylistVisualService _playlistVisualService;
     private readonly ILogger<PlaylistWatchService> _logger;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastPlaylistMediaSyncUtc = new(StringComparer.OrdinalIgnoreCase);
 
@@ -83,7 +82,6 @@ public sealed class PlaylistWatchService
         DeezSpoTagSettingsService settingsService,
         IServiceProvider serviceProvider,
         PlaylistSyncService playlistSyncService,
-        PlaylistVisualService playlistVisualService,
         ILogger<PlaylistWatchService> logger)
     {
         _libraryRepository = libraryRepository;
@@ -100,7 +98,6 @@ public sealed class PlaylistWatchService
         _settingsService = settingsService;
         _serviceProvider = serviceProvider;
         _playlistSyncService = playlistSyncService;
-        _playlistVisualService = playlistVisualService;
         _logger = logger;
     }
 

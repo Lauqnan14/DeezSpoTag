@@ -151,9 +151,9 @@ public sealed class EngineFallbackCoordinatorParityTests
     }
 
     [Fact]
-    public void TryBuildAppleFallbackUrl_UsesAppleId_WhenAppleStepHasNoResolvedUrl()
+    public async Task TryBuildAppleFallbackUrl_UsesAppleId_WhenAppleStepHasNoResolvedUrl()
     {
-        var url = InvokeTryBuildAppleFallbackUrl(
+        var url = await InvokeTryBuildAppleFallbackUrlAsync(
             engine: "apple",
             sourceUrl: "https://www.deezer.com/track/123",
             spotifyId: "spid",
@@ -167,9 +167,9 @@ public sealed class EngineFallbackCoordinatorParityTests
     }
 
     [Fact]
-    public void TryBuildAppleFallbackUrl_BuildsStationUrl_ForStationIds()
+    public async Task TryBuildAppleFallbackUrl_BuildsStationUrl_ForStationIds()
     {
-        var url = InvokeTryBuildAppleFallbackUrl(
+        var url = await InvokeTryBuildAppleFallbackUrlAsync(
             engine: "apple",
             sourceUrl: string.Empty,
             spotifyId: string.Empty,
@@ -238,7 +238,10 @@ public sealed class EngineFallbackCoordinatorParityTests
             deezerIsrcResolver: null!,
             appleCatalogService: null!,
             activityLog: new NullActivityLogWriter(),
-            apiHealthTracker: tracker);
+            optionalServices: new EngineFallbackCoordinator.OptionalServices
+            {
+                ApiHealthTracker = tracker
+            });
         var result = method!.Invoke(coordinator, new object[] { planSteps, nextIndex, settings });
         Assert.NotNull(result);
         Assert.IsAssignableFrom<System.Collections.IEnumerable>(result);
@@ -257,7 +260,7 @@ public sealed class EngineFallbackCoordinatorParityTests
         return string.IsNullOrWhiteSpace(quality) ? source : $"{source}|{quality}";
     }
 
-    private static string? InvokeTryBuildAppleFallbackUrl(
+    private static async Task<string?> InvokeTryBuildAppleFallbackUrlAsync(
         string engine,
         string sourceUrl,
         string spotifyId,
@@ -320,7 +323,7 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var task = method!.Invoke(coordinator, [request, CancellationToken.None]) as Task<string?>;
         Assert.NotNull(task);
-        return task!.GetAwaiter().GetResult();
+        return await task!;
     }
 
     private sealed class StubHttpClientFactory : IHttpClientFactory

@@ -221,12 +221,12 @@ namespace DeezSpoTag.Web.Controllers
             {
                 try
                 {
-                    if (!_libraryConfigStore.HasLocalLibraryData())
+                    if (!await _libraryConfigStore.HasLocalLibraryDataAsync())
                     {
                         return Ok(BuildUnifiedSearchResponse(source: "offline", error: "Offline search is unavailable."));
                     }
 
-                    var offlineResults = SearchOfflineAsync(term.Trim(), cancellationToken);
+                    var offlineResults = await SearchOfflineAsync(term.Trim(), cancellationToken);
                     return Ok(BuildUnifiedSearchResponse(
                         offlineResults.Tracks,
                         offlineResults.Albums,
@@ -1477,8 +1477,7 @@ namespace DeezSpoTag.Web.Controllers
                 normalizedSource,
                 startedUtc,
                 refreshRequested,
-                existingCache,
-                cancellationToken);
+                existingCache);
             if (cachedResponse != null)
             {
                 return cachedResponse;
@@ -1534,8 +1533,7 @@ namespace DeezSpoTag.Web.Controllers
             string normalizedSource,
             DateTimeOffset startedUtc,
             bool refreshRequested,
-            ArtistCacheEntry? existingCache,
-            CancellationToken cancellationToken)
+            ArtistCacheEntry? existingCache)
         {
             if (refreshRequested || existingCache == null || !_artistPageCache.IsUsable(existingCache.FetchedUtc) || !HasArtistPageExtras(existingCache.PayloadJson))
             {
@@ -4225,9 +4223,9 @@ namespace DeezSpoTag.Web.Controllers
             return (null, null);
         }
 
-        private OfflineSearchResults SearchOfflineAsync(string query, CancellationToken cancellationToken)
+        private async Task<OfflineSearchResults> SearchOfflineAsync(string query, CancellationToken cancellationToken)
         {
-            if (!_libraryConfigStore.HasLocalLibraryData())
+            if (!await _libraryConfigStore.HasLocalLibraryDataAsync())
             {
                 return new OfflineSearchResults();
             }
@@ -4235,9 +4233,9 @@ namespace DeezSpoTag.Web.Controllers
             var dbQuery = query.Replace("%", "\\%").Replace("_", "\\_");
             var like = $"%{dbQuery}%";
 
-            var tracks = _libraryConfigStore.SearchTracksAsync(like, cancellationToken);
-            var albums = _libraryConfigStore.SearchAlbumsAsync(like, cancellationToken);
-            var artists = _libraryConfigStore.SearchArtistsAsync(like, cancellationToken);
+            var tracks = await _libraryConfigStore.SearchTracksAsync(like, cancellationToken);
+            var albums = await _libraryConfigStore.SearchAlbumsAsync(like, cancellationToken);
+            var artists = await _libraryConfigStore.SearchArtistsAsync(like, cancellationToken);
 
             return new OfflineSearchResults
             {

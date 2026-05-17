@@ -2359,7 +2359,7 @@ public partial class AutoTagService
 
     private async Task<Dictionary<long, List<string>>> ResolveChangedLibraryFilesByFolderAsync(
         AutoTagMoveSummary autoMoveSummary,
-        IReadOnlyCollection<long> changedFolderIds,
+        List<long> changedFolderIds,
         CancellationToken cancellationToken)
     {
         var grouped = new Dictionary<long, List<string>>();
@@ -2379,30 +2379,40 @@ public partial class AutoTagService
         {
             foreach (var folder in folders)
             {
-                try
-                {
-                    if (IsPathUnderRoot(path, folder.RootPath))
-                    {
-                        if (!grouped.TryGetValue(folder.Id, out var paths))
-                        {
-                            paths = new List<string>();
-                            grouped[folder.Id] = paths;
-                        }
-
-                        if (!paths.Contains(path, StringComparer.OrdinalIgnoreCase))
-                        {
-                            paths.Add(path);
-                        }
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // Ignore paths the runtime cannot normalize; folder-level fallback remains available.
-                }
+                TryAddPathToFolderGroup(grouped, path, folder);
             }
         }
 
         return grouped;
+    }
+
+    private static void TryAddPathToFolderGroup(
+        Dictionary<long, List<string>> grouped,
+        string path,
+        FolderDto folder)
+    {
+        try
+        {
+            if (!IsPathUnderRoot(path, folder.RootPath))
+            {
+                return;
+            }
+
+            if (!grouped.TryGetValue(folder.Id, out var paths))
+            {
+                paths = new List<string>();
+                grouped[folder.Id] = paths;
+            }
+
+            if (!paths.Contains(path, StringComparer.OrdinalIgnoreCase))
+            {
+                paths.Add(path);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Ignore paths the runtime cannot normalize; folder-level fallback remains available.
+        }
     }
 
     private static void AddMatchingLibraryFolders(

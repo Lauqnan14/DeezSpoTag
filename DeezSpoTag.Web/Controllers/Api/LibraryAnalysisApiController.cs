@@ -22,7 +22,6 @@ public class LibraryAnalysisApiController : ControllerBase
         bool RequestedPathMismatch);
 
     private readonly LibraryRepository _repository;
-    private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly AudioQualitySignalAnalyzer _signalAnalyzer;
     private readonly SpectrogramService _spectrogramService;
     private readonly ILogger<LibraryAnalysisApiController> _logger;
@@ -31,71 +30,14 @@ public class LibraryAnalysisApiController : ControllerBase
 
     public LibraryAnalysisApiController(
         LibraryRepository repository,
-        TrackAnalysisBackgroundService analysisService,
         AudioQualitySignalAnalyzer signalAnalyzer,
         SpectrogramService spectrogramService,
         ILogger<LibraryAnalysisApiController> logger)
     {
         _repository = repository;
-        _analysisService = analysisService;
         _signalAnalyzer = signalAnalyzer;
         _spectrogramService = spectrogramService;
         _logger = logger;
-    }
-
-    [HttpGet("status")]
-    public async Task<IActionResult> GetStatus(CancellationToken cancellationToken)
-    {
-        var status = await _repository.GetAnalysisStatusAsync(cancellationToken);
-        return Ok(status);
-    }
-
-    [HttpGet("latest")]
-    public async Task<IActionResult> GetLatest(CancellationToken cancellationToken)
-    {
-        var latest = await _repository.GetLatestTrackAnalysisAsync(cancellationToken);
-        if (latest is null)
-        {
-            return NotFound();
-        }
-        return Ok(latest);
-    }
-
-    [HttpGet("current")]
-    public Task<IActionResult> GetCurrent(CancellationToken cancellationToken)
-    {
-        return GetCurrentProcessingResultAsync(cancellationToken);
-    }
-
-    [HttpGet("processing")]
-    public Task<IActionResult> GetProcessing(CancellationToken cancellationToken)
-    {
-        return GetCurrentProcessingResultAsync(cancellationToken);
-    }
-
-    private async Task<IActionResult> GetCurrentProcessingResultAsync(CancellationToken cancellationToken)
-    {
-        var processing = await _repository.GetProcessingTrackAsync(cancellationToken);
-        if (processing is null)
-        {
-            return NotFound();
-        }
-        return Ok(processing);
-    }
-
-    [HttpPost("run")]
-    public async Task<IActionResult> Run([FromQuery] int batchSize = 100, CancellationToken cancellationToken = default)
-    {
-        batchSize = Math.Clamp(batchSize, 10, 500);
-        await _analysisService.AnalyzeNowAsync(batchSize, cancellationToken, forceWhenDisabled: true);
-        return Ok(new { queued = false, completed = true, batchSize, fullScan = true });
-    }
-
-    [HttpPost("reset")]
-    public async Task<IActionResult> Reset(CancellationToken cancellationToken)
-    {
-        await _repository.ResetAllAnalysisAsync(cancellationToken);
-        return Ok(new { reset = true });
     }
 
     [HttpGet("track/{trackId:long}")]

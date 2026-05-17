@@ -1184,25 +1184,9 @@ public sealed class AutoTagDownloadMoveService
         {
             cancellationToken.ThrowIfCancellationRequested();
             var movedBefore = moved.Count;
-            try
-            {
-                if (IsAudioExtension(file))
-                {
-                    await ProcessResidualAudioFileAsync(file, runtime, buckets, moved, cancellationToken);
-                }
-                else
-                {
-                    ProcessResidualSidecarFile(file, runtime, buckets, moved);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            if (!await TryProcessResidualFileAsync(file, runtime, buckets, moved, cancellationToken))
             {
                 summary.FailedCount++;
-                _logger.LogWarning(ex, "Auto-move residual processing failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(file));
                 continue;
             }
 
@@ -1226,6 +1210,37 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return moved;
+    }
+
+    private async Task<bool> TryProcessResidualFileAsync(
+        string file,
+        ResidualRuntime runtime,
+        ResidualBuckets buckets,
+        Dictionary<string, string> moved,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (IsAudioExtension(file))
+            {
+                await ProcessResidualAudioFileAsync(file, runtime, buckets, moved, cancellationToken);
+            }
+            else
+            {
+                ProcessResidualSidecarFile(file, runtime, buckets, moved);
+            }
+
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Auto-move residual processing failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(file));
+            return false;
+        }
     }
 
     private static bool DidPathChange(string sourcePath, string destinationPath)

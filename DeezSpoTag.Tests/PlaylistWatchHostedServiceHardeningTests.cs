@@ -88,7 +88,6 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _settingsService,
             serviceProvider: null!,
             playlistSyncService: null!,
-            playlistVisualService: null!,
             NullLogger<PlaylistWatchService>.Instance);
 
         var artistWatchService = new ArtistWatchService(

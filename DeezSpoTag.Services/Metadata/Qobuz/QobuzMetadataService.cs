@@ -5,6 +5,7 @@ namespace DeezSpoTag.Services.Metadata.Qobuz;
 
 public sealed class QobuzMetadataService : IQobuzMetadataService
 {
+    private const string ArtistProperty = "artist";
     private readonly IQobuzApiClient _apiClient;
     private readonly QobuzArtistService _artistService;
     private readonly QobuzApiConfig _config;
@@ -159,9 +160,9 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
     private static QobuzArtist? ResolvePerformer(System.Text.Json.JsonElement item)
     {
         var performerName = ReadNestedString(item, "performer", "name")
-            ?? ReadNestedString(item, "artist", "name")
-            ?? ReadString(item, "artist")
-            ?? ReadNestedString(item, "album", "artist", "name");
+            ?? ReadNestedString(item, ArtistProperty, "name")
+            ?? ReadString(item, ArtistProperty)
+            ?? ReadNestedString(item, "album", ArtistProperty, "name");
         if (string.IsNullOrWhiteSpace(performerName))
         {
             return null;
@@ -209,12 +210,12 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
             Downloadable = ReadTrue(albumElement, "downloadable"),
             Purchasable = ReadTrue(albumElement, "purchasable")
         };
-        var artistName = ReadNestedString(albumElement, "artist", "name");
+        var artistName = ReadNestedString(albumElement, ArtistProperty, "name");
         if (!string.IsNullOrWhiteSpace(artistName))
         {
             album.Artists.Add(new QobuzArtist
             {
-                Id = ReadNestedInt32OrDefault(albumElement, "artist", "id"),
+                Id = ReadNestedInt32OrDefault(albumElement, ArtistProperty, "id"),
                 Name = artistName
             });
         }
@@ -312,20 +313,6 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         return ReadInt32OrDefault(value);
     }
 
-    private static int ReadNestedInt32OrDefault(System.Text.Json.JsonElement element, params string[] path)
-    {
-        var current = element;
-        foreach (var segment in path)
-        {
-            if (!current.TryGetProperty(segment, out current))
-            {
-                return 0;
-            }
-        }
-
-        return ReadInt32OrDefault(current);
-    }
-
     private static int ReadInt32OrDefault(System.Text.Json.JsonElement value)
     {
         if (value.ValueKind == System.Text.Json.JsonValueKind.Number && value.TryGetInt32(out var numericValue))
@@ -340,6 +327,20 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         }
 
         return 0;
+    }
+
+    private static int ReadNestedInt32OrDefault(System.Text.Json.JsonElement element, params string[] path)
+    {
+        var current = element;
+        foreach (var segment in path)
+        {
+            if (!current.TryGetProperty(segment, out current))
+            {
+                return 0;
+            }
+        }
+
+        return ReadInt32OrDefault(current);
     }
 
     private static double ReadDoubleOrDefault(System.Text.Json.JsonElement element, string property)

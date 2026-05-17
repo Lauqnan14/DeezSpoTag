@@ -10,6 +10,11 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class LibraryScanRunner
 {
+    private readonly record struct FolderScanSnapshotResult(
+        LibraryConfigStore.LocalLibrarySnapshot Snapshot,
+        int ProcessedFiles,
+        int TotalFiles,
+        int ErrorCount);
     private static readonly bool DefaultLivePreviewIngestEnabled = ReadBooleanEnvironmentVariable("DEEZSPOTAG_LIBRARY_LIVE_INGEST", defaultValue: false);
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
@@ -274,7 +279,7 @@ public sealed class LibraryScanRunner
                     livePreviewIngestEnabled,
                     folderId,
                     activeCts.Token);
-                PersistScanInfo(scanResult.ArtistCount, scanResult.AlbumCount, scanResult.TrackCount);
+                await PersistScanInfoAsync(scanResult.ArtistCount, scanResult.AlbumCount, scanResult.TrackCount);
                 await SyncRepositoryArtifactsAsync(
                     enabledFolders,
                     scanResult.ArtistGenres,
@@ -363,7 +368,7 @@ public sealed class LibraryScanRunner
     }
 
     private async Task RunChangedFilesBatchAsync(
-        IReadOnlyDictionary<long, List<string>> changedFilesByFolder,
+        Dictionary<long, List<string>> changedFilesByFolder,
         bool skipSpotifyFetch,
         CancellationToken cancellationToken)
     {
@@ -441,7 +446,7 @@ public sealed class LibraryScanRunner
                     await EnqueueSpotifyArtistMetadataAsync(activeCts.Token);
                 }
 
-                PersistScanInfo(finalCounts.Artists, finalCounts.Albums, finalCounts.Tracks);
+                await PersistScanInfoAsync(finalCounts.Artists, finalCounts.Albums, finalCounts.Tracks);
                 AddInfoLog($"Targeted library scan completed ({finalCounts.Artists} artists, {finalCounts.Albums} albums, {finalCounts.Tracks} tracks).");
                 await PublishLibraryUpdatedAsync(
                     new IncrementalScanResult(finalCounts.Artists, finalCounts.Albums, finalCounts.Tracks, artistGenres),
@@ -639,7 +644,7 @@ public sealed class LibraryScanRunner
     {
         var folders = _repository.IsConfigured
             ? await _repository.GetFoldersAsync(cancellationToken)
-            : _configStore.GetFolders();
+            : await _configStore.GetFoldersAsync();
         var enabledFolders = folders
             .Where(folder => folder.Enabled)
             .ToList();
@@ -682,20 +687,18 @@ public sealed class LibraryScanRunner
                 ? await _repository.GetLocalScanFileStatesAsync(folder.Id, cancellationToken)
                 : null;
 
-            var folderSnapshot = ScanSingleFolderSnapshot(
+            var folderSnapshotResult = ScanSingleFolderSnapshot(
                 folder,
                 progressOffset,
                 livePreviewIngestEnabled,
                 existingFiles,
-                out var folderProcessed,
-                out var folderTotal,
-                out var folderErrors,
                 cancellationToken);
+            var folderSnapshot = folderSnapshotResult.Snapshot;
 
             progressOffset = new ScanProgressOffset(
-                progressOffset.ProcessedFiles + folderProcessed,
-                progressOffset.TotalFiles + folderTotal,
-                progressOffset.ErrorCount + folderErrors);
+                progressOffset.ProcessedFiles + folderSnapshotResult.ProcessedFiles,
+                progressOffset.TotalFiles + folderSnapshotResult.TotalFiles,
+                progressOffset.ErrorCount + folderSnapshotResult.ErrorCount);
 
             MergeGenres(aggregatedGenres, folderSnapshot.ArtistGenres);
 
@@ -906,14 +909,11 @@ public sealed class LibraryScanRunner
         return clone;
     }
 
-    private LibraryConfigStore.LocalLibrarySnapshot ScanSingleFolderSnapshot(
+    private FolderScanSnapshotResult ScanSingleFolderSnapshot(
         FolderDto folder,
         ScanProgressOffset progressOffset,
         bool livePreviewIngestEnabled,
         IReadOnlyDictionary<string, LocalScanFileState>? existingFiles,
-        out int folderProcessed,
-        out int folderTotal,
-        out int folderErrors,
         CancellationToken cancellationToken)
     {
         var latestProcessed = 0;
@@ -946,10 +946,7 @@ public sealed class LibraryScanRunner
                 : null,
             cancellationToken,
             existingFiles);
-        folderProcessed = latestProcessed;
-        folderTotal = latestTotal;
-        folderErrors = latestErrors;
-        return snapshot;
+        return new FolderScanSnapshotResult(snapshot, latestProcessed, latestTotal, latestErrors);
     }
 
     private static void MergeGenres(
@@ -993,9 +990,9 @@ public sealed class LibraryScanRunner
         return settings.LivePreviewIngest;
     }
 
-    private void PersistScanInfo(int artistCount, int albumCount, int trackCount)
+    private async Task PersistScanInfoAsync(int artistCount, int albumCount, int trackCount)
     {
-        _configStore.SaveLastScanInfo(new LibraryConfigStore.LastScanInfo(
+        await _configStore.SaveLastScanInfoAsync(new LibraryConfigStore.LastScanInfo(
             DateTimeOffset.UtcNow,
             artistCount,
             albumCount,

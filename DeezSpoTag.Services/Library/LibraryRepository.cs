@@ -137,6 +137,7 @@ public sealed class LibraryRepository
     private const string SourceIdField = "sourceId";
     private const string LibraryIdField = "libraryId";
     private const string DurationMsField = "durationMs";
+    private const string ArtistSearchParameter = "artistSearch";
     private const string TrackIdsJsonParameter = "trackIdsJson";
     private const string EntityIdParameter = "entityId";
     private const string TrackGenreTable = "track_genre";
@@ -7053,7 +7054,7 @@ ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
 LIMIT 100;";
 
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistSearch", artistSearch);
+        command.Parameters.AddWithValue(ArtistSearchParameter, artistSearch);
         command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -7133,7 +7134,7 @@ LIMIT 100;";
         await using var isrcCommand = new SqliteCommand(isrcSql, connection);
         isrcCommand.Parameters.AddWithValue("isrc", string.Empty);
         await using var trackCommand = new SqliteCommand(trackSql, connection);
-        trackCommand.Parameters.AddWithValue("artistSearch", string.Empty);
+        trackCommand.Parameters.AddWithValue(ArtistSearchParameter, string.Empty);
         trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
 
         var results = new bool[inputs.Count];
@@ -7196,7 +7197,7 @@ LIMIT 100;";
         isrcCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
 
         await using var trackCommand = new SqliteCommand(trackSql, connection);
-        trackCommand.Parameters.AddWithValue("artistSearch", string.Empty);
+        trackCommand.Parameters.AddWithValue(ArtistSearchParameter, string.Empty);
         trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
         trackCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
         trackCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
@@ -7231,7 +7232,7 @@ LIMIT 100;";
             return false;
         }
 
-        trackCommand.Parameters["artistSearch"]!.Value = artistSearch;
+        trackCommand.Parameters[ArtistSearchParameter]!.Value = artistSearch;
         trackCommand.Parameters[DurationMsField]!.Value = input.DurationMs.HasValue ? input.DurationMs.Value : DBNull.Value;
         return await ExistsByArtistAndTitleAsync(trackCommand, artistName, trackTitle, cancellationToken);
     }
@@ -8543,7 +8544,7 @@ RETURNING id;";
         return await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetString(ordinal);
     }
 
-    private static IReadOnlyList<string> ReadDelimitedValues(string? value)
+    private static string[] ReadDelimitedValues(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {

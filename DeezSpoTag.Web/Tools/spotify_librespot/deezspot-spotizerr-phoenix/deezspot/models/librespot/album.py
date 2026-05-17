@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Union
+from typing import Dict, Any, List
 
 from .types import ExternalUrls, Image, ArtistRef, _str, _int
 from .track import Track as TrackModel
@@ -9,26 +9,26 @@ from .track import Track as TrackModel
 
 @dataclass
 class Album:
-	id: Optional[str] = None
-	name: Optional[str] = None
-	uri: Optional[str] = None
+	id: str | None = None
+	name: str | None = None
+	uri: str | None = None
 	type: str = "album"
-	album_type: Optional[str] = None
-	release_date: Optional[str] = None
-	release_date_precision: Optional[str] = None
-	total_tracks: Optional[int] = None
-	label: Optional[str] = None
-	popularity: Optional[int] = None
+	album_type: str | None = None
+	release_date: str | None = None
+	release_date_precision: str | None = None
+	total_tracks: int | None = None
+	label: str | None = None
+	popularity: int | None = None
 	external_urls: ExternalUrls = field(default_factory=ExternalUrls)
 	external_ids: Dict[str, str] = field(default_factory=dict)
-	available_markets: Optional[List[str]] = None
-	images: Optional[List[Image]] = None
+	available_markets: List[str] | None = None
+	images: List[Image] | None = None
 	artists: List[ArtistRef] = field(default_factory=list)
-	tracks: Optional[List[Union[str, TrackModel]]] = None
-	copyrights: Optional[List[Dict[str, Any]]] = None
+	tracks: List[str | TrackModel] | None = None
+	copyrights: List[Dict[str, Any]] | None = None
 
 	@staticmethod
-	def _parse_images(obj: Dict[str, Any]) -> Optional[List[Image]]:
+	def _parse_images(obj: Dict[str, Any]) -> List[Image] | None:
 		imgs: List[Image] = []
 		for im in obj.get("images", []) or []:
 			im_obj = Image.from_dict(im)
@@ -44,10 +44,10 @@ class Album:
 		return artists
 
 	@staticmethod
-	def _parse_tracks(obj: Dict[str, Any]) -> Optional[List[Union[str, TrackModel]]]:
+	def _parse_tracks(obj: Dict[str, Any]) -> List[str | TrackModel] | None:
 		if not isinstance(obj.get("tracks"), list):
 			return None
-		tracks_in: List[Union[str, TrackModel]] = []
+		tracks_in: List[str | TrackModel] = []
 		for track_item in obj.get("tracks"):
 			if isinstance(track_item, dict):
 				tracks_in.append(TrackModel.from_dict(track_item))

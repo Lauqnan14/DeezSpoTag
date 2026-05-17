@@ -286,7 +286,7 @@ public sealed class FfmpegConversionService
         }
     }
 
-    private static IReadOnlyList<string> BuildArguments(string inputPath, string outputPath, string format, string bitrate, string? extraArgs)
+    private static List<string> BuildArguments(string inputPath, string outputPath, string format, string bitrate, string? extraArgs)
     {
         var args = new List<string>
         {

@@ -9,6 +9,11 @@ namespace DeezSpoTag.Services.Download.Fallback;
 
 public sealed class EngineFallbackCoordinator
 {
+    public sealed class OptionalServices
+    {
+        public IDownloadApiHealthTracker? ApiHealthTracker { get; init; }
+        public QobuzTrackResolver? QobuzTrackResolver { get; init; }
+    }
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
@@ -73,17 +78,17 @@ public sealed class EngineFallbackCoordinator
         DeezerIsrcResolver deezerIsrcResolver,
         AppleMusicCatalogService appleCatalogService,
         IActivityLogWriter activityLog,
-        IDownloadApiHealthTracker? apiHealthTracker = null,
-        QobuzTrackResolver? qobuzTrackResolver = null)
+        OptionalServices? optionalServices = null)
     {
+        optionalServices ??= new OptionalServices();
         _queueRepository = queueRepository;
         _settingsService = settingsService;
         _songLinkResolver = songLinkResolver;
         _deezerIsrcResolver = deezerIsrcResolver;
-        _qobuzTrackResolver = qobuzTrackResolver;
+        _qobuzTrackResolver = optionalServices.QobuzTrackResolver;
         _appleCatalogService = appleCatalogService;
         _activityLog = activityLog;
-        _apiHealthTracker = apiHealthTracker ?? new DownloadApiHealthTracker();
+        _apiHealthTracker = optionalServices.ApiHealthTracker ?? new DownloadApiHealthTracker();
     }
 
     public Task<bool> TryAdvanceAsync<TPayload>(
