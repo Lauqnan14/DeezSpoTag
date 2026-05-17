@@ -43,7 +43,13 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     [HttpPost("recognize-mic")]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxUploadBytes)]
     [RequestSizeLimit(MaxUploadBytes)]
-    public async Task<IActionResult> RecognizeMic([FromForm] IFormFile? audio, CancellationToken cancellationToken)
+    public async Task<IActionResult> RecognizeMic(
+        [FromForm] IFormFile? audio,
+        [FromForm] string? capturePhase,
+        [FromForm] string? captureAttempt,
+        [FromForm] string? logoSessionId,
+        [FromForm] string? clientRequestId,
+        CancellationToken cancellationToken)
     {
         var validationError = ValidateRecognizeMicRequest(audio);
         if (validationError is not null)
@@ -57,7 +63,14 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         try
         {
-            return await ProcessMicRecognitionAsync(audioFile, tempPath, cancellationToken);
+            return await ProcessMicRecognitionAsync(
+                audioFile,
+                tempPath,
+                NormalizeCapturePhase(capturePhase),
+                NormalizeCaptureAttempt(captureAttempt),
+                SanitizeRequestToken(logoSessionId, fallback: "none"),
+                SanitizeClientRequestId(clientRequestId),
+                cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -80,12 +93,20 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     private async Task<IActionResult> ProcessMicRecognitionAsync(
         IFormFile audioFile,
         string tempPath,
+        string capturePhase,
+        string captureAttempt,
+        string logoSessionId,
+        string clientRequestId,
         CancellationToken cancellationToken)
     {
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Shazam mic request accepted: bytes={Bytes}, contentType={ContentType}, fileName={FileName}.",
+                "Shazam mic request accepted: phase={CapturePhase}, attempt={CaptureAttempt}, logoSessionId={LogoSessionId}, clientRequestId={ClientRequestId}, bytes={Bytes}, contentType={ContentType}, fileName={FileName}.",
+                capturePhase,
+                captureAttempt,
+                logoSessionId,
+                clientRequestId,
                 audioFile.Length,
                 string.IsNullOrWhiteSpace(audioFile.ContentType) ? "unknown" : audioFile.ContentType,
                 string.IsNullOrWhiteSpace(audioFile.FileName) ? "unknown" : audioFile.FileName);
@@ -98,7 +119,11 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Shazam mic recognition windows: captureDurationSeconds={CaptureDurationSeconds}, signatureWindowSeconds={SignatureWindowSeconds}.",
+                "Shazam mic recognition windows: phase={CapturePhase}, attempt={CaptureAttempt}, logoSessionId={LogoSessionId}, clientRequestId={ClientRequestId}, captureDurationSeconds={CaptureDurationSeconds}, signatureWindowSeconds={SignatureWindowSeconds}.",
+                capturePhase,
+                captureAttempt,
+                logoSessionId,
+                clientRequestId,
                 captureDurationSeconds,
                 signatureWindowSeconds);
         }
@@ -113,17 +138,25 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
-                    "Shazam mic match failed: outcome={Outcome}, error={Error}.",
+                    "Shazam mic match failed: phase={CapturePhase}, attempt={CaptureAttempt}, logoSessionId={LogoSessionId}, clientRequestId={ClientRequestId}, outcome={Outcome}, error={Error}.",
+                    capturePhase,
+                    captureAttempt,
+                    logoSessionId,
+                    clientRequestId,
                     attempt.Outcome,
                     string.IsNullOrWhiteSpace(attempt.Error) ? "none" : attempt.Error);
             }
-            return BuildNoMatchResponse(attempt);
+            return BuildNoMatchResponse(attempt, capturePhase, captureAttempt, logoSessionId, clientRequestId);
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Shazam mic matched: title={Title}, artist={Artist}, trackId={TrackId}.",
+                "Shazam mic matched: phase={CapturePhase}, attempt={CaptureAttempt}, logoSessionId={LogoSessionId}, clientRequestId={ClientRequestId}, title={Title}, artist={Artist}, trackId={TrackId}.",
+                capturePhase,
+                captureAttempt,
+                logoSessionId,
+                clientRequestId,
                 attempt.Recognition?.Title,
                 attempt.Recognition?.Artist,
                 attempt.Recognition?.TrackId);
@@ -131,7 +164,13 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         try
         {
-            return Ok(await BuildMatchPayloadAsync(attempt.Recognition!, cancellationToken));
+            return Ok(await BuildMatchPayloadAsync(
+                attempt.Recognition!,
+                capturePhase,
+                captureAttempt,
+                logoSessionId,
+                clientRequestId,
+                cancellationToken));
         }
         catch (OperationCanceledException)
         {
@@ -140,8 +179,49 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
-            return Ok(BuildMinimalMatchPayload(attempt.Recognition!));
+            return Ok(BuildMinimalMatchPayload(
+                attempt.Recognition!,
+                capturePhase,
+                captureAttempt,
+                logoSessionId,
+                clientRequestId));
         }
+    }
+
+    private static string NormalizeCapturePhase(string? capturePhase)
+    {
+        var value = (capturePhase ?? string.Empty).Trim().ToLowerInvariant();
+        return value switch
+        {
+            "quick" => "quick",
+            "final" => "final",
+            "file" => "file",
+            "logo" => "logo",
+            _ => "unknown"
+        };
+    }
+
+    private static string NormalizeCaptureAttempt(string? captureAttempt)
+    {
+        var value = (captureAttempt ?? string.Empty).Trim().ToLowerInvariant();
+        return value switch
+        {
+            "quick" => "quick",
+            "final" => "final",
+            "file" => "file",
+            _ => "none"
+        };
+    }
+
+    private static string SanitizeClientRequestId(string? clientRequestId)
+        => SanitizeRequestToken(clientRequestId, fallback: "none");
+
+    private static string SanitizeRequestToken(string? value, string fallback)
+    {
+        var sanitized = DeezSpoTag.Core.Security.LogSanitizer.OneLine(value ?? string.Empty);
+        return string.IsNullOrWhiteSpace(sanitized)
+            ? fallback
+            : sanitized.Length <= 80 ? sanitized : sanitized[..80];
     }
 
     private int ResolveCaptureDurationSeconds()
@@ -209,7 +289,12 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         await audio.CopyToAsync(stream, cancellationToken);
     }
 
-    private ObjectResult BuildNoMatchResponse(ShazamRecognitionAttempt attempt)
+    private ObjectResult BuildNoMatchResponse(
+        ShazamRecognitionAttempt attempt,
+        string capturePhase,
+        string captureAttempt,
+        string logoSessionId,
+        string clientRequestId)
     {
         return attempt.Outcome switch
         {
@@ -218,6 +303,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 new
                 {
                     matched = false,
+                    capturePhase,
+                    captureAttempt,
+                    logoSessionId,
+                    clientRequestId,
                     reason = "recognizer_unavailable",
                     error = attempt.Error ?? "Shazam recognizer is unavailable."
                 }),
@@ -226,6 +315,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 new
                 {
                     matched = false,
+                    capturePhase,
+                    captureAttempt,
+                    logoSessionId,
+                    clientRequestId,
                     reason = "recognizer_error",
                     error = attempt.Error ?? "Shazam recognizer failed."
                 }),
@@ -233,6 +326,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 new
                 {
                     matched = false,
+                    capturePhase,
+                    captureAttempt,
+                    logoSessionId,
+                    clientRequestId,
                     reason = "invalid_audio",
                     error = attempt.Error ?? "Audio sample is invalid."
                 }),
@@ -240,6 +337,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 new
                 {
                     matched = false,
+                    capturePhase,
+                    captureAttempt,
+                    logoSessionId,
+                    clientRequestId,
                     reason = "no_match"
                 })
         };
@@ -247,6 +348,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
     private async Task<object> BuildMatchPayloadAsync(
         ShazamRecognitionInfo recognition,
+        string capturePhase,
+        string captureAttempt,
+        string logoSessionId,
+        string clientRequestId,
         CancellationToken cancellationToken)
     {
         var trackId = recognition.TrackId;
@@ -265,10 +370,24 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         }
 
         var searchResults = await SafeSearchTracksAsync(query, cancellationToken);
-        return BuildMatchPayload(recognition, query, track, related, searchResults);
+        return BuildMatchPayload(
+            recognition,
+            query,
+            track,
+            related,
+            searchResults,
+            capturePhase,
+            captureAttempt,
+            logoSessionId,
+            clientRequestId);
     }
 
-    private static object BuildMinimalMatchPayload(ShazamRecognitionInfo recognition)
+    private static object BuildMinimalMatchPayload(
+        ShazamRecognitionInfo recognition,
+        string capturePhase,
+        string captureAttempt,
+        string logoSessionId,
+        string clientRequestId)
     {
         var query = BuildQuery(recognition);
         return BuildMatchPayload(
@@ -276,7 +395,11 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             query,
             track: null,
             related: Array.Empty<ShazamTrackCard>(),
-            searchResults: Array.Empty<ShazamTrackCard>());
+            searchResults: Array.Empty<ShazamTrackCard>(),
+            capturePhase,
+            captureAttempt,
+            logoSessionId,
+            clientRequestId);
     }
 
     private static object BuildMatchPayload(
@@ -284,7 +407,11 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         string? query,
         ShazamTrackCard? track,
         IReadOnlyList<ShazamTrackCard> related,
-        IReadOnlyList<ShazamTrackCard> searchResults)
+        IReadOnlyList<ShazamTrackCard> searchResults,
+        string capturePhase,
+        string captureAttempt,
+        string logoSessionId,
+        string clientRequestId)
     {
         var relatedList = related ?? Array.Empty<ShazamTrackCard>();
         var searchList = searchResults ?? Array.Empty<ShazamTrackCard>();
@@ -292,6 +419,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         return new
         {
             matched = true,
+            capturePhase,
+            captureAttempt,
+            logoSessionId,
+            clientRequestId,
             recognition = new
             {
                 title = recognition.Title,

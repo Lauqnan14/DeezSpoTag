@@ -353,10 +353,12 @@
             let similar = [];
             let searched = [];
             const effectiveQuery = normalizeText(query || [title, artist].filter(Boolean).join(' '));
+            let effectiveTrackId = normalizeText(trackId);
 
             const livePayload = readLiveCapturePayload();
             if (livePayload) {
                 match = livePayload.track || normalizeRecognitionCard(livePayload.recognition);
+                effectiveTrackId = normalizeText(effectiveTrackId || livePayload?.track?.id || livePayload?.recognition?.trackId);
                 similar = Array.isArray(livePayload.similar)
                     ? livePayload.similar
                     : Array.isArray(livePayload.related) ? livePayload.related : [];
@@ -367,11 +369,12 @@
             }
 
             const tasks = [];
-            if (trackId && (!match || similar.length === 0)) {
+            effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
+            if (effectiveTrackId && (!match || similar.length === 0)) {
                 tasks.push((async () => {
                     const [trackResult, relatedResult] = await Promise.allSettled([
-                        fetchJson(`/api/shazam/track/${encodeURIComponent(trackId)}`),
-                        fetchJson(`/api/shazam/related/${encodeURIComponent(trackId)}?limit=20`)
+                        fetchJson(`/api/shazam/track/${encodeURIComponent(effectiveTrackId)}`),
+                        fetchJson(`/api/shazam/related/${encodeURIComponent(effectiveTrackId)}?limit=20`)
                     ]);
 
                     if (trackResult.status === 'fulfilled') {
@@ -418,7 +421,7 @@
 
             if (!match && title) {
                 match = {
-                    id: normalizeText(trackId),
+                    id: effectiveTrackId,
                     title: normalizeText(title) || 'Unknown Track',
                     artist: normalizeText(artist) || 'Unknown Artist',
                     album: null,

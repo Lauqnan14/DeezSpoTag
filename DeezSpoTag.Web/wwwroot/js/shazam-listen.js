@@ -30,6 +30,9 @@
     let autoStopTimer = null;
     let quickProbeTimer = null;
     let quickProbeInFlight = false;
+    let captureSessionId = 0;
+    let activeLogoSession = null;
+    let activeQuickProbeController = null;
     let overlay = null;
     let fallbackInput = null;
 
@@ -534,6 +537,10 @@
             globalThis.clearTimeout(quickProbeTimer);
             quickProbeTimer = null;
         }
+        if (activeQuickProbeController) {
+            activeQuickProbeController.abort();
+            activeQuickProbeController = null;
+        }
         quickProbeInFlight = false;
 
         if (processor) {
@@ -713,11 +720,28 @@
         return null;
     };
 
-    const performRecognitionRequest = async (audioBlob, filename = 'capture.wav') => {
+    const performRecognitionRequest = async (audioBlob, filename = 'capture.wav', options = {}) => {
         const resolvedName = filename;
+        const phase = String(options?.phase || 'file').trim() || 'file';
+        const attempt = String(options?.attempt || '').trim();
+        const logoSessionId = String(options?.logoSessionId || '').trim();
+        const clientRequestId = String(options?.clientRequestId || '').trim()
+            || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         const form = new FormData();
         form.append('audio', audioBlob, resolvedName);
+        form.append('capturePhase', phase);
+        form.append('clientRequestId', clientRequestId);
+        if (attempt) {
+            form.append('captureAttempt', attempt);
+        }
+        if (logoSessionId) {
+            form.append('logoSessionId', logoSessionId);
+        }
         console.info('Shazam mic upload', {
+            phase,
+            attempt,
+            logoSessionId,
+            clientRequestId,
             filename: resolvedName,
             bytes: Number(audioBlob?.size || 0),
             type: String(audioBlob?.type || '')
@@ -725,7 +749,8 @@
 
         const response = await fetch('/api/shazam/recognize-mic', {
             method: 'POST',
-            body: form
+            body: form,
+            signal: options?.signal
         });
 
         let payload = null;
@@ -737,11 +762,11 @@
         return { response, payload };
     };
 
-    const runRecognitionFromBlob = async (audioBlob, filename) => {
+    const runRecognitionFromBlob = async (audioBlob, filename, options = {}) => {
         setState('searching');
 
         try {
-            const { response, payload } = await performRecognitionRequest(audioBlob, filename);
+            const { response, payload } = await performRecognitionRequest(audioBlob, filename, options);
             if (!response.ok) {
                 const reason = payload?.reason;
                 const detail = extractShazamApiError(payload);
@@ -783,6 +808,80 @@
         }
     };
 
+    const completeLogoSession = async (sessionId, payload) => {
+        if (!payload?.matched || !activeLogoSession || activeLogoSession.id !== sessionId || activeLogoSession.completed) {
+            return false;
+        }
+
+        activeLogoSession.completed = true;
+        setState('searching');
+        await releaseAudio();
+        persistPayloadForResults(payload);
+        navigateToResults(payload);
+        return true;
+    };
+
+    const runLogoRecognitionAttempt = async (sessionId, phase, chunks, capturedRate, options = {}) => {
+        if (!Array.isArray(chunks) || chunks.length === 0) {
+            return false;
+        }
+
+        const session = activeLogoSession;
+        if (!session || session.id !== sessionId || session.completed) {
+            return false;
+        }
+
+        const wav = encodeWavBlob(chunks, capturedRate, 16000);
+        const { response, payload } = await performRecognitionRequest(wav, 'capture.wav', {
+            phase: 'logo',
+            attempt: phase,
+            logoSessionId: `logo-${sessionId}`,
+            clientRequestId: `logo-${sessionId}-${phase}-${Date.now().toString(36)}`,
+            signal: options?.signal
+        });
+
+        if (!activeLogoSession || activeLogoSession.id !== sessionId || activeLogoSession.completed) {
+            return false;
+        }
+
+        if (response.ok && payload?.matched) {
+            return await completeLogoSession(sessionId, payload);
+        }
+
+        if (options?.silentNoMatch) {
+            return false;
+        }
+
+        if (!response.ok) {
+            const reason = payload?.reason;
+            const detail = extractShazamApiError(payload);
+            setState('error');
+
+            if (reason === 'recognizer_unavailable') {
+                notify(detail || 'Shazam recognizer is unavailable on the server.', 'error');
+            } else if (reason === 'recognizer_error') {
+                notify(detail || 'Shazam recognizer failed while processing this sample.', 'error');
+            } else if (detail?.toLowerCase().includes('request body too large')) {
+                notify('Selected audio file is too large for upload. Choose a smaller clip or use microphone capture.', 'error');
+            } else {
+                notify(detail || `Shazam lookup failed (${response.status}).`, 'error');
+            }
+
+            globalThis.setTimeout(() => setState('idle'), 2200);
+            return false;
+        }
+
+        if (payload?.reason === 'no_match') {
+            setState('error');
+            notify('No Shazam match found. Try cleaner audio.', 'warning');
+        } else {
+            setState('error');
+            notify(payload?.error || 'Shazam could not process this sample.', 'error');
+        }
+        globalThis.setTimeout(() => setState('idle'), 1500);
+        return false;
+    };
+
     const scheduleQuickProbe = (delayMs = QUICK_PROBE_INTERVAL_MS) => {
         if (quickProbeTimer || state !== 'listening') {
             return;
@@ -799,6 +898,10 @@
             return;
         }
 
+        const sessionId = activeLogoSession?.id;
+        if (!sessionId) {
+            return;
+        }
         const capturedSamples = buffers.reduce((sum, chunk) => sum + chunk.length, 0);
         const capturedSeconds = sampleRate > 0 ? (capturedSamples / sampleRate) : 0;
         if (capturedSeconds < QUICK_PROBE_MIN_SECONDS) {
@@ -807,6 +910,7 @@
         }
 
         quickProbeInFlight = true;
+        activeQuickProbeController = new AbortController();
         try {
             const probeChunks = buffers.slice();
             if (probeChunks.length === 0) {
@@ -814,22 +918,16 @@
                 return;
             }
 
-            const wav = encodeWavBlob(probeChunks, sampleRate, 16000);
-            const { response, payload } = await performRecognitionRequest(wav, 'capture.wav');
-            if (state !== 'listening') {
-                return;
-            }
-
-            if (response.ok && payload?.matched) {
-                setState('searching');
-                await releaseAudio();
-                persistPayloadForResults(payload);
-                navigateToResults(payload);
-                return;
-            }
+            await runLogoRecognitionAttempt(sessionId, 'quick', probeChunks, sampleRate, {
+                silentNoMatch: true,
+                signal: activeQuickProbeController.signal
+            });
         } catch (error) {
-            console.debug('Shazam quick probe failed; continuing capture.', error);
+            if (error?.name !== 'AbortError') {
+                console.debug('Shazam quick probe failed; continuing capture.', error);
+            }
         } finally {
+            activeQuickProbeController = null;
             quickProbeInFlight = false;
         }
 
@@ -881,6 +979,11 @@
         }
 
         try {
+            captureSessionId += 1;
+            activeLogoSession = {
+                id: captureSessionId,
+                completed: false
+            };
             await initializeLiveCapture();
 
             setState('listening');
@@ -977,8 +1080,17 @@
             return;
         }
 
+        const sessionId = activeLogoSession?.id;
+        if (!sessionId) {
+            return;
+        }
+        if (activeQuickProbeController) {
+            activeQuickProbeController.abort();
+            activeQuickProbeController = null;
+        }
         const capturedChunks = buffers.slice();
         const capturedRate = sampleRate;
+        setState('searching');
         await releaseAudio();
 
         if (capturedChunks.length === 0) {
@@ -988,8 +1100,7 @@
             return;
         }
 
-        const wav = encodeWavBlob(capturedChunks, capturedRate, 16000);
-        await runRecognitionFromBlob(wav, 'capture.wav');
+        await runLogoRecognitionAttempt(sessionId, 'final', capturedChunks, capturedRate);
     };
 
     const setupHandlers = () => {
