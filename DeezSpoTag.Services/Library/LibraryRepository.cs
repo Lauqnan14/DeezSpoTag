@@ -3002,6 +3002,44 @@ LIMIT 1;";
         return Convert.ToInt64(result);
     }
 
+    public async Task<long?> GetLocalTrackIdByTrackMetadataAsync(
+        string artistName,
+        string trackTitle,
+        int? durationMs = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(artistName) || string.IsNullOrWhiteSpace(trackTitle))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = $@"
+SELECT t.id
+FROM track t
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+JOIN track_local tl ON tl.track_id = t.id
+LEFT JOIN audio_file af ON af.id = tl.audio_file_id
+WHERE LOWER(ar.name) = LOWER(@artistName)
+  AND LOWER(t.title) = LOWER(@trackTitle)
+  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
+ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
+LIMIT 1;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistName", artistName);
+        command.Parameters.AddWithValue("trackTitle", trackTitle);
+        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        if (result is null || result == DBNull.Value)
+        {
+            return null;
+        }
+
+        return Convert.ToInt64(result);
+    }
+
     public async Task<IReadOnlyDictionary<string, long>> GetTrackIdsByPlexRatingKeysAsync(
         IReadOnlyList<string> ratingKeys,
         CancellationToken cancellationToken = default)
@@ -3013,15 +3051,40 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
+WITH requested AS (
+    SELECT value AS rating_key
+    FROM json_each(@ratingKeysJson)
+),
+metadata AS (
+    SELECT tpm.plex_rating_key,
+           tpm.track_id,
+           0 AS sort_group,
+           tpm.updated_at_utc AS sort_utc
+    FROM track_plex_metadata tpm
+    JOIN requested r ON LOWER(TRIM(r.rating_key)) = LOWER(TRIM(tpm.plex_rating_key))
+    WHERE tpm.track_id IS NOT NULL
+      AND tpm.plex_rating_key IS NOT NULL
+      AND TRIM(tpm.plex_rating_key) <> ''
+),
+history AS (
+    SELECT ph.plex_rating_key,
+           ph.track_id,
+           1 AS sort_group,
+           ph.played_at_utc AS sort_utc
+    FROM play_history ph
+    JOIN requested r ON LOWER(TRIM(r.rating_key)) = LOWER(TRIM(ph.plex_rating_key))
+    WHERE ph.track_id IS NOT NULL
+      AND ph.plex_rating_key IS NOT NULL
+      AND TRIM(ph.plex_rating_key) <> ''
+)
 SELECT plex_rating_key,
        track_id
-FROM play_history
-WHERE plex_rating_key IN (
-    SELECT value
-    FROM json_each(@ratingKeysJson)
+FROM (
+    SELECT * FROM metadata
+    UNION ALL
+    SELECT * FROM history
 )
-  AND track_id IS NOT NULL
-ORDER BY played_at_utc DESC;";
+ORDER BY sort_group, sort_utc DESC;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("ratingKeysJson", SerializeJsonArray(ratingKeys));
 
