@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using DeezSpoTag.Core.Utils;
 using System.Globalization;
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -13,9 +15,22 @@ public sealed class LastFmTagService
     private readonly IConfiguration _configuration;
     private readonly PlatformAuthService _authService;
     private readonly ILogger<LastFmTagService> _logger;
+    private long _trackTagRequests;
+    private long _trackTagMatches;
+    private long _trackTagEmpty;
+    private long _trackTagNotFound;
+    private long _trackTagApiErrors;
+    private long _trackTagAuthMissing;
+    private DateTimeOffset _lastTrackTagMetricsLogUtc = DateTimeOffset.MinValue;
     private string? _cachedApiKey;
     private DateTimeOffset _cachedApiKeyLoadedAtUtc;
     private static readonly TimeSpan ApiKeyCacheTtl = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan TrackTagMetricsLogInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly Regex InlineFeaturingRegex = new(@"\s+(feat\.?|ft\.?|featuring)\s+.*$", RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex TrailingBracketGroupRegex = new(@"\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*$", RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex TrailingDashQualifierRegex = new(@"\s*-\s*(remix|mix|edit|version|live|remaster(?:ed)?)\b.*$", RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex MultiSpaceRegex = new(@"\s+", RegexOptions.Compiled, RegexTimeout);
 
     // In-memory cache with TTL
     private static readonly TimeSpan TagCacheTtl = TimeSpan.FromDays(7);
@@ -43,7 +58,17 @@ public sealed class LastFmTagService
 
     public async Task<IReadOnlyList<string>?> GetTrackTagsAsync(string artistName, string trackTitle, CancellationToken cancellationToken)
     {
-        var cacheKey = $"tags:{NormalizeCacheKey(artistName)}:{NormalizeCacheKey(trackTitle)}";
+        Interlocked.Increment(ref _trackTagRequests);
+        var normalizedArtist = NormalizeArtistForLookup(artistName);
+        var normalizedTrack = NormalizeTrackTitleForLookup(trackTitle);
+        if (string.IsNullOrWhiteSpace(normalizedArtist) || string.IsNullOrWhiteSpace(normalizedTrack))
+        {
+            Interlocked.Increment(ref _trackTagEmpty);
+            MaybeLogTrackTagMetrics();
+            return null;
+        }
+
+        var cacheKey = $"tags:{NormalizeCacheKey(normalizedArtist)}:{NormalizeCacheKey(normalizedTrack)}";
         if (_tagCache.TryGetValue(cacheKey, out var cached) && !cached.IsExpired)
         {
             return cached.Value;
@@ -52,16 +77,20 @@ public sealed class LastFmTagService
         var apiKey = await ResolveApiKeyAsync();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
+            Interlocked.Increment(ref _trackTagAuthMissing);
+            MaybeLogTrackTagMetrics();
             return null;
         }
 
         try
         {
             var client = _clientFactory.CreateClient();
-            var uri = $"https://ws.audioscrobbler.com/2.0/?method=track.gettoptags&artist={Uri.EscapeDataString(artistName)}&track={Uri.EscapeDataString(trackTitle)}&api_key={Uri.EscapeDataString(apiKey)}&format=json&autocorrect=1";
+            var uri = $"https://ws.audioscrobbler.com/2.0/?method=track.gettoptags&artist={Uri.EscapeDataString(normalizedArtist)}&track={Uri.EscapeDataString(normalizedTrack)}&api_key={Uri.EscapeDataString(apiKey)}&format=json&autocorrect=1";
             var response = await client.GetFromJsonAsync<LastFmTrackTagsResponse>(uri, cancellationToken);
             if (response is null)
             {
+                Interlocked.Increment(ref _trackTagEmpty);
+                MaybeLogTrackTagMetrics();
                 return null;
             }
 
@@ -85,10 +114,14 @@ public sealed class LastFmTagService
                     // Force key re-resolution on next attempt (logout / key rotation / etc).
                     _cachedApiKey = null;
                     _cachedApiKeyLoadedAtUtc = DateTimeOffset.MinValue;
+                    Interlocked.Increment(ref _trackTagApiErrors);
+                    MaybeLogTrackTagMetrics();
                     return null;
                 }
 
                 _tagCache[cacheKey] = new CacheEntry<IReadOnlyList<string>?>(null, TagCacheTtl);
+                Interlocked.Increment(ref _trackTagNotFound);
+                MaybeLogTrackTagMetrics();
                 return null;
             }
 
@@ -104,11 +137,22 @@ public sealed class LastFmTagService
 
             var result = tags?.Count > 0 ? tags : null;
             _tagCache[cacheKey] = new CacheEntry<IReadOnlyList<string>?>(result, TagCacheTtl);
+            if (result is null)
+            {
+                Interlocked.Increment(ref _trackTagEmpty);
+            }
+            else
+            {
+                Interlocked.Increment(ref _trackTagMatches);
+            }
+            MaybeLogTrackTagMetrics();
             return result;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Last.fm tag lookup failed for {Artist} - {Track}", artistName, trackTitle);
+            Interlocked.Increment(ref _trackTagApiErrors);
+            MaybeLogTrackTagMetrics();
             return null;
         }
     }
@@ -292,6 +336,50 @@ public sealed class LastFmTagService
         return string.Join(' ', value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
+    private static string NormalizeArtistForLookup(string? artistName)
+    {
+        var normalized = NormalizeDisplayValue(artistName);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var primary = ArtistNameNormalizer.ExtractPrimaryArtist(normalized);
+        return NormalizeDisplayValue(primary);
+    }
+
+    private static string NormalizeTrackTitleForLookup(string? trackTitle)
+    {
+        var normalized = NormalizeDisplayValue(trackTitle);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = InlineFeaturingRegex.Replace(normalized, string.Empty);
+        normalized = TrailingDashQualifierRegex.Replace(normalized, string.Empty);
+        normalized = RemoveTrailingBracketGroups(normalized);
+        normalized = MultiSpaceRegex.Replace(normalized, " ").Trim();
+        return normalized;
+    }
+
+    private static string RemoveTrailingBracketGroups(string value)
+    {
+        var current = value;
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            var updated = TrailingBracketGroupRegex.Replace(current, string.Empty);
+            if (string.Equals(updated, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            current = updated.Trim();
+        }
+
+        return current;
+    }
+
     private static string NormalizeCacheKey(string? value)
     {
         return NormalizeKey(value);
@@ -339,6 +427,30 @@ public sealed class LastFmTagService
         // Cache "not found / invalid params" errors to avoid hammering Last.fm for content that doesn't exist there.
         // Do NOT cache auth/transient errors (invalid key, rate limits, temporary errors), since that would hide recovery.
         return errorCode is 6 or 7;
+    }
+
+    private void MaybeLogTrackTagMetrics()
+    {
+        if (!_logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastTrackTagMetricsLogUtc < TrackTagMetricsLogInterval)
+        {
+            return;
+        }
+
+        _lastTrackTagMetricsLogUtc = now;
+        _logger.LogInformation(
+            "Last.fm track-tag metrics: requested={Requested} matched={Matched} empty={Empty} notFound={NotFound} apiErrors={ApiErrors} authMissing={AuthMissing}",
+            Interlocked.Read(ref _trackTagRequests),
+            Interlocked.Read(ref _trackTagMatches),
+            Interlocked.Read(ref _trackTagEmpty),
+            Interlocked.Read(ref _trackTagNotFound),
+            Interlocked.Read(ref _trackTagApiErrors),
+            Interlocked.Read(ref _trackTagAuthMissing));
     }
 
     // --- Cache infrastructure ---
