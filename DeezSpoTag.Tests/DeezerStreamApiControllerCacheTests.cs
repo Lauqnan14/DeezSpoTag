@@ -73,7 +73,10 @@ public sealed class DeezerStreamApiControllerCacheTests
         Assert.NotNull(clearMethod);
         Assert.NotNull(cacheEntryType);
 
-        var mediaResultType = cacheEntryType!.GetProperty("Result")!.PropertyType;
+        var mediaProperty = cacheEntryType!.GetProperty("Media", BindingFlags.Public | BindingFlags.Instance)
+            ?? cacheEntryType.GetProperty("Result", BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotNull(mediaProperty);
+        var mediaResultType = mediaProperty!.PropertyType;
         var emptyMethod = mediaResultType.GetMethod("Empty", BindingFlags.Public | BindingFlags.Static);
         Assert.NotNull(emptyMethod);
 

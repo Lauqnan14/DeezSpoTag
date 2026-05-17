@@ -20,12 +20,12 @@ setup(
         install_requires = [
                 "mutagen==1.47.0",
                 "pycryptodome==3.23.0",
-                "requests==2.32.3",
+                "requests==2.33.0",
                 "tqdm==4.67.1",
                 "fastapi==0.116.1",
                 "uvicorn[standard]==0.35.0",
                 "librespot-spotizerr-phoenix",
 								"rapidfuzz==3.13.0",
-								"spotipy==2.25.1"
+								"spotipy==2.25.2"
          ],
 )
