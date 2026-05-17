@@ -7,5 +7,6 @@ public interface IWatchlistPostDownloadSyncNotifier
         string playlistId,
         string trackId,
         long? destinationFolderId,
+        IReadOnlyList<string>? changedFilePaths = null,
         CancellationToken cancellationToken = default);
 }

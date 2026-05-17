@@ -41,6 +41,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         string playlistId,
         string trackId,
         long? destinationFolderId,
+        IReadOnlyList<string>? changedFilePaths = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(source)
@@ -54,7 +55,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             source.Trim().ToLowerInvariant(),
             playlistId.Trim(),
             trackId.Trim(),
-            destinationFolderId);
+            destinationFolderId,
+            NormalizeChangedFilePaths(changedFilePaths));
         return _queue.Writer.WriteAsync(request, cancellationToken);
     }
 
@@ -151,8 +153,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken);
             var effectiveRequest = ResolveEffectiveRequest(request, preference);
 
-            await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken);
-            await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
+        await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken);
+        await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
 
             var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchService>();
             var candidates = await watcher.GetPlaylistTrackCandidatesAsync(
@@ -305,7 +307,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task RunLocalLibraryScanAsync(
+    private async Task RunLocalLibraryScanAsync(
         IServiceProvider services,
         SyncRequest request,
         CancellationToken cancellationToken)
@@ -321,10 +323,37 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             return;
         }
 
-        await scanner.RunChangedFoldersAsync(
-            [request.DestinationFolderId.Value],
-            skipSpotifyFetch: true,
-            cancellationToken);
+        if (request.ChangedFilePaths.Count > 0)
+        {
+            await scanner.RunChangedFilesAsync(
+                new Dictionary<long, List<string>>
+                {
+                    [request.DestinationFolderId.Value] = request.ChangedFilePaths.ToList()
+                },
+                skipSpotifyFetch: true,
+                cancellationToken);
+            return;
+        }
+
+        _logger.LogWarning(
+            "Watchlist post-download sync skipped local library scan for {Source}:{PlaylistId}:{TrackId} because the completed download did not provide changed file paths.",
+            request.Source,
+            request.PlaylistId,
+            request.TrackId);
+    }
+
+    private static List<string> NormalizeChangedFilePaths(IReadOnlyList<string>? changedFilePaths)
+    {
+        if (changedFilePaths is null || changedFilePaths.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        return changedFilePaths
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static async Task RefreshMediaServerAsync(
@@ -346,5 +375,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         string Source,
         string PlaylistId,
         string TrackId,
-        long? DestinationFolderId);
+        long? DestinationFolderId,
+        IReadOnlyList<string> ChangedFilePaths);
 }

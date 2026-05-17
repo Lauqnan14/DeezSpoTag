@@ -2038,9 +2038,29 @@ public static partial class EngineAudioPostDownloadHelper
                     payload.WatchlistPlaylistId,
                     payload.WatchlistTrackId,
                     payload.DestinationFolderId,
+                    ResolveChangedFilePaths(payload),
                     cancellationToken);
             }
         }
+    }
+
+    private static IReadOnlyList<string> ResolveChangedFilePaths(EngineQueueItemBase payload)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in payload.FinalDestinations.Values)
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                paths.Add(path);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.FilePath))
+        {
+            paths.Add(payload.FilePath);
+        }
+
+        return paths.ToList();
     }
 
     public static async Task<TPayload?> InitializeQueueItemAsync<TPayload>(

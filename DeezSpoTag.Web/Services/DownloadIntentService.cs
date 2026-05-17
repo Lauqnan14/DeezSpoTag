@@ -1544,7 +1544,14 @@ public sealed class DownloadIntentService
             Message = string.IsNullOrWhiteSpace(downloadGate.Message)
                 ? "Downloads paused while AutoTag is running."
                 : downloadGate.Message,
-            Engine = string.Empty
+            Engine = string.Empty,
+            SkipReasonCodes = new List<string> { "download_gate_paused" },
+            SkipReasons = new List<string>
+            {
+                string.IsNullOrWhiteSpace(downloadGate.Message)
+                    ? "Downloads paused while AutoTag is running."
+                    : downloadGate.Message
+            }
         };
     }
 

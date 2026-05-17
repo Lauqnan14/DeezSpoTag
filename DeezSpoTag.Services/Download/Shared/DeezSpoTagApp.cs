@@ -559,6 +559,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
         {
+            var changedFilePaths = ResolveChangedFilePaths(documentPayload: payloadJson);
             var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
             if (notifier != null)
             {
@@ -567,8 +568,90 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                     playlistId,
                     trackId,
                     destinationFolderId,
+                    changedFilePaths,
                     cancellationToken);
             }
+        }
+    }
+
+    private static IReadOnlyList<string> ResolveChangedFilePaths(string documentPayload)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(documentPayload))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(documentPayload);
+            var root = document.RootElement;
+            CollectFinalDestinationPaths(root, paths);
+            CollectStringPath(root, paths, "filePath");
+            CollectStringPath(root, paths, "FilePath");
+            CollectFileArrayPaths(root, paths);
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<string>();
+        }
+
+        return paths.ToList();
+    }
+
+    private static void CollectFinalDestinationPaths(JsonElement root, HashSet<string> paths)
+    {
+        if (!TryGetPropertyIgnoreCase(root, "finalDestinations", out var finalDestinations)
+            || finalDestinations.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        foreach (var property in finalDestinations.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.String)
+            {
+                AddPath(paths, property.Value.GetString());
+            }
+        }
+    }
+
+    private static void CollectFileArrayPaths(JsonElement root, HashSet<string> paths)
+    {
+        if (!TryGetPropertyIgnoreCase(root, "files", out var files)
+            || files.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var file in files.EnumerateArray())
+        {
+            if (file.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            CollectStringPath(file, paths, "path");
+            CollectStringPath(file, paths, "filePath");
+            CollectStringPath(file, paths, "FilePath");
+            CollectStringPath(file, paths, "outputPath");
+        }
+    }
+
+    private static void CollectStringPath(JsonElement element, HashSet<string> paths, string propertyName)
+    {
+        if (TryGetPropertyIgnoreCase(element, propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String)
+        {
+            AddPath(paths, property.GetString());
+        }
+    }
+
+    private static void AddPath(HashSet<string> paths, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            paths.Add(path);
         }
     }
 
@@ -633,6 +716,24 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         return property.ValueKind == JsonValueKind.String
                && long.TryParse(property.GetString(), out value);
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement property)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var candidate in element.EnumerateObject())
+            {
+                if (string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    property = candidate.Value;
+                    return true;
+                }
+            }
+        }
+
+        property = default;
+        return false;
     }
 
     private static bool TryReadWatchlistFromSourceIds(JsonElement root, out string source, out string playlistId, out string trackId)

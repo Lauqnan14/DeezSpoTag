@@ -4,6 +4,7 @@ using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
 using HtmlAgilityPack;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,6 +25,10 @@ public sealed class PlaylistWatchService
     private readonly record struct QueueWatchResult(int QueuedCount, int CompletedCount, int FailedCount);
 
     private readonly record struct QueueWatchTrackResult(int QueuedCount, bool Completed, bool Failed);
+    private readonly record struct WatchQueueCapacity(int Limit, int ActiveCount)
+    {
+        public int Remaining => Math.Max(0, Limit - ActiveCount);
+    }
 
     private const string SpotifySource = "spotify";
     private const string DeezerSource = "deezer";
@@ -1879,8 +1884,31 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         using var scope = _serviceProvider.CreateScope();
         var intentService = scope.ServiceProvider.GetRequiredService<DownloadIntentService>();
+        var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
+        var orchestrationService = scope.ServiceProvider.GetRequiredService<DownloadOrchestrationService>();
         var normalizedPreferredEngine = NormalizePreferredEngine(options.PreferredEngine);
         var normalizedDownloadVariantMode = NormalizeDownloadVariantMode(options.DownloadVariantMode);
+        var settings = _settingsService.LoadSettings();
+        var capacity = await ResolveWatchQueueCapacityAsync(queueRepository, settings.WatchMaxTracksPerPlaylistCheck, cancellationToken);
+        if (capacity.Remaining <= 0)
+        {
+            _logger.LogInformation(
+                "{Source} watch queue deferred because active downloads already meet the watchlist cap. active={ActiveCount}, cap={QueueCap}",
+                options.SourceLabel,
+                capacity.ActiveCount,
+                capacity.Limit);
+            return default;
+        }
+
+        var downloadGate = await orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
+        if (!downloadGate.Allowed)
+        {
+            _logger.LogInformation(
+                "{Source} watch queue deferred because downloads are currently gated: {Reason}",
+                options.SourceLabel,
+                string.IsNullOrWhiteSpace(downloadGate.Message) ? "downloads paused" : downloadGate.Message);
+            return default;
+        }
 
         var queuedCount = 0;
         var completedCount = 0;
@@ -1888,6 +1916,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (queuedCount >= capacity.Remaining)
+            {
+                _logger.LogInformation(
+                    "{Source} watch queue deferred remaining tracks after filling watchlist capacity. queuedThisRun={QueuedThisRun}, activeAtStart={ActiveCount}, cap={QueueCap}",
+                    options.SourceLabel,
+                    queuedCount,
+                    capacity.ActiveCount,
+                    capacity.Limit);
+                break;
+            }
 
             var intent = track.Intent;
             if (await HandleBlockedWatchIntentAsync(intent, track, options, cancellationToken))
@@ -1922,6 +1960,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 continue;
             }
 
+            if (ShouldDeferWatchTrack(result))
+            {
+                _logger.LogInformation(
+                    "{Source} watch queue deferred for track {TrackId}: {Reason}",
+                    options.SourceLabel,
+                    track.TrackId,
+                    string.IsNullOrWhiteSpace(result.Message) ? "downloads paused" : result.Message);
+                break;
+            }
+
             var trackResult = await HandleQueuedWatchIntentResultAsync(
                 intentService,
                 result,
@@ -1929,6 +1977,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 intent,
                 options,
                 normalizedDownloadVariantMode,
+                remainingCapacity: capacity.Remaining - queuedCount,
                 cancellationToken);
             queuedCount += trackResult.QueuedCount;
             if (trackResult.Completed)
@@ -1945,6 +1994,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return new QueueWatchResult(queuedCount, completedCount, failedCount);
     }
 
+    private static async Task<WatchQueueCapacity> ResolveWatchQueueCapacityAsync(
+        DownloadQueueRepository queueRepository,
+        int configuredLimit,
+        CancellationToken cancellationToken)
+    {
+        var limit = Math.Max(1, configuredLimit);
+        var activeCount = await queueRepository.GetActiveDownloadCountAsync(cancellationToken);
+        return new WatchQueueCapacity(limit, activeCount);
+    }
+
     private async Task<QueueWatchTrackResult> HandleQueuedWatchIntentResultAsync(
         DownloadIntentService intentService,
         DownloadIntentResult result,
@@ -1952,19 +2011,23 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         DownloadIntent intent,
         QueueWatchOptions options,
         string normalizedDownloadVariantMode,
+        int remainingCapacity,
         CancellationToken cancellationToken)
     {
         var queuedCount = 0;
         if (result.Success)
         {
             queuedCount++;
-            queuedCount += await TryQueueAtmosIntentAsync(
-                intentService,
-                normalizedDownloadVariantMode,
-                intent,
-                new AtmosQueueRequest(options.SourceLabel, track.TrackId, AfterPrimarySkip: false),
-                options,
-                cancellationToken);
+            if (remainingCapacity - queuedCount > 0)
+            {
+                queuedCount += await TryQueueAtmosIntentAsync(
+                    intentService,
+                    normalizedDownloadVariantMode,
+                    intent,
+                    new AtmosQueueRequest(options.SourceLabel, track.TrackId, AfterPrimarySkip: false),
+                    options,
+                    cancellationToken);
+            }
             return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: false);
         }
 
@@ -1978,13 +2041,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     track,
                     cancellationToken);
             }
-            queuedCount += await TryQueueAtmosIntentAsync(
-                intentService,
-                normalizedDownloadVariantMode,
-                intent,
-                new AtmosQueueRequest(options.SourceLabel, track.TrackId, AfterPrimarySkip: true),
-                options,
-                cancellationToken);
+            if (remainingCapacity > 0)
+            {
+                queuedCount += await TryQueueAtmosIntentAsync(
+                    intentService,
+                    normalizedDownloadVariantMode,
+                    intent,
+                    new AtmosQueueRequest(options.SourceLabel, track.TrackId, AfterPrimarySkip: true),
+                    options,
+                    cancellationToken);
+            }
             await TryMarkWatchTrackCompletedAsync(
                 options.WatchlistSource,
                 options.WatchlistPlaylistId,
@@ -2306,6 +2372,17 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         }
 
         return false;
+    }
+
+    private static bool ShouldDeferWatchTrack(DownloadIntentResult result)
+    {
+        if (result?.SkipReasonCodes == null || result.SkipReasonCodes.Count == 0)
+        {
+            return false;
+        }
+
+        return result.SkipReasonCodes.Any(
+            reasonCode => string.Equals(reasonCode?.Trim(), "download_gate_paused", StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool ShouldPersistBlockedTrackIgnore(DownloadIntentResult result)

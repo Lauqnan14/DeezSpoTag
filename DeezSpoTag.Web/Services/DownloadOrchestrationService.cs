@@ -1405,12 +1405,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: post-download targeted library scan enqueued for {changedFileCount} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
+            $"Automation: post-download targeted library scan starting for {changedFileCount} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
 
-        _ = _scanRunner.RunChangedFilesAsync(
+        await _scanRunner.RunChangedFilesAsync(
             movedFilesByDestination,
             skipSpotifyFetch: false,
-            CancellationToken.None);
+            cancellationToken);
 
         await TriggerPlexScanAsync(cancellationToken);
 
@@ -1420,7 +1420,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Automation: vibe analysis starting after library scan was enqueued."));
+                "Automation: vibe analysis starting after targeted library scan completed."));
 
             await _analysisService.AnalyzeNowAsync(Math.Clamp(vibeSettings.BatchSize, 10, 500), cancellationToken);
         }

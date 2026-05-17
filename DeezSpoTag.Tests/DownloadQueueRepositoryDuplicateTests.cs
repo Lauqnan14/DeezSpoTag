@@ -82,6 +82,31 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         Assert.True(exists);
     }
 
+    [Fact]
+    public async Task GetActiveDownloadCountAsync_CountsQueuedRunningAndPausedOnly()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-queued", "Artist", "Queued", 1) with { Status = "queued" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-running", "Artist", "Running", 1) with { Status = "running" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-paused", "Artist", "Paused", 1) with { Status = "paused" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("inactive-completed", "Artist", "Completed", 1) with { Status = "completed" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("inactive-failed", "Artist", "Failed", 1) with { Status = "failed" },
+            CancellationToken.None);
+
+        var activeCount = await context.QueueRepository.GetActiveDownloadCountAsync(CancellationToken.None);
+
+        Assert.Equal(3, activeCount);
+    }
+
     private static Task<TestContext> CreateContextAsync()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-queue-duplicate-tests-" + Path.GetRandomFileName());

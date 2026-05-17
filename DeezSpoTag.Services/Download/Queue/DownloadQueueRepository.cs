@@ -279,6 +279,19 @@ WHERE status = 'queued';";
         return result is null or DBNull ? 0 : Convert.ToInt32(result);
     }
 
+    public async Task<int> GetActiveDownloadCountAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT COUNT(*)
+FROM download_task
+WHERE status IN ('queued', 'running', 'paused');";
+        await using var command = new SqliteCommand(sql, connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? 0 : Convert.ToInt32(result);
+    }
+
     public async Task<bool> HasActiveDownloadsAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);

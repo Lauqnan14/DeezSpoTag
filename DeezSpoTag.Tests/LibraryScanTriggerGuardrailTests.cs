@@ -15,7 +15,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
         Assert.Contains("GetRecentMovedAudioFilesByDestinationAsync", source);
-        Assert.Contains("_scanRunner.RunChangedFilesAsync", source);
+        Assert.Contains("await _scanRunner.RunChangedFilesAsync", source);
+        Assert.Contains("targeted library scan completed", source);
         Assert.DoesNotContain("_scanRunner.RunAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("await _scanRunner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
     }
@@ -42,9 +43,34 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.Contains("ResolveChangedLibraryFolderIdsAsync", source);
         Assert.Contains("autoMoveSummary.ChangedFilePaths", source);
-        Assert.Contains("_libraryScanRunner.RunChangedFilesAsync", source);
-        Assert.Contains("_libraryScanRunner.RunChangedFoldersAsync", source);
+        Assert.Contains("await _libraryScanRunner.RunChangedFilesAsync", source);
+        Assert.Contains("await _libraryScanRunner.RunChangedFoldersAsync", source);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WatchlistPostDownloadSync_UsesTargetedChangedFileScansWhenPathsAreKnown()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs");
+
+        Assert.Contains("ChangedFilePaths", source, StringComparison.Ordinal);
+        Assert.Contains("await scanner.RunChangedFilesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("did not provide changed file paths", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFoldersAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WatchlistPostDownloadNotifier_CarriesCompletedFilePaths()
+    {
+        var interfaceSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "IWatchlistPostDownloadSyncNotifier.cs");
+        var appSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagApp.cs");
+        var helperSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+
+        Assert.Contains("IReadOnlyList<string>? changedFilePaths", interfaceSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveChangedFilePaths(documentPayload: payloadJson)", appSource, StringComparison.Ordinal);
+        Assert.Contains("CollectFinalDestinationPaths", appSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveChangedFilePaths(payload)", helperSource, StringComparison.Ordinal);
+        Assert.Contains("payload.FinalDestinations.Values", helperSource, StringComparison.Ordinal);
     }
 
     [Fact]

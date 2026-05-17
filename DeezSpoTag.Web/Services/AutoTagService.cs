@@ -2319,25 +2319,25 @@ public partial class AutoTagService
             _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                $"Post auto-move targeted library scan enqueued for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
-            AppendLog(job, $"post auto-move targeted library scan enqueued for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}");
-            _ = _libraryScanRunner.RunChangedFilesAsync(
+                $"Post auto-move targeted library scan starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
+            AppendLog(job, $"post auto-move targeted library scan starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}");
+            await _libraryScanRunner.RunChangedFilesAsync(
                 changedFilesByFolder,
                 skipSpotifyFetch: false,
-                CancellationToken.None);
+                cancellationToken);
             return;
         }
 
         _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Post auto-move library scan enqueued for folder(s): {string.Join(", ", changedFolderIds)}."));
-        AppendLog(job, $"post auto-move library scan enqueued for folder(s): {string.Join(", ", changedFolderIds)}");
+            $"Post auto-move library scan starting for folder(s): {string.Join(", ", changedFolderIds)}."));
+        AppendLog(job, $"post auto-move library scan starting for folder(s): {string.Join(", ", changedFolderIds)}");
 
-        _ = _libraryScanRunner.RunChangedFoldersAsync(
+        await _libraryScanRunner.RunChangedFoldersAsync(
             changedFolderIds,
             skipSpotifyFetch: false,
-            CancellationToken.None);
+            cancellationToken);
     }
 
     private async Task<List<long>> ResolveChangedLibraryFolderIdsAsync(
