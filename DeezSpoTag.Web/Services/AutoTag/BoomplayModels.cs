@@ -5,7 +5,7 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed class BoomplayConfig
 {
     [JsonPropertyName("match_by_id")]
-    public bool MatchById { get; set; } = true;
+    public bool MatchById { get; set; }
 
     [JsonPropertyName("search_limit")]
     public int SearchLimit { get; set; } = 12;

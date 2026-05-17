@@ -322,8 +322,12 @@ public sealed class BoomplayMatcher
         var hasSourceArtists = sourceArtists.Count > 0;
         if (!hasSourceTitle && !hasSourceArtists)
         {
-            // If source tags are too sparse, keep ID-first behavior as last-resort.
-            return true;
+            // For sparse local metadata, only trust ID-first when ISRC corroborates it.
+            var sourceIsrc = Normalize(info.Isrc);
+            var candidateIsrc = Normalize(track.Isrc);
+            return !string.IsNullOrWhiteSpace(sourceIsrc)
+                   && !string.IsNullOrWhiteSpace(candidateIsrc)
+                   && string.Equals(sourceIsrc, candidateIsrc, StringComparison.OrdinalIgnoreCase);
         }
 
         if (HasIncompatibleTitleQualifier(info.Title, track.Title))

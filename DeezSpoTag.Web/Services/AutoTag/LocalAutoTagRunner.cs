@@ -118,6 +118,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string TaggedDateTag = "1T_TAGGEDDATE";
     private const string TitleTag = "title";
     private const string ArtistTag = "artist";
+    private const string BoomplayPlatform = "boomplay";
     private const string DiscNumberTag = "discNumber";
     private const string DiscTotalTag = "discTotal";
     private const string GenreTag = "genre";
@@ -704,6 +705,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagMatchResult match,
         bool usedShazamForStatus)
     {
+        if (string.Equals(context.Platform, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            var boomplayGuardReason = EvaluateBoomplayReliabilityGuard(info, match, context.Plan.MatchingConfig);
+            if (!string.IsNullOrWhiteSpace(boomplayGuardReason))
+            {
+                EmitSkippedStatus(context, boomplayGuardReason, usedShazamForStatus);
+                return;
+            }
+        }
+
         var mismatchReason = EvaluateGlobalMismatchGuard(info, match, context.Plan.MatchingConfig);
         if (!string.IsNullOrWhiteSpace(mismatchReason))
         {
@@ -753,7 +764,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagMatchResult match,
         AutoTagMatchingConfig matchingConfig)
     {
-        if (match.Track == null || !info.HasEmbeddedTitle || !info.HasEmbeddedArtist)
+        if (match.Track == null)
         {
             return null;
         }
@@ -805,6 +816,71 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (durationMismatch && titleSimilarity < 0.90d)
         {
             return "match rejected by quality guard (duration mismatch)";
+        }
+
+        return null;
+    }
+
+    private static string? EvaluateBoomplayReliabilityGuard(
+        AutoTagAudioInfo info,
+        AutoTagMatchResult match,
+        AutoTagMatchingConfig matchingConfig)
+    {
+        if (match.Track == null)
+        {
+            return "match rejected by Boomplay guard (missing track payload)";
+        }
+
+        List<string> sourceArtists;
+        if (info.Artists.Count > 0)
+        {
+            sourceArtists = info.Artists;
+        }
+        else if (string.IsNullOrWhiteSpace(info.Artist))
+        {
+            sourceArtists = [];
+        }
+        else
+        {
+            sourceArtists = [info.Artist];
+        }
+
+        var incomingArtists = match.Track.Artists ?? new List<string>();
+        var artistStrictness = Math.Clamp(matchingConfig.Strictness + 0.12d, 0.80d, 0.98d);
+        var artistCompatible = sourceArtists.Count > 0
+            && incomingArtists.Count > 0
+            && AreArtistIdentitiesCompatibleForOverwrite(sourceArtists, incomingArtists, artistStrictness);
+        if (!artistCompatible)
+        {
+            return "match rejected by Boomplay guard (artist mismatch)";
+        }
+
+        var hasMatchingIsrc = HasMatchingIsrc(info.Isrc, match.Track.Isrc);
+        var minAccuracy = Math.Clamp(matchingConfig.Strictness + 0.10d, 0.80d, 0.99d);
+        if (!hasMatchingIsrc && match.Accuracy < minAccuracy)
+        {
+            return $"match rejected by Boomplay guard (accuracy {match.Accuracy:0.000} < {minAccuracy:0.000})";
+        }
+
+        var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
+        var incomingTitle = AutoTagSimilarity.NormalizeText(
+            OneTaggerMatching.CleanTitleMatching(
+                OneTaggerMatching.FullTitle(match.Track.Title, match.Track.Version)));
+        if (string.IsNullOrWhiteSpace(sourceTitle) || string.IsNullOrWhiteSpace(incomingTitle))
+        {
+            return hasMatchingIsrc ? null : "match rejected by Boomplay guard (insufficient title evidence)";
+        }
+
+        var titleSimilarity = AutoTagSimilarity.ComputeScore(sourceTitle, incomingTitle);
+        var minTitleSimilarity = Math.Clamp(matchingConfig.Strictness + 0.10d, 0.82d, 0.98d);
+        if (titleSimilarity < minTitleSimilarity)
+        {
+            return $"match rejected by Boomplay guard (title similarity {titleSimilarity:0.000} < {minTitleSimilarity:0.000})";
+        }
+
+        if (HasDurationMismatch(info.DurationSeconds, match.Track.Duration, matchingConfig.MaxDurationDifferenceSeconds))
+        {
+            return "match rejected by Boomplay guard (duration mismatch)";
         }
 
         return null;
@@ -2040,11 +2116,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 var deezerConfig = ResolveDeezerMatchConfig(context.Config, context.Settings);
                 deezerConfig.FetchLyrics = enableLyrics && !hasLyricsSidecar;
                 return await _deezerMatcher.MatchAsync(info, context.MatchingConfig, deezerConfig, token);
-            case "boomplay":
+            case BoomplayPlatform:
                 return await _boomplayMatcher.MatchAsync(
                     info,
                     context.MatchingConfig,
-                    LoadConfig(context.Config.Custom, "boomplay", new BoomplayConfig()),
+                    LoadConfig(context.Config.Custom, BoomplayPlatform, new BoomplayConfig()),
                     token);
             case "lastfm":
                 return await _lastFmMatcher.MatchAsync(info, LoadConfig(context.Config.Custom, "lastfm", new LastFmConfig()), token);
@@ -7364,6 +7440,74 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             existingArtistCredits,
             existingAlbumArtistCredits,
             file.Tag.Title);
+        ApplyPlatformOverwriteGuards(effectiveTagSettings, sourceTrack, file, platformId);
+    }
+
+    private static void ApplyPlatformOverwriteGuards(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack sourceTrack,
+        TagLib.File file,
+        string platformId)
+    {
+        if (!string.Equals(platformId, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var existingTitle = file.Tag.Title?.Trim();
+        if (effectiveTagSettings.Title
+            && !string.IsNullOrWhiteSpace(existingTitle)
+            && !string.IsNullOrWhiteSpace(sourceTrack.Title))
+        {
+            var normalizedExistingTitle = AutoTagSimilarity.NormalizeText(existingTitle);
+            var normalizedIncomingTitle = AutoTagSimilarity.NormalizeText(sourceTrack.Title);
+            var titleSimilarity = AutoTagSimilarity.ComputeScore(normalizedExistingTitle, normalizedIncomingTitle);
+            if (titleSimilarity < 0.90d)
+            {
+                sourceTrack.Title = existingTitle;
+                effectiveTagSettings.Title = false;
+            }
+        }
+
+        var existingArtists = SplitArtistCredits(file.Tag.Performers?.Where(value => !string.IsNullOrWhiteSpace(value)).ToList()
+            ?? new List<string>());
+        var incomingArtists = SplitArtistCredits(sourceTrack.Artists);
+        if (effectiveTagSettings.Artist
+            && existingArtists.Count > 0
+            && incomingArtists.Count > 0
+            && !AreArtistCreditsEquivalent(existingArtists, incomingArtists))
+        {
+            sourceTrack.Artists = existingArtists;
+            effectiveTagSettings.Artist = false;
+        }
+
+        var existingAlbumArtists = SplitArtistCredits(file.Tag.AlbumArtists?.Where(value => !string.IsNullOrWhiteSpace(value)).ToList()
+            ?? new List<string>());
+        var incomingAlbumArtists = SplitArtistCredits(sourceTrack.AlbumArtists);
+        if (effectiveTagSettings.AlbumArtist
+            && existingAlbumArtists.Count > 0
+            && incomingAlbumArtists.Count > 0
+            && !AreArtistCreditsEquivalent(existingAlbumArtists, incomingAlbumArtists))
+        {
+            sourceTrack.AlbumArtists = existingAlbumArtists;
+            effectiveTagSettings.AlbumArtist = false;
+        }
+
+        var existingAlbum = file.Tag.Album?.Trim();
+        var incomingAlbum = sourceTrack.Album?.Trim();
+        if (effectiveTagSettings.Album
+            && !string.IsNullOrWhiteSpace(existingAlbum)
+            && !string.IsNullOrWhiteSpace(incomingAlbum))
+        {
+            var normalizedExistingAlbum = AutoTagSimilarity.NormalizeText(existingAlbum);
+            var normalizedIncomingAlbum = AutoTagSimilarity.NormalizeText(incomingAlbum);
+            var albumSimilarity = AutoTagSimilarity.ComputeScore(normalizedExistingAlbum, normalizedIncomingAlbum);
+            if (albumSimilarity < 0.90d)
+            {
+                sourceTrack.Album = existingAlbum;
+                effectiveTagSettings.Album = false;
+            }
+        }
     }
 
     private static void ApplyPreferenceAwareArtistGuards(

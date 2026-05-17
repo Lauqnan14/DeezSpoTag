@@ -63,7 +63,7 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                     {
                         Id = "match_by_id",
                         Label = "Match by existing Boomplay ID/URL tag first",
-                        Value = new PlatformCustomOptionBoolean { Value = true }
+                        Value = new PlatformCustomOptionBoolean { Value = false }
                     },
                     new()
                     {

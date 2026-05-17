@@ -95,4 +95,62 @@ public sealed class BoomplayMatcherGuardrailTests
 
         Assert.False(isConsistent);
     }
+
+    [Fact]
+    public void IsIdMatchCandidateConsistent_RejectsSparseSourceWithoutIsrcCorroboration()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = string.Empty,
+            Artist = string.Empty,
+            Artists = new List<string>(),
+            Isrc = string.Empty
+        };
+        var candidate = new BoomplayTrackMetadata
+        {
+            Id = "4133539",
+            Title = "All Eyes On Me",
+            Artist = "Burna Boy",
+            Isrc = "QMDA62565022"
+        };
+        var matchingConfig = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = true,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+
+        Assert.False(isConsistent);
+    }
+
+    [Fact]
+    public void IsIdMatchCandidateConsistent_AcceptsSparseSourceWithExactIsrcCorroboration()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = string.Empty,
+            Artist = string.Empty,
+            Artists = new List<string>(),
+            Isrc = "QMDA62565022"
+        };
+        var candidate = new BoomplayTrackMetadata
+        {
+            Id = "4133539",
+            Title = "All Eyes On Me",
+            Artist = "Burna Boy",
+            Isrc = "QMDA62565022"
+        };
+        var matchingConfig = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = true,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+
+        Assert.True(isConsistent);
+    }
 }
