@@ -13,7 +13,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
-    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
     <PackageReference Include="Openur.TagLibSharp" Version="2.5.0.2" />
     <PackageReference Include="Otp.NET" Version="1.4.1" />
     <PackageReference Include="z440.atl.core" Version="7.13.0" />
