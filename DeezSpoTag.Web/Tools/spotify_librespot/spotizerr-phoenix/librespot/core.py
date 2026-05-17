@@ -1004,6 +1004,8 @@ class Session(Closeable, MessageListener, SubListener):
         # Check gs_signature
         rsa = RSA.construct((int.from_bytes(self.__server_key, "big"), 65537))
         pkcs1_v1_5 = PKCS1_v1_5.new(rsa)
+        # AP challenge signatures are emitted using the legacy SHA-1 + RSA PKCS#1 v1.5
+        # scheme in Spotify's protocol. Verification must mirror that format exactly.
         sha1 = SHA1.new()
         sha1.update(ap_response_message_proto.challenge.login_crypto_challenge.
                     diffie_hellman.gs)

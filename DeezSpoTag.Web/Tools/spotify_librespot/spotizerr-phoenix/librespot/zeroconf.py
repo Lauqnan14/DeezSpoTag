@@ -12,6 +12,7 @@ import concurrent.futures
 import copy
 import io
 import json
+import hmac as stdlib_hmac
 import logging
 import os
 import secrets
@@ -265,7 +266,9 @@ class ZeroconfServer(Closeable):
         hmac = HMAC.new(checksum_key, digestmod=SHA1)
         hmac.update(encrypted)
         mac = hmac.digest()
-        if mac != checksum:
+        # Constant-time comparison avoids timing side-channels on MAC validation.
+        # The SHA-1 based derivation itself is protocol-compatibility behavior.
+        if not stdlib_hmac.compare_digest(mac, checksum):
             return None
 
         aes = AES.new(
