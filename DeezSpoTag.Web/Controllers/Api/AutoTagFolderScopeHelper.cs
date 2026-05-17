@@ -16,11 +16,11 @@ internal static class AutoTagFolderScopeHelper
         {
             return libraryRepository.IsConfigured
                 ? await libraryRepository.GetFoldersAsync(cancellationToken)
-                : libraryConfigStore.GetFolders();
+                : await libraryConfigStore.GetFoldersAsync();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return libraryConfigStore.GetFolders();
+            return await libraryConfigStore.GetFoldersAsync();
         }
     }
 

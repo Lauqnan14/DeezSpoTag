@@ -570,11 +570,11 @@ public partial class AutoTagService
         {
             folders = _libraryRepository.IsConfigured
                 ? await _libraryRepository.GetFoldersAsync(cancellationToken)
-                : _activityLog.GetFolders();
+                : await _activityLog.GetFoldersAsync();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            folders = _activityLog.GetFolders();
+            folders = await _activityLog.GetFoldersAsync();
         }
 
         return folders

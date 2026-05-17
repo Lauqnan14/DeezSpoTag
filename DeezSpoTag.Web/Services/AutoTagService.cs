@@ -859,12 +859,12 @@ public partial class AutoTagService
         {
             var folders = _libraryRepository.IsConfigured
                 ? await _libraryRepository.GetFoldersAsync(cancellationToken)
-                : _activityLog.GetFolders();
+                : await _activityLog.GetFoldersAsync();
             return LibraryFolderRootResolver.ResolveAccessibleRoots(folders);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return LibraryFolderRootResolver.ResolveAccessibleRoots(_activityLog.GetFolders());
+            return LibraryFolderRootResolver.ResolveAccessibleRoots(await _activityLog.GetFoldersAsync());
         }
     }
 
