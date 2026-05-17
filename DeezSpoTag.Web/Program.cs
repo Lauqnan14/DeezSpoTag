@@ -511,6 +511,17 @@ public partial class Program
                         QueueLimit = 0,
                         AutoReplenishment = true
                     }));
+            options.AddPolicy("DefaultApi", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? UnknownValue,
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 1000,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
             options.AddPolicy("SensitiveWrites", context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? UnknownValue,
@@ -1045,7 +1056,7 @@ public partial class Program
 
     static void MapApplicationEndpoints(WebApplication app)
     {
-        app.MapControllers();
+        app.MapControllers().RequireRateLimiting("DefaultApi");
         app.MapRazorPages();
         app.MapHub<DeezSpoTag.Web.Hubs.DeezerQueueHub>("/deezerQueueHub");
         app.MapHub<DeezSpoTag.Web.Hubs.CrossDeviceSyncHub>("/crossDeviceSyncHub");

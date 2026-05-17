@@ -49,7 +49,7 @@ public sealed class DeezerLoginStatusBehaviorTests
             }
         }));
 
-        var result = await controller.Status(validate: false);
+        var result = await controller.Status();
 
         var json = SerializeOkResult(result);
         using var document = JsonDocument.Parse(json);
@@ -77,7 +77,7 @@ public sealed class DeezerLoginStatusBehaviorTests
             }
         }));
 
-        var result = await controller.Status(validate: false);
+        var result = await controller.Status();
 
         var json = SerializeOkResult(result);
         using var document = JsonDocument.Parse(json);
