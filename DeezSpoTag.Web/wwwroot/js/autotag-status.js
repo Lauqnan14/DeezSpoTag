@@ -261,6 +261,28 @@
         return isHistoryTabActive() && !state.manualHistorySelection && hasActiveLiveRun();
     }
 
+    function shouldResetManualHistorySelectionForLiveRun(job) {
+        if (!state.manualHistorySelection || !isHistoryTabActive()) {
+            return false;
+        }
+
+        if (!job?.id || !hasActiveLiveRun()) {
+            return false;
+        }
+
+        if (!state.selectedRunId) {
+            return true;
+        }
+
+        const selectedRunId = normalizeRunId(state.selectedRunId);
+        const liveRunId = normalizeRunId(job.id);
+        if (!selectedRunId || !liveRunId) {
+            return true;
+        }
+
+        return selectedRunId !== liveRunId && isTodayDateToken(state.selectedDate);
+    }
+
     function getRunsForDisplay(runs) {
         const archivedRuns = Array.isArray(runs) ? runs : [];
         if (!canShowLiveRunForSelectedDate()) {
@@ -1028,6 +1050,9 @@
     async function applyPolledJob(job, logs) {
         state.liveJobId = job?.id || null;
         state.liveJobSummary = buildSummaryFromLiveJob(job);
+        if (shouldResetManualHistorySelectionForLiveRun(job)) {
+            state.manualHistorySelection = false;
+        }
         updateStatus(job.id, job.status);
         const hasLogsPayload = Array.isArray(job?.logs) || typeof job?.logs === "string";
         if (hasLogsPayload) {
@@ -1047,6 +1072,14 @@
         if (job.status === STATUS_RUNNING && !shouldFollowLiveRunInHistory() && hasDetails) {
             await refreshHistoryIfSelectedLiveRun();
         }
+
+        globalThis.dispatchEvent(new CustomEvent("deezspotag:activities-live-update", {
+            detail: {
+                source: "autotag",
+                status: job?.status || "",
+                runId: job?.id || ""
+            }
+        }));
     }
 
     function syncSelectedRunWithLiveJob(job, logs) {
