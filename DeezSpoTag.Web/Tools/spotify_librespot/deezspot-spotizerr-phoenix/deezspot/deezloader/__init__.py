@@ -3,7 +3,6 @@ import os
 import json
 import logging
 import re
-from urllib.parse import urlparse
 from deezspot.deezloader.dee_api import API
 from deezspot.easy_spoty import Spo
 from deezspot.deezloader.deegw_api import API_GW
@@ -1424,10 +1423,9 @@ class DeeLogin:
         link = what_kind(link)
         smart = Smart()
 
-        host = self._resolve_host(link)
-        if self._is_allowed_host(host, "spotify.com"):
+        if "spotify.com" in link:
             source = "spotify"
-        elif self._is_allowed_host(host, "deezer.com"):
+        elif "deezer.com" in link:
             source = "deezer"
         else:
             raise InvalidLink(link)
@@ -1521,14 +1519,3 @@ class DeeLogin:
             smart.playlist = playlist
 
         return smart
-
-    @staticmethod
-    def _resolve_host(link: str) -> str:
-        try:
-            return (urlparse(link).hostname or "").lower()
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _is_allowed_host(host: str, root_domain: str) -> bool:
-        return bool(host) and (host == root_domain or host.endswith(f".{root_domain}"))

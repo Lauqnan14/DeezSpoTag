@@ -435,7 +435,7 @@ globalThis.DeezSpoTag = {
             return modal;
         },
 
-        showModal({ title, message, input, buttons, contentElement, dialogClass }) {
+        showModal({ title, message, input, buttons, allowHtml, contentElement, dialogClass }) {
             const modal = this.ensureModal();
             const dialogEl = modal.querySelector('.app-modal-dialog');
             const titleEl = modal.querySelector('.app-modal-title');
@@ -465,7 +465,12 @@ globalThis.DeezSpoTag = {
 
             titleEl.textContent = title || 'Notice';
             // reset body/message
-            messageEl.textContent = message || '';
+            messageEl.innerHTML = '';
+            if (allowHtml) {
+                messageEl.innerHTML = message || '';
+            } else {
+                messageEl.textContent = message || '';
+            }
             // remove any prior injected content
             bodyEl.querySelectorAll('.app-modal-content').forEach(el => el.remove());
             footerEl.innerHTML = '';

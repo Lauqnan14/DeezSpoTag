@@ -141,7 +141,6 @@ namespace DeezSpoTag.API.Controllers
         /// Complete port from: /deezspotag/webui/src/server/routes/api/post/loginArl.ts
         /// </summary>
         [HttpPost("loginArl")]
-        [ValidateAntiForgeryToken]
         public async Task<IActionResult> LoginArl([FromBody] LoginArlRequest request)
         {
             try
@@ -268,7 +267,6 @@ namespace DeezSpoTag.API.Controllers
         /// Complete port from: /deezspotag/webui/src/server/routes/api/post/loginEmail.ts
         /// </summary>
         [HttpPost("loginEmail")]
-        [ValidateAntiForgeryToken]
         public async Task<IActionResult> LoginEmail([FromBody] LoginEmailRequest request)
         {
             try
@@ -327,7 +325,6 @@ namespace DeezSpoTag.API.Controllers
         /// </summary>
         [HttpPost("logout")]
         [HttpPost("/api/authentication/logout")]
-        [ValidateAntiForgeryToken]
         public async Task<IActionResult> Logout()
         {
             try
@@ -367,7 +364,6 @@ namespace DeezSpoTag.API.Controllers
         /// </summary>
         [HttpPost("login/email")]
         [HttpPost("/api/authentication/login/email")]
-        [ValidateAntiForgeryToken]
         public async Task<IActionResult> LoginWithEmail([FromBody] LoginEmailRequest request)
         {
             try
@@ -393,7 +389,6 @@ namespace DeezSpoTag.API.Controllers
         /// </summary>
         [HttpPost("login/arl")]
         [HttpPost("/api/authentication/login/arl")]
-        [ValidateAntiForgeryToken]
         public async Task<IActionResult> LoginWithArl([FromBody] LoginArlRequest request)
         {
             try

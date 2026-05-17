@@ -202,8 +202,28 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
 
     if (need2FA) {
         if (args_info.code_from_file_flag) {
-            fprintf(stderr, "[!] Refusing insecure plaintext 2FA file flow. Use interactive 2FA input.\n");
-            exit(1);
+            fprintf(stderr, "[!] Enter your 2FA code into rootfs/%s/2fa.txt\n", args_info.base_dir_arg);
+            fprintf(stderr, "[!] Example command: echo -n 114514 > rootfs/%s/2fa.txt\n", args_info.base_dir_arg);
+            fprintf(stderr, "[!] Waiting for input...\n");
+            int count = 0;
+            while (1)
+            {
+                if (count >= 20) {
+                    fprintf(stderr, "[!] Failed to get 2FA Code in 60s. Exiting...\n");
+                    exit(0);
+                }
+                char *path = strcat_b(args_info.base_dir_arg, "/2fa.txt");
+                if (file_exists(path)) {
+                    FILE *fp = fopen(path, "r");
+                    fscanf(fp, "%6s", amPassword + passLen);
+                    remove(path);
+                    fprintf(stderr, "[!] Code file detected! Logging in...\n");
+                    break;
+                } else {
+                    sleep(3);
+                    count++;
+                }
+            }
         } else {
             printf("2FA code: ");
             scanf("%6s", amPassword + passLen);
