@@ -233,6 +233,10 @@ public partial class AutoTagService
     private readonly bool _disableAutoMove;
     private readonly TimeSpan _organizerCooldown = TimeSpan.FromSeconds(15);
     private readonly ConcurrentDictionary<string, object> _archiveLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _archivedRunSummariesCacheLock = new();
+    private IReadOnlyList<AutoTagRunSummary>? _archivedRunSummariesCache;
+    private DateTimeOffset _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.MinValue;
+    private static readonly TimeSpan ArchivedRunSummariesCacheTtl = TimeSpan.FromSeconds(30);
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -5344,6 +5348,22 @@ public partial class AutoTagService
 
     private IReadOnlyList<AutoTagRunSummary> GetArchivedRunSummaries()
     {
+        lock (_archivedRunSummariesCacheLock)
+        {
+            if (_archivedRunSummariesCache is not null && _archivedRunSummariesCacheExpiresUtc > DateTimeOffset.UtcNow)
+            {
+                return _archivedRunSummariesCache;
+            }
+
+            var summaries = LoadArchivedRunSummaries();
+            _archivedRunSummariesCache = summaries;
+            _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.UtcNow.Add(ArchivedRunSummariesCacheTtl);
+            return summaries;
+        }
+    }
+
+    private IReadOnlyList<AutoTagRunSummary> LoadArchivedRunSummaries()
+    {
         try
         {
             var summaries = new Dictionary<string, AutoTagRunSummary>(StringComparer.OrdinalIgnoreCase);
@@ -5379,6 +5399,15 @@ public partial class AutoTagService
         {
             _logger.LogDebug(ex, "Failed to enumerate archived AutoTag runs.");
             return Array.Empty<AutoTagRunSummary>();
+        }
+    }
+
+    private void InvalidateArchivedRunSummariesCache()
+    {
+        lock (_archivedRunSummariesCacheLock)
+        {
+            _archivedRunSummariesCache = null;
+            _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.MinValue;
         }
     }
 
@@ -5447,6 +5476,7 @@ public partial class AutoTagService
                     JsonSerializer.Serialize(summary, _jsonOptions),
                     new UTF8Encoding(false));
             }
+            InvalidateArchivedRunSummariesCache();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -6059,6 +6089,7 @@ public partial class AutoTagService
                 File.WriteAllLines(GetRunStatusHistoryPath(job.Id), statusLines, new UTF8Encoding(false));
                 SaveArchivedTagDiffs(job.Id, job.TagDiffs);
             }
+            InvalidateArchivedRunSummariesCache();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -28,6 +28,8 @@
         selectedDate: null,
         calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
         calendarRequestId: 0,
+        calendarLoadKey: "",
+        calendarLoadPromise: null,
         runsRequestId: 0,
         runDetailsRequestId: 0,
         lastLiveDetailsFetchedAt: 0
@@ -859,11 +861,20 @@
     }
 
     async function loadCalendar() {
-        const requestId = ++state.calendarRequestId;
         const year = state.calendarMonth.getFullYear();
         const month = state.calendarMonth.getMonth() + 1;
+        const loadKey = `${year}-${month}`;
+        if (state.calendarLoadPromise && state.calendarLoadKey === loadKey) {
+            return state.calendarLoadPromise;
+        }
 
-        try {
+        const requestId = ++state.calendarRequestId;
+        if (!el("autotag-history-calendar")?.children.length) {
+            renderCalendar([]);
+        }
+
+        state.calendarLoadKey = loadKey;
+        state.calendarLoadPromise = (async () => {
             const payload = await fetchJson(`/api/autotag/history/calendar?year=${year}&month=${month}`);
             if (requestId !== state.calendarRequestId) {
                 return;
@@ -896,6 +907,10 @@
                     : `${year}-${String(month).padStart(2, "0")}-01`;
             }
             await loadRunsForDate(defaultDate);
+        })();
+
+        try {
+            await state.calendarLoadPromise;
         } catch (error) {
             if (requestId !== state.calendarRequestId) {
                 return;
@@ -906,6 +921,11 @@
                 container.innerHTML = '<div class="autotag-run-empty">Failed to load AutoTag calendar.</div>';
             }
             clearRunSelection("Failed to load the full AutoTag log.");
+        } finally {
+            if (state.calendarLoadKey === loadKey) {
+                state.calendarLoadKey = "";
+                state.calendarLoadPromise = null;
+            }
         }
     }
 
@@ -1663,6 +1683,8 @@
         bindHistoryNavigation();
         bindPageResumeRefresh();
         void pollJob();
-        void loadCalendar();
+        if (isHistoryTabActive()) {
+            void loadCalendar();
+        }
     });
 })();
