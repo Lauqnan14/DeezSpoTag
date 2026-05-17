@@ -448,22 +448,24 @@ public sealed class DownloadOrchestrationService : BackgroundService
         await RunPipelineEnrichmentAsync(context, cancellationToken);
         if (!await EnsurePipelineStillIdleAsync(cancellationToken))
         {
+            PersistPipelineCompletionMarkers(context);
             return;
         }
 
         if (await RunRecentDownloadEnhancementAsync(context, cancellationToken))
         {
+            PersistPipelineCompletionMarkers(context);
             return;
         }
 
         if (!await EnsurePipelineStillIdleAsync(cancellationToken))
         {
+            PersistPipelineCompletionMarkers(context);
             return;
         }
 
         await RunPostAutoTagStagesAsync(context, cancellationToken);
-        MarkCompletedItemsAsProcessed(context.PendingCompletionMarkers);
-        _lastPipelineCompletedAt = context.PipelineStartedAt;
+        PersistPipelineCompletionMarkers(context);
     }
 
     private async Task<bool> ResumeInterruptedEnhancementAsync(CancellationToken cancellationToken)
@@ -588,6 +590,15 @@ public sealed class DownloadOrchestrationService : BackgroundService
         string downloadRootPath,
         CancellationToken cancellationToken)
     {
+        if (!HasCandidateStagingAudioFiles(downloadRootPath))
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: post-download enrichment skipped (no candidate audio files under {downloadRootPath})."));
+            return;
+        }
+
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
@@ -617,6 +628,29 @@ public sealed class DownloadOrchestrationService : BackgroundService
             DateTimeOffset.UtcNow,
             "info",
             $"Automation: enrichment finished (status={enrichmentJob?.Status ?? "skipped"})."));
+    }
+
+    private static bool HasCandidateStagingAudioFiles(string rootPath)
+    {
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            return Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories)
+                .Select(Path.GetExtension)
+                .Any(extension => !string.IsNullOrWhiteSpace(extension) && StagingAudioExtensions.Contains(extension));
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private async Task<bool> RunRecentDownloadEnhancementAsync(
@@ -2283,17 +2317,24 @@ public sealed class DownloadOrchestrationService : BackgroundService
             .OrderByDescending(item => item.UpdatedAt)
             .ThenByDescending(item => item.Id)
             .ToList();
+        var hasDownloadRoot = TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out _);
 
         var freshItems = completedItems
             .Where(item => item.UpdatedAt > _lastPipelineCompletedAt)
             .Where(IsCompletedItemUnprocessed)
             .ToList();
+        if (freshItems.Count > 0 && hasDownloadRoot)
+        {
+            freshItems = freshItems
+                .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath!))
+                .ToList();
+        }
         if (freshItems.Count > 0)
         {
             return await FilterAutoTagEligiblePendingItemsAsync(freshItems, foldersById, cancellationToken);
         }
 
-        if (!TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out _))
+        if (!hasDownloadRoot)
         {
             return freshItems;
         }
@@ -2303,6 +2344,12 @@ public sealed class DownloadOrchestrationService : BackgroundService
             .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
             .ToList();
         return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
+    }
+
+    private void PersistPipelineCompletionMarkers(PipelineRunContext context)
+    {
+        MarkCompletedItemsAsProcessed(context.PendingCompletionMarkers);
+        _lastPipelineCompletedAt = context.PipelineStartedAt;
     }
 
     private async Task<List<DownloadQueueItem>> RecoverMissingDestinationFoldersAsync(
