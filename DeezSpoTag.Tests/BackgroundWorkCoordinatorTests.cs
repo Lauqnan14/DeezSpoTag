@@ -13,20 +13,23 @@ public sealed class BackgroundWorkCoordinatorTests
         var coordinator = new BackgroundWorkCoordinator(timeProvider);
 
         Assert.True(coordinator.IsStartupGraceActive);
-        Assert.Equal(
-            DateTimeOffset.Parse("2026-05-18T00:01:30Z"),
-            coordinator.StartupGraceEndsAtUtc);
+        Assert.False(coordinator.BackgroundWorkersReleased);
+        Assert.Null(coordinator.ApplicationStartedAtUtc);
     }
 
     [Fact]
-    public void StartupGrace_ExpiresAfterConfiguredPeriod()
+    public void StartupGrace_ReleasesAfterApplicationStarted()
     {
         var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-05-18T00:00:00Z"));
         var coordinator = new BackgroundWorkCoordinator(timeProvider);
 
-        timeProvider.Advance(TimeSpan.FromSeconds(91));
+        coordinator.MarkApplicationStarted(TimeSpan.Zero);
 
         Assert.False(coordinator.IsStartupGraceActive);
+        Assert.True(coordinator.BackgroundWorkersReleased);
+        Assert.Equal(
+            DateTimeOffset.Parse("2026-05-18T00:00:00Z"),
+            coordinator.ApplicationStartedAtUtc);
     }
 
     [Fact]
@@ -42,10 +45,11 @@ public sealed class BackgroundWorkCoordinatorTests
         Assert.True(snapshot.LibraryWatchersDegraded);
         Assert.Equal("inotify limit reached", snapshot.LibraryWatchersDegradedReason);
 
+        coordinator.MarkApplicationStarted(TimeSpan.Zero);
         timeProvider.Advance(TimeSpan.FromMinutes(31));
 
-        Assert.True(coordinator.CanRunLibraryWatchers());
-        Assert.False(coordinator.GetSnapshot().LibraryWatchersDegraded);
+        Assert.False(coordinator.CanRunLibraryWatchers());
+        Assert.True(coordinator.GetSnapshot().LibraryWatchersDegraded);
     }
 
     private sealed class ManualTimeProvider : TimeProvider

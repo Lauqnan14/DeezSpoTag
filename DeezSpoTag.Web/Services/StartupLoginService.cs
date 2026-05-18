@@ -12,14 +12,16 @@ namespace DeezSpoTag.Web.Services
     /// EXACT PORT: Startup service that handles automatic login on application start
     /// Uses DeezerClient directly for persistent session like deezspotag sessionDZ pattern
     /// </summary>
-    public class StartupLoginService : IHostedService
+    public class StartupLoginService : BackgroundService
     {
+        private static readonly TimeSpan StartupLoginTimeout = TimeSpan.FromSeconds(15);
         private readonly ILogger<StartupLoginService> _logger;
         private readonly DeezerClient _deezerClient;
         private readonly DeezerLoginCoordinator _loginCoordinator;
         private readonly ILoginStorageService _loginStorage;
         private readonly DeezSpoTagSettingsService _settingsService;
         private readonly DeezerAuthUtils _authUtils;
+        private readonly IHostApplicationLifetime _applicationLifetime;
 
         public StartupLoginService(
             IServiceProvider serviceProvider,
@@ -28,7 +30,8 @@ namespace DeezSpoTag.Web.Services
             DeezerLoginCoordinator loginCoordinator,
             ILoginStorageService loginStorage,
             DeezSpoTagSettingsService settingsService,
-            DeezerAuthUtils authUtils)
+            DeezerAuthUtils authUtils,
+            IHostApplicationLifetime applicationLifetime)
         {
             _ = serviceProvider;
             _logger = logger;
@@ -37,9 +40,18 @@ namespace DeezSpoTag.Web.Services
             _loginStorage = loginStorage;
             _settingsService = settingsService;
             _authUtils = authUtils;
+            _applicationLifetime = applicationLifetime;
         }
 
-        public async Task StartAsync(CancellationToken cancellationToken)
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            await WaitForApplicationStartedAsync(stoppingToken);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            timeout.CancelAfter(StartupLoginTimeout);
+            await RunStartupLoginAsync(timeout.Token);
+        }
+
+        private async Task RunStartupLoginAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("Starting automatic login check...");
 
@@ -66,10 +78,34 @@ namespace DeezSpoTag.Web.Services
             {
                 _logger.LogWarning(ex, "Startup login timed out; continuing without automatic Deezer login.");
             }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogWarning(ex, "Startup login timed out after {TimeoutSeconds}s; continuing without automatic Deezer login.", StartupLoginTimeout.TotalSeconds);
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Error in startup login service");
             }
+        }
+
+        private async Task WaitForApplicationStartedAsync(CancellationToken cancellationToken)
+        {
+            if (_applicationLifetime.ApplicationStarted.IsCancellationRequested)
+            {
+                return;
+            }
+
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var cancellationRegistration = cancellationToken.Register(static state =>
+            {
+                ((TaskCompletionSource)state!).TrySetCanceled();
+            }, completion);
+            using var startedRegistration = _applicationLifetime.ApplicationStarted.Register(static state =>
+            {
+                ((TaskCompletionSource)state!).TrySetResult();
+            }, completion);
+
+            await completion.Task;
         }
 
         private async Task<string?> TryLoadNormalizedArlAsync()
@@ -168,11 +204,6 @@ namespace DeezSpoTag.Web.Services
             {
                 _logger.LogError(ex, "Error updating stored user data");
             }
-        }
-
-        public Task StopAsync(CancellationToken cancellationToken)
-        {
-            return Task.CompletedTask;
         }
     }
 }

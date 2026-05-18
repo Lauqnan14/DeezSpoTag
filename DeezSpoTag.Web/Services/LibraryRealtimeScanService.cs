@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class LibraryRealtimeScanService : BackgroundService
 {
+    private const string RealtimeWatchersEnabledEnv = "DEEZSPOTAG_LIBRARY_REALTIME_WATCHERS_ENABLED";
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mp3",
@@ -36,6 +37,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
     private DateTimeOffset _nextRefreshUtc = DateTimeOffset.MinValue;
     private bool _refreshRequested = true;
+    private bool _watchersDisabledForProcess;
 
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(1);
@@ -60,6 +62,12 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Library realtime scan watcher started.");
+        if (!RealtimeWatchersEnabled())
+        {
+            _logger.LogInformation("Library realtime scan watchers are disabled by {EnvironmentVariable}.", RealtimeWatchersEnabledEnv);
+            return;
+        }
+
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
 
         try
@@ -108,7 +116,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
     private async Task EnsureWatchersAsync(CancellationToken cancellationToken)
     {
-        if (!_workCoordinator.CanRunLibraryWatchers())
+        if (_watchersDisabledForProcess || !_workCoordinator.CanRunLibraryWatchers())
         {
             DisposeAllWatchers();
             return;
@@ -459,12 +467,13 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
     private void EnterWatcherDegradedMode(Exception exception)
     {
-        const string message = "Library realtime watchers are temporarily disabled because the host inotify watch limit was reached.";
+        const string message = "Library realtime watchers are disabled for this process because the host inotify watch limit was reached.";
         _logger.LogWarning(exception, "{Message}", message);
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "warning",
             $"{message} Incremental library scans can still run from explicit scan requests."));
+        _watchersDisabledForProcess = true;
         _workCoordinator.MarkLibraryWatchersDegraded(message);
         DisposeAllWatchers();
     }
@@ -549,6 +558,15 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
         var extension = Path.GetExtension(fullPath);
         return !string.IsNullOrWhiteSpace(extension) && AudioExtensions.Contains(extension);
+    }
+
+    private static bool RealtimeWatchersEnabled()
+    {
+        var configured = Environment.GetEnvironmentVariable(RealtimeWatchersEnabledEnv);
+        return string.IsNullOrWhiteSpace(configured)
+            || configured.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || configured.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || configured.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool FileExists(string path)

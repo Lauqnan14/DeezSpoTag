@@ -30,7 +30,6 @@ public static class DeezSpoTagServiceExtensions
         services.TryAddSingleton<IDownloadTagSettingsResolver, NullDownloadTagSettingsResolver>();
         services.AddSingleton<PostDownloadTaskScheduler>();
         services.AddSingleton<IPostDownloadTaskScheduler>(sp => sp.GetRequiredService<PostDownloadTaskScheduler>());
-        services.AddHostedService(sp => sp.GetRequiredService<PostDownloadTaskScheduler>());
 
         // Settings service
         // PHASE 3: Enhanced settings service with complete deezspotag configuration

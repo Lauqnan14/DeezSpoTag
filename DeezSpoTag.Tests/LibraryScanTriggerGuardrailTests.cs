@@ -78,7 +78,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     {
         var source = ReadSource("DeezSpoTag.Web", "Program.cs");
 
-        Assert.Contains("AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+        Assert.Contains("AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
     }
 
     [Fact]

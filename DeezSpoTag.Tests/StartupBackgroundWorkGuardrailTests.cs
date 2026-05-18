@@ -39,7 +39,109 @@ public sealed class StartupBackgroundWorkGuardrailTests
         Assert.Contains("EnterWatcherDegradedMode", source, StringComparison.Ordinal);
         Assert.Contains("MarkLibraryWatchersDegraded", source, StringComparison.Ordinal);
         Assert.Contains("IsWatcherResourceLimit", source, StringComparison.Ordinal);
+        Assert.Contains("DEEZSPOTAG_LIBRARY_REALTIME_WATCHERS_ENABLED", source, StringComparison.Ordinal);
+        Assert.Contains("_watchersDisabledForProcess", source, StringComparison.Ordinal);
         Assert.Contains("inotify", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void StartupLoginService_IsPostReadyBackgroundService()
+    {
+        var root = ResolveRepoRoot();
+        var servicePath = Path.Join(root, "DeezSpoTag.Web", "Services", "StartupLoginService.cs");
+        var source = File.ReadAllText(servicePath);
+
+        Assert.Contains(": BackgroundService", source, StringComparison.Ordinal);
+        Assert.Contains("IHostApplicationLifetime", source, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromSeconds(15)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(": IHostedService", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("public async Task StartAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Program_ReleasesBackgroundWorkersAfterHttpReady()
+    {
+        var root = ResolveRepoRoot();
+        var programPath = Path.Join(root, "DeezSpoTag.Web", "Program.cs");
+        var source = File.ReadAllText(programPath);
+
+        Assert.Contains("startup: {StartupCheckpoint}", source, StringComparison.Ordinal);
+        Assert.Contains("\"/api/runtime/startup\"", source, StringComparison.Ordinal);
+        Assert.Contains(".RequireAuthorization()", source, StringComparison.Ordinal);
+        Assert.Contains("/health", source, StringComparison.Ordinal);
+        Assert.Contains(".AllowAnonymous()", source, StringComparison.Ordinal);
+        Assert.Contains("workers =", source, StringComparison.Ordinal);
+        Assert.Contains("\"http ready\"", source, StringComparison.Ordinal);
+        Assert.Contains("MarkApplicationStarted", source, StringComparison.Ordinal);
+        Assert.Contains("\"background workers released\"", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeferredHostedService_RechecksStartedServiceDuringStop()
+    {
+        var root = ResolveRepoRoot();
+        var servicePath = Path.Join(root, "DeezSpoTag.Web", "Services", "DeferredHostedService.cs");
+        var source = File.ReadAllText(servicePath);
+
+        Assert.Contains("await startTask.WaitAsync(cancellationToken);", source, StringComparison.Ordinal);
+        Assert.Contains("service = _service;", source, StringComparison.Ordinal);
+        Assert.Contains("await service.StopAsync(cancellationToken);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StartupWorkers_HaveExplicitCategories()
+    {
+        var root = ResolveRepoRoot();
+        var programPath = Path.Join(root, "DeezSpoTag.Web", "Program.cs");
+        var source = File.ReadAllText(programPath);
+
+        Assert.Contains("StartupWorkerCategory.Critical", source, StringComparison.Ordinal);
+        Assert.Contains("StartupWorkerCategory.Deferred", source, StringComparison.Ordinal);
+        Assert.Contains("StartupWorkerCategory.Manual", source, StringComparison.Ordinal);
+        Assert.Contains("StartupWorkerCategory.DisabledOnError", source, StringComparison.Ordinal);
+        Assert.Contains("MandatoryStartupInitialization", source, StringComparison.Ordinal);
+        Assert.Contains("LibraryRealtimeScanService", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OptionalHostedServices_AreDeferredExceptStartupLogin()
+    {
+        var root = ResolveRepoRoot();
+        var programPath = Path.Join(root, "DeezSpoTag.Web", "Program.cs");
+        var source = File.ReadAllText(programPath);
+
+        Assert.Contains("AddHostedService<StartupLoginService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService<DeezSpoTag.Services.Download.Shared.DeezSpoTagQueueBackgroundService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService<DeezSpoTag.Web.Services.PlexMetadataRefreshService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SharedQueueRegistration_DoesNotStartPostDownloadSchedulerBeforeReadiness()
+    {
+        var root = ResolveRepoRoot();
+        var sharedPath = Path.Join(root, "DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagServiceExtensions.cs");
+        var source = File.ReadAllText(sharedPath);
+
+        Assert.Contains("AddSingleton<PostDownloadTaskScheduler>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService(sp => sp.GetRequiredService<PostDownloadTaskScheduler>())", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Program_DoesNotPerformDirectNetworkCallsBeforeRunAsync()
+    {
+        var root = ResolveRepoRoot();
+        var programPath = Path.Join(root, "DeezSpoTag.Web", "Program.cs");
+        var source = File.ReadAllText(programPath);
+        var runIndex = source.IndexOf("await app.RunAsync()", StringComparison.Ordinal);
+
+        Assert.True(runIndex > 0, "Program.cs must call app.RunAsync().");
+        var beforeRun = source[..runIndex];
+
+        Assert.DoesNotContain(".GetAsync(", beforeRun, StringComparison.Ordinal);
+        Assert.DoesNotContain(".PostAsync(", beforeRun, StringComparison.Ordinal);
+        Assert.DoesNotContain(".SendAsync(", beforeRun, StringComparison.Ordinal);
     }
 
     private static string ResolveRepoRoot()

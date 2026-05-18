@@ -4,6 +4,7 @@ namespace DeezSpoTag.Web.Services;
 
 public class SpotifyAuthWarmupService : BackgroundService
 {
+    private static readonly TimeSpan WarmupTimeout = TimeSpan.FromSeconds(15);
     private readonly SpotifyBlobService _blobService;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<SpotifyAuthWarmupService> _logger;
@@ -29,9 +30,16 @@ public class SpotifyAuthWarmupService : BackgroundService
         {
             try
             {
-                await _blobService.EnsureSpotifyAuthEnvironmentAsync(stoppingToken);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                timeout.CancelAfter(WarmupTimeout);
+                await _blobService.EnsureSpotifyAuthEnvironmentAsync(timeout.Token);
                 _logger.LogInformation("Spotify auth environment warmup completed.");
                 return;
+            }
+            catch (OperationCanceledException ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                attempt++;
+                _logger.LogWarning(ex, "Spotify auth warmup timed out after {TimeoutSeconds}s (attempt {Attempt}). Retrying in {Delay}s.", WarmupTimeout.TotalSeconds, attempt, delaySeconds);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

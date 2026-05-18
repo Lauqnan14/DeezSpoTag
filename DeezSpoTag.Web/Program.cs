@@ -75,10 +75,21 @@ public partial class Program
         ApplyLocalRuntimeParityEnvironment();
 
         var builder = WebApplication.CreateBuilder(args);
+        var startupState = new DeezSpoTag.Web.Services.StartupStateService();
+        builder.Services.AddSingleton(startupState);
+        builder.Services.AddSingleton<DeezSpoTag.Web.Services.StartupWorkerRegistry>();
+        builder.Services.AddSingleton(new DeezSpoTag.Web.Services.StartupWorkerDescriptor(
+            typeof(Program).FullName ?? nameof(Program),
+            "MandatoryStartupInitialization",
+            StartupWorkerCategory.Critical.ToString(),
+            "Path resolution, data protection setup, DB path setup, schema creation, identity creation, and bootstrap account enforcement before HTTP bind."));
         var libraryDataDir = ConfigureDataDirectories();
+        RecordStartupCheckpoint(startupState, null, "paths resolved");
         ConfigureDataProtection(builder.Services, libraryDataDir);
+        RecordStartupCheckpoint(startupState, null, "data protection ready");
         ConfigureTlsRuntime(builder.Configuration);
         var identityConnectionString = ConfigureDatabaseConnections(builder, libraryDataDir);
+        RecordStartupCheckpoint(startupState, null, "db paths ready");
         ConfigureBindUrls(builder);
 
         ConfigureCoreServices(builder.Services);
@@ -88,6 +99,7 @@ public partial class Program
         RegisterApplicationServices(builder.Services, builder.Configuration);
 
         var app = builder.Build();
+        RecordStartupCheckpoint(startupState, app.Logger, "app built");
         LogBuildDetails(app);
         await InitializeApplicationAsync(app);
         ConfigurePipeline(app, builder.Configuration);
@@ -553,7 +565,15 @@ public partial class Program
         services.AddHttpClient<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>();
         services.AddSignalR();
         services.AddDeezSpoTagQueue();
-        services.AddHostedService<DeezSpoTag.Services.Download.Shared.DeezSpoTagQueueBackgroundService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Shared.DeezSpoTagQueueBackgroundService>();
+        AddDeferredHostedService<DeezSpoTag.Services.Download.Shared.DeezSpoTagQueueBackgroundService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Queue recovery and queue processor polling after HTTP readiness.");
+        AddDeferredHostedService<DeezSpoTag.Services.Download.Shared.PostDownloadTaskScheduler>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Post-download work queue after HTTP readiness.");
     }
 
     static void ConfigureIdentityServices(IServiceCollection services, string identityConnectionString)
@@ -1067,6 +1087,40 @@ public partial class Program
             status = "healthy",
             timestampUtc = DateTimeOffset.UtcNow
         })).AllowAnonymous();
+        app.MapGet("/api/runtime/startup", (
+            DeezSpoTag.Web.Services.StartupStateService startupState,
+            BackgroundWorkCoordinator coordinator) =>
+        {
+            var snapshot = startupState.GetSnapshot(coordinator);
+            return Results.Ok(new
+            {
+                startupPhase = snapshot.Phase,
+                elapsedSeconds = Math.Round(snapshot.Elapsed.TotalSeconds, 3),
+                backgroundGraceActive = snapshot.BackgroundWork.StartupGraceActive,
+                workersReleased = snapshot.BackgroundWork.BackgroundWorkersReleasedAtUtc.HasValue,
+                applicationStartedAtUtc = snapshot.BackgroundWork.ApplicationStartedAtUtc,
+                backgroundWorkersReleasedAtUtc = snapshot.BackgroundWork.BackgroundWorkersReleasedAtUtc,
+                degradedWorkers = snapshot.BackgroundWork.LibraryWatchersDegraded
+                    ? new object[]
+                    {
+                        new
+                        {
+                            name = "library-realtime-watchers",
+                            reason = snapshot.BackgroundWork.LibraryWatchersDegradedReason
+                        }
+                    }
+                    : Array.Empty<object>(),
+                checkpoints = snapshot.Checkpoints.Select(checkpoint => new
+                {
+                    name = checkpoint.Name,
+                    timestampUtc = checkpoint.TimestampUtc,
+                    elapsedSeconds = Math.Round(checkpoint.Elapsed.TotalSeconds, 3)
+                }),
+                workers = app.Services
+                    .GetRequiredService<DeezSpoTag.Web.Services.StartupWorkerRegistry>()
+                    .GetWorkers()
+            });
+        }).RequireAuthorization();
         app.MapControllers().RequireRateLimiting("DefaultApi");
         app.MapRazorPages();
         app.MapHub<DeezSpoTag.Web.Hubs.DeezerQueueHub>("/deezerQueueHub");
@@ -1080,9 +1134,56 @@ public partial class Program
     {
         app.Lifetime.ApplicationStarted.Register(() =>
         {
+            var startupState = app.Services.GetRequiredService<DeezSpoTag.Web.Services.StartupStateService>();
+            var coordinator = app.Services.GetRequiredService<BackgroundWorkCoordinator>();
+            RecordStartupCheckpoint(startupState, app.Logger, "http ready");
+            coordinator.MarkApplicationStarted();
+            _ = Task.Run(async () =>
+            {
+                await coordinator.WaitForStartupGraceAsync(CancellationToken.None);
+                RecordStartupCheckpoint(startupState, app.Logger, "background workers released");
+            });
             Console.WriteLine("🚀 DeezSpoTag is running!");
             Console.WriteLine("🌐 Access the application at: http://localhost:8668");
         });
+    }
+
+    static void RecordStartupCheckpoint(
+        DeezSpoTag.Web.Services.StartupStateService startupState,
+        ILogger? logger,
+        string name)
+    {
+        startupState.Checkpoint(name);
+        if (logger is null)
+        {
+            Console.WriteLine($"startup: {name}");
+            return;
+        }
+
+        logger.LogInformation("startup: {StartupCheckpoint}", name);
+    }
+
+    static void AddDeferredHostedService<TService>(
+        IServiceCollection services,
+        DeezSpoTag.Web.Services.StartupWorkerCategory category,
+        string description)
+        where TService : class, IHostedService
+    {
+        RegisterStartupWorker<TService>(services, category, description);
+        services.AddSingleton<IHostedService, DeezSpoTag.Web.Services.DeferredHostedService<TService>>();
+    }
+
+    static void RegisterStartupWorker<TService>(
+        IServiceCollection services,
+        DeezSpoTag.Web.Services.StartupWorkerCategory category,
+        string description)
+    {
+        var serviceType = typeof(TService);
+        services.AddSingleton(new DeezSpoTag.Web.Services.StartupWorkerDescriptor(
+            serviceType.FullName ?? serviceType.Name,
+            serviceType.Name,
+            category.ToString(),
+            description));
     }
 
     static bool IsTrue(string? value)
@@ -1120,10 +1221,17 @@ public partial class Program
         services.AddTransient<DeezSpoTag.Web.Services.LoginApiServices>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.SpotifyMetadataResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.AppleMusicWrapperService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>());
+        AddDeferredHostedService<DeezSpoTag.Web.Services.AppleMusicWrapperService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Apple wrapper lifecycle after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.IAppleWrapperStatusProvider>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>());
         services.AddSingleton<ILoginStorageService, LoginStorageService>();
+        RegisterStartupWorker<StartupLoginService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Saved Deezer ARL login after HTTP readiness with a hard timeout.");
         services.AddHostedService<StartupLoginService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener, DeezSpoTag.Web.Services.SignalRDeezSpoTagListener>();
     }
@@ -1183,7 +1291,11 @@ public partial class Program
                 CapabilitiesStore = sp.GetRequiredService<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.AutoTagStuckRecoveryHostedService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AutoTagStuckRecoveryHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.AutoTagStuckRecoveryHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "AutoTag stuck job recovery after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagRunner, DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ShazamRecognitionService>();
@@ -1294,7 +1406,11 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.ITidalAccessTokenProvider, DeezSpoTag.Web.Services.TidalAccessTokenProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyTracklistMatchQueue, DeezSpoTag.Web.Services.SpotifyTracklistMatchQueue>();
         services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyTracklistMatchStore, DeezSpoTag.Web.Services.SpotifyTracklistMatchStore>();
-        services.AddHostedService<DeezSpoTag.Web.Services.SpotifyTracklistMatchBackgroundService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistMatchBackgroundService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.SpotifyTracklistMatchBackgroundService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Spotify tracklist matching queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyDeezerLinkService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyFavoritesService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DeezerFavoritesService>();
@@ -1335,7 +1451,11 @@ public partial class Program
                 UserContextAccessor = sp.GetRequiredService<DeezSpoTag.Web.Services.ISpotifyUserContextAccessor>()
             });
         services.AddScoped<DeezSpoTag.Web.Services.SpotifyHomeFeedRuntimeService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.SpotifyHomeFeedRefreshHostedService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SpotifyHomeFeedRefreshHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.SpotifyHomeFeedRefreshHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Spotify home feed refresh after HTTP readiness.");
         services.AddScoped<DeezSpoTag.Web.Controllers.Api.SpotifyCredentialsApiControllerCore.SpotifyCredentialsCollaborators>(sp =>
             new DeezSpoTag.Web.Controllers.Api.SpotifyCredentialsApiControllerCore.SpotifyCredentialsCollaborators
             {
@@ -1394,8 +1514,15 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
-        services.AddHostedService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Playlist and artist watch polling after HTTP readiness.");
+        AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Watchlist post-download sync after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService.Dependencies>(sp =>
@@ -1411,7 +1538,11 @@ public partial class Program
                 HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.MediaServerSoundtrackMonitorService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackMonitorService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.MediaServerSoundtrackMonitorService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Media server soundtrack monitor after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Matching.TrackMatchService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Queue.DownloadCancellationRegistry>();
         services.AddSingleton<DeezSpoTag.Services.Download.Queue.DownloadRetryScheduler>(sp =>
@@ -1438,14 +1569,25 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWrapperDecryptor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleEngineProcessor>();
         services.AddSingleton<DeezSpoTag.Web.Services.IDownloadIntentBackgroundQueue, DeezSpoTag.Web.Services.DownloadIntentBackgroundQueue>();
-        services.AddHostedService<DeezSpoTag.Web.Services.DownloadQueuePreResolutionService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.DownloadQueuePreResolutionService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadQueuePreResolutionService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Download queue pre-resolution after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Download intent background queue after HTTP readiness.");
         services.AddScoped<DeezSpoTag.Web.Services.DownloadIntentService>();
         services.AddScoped<DeezSpoTag.Web.Services.TrackAvailabilityService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyIdResolver, DeezSpoTag.Web.Services.SpotifyIdResolver>();
-        services.AddHostedService<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Spotify auth environment warmup after HTTP readiness with a hard timeout.");
         services.AddSingleton<LibraryDbService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.LibrarySchemaHostedService>();
         services.AddSingleton<DeezSpoTag.Services.Library.LibraryRepository>();
         services.AddSingleton<DeezSpoTag.Services.Library.AudioQualitySignalAnalyzer>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpectrogramService>();
@@ -1460,12 +1602,26 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>()));
         services.AddSingleton<DeezSpoTag.Web.Services.LocalLibraryScanner>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryScanRunner>();
+        RegisterStartupWorker<DeezSpoTag.Web.Services.LibraryScanRunner>(
+            services,
+            StartupWorkerCategory.Manual,
+            "Explicit library scans only when requested by the user or API.");
         services.AddSingleton<DeezSpoTag.Web.Services.DeezerArtistImageService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>());
+        AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Library artist image queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.LyricsRefreshQueueService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>());
-        services.AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Lyrics refresh queue after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.LibraryRealtimeScanService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>(
+            services,
+            StartupWorkerCategory.DisabledOnError,
+            "Realtime library watchers after HTTP readiness; disabled for process when host watcher limits are hit.");
         services.AddSingleton<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies>(sp =>
             new DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies
             {
@@ -1476,12 +1632,18 @@ public partial class Program
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 ConfigStore = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
                 Environment = sp.GetRequiredService<IWebHostEnvironment>()
-            });
+        });
         services.AddSingleton<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService>());
+        AddDeferredHostedService<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Spotify artist metadata queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistImageCacheService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>());
+        AddDeferredHostedService<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Artist metadata updater after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Library.MixService>();
         services.AddSingleton<DeezSpoTag.Services.Library.RadioService>();
         services.AddSingleton<DeezSpoTag.Services.Library.DeezerTrackRecommendationService>();
@@ -1495,32 +1657,65 @@ public partial class Program
                 DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 SongLinkResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.SongLinkResolver>()
-            });
+        });
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Library recommendation automation after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.PlexHistoryImportService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MixSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.VibeAnalysisSettingsStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>());
+        AddDeferredHostedService<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Track analysis background queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.VibeMatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LastFmTagService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MoodMixPreferencesStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MoodBucketService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MoodBucketBackgroundService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.MoodBucketBackgroundService>());
+        AddDeferredHostedService<DeezSpoTag.Web.Services.MoodBucketBackgroundService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Mood bucket background processing after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MoodMixService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadOrchestrationService>();
-        services.AddHostedService(sp => sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadOrchestrationService>());
+        AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadOrchestrationService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Download orchestration after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.DuplicateCleanerService>();
+        RegisterStartupWorker<DeezSpoTag.Web.Services.DuplicateCleanerService>(
+            services,
+            StartupWorkerCategory.Manual,
+            "Duplicate cleanup only when requested by the user or API.");
         services.AddSingleton<DeezSpoTag.Web.Services.QualityScannerService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.QualityScannerAutomationHostedService>();
+        RegisterStartupWorker<DeezSpoTag.Web.Services.QualityScannerService>(
+            services,
+            StartupWorkerCategory.Manual,
+            "Quality scanner manual runs only when requested by the user or API.");
+        services.AddSingleton<DeezSpoTag.Web.Services.QualityScannerAutomationHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.QualityScannerAutomationHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Quality scanner automation after HTTP readiness.");
         services.Configure<DeezSpoTag.Web.Services.MelodayOptions>(configuration.GetSection("Meloday"));
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayCollaborators>();
         services.AddSingleton<DeezSpoTag.Web.Services.MelodayService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MelodaySettingsStore>();
-        services.AddHostedService<DeezSpoTag.Web.Services.MelodayHostedService>();
-        services.AddHostedService<DeezSpoTag.Web.Services.PlexMetadataRefreshService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MelodayHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.MelodayHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Meloday automation after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.PlexMetadataRefreshService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.PlexMetadataRefreshService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Plex metadata refresh after HTTP readiness.");
     }
 
     static void RegisterDeezerServices(IServiceCollection services, IConfiguration configuration)
@@ -1592,8 +1787,10 @@ public partial class Program
     static async Task InitializeApplicationAsync(WebApplication app)
     {
         using var scope = app.Services.CreateScope();
+        var startupState = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Web.Services.StartupStateService>();
         var dbService = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Library.LibraryDbService>();
         await dbService.EnsureSchemaAsync();
+        RecordStartupCheckpoint(startupState, app.Logger, "schema ensured");
         await RunStartupMigrationsAsync(scope.ServiceProvider, app.Logger);
 
         var configStore = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>();
@@ -1606,6 +1803,7 @@ public partial class Program
         await identityDb.Database.EnsureCreatedAsync();
 
         await EnforceIdentityStartupStateAsync(scope.ServiceProvider);
+        RecordStartupCheckpoint(startupState, app.Logger, "identity ensured");
     }
 
     static async Task RunStartupMigrationsAsync(IServiceProvider services, ILogger logger)
