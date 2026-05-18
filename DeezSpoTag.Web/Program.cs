@@ -92,9 +92,8 @@ public partial class Program
         await InitializeApplicationAsync(app);
         ConfigurePipeline(app, builder.Configuration);
         MapApplicationEndpoints(app);
+        LogApplicationStarted(app);
 
-        Console.WriteLine("🚀 DeezSpoTag is running!");
-        Console.WriteLine("🌐 Access the application at: http://localhost:8668");
         await app.RunAsync();
     }
 
@@ -497,6 +496,11 @@ public partial class Program
             options.Cookie.HttpOnly = true;
             options.Cookie.SameSite = Microsoft.AspNetCore.Http.SameSiteMode.Strict;
             options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        });
+        services.Configure<HostOptions>(options =>
+        {
+            options.ServicesStartConcurrently = true;
+            options.ServicesStopConcurrently = true;
         });
         services.AddRateLimiter(options =>
         {
@@ -1058,6 +1062,11 @@ public partial class Program
 
     static void MapApplicationEndpoints(WebApplication app)
     {
+        app.MapGet("/health", () => Results.Ok(new
+        {
+            status = "healthy",
+            timestampUtc = DateTimeOffset.UtcNow
+        })).AllowAnonymous();
         app.MapControllers().RequireRateLimiting("DefaultApi");
         app.MapRazorPages();
         app.MapHub<DeezSpoTag.Web.Hubs.DeezerQueueHub>("/deezerQueueHub");
@@ -1065,6 +1074,15 @@ public partial class Program
         app.MapControllerRoute(
             name: "default",
             pattern: "{controller=Home}/{action=Index}/{id?}");
+    }
+
+    static void LogApplicationStarted(WebApplication app)
+    {
+        app.Lifetime.ApplicationStarted.Register(() =>
+        {
+            Console.WriteLine("🚀 DeezSpoTag is running!");
+            Console.WriteLine("🌐 Access the application at: http://localhost:8668");
+        });
     }
 
     static bool IsTrue(string? value)
