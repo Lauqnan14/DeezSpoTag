@@ -3,6 +3,7 @@ using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Shared.Advanced;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,6 +23,7 @@ public static class DeezSpoTagServiceExtensions
     /// </summary>
     public static IServiceCollection AddDeezSpoTagQueue(this IServiceCollection services)
     {
+        services.TryAddSingleton<BackgroundWorkCoordinator>();
         services.AddSingleton<DownloadQueueRepository>();
         services.AddSingleton<DownloadQueueRecoveryRuntime>();
         services.AddSingleton<DownloadQueueRecoveryService>();
@@ -100,14 +102,17 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
     private readonly ILogger<DeezSpoTagQueueBackgroundService> _logger;
     private readonly DeezSpoTagApp _deezSpoTagApp;
     private readonly DownloadQueueRecoveryService _recoveryService;
+    private readonly BackgroundWorkCoordinator _workCoordinator;
 
     public DeezSpoTagQueueBackgroundService(
         DeezSpoTagApp deezSpoTagApp,
         DownloadQueueRecoveryService recoveryService,
+        BackgroundWorkCoordinator workCoordinator,
         ILogger<DeezSpoTagQueueBackgroundService> logger)
     {
         _deezSpoTagApp = deezSpoTagApp;
         _recoveryService = recoveryService;
+        _workCoordinator = workCoordinator;
         _logger = logger;
     }
 
@@ -117,6 +122,11 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
             "DeezSpoTag",
             async token =>
             {
+                if (_workCoordinator.IsStartupGraceActive)
+                {
+                    return;
+                }
+
                 await _recoveryService.RecoverStaleRunningTasksAsync(token);
 
                 var queuedCount = await _deezSpoTagApp.GetQueuedCountAsync();

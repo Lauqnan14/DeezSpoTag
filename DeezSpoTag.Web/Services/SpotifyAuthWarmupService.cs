@@ -1,18 +1,27 @@
+using DeezSpoTag.Services.Runtime;
+
 namespace DeezSpoTag.Web.Services;
 
 public class SpotifyAuthWarmupService : BackgroundService
 {
     private readonly SpotifyBlobService _blobService;
+    private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<SpotifyAuthWarmupService> _logger;
 
-    public SpotifyAuthWarmupService(SpotifyBlobService blobService, ILogger<SpotifyAuthWarmupService> logger)
+    public SpotifyAuthWarmupService(
+        SpotifyBlobService blobService,
+        BackgroundWorkCoordinator workCoordinator,
+        ILogger<SpotifyAuthWarmupService> logger)
     {
         _blobService = blobService;
+        _workCoordinator = workCoordinator;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+
         var attempt = 0;
         var delaySeconds = 5;
 

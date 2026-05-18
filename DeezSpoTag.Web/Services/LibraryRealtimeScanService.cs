@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Tagging;
 using Microsoft.Extensions.Hosting;
 
@@ -25,6 +26,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     private readonly LibraryConfigStore _configStore;
     private readonly LibraryScanRunner _scanRunner;
     private readonly ITaggingJobQueue? _taggingJobQueue;
+    private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<LibraryRealtimeScanService> _logger;
     private readonly SemaphoreSlim _signal = new(0);
     private readonly object _stateLock = new();
@@ -44,18 +46,21 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         LibraryConfigStore configStore,
         LibraryScanRunner scanRunner,
         ILogger<LibraryRealtimeScanService> logger,
+        BackgroundWorkCoordinator workCoordinator,
         ITaggingJobQueue? taggingJobQueue = null)
     {
         _repository = repository;
         _configStore = configStore;
         _scanRunner = scanRunner;
         _logger = logger;
+        _workCoordinator = workCoordinator;
         _taggingJobQueue = taggingJobQueue;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Library realtime scan watcher started.");
+        await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
 
         try
         {
@@ -103,6 +108,12 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
     private async Task EnsureWatchersAsync(CancellationToken cancellationToken)
     {
+        if (!_workCoordinator.CanRunLibraryWatchers())
+        {
+            DisposeAllWatchers();
+            return;
+        }
+
         var now = DateTimeOffset.UtcNow;
         bool shouldRefresh;
         lock (_stateLock)
@@ -144,6 +155,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             enabled[item.Folder.Id] = new FolderState(item.Folder, item.NormalizedRoot!, baselineFiles);
         }
 
+        Exception? watcherResourceException = null;
         lock (_stateLock)
         {
             var removedIds = _watchers.Keys.Where(id => !enabled.ContainsKey(id)).ToList();
@@ -165,13 +177,28 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                     continue;
                 }
 
-                existing?.Dispose();
-                _watchers[folderId] = CreateWatcher(
-                    state.Folder,
-                    state.NormalizedRootPath,
-                    state.BaselineFiles ?? new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase),
-                    _bootstrappingFolders.Contains(folderId));
+                try
+                {
+                    existing?.Dispose();
+                    _watchers[folderId] = CreateWatcher(
+                        state.Folder,
+                        state.NormalizedRootPath,
+                        state.BaselineFiles ?? new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase),
+                        _bootstrappingFolders.Contains(folderId));
+                }
+                catch (IOException ex) when (IsWatcherResourceLimit(ex))
+                {
+                    existing?.Dispose();
+                    _watchers.Remove(folderId);
+                    watcherResourceException = ex;
+                    break;
+                }
             }
+        }
+
+        if (watcherResourceException != null)
+        {
+            EnterWatcherDegradedMode(watcherResourceException);
         }
     }
 
@@ -383,6 +410,12 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     {
         if (exception != null)
         {
+            if (IsWatcherResourceLimit(exception))
+            {
+                EnterWatcherDegradedMode(exception);
+                return;
+            }
+
             _logger.LogWarning(exception, "Library file watcher error for folder id={FolderId}. Watchers will refresh.", folderId);
         }
         else
@@ -395,6 +428,18 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             _refreshRequested = true;
         }
         _signal.Release();
+    }
+
+    private void EnterWatcherDegradedMode(Exception exception)
+    {
+        const string message = "Library realtime watchers are temporarily disabled because the host inotify watch limit was reached.";
+        _logger.LogWarning(exception, "{Message}", message);
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "warning",
+            $"{message} Incremental library scans can still run from explicit scan requests."));
+        _workCoordinator.MarkLibraryWatchersDegraded(message);
+        DisposeAllWatchers();
     }
 
     private void RequeueFolder(long folderId, TimeSpan delay)
@@ -495,6 +540,14 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             return false;
         }
+    }
+
+    private static bool IsWatcherResourceLimit(Exception exception)
+    {
+        var message = exception.Message;
+        return message.Contains("inotify", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("configured user limit", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("failed to allocate a required resource", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? NormalizePath(string? path)

@@ -5,6 +5,7 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Settings;
 
 namespace DeezSpoTag.Web.Services;
@@ -17,6 +18,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly LyricsService _lyricsService;
     private readonly IWebHostEnvironment _environment;
+    private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<LyricsRefreshQueueService> _logger;
     private readonly Channel<QueueItem> _channel = Channel.CreateUnbounded<QueueItem>();
     private readonly Dictionary<long, QueueItem> _queueItems = new();
@@ -33,12 +35,14 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         DeezSpoTagSettingsService settingsService,
         LyricsService lyricsService,
         IWebHostEnvironment environment,
+        BackgroundWorkCoordinator workCoordinator,
         ILogger<LyricsRefreshQueueService> logger)
     {
         _repository = repository;
         _settingsService = settingsService;
         _lyricsService = lyricsService;
         _environment = environment;
+        _workCoordinator = workCoordinator;
         _logger = logger;
     }
 
@@ -106,6 +110,8 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     {
         try
         {
+            await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+
             await foreach (var item in _channel.Reader.ReadAllAsync(stoppingToken))
             {
                 lock (_queueLock)

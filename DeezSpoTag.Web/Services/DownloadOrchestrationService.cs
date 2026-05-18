@@ -1,6 +1,7 @@
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Plex;
@@ -136,6 +137,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
     private readonly LibraryConfigStore _configStore;
+    private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<DownloadOrchestrationService> _logger;
     private readonly string _enhancementSchedulePath;
     private readonly string _processedCompletionPath;
@@ -177,6 +179,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
+        _workCoordinator = serviceProvider.GetRequiredService<BackgroundWorkCoordinator>();
         _logger = logger;
 
         var configuredDataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
@@ -341,6 +344,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try

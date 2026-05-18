@@ -1,17 +1,21 @@
+using DeezSpoTag.Services.Runtime;
+
 namespace DeezSpoTag.Web.Services;
 
 public sealed class SpotifyHomeFeedRefreshHostedService : BackgroundService
 {
-    private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DisabledPollInterval = TimeSpan.FromMinutes(15);
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<SpotifyHomeFeedRefreshHostedService> _logger;
 
     public SpotifyHomeFeedRefreshHostedService(
         IServiceScopeFactory scopeFactory,
+        BackgroundWorkCoordinator workCoordinator,
         ILogger<SpotifyHomeFeedRefreshHostedService> logger)
     {
         _scopeFactory = scopeFactory;
+        _workCoordinator = workCoordinator;
         _logger = logger;
     }
 
@@ -19,7 +23,7 @@ public sealed class SpotifyHomeFeedRefreshHostedService : BackgroundService
     {
         try
         {
-            await Task.Delay(StartupDelay, stoppingToken);
+            await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
         }
         catch (OperationCanceledException)
         {

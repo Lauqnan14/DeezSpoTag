@@ -6,6 +6,7 @@ using System.Linq;
 using System.Diagnostics;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Runtime;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -14,6 +15,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private const string ArtistKind = "artist";
     private const string PlaylistKind = "playlist";
     private readonly IServiceProvider _serviceProvider;
+    private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<PlaylistWatchHostedService> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _itemLocks = new();
@@ -24,15 +26,25 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
     public PlaylistWatchHostedService(
         IServiceProvider serviceProvider,
+        BackgroundWorkCoordinator workCoordinator,
         ILogger<PlaylistWatchHostedService> logger)
     {
         _serviceProvider = serviceProvider;
+        _workCoordinator = workCoordinator;
         _logger = logger;
+    }
+
+    public PlaylistWatchHostedService(
+        IServiceProvider serviceProvider,
+        ILogger<PlaylistWatchHostedService> logger)
+        : this(serviceProvider, new BackgroundWorkCoordinator(), logger)
+    {
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Playlist watch service started.");
+        await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {

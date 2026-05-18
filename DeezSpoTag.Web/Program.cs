@@ -3,6 +3,7 @@ using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Extensions;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Web.Services.CoverPort;
@@ -536,6 +537,7 @@ public partial class Program
         });
         services.AddCoverPortingServices();
         services.AddMemoryCache();
+        services.AddSingleton<BackgroundWorkCoordinator>();
         services.AddSingleton<QuickTagService>();
         services.AddSingleton<QuickTagTagSourceService>();
         services.AddHttpClient<DeezSpoTag.Web.Services.PlaylistCoverService>();
