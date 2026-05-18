@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 
 import json
-import os
 from requests import Session
 from deezspot.deezloader.deezer_settings import qualities
 from deezspot.exceptions import (
@@ -34,16 +33,8 @@ class ApiGw:
         cls.__password = password
         cls.__token = json.dumps(None)
 
-        cls.__client_id = 172365
-        cls.__client_key_material = os.environ.get(
-            "DEEZSPOT_DEEZER_CLIENT_SECRET",
-            "".join(["fb0bec7c", "cc063dab", "0417eb7b0d847f34"]),
-        )
-        cls.__try_link = "https://api.deezer.com/platform/generic/track/3135556"
-
         cls.__get_lyric = "song.getLyrics"
         cls.__get_song_data = "song.getData"
-        cls.__get_user_get_arl = "user.getArl"
         cls.__get_page_track = "deezer.pageTrack"
         cls.__get_user_data = "deezer.getUserData"
         cls.__get_album_data = "song.getListByAlbum"
@@ -51,7 +42,6 @@ class ApiGw:
         cls.__get_episode_data = "episode.getData"
 
         cls.__get_media_url = "https://media.deezer.com/v1/get_url"
-        cls.__auth_url = "https://api.deezer.com/auth/token"
         cls.__private_api_link = "https://www.deezer.com/ajax/gw-light.php"
         cls.__song_server = "https://e-cdns-proxy-{}.dzcdn.net/mobile/1/{}"
 
@@ -72,14 +62,6 @@ class ApiGw:
             cls.__req.cookies['arl'] = cls.__arl
         else:
             raise BadCredentials(msg="ARL login is required for the Deezer gateway.")
-
-    @classmethod
-    def __set_arl(cls):
-        raise BadCredentials(msg="ARL login is required for the Deezer gateway.")
-
-    @classmethod
-    def __get_access_token(cls):
-        raise BadCredentials(msg="Password login is disabled for the Deezer gateway.")
 
     @classmethod
     def __get_api(
