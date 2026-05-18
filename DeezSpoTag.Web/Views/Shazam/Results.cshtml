@@ -80,6 +80,7 @@
 
     const params = new URLSearchParams(window.location.search);
     const trackId = (params.get('trackId') || '').trim();
+    const requestId = (params.get('requestId') || '').trim();
     const query = (params.get('q') || '').trim();
     const title = (params.get('title') || '').trim();
     const artist = (params.get('artist') || '').trim();
@@ -186,14 +187,6 @@
         }
     };
 
-    const fetchJson = async (url) => {
-        const response = await fetchWithTimeout(url);
-        if (!response.ok) {
-            throw new Error(`Request failed (${response.status})`);
-        }
-        return response.json();
-    };
-
     const normalizeText = (value) => {
         if (typeof value === 'string') {
             return value.trim();
@@ -278,6 +271,53 @@
         }
     };
 
+    const fetchLogoResultPayload = async () => {
+        if (!requestId) {
+            return null;
+        }
+
+        try {
+            const response = await fetchWithTimeout(`/api/shazam/logo-result/${encodeURIComponent(requestId)}`);
+            if (!response.ok) {
+                return null;
+            }
+
+            const payload = await response.json();
+            return payload?.matched ? payload : null;
+        } catch (error) {
+            console.warn('Shazam logo result lookup failed on results page.', error);
+            return null;
+        }
+    };
+
+    const applyLogoPayload = (payload) => {
+        if (!payload?.matched) {
+            return null;
+        }
+
+        const payloadTrackId = normalizeText(payload?.track?.id || payload?.recognition?.trackId);
+        if (trackId && payloadTrackId && payloadTrackId !== trackId) {
+            return null;
+        }
+
+        const payloadQuery = normalizeText(payload?.query);
+        const effectiveQuery = normalizeText(query || [title, artist].filter(Boolean).join(' '));
+        if (effectiveQuery && payloadQuery && normalizeLoose(payloadQuery) !== normalizeLoose(effectiveQuery)) {
+            return null;
+        }
+
+        return {
+            match: payload.track || normalizeRecognitionCard(payload.recognition),
+            effectiveTrackId: payloadTrackId,
+            similar: Array.isArray(payload.similar)
+                ? payload.similar
+                : Array.isArray(payload.related) ? payload.related : [],
+            searched: Array.isArray(payload.searchResults)
+                ? payload.searchResults
+                : []
+        };
+    };
+
     const renderPayload = (match, similar, searched) => {
         if (match) {
             matchContainer.innerHTML = renderCard(match, { variant: 'match' });
@@ -342,7 +382,7 @@
     };
 
     async function load() {
-        if (!trackId && !query && !title && !artist) {
+        if (!trackId && !requestId && !query && !title && !artist) {
             setStatus('No Shazam context was provided. Trigger search from the logo to populate this page.');
             return;
         }
@@ -352,72 +392,23 @@
             let usedLivePayload = false;
             let similar = [];
             let searched = [];
-            const effectiveQuery = normalizeText(query || [title, artist].filter(Boolean).join(' '));
             let effectiveTrackId = normalizeText(trackId);
 
             const livePayload = readLiveCapturePayload();
-            if (livePayload) {
-                match = livePayload.track || normalizeRecognitionCard(livePayload.recognition);
-                effectiveTrackId = normalizeText(effectiveTrackId || livePayload?.track?.id || livePayload?.recognition?.trackId);
-                similar = Array.isArray(livePayload.similar)
-                    ? livePayload.similar
-                    : Array.isArray(livePayload.related) ? livePayload.related : [];
-                searched = Array.isArray(livePayload.searchResults)
-                    ? livePayload.searchResults
-                    : [];
+            let appliedPayload = applyLogoPayload(livePayload);
+            if (!appliedPayload || appliedPayload.similar.length === 0) {
+                appliedPayload = applyLogoPayload(await fetchLogoResultPayload()) || appliedPayload;
+            }
+
+            if (appliedPayload) {
+                match = appliedPayload.match;
+                effectiveTrackId = normalizeText(effectiveTrackId || appliedPayload.effectiveTrackId);
+                similar = appliedPayload.similar;
+                searched = appliedPayload.searched;
                 usedLivePayload = true;
             }
 
-            const tasks = [];
             effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
-            if (effectiveTrackId && (!match || similar.length === 0)) {
-                tasks.push((async () => {
-                    const [trackResult, relatedResult] = await Promise.allSettled([
-                        fetchJson(`/api/shazam/track/${encodeURIComponent(effectiveTrackId)}`),
-                        fetchJson(`/api/shazam/related/${encodeURIComponent(effectiveTrackId)}?limit=20`)
-                    ]);
-
-                    if (trackResult.status === 'fulfilled') {
-                        const trackPayload = trackResult.value;
-                        if (trackPayload?.available && trackPayload.track) {
-                            if (!match) {
-                                match = trackPayload.track;
-                            }
-                        }
-                    }
-
-                    if (relatedResult.status === 'fulfilled') {
-                        const relatedPayload = relatedResult.value;
-                        if (Array.isArray(relatedPayload?.tracks)) {
-                            similar = relatedPayload.tracks;
-                        }
-                    }
-
-                    if (trackResult.status === 'rejected') {
-                        console.warn('Shazam track lookup failed on results page.', trackResult.reason);
-                    }
-                    if (relatedResult.status === 'rejected') {
-                        console.warn('Shazam related lookup failed on results page.', relatedResult.reason);
-                    }
-                })());
-            }
-
-            if (effectiveQuery && searched.length === 0) {
-                tasks.push((async () => {
-                    try {
-                        const searchPayload = await fetchJson(`/api/shazam/search?query=${encodeURIComponent(effectiveQuery)}&limit=20`);
-                        if (Array.isArray(searchPayload?.tracks)) {
-                            searched = searchPayload.tracks;
-                        }
-                    } catch (error) {
-                        console.warn('Shazam search lookup failed on results page.', error);
-                    }
-                })());
-            }
-
-            if (tasks.length > 0) {
-                await Promise.all(tasks);
-            }
 
             if (!match && title) {
                 match = {

@@ -688,9 +688,13 @@
         const params = new URLSearchParams();
         const trackId = payload?.track?.id || payload?.recognition?.trackId;
         const query = payload?.query || [payload?.recognition?.title, payload?.recognition?.artist].filter(Boolean).join(' ');
+        const requestId = payload?.clientRequestId;
 
         if (trackId) {
             params.set('trackId', trackId);
+        }
+        if (requestId) {
+            params.set('requestId', requestId);
         }
         if (query) {
             params.set('q', query);

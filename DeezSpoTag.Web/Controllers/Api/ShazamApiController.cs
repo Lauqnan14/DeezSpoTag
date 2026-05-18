@@ -1,5 +1,6 @@
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Services.Settings;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DeezSpoTag.Web.Controllers.Api;
@@ -11,21 +12,25 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class ShazamRecognitionApiController : ControllerBase
 {
     private const long MaxUploadBytes = 128 * 1024 * 1024;
+    private static readonly TimeSpan LogoResultCacheDuration = TimeSpan.FromMinutes(15);
 
     private readonly ShazamRecognitionService _recognitionService;
     private readonly ShazamDiscoveryService _discoveryService;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly IMemoryCache _memoryCache;
     private readonly ILogger<ShazamRecognitionApiController> _logger;
 
     public ShazamRecognitionApiController(
         ShazamRecognitionService recognitionService,
         ShazamDiscoveryService discoveryService,
         DeezSpoTagSettingsService settingsService,
+        IMemoryCache memoryCache,
         ILogger<ShazamRecognitionApiController> logger)
     {
         _recognitionService = recognitionService;
         _discoveryService = discoveryService;
         _settingsService = settingsService;
+        _memoryCache = memoryCache;
         _logger = logger;
     }
 
@@ -38,6 +43,20 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             available,
             error = available ? null : _recognitionService.AvailabilityError
         });
+    }
+
+    [HttpGet("logo-result/{clientRequestId}")]
+    public IActionResult LogoResult(string clientRequestId)
+    {
+        var sanitizedClientRequestId = SanitizeClientRequestId(clientRequestId);
+        if (string.Equals(sanitizedClientRequestId, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return NotFound(new { available = false });
+        }
+
+        return _memoryCache.TryGetValue(BuildLogoResultCacheKey(sanitizedClientRequestId), out object? payload)
+            ? Ok(payload)
+            : NotFound(new { available = false });
     }
 
     [HttpPost("recognize-mic")]
@@ -164,13 +183,15 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         try
         {
-            return Ok(await BuildMatchPayloadAsync(
+            var payload = await BuildMatchPayloadAsync(
                 attempt.Recognition!,
                 capturePhase,
                 captureAttempt,
                 logoSessionId,
                 clientRequestId,
-                cancellationToken));
+                cancellationToken);
+            CacheLogoResult(clientRequestId, payload);
+            return Ok(payload);
         }
         catch (OperationCanceledException)
         {
@@ -179,12 +200,14 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
-            return Ok(BuildMinimalMatchPayload(
+            var payload = BuildMinimalMatchPayload(
                 attempt.Recognition!,
                 capturePhase,
                 captureAttempt,
                 logoSessionId,
-                clientRequestId));
+                clientRequestId);
+            CacheLogoResult(clientRequestId, payload);
+            return Ok(payload);
         }
     }
 
@@ -359,17 +382,23 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         ShazamTrackCard? track = null;
         IReadOnlyList<ShazamTrackCard> related = Array.Empty<ShazamTrackCard>();
+        IReadOnlyList<ShazamTrackCard> searchResults = Array.Empty<ShazamTrackCard>();
 
+        var searchTask = SafeSearchTracksAsync(query, cancellationToken);
         if (!string.IsNullOrWhiteSpace(trackId))
         {
             var trackTask = SafeGetTrackAsync(trackId, cancellationToken);
             var relatedTask = SafeGetRelatedTracksAsync(trackId, cancellationToken);
-            await Task.WhenAll(trackTask, relatedTask);
+            await Task.WhenAll(trackTask, relatedTask, searchTask);
             track = await trackTask;
             related = await relatedTask;
+            searchResults = await searchTask;
+        }
+        else
+        {
+            searchResults = await searchTask;
         }
 
-        var searchResults = await SafeSearchTracksAsync(query, cancellationToken);
         return BuildMatchPayload(
             recognition,
             query,
@@ -415,6 +444,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     {
         var relatedList = related ?? Array.Empty<ShazamTrackCard>();
         var searchList = searchResults ?? Array.Empty<ShazamTrackCard>();
+        var similarList = MergeSimilarCards(relatedList, searchList, track, recognition);
 
         return new
         {
@@ -443,10 +473,110 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             query,
             track,
             related = relatedList,
-            similar = relatedList,
+            similar = similarList,
             searchResults = searchList
         };
     }
+
+    private static IReadOnlyList<ShazamTrackCard> MergeSimilarCards(
+        IReadOnlyList<ShazamTrackCard> related,
+        IReadOnlyList<ShazamTrackCard> searchResults,
+        ShazamTrackCard? matchedTrack,
+        ShazamRecognitionInfo recognition)
+    {
+        var cards = new List<ShazamTrackCard>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var matchedIdentity = BuildCardIdentity(matchedTrack)
+            ?? BuildRecognitionIdentity(recognition);
+
+        AddCards(related, cards, seen, matchedIdentity);
+        AddCards(searchResults, cards, seen, matchedIdentity);
+        return cards;
+    }
+
+    private static void AddCards(
+        IReadOnlyList<ShazamTrackCard> source,
+        List<ShazamTrackCard> destination,
+        HashSet<string> seen,
+        string? matchedIdentity)
+    {
+        foreach (var card in source)
+        {
+            if (card is null)
+            {
+                continue;
+            }
+
+            var identity = BuildCardIdentity(card);
+            if (string.IsNullOrWhiteSpace(identity)
+                || string.Equals(identity, matchedIdentity, StringComparison.OrdinalIgnoreCase)
+                || !seen.Add(identity))
+            {
+                continue;
+            }
+
+            destination.Add(card);
+            if (destination.Count >= 20)
+            {
+                return;
+            }
+        }
+    }
+
+    private static string? BuildCardIdentity(ShazamTrackCard? card)
+    {
+        if (card is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(card.Id))
+        {
+            return $"id:{card.Id.Trim()}";
+        }
+
+        return BuildTextIdentity(card.Title, card.Artist);
+    }
+
+    private static string? BuildRecognitionIdentity(ShazamRecognitionInfo recognition)
+    {
+        if (!string.IsNullOrWhiteSpace(recognition.TrackId))
+        {
+            return $"id:{recognition.TrackId.Trim()}";
+        }
+
+        return BuildTextIdentity(recognition.Title, recognition.Artist);
+    }
+
+    private static string? BuildTextIdentity(string? title, string? artist)
+    {
+        var normalizedTitle = (title ?? string.Empty).Trim().ToLowerInvariant();
+        var normalizedArtist = (artist ?? string.Empty).Trim().ToLowerInvariant();
+        return string.IsNullOrWhiteSpace(normalizedTitle) && string.IsNullOrWhiteSpace(normalizedArtist)
+            ? null
+            : $"ta:{normalizedTitle}|{normalizedArtist}";
+    }
+
+    private void CacheLogoResult(string clientRequestId, object payload)
+    {
+        if (string.Equals(clientRequestId, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _memoryCache.Set(
+            BuildLogoResultCacheKey(clientRequestId),
+            payload,
+            new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = LogoResultCacheDuration,
+                SlidingExpiration = TimeSpan.FromMinutes(5),
+                Size = 1
+            });
+    }
+
+    private static string BuildLogoResultCacheKey(string clientRequestId)
+        => $"shazam:logo-result:{clientRequestId}";
 
     private async Task<IReadOnlyList<ShazamTrackCard>> SafeSearchTracksAsync(string? query, CancellationToken cancellationToken)
     {
