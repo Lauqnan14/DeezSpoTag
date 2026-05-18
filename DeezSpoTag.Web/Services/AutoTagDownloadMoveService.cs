@@ -1026,6 +1026,7 @@ public sealed class AutoTagDownloadMoveService
         AutoTagMoveSummary summary)
     {
         var sourceDisplay = DownloadPathResolver.NormalizeDisplayPath(DownloadPathResolver.ResolveIoPath(filePath) ?? filePath);
+        var owners = ResolvePathOwners(maps.FileOwnersByDestination, context.DestinationKey, filePath);
         try
         {
             var qualityBucket = TryResolveBucket(maps.FileBucketsByDestination, context.DestinationKey, filePath);
@@ -1047,7 +1048,6 @@ public sealed class AutoTagDownloadMoveService
                 summary,
                 isRootItem: false);
 
-            var owners = ResolvePathOwners(maps.FileOwnersByDestination, context.DestinationKey, filePath);
             RememberTransitionsForOwners(context.TransitionsByQueue, owners, filePath, finalPath);
             if (DidPathChange(sourceDisplay, movedPath))
             {
@@ -1066,6 +1066,7 @@ public sealed class AutoTagDownloadMoveService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             summary.FailedCount++;
+            await MarkMoveFailedForOwnersAsync(owners, context.CancellationToken);
             _logger.LogWarning(ex, "Auto-move destination file failed for {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(filePath));
         }
     }
@@ -1077,6 +1078,7 @@ public sealed class AutoTagDownloadMoveService
         AutoTagMoveSummary summary)
     {
         var candidateCount = TryCountFiles(root);
+        var owners = ResolvePathOwners(maps.RootOwnersByDestination, context.DestinationKey, root);
         try
         {
             var qualityBucket = TryResolveBucket(maps.RootBucketsByDestination, context.DestinationKey, root);
@@ -1099,7 +1101,6 @@ public sealed class AutoTagDownloadMoveService
                 summary.SkippedCount += candidateCount - movedPaths.Count;
             }
 
-            var owners = ResolvePathOwners(maps.RootOwnersByDestination, context.DestinationKey, root);
             await RememberDestinationRootTransitionsAsync(movedPaths, owners, context, summary);
         }
         catch (OperationCanceledException)
@@ -1109,7 +1110,18 @@ public sealed class AutoTagDownloadMoveService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             summary.FailedCount += Math.Max(1, candidateCount);
+            await MarkMoveFailedForOwnersAsync(owners, context.CancellationToken);
             _logger.LogWarning(ex, "Auto-move destination root failed for {Root}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(root));
+        }
+    }
+
+    private async Task MarkMoveFailedForOwnersAsync(
+        IReadOnlyCollection<string> owners,
+        CancellationToken cancellationToken)
+    {
+        foreach (var queueUuid in owners)
+        {
+            await _queueRepository.MarkMoveFailedAsync(queueUuid, cancellationToken);
         }
     }
 
@@ -3133,6 +3145,7 @@ public sealed class AutoTagDownloadMoveService
                 finalDestinationsJson,
                 payloadJson,
                 cancellationToken);
+            await _queueRepository.MarkMoveSucceededAsync(item.QueueUuid, cancellationToken);
         }
     }
 

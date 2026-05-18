@@ -201,9 +201,9 @@ public class ActivitiesController : Controller
         try
         {
             var deleted = 0;
-            deleted += await _queueRepository.DeleteByStatusAsync(CompletedStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteByStatusAsync(CompleteStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteByStatusAsync(SkippedStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(CompletedStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(CompleteStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(SkippedStatus, HttpContext.RequestAborted);
             if (deleted > 0)
             {
                 _deezspotagListener.SendRemovedFinishedDownloads();
@@ -233,8 +233,8 @@ public class ActivitiesController : Controller
         try
         {
             var deleted = 0;
-            deleted += await _queueRepository.DeleteByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
             if (deleted > 0)
             {
                 _deezspotagListener.SendRemovedFinishedDownloads();
@@ -376,7 +376,11 @@ public class ActivitiesController : Controller
                 return BadRequest("Only failed or canceled downloads can be deleted");
             }
 
-            await _queueRepository.DeleteByUuidAsync(request.Uuid);
+            var deleted = await _queueRepository.DeleteClearableByUuidAsync(request.Uuid);
+            if (deleted == 0)
+            {
+                return BadRequest("Download cannot be removed until its destination move has completed.");
+            }
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Removed failed download {Uuid} from queue", LogSanitizer.OneLine(request.Uuid));
@@ -450,7 +454,7 @@ public class ActivitiesController : Controller
     {
         try
         {
-            var deleted = await _queueRepository.DeleteAllAsync(HttpContext.RequestAborted);
+            var deleted = await _queueRepository.DeleteClearableAllAsync(HttpContext.RequestAborted);
             if (deleted > 0)
             {
                 _deezspotagListener.SendRemovedAllDownloads(null);

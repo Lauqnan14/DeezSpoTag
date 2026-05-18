@@ -22,6 +22,17 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void DownloadOrchestration_DoesNotMarkCompletedDownloadsProcessedWhenSourceFilesRemain()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("FilterCompletedMarkersReadyToPersistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("!PayloadHasExistingSourceUnderRoot(currentItem.PayloadJson, context.DownloadRootPath)", source, StringComparison.Ordinal);
+        Assert.Contains("remain eligible for recovery", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private void PersistPipelineCompletionMarkers(PipelineRunContext context)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LibraryStatusPolling_DoesNotReloadArtistsDuringActiveScans()
     {
         var source = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library.js");

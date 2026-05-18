@@ -78,7 +78,7 @@ public sealed class DeferredHostedService<TService> : IHostedService
                 return;
             }
 
-            _startTask = Task.Run(StartDeferredServiceAsync);
+            _startTask = StartDeferredServiceAsync();
         }
     }
 

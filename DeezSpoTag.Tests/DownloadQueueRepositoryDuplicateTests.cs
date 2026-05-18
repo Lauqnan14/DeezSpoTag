@@ -107,6 +107,76 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         Assert.Equal(3, activeCount);
     }
 
+    [Fact]
+    public async Task DeleteClearableByStatusAsync_PreservesCompletedDestinationUntilMoveSucceeded()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("completed-pending-move", "Artist", "Track", 44),
+            CancellationToken.None);
+        await context.QueueRepository.UpdateStatusAsync(
+            "completed-pending-move",
+            "completed",
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: CancellationToken.None);
+
+        var blockedDeleteCount = await context.QueueRepository.DeleteClearableByStatusAsync("completed", CancellationToken.None);
+
+        Assert.Equal(0, blockedDeleteCount);
+        Assert.NotNull(await context.QueueRepository.GetByUuidAsync("completed-pending-move", CancellationToken.None));
+
+        await context.QueueRepository.MarkMoveSucceededAsync("completed-pending-move", CancellationToken.None);
+        var deletedCount = await context.QueueRepository.DeleteClearableByStatusAsync("completed", CancellationToken.None);
+
+        Assert.Equal(1, deletedCount);
+        Assert.Null(await context.QueueRepository.GetByUuidAsync("completed-pending-move", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task DeleteClearableAllAsync_PreservesAnyDestinationRowUntilMoveSucceeded()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("failed-with-destination", "Artist", "Failed", 55) with { Status = "failed" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("completed-without-destination", "Artist", "No Destination", null) with { Status = "completed" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("completed-moved", "Artist", "Moved", 66) with { Status = "completed" },
+            CancellationToken.None);
+        await context.QueueRepository.MarkMoveSucceededAsync("completed-moved", CancellationToken.None);
+
+        var deletedCount = await context.QueueRepository.DeleteClearableAllAsync(CancellationToken.None);
+
+        Assert.Equal(2, deletedCount);
+        Assert.NotNull(await context.QueueRepository.GetByUuidAsync("failed-with-destination", CancellationToken.None));
+        Assert.Null(await context.QueueRepository.GetByUuidAsync("completed-without-destination", CancellationToken.None));
+        Assert.Null(await context.QueueRepository.GetByUuidAsync("completed-moved", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task UpdateQueueMetadataAsync_ProtectsCompletedRowWhenDestinationIsRecovered()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("completed-recovered-destination", "Artist", "Recovered", null) with { Status = "completed" },
+            CancellationToken.None);
+
+        await context.QueueRepository.UpdateQueueMetadataAsync(
+            "completed-recovered-destination",
+            qualityRank: null,
+            contentType: "stereo",
+            destinationFolderId: 77,
+            cancellationToken: CancellationToken.None);
+
+        var blockedDeleteCount = await context.QueueRepository.DeleteClearableByStatusAsync("completed", CancellationToken.None);
+
+        Assert.Equal(0, blockedDeleteCount);
+        Assert.NotNull(await context.QueueRepository.GetByUuidAsync("completed-recovered-destination", CancellationToken.None));
+    }
+
     private static Task<TestContext> CreateContextAsync()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-queue-duplicate-tests-" + Path.GetRandomFileName());
@@ -129,7 +199,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         string queueUuid,
         string artist,
         string title,
-        long destinationFolderId,
+        long? destinationFolderId,
         string? deezerTrackId = null,
         string? deezerAlbumId = null,
         string? deezerArtistId = null,

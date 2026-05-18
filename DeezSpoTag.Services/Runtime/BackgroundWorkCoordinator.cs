@@ -5,7 +5,6 @@ public sealed class BackgroundWorkCoordinator
     public static readonly TimeSpan DefaultStartupGracePeriod = TimeSpan.FromSeconds(5);
 
     private readonly TimeProvider _timeProvider;
-    private readonly DateTimeOffset _startedAtUtc;
     private readonly object _stateLock = new();
     private readonly TaskCompletionSource _backgroundWorkersReleased =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -25,7 +24,6 @@ public sealed class BackgroundWorkCoordinator
         ArgumentNullException.ThrowIfNull(timeProvider);
 
         _timeProvider = timeProvider;
-        _startedAtUtc = _timeProvider.GetUtcNow();
     }
 
     public DateTimeOffset? ApplicationStartedAtUtc

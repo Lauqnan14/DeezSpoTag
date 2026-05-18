@@ -648,6 +648,8 @@ CREATE TABLE IF NOT EXISTS download_task (
     apple_album_id TEXT,
     apple_artist_id TEXT,
     duration_ms INTEGER,
+    destination_folder_id INTEGER,
+    move_status TEXT,
     quality_rank INTEGER,
     lyrics_status TEXT,
     file_extension TEXT,

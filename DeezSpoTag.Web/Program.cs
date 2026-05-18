@@ -1138,14 +1138,19 @@ public partial class Program
             var coordinator = app.Services.GetRequiredService<BackgroundWorkCoordinator>();
             RecordStartupCheckpoint(startupState, app.Logger, "http ready");
             coordinator.MarkApplicationStarted();
-            _ = Task.Run(async () =>
-            {
-                await coordinator.WaitForStartupGraceAsync(CancellationToken.None);
-                RecordStartupCheckpoint(startupState, app.Logger, "background workers released");
-            });
+            _ = RecordBackgroundWorkersReleasedAsync(startupState, coordinator, app.Logger);
             Console.WriteLine("🚀 DeezSpoTag is running!");
             Console.WriteLine("🌐 Access the application at: http://localhost:8668");
         });
+    }
+
+    static async Task RecordBackgroundWorkersReleasedAsync(
+        DeezSpoTag.Web.Services.StartupStateService startupState,
+        BackgroundWorkCoordinator coordinator,
+        ILogger logger)
+    {
+        await coordinator.WaitForStartupGraceAsync(CancellationToken.None);
+        RecordStartupCheckpoint(startupState, logger, "background workers released");
     }
 
     static void RecordStartupCheckpoint(
@@ -1160,7 +1165,10 @@ public partial class Program
             return;
         }
 
-        logger.LogInformation("startup: {StartupCheckpoint}", name);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("startup: {StartupCheckpoint}", name);
+        }
     }
 
     static void AddDeferredHostedService<TService>(

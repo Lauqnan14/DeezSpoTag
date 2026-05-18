@@ -64,7 +64,12 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         _logger.LogInformation("Library realtime scan watcher started.");
         if (!RealtimeWatchersEnabled())
         {
-            _logger.LogInformation("Library realtime scan watchers are disabled by {EnvironmentVariable}.", RealtimeWatchersEnabledEnv);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Library realtime scan watchers are disabled by {EnvironmentVariable}.",
+                    RealtimeWatchersEnabledEnv);
+            }
             return;
         }
 

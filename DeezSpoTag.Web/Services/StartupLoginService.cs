@@ -24,7 +24,6 @@ namespace DeezSpoTag.Web.Services
         private readonly IHostApplicationLifetime _applicationLifetime;
 
         public StartupLoginService(
-            IServiceProvider serviceProvider,
             ILogger<StartupLoginService> logger,
             DeezerClient deezerClient,
             DeezerLoginCoordinator loginCoordinator,
@@ -33,7 +32,6 @@ namespace DeezSpoTag.Web.Services
             DeezerAuthUtils authUtils,
             IHostApplicationLifetime applicationLifetime)
         {
-            _ = serviceProvider;
             _logger = logger;
             _deezerClient = deezerClient;
             _loginCoordinator = loginCoordinator;

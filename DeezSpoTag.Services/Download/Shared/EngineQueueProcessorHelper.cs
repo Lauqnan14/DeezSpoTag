@@ -363,12 +363,6 @@ internal static class EngineQueueProcessorHelper
             workContext.Deps.ActivityLog.Warn(
                 $"Sidecar prefetch failed (engine={workContext.EngineName}): {workContext.Item.QueueUuid} {prefetchFailure}");
         }
-        await workContext.Deps.QueueRepository.UpdateStatusAsync(
-            workContext.Item.QueueUuid,
-            "completed",
-            downloaded: 1,
-            progress: 100,
-            cancellationToken: workContext.ItemToken);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<TPayload>(
                 workContext.Deps.QueueRepository,
@@ -387,6 +381,12 @@ internal static class EngineQueueProcessorHelper
                         (item, value) => item.Progress = value,
                         (item, value) => item.Downloaded = value))),
             workContext.ItemToken);
+        await workContext.Deps.QueueRepository.UpdateStatusAsync(
+            workContext.Item.QueueUuid,
+            "completed",
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: workContext.ItemToken);
         await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(
             workContext.Payload,
             "completed",

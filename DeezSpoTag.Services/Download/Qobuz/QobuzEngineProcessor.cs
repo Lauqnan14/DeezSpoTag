@@ -526,21 +526,25 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 prefetchFailure);
             _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
         }
-        await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
-        await QueueHelperUtils.UpdatePayloadAsync(
-            new QueueHelperUtils.UpdatePayloadRequest<QobuzQueueItem>(
+        await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
+            new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<QobuzQueueItem>(
                 _queueRepository,
                 queueUuid,
                 payload,
                 outputPath,
                 finalSize,
                 payload.Size,
-                new QueueHelperUtils.PayloadUpdateMutators<QobuzQueueItem>(
-                    (item, value) => item.FilePath = value,
-                    (item, value) => item.TotalSize = value,
-                    (item, value) => item.Progress = value,
-                    (item, value) => item.Downloaded = value)),
+                payload.Files,
+                new QueueHelperUtils.FinalDestinationMutators<QobuzQueueItem>(
+                    item => item.FinalDestinations,
+                    (item, value) => item.FinalDestinations = value,
+                    new QueueHelperUtils.PayloadUpdateMutators<QobuzQueueItem>(
+                        (item, value) => item.FilePath = value,
+                        (item, value) => item.TotalSize = value,
+                        (item, value) => item.Progress = value,
+                        (item, value) => item.Downloaded = value))),
             cancellationToken);
+        await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
         await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, CompletedStatus, _serviceProvider, cancellationToken);
         _retryScheduler.Clear(queueUuid);
 

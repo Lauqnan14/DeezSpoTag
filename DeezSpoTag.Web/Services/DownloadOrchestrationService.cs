@@ -453,24 +453,24 @@ public sealed class DownloadOrchestrationService : BackgroundService
         await RunPipelineEnrichmentAsync(context, cancellationToken);
         if (!await EnsurePipelineStillIdleAsync(cancellationToken))
         {
-            PersistPipelineCompletionMarkers(context);
+            await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
             return;
         }
 
         if (await RunRecentDownloadEnhancementAsync(context, cancellationToken))
         {
-            PersistPipelineCompletionMarkers(context);
+            await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
             return;
         }
 
         if (!await EnsurePipelineStillIdleAsync(cancellationToken))
         {
-            PersistPipelineCompletionMarkers(context);
+            await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
             return;
         }
 
         await RunPostAutoTagStagesAsync(context, cancellationToken);
-        PersistPipelineCompletionMarkers(context);
+        await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
     }
 
     private async Task<bool> ResumeInterruptedEnhancementAsync(CancellationToken cancellationToken)
@@ -2351,10 +2351,52 @@ public sealed class DownloadOrchestrationService : BackgroundService
         return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
     }
 
-    private void PersistPipelineCompletionMarkers(PipelineRunContext context)
+    private async Task PersistPipelineCompletionMarkersAsync(PipelineRunContext context, CancellationToken cancellationToken)
     {
-        MarkCompletedItemsAsProcessed(context.PendingCompletionMarkers);
+        var safeMarkers = await FilterCompletedMarkersReadyToPersistAsync(context, cancellationToken);
+        MarkCompletedItemsAsProcessed(safeMarkers);
         _lastPipelineCompletedAt = context.PipelineStartedAt;
+    }
+
+    private async Task<IReadOnlyDictionary<string, DateTimeOffset>> FilterCompletedMarkersReadyToPersistAsync(
+        PipelineRunContext context,
+        CancellationToken cancellationToken)
+    {
+        if (context.PendingCompletionMarkers.Count == 0)
+        {
+            return context.PendingCompletionMarkers;
+        }
+
+        var currentItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var currentByMarker = currentItems
+            .Select(item => new { Marker = BuildCompletionMarker(item), Item = item })
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Marker))
+            .ToDictionary(entry => entry.Marker, entry => entry.Item, StringComparer.OrdinalIgnoreCase);
+        var safeMarkers = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (marker, updatedAt) in context.PendingCompletionMarkers)
+        {
+            if (!currentByMarker.TryGetValue(marker, out var currentItem))
+            {
+                safeMarkers[marker] = updatedAt;
+                continue;
+            }
+
+            if (!PayloadHasExistingSourceUnderRoot(currentItem.PayloadJson, context.DownloadRootPath))
+            {
+                safeMarkers[marker] = currentItem.UpdatedAt > updatedAt ? currentItem.UpdatedAt : updatedAt;
+            }
+        }
+
+        var deferredCount = context.PendingCompletionMarkers.Count - safeMarkers.Count;
+        if (deferredCount > 0)
+        {
+            _logger.LogWarning(
+                "Post-download automation left {DeferredCount} completed download item(s) with source files still under the download root; they remain eligible for recovery.",
+                deferredCount);
+        }
+
+        return safeMarkers;
     }
 
     private async Task<List<DownloadQueueItem>> RecoverMissingDestinationFoldersAsync(
