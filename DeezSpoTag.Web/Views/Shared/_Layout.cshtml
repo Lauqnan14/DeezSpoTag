@@ -977,14 +977,14 @@
     </div>
     
     <script src="~/js/user-preferences.js" asp-append-version="true"></script>
-    @if (!_isLoginPage)
-    {
-        <script src="~/js/shazam-listen.js" asp-append-version="true"></script>
-    }
     @{
         ViewData["IncludeSignalR"] = !_isLoginPage;
     }
     <partial name="_CommonFooterScripts" />
+    @if (!_isLoginPage)
+    {
+        <script src="~/js/shazam-listen.js" asp-append-version="true"></script>
+    }
     @if (!_isLoginPage && !_isHomeIndexPage)
     {
         <script src="~/js/download-logger.js" asp-append-version="true"></script>

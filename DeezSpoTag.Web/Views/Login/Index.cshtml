@@ -1091,6 +1091,31 @@ function showToast(message, type = 'info') {
     console.log('TOAST:', message, type);
 }
 
+function setLoginDropdownValue(inputId, value) {
+    const input = document.getElementById(inputId);
+    if (!input) {
+        return;
+    }
+
+    input.value = value;
+    const dropdown = input.closest('.login-dropdown');
+    if (!dropdown) {
+        return;
+    }
+
+    const trigger = dropdown.querySelector('.dropdown-trigger');
+    const options = dropdown.querySelectorAll('.dropdown-option');
+    const selectedOption = Array.from(options).find(option => (option.getAttribute('data-value') || '') === value)
+        || options[0];
+    if (!selectedOption || !trigger) {
+        return;
+    }
+
+    input.value = selectedOption.getAttribute('data-value') || '';
+    trigger.textContent = selectedOption.textContent || input.value;
+    options.forEach(option => option.setAttribute('aria-selected', option === selectedOption ? 'true' : 'false'));
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     console.log('=== DOM LOADED ===');
@@ -1195,31 +1220,6 @@ document.addEventListener('DOMContentLoaded', function() {
             document.addEventListener('click', closeMenu);
             syncSelection(input.value || options[0]?.getAttribute('data-value') || '');
         });
-    }
-
-    function setLoginDropdownValue(inputId, value) {
-        const input = document.getElementById(inputId);
-        if (!input) {
-            return;
-        }
-
-        input.value = value;
-        const dropdown = input.closest('.login-dropdown');
-        if (!dropdown) {
-            return;
-        }
-
-        const trigger = dropdown.querySelector('.dropdown-trigger');
-        const options = dropdown.querySelectorAll('.dropdown-option');
-        const selectedOption = Array.from(options).find(option => (option.getAttribute('data-value') || '') === value)
-            || options[0];
-        if (!selectedOption || !trigger) {
-            return;
-        }
-
-        input.value = selectedOption.getAttribute('data-value') || '';
-        trigger.textContent = selectedOption.textContent || input.value;
-        options.forEach(option => option.setAttribute('aria-selected', option === selectedOption ? 'true' : 'false'));
     }
 
     // Render tab UI immediately, then hydrate async state in the background.

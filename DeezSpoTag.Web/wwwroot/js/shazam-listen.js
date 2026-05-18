@@ -672,6 +672,18 @@
         }
     };
 
+    const persistLastFailure = (failure) => {
+        try {
+            sessionStorage.setItem('deezspotag-shazam-last-failure', JSON.stringify({
+                ...failure,
+                capturedAt: Date.now(),
+                origin: globalThis.location.origin
+            }));
+        } catch {
+            // Ignore storage failures; the console still carries the diagnostic details.
+        }
+    };
+
     const navigateToResults = (payload) => {
         const params = new URLSearchParams();
         const trackId = payload?.track?.id || payload?.recognition?.trackId;
@@ -747,9 +759,22 @@
             type: String(audioBlob?.type || '')
         });
 
+        const headers = new Headers({
+            Accept: 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        });
+
+        const csrfToken = document.querySelector('meta[name="deezspotag-csrf-token"]')?.getAttribute('content')?.trim();
+        if (csrfToken) {
+            headers.set('X-CSRF-TOKEN', csrfToken);
+        }
+
         const response = await fetch('/api/shazam/recognize-mic', {
             method: 'POST',
             body: form,
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers,
             signal: options?.signal
         });
 
@@ -757,6 +782,27 @@
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
             payload = await response.json();
+        }
+
+        if (!response.ok) {
+            persistLastFailure({
+                phase,
+                attempt,
+                logoSessionId,
+                clientRequestId,
+                status: response.status,
+                statusText: response.statusText,
+                payload
+            });
+            console.warn('Shazam mic upload failed', {
+                phase,
+                attempt,
+                logoSessionId,
+                clientRequestId,
+                status: response.status,
+                statusText: response.statusText,
+                payload
+            });
         }
 
         return { response, payload };
