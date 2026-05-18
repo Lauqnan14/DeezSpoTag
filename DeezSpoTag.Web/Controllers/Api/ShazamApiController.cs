@@ -203,14 +203,33 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
-            var payload = BuildMinimalMatchPayload(
-                attempt.Recognition!,
+            return StatusCode(StatusCodes.Status502BadGateway, new
+            {
+                matched = true,
                 capturePhase,
                 captureAttempt,
                 logoSessionId,
-                clientRequestId);
-            CacheLogoResult(clientRequestId, payload);
-            return Ok(payload);
+                clientRequestId,
+                reason = "enrichment_failed",
+                recognition = new
+                {
+                    title = attempt.Recognition!.Title,
+                    artist = attempt.Recognition.Artist,
+                    artists = attempt.Recognition.Artists,
+                    isrc = attempt.Recognition.Isrc,
+                    durationMs = attempt.Recognition.DurationMs,
+                    trackId = attempt.Recognition.TrackId,
+                    url = attempt.Recognition.Url,
+                    genre = attempt.Recognition.Genre,
+                    album = attempt.Recognition.Album,
+                    label = attempt.Recognition.Label,
+                    releaseDate = attempt.Recognition.ReleaseDate,
+                    artworkUrl = attempt.Recognition.ArtworkUrl,
+                    artworkHqUrl = attempt.Recognition.ArtworkHqUrl,
+                    key = attempt.Recognition.Key
+                },
+                error = "Shazam recognized the audio, but result enrichment failed."
+            });
         }
     }
 
@@ -413,27 +432,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 ClientRequestId: clientRequestId));
     }
 
-    private static object BuildMinimalMatchPayload(
-        ShazamRecognitionInfo recognition,
-        string capturePhase,
-        string captureAttempt,
-        string logoSessionId,
-        string clientRequestId)
-    {
-        var query = BuildQuery(recognition);
-        return BuildMatchPayload(
-            new ShazamLogoMatchPayload(
-                Recognition: recognition,
-                Query: query,
-                Track: null,
-                Related: Array.Empty<ShazamTrackCard>(),
-                SearchResults: Array.Empty<ShazamTrackCard>(),
-                CapturePhase: capturePhase,
-                CaptureAttempt: captureAttempt,
-                LogoSessionId: logoSessionId,
-                ClientRequestId: clientRequestId));
-    }
-
     private static object BuildMatchPayload(ShazamLogoMatchPayload payload)
     {
         var relatedList = payload.Related ?? Array.Empty<ShazamTrackCard>();
@@ -476,6 +474,13 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             },
             query = payload.Query,
             track = payload.Track,
+            enrichment = new
+            {
+                trackResolved = payload.Track != null,
+                relatedCount = relatedList.Count,
+                searchResultCount = searchList.Count,
+                similarCount = similarList.Count
+            },
             related = relatedList,
             similar = similarList,
             searchResults = searchList

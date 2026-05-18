@@ -161,11 +161,29 @@ public sealed partial class ShazamDiscoveryService
 
     private static string ResolveShazamPortPython(string scriptPath)
     {
+        var explicitPython = Environment.GetEnvironmentVariable("SHAZAM_PYTHON");
+        if (!string.IsNullOrWhiteSpace(explicitPython) && File.Exists(explicitPython))
+        {
+            return explicitPython;
+        }
+
         var scriptDirectory = Path.GetDirectoryName(scriptPath) ?? string.Empty;
         var venvPython = Path.Combine(scriptDirectory, ".venv", "bin", "python");
         if (File.Exists(venvPython))
         {
             return venvPython;
+        }
+
+        var venvPython3 = Path.Combine(scriptDirectory, ".venv", "bin", "python3");
+        if (File.Exists(venvPython3))
+        {
+            return venvPython3;
+        }
+
+        var vibePython = Environment.GetEnvironmentVariable("VIBE_ANALYZER_PYTHON");
+        if (!string.IsNullOrWhiteSpace(vibePython) && File.Exists(vibePython))
+        {
+            return vibePython;
         }
 
         return "python3";

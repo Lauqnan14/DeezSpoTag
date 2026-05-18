@@ -52,6 +52,11 @@ public sealed class ShazamLogoRecognitionGuardrailTests
         Assert.Contains("searchResults = searchList", source, StringComparison.Ordinal);
         Assert.Contains("[HttpGet(\"logo-result/{clientRequestId}\")]", source, StringComparison.Ordinal);
         Assert.Contains("CacheLogoResult(clientRequestId, payload);", source, StringComparison.Ordinal);
+        Assert.Contains("reason = \"enrichment_failed\"", source, StringComparison.Ordinal);
+        Assert.Contains("matched = true", source, StringComparison.Ordinal);
+        Assert.Contains("enrichment = new", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildMinimalMatchPayload", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnsureLogoEnrichmentProducedResults", source, StringComparison.Ordinal);
     }
 
     [Fact]

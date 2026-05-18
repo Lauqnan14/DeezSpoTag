@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Web.Services;
@@ -15,6 +16,43 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ShazamDiscoveryServiceTimeoutTests
 {
+    [Fact]
+    public void DiscoveryPythonResolver_PrefersConfiguredShazamPython()
+    {
+        var rootPath = Path.Join(Path.GetTempPath(), "deezspotag-shazam-python-" + Path.GetRandomFileName());
+        var scriptDirectory = Path.Combine(rootPath, "Tools", "shazam_port");
+        var configuredPython = Path.Combine(rootPath, "runtime", "python3");
+        var scriptPath = Path.Combine(scriptDirectory, "discover.py");
+        try
+        {
+            Directory.CreateDirectory(scriptDirectory);
+            Directory.CreateDirectory(Path.GetDirectoryName(configuredPython)!);
+            File.WriteAllText(scriptPath, "# test");
+            File.WriteAllText(configuredPython, string.Empty);
+            Environment.SetEnvironmentVariable("SHAZAM_PYTHON", configuredPython);
+
+            var method = typeof(ShazamDiscoveryService).GetMethod(
+                "ResolveShazamPortPython",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+            var resolved = Assert.IsType<string>(method!.Invoke(null, new object[] { scriptPath }));
+            Assert.Equal(configuredPython, resolved);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("SHAZAM_PYTHON", null);
+            try
+            {
+                Directory.Delete(rootPath, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup.
+            }
+        }
+    }
+
     [Fact]
     public async Task GetRelatedTracksAsync_WhenHttpClientTimesOut_ReturnsEmptyList()
     {
