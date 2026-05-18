@@ -607,11 +607,11 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return;
         }
 
-        foreach (var property in finalDestinations.EnumerateObject())
+        foreach (var value in finalDestinations.EnumerateObject().Select(static property => property.Value))
         {
-            if (property.Value.ValueKind == JsonValueKind.String)
+            if (value.ValueKind == JsonValueKind.String)
             {
-                AddPath(paths, property.Value.GetString());
+                AddPath(paths, value.GetString());
             }
         }
     }
@@ -722,13 +722,12 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
-            foreach (var candidate in element.EnumerateObject())
+            var matchingProperty = element.EnumerateObject()
+                .FirstOrDefault(candidate => string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase));
+            if (matchingProperty.Value.ValueKind != JsonValueKind.Undefined)
             {
-                if (string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    property = candidate.Value;
-                    return true;
-                }
+                property = matchingProperty.Value;
+                return true;
             }
         }
 

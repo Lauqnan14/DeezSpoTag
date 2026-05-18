@@ -16,7 +16,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
 
         Assert.Contains("settings.WatchMaxTracksPerPlaylistCheck", source, StringComparison.Ordinal);
         Assert.Contains("GetActiveDownloadCountAsync", source, StringComparison.Ordinal);
-        Assert.Contains("queuedCount >= capacity.Remaining", source, StringComparison.Ordinal);
+        Assert.Contains("queuedCount >= capacity.Value.Remaining", source, StringComparison.Ordinal);
         Assert.Contains("active downloads already meet the watchlist cap", source, StringComparison.Ordinal);
     }
 

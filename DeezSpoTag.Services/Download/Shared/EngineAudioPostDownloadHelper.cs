@@ -2044,15 +2044,12 @@ public static partial class EngineAudioPostDownloadHelper
         }
     }
 
-    private static IReadOnlyList<string> ResolveChangedFilePaths(EngineQueueItemBase payload)
+    private static List<string> ResolveChangedFilePaths(EngineQueueItemBase payload)
     {
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in payload.FinalDestinations.Values)
+        foreach (var path in payload.FinalDestinations.Values.Where(static path => !string.IsNullOrWhiteSpace(path)))
         {
-            if (!string.IsNullOrWhiteSpace(path))
-            {
-                paths.Add(path);
-            }
+            paths.Add(path);
         }
 
         if (!string.IsNullOrWhiteSpace(payload.FilePath))

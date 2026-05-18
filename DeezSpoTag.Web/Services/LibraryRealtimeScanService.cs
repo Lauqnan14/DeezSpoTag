@@ -131,6 +131,22 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             return;
         }
 
+        var enabled = await BuildEnabledFolderStatesAsync(cancellationToken);
+
+        IOException? watcherResourceException;
+        lock (_stateLock)
+        {
+            watcherResourceException = ApplyWatcherStates(enabled);
+        }
+
+        if (watcherResourceException != null)
+        {
+            EnterWatcherDegradedMode(watcherResourceException);
+        }
+    }
+
+    private async Task<Dictionary<long, FolderState>> BuildEnabledFolderStatesAsync(CancellationToken cancellationToken)
+    {
         var folders = _repository.IsConfigured
             ? await _repository.GetFoldersAsync(cancellationToken)
             : await _configStore.GetFoldersAsync();
@@ -155,50 +171,61 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             enabled[item.Folder.Id] = new FolderState(item.Folder, item.NormalizedRoot!, baselineFiles);
         }
 
-        Exception? watcherResourceException = null;
-        lock (_stateLock)
+        return enabled;
+    }
+
+    private IOException? ApplyWatcherStates(IReadOnlyDictionary<long, FolderState> enabled)
+    {
+        RemoveDisabledWatchers(enabled);
+
+        foreach (var entry in enabled)
         {
-            var removedIds = _watchers.Keys.Where(id => !enabled.ContainsKey(id)).ToList();
-            foreach (var folderId in removedIds)
+            var exception = RefreshWatcher(entry.Key, entry.Value);
+            if (exception != null)
             {
-                _watchers[folderId].Dispose();
-                _watchers.Remove(folderId);
-                _pendingScans.Remove(folderId);
-            }
-
-            foreach (var entry in enabled)
-            {
-                var folderId = entry.Key;
-                var state = entry.Value;
-                if (_watchers.TryGetValue(folderId, out var existing) &&
-                    string.Equals(existing.NormalizedRootPath, state.NormalizedRootPath, StringComparison.OrdinalIgnoreCase) &&
-                    existing.AutoTagEnabled == state.Folder.AutoTagEnabled)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    existing?.Dispose();
-                    _watchers[folderId] = CreateWatcher(
-                        state.Folder,
-                        state.NormalizedRootPath,
-                        state.BaselineFiles ?? new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase),
-                        _bootstrappingFolders.Contains(folderId));
-                }
-                catch (IOException ex) when (IsWatcherResourceLimit(ex))
-                {
-                    existing?.Dispose();
-                    _watchers.Remove(folderId);
-                    watcherResourceException = ex;
-                    break;
-                }
+                return exception;
             }
         }
 
-        if (watcherResourceException != null)
+        return null;
+    }
+
+    private void RemoveDisabledWatchers(IReadOnlyDictionary<long, FolderState> enabled)
+    {
+        var removedIds = _watchers.Keys.Where(id => !enabled.ContainsKey(id)).ToList();
+        foreach (var folderId in removedIds)
         {
-            EnterWatcherDegradedMode(watcherResourceException);
+            _watchers[folderId].Dispose();
+            _watchers.Remove(folderId);
+            _pendingScans.Remove(folderId);
+        }
+    }
+
+    private IOException? RefreshWatcher(long folderId, FolderState state)
+    {
+        var existing = _watchers.GetValueOrDefault(folderId);
+        if (existing is not null &&
+            string.Equals(existing.NormalizedRootPath, state.NormalizedRootPath, StringComparison.OrdinalIgnoreCase) &&
+            existing.AutoTagEnabled == state.Folder.AutoTagEnabled)
+        {
+            return null;
+        }
+
+        try
+        {
+            existing?.Dispose();
+            _watchers[folderId] = CreateWatcher(
+                state.Folder,
+                state.NormalizedRootPath,
+                state.BaselineFiles ?? new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase),
+                _bootstrappingFolders.Contains(folderId));
+            return null;
+        }
+        catch (IOException ex) when (IsWatcherResourceLimit(ex))
+        {
+            existing?.Dispose();
+            _watchers.Remove(folderId);
+            return ex;
         }
     }
 
@@ -442,18 +469,12 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         DisposeAllWatchers();
     }
 
-    private void RequeueFolder(long folderId, TimeSpan delay)
-        => RequeueFolder(folderId, delay, changedFilePaths: [], deletedFilePaths: []);
-
     private void RequeueFolder(long folderId, TimeSpan delay, string? changedFilePath)
         => RequeueFolder(
             folderId,
             delay,
             NormalizePath(changedFilePath) is { } path ? [path] : [],
             deletedFilePaths: []);
-
-    private void RequeueFolder(long folderId, TimeSpan delay, IEnumerable<string> changedFilePaths)
-        => RequeueFolder(folderId, delay, changedFilePaths, deletedFilePaths: []);
 
     private void RequeueFolder(
         long folderId,
@@ -674,7 +695,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     private sealed class WatchedFolder : IDisposable
     {
         private readonly object _baselineLock = new();
-        private Dictionary<string, FileBaselineState> _baselineFiles;
+        private readonly Dictionary<string, FileBaselineState> _baselineFiles;
         private bool _isBootstrapping;
 
         public WatchedFolder(

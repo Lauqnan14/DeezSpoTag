@@ -11,6 +11,9 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class ShazamRecognitionApiController : ControllerBase
 {
+    private const string QuickCaptureAttempt = "quick";
+    private const string FinalCaptureAttempt = "final";
+
     private const long MaxUploadBytes = 128 * 1024 * 1024;
     private static readonly TimeSpan LogoResultCacheDuration = TimeSpan.FromMinutes(15);
 
@@ -216,8 +219,8 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         var value = (capturePhase ?? string.Empty).Trim().ToLowerInvariant();
         return value switch
         {
-            "quick" => "quick",
-            "final" => "final",
+            QuickCaptureAttempt => QuickCaptureAttempt,
+            FinalCaptureAttempt => FinalCaptureAttempt,
             "file" => "file",
             "logo" => "logo",
             _ => "unknown"
@@ -229,8 +232,8 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         var value = (captureAttempt ?? string.Empty).Trim().ToLowerInvariant();
         return value switch
         {
-            "quick" => "quick",
-            "final" => "final",
+            QuickCaptureAttempt => QuickCaptureAttempt,
+            FinalCaptureAttempt => FinalCaptureAttempt,
             "file" => "file",
             _ => "none"
         };
@@ -242,9 +245,12 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     private static string SanitizeRequestToken(string? value, string fallback)
     {
         var sanitized = DeezSpoTag.Core.Security.LogSanitizer.OneLine(value ?? string.Empty);
-        return string.IsNullOrWhiteSpace(sanitized)
-            ? fallback
-            : sanitized.Length <= 80 ? sanitized : sanitized[..80];
+        if (string.IsNullOrWhiteSpace(sanitized))
+        {
+            return fallback;
+        }
+
+        return sanitized.Length <= 80 ? sanitized : sanitized[..80];
     }
 
     private int ResolveCaptureDurationSeconds()
@@ -382,8 +388,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         ShazamTrackCard? track = null;
         IReadOnlyList<ShazamTrackCard> related = Array.Empty<ShazamTrackCard>();
-        IReadOnlyList<ShazamTrackCard> searchResults = Array.Empty<ShazamTrackCard>();
-
         var searchTask = SafeSearchTracksAsync(query, cancellationToken);
         if (!string.IsNullOrWhiteSpace(trackId))
         {
@@ -392,23 +396,21 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             await Task.WhenAll(trackTask, relatedTask, searchTask);
             track = await trackTask;
             related = await relatedTask;
-            searchResults = await searchTask;
-        }
-        else
-        {
-            searchResults = await searchTask;
         }
 
+        var searchResults = await searchTask;
+
         return BuildMatchPayload(
-            recognition,
-            query,
-            track,
-            related,
-            searchResults,
-            capturePhase,
-            captureAttempt,
-            logoSessionId,
-            clientRequestId);
+            new ShazamLogoMatchPayload(
+                Recognition: recognition,
+                Query: query,
+                Track: track,
+                Related: related,
+                SearchResults: searchResults,
+                CapturePhase: capturePhase,
+                CaptureAttempt: captureAttempt,
+                LogoSessionId: logoSessionId,
+                ClientRequestId: clientRequestId));
     }
 
     private static object BuildMinimalMatchPayload(
@@ -420,39 +422,41 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     {
         var query = BuildQuery(recognition);
         return BuildMatchPayload(
-            recognition,
-            query,
-            track: null,
-            related: Array.Empty<ShazamTrackCard>(),
-            searchResults: Array.Empty<ShazamTrackCard>(),
-            capturePhase,
-            captureAttempt,
-            logoSessionId,
-            clientRequestId);
+            new ShazamLogoMatchPayload(
+                Recognition: recognition,
+                Query: query,
+                Track: null,
+                Related: Array.Empty<ShazamTrackCard>(),
+                SearchResults: Array.Empty<ShazamTrackCard>(),
+                CapturePhase: capturePhase,
+                CaptureAttempt: captureAttempt,
+                LogoSessionId: logoSessionId,
+                ClientRequestId: clientRequestId));
     }
 
-    private static object BuildMatchPayload(
-        ShazamRecognitionInfo recognition,
-        string? query,
-        ShazamTrackCard? track,
-        IReadOnlyList<ShazamTrackCard> related,
-        IReadOnlyList<ShazamTrackCard> searchResults,
-        string capturePhase,
-        string captureAttempt,
-        string logoSessionId,
-        string clientRequestId)
+    private static object BuildMatchPayload(ShazamLogoMatchPayload payload)
     {
-        var relatedList = related ?? Array.Empty<ShazamTrackCard>();
-        var searchList = searchResults ?? Array.Empty<ShazamTrackCard>();
-        var similarList = MergeSimilarCards(relatedList, searchList, track, recognition);
+        var relatedList = payload.Related ?? Array.Empty<ShazamTrackCard>();
+        var searchList = payload.SearchResults ?? Array.Empty<ShazamTrackCard>();
+        var similarList = MergeSimilarCards(relatedList, searchList, payload.Track, payload.Recognition);
 
+        return BuildMatchPayloadObject(payload, relatedList, searchList, similarList);
+    }
+
+    private static object BuildMatchPayloadObject(
+        ShazamLogoMatchPayload payload,
+        IReadOnlyList<ShazamTrackCard> relatedList,
+        IReadOnlyList<ShazamTrackCard> searchList,
+        List<ShazamTrackCard> similarList)
+    {
+        var recognition = payload.Recognition;
         return new
         {
             matched = true,
-            capturePhase,
-            captureAttempt,
-            logoSessionId,
-            clientRequestId,
+            capturePhase = payload.CapturePhase,
+            captureAttempt = payload.CaptureAttempt,
+            logoSessionId = payload.LogoSessionId,
+            clientRequestId = payload.ClientRequestId,
             recognition = new
             {
                 title = recognition.Title,
@@ -470,15 +474,26 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 artworkHqUrl = recognition.ArtworkHqUrl,
                 key = recognition.Key
             },
-            query,
-            track,
+            query = payload.Query,
+            track = payload.Track,
             related = relatedList,
             similar = similarList,
             searchResults = searchList
         };
     }
 
-    private static IReadOnlyList<ShazamTrackCard> MergeSimilarCards(
+    private sealed record ShazamLogoMatchPayload(
+        ShazamRecognitionInfo Recognition,
+        string? Query,
+        ShazamTrackCard? Track,
+        IReadOnlyList<ShazamTrackCard> Related,
+        IReadOnlyList<ShazamTrackCard> SearchResults,
+        string CapturePhase,
+        string CaptureAttempt,
+        string LogoSessionId,
+        string ClientRequestId);
+
+    private static List<ShazamTrackCard> MergeSimilarCards(
         IReadOnlyList<ShazamTrackCard> related,
         IReadOnlyList<ShazamTrackCard> searchResults,
         ShazamTrackCard? matchedTrack,

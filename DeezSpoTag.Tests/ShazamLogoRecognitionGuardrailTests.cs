@@ -9,6 +9,8 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ShazamLogoRecognitionGuardrailTests
 {
+    private static readonly string[] ExpectedSimilarIds = ["related-1", "search-1"];
+
     [Fact]
     public void LogoCapture_UsesSingleSessionWithFastAndFinalAttempts()
     {
@@ -43,7 +45,7 @@ public sealed class ShazamLogoRecognitionGuardrailTests
         Assert.Contains("captureAttempt,", source, StringComparison.Ordinal);
         Assert.Contains("logoSessionId,", source, StringComparison.Ordinal);
         Assert.Contains("related = relatedList", source, StringComparison.Ordinal);
-        Assert.Contains("var similarList = MergeSimilarCards(relatedList, searchList, track, recognition);", source, StringComparison.Ordinal);
+        Assert.Contains("var similarList = MergeSimilarCards(relatedList, searchList, payload.Track, payload.Recognition);", source, StringComparison.Ordinal);
         Assert.Contains("AddCards(related, cards, seen, matchedIdentity);", source, StringComparison.Ordinal);
         Assert.Contains("AddCards(searchResults, cards, seen, matchedIdentity);", source, StringComparison.Ordinal);
         Assert.Contains("similar = similarList", source, StringComparison.Ordinal);
@@ -89,6 +91,9 @@ public sealed class ShazamLogoRecognitionGuardrailTests
         var method = typeof(DeezSpoTag.Web.Controllers.Api.ShazamRecognitionApiController)
             .GetMethod("BuildMatchPayload", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
+        var payloadType = typeof(DeezSpoTag.Web.Controllers.Api.ShazamRecognitionApiController)
+            .GetNestedType("ShazamLogoMatchPayload", BindingFlags.NonPublic);
+        Assert.NotNull(payloadType);
 
         var recognition = new ShazamRecognitionInfo
         {
@@ -108,7 +113,7 @@ public sealed class ShazamLogoRecognitionGuardrailTests
             CreateCard("search-1", "Search Song", "Search Artist")
         };
 
-        var payload = method!.Invoke(null, new object?[]
+        var matchPayload = Activator.CreateInstance(payloadType!, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public, null, new object?[]
         {
             recognition,
             "Matched Song Matched Artist",
@@ -119,14 +124,17 @@ public sealed class ShazamLogoRecognitionGuardrailTests
             "final",
             "logo-1",
             "request-1"
-        });
+        }, null);
+        Assert.NotNull(matchPayload);
+
+        var payload = method!.Invoke(null, new[] { matchPayload });
 
         Assert.NotNull(payload);
         var similar = payload!.GetType().GetProperty("similar")!.GetValue(payload) as System.Collections.IEnumerable;
         Assert.NotNull(similar);
 
         var ids = similar!.Cast<ShazamTrackCard>().Select(card => card.Id).ToArray();
-        Assert.Equal(new[] { "related-1", "search-1" }, ids);
+        Assert.Equal(ExpectedSimilarIds, ids);
     }
 
     private static ShazamTrackCard CreateCard(string id, string title, string artist) =>

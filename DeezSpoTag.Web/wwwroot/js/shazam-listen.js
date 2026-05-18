@@ -736,13 +736,28 @@
         return null;
     };
 
+    const createClientRequestId = () => {
+        const cryptoApi = globalThis.crypto;
+        if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+            return cryptoApi.randomUUID();
+        }
+
+        if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+            const values = new Uint32Array(2);
+            cryptoApi.getRandomValues(values);
+            return `${Date.now().toString(36)}-${values[0].toString(36)}${values[1].toString(36)}`;
+        }
+
+        return `${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`;
+    };
+
     const performRecognitionRequest = async (audioBlob, filename = 'capture.wav', options = {}) => {
         const resolvedName = filename;
         const phase = String(options?.phase || 'file').trim() || 'file';
         const attempt = String(options?.attempt || '').trim();
         const logoSessionId = String(options?.logoSessionId || '').trim();
         const clientRequestId = String(options?.clientRequestId || '').trim()
-            || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+            || createClientRequestId();
         const form = new FormData();
         form.append('audio', audioBlob, resolvedName);
         form.append('capturePhase', phase);
