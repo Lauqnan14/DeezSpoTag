@@ -165,6 +165,13 @@ Open:
 
 - `http://<your-server-ip>:8668`
 
+Default initial login from the Docker Compose / `.env` template:
+
+- Username: `DeezSpoTag`
+- Password: `YourStrongPassword123!`
+
+On first login, you will be forced to change the bootstrap username and password to your preferred credentials.
+
 If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 
 ---

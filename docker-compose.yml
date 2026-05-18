@@ -1,37 +1,38 @@
 services:
   apple-wrapper:
     container_name: apple-wrapper
-    image: ${APPLE_WRAPPER_IMAGE:-ghcr.io/lauqnan14/deezspotag-apple-wrapper:prerelease}
-    pull_policy: ${APPLE_WRAPPER_PULL_POLICY:-always}
+    image: ghcr.io/lauqnan14/deezspotag-apple-wrapper:prerelease
+    pull_policy: always
     restart: unless-stopped
     network_mode: host
     privileged: true
-    user: "${APPLE_WRAPPER_UID:-0}:${APPLE_WRAPPER_GID:-0}"
+    user: "0:0"
     stop_grace_period: 20s
     environment:
-      WRAPPER_ARGS: "${WRAPPER_ARGS:--H 127.0.0.1 -D 10020 -M 20020 -A 30020}"
-      args: "${WRAPPER_ARGS:--H 127.0.0.1 -D 10020 -M 20020 -A 30020}"
-      WRAPPER_LOGIN_RETRY_ATTEMPTS: "${WRAPPER_LOGIN_RETRY_ATTEMPTS:-2}"
-      WRAPPER_LOGIN_RETRY_DELAY_SECONDS: "${WRAPPER_LOGIN_RETRY_DELAY_SECONDS:-4}"
-      TZ: "${TZ:-UTC}"
+      WRAPPER_ARGS: "-H 127.0.0.1 -D 10020 -M 20020 -A 30020"
+      args: "-H 127.0.0.1 -D 10020 -M 20020 -A 30020"
+      WRAPPER_LOGIN_RETRY_ATTEMPTS: "2"
+      WRAPPER_LOGIN_RETRY_DELAY_SECONDS: "4"
+      TZ: "UTC"
     volumes:
-      - ${APPLE_WRAPPER_DATA_PATH:-./apple-wrapper/data}:/opt/apple-wrapper/data
-      - ${APPLE_WRAPPER_SESSION_PATH:-./apple-wrapper/session}:/opt/apple-wrapper/rootfs/data/data/com.apple.android.music
+      - /path/to/apple-wrapper/data:/opt/apple-wrapper/data
+      - /path/to/apple-wrapper/session:/opt/apple-wrapper/rootfs/data/data/com.apple.android.music
       - /dev/urandom:/opt/apple-wrapper/rootfs/dev/urandom:ro
       - /dev/random:/opt/apple-wrapper/rootfs/dev/random:ro
 
   deezspotag:
     container_name: deezspotag
-    image: ${DEEZSPOTAG_IMAGE:-ghcr.io/lauqnan14/deezspotag:prerelease}
-    pull_policy: ${DEEZSPOTAG_PULL_POLICY:-always}
+    image: ghcr.io/lauqnan14/deezspotag:prerelease
+    pull_policy: always
     restart: unless-stopped
     network_mode: host
     depends_on:
       - apple-wrapper
-    user: "${PUID:-1000}:${PGID:-1000}"
+    user: "1000:1000"
     environment:
-      DEEZSPOTAG_BOOTSTRAP_USER: "${DEEZSPOTAG_BOOTSTRAP_USER:-}"
-      DEEZSPOTAG_BOOTSTRAP_PASS: "${DEEZSPOTAG_BOOTSTRAP_PASS:-}"
+      ASPNETCORE_URLS: "http://0.0.0.0:8668"
+      DEEZSPOTAG_BOOTSTRAP_USER: "DeezSpoTag"
+      DEEZSPOTAG_BOOTSTRAP_PASS: "YourStrongPassword123!"
       DEEZSPOTAG_DATA_DIR: "/data"
       DEEZSPOTAG_CONFIG_DIR: "/data"
       DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR: "/data/security/data-protection-keys"
@@ -40,11 +41,11 @@ services:
       DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE: "shared"
       DEEZSPOTAG_APPLE_WRAPPER_SHARED_DATA_DIR: "/apple-wrapper/data"
       DEEZSPOTAG_APPLE_WRAPPER_SHARED_SESSION_DIR: "/apple-wrapper/session"
-      TZ: "${TZ:-UTC}"
+      TZ: "UTC"
     volumes:
-      - ${DEEZSPOTAG_DATA_PATH:-./data}:/data
-      - ${DEEZSPOTAG_APPDATA_PATH:-./data}:/app/Data
-      - ${DOWNLOADS_PATH:-./downloads}:/downloads
-      - ${LIBRARY_PATH:-./library}:/library
-      - ${APPLE_WRAPPER_DATA_PATH:-./apple-wrapper/data}:/apple-wrapper/data
-      - ${APPLE_WRAPPER_SESSION_PATH:-./apple-wrapper/session}:/apple-wrapper/session
+      - /path/to/deezspotag/data:/data
+      - /path/to/deezspotag/data:/app/Data
+      - /path/to/downloads:/downloads
+      - /path/to/music/library:/library
+      - /path/to/apple-wrapper/data:/apple-wrapper/data
+      - /path/to/apple-wrapper/session:/apple-wrapper/session
