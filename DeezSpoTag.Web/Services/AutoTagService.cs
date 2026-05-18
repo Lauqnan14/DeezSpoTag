@@ -86,6 +86,7 @@ public abstract class AutoTagRunState
     public string? ProfileId { get; set; }
     public string? ProfileName { get; set; }
     public AutoTagMoveSummary? AutoMoveSummary { get; set; }
+    public int LastPlexRefreshEnhancedFileCount { get; set; }
 }
 
 public class AutoTagJob : AutoTagRunState
@@ -95,6 +96,7 @@ public class AutoTagJob : AutoTagRunState
     public List<TaggingStatusSnapshot> StatusHistory { get; } = new();
     public List<string> Logs { get; } = new();
     public List<EnhancementWorkflowResult> EnhancementWorkflows { get; } = new();
+    public List<string> EnhancedFilePaths { get; } = new();
     public List<string> StartedPlatforms { get; } = new();
     public Dictionary<string, AutoTagTagDiff> TagDiffs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public AutoTagResumeCheckpoint? ResumeCheckpoint { get; set; }
@@ -203,6 +205,8 @@ public partial class AutoTagService
     private readonly ConcurrentDictionary<string, string> _lastActivityLines = new();
     private readonly ConcurrentDictionary<string, byte> _staleRecoveryCleanupJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _stuckRecoveryJobs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _enhancementPlexRefreshJobs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobCancellationSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger<AutoTagService> _logger;
     private readonly LibraryConfigStore _activityLog;
     private readonly AuthenticatedDeezerService _deezerAuth;
@@ -732,6 +736,11 @@ public partial class AutoTagService
         if (source.StatusHistory.Count > 0)
         {
             target.StatusHistory.AddRange(source.StatusHistory);
+        }
+
+        if (source.EnhancedFilePaths.Count > 0)
+        {
+            target.EnhancedFilePaths.AddRange(source.EnhancedFilePaths);
         }
 
         if (source.StartedPlatforms.Count > 0)
@@ -1769,6 +1778,12 @@ public partial class AutoTagService
         }
 
         var stopped = await _autoTagRunner.StopAsync(id, CancellationToken.None);
+        if (_jobCancellationSources.TryGetValue(id, out var cancellation))
+        {
+            await cancellation.CancelAsync();
+            stopped = true;
+        }
+
         if (stopped)
         {
             var interruptedStatus = IsEnhancementRunIntent(job.RunIntent)
@@ -1784,6 +1799,10 @@ public partial class AutoTagService
                 string.Equals(interruptedStatus, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
                     ? "autotag interrupted by user"
                     : "autotag canceled by user");
+            if (IsEnhancementRunIntent(job.RunIntent))
+            {
+                await TriggerTargetedPlexRefreshForEnhancedFilesAsync(job, TimeSpan.FromSeconds(20), CancellationToken.None);
+            }
         }
 
         return stopped;
@@ -1793,6 +1812,8 @@ public partial class AutoTagService
     {
         var fileOutcomes = new Dictionary<string, FileTagOutcome>(StringComparer.OrdinalIgnoreCase);
         var runtimeConfigPaths = InitializeRuntimeConfigPaths(configPath);
+        using var jobCancellation = new CancellationTokenSource();
+        _jobCancellationSources[job.Id] = jobCancellation;
 
         try
         {
@@ -1807,7 +1828,7 @@ public partial class AutoTagService
                 return;
             }
 
-            var execution = await ExecuteStagesAsync(job, stages, path, configPath, fileOutcomes);
+            var execution = await ExecuteStagesAsync(job, stages, path, configPath, fileOutcomes, jobCancellation.Token);
             var success = execution.Success;
 
             if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
@@ -1836,7 +1857,26 @@ public partial class AutoTagService
                     includesEnrichmentStage,
                     includesEnhancementStage,
                     fileOutcomes,
-                    execution.EarlyAutoMove);
+                    execution.EarlyAutoMove,
+                    jobCancellation.Token);
+            }
+
+            NotifyCompleted(job);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                job.Status = IsEnhancementRunIntent(job.RunIntent)
+                    ? AutoTagLiterals.InterruptedStatus
+                    : AutoTagLiterals.CanceledStatus;
+                job.Error = IsEnhancementRunIntent(job.RunIntent)
+                    ? "Interrupted. Resume is available."
+                    : "Stopped.";
+                job.ExitCode = 1;
+                job.FinishedAt = DateTimeOffset.UtcNow;
+                SaveJob(job);
             }
 
             NotifyCompleted(job);
@@ -1853,6 +1893,10 @@ public partial class AutoTagService
             }
             _activeJobStages.TryRemove(job.Id, out _);
             _activeJobIds.TryRemove(job.Id, out _);
+            if (_jobCancellationSources.TryRemove(job.Id, out var cancellation))
+            {
+                cancellation.Dispose();
+            }
         }
     }
 
@@ -1915,13 +1959,14 @@ public partial class AutoTagService
         IReadOnlyList<AutoTagStageConfig> stages,
         string path,
         string configPath,
-        Dictionary<string, FileTagOutcome> fileOutcomes)
+        Dictionary<string, FileTagOutcome> fileOutcomes,
+        CancellationToken cancellationToken)
     {
         AutoMoveExecutionResult? earlyAutoMove = null;
         for (var index = 0; index < stages.Count; index++)
         {
             var stage = stages[index];
-            var stageResult = await ExecuteSingleStageAsync(job, stage, index, stages.Count, path, fileOutcomes);
+            var stageResult = await ExecuteSingleStageAsync(job, stage, index, stages.Count, path, fileOutcomes, cancellationToken);
             if (!stageResult.Success)
             {
                 return new StageRunResult(false, earlyAutoMove);
@@ -1931,7 +1976,7 @@ public partial class AutoTagService
             {
                 var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
                 AppendLog(job, "enrichment completed, auto-move starting before enhancement");
-                earlyAutoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+                earlyAutoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
                 AppendLog(job, "auto-move completed before enhancement");
             }
         }
@@ -2005,7 +2050,8 @@ public partial class AutoTagService
         int stageIndex,
         int totalStages,
         string path,
-        Dictionary<string, FileTagOutcome> fileOutcomes)
+        Dictionary<string, FileTagOutcome> fileOutcomes,
+        CancellationToken cancellationToken)
     {
         AppendLog(job, BuildStageStartedLog(stage, stageIndex, totalStages));
         _activeJobStages[job.Id] = stage.Name;
@@ -2031,7 +2077,7 @@ public partial class AutoTagService
                 status => UpdateStatus(job, status, stage.Name, stage.ConfigHash, stageIndex, totalStages, fileOutcomes),
                 line => AppendLog(job, line),
                 resumeCursor,
-                CancellationToken.None);
+                cancellationToken);
             if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
             {
                 return HandleStoppedStage(job);
@@ -2078,13 +2124,14 @@ public partial class AutoTagService
         bool includesEnrichmentStage,
         bool includesEnhancementStage,
         Dictionary<string, FileTagOutcome> fileOutcomes,
-        AutoMoveExecutionResult? earlyAutoMove)
+        AutoMoveExecutionResult? earlyAutoMove,
+        CancellationToken cancellationToken)
     {
-        var autoMove = earlyAutoMove ?? await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes);
+        var autoMove = earlyAutoMove ?? await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes, cancellationToken);
         if (ShouldRunGenericOrganizer(job, configPath))
         {
             AppendLog(job, "post-processing organizer starting");
-            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary);
+            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary, cancellationToken);
         }
         else
         {
@@ -2095,40 +2142,40 @@ public partial class AutoTagService
             path,
             configPath,
             includesEnhancementStage,
-            CancellationToken.None);
+            cancellationToken);
         await RunManualEnrichmentArtworkMaintenanceAsync(
             job,
             path,
             includesEnrichmentStage,
             includesEnhancementStage,
             autoMove.Summary,
-            CancellationToken.None);
-        var plexTriggeredByEnhancement = await TriggerPlexMetadataRefreshAfterEnhancementAsync(
+            cancellationToken);
+        var plexTriggeredByEnhancement = await TriggerTargetedPlexRefreshAfterEnhancementAsync(
             job,
             includesEnhancementStage,
-            CancellationToken.None);
-        var plexRefreshRequestedAfterMove = false;
+            cancellationToken);
         if (autoMove.Completed && !plexTriggeredByEnhancement)
         {
-            plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+            await TriggerPlexScanAfterMoveAsync(job, cancellationToken);
         }
-        await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
+        await TriggerLibraryScanAfterAutoMoveAsync(
             job,
             autoMove.Summary,
-            autoMove.Completed && (plexTriggeredByEnhancement || plexRefreshRequestedAfterMove),
-            CancellationToken.None);
+            cancellationToken);
     }
 
     private async Task OrganizeAfterAutoMoveAsync(
         AutoTagJob job,
         string path,
         string configPath,
-        AutoTagMoveSummary autoMoveSummary)
+        AutoTagMoveSummary autoMoveSummary,
+        CancellationToken cancellationToken)
     {
         var roots = ResolveContinuationPathsAfterAutoMove(path, autoMoveSummary);
         foreach (var root in roots)
         {
-            await OrganizeJobAsync(job, root, configPath);
+            cancellationToken.ThrowIfCancellationRequested();
+            await OrganizeJobAsync(job, root, configPath, cancellationToken);
         }
     }
 
@@ -2136,7 +2183,8 @@ public partial class AutoTagService
         AutoTagJob job,
         string path,
         string configPath,
-        Dictionary<string, FileTagOutcome> fileOutcomes)
+        Dictionary<string, FileTagOutcome> fileOutcomes,
+        CancellationToken cancellationToken)
     {
         if (IsEnhancementRunIntent(job.RunIntent))
         {
@@ -2151,7 +2199,7 @@ public partial class AutoTagService
 
         var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
         AppendLog(job, "tagging completed, auto-move starting");
-        return await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles);
+        return await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
     }
 
     private bool ShouldRunGenericOrganizer(AutoTagJob job, string configPath)
@@ -2186,11 +2234,11 @@ public partial class AutoTagService
         AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
 
         AppendLog(job, "tagging failed, evaluating post-failure auto-move");
-        var autoMove = await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes);
+        var autoMove = await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes, CancellationToken.None);
         if (ShouldRunGenericOrganizer(job, configPath))
         {
             AppendLog(job, "post-processing organizer starting");
-            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary);
+            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary, CancellationToken.None);
         }
         else
         {
@@ -2198,11 +2246,10 @@ public partial class AutoTagService
         }
         if (autoMove.Completed)
         {
-            var plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
-            await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
+            await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+            await TriggerLibraryScanAfterAutoMoveAsync(
                 job,
                 autoMove.Summary,
-                plexRefreshRequestedAfterMove,
                 CancellationToken.None);
         }
 
@@ -2271,13 +2318,12 @@ public partial class AutoTagService
         return stages;
     }
 
-    private async Task TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
+    private async Task TriggerLibraryScanAfterAutoMoveAsync(
         AutoTagJob job,
         AutoTagMoveSummary autoMoveSummary,
-        bool plexRefreshRequested,
         CancellationToken cancellationToken)
     {
-        if (!plexRefreshRequested)
+        if (autoMoveSummary.MovedCount <= 0)
         {
             return;
         }
@@ -3157,8 +3203,9 @@ public partial class AutoTagService
         }
     }
 
-    private async Task OrganizeJobAsync(AutoTagJob job, string rootPath, string configPath)
+    private async Task OrganizeJobAsync(AutoTagJob job, string rootPath, string configPath, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (job.Status is not AutoTagLiterals.CompletedStatus and not AutoTagLiterals.FailedStatus)
         {
             if (_logger.IsEnabled(LogLevel.Information))
@@ -3188,7 +3235,7 @@ public partial class AutoTagService
             return;
         }
 
-        if (!await WaitForOrganizerCooldownAsync(_organizerCooldown, CancellationToken.None))
+        if (!await WaitForOrganizerCooldownAsync(_organizerCooldown, cancellationToken))
         {
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -3203,7 +3250,7 @@ public partial class AutoTagService
             _logger.LogInformation("AutoTag job JobId: organizer started for RootPath");
             AppendLog(job, "organizer started");
             var organizerOptions = await LoadOrganizerOptionsAsync(job, configPath);
-            await _libraryOrganizer.OrganizePathAsync(rootPath, organizerOptions, message => AppendLog(job, message));
+            await _libraryOrganizer.OrganizePathAsync(rootPath, organizerOptions, message => AppendLog(job, message), cancellationToken);
             _logger.LogInformation("AutoTag job JobId: organizer finished for RootPath");
             AppendLog(job, "organizer finished");
         }
@@ -3416,7 +3463,8 @@ public partial class AutoTagService
         string rootPath,
         string configPath,
         IReadOnlyCollection<string> taggedFiles,
-        IReadOnlyCollection<string> failedFiles)
+        IReadOnlyCollection<string> failedFiles,
+        CancellationToken cancellationToken)
     {
         if (_disableAutoMove)
         {
@@ -3443,7 +3491,7 @@ public partial class AutoTagService
                 organizerOptions,
                 taggedFiles,
                 failedFiles,
-                CancellationToken.None);
+                cancellationToken);
             _logger.LogInformation("AutoTag job JobId: auto-move finished for RootPath");
             AppendLog(job, "auto-move finished");
             ApplyAutoMoveSummary(job, summary);
@@ -3492,7 +3540,7 @@ public partial class AutoTagService
         return await TriggerPlexScanAsync(job, plex, "after auto-move", cancellationToken);
     }
 
-    private async Task<bool> TriggerPlexMetadataRefreshAfterEnhancementAsync(
+    private async Task<bool> TriggerTargetedPlexRefreshAfterEnhancementAsync(
         AutoTagJob job,
         bool includesEnhancementStage,
         CancellationToken cancellationToken)
@@ -3504,13 +3552,96 @@ public partial class AutoTagService
             return false;
         }
 
+        return await TriggerTargetedPlexRefreshForEnhancedFilesAsync(job, TimeSpan.FromSeconds(30), cancellationToken);
+    }
+
+    private async Task<bool> TriggerTargetedPlexRefreshForEnhancedFilesAsync(
+        AutoTagJob job,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        if (!IsEnhancementRunIntent(job.RunIntent) || job.EnhancedFilePaths.Count == 0)
+        {
+            return false;
+        }
+
         var plex = await LoadConfiguredPlexForScanAsync(job);
         if (plex == null)
         {
             return false;
         }
 
-        return await TriggerPlexScanAsync(job, plex, "after enhancement run", cancellationToken);
+        try
+        {
+            var plexUrl = plex.Url ?? string.Empty;
+            var plexToken = plex.Token ?? string.Empty;
+            using var timeoutSource = new CancellationTokenSource(timeout);
+            using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+            var targets = await ResolvePlexRefreshTargetsForEnhancedFilesAsync(job, plexUrl, plexToken, linkedSource.Token);
+            if (targets.Count == 0)
+            {
+                AppendLog(job, "plex targeted refresh skipped: no album or artist targets found for enhanced files");
+                return false;
+            }
+
+            var refreshed = 0;
+            foreach (var ratingKey in targets)
+            {
+                linkedSource.Token.ThrowIfCancellationRequested();
+                refreshed += await _plexApiClient.RefreshMetadataAsync(plexUrl, plexToken, ratingKey, linkedSource.Token)
+                    ? 1
+                    : 0;
+            }
+
+            AppendLog(job, $"plex targeted refresh requested: targets={targets.Count}, refreshed={refreshed}");
+            job.LastPlexRefreshEnhancedFileCount = job.EnhancedFilePaths.Count;
+            SaveJob(job);
+            return refreshed > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog(job, "plex targeted refresh timed out or was canceled");
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag job {JobId}: targeted Plex refresh failed.", job.Id);
+            AppendLog(job, $"plex targeted refresh failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private async Task<List<string>> ResolvePlexRefreshTargetsForEnhancedFilesAsync(
+        AutoTagJob job,
+        string plexUrl,
+        string plexToken,
+        CancellationToken cancellationToken)
+    {
+        var trackIdsByPath = await _libraryRepository.GetTrackIdsByFilePathsAsync(job.EnhancedFilePaths, cancellationToken);
+        if (trackIdsByPath.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        var trackIds = trackIdsByPath.Values.Distinct().ToList();
+        var plexTrackKeysByTrackId = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(trackIds, cancellationToken);
+        var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var trackRatingKey in plexTrackKeysByTrackId.Values.Where(static key => !string.IsNullOrWhiteSpace(key)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var parentKeys = await _plexApiClient.GetMetadataParentKeysAsync(plexUrl, plexToken, trackRatingKey, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(parentKeys.AlbumRatingKey))
+            {
+                targets.Add(parentKeys.AlbumRatingKey);
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(parentKeys.ArtistRatingKey))
+            {
+                targets.Add(parentKeys.ArtistRatingKey);
+            }
+        }
+
+        return targets.ToList();
     }
 
     private async Task<PlexAuth?> LoadConfiguredPlexForScanAsync(AutoTagJob job)
@@ -4615,6 +4746,7 @@ public partial class AutoTagService
         ApplyIdentityReviewGuard(job, status);
         AppendStatusHistory(job, status);
         TrackFileOutcome(fileOutcomes, status);
+        TrackEnhancedFilePath(job, stageName, status);
         switch (status.Status.Status)
         {
             case AutoTagLiterals.OkStatus:
@@ -4633,6 +4765,54 @@ public partial class AutoTagService
         }
         TryUpdateResumeCheckpoint(job, stageName, stageConfigHash, status);
         SaveJob(job);
+        QueueEnhancementPlexRefreshBatchIfDue(job);
+    }
+
+    private static void TrackEnhancedFilePath(AutoTagJob job, string stageName, TaggingStatusWrap status)
+    {
+        var statusValue = status.Status;
+        if (!IsEnhancementRunIntent(job.RunIntent)
+            || !string.Equals(stageName, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)
+            || !IsSuccessfulTagStatus(statusValue?.Status)
+            || string.IsNullOrWhiteSpace(statusValue?.Path))
+        {
+            return;
+        }
+
+        var normalizedPath = NormalizePathForJob(statusValue.Path);
+        if (job.EnhancedFilePaths.Contains(normalizedPath, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        job.EnhancedFilePaths.Add(normalizedPath);
+    }
+
+    private void QueueEnhancementPlexRefreshBatchIfDue(AutoTagJob job)
+    {
+        const int batchSize = 20;
+        if (!IsEnhancementRunIntent(job.RunIntent)
+            || job.EnhancedFilePaths.Count < job.LastPlexRefreshEnhancedFileCount + batchSize
+            || !_enhancementPlexRefreshJobs.TryAdd(job.Id, 0))
+        {
+            return;
+        }
+
+        job.LastPlexRefreshEnhancedFileCount = job.EnhancedFilePaths.Count;
+        SaveJob(job);
+        _ = RunEnhancementPlexRefreshBatchAsync(job);
+    }
+
+    private async Task RunEnhancementPlexRefreshBatchAsync(AutoTagJob job)
+    {
+        try
+        {
+            await TriggerTargetedPlexRefreshForEnhancedFilesAsync(job, TimeSpan.FromSeconds(15), CancellationToken.None);
+        }
+        finally
+        {
+            _enhancementPlexRefreshJobs.TryRemove(job.Id, out _);
+        }
     }
 
     private static bool IsTerminalStatus(string? status)
@@ -5508,6 +5688,7 @@ public partial class AutoTagService
             ProfileId = job.ProfileId,
             ProfileName = job.ProfileName,
             AutoMoveSummary = job.AutoMoveSummary?.Clone(),
+            LastPlexRefreshEnhancedFileCount = job.LastPlexRefreshEnhancedFileCount,
             LogCount = GetArchivedLogCount(job.Id, job.Logs.Count),
             StatusEntryCount = GetArchivedStatusCount(job.Id, job.StatusHistory.Count)
         };
@@ -6495,11 +6676,10 @@ public partial class AutoTagService
 
             if (summary.MovedCount > 0 && string.IsNullOrWhiteSpace(summary.Error))
             {
-                var plexRefreshRequestedAfterMove = await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
-                await TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync(
+                await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
+                await TriggerLibraryScanAfterAutoMoveAsync(
                     job,
                     summary,
-                    plexRefreshRequestedAfterMove,
                     CancellationToken.None);
             }
         }

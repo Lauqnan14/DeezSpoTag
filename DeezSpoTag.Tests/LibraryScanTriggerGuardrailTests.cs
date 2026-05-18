@@ -56,7 +56,36 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("autoMoveSummary.ChangedFilePaths", source);
         Assert.Contains("await _libraryScanRunner.RunChangedFilesAsync", source);
         Assert.Contains("await _libraryScanRunner.RunChangedFoldersAsync", source);
+        Assert.Contains("TriggerLibraryScanAfterAutoMoveAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagEnhancementRefresh_IsTargetedAndInterruptible()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+
+        Assert.Contains("public List<string> EnhancedFilePaths", source, StringComparison.Ordinal);
+        Assert.Contains("TrackEnhancedFilePath(job, stageName, status)", source, StringComparison.Ordinal);
+        Assert.Contains("QueueEnhancementPlexRefreshBatchIfDue(job)", source, StringComparison.Ordinal);
+        Assert.Contains("TriggerTargetedPlexRefreshForEnhancedFilesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("LastPlexRefreshEnhancedFileCount", source, StringComparison.Ordinal);
+        Assert.Contains("GetMetadataParentKeysAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshMetadataAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_jobCancellationSources", source, StringComparison.Ordinal);
+        Assert.Contains("stopped = true;", source, StringComparison.Ordinal);
+        Assert.Contains("OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TriggerPlexMetadataRefreshAfterEnhancementAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagLibraryOrganizer_AcceptsCancellationForEnhancementPostProcessing()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagLibraryOrganizer.cs");
+
+        Assert.Contains("CancellationToken cancellationToken", source, StringComparison.Ordinal);
+        Assert.Contains("cancellationToken.ThrowIfCancellationRequested();", source, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -248,6 +248,68 @@ public class PlexApiClient
         }
     }
 
+    public async Task<bool> RefreshMetadataAsync(string serverUrl, string token, string ratingKey, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey))
+            {
+                return false;
+            }
+
+            var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey.Trim())}/refresh?X-Plex-Token={Uri.EscapeDataString(token)}";
+            using var response = await _httpClient.PutAsync(url, null, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to refresh Plex metadata {RatingKey}: {StatusCode}", ratingKey, response.StatusCode);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Error refreshing Plex metadata {RatingKey}", ratingKey);
+            return false;
+        }
+    }
+
+    public async Task<PlexMetadataParentKeys> GetMetadataParentKeysAsync(
+        string serverUrl,
+        string token,
+        string ratingKey,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey))
+            {
+                return PlexMetadataParentKeys.Empty;
+            }
+
+            var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey.Trim())}?X-Plex-Token={Uri.EscapeDataString(token)}";
+            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to load Plex metadata {RatingKey}: {StatusCode}", ratingKey, response.StatusCode);
+                return PlexMetadataParentKeys.Empty;
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return PlexMetadataParentKeys.Empty;
+            }
+
+            return ParseMetadataParentKeys(XDocument.Parse(content));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Error loading Plex metadata {RatingKey}", ratingKey);
+            return PlexMetadataParentKeys.Empty;
+        }
+    }
+
     public async Task<string?> FindArtistRatingKeyAsync(string serverUrl, string token, string artistName, CancellationToken cancellationToken = default)
     {
         var location = await FindArtistLocationAsync(serverUrl, token, artistName, cancellationToken);
@@ -958,6 +1020,19 @@ public class PlexApiClient
             DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
             FilePath = track.Descendants("Part").FirstOrDefault()?.Attribute("file")?.Value ?? string.Empty
         };
+    }
+
+    private static PlexMetadataParentKeys ParseMetadataParentKeys(XDocument doc)
+    {
+        var track = doc.Descendants(TrackElementName).FirstOrDefault();
+        if (track == null)
+        {
+            return PlexMetadataParentKeys.Empty;
+        }
+
+        return new PlexMetadataParentKeys(
+            track.Attribute("parentRatingKey")?.Value,
+            track.Attribute("grandparentRatingKey")?.Value);
     }
 
     private static string GetTrackDedupeKey(PlexTrack track)
@@ -2071,6 +2146,11 @@ public class PlexLibrarySection
     public string Key { get; set; } = "";
     public string Title { get; set; } = "";
     public string Type { get; set; } = "";
+}
+
+public sealed record PlexMetadataParentKeys(string? AlbumRatingKey, string? ArtistRatingKey)
+{
+    public static PlexMetadataParentKeys Empty { get; } = new(null, null);
 }
 
 public class PlexHistoryItem

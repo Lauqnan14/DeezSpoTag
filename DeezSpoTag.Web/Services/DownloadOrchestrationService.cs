@@ -808,6 +808,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
             var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId);
             if (!stopped)
             {
+                _enhancementPauseRequested = false;
+                _enhancementResumeAwaitingPipelineCompletion = false;
                 return false;
             }
 
@@ -1834,13 +1836,17 @@ public sealed class DownloadOrchestrationService : BackgroundService
                 {
                     LogEnhancementPauseSuccess(request.Reason, jobId);
                 }
+                return true;
             }
-            else if (_logger.IsEnabled(LogLevel.Information))
+
+            _enhancementPauseRequested = false;
+            _enhancementResumeAwaitingPipelineCompletion = false;
+            if (_logger.IsEnabled(LogLevel.Information))
             {
                 LogEnhancementPauseAlreadyStopped(request.Reason, jobId);
             }
 
-            return true;
+            return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3258,6 +3264,8 @@ public sealed class DownloadOrchestrationService : BackgroundService
                     break;
                 }
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
         }
         finally
         {

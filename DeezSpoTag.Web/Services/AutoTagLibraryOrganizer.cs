@@ -85,14 +85,31 @@ public class AutoTagLibraryOrganizer
         => OrganizePathAsync(rootPath, options, report: null, log);
 
     public Task OrganizePathAsync(string rootPath, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log = null)
+        => OrganizePathAsync(rootPath, options, report, log, CancellationToken.None);
+
+    public Task OrganizePathAsync(
+        string rootPath,
+        AutoTagOrganizerOptions options,
+        Action<string>? log,
+        CancellationToken cancellationToken)
+        => OrganizePathAsync(rootPath, options, report: null, log, cancellationToken);
+
+    public Task OrganizePathAsync(
+        string rootPath,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(rootPath))
         {
             return Task.CompletedTask;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var normalizedRoot = Path.GetFullPath(rootPath);
         var files = EnumerateAudioFiles(normalizedRoot, options.IncludeSubfolders).ToList();
+        cancellationToken.ThrowIfCancellationRequested();
         log?.Invoke($"organizer scan prepared: root={normalizedRoot}, includeSubfolders={options.IncludeSubfolders}, candidateFiles={files.Count}");
         report?.Entries.Clear();
         report ??= options.GenerateReconciliationReport ? new AutoTagOrganizerReport() : null;
@@ -101,16 +118,26 @@ public class AutoTagLibraryOrganizer
             report.CandidateFiles += files.Count;
         }
 
-        return OrganizeAsync(normalizedRoot, files, options, report, log);
+        return OrganizeAsync(normalizedRoot, files, options, report, log, cancellationToken);
     }
 
     private Task OrganizeAsync(string rootPath, IReadOnlyCollection<string> filePaths, AutoTagOrganizerOptions options, AutoTagOrganizerReport? report, Action<string>? log)
+        => OrganizeAsync(rootPath, filePaths, options, report, log, CancellationToken.None);
+
+    private Task OrganizeAsync(
+        string rootPath,
+        IReadOnlyCollection<string> filePaths,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(rootPath))
         {
             return Task.CompletedTask;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var normalizedRoot = Path.GetFullPath(rootPath);
         var settings = _settingsService.LoadSettings();
         settings.DownloadLocation = normalizedRoot;
@@ -129,6 +156,7 @@ public class AutoTagLibraryOrganizer
         var usePrimaryArtistFolders = options.UsePrimaryArtistFoldersOverride
             ?? settings.Tags.SingleAlbumArtist;
         var plan = BuildMovePlan(normalizedRoot, filePaths, options, settings, usePrimaryArtistFolders, report, log);
+        cancellationToken.ThrowIfCancellationRequested();
         log?.Invoke($"organizer plan prepared: {plan.Count} move action(s)");
         if (report != null)
         {
@@ -136,10 +164,15 @@ public class AutoTagLibraryOrganizer
         }
 
         var artistDirectoryTransitions = ExecuteMovePlan(normalizedRoot, plan, options, report, log);
+        cancellationToken.ThrowIfCancellationRequested();
         MoveResidualArtistSidecarsForTransitions(normalizedRoot, artistDirectoryTransitions, options, report, log);
+        cancellationToken.ThrowIfCancellationRequested();
         MergeNoAudioArtistDirectoriesIntoMatchingDestinations(normalizedRoot, options, report, log);
+        cancellationToken.ThrowIfCancellationRequested();
         MoveExistingNoAudioDirectoriesToQuarantine(normalizedRoot, options, report, log);
+        cancellationToken.ThrowIfCancellationRequested();
         ReconcileOrphanCombinedArtistFolders(normalizedRoot, usePrimaryArtistFolders, options, report, log);
+        cancellationToken.ThrowIfCancellationRequested();
         if (options.RemoveEmptyFolders)
         {
             CleanupArtistFolders(normalizedRoot, usePrimaryArtistFolders, report, log);

@@ -69,6 +69,44 @@ public sealed class PlexApiClientTimeoutHandlingTests
         Assert.Contains("art.locked=1", uri, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RefreshMetadataAsync_RefreshesSpecificMetadataRatingKey()
+    {
+        using var handler = new CaptureRequestHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+        var refreshed = await client.RefreshMetadataAsync(
+            "http://plex.local:32400",
+            "token",
+            "album-123",
+            CancellationToken.None);
+
+        Assert.True(refreshed);
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal(HttpMethod.Put, handler.LastRequest!.Method);
+        var uri = handler.LastRequest.RequestUri!.ToString();
+        Assert.Contains("/library/metadata/album-123/refresh", uri, StringComparison.Ordinal);
+        Assert.DoesNotContain("/library/sections/", uri, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetMetadataParentKeysAsync_ReadsAlbumAndArtistRatingKeys()
+    {
+        using var httpClient = new HttpClient(new XmlHandler(
+            "<MediaContainer><Track ratingKey=\"track-1\" parentRatingKey=\"album-1\" grandparentRatingKey=\"artist-1\" /></MediaContainer>"));
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+        var parentKeys = await client.GetMetadataParentKeysAsync(
+            "http://plex.local:32400",
+            "token",
+            "track-1",
+            CancellationToken.None);
+
+        Assert.Equal("album-1", parentKeys.AlbumRatingKey);
+        Assert.Equal("artist-1", parentKeys.ArtistRatingKey);
+    }
+
     private sealed class TimeoutHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -94,6 +132,17 @@ public sealed class PlexApiClientTimeoutHandlingTests
         {
             LastRequest = request;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }
+    }
+
+    private sealed class XmlHandler(string xml) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(xml)
+            });
         }
     }
 }
