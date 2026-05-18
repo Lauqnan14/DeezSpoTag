@@ -548,34 +548,48 @@ class DeezerQueueEnhanced {
         const item = this.queue[uuid];
         if ((item?.errors?.length ?? 0) <= 0) return;
 
-        const rows = item.errors.map(error => `
-            <tr>
-                <td>${error.data?.id || 'N/A'}</td>
-                <td>${error.data?.artist || 'Unknown'}</td>
-                <td>${error.data?.title || 'Unknown'}</td>
-                <td title="${error.stack || ''}">${error.message}</td>
-            </tr>
-        `).join('');
-
-        const tableHtml = `
-            <table class="error-table">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Artist</th>
-                        <th>Title</th>
-                        <th>Error</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${rows}
-                </tbody>
-            </table>
-        `;
-
         if (globalThis.DeezSpoTag?.ui?.alert) {
-            DeezSpoTag.ui.alert(tableHtml, { title: `Errors for ${item.title}`, allowHtml: true });
+            DeezSpoTag.ui.alert('', {
+                title: `Errors for ${item.title}`,
+                contentElement: this.buildErrorTable(item.errors)
+            });
         }
+    }
+
+    buildErrorTable(errors) {
+        const table = document.createElement('table');
+        table.className = 'error-table';
+
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
+        ['ID', 'Artist', 'Title', 'Error'].forEach((label) => {
+            const header = document.createElement('th');
+            header.textContent = label;
+            headerRow.appendChild(header);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        errors.forEach((error) => {
+            const row = document.createElement('tr');
+            [
+                error.data?.id || 'N/A',
+                error.data?.artist || 'Unknown',
+                error.data?.title || 'Unknown',
+                error.message || ''
+            ].forEach((value, index) => {
+                const cell = document.createElement('td');
+                cell.textContent = String(value);
+                if (index === 3 && error.stack) {
+                    cell.title = String(error.stack);
+                }
+                row.appendChild(cell);
+            });
+            tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        return table;
     }
 
     /**

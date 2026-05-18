@@ -857,7 +857,6 @@ function playVideoPreview(url) {
         globalThis.DeezSpoTag.ui.showModal({
             title: 'Preview',
             message: '',
-            allowHtml: true,
             contentElement: video,
             buttons: [{ label: 'Close', value: true, primary: true }]
         });

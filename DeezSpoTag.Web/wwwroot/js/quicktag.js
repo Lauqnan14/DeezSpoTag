@@ -451,7 +451,6 @@
             globalThis.DeezSpoTag.ui.showModal({
                 title: "Tag Dump",
                 message: "",
-                allowHtml: true,
                 contentElement: container,
                 buttons: [{ label: "Close", value: true, primary: true }]
             });
