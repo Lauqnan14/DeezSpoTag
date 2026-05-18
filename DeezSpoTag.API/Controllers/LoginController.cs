@@ -16,6 +16,7 @@ namespace DeezSpoTag.API.Controllers
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
+    [AutoValidateAntiforgeryToken]
     public class LoginController : ControllerBase
     {
         private const string DeezerScheme = "https";

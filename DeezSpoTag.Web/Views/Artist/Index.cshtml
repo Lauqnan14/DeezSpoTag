@@ -2553,6 +2553,16 @@ async function downloadUsingApi(url, metadata = null) {
             ...extras
         });
 
+        const isHostMatch = (candidateUrl, expectedHost) => {
+            try {
+                const parsedHost = new URL(candidateUrl).hostname.toLowerCase();
+                return parsedHost === expectedHost || parsedHost.endsWith(`.${expectedHost}`);
+            } catch {
+                return false;
+            }
+        };
+        const isSpotifyUrl = lower.startsWith('spotify:') || isHostMatch(url, 'spotify.com');
+
         if (lower.startsWith('isrc:')) {
             endpoint = '/api/download/intent';
             payload = {
@@ -2602,7 +2612,7 @@ async function downloadUsingApi(url, metadata = null) {
                     intentFromMetadata('qobuz', url)
                 ]
             };
-        } else if (lower.includes('spotify.com') || lower.startsWith('spotify:')) {
+        } else if (isSpotifyUrl) {
             endpoint = '/api/download/intent';
             payload = {
                 destinationFolderId: destinationFolderId,

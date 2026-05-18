@@ -1490,7 +1490,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for {Isrc}", isrc);
+                _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             }
             return null;
         }
@@ -1498,7 +1498,7 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple catalog ISRC payload could not be parsed for {Isrc}", isrc);
+                _logger.LogDebug(ex, "Apple catalog ISRC payload could not be parsed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
             }
             return null;
         }

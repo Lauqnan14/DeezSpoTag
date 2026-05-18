@@ -4,7 +4,6 @@ import json
 import os
 from requests import Session
 from deezspot.deezloader.deezer_settings import qualities
-from deezspot.deezloader.__download_utils__ import md5hex
 from deezspot.exceptions import (
     BadCredentials,
     TrackNotFound,
@@ -72,55 +71,15 @@ class ApiGw:
         if cls.__arl:
             cls.__req.cookies['arl'] = cls.__arl
         else:
-            cls.__set_arl()
+            raise BadCredentials(msg="ARL login is required for the Deezer gateway.")
 
     @classmethod
     def __set_arl(cls):
-        access_token = cls.__get_access_token()
-
-        c_headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-
-        cls.__req.get(
-            cls.__try_link,
-            headers=c_headers,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        ).json()
-        cls.__arl = cls.__get_api(cls.__get_user_get_arl)
+        raise BadCredentials(msg="ARL login is required for the Deezer gateway.")
 
     @classmethod
     def __get_access_token(cls):
-        password = md5hex(cls.__password)
-
-        to_hash = (
-            f"{cls.__client_id}{cls.__email}{password}{cls.__client_key_material}"
-        )
-
-        request_hash = md5hex(to_hash)
-
-        params = {
-            "app_id": cls.__client_id,
-            "login": cls.__email,
-            "password": password,
-            "hash": request_hash
-        }
-
-        results = req_get(
-            cls.__auth_url,
-            params=params,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        ).json()
-
-        if "error" in results:
-            raise BadCredentials(
-                email = cls.__email,
-                password = cls.__password
-            )
-
-        access_token = results['access_token']
-
-        return access_token
+        raise BadCredentials(msg="Password login is disabled for the Deezer gateway.")
 
     @classmethod
     def __get_api(
@@ -269,7 +228,9 @@ class ApiGw:
 
     @staticmethod
     def __is_spreaker_link(song_link):
-        return bool(song_link and 'spreaker.com' in song_link)
+        parsed_host = urlparse(song_link).hostname if song_link else None
+        host = (parsed_host or '').lower()
+        return host == 'spreaker.com' or host.endswith('.spreaker.com')
 
     @staticmethod
     def __is_empty_response(response):

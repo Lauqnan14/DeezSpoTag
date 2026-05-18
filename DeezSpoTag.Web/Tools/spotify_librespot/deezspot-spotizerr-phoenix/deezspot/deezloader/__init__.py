@@ -3,6 +3,7 @@ import os
 import json
 import logging
 import re
+from urllib.parse import urlparse
 from deezspot.deezloader.dee_api import API
 from deezspot.easy_spoty import Spo
 from deezspot.deezloader.deegw_api import API_GW
@@ -63,6 +64,12 @@ from deezspot.models.callback.track import TrackObject as trackCbObject, ArtistT
 from deezspot.models.callback.album import AlbumObject as albumCbObject
 from deezspot.models.callback.playlist import PlaylistObject as playlistCbObject
 from deezspot.models.callback.common import IDs
+
+def _link_host_matches(link, expected_host):
+    parsed_host = urlparse(link).hostname or ""
+    host = parsed_host.lower()
+    expected = expected_host.lower()
+    return host == expected or host.endswith(f".{expected}")
 from deezspot.models.callback.user import UserObject
 from rapidfuzz import fuzz
 
@@ -1423,9 +1430,9 @@ class DeeLogin:
         link = what_kind(link)
         smart = Smart()
 
-        if "spotify.com" in link:
+        if _link_host_matches(link, "spotify.com"):
             source = "spotify"
-        elif "deezer.com" in link:
+        elif _link_host_matches(link, "deezer.com"):
             source = "deezer"
         else:
             raise InvalidLink(link)

@@ -435,6 +435,65 @@ globalThis.DeezSpoTag = {
             return modal;
         },
 
+        appendSanitizedHtml(target, html) {
+            const parser = new DOMParser();
+            const parsed = parser.parseFromString(String(html || ''), 'text/html');
+            const allowedTags = new Set([
+                'a', 'b', 'br', 'code', 'div', 'em', 'i', 'li', 'ol', 'p', 'span',
+                'strong', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul'
+            ]);
+            const allowedAttributes = new Set(['class', 'colspan', 'href', 'rel', 'rowspan', 'target', 'title']);
+            const copySafeNode = (node) => {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return document.createTextNode(node.textContent || '');
+                }
+
+                if (node.nodeType !== Node.ELEMENT_NODE) {
+                    return document.createTextNode('');
+                }
+
+                const tagName = node.tagName.toLowerCase();
+                if (!allowedTags.has(tagName)) {
+                    const fragment = document.createDocumentFragment();
+                    node.childNodes.forEach((child) => fragment.appendChild(copySafeNode(child)));
+                    return fragment;
+                }
+
+                const element = document.createElement(tagName);
+                Array.from(node.attributes).forEach((attribute) => {
+                    const name = attribute.name.toLowerCase();
+                    if (!allowedAttributes.has(name) || name.startsWith('on')) {
+                        return;
+                    }
+
+                    const value = attribute.value || '';
+                    if ((name === 'href' || name === 'src') && !this.isSafeModalUrl(value)) {
+                        return;
+                    }
+
+                    element.setAttribute(name, value);
+                });
+
+                if (tagName === 'a') {
+                    element.rel = 'noopener noreferrer';
+                }
+
+                node.childNodes.forEach((child) => element.appendChild(copySafeNode(child)));
+                return element;
+            };
+
+            parsed.body.childNodes.forEach((node) => target.appendChild(copySafeNode(node)));
+        },
+
+        isSafeModalUrl(value) {
+            try {
+                const parsed = new URL(value, globalThis.location.origin);
+                return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+            } catch {
+                return false;
+            }
+        },
+
         showModal({ title, message, input, buttons, allowHtml, contentElement, dialogClass }) {
             const modal = this.ensureModal();
             const dialogEl = modal.querySelector('.app-modal-dialog');
@@ -465,15 +524,15 @@ globalThis.DeezSpoTag = {
 
             titleEl.textContent = title || 'Notice';
             // reset body/message
-            messageEl.innerHTML = '';
+            messageEl.replaceChildren();
             if (allowHtml) {
-                messageEl.innerHTML = message || '';
+                this.appendSanitizedHtml(messageEl, message);
             } else {
                 messageEl.textContent = message || '';
             }
             // remove any prior injected content
             bodyEl.querySelectorAll('.app-modal-content').forEach(el => el.remove());
-            footerEl.innerHTML = '';
+            footerEl.replaceChildren();
 
             let inputEl = null;
             if (input) {

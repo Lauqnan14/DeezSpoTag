@@ -935,6 +935,15 @@ function clearSoundtrackUrlError() {
     error.textContent = '';
 }
 
+function isExactOrSubdomainHost(host, expectedHost) {
+    const normalizedHost = String(host || '').toLowerCase();
+    return normalizedHost === expectedHost || normalizedHost.endsWith(`.${expectedHost}`);
+}
+
+function isSpotifyHostname(host) {
+    return isExactOrSubdomainHost(host, 'spotify.com');
+}
+
 async function openSoundtrackManualUrl(rawUrl) {
     const inputUrl = String(rawUrl || '').trim();
     if (!inputUrl) {
@@ -958,7 +967,7 @@ async function openSoundtrackManualUrl(rawUrl) {
     }
 
     try {
-        if (host.includes('spotify.com')) {
+        if (isSpotifyHostname(host)) {
             const response = await fetch(`/api/spotify/metadata?url=${encodeURIComponent(inputUrl)}`);
             if (!response.ok) {
                 throw new Error(`Spotify link parse failed (HTTP ${response.status}).`);
@@ -1058,7 +1067,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (currentSearchTerm && currentSearchSource !== 'manual') {
         if (isValidURL(currentSearchTerm)) {
             const parsedUrl = new URL(currentSearchTerm);
-            if (parsedUrl.hostname.includes('spotify.com')) {
+            if (isSpotifyHostname(parsedUrl.hostname)) {
                 fetch(`/api/spotify/metadata?url=${encodeURIComponent(currentSearchTerm)}`)
                     .then((resp) => resp.ok ? resp.json() : null)
                     .then((data) => {

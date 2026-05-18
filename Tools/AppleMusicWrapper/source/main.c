@@ -34,6 +34,45 @@ static char *g_storefront_id = NULL;
 static char *g_dev_token = NULL;
 static char *g_music_token = NULL;
 
+int file_exists(char *filename);
+char *strcat_b(char *dest, char* src);
+
+static int read_two_factor_code_from_file(char *code, size_t code_size) {
+    char *path = strcat_b(args_info.base_dir_arg, "/2fa.txt");
+    if (!file_exists(path)) {
+        free(path);
+        return 0;
+    }
+
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL) {
+        free(path);
+        return 0;
+    }
+
+    int read_ok = fscanf(fp, "%6s", code) == 1;
+    code[code_size - 1] = '\0';
+    fclose(fp);
+    remove(path);
+    free(path);
+    return read_ok;
+}
+
+static char *build_password_with_two_factor_code(const char *password, const char *code) {
+    size_t password_len = strlen(password);
+    size_t code_len = strlen(code);
+    char *combined = malloc(password_len + code_len + 1);
+    if (combined == NULL) {
+        fprintf(stderr, "[!] Failed to allocate credential buffer. Exiting...\n");
+        exit(1);
+    }
+
+    memcpy(combined, password, password_len);
+    memcpy(combined + password_len, code, code_len);
+    combined[password_len + code_len] = '\0';
+    return combined;
+}
+
 #ifndef MyRelease
 static int (*orig_debug_log_enabled)(void);
 static int (*orig_android_log_print)(int prio, const char *tag, const char *fmt, ...);
@@ -198,8 +237,8 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             credReqHandler->obj)),
         need2FA ? "true" : "false");
 
-    int passLen = strlen(amPassword);
-
+    char twoFactorCode[7] = {0};
+    char *passwordForRequest = amPassword;
     if (need2FA) {
         if (args_info.code_from_file_flag) {
             fprintf(stderr, "[!] Enter your 2FA code into rootfs/%s/2fa.txt\n", args_info.base_dir_arg);
@@ -212,11 +251,7 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
                     fprintf(stderr, "[!] Failed to get 2FA Code in 60s. Exiting...\n");
                     exit(0);
                 }
-                char *path = strcat_b(args_info.base_dir_arg, "/2fa.txt");
-                if (file_exists(path)) {
-                    FILE *fp = fopen(path, "r");
-                    fscanf(fp, "%6s", amPassword + passLen);
-                    remove(path);
+                if (read_two_factor_code_from_file(twoFactorCode, sizeof(twoFactorCode))) {
                     fprintf(stderr, "[!] Code file detected! Logging in...\n");
                     break;
                 } else {
@@ -226,8 +261,12 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
             }
         } else {
             printf("2FA code: ");
-            scanf("%6s", amPassword + passLen);
+            if (scanf("%6s", twoFactorCode) != 1) {
+                fprintf(stderr, "[!] Failed to read 2FA code. Exiting...\n");
+                exit(1);
+            }
         }
+        passwordForRequest = build_password_with_two_factor_code(amPassword, twoFactorCode);
     }
 
     uint8_t *const ptr = malloc(80);
@@ -242,7 +281,7 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
     _ZN17storeservicescore19CredentialsResponse11setUserNameERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(
         credResp.obj, &username);
 
-    union std_string password = new_std_string(amPassword);
+    union std_string password = new_std_string(passwordForRequest);
     _ZN17storeservicescore19CredentialsResponse11setPasswordERKNSt6__ndk112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(
         credResp.obj, &password);
 
@@ -251,6 +290,10 @@ static void credentialHandler(struct shared_ptr *credReqHandler,
 
     _ZN20androidstoreservices28AndroidPresentationInterface25handleCredentialsResponseERKNSt6__ndk110shared_ptrIN17storeservicescore19CredentialsResponseEEE(
         apInf.obj, &credResp);
+    if (passwordForRequest != amPassword) {
+        memset(passwordForRequest, 0, strlen(passwordForRequest));
+        free(passwordForRequest);
+    }
 }
 
 
