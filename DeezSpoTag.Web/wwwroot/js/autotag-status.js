@@ -17,6 +17,7 @@
     const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let pollTimer = null;
     let realtimeRefreshTimer = null;
+    let dateRolloverTimer = null;
     let signalRConnection = null;
 
     const state = {
@@ -36,7 +37,8 @@
         calendarLoadPromise: null,
         runsRequestId: 0,
         runDetailsRequestId: 0,
-        lastLiveDetailsFetchedAt: 0
+        lastLiveDetailsFetchedAt: 0,
+        currentTodayToken: toDateToken(new Date())
     };
 
     const el = (id) => document.getElementById(id);
@@ -243,24 +245,16 @@
             return true;
         }
 
-        return isTodayDateToken(state.selectedDate);
+        return state.selectedDate === getLiveRunDateToken(state.liveJobSummary);
     }
 
     function getLiveRunDateToken(job) {
         const sourceDate = job?.startedAt || job?.finishedAt || null;
-        if (typeof sourceDate === "string") {
-            const trimmed = sourceDate.trim();
-            const isoPrefix = trimmed.slice(0, 10);
-            if (/^\d{4}-\d{2}-\d{2}$/.test(isoPrefix)) {
-                return isoPrefix;
-            }
-        }
-
         const parsed = sourceDate ? new Date(sourceDate) : null;
         if (parsed && !Number.isNaN(parsed.getTime())) {
-            return toDateTokenUtc(parsed);
+            return toDateToken(parsed);
         }
-        return toDateTokenUtc(new Date());
+        return toDateToken(new Date());
     }
 
     function shouldFollowLiveRunInHistory() {
@@ -1169,6 +1163,7 @@
     async function refreshAutoTagRunHistory(payload) {
         const date = payload?.date || state.selectedDate || toDateToken(new Date());
         const runDate = date instanceof Date ? toDateToken(date) : String(date || "");
+        const runId = normalizeRunId(payload?.runId);
         const runMonth = runDate.length >= 7 ? runDate.slice(0, 7) : "";
         const selectedMonth = `${state.calendarMonth.getFullYear()}-${String(state.calendarMonth.getMonth() + 1).padStart(2, "0")}`;
         if (runMonth && runMonth !== selectedMonth) {
@@ -1178,6 +1173,26 @@
         await loadCalendar();
         if (runDate && runDate === state.selectedDate) {
             await loadRunsForDate(runDate);
+        }
+        await refreshRealtimeRunDetails(runId, runDate);
+    }
+
+    async function refreshRealtimeRunDetails(runId, runDate) {
+        if (!runId) {
+            return;
+        }
+
+        const selectedRunId = normalizeRunId(state.selectedRunId);
+        const shouldRefreshSelectedRun = selectedRunId === runId;
+        const shouldFollowRun = !state.manualHistorySelection && runDate && runDate === state.selectedDate;
+        if (!shouldRefreshSelectedRun && !shouldFollowRun) {
+            return;
+        }
+
+        try {
+            await loadRunDetails(runId);
+        } catch (error) {
+            console.warn("Failed to refresh AutoTag run details after realtime update", error);
         }
     }
 
@@ -1213,6 +1228,42 @@
         document.addEventListener("visibilitychange", () => {
             if (!document.hidden) {
                 void refreshNow({ loadCalendar: isHistoryTabActive() });
+            }
+        });
+    }
+
+    function bindDateRolloverRefresh() {
+        if (dateRolloverTimer) {
+            clearInterval(dateRolloverTimer);
+        }
+
+        dateRolloverTimer = setInterval(() => {
+            const todayToken = toDateToken(new Date());
+            if (todayToken === state.currentTodayToken) {
+                return;
+            }
+
+            const previousTodayToken = state.currentTodayToken;
+            state.currentTodayToken = todayToken;
+            if (!isHistoryTabActive()) {
+                return;
+            }
+
+            const shouldMoveToToday = !state.manualHistorySelection || state.selectedDate === previousTodayToken;
+            if (shouldMoveToToday) {
+                state.manualHistorySelection = false;
+                const today = new Date();
+                state.calendarMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+                state.selectedDate = todayToken;
+            }
+
+            void loadCalendar();
+        }, 60000);
+
+        globalThis.addEventListener("beforeunload", () => {
+            if (dateRolloverTimer) {
+                clearInterval(dateRolloverTimer);
+                dateRolloverTimer = null;
             }
         });
     }
@@ -1731,6 +1782,7 @@
         bindDiffActions();
         bindHistoryNavigation();
         bindPageResumeRefresh();
+        bindDateRolloverRefresh();
         connectRealtimeHistory();
         void pollJob();
         if (isHistoryTabActive()) {

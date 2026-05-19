@@ -107,6 +107,7 @@ public sealed class AutoTagRunSummary : AutoTagRunState
 {
     public int LogCount { get; set; }
     public int StatusEntryCount { get; set; }
+    public string? ResumeFromJobId { get; set; }
 }
 
 public sealed class AutoTagRunDaySummary
@@ -204,7 +205,11 @@ public partial class AutoTagService
     private readonly record struct EnrichmentBuildContext(string RunIntent, string JobId);
     private readonly record struct EnhancementBuildContext(string RunIntent, string JobId);
     private readonly record struct AutoMoveExecutionResult(bool Completed, AutoTagMoveSummary Summary);
-    private sealed record ResumeCheckpointSeed(string SourceJobId, AutoTagResumeCheckpoint Checkpoint);
+    private sealed record ResumeCheckpointSeed(
+        string SourceJobId,
+        string ResumeJobId,
+        DateTimeOffset StartedAt,
+        AutoTagResumeCheckpoint Checkpoint);
 
     private readonly ConcurrentDictionary<string, AutoTagJob> _jobs = new();
     private readonly ConcurrentDictionary<string, byte> _activeJobIds = new();
@@ -552,12 +557,9 @@ public partial class AutoTagService
         var normalizedTrigger = NormalizeRunTrigger(trigger);
         var normalizedRunIntent = NormalizeRunIntent(runIntent);
         var resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, profileId);
-        var isEnhancementResume = resumeSeed != null && IsEnhancementRunIntent(normalizedRunIntent);
-        var resumeSourceJob = isEnhancementResume ? GetJob(resumeSeed!.SourceJobId) : null;
-        var resumedJobId = isEnhancementResume ? resumeSeed!.SourceJobId : Guid.NewGuid().ToString("N");
-        var resumedStartedAt = isEnhancementResume
-            ? (resumeSourceJob?.StartedAt ?? DateTimeOffset.UtcNow)
-            : DateTimeOffset.UtcNow;
+        var resumeSourceJob = resumeSeed == null ? null : GetJob(resumeSeed.SourceJobId) ?? LoadJob(resumeSeed.SourceJobId);
+        var resumedJobId = resumeSeed?.ResumeJobId ?? Guid.NewGuid().ToString("N");
+        var resumedStartedAt = resumeSeed?.StartedAt ?? DateTimeOffset.UtcNow;
 
         var blockedByTriggerPolicy = TryCreateBlockedJobForTriggerPolicy(
             normalizedPath,
@@ -614,9 +616,9 @@ public partial class AutoTagService
             ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
             ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim(),
             ResumeCheckpoint = resumeSeed?.Checkpoint,
-            ResumeFromJobId = isEnhancementResume ? null : resumeSeed?.SourceJobId
+            ResumeFromJobId = null
         };
-        if (isEnhancementResume && resumeSourceJob != null)
+        if (resumeSourceJob != null)
         {
             HydrateResumeJob(job, resumeSourceJob);
         }
@@ -972,12 +974,39 @@ public partial class AutoTagService
             && IsResumeCandidate(latestMatchingJob, normalizedPath, normalizedRunIntent, normalizedProfileId);
     }
 
-    private static ResumeCheckpointSeed? BuildResumeCheckpointSeed(AutoTagJob job)
+    private ResumeCheckpointSeed? BuildResumeCheckpointSeed(AutoTagJob job)
     {
         var checkpoint = CloneResumeCheckpoint(job.ResumeCheckpoint);
-        return checkpoint == null
-            ? null
-            : new ResumeCheckpointSeed(job.Id, checkpoint);
+        if (checkpoint == null)
+        {
+            return null;
+        }
+
+        var rootJob = ResolveResumeRootJob(job);
+        return new ResumeCheckpointSeed(job.Id, rootJob.Id, rootJob.StartedAt, checkpoint);
+    }
+
+    private AutoTagJob ResolveResumeRootJob(AutoTagJob job)
+    {
+        var current = job;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { job.Id };
+        for (var depth = 0; depth < 20; depth += 1)
+        {
+            if (string.IsNullOrWhiteSpace(current.ResumeFromJobId) || !seen.Add(current.ResumeFromJobId))
+            {
+                return current;
+            }
+
+            var parent = GetJob(current.ResumeFromJobId) ?? LoadJob(current.ResumeFromJobId);
+            if (parent == null)
+            {
+                return current;
+            }
+
+            current = parent;
+        }
+
+        return current;
     }
 
     private static bool IsResumeScopeMatch(
@@ -1208,12 +1237,12 @@ public partial class AutoTagService
     public IReadOnlyList<AutoTagRunDaySummary> GetArchivedRunCalendar(int year, int month)
     {
         var summaries = GetArchivedRunSummaries()
-            .Where(summary => summary.StartedAt.Year == year && summary.StartedAt.Month == month)
+            .Where(summary => GetRunDate(summary.StartedAt).Year == year && GetRunDate(summary.StartedAt).Month == month)
             .OrderBy(summary => summary.StartedAt)
             .ToList();
 
         return summaries
-            .GroupBy(summary => summary.StartedAt.ToString("yyyy-MM-dd"))
+            .GroupBy(summary => GetRunDateToken(summary.StartedAt))
             .Select(group => new AutoTagRunDaySummary
             {
                 Date = group.Key,
@@ -1228,9 +1257,20 @@ public partial class AutoTagService
     {
         var token = date.ToString("yyyy-MM-dd");
         return GetArchivedRunSummaries()
-            .Where(summary => string.Equals(summary.StartedAt.ToString("yyyy-MM-dd"), token, StringComparison.Ordinal))
+            .Where(summary => string.Equals(GetRunDateToken(summary.StartedAt), token, StringComparison.Ordinal))
             .OrderByDescending(summary => summary.StartedAt)
             .ToList();
+    }
+
+    internal static DateOnly GetRunDate(DateTimeOffset timestamp)
+    {
+        var localTimestamp = TimeZoneInfo.ConvertTime(timestamp, TimeZoneInfo.Local);
+        return DateOnly.FromDateTime(localTimestamp.DateTime);
+    }
+
+    internal static string GetRunDateToken(DateTimeOffset timestamp)
+    {
+        return GetRunDate(timestamp).ToString("yyyy-MM-dd");
     }
 
     public AutoTagRunArchive? GetArchivedRun(string id)
@@ -5694,14 +5734,44 @@ public partial class AutoTagService
         }
     }
 
-    private static IReadOnlyList<AutoTagRunSummary> NormalizeRunIndexSummaries(IEnumerable<AutoTagRunSummary> summaries)
+    private IReadOnlyList<AutoTagRunSummary> NormalizeRunIndexSummaries(IEnumerable<AutoTagRunSummary> summaries)
     {
         return summaries
             .Where(static summary => !string.IsNullOrWhiteSpace(summary.Id))
-            .GroupBy(static summary => summary.Id, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(GetRunIndexGroupKey, StringComparer.OrdinalIgnoreCase)
             .Select(static group => group.OrderByDescending(summary => summary.StartedAt).First())
             .OrderByDescending(static summary => summary.StartedAt)
             .ToList();
+    }
+
+    private string GetRunIndexGroupKey(AutoTagRunSummary summary)
+    {
+        if (string.IsNullOrWhiteSpace(summary.ResumeFromJobId))
+        {
+            return summary.Id;
+        }
+
+        var rootId = ResolveResumeRootJobId(summary.Id, summary.ResumeFromJobId);
+        return string.IsNullOrWhiteSpace(rootId) ? summary.Id : rootId;
+    }
+
+    private string? ResolveResumeRootJobId(string jobId, string? resumeFromJobId)
+    {
+        var currentId = jobId;
+        var parentId = resumeFromJobId;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { jobId };
+        for (var depth = 0; depth < 20; depth += 1)
+        {
+            if (string.IsNullOrWhiteSpace(parentId) || !seen.Add(parentId))
+            {
+                return currentId;
+            }
+
+            currentId = parentId;
+            parentId = TryReadJobResumeFromJobId(currentId);
+        }
+
+        return currentId;
     }
 
     private IReadOnlyList<AutoTagRunSummary> LoadArchivedRunSummaries()
@@ -5851,6 +5921,7 @@ public partial class AutoTagService
             ProfileName = job.ProfileName,
             AutoMoveSummary = job.AutoMoveSummary?.Clone(),
             LastPlexRefreshEnhancedFileCount = job.LastPlexRefreshEnhancedFileCount,
+            ResumeFromJobId = string.IsNullOrWhiteSpace(job.ResumeFromJobId) ? null : job.ResumeFromJobId,
             LogCount = GetArchivedLogCount(job.Id, job.Logs.Count),
             StatusEntryCount = GetArchivedStatusCount(job.Id, job.StatusHistory.Count)
         };
@@ -5885,7 +5956,41 @@ public partial class AutoTagService
         }
 
         var json = File.ReadAllText(path, Encoding.UTF8);
-        return JsonSerializer.Deserialize<AutoTagRunSummary>(json, _jsonOptions);
+        var summary = JsonSerializer.Deserialize<AutoTagRunSummary>(json, _jsonOptions);
+        if (summary != null && string.IsNullOrWhiteSpace(summary.ResumeFromJobId))
+        {
+            summary.ResumeFromJobId = TryReadJobResumeFromJobId(summary.Id);
+        }
+
+        return summary;
+    }
+
+    private string? TryReadJobResumeFromJobId(string jobId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                return null;
+            }
+
+            var path = Path.Join(_jobsDir, $"{jobId}.json");
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
+            return document.RootElement.TryGetProperty(nameof(AutoTagJob.ResumeFromJobId), out var value)
+                && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to read AutoTag resume source for {JobId}.", jobId);
+            return null;
+        }
     }
 
     private List<string> ReadRunLogLines(string jobId)

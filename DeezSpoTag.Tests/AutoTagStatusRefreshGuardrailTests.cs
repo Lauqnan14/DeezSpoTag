@@ -139,6 +139,90 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
+    public void AutoTagService_ReusesRootJobIdForAllResumeIntents()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.DoesNotContain("isEnhancementResume", source, StringComparison.Ordinal);
+        Assert.Contains("var resumedJobId = resumeSeed?.ResumeJobId ?? Guid.NewGuid().ToString(\"N\");", source, StringComparison.Ordinal);
+        Assert.Contains("ResumeFromJobId = null", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveResumeRootJob", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_CollapsesResumeChainsInRunIndex()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.Contains(".GroupBy(GetRunIndexGroupKey, StringComparer.OrdinalIgnoreCase)", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveResumeRootJobId(summary.Id, summary.ResumeFromJobId)", source, StringComparison.Ordinal);
+        Assert.Contains("TryReadJobResumeFromJobId(summary.Id)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagHistory_UsesLocalRunDateForCalendarAndRealtimeEvents()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var realtimePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "ActivitiesRealtimeService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+        Assert.True(File.Exists(realtimePath), $"Missing realtime service source: {realtimePath}");
+
+        var serviceSource = File.ReadAllText(servicePath);
+        var realtimeSource = File.ReadAllText(realtimePath);
+        Assert.Contains("TimeZoneInfo.ConvertTime(timestamp, TimeZoneInfo.Local)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains(".GroupBy(summary => GetRunDateToken(summary.StartedAt))", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("string.Equals(GetRunDateToken(summary.StartedAt), token, StringComparison.Ordinal)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("date = AutoTagService.GetRunDateToken(summary.StartedAt)", realtimeSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("summary.StartedAt.ToString(\"yyyy-MM-dd\")", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("summary.StartedAt.ToString(\"yyyy-MM-dd\")", realtimeSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_RefreshesHistoryWhenLocalDateChanges()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("currentTodayToken: toDateToken(new Date())", source, StringComparison.Ordinal);
+        Assert.Contains("function bindDateRolloverRefresh()", source, StringComparison.Ordinal);
+        Assert.Contains("state.selectedDate = todayToken;", source, StringComparison.Ordinal);
+        Assert.Contains("bindDateRolloverRefresh();", source, StringComparison.Ordinal);
+        Assert.Contains("return state.selectedDate === getLiveRunDateToken(state.liveJobSummary);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_RefreshesSelectedRunDetailsAfterRealtimeUpdate()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("const runId = normalizeRunId(payload?.runId);", source, StringComparison.Ordinal);
+        Assert.Contains("await refreshRealtimeRunDetails(runId, runDate);", source, StringComparison.Ordinal);
+        Assert.Contains("function refreshRealtimeRunDetails(runId, runDate)", source, StringComparison.Ordinal);
+        Assert.Contains("await loadRunDetails(runId);", source, StringComparison.Ordinal);
+
+        var refreshStart = source.IndexOf("function refreshRealtimeRunDetails(runId, runDate)", StringComparison.Ordinal);
+        Assert.True(refreshStart >= 0);
+        var refreshEnd = source.IndexOf("\n    function connectRealtimeHistory()", refreshStart, StringComparison.Ordinal);
+        Assert.True(refreshEnd > refreshStart);
+        var refreshBody = source.Substring(refreshStart, refreshEnd - refreshStart);
+        Assert.DoesNotContain("runIntent", refreshBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("enhancement", refreshBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("enrichment", refreshBody, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void AutoTagStatusScript_DoesNotOverwriteArchivedHistoryFromCompletedLatestPoll()
     {
         var repoRoot = ResolveRepoRoot();
