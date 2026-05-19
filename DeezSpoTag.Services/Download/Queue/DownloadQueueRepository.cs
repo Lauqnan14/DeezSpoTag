@@ -99,6 +99,7 @@ SET status = 'queued',
     downloaded = 0,
     failed = 0,
     queue_order = @queueOrder,
+    activities_cleared_at = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
@@ -563,11 +564,13 @@ WITH active_items AS (
 	SELECT " + selectedColumns + @"
 	FROM download_task
 	WHERE lower(status) IN (" + activeStatuses + @")
+	  AND activities_cleared_at IS NULL
 ),
 terminal_items AS (
 	SELECT " + selectedColumns + @"
 	FROM download_task
 	WHERE lower(status) NOT IN (" + activeStatuses + @")
+	  AND activities_cleared_at IS NULL
 	ORDER BY updated_at DESC, id DESC
 	LIMIT @terminalLimit
 )
@@ -739,6 +742,7 @@ SET final_destinations_json = NULL,
     staging_cleanup_status = NULL,
     staging_cleanup_error = NULL,
     staging_cleanup_at = NULL,
+    activities_cleared_at = NULL,
     move_status = CASE
         WHEN destination_folder_id IS NOT NULL THEN '" + MoveStatusPending + @"'
         ELSE NULL
@@ -786,6 +790,51 @@ WHERE queue_uuid = @queueUuid;";
         const string sql = @"DELETE FROM download_task WHERE status = @status;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("status", status);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<int> MarkActivitiesClearedByStatusAsync(string status, CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET activities_cleared_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE lower(status) = lower(@status)
+  AND activities_cleared_at IS NULL;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("status", status);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<int> MarkActivitiesClearedByUuidAsync(string queueUuid, CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET activities_cleared_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid
+  AND activities_cleared_at IS NULL;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<int> MarkTerminalActivitiesClearedAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string activeStatuses = "'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
+        const string sql = @"
+UPDATE download_task
+SET activities_cleared_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE lower(status) NOT IN (" + activeStatuses + @")
+  AND activities_cleared_at IS NULL;";
+        await using var command = new SqliteCommand(sql, connection);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1168,6 +1217,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
     staging_cleanup_status TEXT,
     staging_cleanup_error TEXT,
     staging_cleanup_at TEXT,
+    activities_cleared_at TEXT,
     progress REAL,
     downloaded INTEGER,
     failed INTEGER,
@@ -1198,6 +1248,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_status", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_error", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_at", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "activities_cleared_at", "TEXT", cancellationToken);
         await EnsureIndexesAsync(connection, cancellationToken);
         await NormalizeLegacyPlaceholderIdsAsync(connection, cancellationToken);
         await NormalizeLegacyAtmosContentTypesAsync(connection, cancellationToken);

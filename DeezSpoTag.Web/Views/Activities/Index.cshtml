@@ -3245,6 +3245,58 @@ function endTaskAction(taskOrId) {
     }
 }
 
+function refreshQueueViewState() {
+    clearMissingQueueActivity(tasks);
+    updateStats();
+    queueState = deriveQueueState(tasks);
+    updateQueueButtons();
+    updateToggleQueueUi(queueState);
+    scheduleRenderTasks({ immediate: true });
+}
+
+function removeVisibleQueueTasks(taskIds) {
+    const ids = Array.isArray(taskIds)
+        ? taskIds.map(id => String(id || '').trim()).filter(Boolean)
+        : [String(taskIds || '').trim()].filter(Boolean);
+    if (ids.length === 0) {
+        return false;
+    }
+
+    const idSet = new Set(ids);
+    const nextTasks = tasks.filter(task => !idSet.has(String(task.taskId || '').trim()));
+    if (nextTasks.length === tasks.length) {
+        return false;
+    }
+
+    tasks = nextTasks;
+    refreshQueueViewState();
+    return true;
+}
+
+function clearVisibleQueueTasks(predicate) {
+    const nextTasks = tasks.filter(task => !predicate(task));
+    if (nextTasks.length === tasks.length) {
+        return false;
+    }
+
+    tasks = nextTasks;
+    refreshQueueViewState();
+    return true;
+}
+
+function isCompletedQueueTask(task) {
+    return mapStatus(task?.status) === 'complete';
+}
+
+function isCanceledQueueTask(task) {
+    return mapStatus(task?.status) === 'canceled';
+}
+
+function isActiveQueueTask(task) {
+    const status = mapStatus(task?.status);
+    return status === 'queued' || status === 'running' || status === 'paused' || status === 'retrying';
+}
+
 function activityActionIconSvg(name) {
     switch (String(name || '').toLowerCase()) {
         case 'pause':
@@ -4098,6 +4150,7 @@ async function clearAllTasks() {
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification(payload?.message || 'Queue cleared.', 'info');
         }
+        clearVisibleQueueTasks(task => !isActiveQueueTask(task));
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear all downloads:', error);
@@ -4139,6 +4192,7 @@ async function clearCompletedTasks() {
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification(payload?.message || 'Completed downloads cleared.', 'info');
         }
+        clearVisibleQueueTasks(isCompletedQueueTask);
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear completed downloads:', error);
@@ -4168,6 +4222,7 @@ async function clearCanceledTasks() {
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification(payload?.message || 'Canceled downloads cleared.', 'info');
         }
+        clearVisibleQueueTasks(isCanceledQueueTask);
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear canceled downloads:', error);
@@ -4663,6 +4718,7 @@ async function deleteFailedTask(taskId) {
 
     try {
         await ensureJsonActionSuccess('/Activities/DeleteFailed', { uuid: taskId });
+        removeVisibleQueueTasks(taskId);
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error(`Failed to delete task ${taskId}:`, error);
@@ -5478,6 +5534,26 @@ function normalizeQueueEventUuid(payload) {
     return '';
 }
 
+function normalizeQueueEventUuids(payload) {
+    if (Array.isArray(payload)) {
+        return payload.map(normalizeQueueEventUuid).filter(Boolean);
+    }
+
+    const uuid = normalizeQueueEventUuid(payload);
+    if (uuid) {
+        return [uuid];
+    }
+
+    if (payload && typeof payload === 'object') {
+        const values = payload.uuids || payload.ids || payload.items;
+        if (Array.isArray(values)) {
+            return values.map(normalizeQueueEventUuid).filter(Boolean);
+        }
+    }
+
+    return [];
+}
+
 function extractQueueEventMessage(value) {
     if (!value) {
         return '';
@@ -5717,6 +5793,51 @@ function initQueueRealtimeEvents() {
         if (message) {
             setTaskActivity(taskId, message);
         }
+    });
+    connection.on('addedToQueue', () => {
+        void loadQueueFromServer({ force: true });
+    });
+    connection.on('startDownload', (payload) => {
+        const taskId = normalizeQueueEventUuid(payload);
+        if (!taskId) {
+            return;
+        }
+
+        const task = tasks.find(entry => entry.taskId === taskId);
+        if (task && task.status !== 'running') {
+            task.status = 'running';
+            refreshQueueViewState();
+        } else {
+            scheduleQueueHydrationRefresh();
+        }
+    });
+    connection.on('finishDownload', (payload) => {
+        const taskId = normalizeQueueEventUuid(payload);
+        if (!taskId) {
+            return;
+        }
+
+        const task = tasks.find(entry => entry.taskId === taskId);
+        if (task) {
+            task.status = 'complete';
+            task.progress = 100;
+            refreshQueueViewState();
+        }
+        scheduleQueueHydrationRefresh();
+    });
+    connection.on('removedFromQueue', (payload) => {
+        const taskIds = normalizeQueueEventUuids(payload);
+        if (removeVisibleQueueTasks(taskIds)) {
+            return;
+        }
+
+        scheduleQueueHydrationRefresh();
+    });
+    connection.on('removedAllDownloads', () => {
+        void loadQueueFromServer({ force: true });
+    });
+    connection.on('removedFinishedDownloads', () => {
+        void loadQueueFromServer({ force: true });
     });
 
     if (!queueRealtimeLifecycleAttached) {

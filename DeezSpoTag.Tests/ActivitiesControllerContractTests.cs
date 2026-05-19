@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.IO;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Queue;
@@ -83,5 +84,54 @@ public sealed class ActivitiesControllerContractTests
 
         var mapped = mapStatusForUi!.Invoke(null, ["skipped"]) as string;
         Assert.Equal("completed", mapped);
+    }
+
+    [Fact]
+    public void ActivitiesDownloadsTab_HandlesQueueRemovalEvents()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("connection.on('removedFromQueue'", source, StringComparison.Ordinal);
+        Assert.Contains("connection.on('removedAllDownloads'", source, StringComparison.Ordinal);
+        Assert.Contains("connection.on('removedFinishedDownloads'", source, StringComparison.Ordinal);
+        Assert.Contains("connection.on('addedToQueue'", source, StringComparison.Ordinal);
+        Assert.Contains("refreshQueueViewState", source, StringComparison.Ordinal);
+        Assert.Contains("isActiveQueueTask", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesDeleteFailed_EmitsRemovedFromQueue()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Controllers/ActivitiesController.cs"));
+
+        Assert.Contains("_deezspotagListener.SendRemovedFromQueue(request.Uuid);", source, StringComparison.Ordinal);
+        Assert.Contains("MarkActivitiesClearedByUuidAsync(request.Uuid", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadScript_HandlesQueueRemovalEventsOutsideActivities()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/wwwroot/js/download.js"));
+
+        Assert.Contains("this.connection.on(\"removedFromQueue\"", source, StringComparison.Ordinal);
+        Assert.Contains("this.connection.on(\"removedAllDownloads\"", source, StringComparison.Ordinal);
+        Assert.Contains("this.connection.on(\"removedFinishedDownloads\"", source, StringComparison.Ordinal);
+        Assert.Contains("clearLocalQueue()", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RemovedAllDownloadsEvent_AlwaysSendsPayload()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Shared/Models/IDeezSpoTagListener.cs"));
+
+        Assert.Contains("Send(\"removedAllDownloads\", new { currentItem });", source, StringComparison.Ordinal);
     }
 }

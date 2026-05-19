@@ -200,11 +200,15 @@ public class ActivitiesController : Controller
     {
         try
         {
+            var hidden = 0;
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CompletedStatus, HttpContext.RequestAborted);
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CompleteStatus, HttpContext.RequestAborted);
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(SkippedStatus, HttpContext.RequestAborted);
             var deleted = 0;
             deleted += await _queueRepository.DeleteClearableByStatusAsync(CompletedStatus, HttpContext.RequestAborted);
             deleted += await _queueRepository.DeleteClearableByStatusAsync(CompleteStatus, HttpContext.RequestAborted);
             deleted += await _queueRepository.DeleteClearableByStatusAsync(SkippedStatus, HttpContext.RequestAborted);
-            if (deleted > 0)
+            if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedFinishedDownloads();
             }
@@ -216,8 +220,9 @@ public class ActivitiesController : Controller
             return Json(new
             {
                 success = true,
-                message = deleted > 0 ? "Completed downloads cleared" : "No completed downloads to clear",
-                deleted
+                message = hidden > 0 || deleted > 0 ? "Completed downloads cleared" : "No completed downloads to clear",
+                deleted,
+                hidden
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -232,10 +237,13 @@ public class ActivitiesController : Controller
     {
         try
         {
+            var hidden = 0;
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
             var deleted = 0;
             deleted += await _queueRepository.DeleteClearableByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
             deleted += await _queueRepository.DeleteClearableByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
-            if (deleted > 0)
+            if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedFinishedDownloads();
             }
@@ -247,8 +255,9 @@ public class ActivitiesController : Controller
             return Json(new
             {
                 success = true,
-                message = deleted > 0 ? "Canceled downloads cleared" : "No canceled downloads to clear",
-                deleted
+                message = hidden > 0 || deleted > 0 ? "Canceled downloads cleared" : "No canceled downloads to clear",
+                deleted,
+                hidden
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -376,15 +385,21 @@ public class ActivitiesController : Controller
                 return BadRequest("Only failed or canceled downloads can be deleted");
             }
 
+            var hidden = await _queueRepository.MarkActivitiesClearedByUuidAsync(request.Uuid, HttpContext.RequestAborted);
             var deleted = await _queueRepository.DeleteClearableByUuidAsync(request.Uuid);
             if (deleted == 0)
             {
-                return BadRequest("Download cannot be removed until its destination move has completed.");
+                var itemHidden = hidden > 0;
+                if (!itemHidden)
+                {
+                    return BadRequest("Download cannot be removed until its destination move has completed.");
+                }
             }
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Removed failed download {Uuid} from queue", LogSanitizer.OneLine(request.Uuid));
             }
+            _deezspotagListener.SendRemovedFromQueue(request.Uuid);
             return Json(new { success = true, message = "Download removed from queue" });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -454,8 +469,9 @@ public class ActivitiesController : Controller
     {
         try
         {
+            var hidden = await _queueRepository.MarkTerminalActivitiesClearedAsync(HttpContext.RequestAborted);
             var deleted = await _queueRepository.DeleteClearableAllAsync(HttpContext.RequestAborted);
-            if (deleted > 0)
+            if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedAllDownloads(null);
             }
@@ -467,8 +483,9 @@ public class ActivitiesController : Controller
             return Json(new
             {
                 success = true,
-                message = deleted > 0 ? "All downloads cleared" : "Queue is already empty",
-                deleted
+                message = hidden > 0 || deleted > 0 ? "All downloads cleared" : "Queue is already empty",
+                deleted,
+                hidden
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

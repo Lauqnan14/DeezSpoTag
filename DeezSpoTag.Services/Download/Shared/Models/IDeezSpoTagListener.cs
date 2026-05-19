@@ -137,7 +137,7 @@ public interface IDeezSpoTagListener
     /// </summary>
     void SendRemovedAllDownloads(string? currentItem = null)
     {
-        Send("removedAllDownloads", currentItem);
+        Send("removedAllDownloads", new { currentItem });
     }
 
     /// <summary>

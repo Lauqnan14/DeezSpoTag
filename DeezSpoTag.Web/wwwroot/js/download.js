@@ -738,6 +738,26 @@ DeezSpoTag.Download = {
                     this.handleDownloadCompleted(downloadId, data);
                 });
 
+                this.connection.on("removedFromQueue", (data) => {
+                    const downloadId = data?.uuid || data?.id || data;
+                    if (!downloadId) {
+                        this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after remove failed', error));
+                        return;
+                    }
+
+                    this.removeFromLocalQueue(String(downloadId));
+                    this.updateQueueDisplay();
+                });
+
+                this.connection.on("removedAllDownloads", () => {
+                    this.clearLocalQueue();
+                    this.updateQueueDisplay();
+                });
+
+                this.connection.on("removedFinishedDownloads", () => {
+                    this.refreshQueueFromServer().catch((error) => console.warn('Queue sync after clear finished failed', error));
+                });
+
                 // Queue errors when adding items
                 this.connection.on("queueError", (error) => {
                     const message = error?.error || error?.message || 'Failed to add to queue';
@@ -2257,6 +2277,17 @@ DeezSpoTag.Download = {
             cancelAnimationFrame(this.progressAnimationFrameById[downloadId]);
             delete this.progressAnimationFrameById[downloadId];
         }
+    },
+
+    clearLocalQueue() {
+        Object.values(this.progressAnimationFrameById || {}).forEach((frameId) => {
+            if (frameId != null) {
+                cancelAnimationFrame(frameId);
+            }
+        });
+        this.queue.items = [];
+        this.progressCacheById = {};
+        this.progressAnimationFrameById = {};
     },
 
     updateLocalQueueItem(downloadId, updates) {

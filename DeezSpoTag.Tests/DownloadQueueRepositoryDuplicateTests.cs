@@ -229,6 +229,58 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task MarkActivitiesClearedByStatusAsync_HidesPendingMoveRowsWithoutDeletingDestinationId()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("completed-pending-visible", "Artist", "Pending", 44),
+            CancellationToken.None);
+        await context.QueueRepository.UpdateStatusAsync(
+            "completed-pending-visible",
+            "completed",
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: CancellationToken.None);
+
+        Assert.Contains(
+            await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 10, CancellationToken.None),
+            item => item.QueueUuid == "completed-pending-visible");
+
+        var hidden = await context.QueueRepository.MarkActivitiesClearedByStatusAsync("completed", CancellationToken.None);
+        var deleted = await context.QueueRepository.DeleteClearableByStatusAsync("completed", CancellationToken.None);
+
+        Assert.Equal(1, hidden);
+        Assert.Equal(0, deleted);
+        var persisted = await context.QueueRepository.GetByUuidAsync("completed-pending-visible", CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal(44, persisted.DestinationFolderId);
+        Assert.DoesNotContain(
+            await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 10, CancellationToken.None),
+            item => item.QueueUuid == "completed-pending-visible");
+    }
+
+    [Fact]
+    public async Task RequeueAsync_RestoresActivitiesVisibilityForClearedRow()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("failed-hidden-retry", "Artist", "Retry", 77) with { Status = "failed" },
+            CancellationToken.None);
+
+        await context.QueueRepository.MarkActivitiesClearedByUuidAsync("failed-hidden-retry", CancellationToken.None);
+        Assert.DoesNotContain(
+            await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 10, CancellationToken.None),
+            item => item.QueueUuid == "failed-hidden-retry");
+
+        var requeued = await context.QueueRepository.RequeueAsync("failed-hidden-retry", CancellationToken.None);
+
+        Assert.True(requeued);
+        Assert.Contains(
+            await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 10, CancellationToken.None),
+            item => item.QueueUuid == "failed-hidden-retry");
+    }
+
+    [Fact]
     public async Task UpdateQueueMetadataAsync_ProtectsCompletedRowWhenDestinationIsRecovered()
     {
         await using var context = await CreateContextAsync();
