@@ -84,7 +84,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
-    public async Task GetActiveDownloadCountAsync_CountsQueuedRunningAndPausedOnly()
+    public async Task GetActiveDownloadCountAsync_CountsEveryDownloadActiveStatus()
     {
         await using var context = await CreateContextAsync();
         await context.QueueRepository.EnqueueAsync(
@@ -97,6 +97,15 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             CreateQueueItem("active-paused", "Artist", "Paused", 1) with { Status = "paused" },
             CancellationToken.None);
         await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-inqueue", "Artist", "In Queue", 1) with { Status = "inqueue" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-downloading", "Artist", "Downloading", 1) with { Status = "downloading" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-retrying", "Artist", "Retrying", 1) with { Status = "retrying" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
             CreateQueueItem("inactive-completed", "Artist", "Completed", 1) with { Status = "completed" },
             CancellationToken.None);
         await context.QueueRepository.EnqueueAsync(
@@ -105,7 +114,38 @@ public sealed class DownloadQueueRepositoryDuplicateTests
 
         var activeCount = await context.QueueRepository.GetActiveDownloadCountAsync(CancellationToken.None);
 
-        Assert.Equal(3, activeCount);
+        Assert.Equal(6, activeCount);
+        Assert.True(await context.QueueRepository.HasActiveDownloadsAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetUnfinishedWatchlistDownloadCountAsync_WaitsForCompletedMove()
+    {
+        await using var context = await CreateContextAsync();
+        const string payloadJson = """
+            {"WatchlistOrigin":"playlist","WatchlistSource":"spotify","WatchlistPlaylistId":"playlist-1","WatchlistTrackId":"track-1"}
+            """;
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("watch-queued", "Artist", "Queued", 1) with { PayloadJson = payloadJson },
+            CancellationToken.None);
+
+        var queuedCount = await context.QueueRepository.GetUnfinishedWatchlistDownloadCountAsync(CancellationToken.None);
+        Assert.Equal(1, queuedCount);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "watch-queued",
+            "completed",
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: CancellationToken.None);
+
+        var completedBeforeMoveCount = await context.QueueRepository.GetUnfinishedWatchlistDownloadCountAsync(CancellationToken.None);
+        Assert.Equal(1, completedBeforeMoveCount);
+
+        await context.QueueRepository.MarkMoveSucceededAsync("watch-queued", CancellationToken.None);
+
+        var movedCount = await context.QueueRepository.GetUnfinishedWatchlistDownloadCountAsync(CancellationToken.None);
+        Assert.Equal(0, movedCount);
     }
 
     [Fact]

@@ -1000,14 +1000,15 @@
                 Watchlist Settings
             </div>
             <div class="settings-content">
-                <div class="switch-row">
-                    <label class="switch-label" for="watchEnabled">Enable Watchlist</label>
-                    <span class="switch">
-                        <input type="checkbox" id="watchEnabled">
-                        <span class="slider"></span>
-                    </span>
-                </div>
-                <div class="form-row-3">
+	                <div class="switch-row">
+	                    <label class="switch-label" for="watchEnabled">Enable Watchlist</label>
+	                    <span class="switch">
+	                        <input type="checkbox" id="watchEnabled">
+	                        <span class="slider"></span>
+	                    </span>
+	                </div>
+	                <div class="warning-text" data-tooltip-target="watchEnabled">Watchlist will not add new files while previous watchlist downloads are still in the queue, actively downloading, or waiting to move to the destination folder, to avoid unnecessary resource consumption.</div>
+	                <div class="form-row-3">
                     <div class="form-group">
                         <label for="watchPollIntervalSeconds">Watch Interval (seconds)</label>
                         <input type="number" id="watchPollIntervalSeconds" min="1" max="86400" value="3600">

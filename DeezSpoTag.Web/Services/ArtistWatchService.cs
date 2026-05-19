@@ -98,6 +98,7 @@ public sealed class ArtistWatchService
         await CheckSpotifyArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckAppleArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckDeezerArtistAsync(artist, settings, albumGroups, cancellationToken);
+        await TouchArtistWatchStateAsync(artist, cancellationToken);
     }
 
     private async Task CheckSpotifyArtistAsync(
@@ -716,6 +717,19 @@ public sealed class ArtistWatchService
         }
 
         await _libraryRepository.AddArtistWatchAlbumsAsync(artistId, insertedAlbums, cancellationToken);
+    }
+
+    private async Task TouchArtistWatchStateAsync(
+        WatchlistArtistDto artist,
+        CancellationToken cancellationToken)
+    {
+        var state = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
+        await _libraryRepository.UpsertArtistWatchStateAsync(
+            artist.ArtistId,
+            state?.SpotifyId ?? artist.SpotifyId,
+            state?.BatchNextOffset,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
     }
 
     internal static IReadOnlyList<string> NormalizeAlbumGroups(IEnumerable<string>? configuredGroups)

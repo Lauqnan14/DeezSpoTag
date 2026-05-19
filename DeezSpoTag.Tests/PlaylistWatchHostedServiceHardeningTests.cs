@@ -221,6 +221,33 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RunOnce_UsesPersistedLastChecked_ToRespectIntervalAfterRestart()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchDelayBetweenPlaylistsSeconds = 3600;
+        _settingsService.SaveSettings(settings);
+
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-persisted-delay", "Persisted Delay", null, null, null);
+
+        var firstHosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        await InvokeRunOnceAsync(firstHosted);
+
+        var state = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-persisted-delay", CancellationToken.None);
+        Assert.NotNull(state?.LastCheckedUtc);
+        var firstLastCheckedUtc = state!.LastCheckedUtc;
+
+        var restartedHosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        await InvokeRunOnceAsync(restartedHosted);
+
+        var stateAfterRestart = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-persisted-delay", CancellationToken.None);
+        Assert.Equal(firstLastCheckedUtc, stateAfterRestart?.LastCheckedUtc);
+        var restartedLastRun = GetLastRunMap(restartedHosted);
+        Assert.True(restartedLastRun.ContainsKey("playlist:unsupported:pl-persisted-delay"));
+        var restartedFailures = GetFailureMap(restartedHosted);
+        Assert.Empty(restartedFailures);
+    }
+
+    [Fact]
     public async Task RunOnce_BackoffWarnings_OnlyLogAtThresholdMilestones()
     {
         await _repository.AddPlaylistWatchlistAsync("spotify", "pl-log-threshold", "Failing", null, null, null);

@@ -45,6 +45,8 @@ public sealed class PlaylistWatchService
     private const string TidalSource = "tidal";
     private const string PlaylistWatchType = "playlist";
     private const string QueuedStatus = "queued";
+    private const string ArtistWatchOrigin = "artist";
+    private const string PlaylistWatchOrigin = "playlist";
     private const string AlbumField = "album";
     private const string JsonTitleProperty = "title";
     private const string JsonItemsProperty = "items";
@@ -199,6 +201,7 @@ public sealed class PlaylistWatchService
         var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
         var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
         var candidates = await FetchLivePlaylistTrackCandidatesAsync(source, sourceId, cancellationToken);
+        await TouchPlaylistWatchStateAsync(source, sourceId, candidates.Count, cancellationToken);
         if (candidates.Count == 0)
         {
             return new PlaylistReconciliationResult(false, "No playlist tracks were available to reconcile.", 0, 0, 0, 0, 0, 0, null);
@@ -255,7 +258,8 @@ public sealed class PlaylistWatchService
                 preference?.PreferredEngine,
                 preference?.DownloadVariantMode,
                 preference?.AtmosDestinationFolderId,
-                new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules)),
+                new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules),
+                PlaylistWatchOrigin),
             cancellationToken);
         await AddPlaylistWatchHistoryAsync(source, sourceId, playlist.Name, queueResult.QueuedCount, cancellationToken);
 
@@ -322,6 +326,25 @@ public sealed class PlaylistWatchService
                 queuedCount,
                 QueuedStatus,
                 ArtistName: null),
+            cancellationToken);
+    }
+
+    private async Task TouchPlaylistWatchStateAsync(
+        string source,
+        string sourceId,
+        int trackCount,
+        CancellationToken cancellationToken)
+    {
+        var state = await _libraryRepository.GetPlaylistWatchStateAsync(source, sourceId, cancellationToken);
+        await _libraryRepository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                source,
+                sourceId,
+                state?.SnapshotId,
+                trackCount,
+                state?.BatchNextOffset,
+                state?.BatchProcessingSnapshotId,
+                DateTimeOffset.UtcNow),
             cancellationToken);
     }
 
@@ -1391,7 +1414,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var result = await QueueSpotifyTracksAsync(
             tracks,
             destinationFolderId,
-            BuildQueueWatchOptions(sourceLabel, null, null),
+            BuildQueueWatchOptions(sourceLabel, null, null, watchlistOrigin: ArtistWatchOrigin),
             cancellationToken);
         return result.QueuedCount;
     }
@@ -1407,7 +1430,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var result = await QueueDeezerTracksAsync(
             tracks,
             destinationFolderId,
-            BuildQueueWatchOptions(sourceLabel, null, null),
+            BuildQueueWatchOptions(sourceLabel, null, null, watchlistOrigin: ArtistWatchOrigin),
             cancellationToken);
         return result.QueuedCount;
     }
@@ -1443,7 +1466,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var result = await QueueWatchIntentTracksAsync(
             watchTracks,
             destinationFolderId,
-            BuildQueueWatchOptions(sourceLabel, null, null),
+            BuildQueueWatchOptions(sourceLabel, null, null, watchlistOrigin: ArtistWatchOrigin),
             cancellationToken);
         return result.QueuedCount;
     }
@@ -1682,7 +1705,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? preferredEngine = null,
         string? downloadVariantMode = null,
         long? atmosDestinationFolderId = null,
-        QueueWatchRuleSet? ruleSet = null)
+        QueueWatchRuleSet? ruleSet = null,
+        string? watchlistOrigin = null)
     {
         return new QueueWatchOptions(
             sourceLabel,
@@ -1692,7 +1716,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             downloadVariantMode,
             atmosDestinationFolderId,
             ruleSet?.RoutingRules,
-            ruleSet?.BlockRules);
+            ruleSet?.BlockRules,
+            watchlistOrigin);
     }
 
     private static long? ResolveRoutingFolderId(DownloadIntent intent, IReadOnlyList<PlaylistTrackRoutingRule>? rules, long? defaultFolderId)
@@ -1859,6 +1884,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             WatchlistSource = sourceIntent.WatchlistSource,
             WatchlistPlaylistId = sourceIntent.WatchlistPlaylistId,
             WatchlistTrackId = sourceIntent.WatchlistTrackId,
+            WatchlistOrigin = sourceIntent.WatchlistOrigin,
             HasAtmos = sourceIntent.HasAtmos,
             HasAppleDigitalMaster = sourceIntent.HasAppleDigitalMaster,
             Danceability = sourceIntent.Danceability,
@@ -1980,6 +2006,20 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
+        var unfinishedWatchlistCount = await queueRepository.GetUnfinishedWatchlistDownloadCountAsync(cancellationToken);
+        if (unfinishedWatchlistCount > 0)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "{Source} watch queue deferred because previous watchlist downloads have not finished moving to destination. unfinished={UnfinishedWatchlistDownloads}",
+                    options.SourceLabel,
+                    unfinishedWatchlistCount);
+            }
+
+            return null;
+        }
+
         var capacity = await ResolveWatchQueueCapacityAsync(queueRepository, settings.WatchMaxTracksPerPlaylistCheck, cancellationToken);
         if (capacity.Remaining <= 0)
         {
@@ -2181,6 +2221,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             intent.WatchlistTrackId = trackId;
         }
 
+        intent.WatchlistOrigin = options.WatchlistOrigin ?? string.Empty;
+
         return CreateManualParityQueueIntent(intent);
     }
 
@@ -2228,6 +2270,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             WatchlistSource = intent.WatchlistSource,
             WatchlistPlaylistId = intent.WatchlistPlaylistId,
             WatchlistTrackId = intent.WatchlistTrackId,
+            WatchlistOrigin = intent.WatchlistOrigin,
             HasAtmos = intent.HasAtmos,
             HasAppleDigitalMaster = intent.HasAppleDigitalMaster,
             AllowQualityUpgrade = intent.AllowQualityUpgrade
@@ -2812,7 +2855,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? DownloadVariantMode,
         long? AtmosDestinationFolderId,
         IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,
-        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
+        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
+        string? WatchlistOrigin);
 
     private sealed record WatchIntentTrack(string TrackId, string? Isrc, DownloadIntent Intent);
 

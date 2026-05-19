@@ -112,6 +112,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             }
 
             CleanupStaleState(items);
+            await SeedPersistedLastRunsAsync(items, repository, stoppingToken);
             await ProcessWatchItemsAsync(items, settings, scope.ServiceProvider, stoppingToken);
         }
         catch (OperationCanceledException)
@@ -317,6 +318,49 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
 
         return items;
+    }
+
+    private async Task SeedPersistedLastRunsAsync(
+        IReadOnlyList<WatchItem> items,
+        LibraryRepository repository,
+        CancellationToken cancellationToken)
+    {
+        foreach (var item in items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_lastRun.ContainsKey(item.Key))
+            {
+                continue;
+            }
+
+            var lastCheckedUtc = await ResolvePersistedLastCheckedUtcAsync(item, repository, cancellationToken);
+            if (lastCheckedUtc.HasValue)
+            {
+                _lastRun.TryAdd(item.Key, lastCheckedUtc.Value);
+            }
+        }
+    }
+
+    private static async Task<DateTimeOffset?> ResolvePersistedLastCheckedUtcAsync(
+        WatchItem item,
+        LibraryRepository repository,
+        CancellationToken cancellationToken)
+    {
+        if (item.Kind == ArtistKind)
+        {
+            return item.Artist?.LastCheckedUtc;
+        }
+
+        if (item.Playlist is null)
+        {
+            return null;
+        }
+
+        var state = await repository.GetPlaylistWatchStateAsync(
+            item.Playlist.Source,
+            item.Playlist.SourceId,
+            cancellationToken);
+        return state?.LastCheckedUtc;
     }
 
     private WatchItemEligibility GetEligibility(WatchItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)

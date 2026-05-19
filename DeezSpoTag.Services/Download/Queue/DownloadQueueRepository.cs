@@ -315,7 +315,7 @@ WHERE status = 'queued';";
         const string sql = @"
 SELECT COUNT(*)
 FROM download_task
-WHERE status IN ('queued', 'running', 'paused');";
+WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying');";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 0 : Convert.ToInt32(result);
@@ -328,11 +328,34 @@ WHERE status IN ('queued', 'running', 'paused');";
         const string sql = @"
 SELECT 1
 FROM download_task
-WHERE status IN ('queued', 'running', 'paused')
+WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null && result is not DBNull;
+    }
+
+    public async Task<int> GetUnfinishedWatchlistDownloadCountAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT COUNT(*)
+FROM download_task
+WHERE json_valid(payload)
+AND (
+    lower(COALESCE(json_extract(payload, '$.WatchlistOrigin'), json_extract(payload, '$.watchlistOrigin'), '')) <> ''
+    OR lower(COALESCE(json_extract(payload, '$.WatchlistSource'), json_extract(payload, '$.watchlistSource'), '')) <> ''
+    OR lower(COALESCE(json_extract(payload, '$.WatchlistPlaylistId'), json_extract(payload, '$.watchlistPlaylistId'), '')) <> ''
+    OR lower(COALESCE(json_extract(payload, '$.WatchlistTrackId'), json_extract(payload, '$.watchlistTrackId'), '')) <> ''
+)
+AND NOT (
+    lower(status) IN ('completed', 'complete')
+    AND lower(COALESCE(move_status, '')) IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"')
+);";
+        await using var command = new SqliteCommand(sql, connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? 0 : Convert.ToInt32(result);
     }
 
     public async Task UpdateStatusAsync(string queueUuid, string status, string? error = null, int? downloaded = null, int? failed = null, double? progress = null, CancellationToken cancellationToken = default)

@@ -574,7 +574,8 @@ public sealed class DownloadIntentService
             DestinationFolderId = item.DestinationFolderId ?? ReadPayloadInt64(payload, "DestinationFolderId", "destinationFolderId"),
             WatchlistSource = ReadPayloadString(payload, "WatchlistSource", "watchlistSource") ?? string.Empty,
             WatchlistPlaylistId = ReadPayloadString(payload, "WatchlistPlaylistId", "watchlistPlaylistId") ?? string.Empty,
-            WatchlistTrackId = ReadPayloadString(payload, "WatchlistTrackId", "watchlistTrackId") ?? string.Empty
+            WatchlistTrackId = ReadPayloadString(payload, "WatchlistTrackId", "watchlistTrackId") ?? string.Empty,
+            WatchlistOrigin = ReadPayloadString(payload, "WatchlistOrigin", "watchlistOrigin") ?? string.Empty
         };
     }
 
@@ -5250,6 +5251,7 @@ public sealed class DownloadIntentService
             WatchlistSource = intent.WatchlistSource ?? string.Empty,
             WatchlistPlaylistId = intent.WatchlistPlaylistId ?? string.Empty,
             WatchlistTrackId = intent.WatchlistTrackId ?? string.Empty,
+            WatchlistOrigin = intent.WatchlistOrigin ?? string.Empty,
             CollectionName = resolvedAlbum,
             CollectionType = collectionType,
             ContentType = contentType,
@@ -5487,6 +5489,7 @@ public sealed class DownloadIntentService
         p.WatchlistSource = ResolveIntentString(intent.WatchlistSource, p.WatchlistSource);
         p.WatchlistPlaylistId = ResolveIntentString(intent.WatchlistPlaylistId, p.WatchlistPlaylistId);
         p.WatchlistTrackId = ResolveIntentString(intent.WatchlistTrackId, p.WatchlistTrackId);
+        p.WatchlistOrigin = ResolveIntentString(intent.WatchlistOrigin, p.WatchlistOrigin);
     }
 
     private static int ResolveIntentTrackNumber(DownloadIntent intent, int existingTrackNumber, int fallbackPosition)
