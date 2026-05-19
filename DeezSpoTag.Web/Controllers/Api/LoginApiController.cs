@@ -58,7 +58,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         /// Get login status - exact port from deezspotag connect.ts
         /// </summary>
         [HttpGet("status")]
-        public async Task<IActionResult> Status(CancellationToken cancellationToken = default)
+        public async Task<IActionResult> Status([FromQuery] bool validate = false, CancellationToken cancellationToken = default)
         {
             var gate = EnsureAccess();
             if (gate != null)
@@ -92,6 +92,16 @@ namespace DeezSpoTag.Web.Controllers.Api
                 {
                     await _loginStorage.ResetLoginCredentialsAsync();
                     return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
+                }
+
+                if (!validate)
+                {
+                    return Ok(BuildStatusResponse(
+                        LOGIN_STATUS_SUCCESS,
+                        hasStoredCredentials,
+                        loginData.User,
+                        live: false,
+                        authState: AuthStateStored));
                 }
 
                 try

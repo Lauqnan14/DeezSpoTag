@@ -1663,7 +1663,7 @@ globalThis.DeezSpoTag = {
     },
 
     async fetchConnectedPlatformResponses(fetchOptions, runDeepChecks, forceDeepRefresh = false) {
-        const deezerRequested = runDeepChecks;
+        const deezerRequested = true;
         const appleWrapperRequested = runDeepChecks;
         const deezerRequest = deezerRequested
             ? fetch('/api/login/status', fetchOptions)

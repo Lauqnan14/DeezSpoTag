@@ -23,6 +23,7 @@ public sealed class DeezerLoginStatusBehaviorTests
     private const string LiveAuthState = "live";
     private const string StatusUrl = "/api/login/status";
     private const string ValidateStatusUrl = "/api/login/status?validate=true";
+    private const string ConnectedPlatformsCacheKey = "connected-platforms-cache";
     private const string DeezerWarmupServiceName = "DeezerLoginWarmupService";
     private const string DeezSpoTagWebDirectory = "DeezSpoTag.Web";
     private const string StatusPropertyName = "status";
@@ -55,10 +56,10 @@ public sealed class DeezerLoginStatusBehaviorTests
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
         var statusCode = root.GetProperty(StatusPropertyName).GetInt32();
-        Assert.True(statusCode is 0 or 1);
+        Assert.Equal(1, statusCode);
         Assert.False(root.GetProperty(LivePropertyName).GetBoolean());
         var authState = root.GetProperty(AuthStatePropertyName).GetString();
-        Assert.Contains(authState, new[] { StoredAuthState, "validated", "disconnected" });
+        Assert.Equal(StoredAuthState, authState);
 
         if (statusCode == 1 && root.TryGetProperty(UserPropertyName, out var userElement))
         {
@@ -100,10 +101,12 @@ public sealed class DeezerLoginStatusBehaviorTests
         var repoRoot = ResolveRepoRoot();
         var siteSource = File.ReadAllText(Path.Join(repoRoot, DeezSpoTagWebDirectory, "wwwroot", "js", "site.js"));
         var loginSource = File.ReadAllText(Path.Join(repoRoot, DeezSpoTagWebDirectory, "Views", "Login", "Index.cshtml"));
+        var layoutSource = File.ReadAllText(Path.Join(repoRoot, DeezSpoTagWebDirectory, "Views", "Shared", "_Layout.cshtml"));
 
         Assert.Contains(StatusUrl, siteSource, StringComparison.Ordinal);
         Assert.DoesNotContain(ValidateStatusUrl, siteSource, StringComparison.Ordinal);
         Assert.Contains(ValidateStatusUrl, loginSource, StringComparison.Ordinal);
+        Assert.DoesNotContain($"'{ConnectedPlatformsCacheKey}',", layoutSource, StringComparison.Ordinal);
     }
 
     [Fact]
