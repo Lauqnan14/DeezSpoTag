@@ -228,6 +228,25 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
         return items;
     }
 
+    public async Task<IReadOnlyList<DownloadQueueItem>> GetActivitiesTasksAsync(
+        int terminalItemLimit,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var sql = BuildActivitiesQueueSql();
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("terminalLimit", Math.Max(0, terminalItemLimit));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var items = new List<DownloadQueueItem>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadItem(reader));
+        }
+
+        return items;
+    }
+
     public async Task<IReadOnlyList<DownloadQueueItem>> GetRunningTasksOlderThanAsync(
         TimeSpan age,
         CancellationToken cancellationToken = default)
@@ -440,6 +459,37 @@ WHERE status = 'queued'
   {extraWhereClause}
 ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
 LIMIT 1;";
+    }
+
+    private static string BuildActivitiesQueueSql()
+    {
+        const string selectedColumns = @"
+	id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+	spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+	duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
+	status, payload, progress, downloaded, failed, error, created_at, updated_at";
+
+        const string activeStatuses = "'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
+        return @"
+WITH active_items AS (
+	SELECT " + selectedColumns + @"
+	FROM download_task
+	WHERE lower(status) IN (" + activeStatuses + @")
+),
+terminal_items AS (
+	SELECT " + selectedColumns + @"
+	FROM download_task
+	WHERE lower(status) NOT IN (" + activeStatuses + @")
+	ORDER BY updated_at DESC, id DESC
+	LIMIT @terminalLimit
+)
+SELECT " + selectedColumns + @"
+FROM (
+	SELECT " + selectedColumns + @" FROM active_items
+	UNION ALL
+	SELECT " + selectedColumns + @" FROM terminal_items
+)
+ORDER BY (queue_order IS NULL), queue_order ASC, created_at ASC, id ASC;";
     }
 
     private static async Task UpdateDequeuedItemStatusAsync(

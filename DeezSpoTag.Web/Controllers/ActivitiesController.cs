@@ -47,7 +47,7 @@ public class ActivitiesController : Controller
     private readonly DownloadQueueRepository _queueRepository;
     private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly IActivityLogWriter _activityLog;
-    private readonly DeezSpoTag.Services.Download.Shared.DeezSpoTagApp _deezSpoTagApp;
+    private readonly IServiceProvider _serviceProvider;
 
     public ActivitiesController(
         ILogger<ActivitiesController> logger,
@@ -55,14 +55,14 @@ public class ActivitiesController : Controller
         DownloadQueueRepository queueRepository,
         IDeezSpoTagListener deezspotagListener,
         IActivityLogWriter activityLog,
-        DeezSpoTag.Services.Download.Shared.DeezSpoTagApp deezSpoTagApp)
+        IServiceProvider serviceProvider)
     {
         _logger = logger;
         _settingsService = settingsService;
         _queueRepository = queueRepository;
         _deezspotagListener = deezspotagListener;
         _activityLog = activityLog;
-        _deezSpoTagApp = deezSpoTagApp;
+        _serviceProvider = serviceProvider;
     }
 
     public IActionResult Index()
@@ -109,7 +109,7 @@ public class ActivitiesController : Controller
             var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
             if (status is RunningStatus or DownloadingStatus)
             {
-                await _deezSpoTagApp.PauseDownloadAsync(request.Uuid);
+                await GetDeezSpoTagApp().PauseDownloadAsync(request.Uuid);
             }
             else if (status is QueuedStatus or InQueueStatus)
             {
@@ -151,7 +151,7 @@ public class ActivitiesController : Controller
                 await _queueRepository.UpdateStatusAsync(request.Uuid, QueuedStatus, error: null, cancellationToken: HttpContext.RequestAborted);
             }
 
-            await _deezSpoTagApp.EnsureQueueProcessorRunningAsync();
+            await GetDeezSpoTagApp().EnsureQueueProcessorRunningAsync();
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Resumed download {Uuid}", LogSanitizer.OneLine(request.Uuid));
@@ -181,7 +181,7 @@ public class ActivitiesController : Controller
                 return NotFound(DownloadNotFoundMessage);
             }
 
-            await _deezSpoTagApp.CancelDownloadAsync(request.Uuid);
+            await GetDeezSpoTagApp().CancelDownloadAsync(request.Uuid);
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Cancelled download {Uuid}", LogSanitizer.OneLine(request.Uuid));
@@ -263,7 +263,7 @@ public class ActivitiesController : Controller
     {
         try
         {
-            await _deezSpoTagApp.PauseQueueAsync();
+            await GetDeezSpoTagApp().PauseQueueAsync();
             await _queueRepository.PauseQueuedAsync();
             _logger.LogInformation("Paused all downloads");
             return Json(new { success = true, message = "All downloads paused" });
@@ -281,7 +281,7 @@ public class ActivitiesController : Controller
         try
         {
             await _queueRepository.ResumePausedAsync();
-            await _deezSpoTagApp.EnsureQueueProcessorRunningAsync();
+            await GetDeezSpoTagApp().EnsureQueueProcessorRunningAsync();
             _logger.LogInformation("Resumed all downloads");
             return Json(new { success = true, message = "All downloads resumed" });
         }
@@ -315,7 +315,7 @@ public class ActivitiesController : Controller
 
                 try
                 {
-                    await _deezSpoTagApp.CancelDownloadAsync(task.QueueUuid);
+                    await GetDeezSpoTagApp().CancelDownloadAsync(task.QueueUuid);
                     canceled++;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -423,7 +423,7 @@ public class ActivitiesController : Controller
                 return BadRequest("Only failed or canceled downloads can be retried");
             }
 
-            var retryQueued = await _deezSpoTagApp.RetryDownloadAsync(request.Uuid, HttpContext.RequestAborted);
+            var retryQueued = await GetDeezSpoTagApp().RetryDownloadAsync(request.Uuid, HttpContext.RequestAborted);
             if (!retryQueued)
             {
                 return BadRequest("Retry blocked: invalid payload for this download.");
@@ -487,8 +487,9 @@ public class ActivitiesController : Controller
     private async Task<Dictionary<string, object>> GetEngineQueueAsync()
     {
         var settings = _settingsService.LoadSettings();
-        var items = await _queueRepository.GetTasksAsync();
-        var selectedItems = LimitQueueItemsForActivities(items);
+        var selectedItems = await _queueRepository.GetActivitiesTasksAsync(
+            ActivitiesTerminalItemLimit,
+            HttpContext.RequestAborted);
 
         var queue = new Dictionary<string, Dictionary<string, object>>();
         var queueOrder = new List<string>();
@@ -512,61 +513,8 @@ public class ActivitiesController : Controller
         };
     }
 
-    private static IReadOnlyList<DownloadQueueItem> LimitQueueItemsForActivities(IReadOnlyList<DownloadQueueItem> items)
-    {
-        if (items.Count == 0)
-        {
-            return items;
-        }
-
-        var terminal = new List<DownloadQueueItem>();
-        var activeCount = 0;
-        foreach (var item in items)
-        {
-            if (IsActiveQueueStatus(item.Status))
-            {
-                activeCount++;
-                continue;
-            }
-
-            terminal.Add(item);
-        }
-
-        if (terminal.Count <= ActivitiesTerminalItemLimit)
-        {
-            return items;
-        }
-
-        var keepTerminalIds = terminal
-            .Where(item => !string.IsNullOrWhiteSpace(item.QueueUuid))
-            .OrderByDescending(item => item.UpdatedAt)
-            .Take(ActivitiesTerminalItemLimit)
-            .Select(item => item.QueueUuid)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var limited = new List<DownloadQueueItem>(activeCount + keepTerminalIds.Count);
-        foreach (var item in items)
-        {
-            if (IsActiveQueueStatus(item.Status))
-            {
-                limited.Add(item);
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(item.QueueUuid) && keepTerminalIds.Contains(item.QueueUuid))
-            {
-                limited.Add(item);
-            }
-        }
-
-        return limited;
-    }
-
-    private static bool IsActiveQueueStatus(string? status)
-    {
-        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized is QueuedStatus or InQueueStatus or RunningStatus or DownloadingStatus or PausedStatus or "retrying";
-    }
+    private DeezSpoTag.Services.Download.Shared.DeezSpoTagApp GetDeezSpoTagApp()
+        => _serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.DeezSpoTagApp>();
 
     private static Dictionary<string, object> BuildQueuePayload(DownloadQueueItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {

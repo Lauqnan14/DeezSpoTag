@@ -281,7 +281,7 @@ async function runMeloday() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+function initializeMelodayCard() {
     // Use the status pill as the presence check now that the text block is gone
     if (document.getElementById('melodayStatusPill')) {
         loadMelodayStatus();
@@ -301,4 +301,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
     }
-});
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeMelodayCard);
+} else {
+    initializeMelodayCard();
+}

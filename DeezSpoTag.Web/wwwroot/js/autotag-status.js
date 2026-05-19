@@ -1669,7 +1669,7 @@
             || `Failed to load tag diff (HTTP ${statusCode}).`;
     }
 
-    document.addEventListener("DOMContentLoaded", async () => {
+    async function initializeAutoTagStatus() {
         if (!hasStatusUI()) {
             return;
         }
@@ -1686,5 +1686,11 @@
         if (isHistoryTabActive()) {
             void loadCalendar();
         }
-    });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initializeAutoTagStatus);
+    } else {
+        void initializeAutoTagStatus();
+    }
 })();

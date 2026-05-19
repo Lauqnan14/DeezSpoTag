@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
@@ -105,6 +106,37 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         var activeCount = await context.QueueRepository.GetActiveDownloadCountAsync(CancellationToken.None);
 
         Assert.Equal(3, activeCount);
+    }
+
+    [Fact]
+    public async Task GetActivitiesTasksAsync_KeepsAllActiveAndLimitsTerminalRows()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("terminal-old", "Artist", "Terminal Old", 1) with { Status = "completed" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("terminal-middle", "Artist", "Terminal Middle", 1) with { Status = "failed" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("terminal-new", "Artist", "Terminal New", 1) with { Status = "canceled" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-queued-visible", "Artist", "Active Queued", 1) with { Status = "queued" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-running-visible", "Artist", "Active Running", 1) with { Status = "running" },
+            CancellationToken.None);
+
+        var items = await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 2, CancellationToken.None);
+        var queueUuids = items.Select(item => item.QueueUuid).ToList();
+
+        Assert.Contains("active-queued-visible", queueUuids);
+        Assert.Contains("active-running-visible", queueUuids);
+        Assert.Contains("terminal-middle", queueUuids);
+        Assert.Contains("terminal-new", queueUuids);
+        Assert.DoesNotContain("terminal-old", queueUuids);
+        Assert.Equal(4, queueUuids.Count);
     }
 
     [Fact]

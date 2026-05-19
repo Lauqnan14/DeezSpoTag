@@ -260,7 +260,7 @@
         syncAutoRefresh: () => syncAutoRefreshState()
     };
 
-    document.addEventListener(DOM_CONTENT_LOADED, () => {
+    function initializeWatchlistHistory() {
         if (initialized) {
             return;
         }
@@ -268,7 +268,13 @@
         ensureControls();
         void loadHistory({ showLoading: true });
         syncAutoRefreshState();
-    });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener(DOM_CONTENT_LOADED, initializeWatchlistHistory);
+    } else {
+        initializeWatchlistHistory();
+    }
     document.addEventListener("visibilitychange", () => {
         syncAutoRefreshState();
         if (!document.hidden && isHistoryTabActive()) {

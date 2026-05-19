@@ -3027,8 +3027,51 @@ let queueRealtimeLifecycleAttached = false;
 let queueActionInFlight = false;
 let queueHydrationRefreshTimer = null;
 let lastQueueHydrationRefreshAt = 0;
+const activityLazyScripts = new Map();
+const activityLazyScriptUrls = {
+    autoTagStatus: '@Url.Content("~/js/autotag-status.js")',
+    watchlistHistory: '@Url.Content("~/js/watchlist-history.js")',
+    meloday: '@Url.Content("~/js/meloday.js")'
+};
 const activityCsrfUnsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const activityNativeFetch = globalThis.fetch.bind(globalThis);
+
+function loadActivityScript(key, src) {
+    if (activityLazyScripts.has(key)) {
+        return activityLazyScripts.get(key);
+    }
+
+    const promise = new Promise((resolve, reject) => {
+        const existing = document.querySelector(`script[data-activity-script="${key}"]`);
+        if (existing) {
+            resolve();
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.dataset.activityScript = key;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`Failed to load ${src}`));
+        document.body.appendChild(script);
+    });
+    promise.catch(() => activityLazyScripts.delete(key));
+    activityLazyScripts.set(key, promise);
+    return promise;
+}
+
+function loadAutoTagStatusScript() {
+    return loadActivityScript('autoTagStatus', activityLazyScriptUrls.autoTagStatus);
+}
+
+function loadWatchlistHistoryScript() {
+    return loadActivityScript('watchlistHistory', activityLazyScriptUrls.watchlistHistory);
+}
+
+function loadMelodayScript() {
+    return loadActivityScript('meloday', activityLazyScriptUrls.meloday);
+}
 
 function readActivityCsrfRequestToken() {
     const tokenMeta = document.querySelector('meta[name="deezspotag-csrf-token"]');
@@ -6882,19 +6925,37 @@ async function loadLibraryLogs() {
 	    }
 
 let mediaOperationsInitialized = false;
-function initMediaOperationsSection() {
+let mediaOperationsInitPromise = null;
+async function initMediaOperationsSection() {
     if (mediaOperationsInitialized) {
         return;
     }
 
-    mediaOperationsInitialized = true;
-    initMediaOperationsHelp();
-    initMetadataUpdater();
-    initMediaServerScan();
-    initDatabaseUpdater();
-    initAnalysisCard();
-    initLibraryMaintenance();
-    startLibraryScanStatusPolling();
+    if (mediaOperationsInitPromise) {
+        return mediaOperationsInitPromise;
+    }
+
+    mediaOperationsInitPromise = (async () => {
+        await loadMelodayScript();
+        if (mediaOperationsInitialized) {
+            return;
+        }
+
+        initMediaOperationsHelp();
+        initMetadataUpdater();
+        initMediaServerScan();
+        initDatabaseUpdater();
+        initAnalysisCard();
+        initLibraryMaintenance();
+        startLibraryScanStatusPolling();
+        mediaOperationsInitialized = true;
+    })();
+
+    try {
+        await mediaOperationsInitPromise;
+    } finally {
+        mediaOperationsInitPromise = null;
+    }
 }
 
 let activitiesTabRefreshBound = false;
@@ -6919,27 +6980,32 @@ function bindActivitiesTabSwitchRefresh() {
         });
     };
 
-	    const refreshByTarget = (targetSelector) => {
-	        if (targetSelector !== '#downloads-content') {
-	            stopQueuePolling();
-	        }
-	        switch (targetSelector) {
-	            case '#downloads-content':
-	                void loadQueueFromServer({ force: true });
-	                startQueuePolling();
-	                scheduleRenderTasks({ immediate: true });
-                    globalThis.DeezSpoTagWatchlistHistory?.syncAutoRefresh?.();
-	                break;
-	            case '#media-operations-content':
-	                initMediaOperationsSection();
-	                break;
-	            case '#autotag-status-content':
-	                void globalThis.DeezSpoTagAutoTagStatus?.refresh?.();
-	                break;
-            case '#history-content':
-                void globalThis.DeezSpoTagAutoTagStatus?.refresh?.({ loadCalendar: true, resetLiveFollow: true });
-                void globalThis.DeezSpoTagWatchlistHistory?.refresh?.();
+    const refreshByTarget = (targetSelector) => {
+        if (targetSelector !== '#downloads-content') {
+            stopQueuePolling();
+        }
+
+        switch (targetSelector) {
+            case '#downloads-content':
+                void loadQueueFromServer({ force: true });
+                startQueuePolling();
+                scheduleRenderTasks({ immediate: true });
                 globalThis.DeezSpoTagWatchlistHistory?.syncAutoRefresh?.();
+                break;
+            case '#media-operations-content':
+                void initMediaOperationsSection();
+                break;
+            case '#autotag-status-content':
+                void loadAutoTagStatusScript()
+                    .then(() => globalThis.DeezSpoTagAutoTagStatus?.refresh?.());
+                break;
+            case '#history-content':
+                void Promise.all([loadAutoTagStatusScript(), loadWatchlistHistoryScript()])
+                    .then(() => {
+                        void globalThis.DeezSpoTagAutoTagStatus?.refresh?.({ loadCalendar: true, resetLiveFollow: true });
+                        void globalThis.DeezSpoTagWatchlistHistory?.refresh?.();
+                        globalThis.DeezSpoTagWatchlistHistory?.syncAutoRefresh?.();
+                    });
                 break;
             case '#logs-content':
                 void loadLibraryLogs();
@@ -6965,16 +7031,13 @@ function bindActivitiesTabSwitchRefresh() {
 
     const activeTabTrigger = activitiesTabs?.querySelector('[data-bs-toggle="tab"].active');
     const activeTarget = activeTabTrigger?.dataset?.bsTarget;
-    if (activeTarget) {
+    if (activeTarget && activeTarget !== '#downloads-content') {
         refreshByTarget(activeTarget);
-        keepActivitiesTabVisible(activeTabTrigger);
     }
+    keepActivitiesTabVisible(activeTabTrigger);
 }
 
 </script>
-<script src="~/js/autotag-status.js" asp-append-version="true"></script>
-<script src="~/js/watchlist-history.js" asp-append-version="true"></script>
-<script src="~/js/meloday.js" asp-append-version="true"></script>
 <script>
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
