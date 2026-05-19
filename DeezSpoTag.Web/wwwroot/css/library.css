@@ -731,7 +731,8 @@
     box-shadow: 0 4px 16px color-mix(in srgb, var(--primary-color) 10%, transparent);
 }
 
-/* Spotify-style monitored playlist tiles: no outer boxed background. */
+/* Spotify-style monitored watchlist tiles: no outer boxed background. */
+.watchlist-artist-card,
 .watchlist-playlist-card-v2 {
     background: transparent;
     border: none;
@@ -739,9 +740,22 @@
     box-shadow: none;
 }
 
+.watchlist-artist-card:hover,
 .watchlist-playlist-card-v2:hover {
     border: none;
     box-shadow: none;
+}
+
+.watchlist-artist-card .watchlist-card-art,
+.watchlist-playlist-card-v2 .watchlist-card-art {
+    border-radius: 12px;
+    margin: 0 0 10px;
+}
+
+.watchlist-artist-card .watchlist-card-strip,
+.watchlist-playlist-card-v2 .watchlist-card-strip {
+    padding: 0 4px;
+    gap: 4px;
 }
 
 /* Top zone: square art area */
@@ -2813,6 +2827,29 @@
     .library-page .artist-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 12px;
+    }
+
+    .watchlist-artist-grid,
+    .watchlist-playlist-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        justify-content: stretch;
+        gap: 10px;
+    }
+
+    .watchlist-artist-card,
+    .watchlist-playlist-card-v2 {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .watchlist-artist-card .watchlist-card-name,
+    .watchlist-playlist-card-v2 .watchlist-card-name {
+        font-size: 15px;
+    }
+
+    .watchlist-artist-card .watchlist-card-meta,
+    .watchlist-playlist-card-v2 .watchlist-card-meta {
+        font-size: 11px;
     }
 }
 
