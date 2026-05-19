@@ -4,7 +4,7 @@
 
 # DeezSpoTag
 
-Bridge streaming sources and local libraries with one web app. DeezSpoTag handles discovery, queueing, downloading, tagging, conversion, and organization workflows for self-hosted music stacks.
+Bridge streaming services and your local libraries with one web app. DeezSpoTag handles discovery, queueing, downloading, tagging, conversion, and organization workflows for self-hosted music stacks.
 
 Support: [GitHub Issues](https://github.com/Lauqnan14/DeezSpoTag/issues)
 
@@ -31,7 +31,7 @@ DeezSpoTag automates music workflows end-to-end:
 
 ## ⚠️ Warning
 
-- This project is under active development.
+- This project is under heavy development.
 - Some features are experimental and may modify music metadata.
 - Do not run this on your main library without a backup.
 - Only Shazam, Spotify, iTunes, and Deezer have been thoroughly tested for tagging with reliable results.
@@ -54,7 +54,7 @@ DeezSpoTag automates music workflows end-to-end:
 - Multi-platform tagging controls.
 - Built-in manual lyrics editor and lyrics creator.
 - Essentia-based tagging support.
-- Animated artwork support.
+- Animated album artwork support.
 - Naming templates and folder structure customization.
 - Optional post-download conversion controls.
 - Multi-lyrics (.ttml and .lrc) support.
@@ -84,18 +84,19 @@ Use the `Login` page to configure platform credentials.
   - `Account Name` is required, and can be anything.
   - `Region` is optional.
 
-  - Open the Spotify login page.
-  - In Save Web Player Cookies, paste sp_dc.
-  - Leave User Agent blank unless you have a specific reason to override it.
-  - Click Save Web Player Cookies.
-  - Wait for the success message.
-  - Then go to Spotify Account Credentials.
-  - Enter the account name you want to use.
-  - Optionally set region.
-  - Click Login.
-  - Open Spotify desktop app or Spotify web player.
-  - Transfer playback to the DeezSpoTag device in Spotify Connect.
-  - Wait for the blob/librespot login to complete.
+- Open the Spotify login page.
+- In Save Web Player Cookies, paste sp_dc.
+- Leave User Agent blank unless you have a specific reason to override it.
+- `Click Save Web Player Cookies`
+- Wait for the success message.
+
+- Then go to Spotify Account Credentials.
+- Enter the account name you want to use.
+- Optionally set region.
+- Click Login.
+- Open Spotify desktop app or Spotify web player.
+- Transfer playback to the DeezSpoTag device in Spotify Connect.
+- Wait for the blob/librespot login to complete.
 
 ### Apple Music (Active subscription is a must)
 
@@ -147,12 +148,16 @@ match the compose defaults; use your own absolute paths on a NAS or server and
 set the matching values in `.env`.
 
 ```bash
-mkdir -p \
-  ./data \
-  ./apple-wrapper/data \
-  ./apple-wrapper/session \
-  ./downloads \
-  ./library
+sudo mkdir -p \
+  /path/to/deezspotag/data \
+  /path/to/deezspotag/apple-wrapper/data \
+  /path/to/deezspotag/apple-wrapper/session \
+  /path/to/downloads \
+  /path/to/library
+
+sudo chown -R <PUID>:<PGID> /path/to/deezspotag/data
+sudo chown -R <PUID>:<PGID> /path/to/deezspotag/apple-wrapper
+sudo chmod -R u+rwX,g+rwX /path/to/deezspotag
 ```
 
 Then configure `.env` and start:
