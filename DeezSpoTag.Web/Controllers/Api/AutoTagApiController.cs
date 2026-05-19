@@ -530,6 +530,7 @@ public sealed class EnhancementQualityChecksRequest
     public string? DuplicatesFolderName { get; set; }
     public bool? QueueAtmosAlternatives { get; set; }
     public bool? QueueLyricsRefresh { get; set; }
+    public bool? QueueTechnicalProfileUpgrades { get; set; }
     public string? MinFormat { get; set; }
     public int? MinBitDepth { get; set; }
     public double? MinSampleRateKhz { get; set; }

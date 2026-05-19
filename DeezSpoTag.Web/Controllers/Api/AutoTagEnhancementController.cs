@@ -1350,11 +1350,22 @@ public class AutoTagEnhancementController : ControllerBase
         [FromBody] EnhancementQualityChecksRequest request,
         CancellationToken cancellationToken)
     {
+        if (request is null)
+        {
+            return BadRequest("Quality check request is required.");
+        }
+
         var technicalProfiles = NormalizeTechnicalProfiles(request.TechnicalProfiles);
+        var queueTechnicalProfileUpgrades = request.QueueTechnicalProfileUpgrades == true;
+        if (queueTechnicalProfileUpgrades && technicalProfiles.Count == 0)
+        {
+            return BadRequest("Select at least one technical profile before queueing profile upgrades.");
+        }
+
         var runQualityScanner = request.FlagMissingTags == true
             || request.FlagMismatchedMetadata == true
             || request.QueueAtmosAlternatives == true
-            || technicalProfiles.Count > 0;
+            || queueTechnicalProfileUpgrades;
         var runDuplicateCheck = request.FlagDuplicates == true;
         var runLyricsRefresh = request.QueueLyricsRefresh == true;
         if (!runQualityScanner && !runDuplicateCheck && !runLyricsRefresh)
@@ -1368,8 +1379,18 @@ public class AutoTagEnhancementController : ControllerBase
             return scopeError;
         }
 
+        var profileUpgrade = queueTechnicalProfileUpgrades
+            ? await BuildTechnicalProfileUpgradePreviewAsync(request, technicalProfiles, scopedFolderIds, cancellationToken)
+            : null;
+        if (profileUpgrade is { MatchingTracks: 0 })
+        {
+            runQualityScanner = request.FlagMissingTags == true
+                || request.FlagMismatchedMetadata == true
+                || request.QueueAtmosAlternatives == true;
+        }
+
         var qualityScanner = runQualityScanner
-            ? await StartEnhancementQualityScannerAsync(request, technicalProfiles, scopedFolderIds, cancellationToken)
+            ? await StartEnhancementQualityScannerAsync(request, technicalProfiles, scopedFolderIds, queueTechnicalProfileUpgrades, cancellationToken)
             : null;
         var duplicateCheck = runDuplicateCheck
             ? await RunEnhancementDuplicateCheckAsync(request, enabledFolders, cancellationToken)
@@ -1381,6 +1402,7 @@ public class AutoTagEnhancementController : ControllerBase
         return Ok(new
         {
             success = true,
+            profileUpgrade,
             qualityScanner,
             duplicateCheck,
             lyricsRefresh
@@ -1480,6 +1502,7 @@ public class AutoTagEnhancementController : ControllerBase
         EnhancementQualityChecksRequest request,
         IReadOnlyCollection<string> technicalProfiles,
         IReadOnlyList<long> scopedFolderIds,
+        bool queueTechnicalProfileUpgrades,
         CancellationToken cancellationToken)
     {
         var minSampleRateHz = request.MinSampleRateKhz.HasValue && request.MinSampleRateKhz.Value > 0
@@ -1490,7 +1513,7 @@ public class AutoTagEnhancementController : ControllerBase
             || !string.IsNullOrWhiteSpace(request.MinFormat)
             || request.MinBitDepth.HasValue
             || minSampleRateHz.HasValue
-            || technicalProfiles.Count > 0;
+            || (queueTechnicalProfileUpgrades && technicalProfiles.Count > 0);
         var started = await _qualityScannerService.StartAsync(
             new QualityScannerStartRequest
             {
@@ -1514,6 +1537,39 @@ public class AutoTagEnhancementController : ControllerBase
             started,
             state = _qualityScannerService.GetState()
         };
+    }
+
+    private async Task<TechnicalProfileUpgradePreview> BuildTechnicalProfileUpgradePreviewAsync(
+        EnhancementQualityChecksRequest request,
+        IReadOnlyCollection<string> technicalProfiles,
+        IReadOnlyList<long> scopedFolderIds,
+        CancellationToken cancellationToken)
+    {
+        var tracks = await _folderScopeDependencies.LibraryRepository.GetQualityScanTracksAsync(
+            request.Scope,
+            scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
+            minFormat: null,
+            minBitDepth: null,
+            minSampleRateHz: null,
+            cancellationToken);
+        if (scopedFolderIds.Count > 1)
+        {
+            var allowed = scopedFolderIds.ToHashSet();
+            tracks = tracks
+                .Where(track => track.DestinationFolderId.HasValue && allowed.Contains(track.DestinationFolderId.Value))
+                .ToList();
+        }
+
+        var allowedProfiles = technicalProfiles.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var matchingTracks = tracks
+            .Count(track => allowedProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)));
+        return new TechnicalProfileUpgradePreview(
+            Requested: true,
+            SelectedProfiles: technicalProfiles.ToList(),
+            MatchingTracks: matchingTracks,
+            Message: matchingTracks > 0
+                ? $"Queued scan for {matchingTracks} track(s) in selected technical profile(s)."
+                : "No tracks matched the selected technical profile(s) in the selected library scope.");
     }
 
     private async Task<object> RunEnhancementDuplicateCheckAsync(
@@ -1625,4 +1681,10 @@ public class AutoTagEnhancementController : ControllerBase
             .Cast<string>()
             .ToList();
     }
+
+    private sealed record TechnicalProfileUpgradePreview(
+        bool Requested,
+        IReadOnlyList<string> SelectedProfiles,
+        int MatchingTracks,
+        string Message);
 }

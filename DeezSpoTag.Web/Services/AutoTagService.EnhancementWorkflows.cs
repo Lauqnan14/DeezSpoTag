@@ -22,6 +22,7 @@ public partial class AutoTagService
         string? DuplicatesFolderName,
         bool QueueLyricsRefresh,
         bool QueueAtmosAlternatives,
+        bool QueueTechnicalProfileUpgrades,
         bool RunQualityUpgradeStage,
         bool RunQualityScanner,
         IReadOnlyList<string> TechnicalProfiles)
@@ -393,12 +394,13 @@ public partial class AutoTagService
         var flagMismatchedMetadata = ReadBool(qualityChecks, "flagMismatchedMetadata") == true;
         var queueAtmosAlternatives = ReadBool(qualityChecks, "queueAtmosAlternatives") == true;
         var queueLyricsRefresh = ReadBool(qualityChecks, "queueLyricsRefresh") == true;
+        var queueTechnicalProfileUpgrades = ReadBool(qualityChecks, "queueTechnicalProfileUpgrades") == true;
         var technicalProfiles = ReadStringList(qualityChecks, "technicalProfiles")
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var runQualityUpgradeStage = flagMissingTags || flagMismatchedMetadata || technicalProfiles.Count > 0;
-        var runQualityScanner = flagMissingTags || flagMismatchedMetadata || queueAtmosAlternatives || technicalProfiles.Count > 0;
+        var runQualityUpgradeStage = flagMissingTags || flagMismatchedMetadata || (queueTechnicalProfileUpgrades && technicalProfiles.Count > 0);
+        var runQualityScanner = flagMissingTags || flagMismatchedMetadata || queueAtmosAlternatives || (queueTechnicalProfileUpgrades && technicalProfiles.Count > 0);
         return new QualityCheckOptions(
             FlagDuplicates: flagDuplicates,
             UseDuplicatesFolder: ReadBool(qualityChecks, "useDuplicatesFolder") != false,
@@ -406,6 +408,7 @@ public partial class AutoTagService
             DuplicatesFolderName: qualityChecks["duplicatesFolderName"]?.GetValue<string>(),
             QueueLyricsRefresh: queueLyricsRefresh,
             QueueAtmosAlternatives: queueAtmosAlternatives,
+            QueueTechnicalProfileUpgrades: queueTechnicalProfileUpgrades,
             RunQualityUpgradeStage: runQualityUpgradeStage,
             RunQualityScanner: runQualityScanner,
             TechnicalProfiles: technicalProfiles);

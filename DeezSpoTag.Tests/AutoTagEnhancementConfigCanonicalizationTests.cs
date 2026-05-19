@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
@@ -182,11 +183,30 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     {
         Assert.Null(typeof(EnhancementFolderUniformityRequest).GetProperty("FolderId"));
         Assert.Null(typeof(EnhancementQualityChecksRequest).GetProperty("FolderId"));
+        Assert.NotNull(typeof(EnhancementQualityChecksRequest).GetProperty("QueueTechnicalProfileUpgrades"));
 
         var endpoint = typeof(AutoTagEnhancementController).GetMethod(nameof(AutoTagEnhancementController.GetEnhancementTechnicalProfiles));
         Assert.NotNull(endpoint);
         Assert.DoesNotContain(endpoint!.GetParameters(), parameter =>
             string.Equals(parameter.Name, "folderId", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void EnhancementTechnicalProfileUpgrade_IsExplicitlyWired()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var scriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagEnhancementController.cs"));
+        var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
+
+        Assert.Contains("enhancementQueueTechnicalProfileUpgrades", viewSource, StringComparison.Ordinal);
+        Assert.Contains("queueTechnicalProfileUpgrades: checks.queueTechnicalProfileUpgrades", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("Select at least one technical profile before queueing profile upgrades.", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("BuildTechnicalProfileUpgradePreviewAsync", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("queueTechnicalProfileUpgrades && technicalProfiles.Count > 0", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("queueTechnicalProfileUpgrades && technicalProfiles.Count > 0", workflowSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("|| technicalProfiles.Count > 0;", controllerSource, StringComparison.Ordinal);
     }
 
     private static long[] ReadLongArray(JsonElement element)
@@ -196,5 +216,21 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
             .Where(static item => item.ValueKind == JsonValueKind.Number && item.TryGetInt64(out _))
             .Select(static item => item.GetInt64())
             .ToArray();
+    }
+
+    private static string ResolveRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current != null)
+        {
+            if (File.Exists(Path.Join(current.FullName, "Directory.Build.props")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new InvalidOperationException("Unable to locate repository root from test output path.");
     }
 }

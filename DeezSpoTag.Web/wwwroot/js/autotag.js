@@ -90,6 +90,7 @@
                 technicalProfiles: [],
                 queueAtmosAlternatives: false,
                 queueLyricsRefresh: false,
+                queueTechnicalProfileUpgrades: false,
                 flagDuplicates: false,
                 flagMissingTags: false,
                 flagMismatchedMetadata: false,
@@ -2032,6 +2033,7 @@
         qualityChecks.technicalProfiles = normalizeTechnicalProfiles(qualityChecks.technicalProfiles);
         qualityChecks.queueAtmosAlternatives = qualityChecks.queueAtmosAlternatives === true;
         qualityChecks.queueLyricsRefresh = qualityChecks.queueLyricsRefresh === true;
+        qualityChecks.queueTechnicalProfileUpgrades = qualityChecks.queueTechnicalProfileUpgrades === true;
         qualityChecks.flagDuplicates = qualityChecks.flagDuplicates === true;
         qualityChecks.flagMissingTags = qualityChecks.flagMissingTags === true;
         qualityChecks.flagMismatchedMetadata = qualityChecks.flagMismatchedMetadata === true;
@@ -2802,6 +2804,7 @@
         );
         setChecked("enhancementQueueAtmosAlternatives", state.config.enhancement.qualityChecks.queueAtmosAlternatives);
         setChecked("enhancementQueueLyricsRefresh", state.config.enhancement.qualityChecks.queueLyricsRefresh);
+        setChecked("enhancementQueueTechnicalProfileUpgrades", state.config.enhancement.qualityChecks.queueTechnicalProfileUpgrades);
         renderEnhancementTechnicalProfilesCatalog();
         void refreshEnhancementTechnicalProfiles();
         setChecked("autotag-write-lrc", state.config.writeLrc);
@@ -3777,6 +3780,7 @@
         qualityChecks.folderIds = parseFolderIdList(getValue("enhancementQualityFolder", (qualityChecks.folderIds ?? []).join(",")));
         qualityChecks.queueAtmosAlternatives = getChecked("enhancementQueueAtmosAlternatives", qualityChecks.queueAtmosAlternatives);
         qualityChecks.queueLyricsRefresh = getChecked("enhancementQueueLyricsRefresh", qualityChecks.queueLyricsRefresh);
+        qualityChecks.queueTechnicalProfileUpgrades = getChecked("enhancementQueueTechnicalProfileUpgrades", qualityChecks.queueTechnicalProfileUpgrades);
         qualityChecks.flagDuplicates = getChecked("flagDuplicates", qualityChecks.flagDuplicates);
         qualityChecks.flagMissingTags = getChecked("flagMissingTags", qualityChecks.flagMissingTags);
         qualityChecks.flagMismatchedMetadata = getChecked("flagMismatchedMetadata", qualityChecks.flagMismatchedMetadata);
@@ -4421,6 +4425,7 @@
                     duplicatesFolderName: checks.duplicatesFolderName,
                     queueAtmosAlternatives: checks.queueAtmosAlternatives,
                     queueLyricsRefresh: checks.queueLyricsRefresh,
+                    queueTechnicalProfileUpgrades: checks.queueTechnicalProfileUpgrades,
                     cooldownMinutes: checks.cooldownMinutes,
                     technicalProfiles: normalizeTechnicalProfiles(checks.technicalProfiles)
                 })
@@ -4437,6 +4442,9 @@
                     ? "Quality Scanner started"
                     : "Quality Scanner already running";
             }
+            const profileUpgradeSummary = payload?.profileUpgrade?.requested
+                ? String(payload.profileUpgrade.message || `Profile upgrades: ${Number(payload.profileUpgrade.matchingTracks ?? 0)} matching track(s)`)
+                : "Profile upgrades skipped";
             const duplicateSummary = payload?.duplicateCheck
                 ? `Duplicates: ${Number(payload.duplicateCheck.duplicatesFound ?? 0)} found, ${Number(payload.duplicateCheck.deleted ?? 0)} moved to ${String(payload.duplicateCheck.duplicatesFolderName || "%duplicates%")}`
                 : "Duplicate Cleaner skipped";
@@ -4448,7 +4456,7 @@
                     lyricsSummary = `Lyrics: ${Number(payload.lyricsRefresh.enqueued ?? 0)} enqueued, ${Number(payload.lyricsRefresh.skipped ?? 0)} skipped`;
                 }
             }
-            const message = `${qualityStarted}. ${duplicateSummary}. ${lyricsSummary}.`;
+            const message = `${qualityStarted}. ${profileUpgradeSummary}. ${duplicateSummary}. ${lyricsSummary}.`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
             showToast("Enhancement quality checks submitted.", "success");
         } catch (error) {
