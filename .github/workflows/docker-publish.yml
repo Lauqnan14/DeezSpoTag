@@ -153,13 +153,47 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Warm .NET base image metadata
+        if: matrix.image_name == 'deezspotag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 4 ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          retry docker buildx imagetools inspect mcr.microsoft.com/dotnet/sdk:10.0 >/dev/null
+          retry docker buildx imagetools inspect mcr.microsoft.com/dotnet/aspnet:10.0 >/dev/null
 
       - name: Build app audit image
         if: matrix.image_name == 'deezspotag'
         shell: bash
         run: |
           set -euo pipefail
-          docker buildx build \
+          retry_buildx() {
+            local attempt
+            for attempt in 1 2 3; do
+              if docker buildx build "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                return 1
+              fi
+              sleep $((attempt * 20))
+            done
+          }
+          retry_buildx \
             --platform linux/amd64 \
             --build-arg DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
             --load \
