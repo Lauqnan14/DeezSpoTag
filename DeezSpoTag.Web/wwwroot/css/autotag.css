@@ -1721,6 +1721,77 @@ body.autotag-col-resizing * {
     min-width: 126px;
 }
 
+.enhancement-settings-panel.download-section {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    margin-bottom: 0;
+}
+
+.enhancement-settings-panel .playlist-settings-section {
+    gap: 12px;
+}
+
+.enhancement-settings-panel .dropdown-trigger {
+    min-height: 38px;
+    background: var(--bg-primary);
+    border-color: color-mix(in srgb, var(--primary-color) 22%, var(--border-secondary));
+}
+
+.enhancement-settings-panel .dropdown-trigger:focus,
+.enhancement-settings-panel .dropdown-select.open .dropdown-trigger {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 24%, transparent);
+}
+
+.enhancement-settings-panel .checkbox-group {
+    align-items: flex-start;
+}
+
+.enhancement-settings-panel .enhancement-checkbox-grid .checkbox-group {
+    align-items: center;
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.enhancement-settings-panel .enhancement-checkbox-grid .checkbox-group label {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.enhancement-settings-panel .checkbox-group input[type="checkbox"] {
+    margin-top: 2px;
+    flex: 0 0 auto;
+}
+
+.enhancement-settings-panel .enhancement-checkbox-grid .checkbox-group input[type="checkbox"] {
+    margin-top: 0;
+}
+
+.enhancement-settings-panel .enhancement-action-row {
+    margin-top: 0;
+    padding-top: 2px;
+}
+
+.enhancement-settings-panel > .helper {
+    margin-top: -4px;
+}
+
 .folder-path-input {
     display: flex;
     gap: 8px;
