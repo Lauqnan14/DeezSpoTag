@@ -134,6 +134,12 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     {
         var context = await BuildTrackContextAsync(payload, settings, itemToken);
         var request = BuildRequest(payload, settings, context);
+        await QueueHelperUtils.PersistExpectedStagingPathAsync(
+            _queueRepository,
+            next.QueueUuid,
+            payload,
+            ResolveExpectedOutputPath(context),
+            itemToken);
         payload.QobuzRequestedQuality = request.Quality;
         var progressReporter = CreateProgressReporter(next.QueueUuid, itemToken);
         _activityLog.Info($"Download start: {next.QueueUuid} engine={EngineName} quality={request.Quality}");
@@ -285,6 +291,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 settings,
                 pathProcessor)
             : context;
+    }
+
+    private static string ResolveExpectedOutputPath(EngineAudioPostDownloadHelper.EngineTrackContext context)
+    {
+        return !string.IsNullOrWhiteSpace(context.PathResult.WritePath)
+            ? context.PathResult.WritePath
+            : Path.Join(context.PathResult.FilePath, context.PathResult.Filename);
     }
 
     private static QobuzDownloadRequest BuildRequest(

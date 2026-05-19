@@ -21,12 +21,18 @@ public sealed class DownloadQueueRepository
     private const string MoveStatusFailed = "failed";
     private const string MoveStatusNotRequired = "not_required";
     private readonly string _connectionString;
+    private readonly DownloadStagingCleanupService? _stagingCleanupService;
+    private readonly ILogger<DownloadQueueRepository> _logger;
     private bool _schemaEnsured;
     private readonly object _schemaLock = new();
 
-    public DownloadQueueRepository(IConfiguration configuration, ILogger<DownloadQueueRepository> logger)
+    public DownloadQueueRepository(
+        IConfiguration configuration,
+        ILogger<DownloadQueueRepository> logger,
+        DownloadStagingCleanupService? stagingCleanupService = null)
     {
-        _ = logger;
+        _logger = logger;
+        _stagingCleanupService = stagingCleanupService;
         var rawConnection =
             Environment.GetEnvironmentVariable("QUEUE_DB")
             ?? configuration.GetConnectionString("Queue")
@@ -360,6 +366,62 @@ WHERE queue_uuid = @queueUuid;";
         command.Parameters.AddWithValue("failed", (object?)failed ?? DBNull.Value);
         command.Parameters.AddWithValue("progress", (object?)progress ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated > 0)
+        {
+            await TryCleanupStagingForTerminalStatusAsync(connection, queueUuid, status, cancellationToken);
+        }
+    }
+
+    private async Task TryCleanupStagingForTerminalStatusAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        if (_stagingCleanupService == null || !IsFailedOrCanceledStatus(status))
+        {
+            return;
+        }
+
+        var payloadJson = await GetPayloadJsonAsync(connection, queueUuid, cancellationToken);
+        DownloadStagingCleanupResult result;
+        try
+        {
+            result = await _stagingCleanupService.CleanupAsync(queueUuid, payloadJson, cancellationToken);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            result = DownloadStagingCleanupResult.Failed(ex.Message, 0, 0, 0);
+            _logger.LogWarning(ex, "Staging cleanup failed for queue item {QueueUuid}", queueUuid);
+        }
+
+        await UpdateStagingCleanupStatusAsync(connection, queueUuid, result, cancellationToken);
+    }
+
+    private static bool IsFailedOrCanceledStatus(string status)
+    {
+        var normalized = status.Trim().ToLowerInvariant();
+        return normalized is "failed" or "canceled" or "cancelled";
+    }
+
+    private static async Task UpdateStagingCleanupStatusAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        DownloadStagingCleanupResult result,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+UPDATE download_task
+SET staging_cleanup_status = @status,
+    staging_cleanup_error = @error,
+    staging_cleanup_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("status", result.Status);
+        command.Parameters.AddWithValue("error", (object?)result.Error ?? DBNull.Value);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -648,6 +710,9 @@ WHERE queue_uuid = @queueUuid;";
 UPDATE download_task
 SET final_destinations_json = NULL,
     lyrics_status = NULL,
+    staging_cleanup_status = NULL,
+    staging_cleanup_error = NULL,
+    staging_cleanup_at = NULL,
     move_status = CASE
         WHEN destination_folder_id IS NOT NULL THEN '" + MoveStatusPending + @"'
         ELSE NULL
@@ -705,7 +770,12 @@ WHERE queue_uuid = @queueUuid;";
         const string sql = @"
 DELETE FROM download_task
 WHERE status = @status
-  AND (destination_folder_id IS NULL OR move_status = '" + MoveStatusMoved + @"' OR move_status = '" + MoveStatusNotRequired + @"');";
+  AND (
+    destination_folder_id IS NULL
+    OR move_status = '" + MoveStatusMoved + @"'
+    OR move_status = '" + MoveStatusNotRequired + @"'
+    OR (lower(status) IN ('failed', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+  );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("status", status);
         return await command.ExecuteNonQueryAsync(cancellationToken);
@@ -739,7 +809,12 @@ WHERE status = @status
         const string sql = @"
 DELETE FROM download_task
 WHERE queue_uuid = @queueUuid
-  AND (destination_folder_id IS NULL OR move_status = '" + MoveStatusMoved + @"' OR move_status = '" + MoveStatusNotRequired + @"');";
+  AND (
+    destination_folder_id IS NULL
+    OR move_status = '" + MoveStatusMoved + @"'
+    OR move_status = '" + MoveStatusNotRequired + @"'
+    OR (lower(status) IN ('failed', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+  );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         return await command.ExecuteNonQueryAsync(cancellationToken);
@@ -762,7 +837,8 @@ WHERE queue_uuid = @queueUuid
 DELETE FROM download_task
 WHERE destination_folder_id IS NULL
    OR move_status = '" + MoveStatusMoved + @"'
-   OR move_status = '" + MoveStatusNotRequired + @"';";
+   OR move_status = '" + MoveStatusNotRequired + @"'
+   OR (lower(status) IN ('failed', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'));";
         await using var command = new SqliteCommand(sql, connection);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -1063,6 +1139,9 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
     status TEXT NOT NULL DEFAULT 'queued',
     payload TEXT,
     final_destinations_json TEXT,
+    staging_cleanup_status TEXT,
+    staging_cleanup_error TEXT,
+    staging_cleanup_at TEXT,
     progress REAL,
     downloaded INTEGER,
     failed INTEGER,
@@ -1090,6 +1169,9 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureColumnAsync(connection, DownloadTaskTable, "queue_order", "INTEGER", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "content_type", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "final_destinations_json", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_status", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_error", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_at", "TEXT", cancellationToken);
         await EnsureIndexesAsync(connection, cancellationToken);
         await NormalizeLegacyPlaceholderIdsAsync(connection, cancellationToken);
         await NormalizeLegacyAtmosContentTypesAsync(connection, cancellationToken);

@@ -187,6 +187,12 @@ internal static class EngineQueueProcessorHelper
         if (context != null)
         {
             workContext.Callbacks.ApplyContextToRequest(request, context);
+            await QueueHelperUtils.PersistExpectedStagingPathAsync(
+                workContext.Deps.QueueRepository,
+                next.QueueUuid,
+                workContext.Payload,
+                ResolveExpectedOutputPath(context),
+                itemToken);
         }
 
         var progressReporter = QueueHelperUtils.CreateProgressReporter(
@@ -258,6 +264,13 @@ internal static class EngineQueueProcessorHelper
                 workContext.Settings,
                 pathProcessor)
             : context;
+    }
+
+    private static string ResolveExpectedOutputPath(EngineAudioPostDownloadHelper.EngineTrackContext context)
+    {
+        return !string.IsNullOrWhiteSpace(context.PathResult.WritePath)
+            ? context.PathResult.WritePath
+            : Path.Join(context.PathResult.FilePath, context.PathResult.Filename);
     }
 
     private static async Task QueuePrefetchIfNeededAsync<TPayload>(

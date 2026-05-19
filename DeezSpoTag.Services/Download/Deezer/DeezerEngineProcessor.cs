@@ -46,6 +46,17 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
     private const string DeezerLoginRequiredMessage = "Deezer login required";
     private const string TrackType = "track";
     private const string EpisodeCollectionType = "episode";
+    private static readonly IReadOnlyDictionary<int, string> StagingExtensions = new Dictionary<int, string>
+    {
+        [9] = ".flac",
+        [3] = ".mp3",
+        [1] = ".mp3",
+        [8] = ".mp3",
+        [13] = ".mp4",
+        [14] = ".mp4",
+        [15] = ".mp4",
+        [0] = ".mp3"
+    };
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
     private const string DirectUrlKey = "direct_url";
@@ -371,6 +382,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
 
         var preparation = BuildTrackDownloadPreparation(request, track);
         _activityLog.Info($"Download start: {request.QueueUuid} engine=deezer bitrate={preparation.Track.Bitrate}");
+        await PersistExpectedTrackStagingPathAsync(request, preparation.Track, cancellationToken);
 
         var result = await ExecuteTrackDownloadAsync(request, preparation, cancellationToken);
 
@@ -478,6 +490,25 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             EnableDeferredSidecarTasks: false,
             AllowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(request.Payload),
             CancellationToken: cancellationToken));
+    }
+
+    private async Task PersistExpectedTrackStagingPathAsync(
+        TrackPayloadProcessingRequest request,
+        CoreTrack track,
+        CancellationToken cancellationToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
+        var pathResult = pathProcessor.GeneratePaths(track, TrackType, request.Settings);
+        var extension = StagingExtensions.TryGetValue(track.Bitrate, out var mappedExtension)
+            ? mappedExtension
+            : ".mp3";
+        await QueueHelperUtils.PersistExpectedStagingPathAsync(
+            _queueRepository,
+            request.QueueUuid,
+            request.Payload,
+            Path.Join(pathResult.FilePath, $"{pathResult.Filename}{extension}"),
+            cancellationToken);
     }
 
     private async Task HandleTrackDownloadFailureAsync(

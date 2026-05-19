@@ -25,6 +25,7 @@ public static class DeezSpoTagServiceExtensions
     {
         services.TryAddSingleton<BackgroundWorkCoordinator>();
         services.AddSingleton<DownloadQueueRepository>();
+        services.AddSingleton<DownloadStagingCleanupService>();
         services.AddSingleton<DownloadQueueRecoveryRuntime>();
         services.AddSingleton<DownloadQueueRecoveryService>();
         services.TryAddSingleton<IDownloadTagSettingsResolver, NullDownloadTagSettingsResolver>();

@@ -94,6 +94,47 @@ internal static class QueueHelperUtils
         await queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
     }
 
+    public static async Task PersistExpectedStagingPathAsync<TQueueItem>(
+        DownloadQueueRepository queueRepository,
+        string queueUuid,
+        TQueueItem payload,
+        string filePath,
+        CancellationToken cancellationToken)
+        where TQueueItem : EngineQueueItemBase
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return;
+        }
+
+        var normalizedPath = DownloadPathResolver.NormalizeDisplayPath(filePath);
+        payload.FilePath = normalizedPath;
+        if (!payload.Files.Any(file => HasMatchingPath(file, normalizedPath)))
+        {
+            payload.Files.Add(new Dictionary<string, object> { ["path"] = normalizedPath });
+        }
+
+        var json = JsonSerializer.Serialize(payload);
+        await queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
+    }
+
+    private static bool HasMatchingPath(IReadOnlyDictionary<string, object> file, string path)
+    {
+        return TryPathEquals(file, "path", path)
+               || TryPathEquals(file, "Path", path)
+               || TryPathEquals(file, "filePath", path)
+               || TryPathEquals(file, "FilePath", path)
+               || TryPathEquals(file, "outputPath", path)
+               || TryPathEquals(file, "OutputPath", path);
+    }
+
+    private static bool TryPathEquals(IReadOnlyDictionary<string, object> file, string key, string path)
+    {
+        return file.TryGetValue(key, out var value)
+               && value is string candidate
+               && string.Equals(candidate, path, StringComparison.OrdinalIgnoreCase);
+    }
+
     public static double TryGetFileSizeMb(string filePath)
     {
         if (string.IsNullOrWhiteSpace(filePath))

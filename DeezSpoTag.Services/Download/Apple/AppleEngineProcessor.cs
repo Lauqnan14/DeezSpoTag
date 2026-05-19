@@ -444,6 +444,12 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         {
             request.OutputDir = trackContext.OutputDir;
             request.FilenameFormat = trackContext.FilenameFormat;
+            await QueueHelperUtils.PersistExpectedStagingPathAsync(
+                _queueRepository,
+                next.QueueUuid,
+                queueContext.Payload,
+                ResolveExpectedOutputPath(trackContext),
+                itemToken);
         }
         if (queueContext.VideoPayload && !string.IsNullOrWhiteSpace(queueContext.VideoDestinationRoot))
         {
@@ -518,6 +524,13 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 pathProcessor,
                 ResolveAppleDownloadType)
             : context;
+    }
+
+    private static string ResolveExpectedOutputPath(EngineAudioPostDownloadHelper.EngineTrackContext context)
+    {
+        return !string.IsNullOrWhiteSpace(context.PathResult.WritePath)
+            ? context.PathResult.WritePath
+            : Path.Join(context.PathResult.FilePath, context.PathResult.Filename);
     }
 
     private async Task TryPopulateAuthorizationTokenAsync(
