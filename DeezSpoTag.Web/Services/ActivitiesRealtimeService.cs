@@ -27,7 +27,7 @@ public sealed class ActivitiesRealtimeService
         _ = PublishAsync("autotagRunChanged", new
         {
             runId = summary.Id,
-            date = AutoTagService.GetRunDateToken(summary.StartedAt),
+            date = AutoTagService.GetRunDateToken(AutoTagService.GetRunHistoryTimestamp(summary)),
             status = summary.Status,
             startedAt = summary.StartedAt,
             finishedAt = summary.FinishedAt,

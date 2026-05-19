@@ -177,11 +177,31 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         var serviceSource = File.ReadAllText(servicePath);
         var realtimeSource = File.ReadAllText(realtimePath);
         Assert.Contains("TimeZoneInfo.ConvertTime(timestamp, TimeZoneInfo.Local)", serviceSource, StringComparison.Ordinal);
-        Assert.Contains(".GroupBy(summary => GetRunDateToken(summary.StartedAt))", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("string.Equals(GetRunDateToken(summary.StartedAt), token, StringComparison.Ordinal)", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("date = AutoTagService.GetRunDateToken(summary.StartedAt)", realtimeSource, StringComparison.Ordinal);
+        Assert.Contains(".GroupBy(summary => GetRunDateToken(GetRunHistoryTimestamp(summary)))", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("string.Equals(GetRunDateToken(GetRunHistoryTimestamp(summary)), token, StringComparison.Ordinal)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("date = AutoTagService.GetRunDateToken(AutoTagService.GetRunHistoryTimestamp(summary))", realtimeSource, StringComparison.Ordinal);
         Assert.DoesNotContain("summary.StartedAt.ToString(\"yyyy-MM-dd\")", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("summary.StartedAt.ToString(\"yyyy-MM-dd\")", realtimeSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_MovesOnlyEnhancementRunsAcrossHistoryDays()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.Contains("public DateTimeOffset? HistoryDate { get; set; }", source, StringComparison.Ordinal);
+        Assert.Contains("HistoryDate = ResolveRunHistoryDate(job)", source, StringComparison.Ordinal);
+        Assert.Contains("if (!IsEnhancementRunIntent(job.RunIntent))", source, StringComparison.Ordinal);
+        Assert.Contains("return null;", source, StringComparison.Ordinal);
+        Assert.Contains("public DateTimeOffset LastActivityAt { get; set; }", source, StringComparison.Ordinal);
+        Assert.Contains("job.LastActivityAt = DateTimeOffset.UtcNow;", source, StringComparison.Ordinal);
+        Assert.Contains("return ResolveLastActivityTimestamp(job);", source, StringComparison.Ordinal);
+        Assert.Contains("private static DateTimeOffset ResolveLastActivityTimestamp(AutoTagJob job)", source, StringComparison.Ordinal);
+        Assert.Contains("job.ResumeCheckpoint?.UpdatedAt", source, StringComparison.Ordinal);
+        Assert.Contains("job.StatusHistory", source, StringComparison.Ordinal);
     }
 
     [Fact]

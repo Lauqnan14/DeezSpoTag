@@ -101,6 +101,7 @@ public class AutoTagJob : AutoTagRunState
     public Dictionary<string, AutoTagTagDiff> TagDiffs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public AutoTagResumeCheckpoint? ResumeCheckpoint { get; set; }
     public string? ResumeFromJobId { get; set; }
+    public DateTimeOffset LastActivityAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed class AutoTagRunSummary : AutoTagRunState
@@ -108,6 +109,7 @@ public sealed class AutoTagRunSummary : AutoTagRunState
     public int LogCount { get; set; }
     public int StatusEntryCount { get; set; }
     public string? ResumeFromJobId { get; set; }
+    public DateTimeOffset? HistoryDate { get; set; }
 }
 
 public sealed class AutoTagRunDaySummary
@@ -616,7 +618,8 @@ public partial class AutoTagService
             ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
             ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim(),
             ResumeCheckpoint = resumeSeed?.Checkpoint,
-            ResumeFromJobId = null
+            ResumeFromJobId = null,
+            LastActivityAt = DateTimeOffset.UtcNow
         };
         if (resumeSourceJob != null)
         {
@@ -745,6 +748,9 @@ public partial class AutoTagService
         target.Progress = source.Progress;
         target.ExitCode = null;
         target.Error = null;
+        target.LastActivityAt = source.LastActivityAt > DateTimeOffset.MinValue
+            ? source.LastActivityAt
+            : source.StartedAt;
         if (source.Logs.Count > 0)
         {
             target.Logs.AddRange(source.Logs);
@@ -1237,12 +1243,13 @@ public partial class AutoTagService
     public IReadOnlyList<AutoTagRunDaySummary> GetArchivedRunCalendar(int year, int month)
     {
         var summaries = GetArchivedRunSummaries()
-            .Where(summary => GetRunDate(summary.StartedAt).Year == year && GetRunDate(summary.StartedAt).Month == month)
+            .Where(summary => GetRunDate(GetRunHistoryTimestamp(summary)).Year == year
+                && GetRunDate(GetRunHistoryTimestamp(summary)).Month == month)
             .OrderBy(summary => summary.StartedAt)
             .ToList();
 
         return summaries
-            .GroupBy(summary => GetRunDateToken(summary.StartedAt))
+            .GroupBy(summary => GetRunDateToken(GetRunHistoryTimestamp(summary)))
             .Select(group => new AutoTagRunDaySummary
             {
                 Date = group.Key,
@@ -1257,9 +1264,14 @@ public partial class AutoTagService
     {
         var token = date.ToString("yyyy-MM-dd");
         return GetArchivedRunSummaries()
-            .Where(summary => string.Equals(GetRunDateToken(summary.StartedAt), token, StringComparison.Ordinal))
+            .Where(summary => string.Equals(GetRunDateToken(GetRunHistoryTimestamp(summary)), token, StringComparison.Ordinal))
             .OrderByDescending(summary => summary.StartedAt)
             .ToList();
+    }
+
+    internal static DateTimeOffset GetRunHistoryTimestamp(AutoTagRunSummary summary)
+    {
+        return summary.HistoryDate ?? summary.StartedAt;
     }
 
     internal static DateOnly GetRunDate(DateTimeOffset timestamp)
@@ -5375,11 +5387,13 @@ public partial class AutoTagService
 
     private void AppendStatusHistory(AutoTagJob job, TaggingStatusWrap status)
     {
+        var timestamp = DateTimeOffset.UtcNow;
         var snapshot = new TaggingStatusSnapshot
         {
-            Timestamp = DateTimeOffset.UtcNow,
+            Timestamp = timestamp,
             Status = status
         };
+        job.LastActivityAt = timestamp;
         lock (job.StatusHistory)
         {
             job.StatusHistory.Add(snapshot);
@@ -5399,6 +5413,7 @@ public partial class AutoTagService
         }
 
         var cleaned = AnsiRegex.Replace(line, string.Empty);
+        job.LastActivityAt = DateTimeOffset.UtcNow;
         TrackStartedPlatform(job, cleaned);
         lock (job.Logs)
         {
@@ -5922,9 +5937,20 @@ public partial class AutoTagService
             AutoMoveSummary = job.AutoMoveSummary?.Clone(),
             LastPlexRefreshEnhancedFileCount = job.LastPlexRefreshEnhancedFileCount,
             ResumeFromJobId = string.IsNullOrWhiteSpace(job.ResumeFromJobId) ? null : job.ResumeFromJobId,
+            HistoryDate = ResolveRunHistoryDate(job),
             LogCount = GetArchivedLogCount(job.Id, job.Logs.Count),
             StatusEntryCount = GetArchivedStatusCount(job.Id, job.StatusHistory.Count)
         };
+    }
+
+    private static DateTimeOffset? ResolveRunHistoryDate(AutoTagJob job)
+    {
+        if (!IsEnhancementRunIntent(job.RunIntent))
+        {
+            return null;
+        }
+
+        return ResolveLastActivityTimestamp(job);
     }
 
     private AutoTagRunSummary? LoadRunSummary(string jobId)
@@ -6602,6 +6628,10 @@ public partial class AutoTagService
     {
         job.Trigger = NormalizeRunTrigger(job.Trigger);
         job.RunIntent = NormalizeRunIntent(job.RunIntent);
+        if (job.LastActivityAt <= DateTimeOffset.MinValue)
+        {
+            job.LastActivityAt = ResolveLastActivityTimestamp(job);
+        }
 
         if (!string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
         {
@@ -6626,6 +6656,31 @@ public partial class AutoTagService
         job.Error ??= "AutoTag job was interrupted by an application restart; resume is available.";
         SaveJob(job);
         TryQueueStaleRecoveryCleanup(job);
+    }
+
+    private static DateTimeOffset ResolveLastActivityTimestamp(AutoTagJob job)
+    {
+        var timestamp = job.StartedAt;
+        if (job.ResumeCheckpoint?.UpdatedAt > timestamp)
+        {
+            timestamp = job.ResumeCheckpoint.UpdatedAt;
+        }
+
+        var latestStatusTimestamp = job.StatusHistory
+            .Select(static entry => entry.Timestamp)
+            .DefaultIfEmpty(DateTimeOffset.MinValue)
+            .Max();
+        if (latestStatusTimestamp > timestamp)
+        {
+            timestamp = latestStatusTimestamp;
+        }
+
+        if (job.FinishedAt > timestamp)
+        {
+            timestamp = job.FinishedAt.Value;
+        }
+
+        return timestamp;
     }
 
     public async Task RecoverStuckJobsAsync(
