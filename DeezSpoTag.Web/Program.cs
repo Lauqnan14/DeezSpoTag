@@ -616,6 +616,7 @@ public partial class Program
     {
         if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
             || context.Request.Path.StartsWithSegments("/deezerQueueHub", StringComparison.OrdinalIgnoreCase)
+            || context.Request.Path.StartsWithSegments("/activitiesHub", StringComparison.OrdinalIgnoreCase)
             || context.Request.Path.StartsWithSegments("/crossDeviceSyncHub", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = statusCode;
@@ -1124,6 +1125,7 @@ public partial class Program
         app.MapControllers().RequireRateLimiting("DefaultApi");
         app.MapRazorPages();
         app.MapHub<DeezSpoTag.Web.Hubs.DeezerQueueHub>("/deezerQueueHub");
+        app.MapHub<DeezSpoTag.Web.Hubs.ActivitiesHub>("/activitiesHub");
         app.MapHub<DeezSpoTag.Web.Hubs.CrossDeviceSyncHub>("/crossDeviceSyncHub");
         app.MapControllerRoute(
             name: "default",
@@ -1242,6 +1244,7 @@ public partial class Program
             "Saved Deezer ARL login after HTTP readiness with a hard timeout.");
         services.AddHostedService<StartupLoginService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener, DeezSpoTag.Web.Services.SignalRDeezSpoTagListener>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ActivitiesRealtimeService>();
     }
 
     static void RegisterAutoTagServices(IServiceCollection services)
@@ -1268,7 +1271,8 @@ public partial class Program
                 LyricsRefreshQueueService = sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(),
                 CoverMaintenanceService = sp.GetRequiredService<DeezSpoTag.Web.Services.CoverPort.CoverLibraryMaintenanceService>(),
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
-                UserPreferencesStore = sp.GetRequiredService<DeezSpoTag.Web.Services.UserPreferencesStore>()
+                UserPreferencesStore = sp.GetRequiredService<DeezSpoTag.Web.Services.UserPreferencesStore>(),
+                ActivitiesRealtime = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators>(sp =>
             new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators
@@ -1299,6 +1303,11 @@ public partial class Program
                 CapabilitiesStore = sp.GetRequiredService<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AutoTagRunIndexWarmupHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.AutoTagRunIndexWarmupHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "AutoTag run history index warmup after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagStuckRecoveryHostedService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.AutoTagStuckRecoveryHostedService>(
             services,

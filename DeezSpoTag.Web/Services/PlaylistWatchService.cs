@@ -71,6 +71,7 @@ public sealed class PlaylistWatchService
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
     private readonly PlaylistSyncService _playlistSyncService;
+    private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly ILogger<PlaylistWatchService> _logger;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastPlaylistMediaSyncUtc = new(StringComparer.OrdinalIgnoreCase);
 
@@ -94,6 +95,7 @@ public sealed class PlaylistWatchService
         DeezSpoTagSettingsService settingsService,
         IServiceProvider serviceProvider,
         PlaylistSyncService playlistSyncService,
+        ActivitiesRealtimeService activitiesRealtime,
         ILogger<PlaylistWatchService> logger)
     {
         _libraryRepository = libraryRepository;
@@ -110,6 +112,7 @@ public sealed class PlaylistWatchService
         _settingsService = settingsService;
         _serviceProvider = serviceProvider;
         _playlistSyncService = playlistSyncService;
+        _activitiesRealtime = activitiesRealtime;
         _logger = logger;
     }
 
@@ -316,7 +319,7 @@ public sealed class PlaylistWatchService
             return;
         }
 
-        await _libraryRepository.AddWatchlistHistoryAsync(
+        var entry = await _libraryRepository.AddWatchlistHistoryAsync(
             new WatchlistHistoryInsert(
                 source,
                 PlaylistWatchType,
@@ -327,6 +330,10 @@ public sealed class PlaylistWatchService
                 QueuedStatus,
                 ArtistName: null),
             cancellationToken);
+        if (entry != null)
+        {
+            _activitiesRealtime.PublishWatchlistHistoryChanged(entry);
+        }
     }
 
     private async Task TouchPlaylistWatchStateAsync(

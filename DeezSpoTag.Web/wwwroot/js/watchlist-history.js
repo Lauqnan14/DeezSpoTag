@@ -2,7 +2,9 @@
     const TABLE_BODY_ID = "watchlist-history-body";
     const DOM_CONTENT_LOADED = "DOMContentLoaded";
     const WATCHLIST_HISTORY_URL = "/api/history/watchlist";
+    const SIGNALR_HUB_URL = "/activitiesHub";
     const REFRESH_INTERVAL_MS = 10000;
+    const EVENT_REFRESH_DELAY_MS = 300;
     const DEFAULT_LIMIT = 50;
     const MAX_LIMIT = 200;
     const EMPTY_HISTORY_HTML = "<tr><td colspan=\"6\">No watchlist history yet.</td></tr>";
@@ -19,10 +21,13 @@
     let activeRequestId = 0;
     let requestInFlight = false;
     let initialized = false;
+    let eventRefreshTimerId = null;
+    let signalRConnection = null;
     const state = {
         limit: DEFAULT_LIMIT,
         offset: 0,
-        total: 0
+        total: 0,
+        lastSeenId: 0
     };
     const controls = {
         container: null,
@@ -75,13 +80,48 @@
         return Math.min(MAX_LIMIT, Math.max(1, Math.floor(numeric)));
     }
 
-    function buildHistoryUrl(limit, offset) {
+    function buildHistoryUrl(limit, offset, sinceId = 0) {
         const params = new URLSearchParams({
             limit: String(clampLimit(limit)),
             offset: String(Math.max(0, Math.floor(Number(offset) || 0))),
             _: String(Date.now())
         });
+        const normalizedSinceId = Math.max(0, Math.floor(Number(sinceId) || 0));
+        if (normalizedSinceId > 0) {
+            params.set("sinceId", String(normalizedSinceId));
+        }
         return `${WATCHLIST_HISTORY_URL}?${params.toString()}`;
+    }
+
+    function updateLastSeenId(entries) {
+        if (!Array.isArray(entries)) {
+            return;
+        }
+
+        const maxId = entries.reduce((current, entry) => Math.max(current, Number(entry?.id) || 0), state.lastSeenId);
+        state.lastSeenId = Math.max(state.lastSeenId, maxId);
+    }
+
+    function buildEntryRow(entry) {
+        const name = escapeHtml(entry.name || "--");
+        const artistName = entry.artistName ? ` • ${escapeHtml(entry.artistName)}` : "";
+        let watchLabel = entry.watchType || entry.collectionType || "";
+        if (entry.watchType && entry.collectionType && entry.watchType !== entry.collectionType) {
+            watchLabel = `${entry.watchType} ${entry.collectionType}`;
+        }
+        return `
+<tr data-history-id="${escapeHtml(entry.id || "")}">
+    <td data-label="Date">${escapeHtml(formatTime(entry.createdAt))}</td>
+    <td data-label="Source">${escapeHtml(toTitleCase(entry.source))}</td>
+    <td data-label="Type">${escapeHtml(toTitleCase(watchLabel))}</td>
+    <td data-label="Name">${name}${artistName}</td>
+    <td data-label="Tracks">${escapeHtml(entry.trackCount ?? "--")}</td>
+    <td data-label="Status">${escapeHtml(toTitleCase(entry.status))}</td>
+</tr>`;
+    }
+
+    function renderEntries(entries) {
+        tableBody.innerHTML = entries.map(buildEntryRow).join("");
     }
 
     function ensureControls() {
@@ -155,6 +195,10 @@
             clearInterval(refreshTimerId);
             refreshTimerId = null;
         }
+        if (eventRefreshTimerId !== null) {
+            clearTimeout(eventRefreshTimerId);
+            eventRefreshTimerId = null;
+        }
     }
 
     function startAutoRefresh() {
@@ -223,23 +267,8 @@
                 return;
             }
 
-            tableBody.innerHTML = entries.map((entry) => {
-                const name = escapeHtml(entry.name || "--");
-                const artistName = entry.artistName ? ` • ${escapeHtml(entry.artistName)}` : "";
-                let watchLabel = entry.watchType || entry.collectionType || "";
-                if (entry.watchType && entry.collectionType && entry.watchType !== entry.collectionType) {
-                    watchLabel = `${entry.watchType} ${entry.collectionType}`;
-                }
-                return `
-<tr>
-    <td data-label="Date">${escapeHtml(formatTime(entry.createdAt))}</td>
-    <td data-label="Source">${escapeHtml(toTitleCase(entry.source))}</td>
-    <td data-label="Type">${escapeHtml(toTitleCase(watchLabel))}</td>
-    <td data-label="Name">${name}${artistName}</td>
-    <td data-label="Tracks">${escapeHtml(entry.trackCount ?? "--")}</td>
-    <td data-label="Status">${escapeHtml(toTitleCase(entry.status))}</td>
-</tr>`;
-            }).join("");
+            updateLastSeenId(entries);
+            renderEntries(entries);
             updateControls();
         } catch (error) {
             if (currentRequestId !== activeRequestId) {
@@ -255,6 +284,99 @@
         }
     }
 
+    async function loadChangedHistory() {
+        if (requestInFlight) {
+            return;
+        }
+
+        if (state.offset > 0 || state.lastSeenId <= 0) {
+            state.offset = 0;
+            await loadHistory({ force: true, showLoading: false });
+            return;
+        }
+
+        try {
+            const response = await fetch(buildHistoryUrl(state.limit, 0, state.lastSeenId), {
+                cache: "no-store",
+                headers: {
+                    "Cache-Control": "no-cache",
+                    Pragma: "no-cache"
+                }
+            });
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+
+            const payload = await response.json();
+            const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+            if (entries.length === 0) {
+                return;
+            }
+
+            updateLastSeenId(entries);
+            state.total += entries.length;
+            applyChangedEntries(entries);
+            updateControls();
+        } catch (error) {
+            console.warn("Failed to load changed watchlist history", error);
+            await loadHistory({ force: true, showLoading: false });
+        }
+    }
+
+    function applyChangedEntries(entries) {
+        const currentRows = Array.from(tableBody.querySelectorAll("tr[data-history-id]"));
+        if (currentRows.length === 0) {
+            renderEntries(entries.slice(0, state.limit));
+            return;
+        }
+
+        entries.slice().reverse().forEach((entry) => {
+            const id = String(entry?.id || "");
+            if (!id) {
+                return;
+            }
+
+            Array.from(tableBody.querySelectorAll("tr[data-history-id]"))
+                .find((row) => row.dataset.historyId === id)
+                ?.remove();
+            tableBody.insertAdjacentHTML("afterbegin", buildEntryRow(entry));
+        });
+
+        Array.from(tableBody.querySelectorAll("tr[data-history-id]"))
+            .slice(state.limit)
+            .forEach((row) => row.remove());
+    }
+
+    function queueEventRefresh() {
+        if (document.hidden || !isHistoryTabActive()) {
+            return;
+        }
+
+        if (eventRefreshTimerId !== null) {
+            clearTimeout(eventRefreshTimerId);
+        }
+        eventRefreshTimerId = setTimeout(() => {
+            eventRefreshTimerId = null;
+            void loadChangedHistory();
+        }, EVENT_REFRESH_DELAY_MS);
+    }
+
+    function connectRealtime() {
+        if (signalRConnection || !globalThis.signalR) {
+            return;
+        }
+
+        signalRConnection = new globalThis.signalR.HubConnectionBuilder()
+            .withUrl(SIGNALR_HUB_URL)
+            .withAutomaticReconnect()
+            .build();
+        signalRConnection.on("watchlistHistoryChanged", queueEventRefresh);
+        signalRConnection.start().catch((error) => {
+            console.warn("Watchlist history realtime connection failed", error);
+            signalRConnection = null;
+        });
+    }
+
     globalThis.DeezSpoTagWatchlistHistory = {
         refresh: (options) => loadHistory(options),
         syncAutoRefresh: () => syncAutoRefreshState()
@@ -266,6 +388,7 @@
         }
         initialized = true;
         ensureControls();
+        connectRealtime();
         void loadHistory({ showLoading: true });
         syncAutoRefreshState();
     }
@@ -295,9 +418,7 @@
         }
     });
     globalThis.addEventListener("deezspotag:activities-live-update", () => {
-        if (!document.hidden && isHistoryTabActive()) {
-            void loadHistory();
-        }
+        queueEventRefresh();
     });
     globalThis.addEventListener("beforeunload", stopAutoRefresh);
 })();

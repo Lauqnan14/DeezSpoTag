@@ -12,8 +12,12 @@
     const pollIntervalMs = 3000;
     const runningDetailRefreshMs = 6000;
     const idleDetailRefreshMs = 20000;
+    const realtimeRefreshDelayMs = 300;
+    const signalRHubUrl = "/activitiesHub";
     const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let pollTimer = null;
+    let realtimeRefreshTimer = null;
+    let signalRConnection = null;
 
     const state = {
         currentFilter: "all",
@@ -1148,6 +1152,51 @@
         await pollJob();
     }
 
+    function scheduleAutoTagRunRefresh(payload) {
+        if (document.hidden || !isHistoryTabActive()) {
+            return;
+        }
+
+        if (realtimeRefreshTimer) {
+            clearTimeout(realtimeRefreshTimer);
+        }
+        realtimeRefreshTimer = setTimeout(() => {
+            realtimeRefreshTimer = null;
+            void refreshAutoTagRunHistory(payload);
+        }, realtimeRefreshDelayMs);
+    }
+
+    async function refreshAutoTagRunHistory(payload) {
+        const date = payload?.date || state.selectedDate || toDateToken(new Date());
+        const runDate = date instanceof Date ? toDateToken(date) : String(date || "");
+        const runMonth = runDate.length >= 7 ? runDate.slice(0, 7) : "";
+        const selectedMonth = `${state.calendarMonth.getFullYear()}-${String(state.calendarMonth.getMonth() + 1).padStart(2, "0")}`;
+        if (runMonth && runMonth !== selectedMonth) {
+            return;
+        }
+
+        await loadCalendar();
+        if (runDate && runDate === state.selectedDate) {
+            await loadRunsForDate(runDate);
+        }
+    }
+
+    function connectRealtimeHistory() {
+        if (signalRConnection || !globalThis.signalR) {
+            return;
+        }
+
+        signalRConnection = new globalThis.signalR.HubConnectionBuilder()
+            .withUrl(signalRHubUrl)
+            .withAutomaticReconnect()
+            .build();
+        signalRConnection.on("autotagRunChanged", scheduleAutoTagRunRefresh);
+        signalRConnection.start().catch((error) => {
+            console.warn("AutoTag history realtime connection failed", error);
+            signalRConnection = null;
+        });
+    }
+
     function bindPageResumeRefresh() {
         globalThis.addEventListener("focus", () => {
             if (!document.hidden) {
@@ -1682,6 +1731,7 @@
         bindDiffActions();
         bindHistoryNavigation();
         bindPageResumeRefresh();
+        connectRealtimeHistory();
         void pollJob();
         if (isHistoryTabActive()) {
             void loadCalendar();

@@ -125,6 +125,44 @@ SELECT spotify_id, deezer_id FROM artist_watchlist WHERE artist_id=1;";
         }
     }
 
+    [Fact]
+    public async Task AddWatchlistHistoryAsync_ReturnsInsertedEntry_And_SinceQueryReturnsNewerRows()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+        var repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
+
+        var first = await repository.AddWatchlistHistoryAsync(new WatchlistHistoryInsert(
+            " spotify ",
+            "playlist",
+            " one ",
+            "One",
+            "playlist",
+            2,
+            "queued",
+            ArtistName: null));
+        var second = await repository.AddWatchlistHistoryAsync(new WatchlistHistoryInsert(
+            "spotify",
+            "playlist",
+            "two",
+            "Two",
+            "playlist",
+            3,
+            "queued",
+            ArtistName: null));
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal("spotify", first!.Source);
+        Assert.Equal("one", first.SourceId);
+
+        var newer = await repository.GetWatchlistHistorySinceAsync(first.Id, 50);
+
+        var single = Assert.Single(newer);
+        Assert.Equal(second!.Id, single.Id);
+        Assert.Equal("two", single.SourceId);
+    }
+
     private static async Task<bool> IndexExistsAsync(SqliteConnection connection, string name)
     {
         await using var command = connection.CreateCommand();

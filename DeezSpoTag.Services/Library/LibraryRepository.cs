@@ -6062,19 +6062,20 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
         return updated > 0;
     }
 
-    public async Task AddWatchlistHistoryAsync(
+    public async Task<WatchlistHistoryDto?> AddWatchlistHistoryAsync(
         WatchlistHistoryInsert entry,
         CancellationToken cancellationToken = default)
     {
         if (!TryNormalizePlaylistWatchKey(entry.Source, entry.SourceId, out var normalizedSource, out var normalizedSourceId))
         {
-            return;
+            return null;
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO watchlist_history (source, watch_type, source_id, name, collection_type, track_count, status, artist_name)
-VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @status, @artistName);";
+VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @status, @artistName)
+RETURNING id, created_at;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("watchType", entry.WatchType);
@@ -6084,7 +6085,26 @@ VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @st
         command.Parameters.AddWithValue("trackCount", entry.TrackCount);
         command.Parameters.AddWithValue("status", entry.Status);
         command.Parameters.AddWithValue("artistName", (object?)entry.ArtistName ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var created = await reader.IsDBNullAsync(1, cancellationToken)
+            ? DateTimeOffset.UtcNow
+            : ParseDateTimeOffsetInvariant(reader.GetString(1));
+        return new WatchlistHistoryDto(
+            reader.GetInt64(0),
+            normalizedSource,
+            entry.WatchType,
+            normalizedSourceId,
+            entry.Name,
+            entry.CollectionType,
+            entry.TrackCount,
+            entry.Status,
+            entry.ArtistName,
+            created);
     }
 
     public async Task<int> GetWatchlistHistoryCountAsync(CancellationToken cancellationToken = default)
@@ -6119,6 +6139,51 @@ LIMIT @limit OFFSET @offset;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", limit);
         command.Parameters.AddWithValue("offset", offset);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var items = new List<WatchlistHistoryDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(9));
+            items.Add(new WatchlistHistoryDto(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                reader.GetInt32(6),
+                reader.GetString(7),
+                await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
+                created));
+        }
+
+        return items;
+    }
+
+    public async Task<IReadOnlyList<WatchlistHistoryDto>> GetWatchlistHistorySinceAsync(
+        long sinceId,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id,
+       source,
+       watch_type,
+       source_id,
+       name,
+       collection_type,
+       track_count,
+       status,
+       artist_name,
+       created_at
+FROM watchlist_history
+WHERE id > @sinceId
+ORDER BY id DESC
+LIMIT @limit;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("sinceId", Math.Max(0, sinceId));
+        command.Parameters.AddWithValue("limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var items = new List<WatchlistHistoryDto>();
         while (await reader.ReadAsync(cancellationToken))

@@ -98,6 +98,47 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
+    public void AutoTagStatusScript_UsesRealtimeRunChangeEvents()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("const signalRHubUrl = \"/activitiesHub\";", source, StringComparison.Ordinal);
+        Assert.Contains(".withUrl(signalRHubUrl)", source, StringComparison.Ordinal);
+        Assert.Contains("autotagRunChanged", source, StringComparison.Ordinal);
+        Assert.Contains("scheduleAutoTagRunRefresh", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WatchlistHistoryScript_UsesRealtimeAndIncrementalRefresh()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "watchlist-history.js");
+        Assert.True(File.Exists(scriptPath), $"Missing watchlist history script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("const SIGNALR_HUB_URL = \"/activitiesHub\";", source, StringComparison.Ordinal);
+        Assert.Contains("watchlistHistoryChanged", source, StringComparison.Ordinal);
+        Assert.Contains("sinceId", source, StringComparison.Ordinal);
+        Assert.Contains("loadChangedHistory", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_MaintainsCompactRunIndexForHistoryLists()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.Contains("run-index.json", source, StringComparison.Ordinal);
+        Assert.Contains("LoadRunIndexSummaries", source, StringComparison.Ordinal);
+        Assert.Contains("UpdateRunIndex", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTagStatusScript_DoesNotOverwriteArchivedHistoryFromCompletedLatestPoll()
     {
         var repoRoot = ResolveRepoRoot();

@@ -55,6 +55,7 @@ public sealed class ArtistWatchService
     private readonly DeezerClient _deezerClient;
     private readonly PlaylistWatchService _playlistWatchService;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly ILogger<ArtistWatchService> _logger;
 
     public ArtistWatchService(
@@ -62,6 +63,7 @@ public sealed class ArtistWatchService
         ArtistWatchPlatformDependencies platformDependencies,
         PlaylistWatchService playlistWatchService,
         DeezSpoTagSettingsService settingsService,
+        ActivitiesRealtimeService activitiesRealtime,
         ILogger<ArtistWatchService> logger)
     {
         _libraryRepository = libraryRepository;
@@ -71,6 +73,7 @@ public sealed class ArtistWatchService
         _deezerClient = platformDependencies.DeezerClient;
         _playlistWatchService = playlistWatchService;
         _settingsService = settingsService;
+        _activitiesRealtime = activitiesRealtime;
         _logger = logger;
     }
 
@@ -693,7 +696,7 @@ public sealed class ArtistWatchService
             return;
         }
 
-        await _libraryRepository.AddWatchlistHistoryAsync(
+        var entry = await _libraryRepository.AddWatchlistHistoryAsync(
             new WatchlistHistoryInsert(
                 source,
                 ArtistEntityType,
@@ -704,6 +707,10 @@ public sealed class ArtistWatchService
                 QueuedStatus,
                 artistName),
             cancellationToken);
+        if (entry != null)
+        {
+            _activitiesRealtime.PublishWatchlistHistoryChanged(entry);
+        }
     }
 
     private async Task PersistArtistWatchAlbumsAsync(

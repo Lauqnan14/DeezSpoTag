@@ -123,6 +123,13 @@ public sealed class AutoTagRunArchive
     public List<TaggingStatusSnapshot> StatusHistory { get; set; } = new();
 }
 
+public sealed class AutoTagRunIndexDocument
+{
+    public int Version { get; set; } = 1;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public List<AutoTagRunSummary> Runs { get; set; } = new();
+}
+
 public class TaggingStatusSnapshot
 {
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
@@ -207,6 +214,7 @@ public partial class AutoTagService
     private readonly ConcurrentDictionary<string, byte> _stuckRecoveryJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _enhancementPlexRefreshJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobCancellationSources = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRunIndexUpdateUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger<AutoTagService> _logger;
     private readonly LibraryConfigStore _activityLog;
     private readonly AuthenticatedDeezerService _deezerAuth;
@@ -228,19 +236,23 @@ public partial class AutoTagService
     private readonly CoverLibraryMaintenanceService _coverMaintenanceService;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly UserPreferencesStore _userPreferencesStore;
+    private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly string _jobsDir;
     private readonly string _historyDir;
     private readonly string _workersHistoryDir;
     private readonly string _runtimeConfigDir;
     private readonly string _lastConfigPath;
     private readonly string _lastJobPath;
+    private readonly string _runIndexPath;
     private readonly bool _disableAutoMove;
     private readonly TimeSpan _organizerCooldown = TimeSpan.FromSeconds(15);
     private readonly ConcurrentDictionary<string, object> _archiveLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _archivedRunSummariesCacheLock = new();
+    private readonly object _runIndexLock = new();
     private IReadOnlyList<AutoTagRunSummary>? _archivedRunSummariesCache;
     private DateTimeOffset _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.MinValue;
     private static readonly TimeSpan ArchivedRunSummariesCacheTtl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RunIndexUpdateInterval = TimeSpan.FromSeconds(2);
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -420,6 +432,7 @@ public partial class AutoTagService
         public required CoverLibraryMaintenanceService CoverMaintenanceService { get; init; }
         public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
         public required UserPreferencesStore UserPreferencesStore { get; init; }
+        public required ActivitiesRealtimeService ActivitiesRealtime { get; init; }
     }
 
     public event Action<AutoTagJob>? JobCompleted;
@@ -450,6 +463,7 @@ public partial class AutoTagService
         _coverMaintenanceService = collaborators.CoverMaintenanceService;
         _profileResolutionService = collaborators.ProfileResolutionService;
         _userPreferencesStore = collaborators.UserPreferencesStore;
+        _activitiesRealtime = collaborators.ActivitiesRealtime;
         var appDataRoot = AppDataPaths.GetDataRoot(env);
         var autoTagRoot = Path.Join(appDataRoot, AutoTagFolderName);
         _jobsDir = Path.Join(autoTagRoot, "jobs");
@@ -459,6 +473,7 @@ public partial class AutoTagService
         _runtimeConfigDir = Path.Join(autoTagRoot, "runtime");
         _lastConfigPath = Path.Join(autoTagRoot, "last-config.json");
         _lastJobPath = Path.Join(autoTagRoot, "last-job.json");
+        _runIndexPath = Path.Join(autoTagRoot, "run-index.json");
         Directory.CreateDirectory(autoTagRoot);
         Directory.CreateDirectory(_jobsDir);
         Directory.CreateDirectory(_historyDir);
@@ -5535,11 +5550,158 @@ public partial class AutoTagService
                 return _archivedRunSummariesCache;
             }
 
-            var summaries = LoadArchivedRunSummaries();
+            var summaries = LoadRunIndexSummaries();
             _archivedRunSummariesCache = summaries;
             _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.UtcNow.Add(ArchivedRunSummariesCacheTtl);
             return summaries;
         }
+    }
+
+    private IReadOnlyList<AutoTagRunSummary> LoadRunIndexSummaries()
+    {
+        lock (_runIndexLock)
+        {
+            var indexed = TryLoadRunIndex();
+            if (indexed.Count > 0 || (File.Exists(_runIndexPath) && new FileInfo(_runIndexPath).Length > 0))
+            {
+                return indexed;
+            }
+
+            var summaries = LoadArchivedRunSummaries();
+            PersistRunIndex(summaries);
+            return summaries;
+        }
+    }
+
+    public void WarmRunIndexIfMissing()
+    {
+        if (File.Exists(_runIndexPath) && new FileInfo(_runIndexPath).Length > 0)
+        {
+            return;
+        }
+
+        try
+        {
+            lock (_runIndexLock)
+            {
+                if (File.Exists(_runIndexPath) && new FileInfo(_runIndexPath).Length > 0)
+                {
+                    return;
+                }
+
+                PersistRunIndex(LoadArchivedRunSummaries());
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to warm AutoTag run index.");
+        }
+    }
+
+    private IReadOnlyList<AutoTagRunSummary> TryLoadRunIndex()
+    {
+        try
+        {
+            if (!File.Exists(_runIndexPath))
+            {
+                return Array.Empty<AutoTagRunSummary>();
+            }
+
+            var json = File.ReadAllText(_runIndexPath, Encoding.UTF8);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return Array.Empty<AutoTagRunSummary>();
+            }
+
+            var document = JsonSerializer.Deserialize<AutoTagRunIndexDocument>(json, _jsonOptions);
+            return NormalizeRunIndexSummaries(document?.Runs ?? new List<AutoTagRunSummary>());
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to load AutoTag run index.");
+            var summaries = LoadArchivedRunSummaries();
+            PersistRunIndex(summaries);
+            return summaries;
+        }
+    }
+
+    private void UpdateRunIndex(AutoTagRunSummary summary, bool force = false)
+    {
+        if (!force && !ShouldUpdateRunIndex(summary))
+        {
+            return;
+        }
+
+        lock (_runIndexLock)
+        {
+            var summaries = TryLoadRunIndex()
+                .Where(run => !string.Equals(run.Id, summary.Id, StringComparison.OrdinalIgnoreCase))
+                .Append(summary)
+                .ToList();
+            PersistRunIndex(summaries);
+        }
+
+        InvalidateArchivedRunSummariesCache();
+        _activitiesRealtime.PublishAutoTagRunChanged(summary);
+    }
+
+    private bool ShouldUpdateRunIndex(AutoTagRunSummary summary)
+    {
+        if (IsTerminalRunStatus(summary.Status))
+        {
+            _lastRunIndexUpdateUtc[summary.Id] = DateTimeOffset.UtcNow;
+            return true;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var lastUpdate = _lastRunIndexUpdateUtc.GetOrAdd(summary.Id, now);
+        if (lastUpdate == now || now - lastUpdate < RunIndexUpdateInterval)
+        {
+            return lastUpdate == now;
+        }
+
+        _lastRunIndexUpdateUtc[summary.Id] = now;
+        return true;
+    }
+
+    private static bool IsTerminalRunStatus(string? status)
+    {
+        return string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.SkippedStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void PersistRunIndex(IReadOnlyCollection<AutoTagRunSummary> summaries)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_runIndexPath) ?? _historyDir);
+            var document = new AutoTagRunIndexDocument
+            {
+                UpdatedAt = DateTimeOffset.UtcNow,
+                Runs = NormalizeRunIndexSummaries(summaries).ToList()
+            };
+            File.WriteAllText(
+                _runIndexPath,
+                JsonSerializer.Serialize(document, _jsonOptions),
+                new UTF8Encoding(false));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to persist AutoTag run index.");
+        }
+    }
+
+    private static IReadOnlyList<AutoTagRunSummary> NormalizeRunIndexSummaries(IEnumerable<AutoTagRunSummary> summaries)
+    {
+        return summaries
+            .Where(static summary => !string.IsNullOrWhiteSpace(summary.Id))
+            .GroupBy(static summary => summary.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.OrderByDescending(summary => summary.StartedAt).First())
+            .OrderByDescending(static summary => summary.StartedAt)
+            .ToList();
     }
 
     private IReadOnlyList<AutoTagRunSummary> LoadArchivedRunSummaries()
@@ -5655,8 +5817,8 @@ public partial class AutoTagService
                     GetRunSummaryPath(job.Id),
                     JsonSerializer.Serialize(summary, _jsonOptions),
                     new UTF8Encoding(false));
+                UpdateRunIndex(summary);
             }
-            InvalidateArchivedRunSummariesCache();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -6254,9 +6416,10 @@ public partial class AutoTagService
             lock (archiveLock)
             {
                 Directory.CreateDirectory(GetRunHistoryDirectory(job.Id));
+                var summary = BuildRunSummary(job);
                 File.WriteAllText(
                     GetRunSummaryPath(job.Id),
-                    JsonSerializer.Serialize(BuildRunSummary(job), _jsonOptions),
+                    JsonSerializer.Serialize(summary, _jsonOptions),
                     new UTF8Encoding(false));
 
                 File.WriteAllLines(
@@ -6269,8 +6432,8 @@ public partial class AutoTagService
                     .ToList();
                 File.WriteAllLines(GetRunStatusHistoryPath(job.Id), statusLines, new UTF8Encoding(false));
                 SaveArchivedTagDiffs(job.Id, job.TagDiffs);
+                UpdateRunIndex(summary, force: true);
             }
-            InvalidateArchivedRunSummariesCache();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

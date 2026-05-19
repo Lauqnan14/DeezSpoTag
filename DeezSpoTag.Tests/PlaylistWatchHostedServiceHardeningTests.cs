@@ -88,6 +88,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _settingsService,
             serviceProvider: null!,
             playlistSyncService: null!,
+            activitiesRealtime: null!,
             NullLogger<PlaylistWatchService>.Instance);
 
         var artistWatchService = new ArtistWatchService(
@@ -99,6 +100,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 deezerClient: null!),
             playlistWatchService,
             _settingsService,
+            activitiesRealtime: null!,
             NullLogger<ArtistWatchService>.Instance);
 
         var services = new ServiceCollection();
