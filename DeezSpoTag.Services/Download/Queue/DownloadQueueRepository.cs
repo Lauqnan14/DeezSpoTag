@@ -416,7 +416,10 @@ WHERE queue_uuid = @queueUuid;";
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             result = DownloadStagingCleanupResult.Failed(ex.Message, 0, 0, 0);
-            _logger.LogWarning(ex, "Staging cleanup failed for queue item {QueueUuid}", queueUuid);
+            _logger.LogWarning(
+                ex,
+                "Staging cleanup failed for queue item {QueueUuid}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(queueUuid));
         }
 
         await UpdateStagingCleanupStatusAsync(connection, queueUuid, result, cancellationToken);
