@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging;
 
@@ -10,8 +11,9 @@ public sealed class TidalQueueBackgroundService : EngineQueueBackgroundService<T
         DownloadQueueRepository queueRepository,
         TidalEngineProcessor processor,
         DeezSpoTagSettingsService settingsService,
+        IDownloadQueueExecutionGate executionGate,
         ILogger<TidalQueueBackgroundService> logger)
-        : base(queueRepository, processor, settingsService, logger)
+        : base(queueRepository, processor, settingsService, executionGate, logger)
     {
     }
 

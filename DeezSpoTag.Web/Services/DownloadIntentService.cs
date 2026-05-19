@@ -335,12 +335,29 @@ public sealed class DownloadIntentService
             appleUrl);
     }
 
-    public async Task<DownloadIntentResult> EnqueueAsync(
+    public Task<DownloadIntentResult> EnqueueAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false)
+        => EnqueueCoreAsync(intent, cancellationToken, preferIsrcOnly, allowManualQueueDuringEnrichment: false);
+
+    public Task<DownloadIntentResult> EnqueueManualAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken,
+        bool preferIsrcOnly = false)
+        => EnqueueCoreAsync(intent, cancellationToken, preferIsrcOnly, allowManualQueueDuringEnrichment: true);
+
+    private async Task<DownloadIntentResult> EnqueueCoreAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken,
+        bool preferIsrcOnly,
+        bool allowManualQueueDuringEnrichment)
     {
-        var resolution = await TryPrepareEnqueueResolutionAsync(intent, preferIsrcOnly, cancellationToken);
+        var resolution = await TryPrepareEnqueueResolutionAsync(
+            intent,
+            preferIsrcOnly,
+            allowManualQueueDuringEnrichment,
+            cancellationToken);
         if (resolution.Failure != null)
         {
             return resolution.Failure;
@@ -472,7 +489,11 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken)
     {
         var intent = BuildIntentFromQueueItem(item);
-        var resolution = await TryPrepareEnqueueResolutionAsync(intent, preferIsrcOnly: false, cancellationToken);
+        var resolution = await TryPrepareEnqueueResolutionAsync(
+            intent,
+            preferIsrcOnly: false,
+            allowManualQueueDuringEnrichment: false,
+            cancellationToken);
         if (resolution.Failure != null)
         {
             return new QueuePreResolutionPayload.ResolutionResult(
@@ -823,9 +844,10 @@ public sealed class DownloadIntentService
     private async Task<(DownloadIntentResult? Failure, EnqueueResolutionState? State)> TryPrepareEnqueueResolutionAsync(
         DownloadIntent intent,
         bool preferIsrcOnly,
+        bool allowManualQueueDuringEnrichment,
         CancellationToken cancellationToken)
     {
-        var gateFailure = await TryBlockByDownloadGateAsync(cancellationToken);
+        var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment, cancellationToken);
         if (gateFailure != null)
         {
             return (gateFailure, null);
@@ -1530,9 +1552,13 @@ public sealed class DownloadIntentService
         return null;
     }
 
-    private async Task<DownloadIntentResult?> TryBlockByDownloadGateAsync(CancellationToken cancellationToken)
+    private async Task<DownloadIntentResult?> TryBlockByDownloadGateAsync(
+        bool allowManualQueueDuringEnrichment,
+        CancellationToken cancellationToken)
     {
-        var downloadGate = await _orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
+        var downloadGate = allowManualQueueDuringEnrichment
+            ? await _orchestrationService.EvaluateManualQueueGateAsync(cancellationToken)
+            : await _orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
         if (downloadGate.Allowed)
         {
             return null;

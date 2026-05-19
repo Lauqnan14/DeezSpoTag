@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Runtime;
@@ -14,7 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class DownloadOrchestrationService : BackgroundService
+public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQueueExecutionGate
 {
     private sealed record AutoTagStages(bool HasEnrichment, bool HasEnhancement);
     private sealed record EnhancementTarget(
@@ -243,7 +244,21 @@ public sealed class DownloadOrchestrationService : BackgroundService
         }
     }
 
-    public async Task<DownloadGateDecision> EvaluateDownloadGateAsync(CancellationToken cancellationToken = default)
+    public Task<DownloadGateDecision> EvaluateDownloadGateAsync(CancellationToken cancellationToken = default)
+        => EvaluateDownloadGateAsync(allowManualQueueDuringEnrichment: false, cancellationToken);
+
+    public Task<DownloadGateDecision> EvaluateManualQueueGateAsync(CancellationToken cancellationToken = default)
+        => EvaluateDownloadGateAsync(allowManualQueueDuringEnrichment: true, cancellationToken);
+
+    public async Task<bool> CanStartDownloadAsync(CancellationToken cancellationToken = default)
+    {
+        var decision = await EvaluateDownloadGateAsync(cancellationToken);
+        return decision.Allowed;
+    }
+
+    private async Task<DownloadGateDecision> EvaluateDownloadGateAsync(
+        bool allowManualQueueDuringEnrichment,
+        CancellationToken cancellationToken)
     {
         if (!TaggingInProgress)
         {
@@ -252,7 +267,9 @@ public sealed class DownloadOrchestrationService : BackgroundService
 
         if (_autoTagService.TryGetRunningEnrichmentJobId(out _))
         {
-            return DenyDownloads("Downloads paused while enrichment is running.");
+            return allowManualQueueDuringEnrichment
+                ? AllowDownloads()
+                : DenyDownloads("Downloads paused while enrichment is running.");
         }
 
         var enhancementDecision = await TryResolveEnhancementGateDecisionAsync(cancellationToken);
@@ -267,7 +284,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             return enrichmentPauseDecision;
         }
 
-        var runningJobDecision = await TryResolveRunningJobGateDecisionAsync();
+        var runningJobDecision = TryResolveRunningJobGateDecision(allowManualQueueDuringEnrichment);
         if (runningJobDecision != null)
         {
             return runningJobDecision;
@@ -311,7 +328,7 @@ public sealed class DownloadOrchestrationService : BackgroundService
             : null;
     }
 
-    private async Task<DownloadGateDecision?> TryResolveRunningJobGateDecisionAsync()
+    private DownloadGateDecision? TryResolveRunningJobGateDecision(bool allowManualQueueDuringEnrichment)
     {
         if (!_autoTagService.TryGetAnyRunningJobId(out var runningJobId))
         {
@@ -327,7 +344,9 @@ public sealed class DownloadOrchestrationService : BackgroundService
         var runningJob = _autoTagService.GetJob(runningJobId);
         if (string.Equals(runningJob?.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
         {
-            return DenyDownloads("Downloads paused while enrichment is running.");
+            return allowManualQueueDuringEnrichment
+                ? AllowDownloads()
+                : DenyDownloads("Downloads paused while enrichment is running.");
         }
 
         return AllowDownloads();

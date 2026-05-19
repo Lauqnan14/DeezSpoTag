@@ -27,6 +27,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DownloadCancellationRegistry _cancellationRegistry;
+    private readonly IDownloadQueueExecutionGate _executionGate;
 
     public object? CurrentJob { get; private set; }
 
@@ -40,6 +41,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         DownloadRetryScheduler retryScheduler,
         DownloadQueueRepository queueRepository,
         DownloadCancellationRegistry cancellationRegistry,
+        IDownloadQueueExecutionGate executionGate,
         IServiceProvider serviceProvider)
     {
         _logger = logger;
@@ -48,6 +50,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         _retryScheduler = retryScheduler;
         _queueRepository = queueRepository;
         _cancellationRegistry = cancellationRegistry;
+        _executionGate = executionGate;
         _serviceProvider = serviceProvider;
 
         Settings = LoadSettings();
@@ -139,6 +142,11 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     public async Task StartQueueAsync()
     {
         var shouldStartProcessor = false;
+        if (!await CanStartQueueItemAsync(CancellationToken.None))
+        {
+            _logger.LogDebug("Queue processor start deferred by download execution gate.");
+            return;
+        }
 
         // Prevent multiple queue processors from running simultaneously
         lock (_queueLock)
@@ -207,6 +215,12 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
             // Reload queue settings every dequeue cycle so user preference changes apply immediately.
             Settings = _settingsService.LoadSettings();
+            if (!await CanStartQueueItemAsync(CancellationToken.None))
+            {
+                _logger.LogDebug("Queue worker stopped before dequeue because download execution gate is closed.");
+                return;
+            }
+
             var newestFirst = string.Equals(Settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
             var nextItem = await _queueRepository.DequeueNextAnyAsync(newestFirst);
             if (nextItem == null || string.IsNullOrWhiteSpace(nextItem.QueueUuid))
@@ -236,6 +250,9 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return _stopRequested;
         }
     }
+
+    private Task<bool> CanStartQueueItemAsync(CancellationToken cancellationToken)
+        => _executionGate.CanStartDownloadAsync(cancellationToken);
 
     private static int ResolveQueueWorkerConcurrency(DeezSpoTagSettings settings)
     {

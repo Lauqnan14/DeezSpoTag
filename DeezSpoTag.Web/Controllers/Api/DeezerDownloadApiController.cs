@@ -63,7 +63,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         public async Task<IActionResult> AddWithSettings([FromBody] JsonElement payload)
         {
             var cancellationToken = CancellationToken.None;
-            var downloadGate = await _orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
+            var downloadGate = await _orchestrationService.EvaluateManualQueueGateAsync(cancellationToken);
             if (!downloadGate.Allowed)
             {
                 return StatusCode(409, new { error = string.IsNullOrWhiteSpace(downloadGate.Message) ? "Downloads paused while AutoTag is running." : downloadGate.Message });
@@ -297,7 +297,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                     intent.PreferredEngine = DeezerSource;
                     intent.Quality = resolvedBitrate.ToString();
                     intent.DestinationFolderId = request.DestinationFolderId;
-                    var result = await _intentService.EnqueueAsync(intent, CancellationToken.None);
+                    var result = await _intentService.EnqueueManualAsync(intent, CancellationToken.None);
 
                     lock (queueSync)
                     {
@@ -399,7 +399,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                 return;
             }
 
-            var result = await _intentService.EnqueueAsync(
+            var result = await _intentService.EnqueueManualAsync(
                 intent,
                 cancellationToken,
                 preferIsrcOnly: isBatch && !forceImmediateNoIsrc);
@@ -751,7 +751,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                     ContentType = inferredContentType
                 };
 
-                var intentResult = await _intentService.EnqueueAsync(intent, HttpContext.RequestAborted);
+                var intentResult = await _intentService.EnqueueManualAsync(intent, HttpContext.RequestAborted);
                 if (!intentResult.Success || intentResult.Queued.Count == 0)
                 {
                     return BadRequest("Invalid or unsupported URL");

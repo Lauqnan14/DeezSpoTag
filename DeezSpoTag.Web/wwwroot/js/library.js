@@ -98,6 +98,7 @@ const libraryState = {
     unmatchedArtistResolver: {
         items: [],
         suggestions: new Map(),
+        loadingSuggestionIds: new Set(),
         loading: false,
         initialized: false,
         filter: ''

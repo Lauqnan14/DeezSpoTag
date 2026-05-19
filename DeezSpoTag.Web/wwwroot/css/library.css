@@ -5785,6 +5785,7 @@
     border-radius: 10px;
     padding: 0.7rem;
     background: rgba(15, 23, 42, 0.35);
+    color: var(--text-primary);
     display: grid;
     grid-template-columns: minmax(180px, 1.2fr) minmax(240px, 2fr) auto;
     gap: 0.6rem;
@@ -5793,6 +5794,7 @@
 
 .unmatched-artist-row__name {
     font-weight: 600;
+    color: var(--text-primary);
 }
 
 .unmatched-artist-row__suggestions select {
@@ -5800,14 +5802,47 @@
     border: 1px solid var(--border, rgba(56, 189, 248, 0.24));
     border-radius: 8px;
     background: rgba(15, 23, 42, 0.52);
-    color: inherit;
+    color: var(--text-primary);
     padding: 0.46rem 0.52rem;
+}
+
+.unmatched-artist-row__suggestions select:disabled {
+    color: var(--text-primary);
+    opacity: 1;
+    -webkit-text-fill-color: var(--text-primary);
+}
+
+.unmatched-artist-row__suggestions option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
 }
 
 .unmatched-artist-row__actions {
     display: flex;
     gap: 0.45rem;
     justify-content: flex-end;
+}
+
+.unmatched-artist-row.is-loading-suggestions {
+    border-color: color-mix(in srgb, var(--primary-color) 50%, transparent);
+}
+
+.unmatched-artist-row__spinner {
+    display: inline-block;
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    border: 2px solid color-mix(in srgb, var(--text-secondary) 32%, transparent);
+    border-top-color: var(--text-secondary);
+    border-radius: 50%;
+    box-sizing: border-box;
+    animation: unmatched-artist-suggestion-spin 0.8s linear infinite;
+}
+
+@keyframes unmatched-artist-suggestion-spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 @media (max-width: 820px) {

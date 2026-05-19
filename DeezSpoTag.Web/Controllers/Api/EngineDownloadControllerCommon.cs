@@ -438,7 +438,7 @@ internal static class EngineDownloadControllerCommon
         where TPayload : EngineQueueItemBase
     {
         var cancellationToken = CancellationToken.None;
-        var downloadGate = await context.OrchestrationService.EvaluateDownloadGateAsync(cancellationToken);
+        var downloadGate = await context.OrchestrationService.EvaluateManualQueueGateAsync(cancellationToken);
         if (!downloadGate.Allowed)
         {
             return new ObjectResult(new

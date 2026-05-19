@@ -89,7 +89,7 @@ public sealed class DownloadIntentApiController : ControllerBase
         foreach (var intent in request.Intents)
         {
             ApplyDestinationDefaults(intent, request);
-            var result = await _intentService.EnqueueAsync(intent, cancellationToken);
+            var result = await _intentService.EnqueueManualAsync(intent, cancellationToken);
             state.Apply(result);
         }
 

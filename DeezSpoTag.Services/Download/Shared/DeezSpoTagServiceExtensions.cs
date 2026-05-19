@@ -102,16 +102,19 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
     private readonly DeezSpoTagApp _deezSpoTagApp;
     private readonly DownloadQueueRecoveryService _recoveryService;
     private readonly BackgroundWorkCoordinator _workCoordinator;
+    private readonly IDownloadQueueExecutionGate _executionGate;
 
     public DeezSpoTagQueueBackgroundService(
         DeezSpoTagApp deezSpoTagApp,
         DownloadQueueRecoveryService recoveryService,
         BackgroundWorkCoordinator workCoordinator,
+        IDownloadQueueExecutionGate executionGate,
         ILogger<DeezSpoTagQueueBackgroundService> logger)
     {
         _deezSpoTagApp = deezSpoTagApp;
         _recoveryService = recoveryService;
         _workCoordinator = workCoordinator;
+        _executionGate = executionGate;
         _logger = logger;
     }
 
@@ -122,6 +125,11 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
             async token =>
             {
                 if (_workCoordinator.IsStartupGraceActive)
+                {
+                    return;
+                }
+
+                if (!await _executionGate.CanStartDownloadAsync(token))
                 {
                     return;
                 }
@@ -184,8 +192,17 @@ public class DeezSpoTagAppFactory : IDeezSpoTagAppFactory
         var retryScheduler = serviceProvider.GetRequiredService<Queue.DownloadRetryScheduler>();
         var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         var cancellationRegistry = serviceProvider.GetRequiredService<DownloadCancellationRegistry>();
+        var executionGate = serviceProvider.GetRequiredService<IDownloadQueueExecutionGate>();
 
         // Use the root service provider to avoid disposal issues when creating new scopes
-        return new DeezSpoTagApp(logger, settingsService, listener, retryScheduler, queueRepository, cancellationRegistry, _rootServiceProvider);
+        return new DeezSpoTagApp(
+            logger,
+            settingsService,
+            listener,
+            retryScheduler,
+            queueRepository,
+            cancellationRegistry,
+            executionGate,
+            _rootServiceProvider);
     }
 }

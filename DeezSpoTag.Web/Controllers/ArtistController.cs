@@ -59,7 +59,7 @@ public class ArtistController : Controller
                 Quality = resolvedBitrate.ToString(),
                 ContentType = "music"
             };
-            var result = await _intentService.EnqueueAsync(intent, CancellationToken.None);
+            var result = await _intentService.EnqueueManualAsync(intent, CancellationToken.None);
             var queued = result.Queued
                 .Select(static uuid => new Dictionary<string, object> { ["uuid"] = uuid })
                 .ToList();

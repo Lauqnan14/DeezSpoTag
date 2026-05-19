@@ -716,6 +716,15 @@ body {
     color: var(--text-primary) !important;
 }
 
+.form-control:disabled,
+.form-select:disabled {
+    background-color: var(--bg-tertiary) !important;
+    border-color: var(--border-secondary) !important;
+    color: var(--text-primary) !important;
+    opacity: 1 !important;
+    -webkit-text-fill-color: var(--text-primary) !important;
+}
+
 button:focus-visible,
 button:active,
 .btn:focus-visible,

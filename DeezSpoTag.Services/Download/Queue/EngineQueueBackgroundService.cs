@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Download.Shared;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -11,17 +12,20 @@ public abstract class EngineQueueBackgroundService<TProcessor> : BackgroundServi
     private readonly DownloadQueueRepository _queueRepository;
     private readonly TProcessor _processor;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly IDownloadQueueExecutionGate _executionGate;
     private readonly ILogger _logger;
 
     protected EngineQueueBackgroundService(
         DownloadQueueRepository queueRepository,
         TProcessor processor,
         DeezSpoTagSettingsService settingsService,
+        IDownloadQueueExecutionGate executionGate,
         ILogger logger)
     {
         _queueRepository = queueRepository;
         _processor = processor;
         _settingsService = settingsService;
+        _executionGate = executionGate;
         _logger = logger;
     }
 
@@ -41,6 +45,11 @@ public abstract class EngineQueueBackgroundService<TProcessor> : BackgroundServi
 
     private async Task ProcessNextAsync(CancellationToken stoppingToken)
     {
+        if (!await _executionGate.CanStartDownloadAsync(stoppingToken))
+        {
+            return;
+        }
+
         var settings = _settingsService.LoadSettings();
         var newestFirst = string.Equals(settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
         var next = await _queueRepository.DequeueNextAsync(EngineKey, newestFirst, stoppingToken);

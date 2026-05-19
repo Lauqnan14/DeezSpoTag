@@ -1691,6 +1691,8 @@ public partial class Program
             "Mood bucket background processing after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MoodMixService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadOrchestrationService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Shared.IDownloadQueueExecutionGate>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadOrchestrationService>());
         AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadOrchestrationService>(
             services,
             StartupWorkerCategory.Deferred,

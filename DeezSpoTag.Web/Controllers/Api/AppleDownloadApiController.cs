@@ -143,7 +143,7 @@ public sealed class AppleDownloadApiController : ControllerBase
 
     private async Task<IActionResult?> ValidateRequestAsync(JsonElement payload, CancellationToken cancellationToken)
     {
-        var downloadGate = await _orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
+        var downloadGate = await _orchestrationService.EvaluateManualQueueGateAsync(cancellationToken);
         if (!downloadGate.Allowed)
         {
             return StatusCode(409, new
@@ -184,7 +184,7 @@ public sealed class AppleDownloadApiController : ControllerBase
                 options.AllowQualityUpgrade,
                 forceVideoContent);
 
-            var result = await _intentService.EnqueueAsync(intent, cancellationToken);
+            var result = await _intentService.EnqueueManualAsync(intent, cancellationToken);
             if (result.Success && result.Queued.Count > 0)
             {
                 aggregate.Queued.AddRange(result.Queued);

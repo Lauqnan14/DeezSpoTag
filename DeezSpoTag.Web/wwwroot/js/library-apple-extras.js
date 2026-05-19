@@ -1264,6 +1264,7 @@ function renderUnmatchedArtistsResolverList(elements) {
     elements.unmatchedModalStatus.textContent = `${rows.length.toLocaleString()} unmatched artist(s).`;
     elements.unmatchedModalList.innerHTML = rows.map(item => {
         const suggestions = state.suggestions.get(item.artistId) || [];
+        const loadingSuggestions = state.loadingSuggestionIds?.has(item.artistId) === true;
         const options = suggestions.length > 0
             ? suggestions.map(suggestion => {
                 const overlapText = Number(suggestion.localAlbumOverlap || 0) > 0
@@ -1275,16 +1276,21 @@ function renderUnmatchedArtistsResolverList(elements) {
                 const verifiedText = suggestion.verified ? ' • verified' : '';
                 return `<option value="${escapeHtml(suggestion.spotifyId)}">${escapeHtml(suggestion.name)}${overlapText}${catalogText}${verifiedText}</option>`;
             }).join('')
+            : loadingSuggestions
+                ? '<option value="">Searching suggestions...</option>'
             : '<option value="">Load suggestions first</option>';
+        const suggestionsButtonContent = loadingSuggestions
+            ? '<span class="unmatched-artist-row__spinner" aria-hidden="true"></span><span>Searching</span>'
+            : 'Suggestions';
 
         return `
-            <div class="unmatched-artist-row" data-artist-id="${escapeHtml(String(item.artistId || ''))}">
+            <div class="unmatched-artist-row${loadingSuggestions ? ' is-loading-suggestions' : ''}" data-artist-id="${escapeHtml(String(item.artistId || ''))}"${loadingSuggestions ? ' aria-busy="true"' : ''}>
                 <div class="unmatched-artist-row__name">${escapeHtml(item.artistName)}</div>
                 <div class="unmatched-artist-row__suggestions">
-                    <select data-suggestion-select ${suggestions.length === 0 ? 'disabled' : ''}>${options}</select>
+                    <select class="form-select" data-suggestion-select ${suggestions.length === 0 ? 'disabled' : ''}>${options}</select>
                 </div>
                 <div class="unmatched-artist-row__actions">
-                    <button type="button" class="btn-secondary action-btn action-btn-sm" data-load-suggestions>Suggestions</button>
+                    <button type="button" class="btn-secondary action-btn action-btn-sm" data-load-suggestions ${loadingSuggestions ? 'disabled' : ''}>${suggestionsButtonContent}</button>
                     <button type="button" class="btn-primary action-btn action-btn-sm" data-apply-suggestion ${suggestions.length === 0 ? 'disabled' : ''}>Apply</button>
                 </div>
             </div>`;
@@ -1316,12 +1322,22 @@ function renderUnmatchedArtistsResolverList(elements) {
 }
 
 async function loadSuggestionsForUnmatchedArtist(elements, artistId) {
+    const state = libraryState.unmatchedArtistResolver;
+    state.loadingSuggestionIds ??= new Set();
+    if (state.loadingSuggestionIds.has(artistId)) {
+        return;
+    }
+
+    state.loadingSuggestionIds.add(artistId);
+    renderUnmatchedArtistsResolverList(elements);
     try {
         const suggestions = await fetchUnmatchedArtistSuggestions(artistId);
-        libraryState.unmatchedArtistResolver.suggestions.set(artistId, suggestions);
-        renderUnmatchedArtistsResolverList(elements);
+        state.suggestions.set(artistId, suggestions);
     } catch (error) {
         showToast(`Suggestion load failed: ${error.message}`, true);
+    } finally {
+        state.loadingSuggestionIds.delete(artistId);
+        renderUnmatchedArtistsResolverList(elements);
     }
 }
 

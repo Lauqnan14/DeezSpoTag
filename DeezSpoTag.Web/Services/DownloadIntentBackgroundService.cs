@@ -27,7 +27,7 @@ public sealed class DownloadIntentBackgroundService : BackgroundService
             var service = scope.ServiceProvider.GetRequiredService<DownloadIntentService>();
             try
             {
-                await service.EnqueueAsync(intent, stoppingToken);
+                await service.EnqueueManualAsync(intent, stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
