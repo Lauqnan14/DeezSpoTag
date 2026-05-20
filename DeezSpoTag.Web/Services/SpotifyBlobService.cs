@@ -6,7 +6,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Utils;
+using Microsoft.AspNetCore.DataProtection;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -42,6 +44,8 @@ public sealed class SpotifyBlobService
     private const string SpotifyOpenTokenPath = "/api/token";
     private const string CredentialsNotFoundError = "credentials_not_found";
     private const string AllRetriesFailedError = "all_retries_failed";
+    private const string WebPlayerProtectionPurpose = "DeezSpoTag.Spotify.WebPlayer";
+    private const string LibrespotProtectionPurpose = "DeezSpoTag.Spotify.Librespot";
     private static readonly TimeSpan[] WebApiRetryDelays =
     {
         TimeSpan.FromSeconds(2),
@@ -62,16 +66,23 @@ public sealed class SpotifyBlobService
         TimeSpan.FromMilliseconds(250));
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<SpotifyBlobService> _logger;
+    private readonly ProtectedCredentialFileStore _webPlayerCredentialStore;
+    private readonly ProtectedCredentialFileStore _librespotCredentialStore;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Token, DateTimeOffset ExpiresAt)> TokenCache = new();
 
-    public SpotifyBlobService(IWebHostEnvironment environment, ILogger<SpotifyBlobService> logger)
+    public SpotifyBlobService(
+        IWebHostEnvironment environment,
+        ILogger<SpotifyBlobService> logger,
+        IDataProtectionProvider dataProtectionProvider)
     {
         _environment = environment;
         _logger = logger;
+        _webPlayerCredentialStore = new ProtectedCredentialFileStore(dataProtectionProvider, WebPlayerProtectionPurpose);
+        _librespotCredentialStore = new ProtectedCredentialFileStore(dataProtectionProvider, LibrespotProtectionPurpose);
     }
 
     public bool BlobExists(string blobPath)
@@ -186,6 +197,7 @@ public sealed class SpotifyBlobService
                 // A newly generated blob can reuse the same file path as a prior login.
                 // Ensure stale token cache for that path is dropped immediately.
                 InvalidateWebApiAccessToken(blobPath);
+                await ProtectBlobFileByKindAsync(blobPath, cancellationToken);
 
                 return new SpotifyBlobResult
                 {
@@ -554,26 +566,35 @@ public sealed class SpotifyBlobService
                 return new LibrespotPayloadResult(null, HelperNotFoundError);
             }
 
-            var executionResult = await RunPythonScriptAsync(
-                pythonExecutable,
-                scriptPath,
-                cancellationToken,
-                arguments);
-
-            if (string.IsNullOrWhiteSpace(executionResult.StandardOutput))
+            var tempCredentialPath = await CreateTemporaryPlaintextCredentialFileAsync(arguments, cancellationToken);
+            try
             {
-                if (!string.IsNullOrWhiteSpace(executionResult.StandardError))
+                var effectiveArguments = ReplaceCredentialArgument(arguments, tempCredentialPath);
+                var executionResult = await RunPythonScriptAsync(
+                    pythonExecutable,
+                    scriptPath,
+                    cancellationToken,
+                    effectiveArguments);
+
+                if (string.IsNullOrWhiteSpace(executionResult.StandardOutput))
                 {
-                    _logger.LogWarning(
-                        "Spotify librespot {Helper} request failed: {Error}",
-                        helperName,
-                        executionResult.StandardError);
+                    if (!string.IsNullOrWhiteSpace(executionResult.StandardError))
+                    {
+                        _logger.LogWarning(
+                            "Spotify librespot {Helper} request failed: {Error}",
+                            helperName,
+                            executionResult.StandardError);
+                    }
+
+                    return new LibrespotPayloadResult(null, RequestFailedError);
                 }
 
-                return new LibrespotPayloadResult(null, RequestFailedError);
+                return ParseLibrespotPayloadResult(executionResult.StandardOutput);
             }
-
-            return ParseLibrespotPayloadResult(executionResult.StandardOutput);
+            finally
+            {
+                TryDeleteFile(tempCredentialPath);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -610,7 +631,11 @@ public sealed class SpotifyBlobService
 
         try
         {
-            var json = await File.ReadAllTextAsync(blobPath, cancellationToken);
+            var json = await ReadBlobTextAndMigrateAsync(blobPath, cancellationToken);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
             using var jsonDoc = JsonDocument.Parse(json);
             if (ClassifyBlobKind(jsonDoc.RootElement) != SpotifyBlobKind.WebPlayer)
             {
@@ -656,7 +681,11 @@ public sealed class SpotifyBlobService
 
         try
         {
-            var json = await File.ReadAllTextAsync(blobPath, cancellationToken);
+            var json = await ReadBlobTextAndMigrateAsync(blobPath, cancellationToken);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return false;
+            }
             using var doc = JsonDocument.Parse(json);
             return ClassifyBlobKind(doc.RootElement) == SpotifyBlobKind.Librespot;
         }
@@ -728,7 +757,7 @@ public sealed class SpotifyBlobService
         };
 
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
-        await WriteTextAtomicallyAsync(blobPath, json, cancellationToken);
+        await _webPlayerCredentialStore.WriteTextAsync(blobPath, json, cancellationToken);
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
@@ -803,7 +832,7 @@ public sealed class SpotifyBlobService
         };
 
         var json = JsonSerializer.Serialize(payload, _jsonOptions);
-        await WriteTextAtomicallyAsync(blobPath, json, cancellationToken);
+        await _webPlayerCredentialStore.WriteTextAsync(blobPath, json, cancellationToken);
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Saved Spotify web player blob at {BlobPath} with {CookieCount} cookies.",
@@ -1007,6 +1036,141 @@ public sealed class SpotifyBlobService
         return checkResult.Success;
     }
 
+    private async Task<string?> ReadBlobTextAndMigrateAsync(string blobPath, CancellationToken cancellationToken)
+    {
+        var stored = await File.ReadAllTextAsync(blobPath, cancellationToken);
+        if (_webPlayerCredentialStore.IsProtectedForPurpose(stored))
+        {
+            return await _webPlayerCredentialStore.ReadTextAsync(blobPath, cancellationToken);
+        }
+
+        if (_librespotCredentialStore.IsProtectedForPurpose(stored))
+        {
+            return await _librespotCredentialStore.ReadTextAsync(blobPath, cancellationToken);
+        }
+
+        if (_webPlayerCredentialStore.IsProtectedText(stored))
+        {
+            return null;
+        }
+
+        await ProtectBlobFileByKindAsync(blobPath, stored, cancellationToken);
+        return stored;
+    }
+
+    private async Task ProtectBlobFileByKindAsync(string blobPath, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
+        {
+            return;
+        }
+
+        var stored = await File.ReadAllTextAsync(blobPath, cancellationToken);
+        if (_webPlayerCredentialStore.IsProtectedText(stored))
+        {
+            return;
+        }
+
+        await ProtectBlobFileByKindAsync(blobPath, stored, cancellationToken);
+    }
+
+    private async Task ProtectBlobFileByKindAsync(string blobPath, string json, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            switch (ClassifyBlobKind(document.RootElement))
+            {
+                case SpotifyBlobKind.WebPlayer:
+                    await _webPlayerCredentialStore.WriteTextAsync(blobPath, json, cancellationToken);
+                    break;
+                case SpotifyBlobKind.Librespot:
+                    await _librespotCredentialStore.WriteTextAsync(blobPath, json, cancellationToken);
+                    break;
+            }
+        }
+        catch (JsonException)
+        {
+            // Invalid blob JSON remains untouched so callers can report the same invalid-blob behavior.
+        }
+    }
+
+    private async Task<string?> CreateTemporaryPlaintextCredentialFileAsync(
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken)
+    {
+        var credentialPath = ResolveCredentialArgument(arguments);
+        if (string.IsNullOrWhiteSpace(credentialPath))
+        {
+            return null;
+        }
+
+        var json = await ReadBlobTextAndMigrateAsync(credentialPath, cancellationToken);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        var directory = Path.GetDirectoryName(credentialPath);
+        var tempRoot = string.IsNullOrWhiteSpace(directory) ? Path.GetTempPath() : directory;
+        var tempPath = Path.Join(tempRoot, $".spotify-credentials-{Guid.NewGuid():N}.json");
+        await WriteTextAtomicallyAsync(tempPath, json, cancellationToken);
+        return tempPath;
+    }
+
+    private static string? ResolveCredentialArgument(IReadOnlyList<string> arguments)
+    {
+        for (var i = 0; i < arguments.Count - 1; i++)
+        {
+            if (string.Equals(arguments[i], CredentialsArg, StringComparison.Ordinal))
+            {
+                return arguments[i + 1];
+            }
+        }
+
+        return null;
+    }
+
+    private static string[] ReplaceCredentialArgument(IReadOnlyList<string> arguments, string? temporaryCredentialPath)
+    {
+        var copy = arguments.ToArray();
+        if (string.IsNullOrWhiteSpace(temporaryCredentialPath))
+        {
+            return copy;
+        }
+
+        for (var i = 0; i < copy.Length - 1; i++)
+        {
+            if (string.Equals(copy[i], CredentialsArg, StringComparison.Ordinal))
+            {
+                copy[i + 1] = temporaryCredentialPath;
+                break;
+            }
+        }
+
+        return copy;
+    }
+
+    private static void TryDeleteFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Best effort only.
+        }
+    }
+
     private async Task<SpotifyAccessTokenResult> RequestLibrespotWebApiTokenAsync(string blobPath, CancellationToken cancellationToken)
     {
         try
@@ -1020,22 +1184,37 @@ public sealed class SpotifyBlobService
                 return new SpotifyAccessTokenResult(null, null, HelperNotFoundError);
             }
 
-            var startInfo = CreatePythonScriptStartInfo(
-                pythonExecutable,
-                scriptPath,
-                CredentialsArg, blobPath,
+            var arguments = new[]
+            {
+                CredentialsArg,
+                blobPath,
                 "--scopes",
                 "playlist-read",
                 "playlist-read-private",
                 "user-library-read",
                 "user-read-private",
-                "user-read-email");
+                "user-read-email"
+            };
+            var tempCredentialPath = await CreateTemporaryPlaintextCredentialFileAsync(arguments, cancellationToken);
+            string stdout;
+            string stderr;
+            try
+            {
+                var startInfo = CreatePythonScriptStartInfo(
+                    pythonExecutable,
+                    scriptPath,
+                    ReplaceCredentialArgument(arguments, tempCredentialPath));
 
-            using var process = new Process { StartInfo = startInfo };
-            process.Start();
-            var processOutput = await WaitForProcessExitAsync(process, cancellationToken);
-            var stdout = processOutput.StandardOutput;
-            var stderr = processOutput.StandardError;
+                using var process = new Process { StartInfo = startInfo };
+                process.Start();
+                var processOutput = await WaitForProcessExitAsync(process, cancellationToken);
+                stdout = processOutput.StandardOutput;
+                stderr = processOutput.StandardError;
+            }
+            finally
+            {
+                TryDeleteFile(tempCredentialPath);
+            }
 
             if (string.IsNullOrWhiteSpace(stdout))
             {

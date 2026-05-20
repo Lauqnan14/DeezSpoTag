@@ -1,4 +1,6 @@
 using System.Text.Json;
+using DeezSpoTag.Services.Security;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Authentication;
@@ -21,7 +23,9 @@ public class LoginStorageService : ILoginStorageService
 {
     private readonly string _configFolder;
     private readonly string _loginFilePath;
+    private readonly ProtectedCredentialFileStore _credentialStore;
     private readonly ILogger<LoginStorageService> _logger;
+    private const string ProtectionPurpose = "DeezSpoTag.Deezer.Login";
     private static readonly JsonSerializerOptions LoginDeserializeOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -40,12 +44,14 @@ public class LoginStorageService : ILoginStorageService
         User = null
     };
 
-    public LoginStorageService(ILogger<LoginStorageService> logger)
+    public LoginStorageService(ILogger<LoginStorageService> logger, IDataProtectionProvider dataProtectionProvider)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        ArgumentNullException.ThrowIfNull(dataProtectionProvider);
 
         _configFolder = DeezSpoTagConfigPathResolver.GetConfigFolder();
         _loginFilePath = Path.Join(_configFolder, "login.json");
+        _credentialStore = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -71,7 +77,11 @@ public class LoginStorageService : ILoginStorageService
                 return null;
             }
 
-            var json = await File.ReadAllTextAsync(_loginFilePath);
+            var json = await _credentialStore.ReadTextAndMigrateAsync(_loginFilePath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
 
             if (!json.TrimStart().StartsWith('{'))
             {
@@ -113,7 +123,11 @@ public class LoginStorageService : ILoginStorageService
             {
                 if (System.IO.File.Exists(_loginFilePath))
                 {
-                    var existingJson = await File.ReadAllTextAsync(_loginFilePath);
+                    var existingJson = await _credentialStore.ReadTextAndMigrateAsync(_loginFilePath);
+                    if (string.IsNullOrWhiteSpace(existingJson))
+                    {
+                        existingJson = "{}";
+                    }
                     var existingData = JsonSerializer.Deserialize<LoginData>(existingJson, LoginDeserializeOptions);
                     if (existingData != null)
                     {
@@ -141,7 +155,7 @@ public class LoginStorageService : ILoginStorageService
             }
 
             var json = JsonSerializer.Serialize(dataToSave, LoginSerializeOptions);
-            await System.IO.File.WriteAllTextAsync(_loginFilePath, json);
+            await _credentialStore.WriteTextAsync(_loginFilePath, json);
 
             _logger.LogDebug("Saved login credentials to file");
         }
@@ -162,7 +176,7 @@ public class LoginStorageService : ILoginStorageService
             }
 
             var json = JsonSerializer.Serialize(DefaultLoginData, LoginSerializeOptions);
-            await System.IO.File.WriteAllTextAsync(_loginFilePath, json);
+            await _credentialStore.WriteTextAsync(_loginFilePath, json);
 
             _logger.LogDebug("Reset login credentials to defaults");
         }
@@ -184,7 +198,7 @@ public class LoginStorageService : ILoginStorageService
             }
 
             var content = await File.ReadAllTextAsync(_loginFilePath);
-            if (content.TrimStart().StartsWith('{'))
+            if (_credentialStore.IsProtectedText(content) || content.TrimStart().StartsWith('{'))
             {
                 _logger.LogInformation("Login file is not corrupted");
                 return;
@@ -194,7 +208,7 @@ public class LoginStorageService : ILoginStorageService
 
             var json = JsonSerializer.Serialize(DefaultLoginData, LoginSerializeOptions);
 
-            await File.WriteAllTextAsync(_loginFilePath, json);
+            await _credentialStore.WriteTextAsync(_loginFilePath, json);
             _logger.LogInformation("Login file repaired successfully");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

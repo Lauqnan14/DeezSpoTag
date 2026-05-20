@@ -4,7 +4,9 @@ using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Core.Security;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Crypto;
+using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Utils;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Text;
@@ -26,6 +28,8 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
     private readonly ILogger<DeezerAuthenticationService> _logger;
     private readonly DeezerAuthUtils _authUtils;
     private readonly string _configPath;
+    private readonly ProtectedCredentialFileStore _credentialStore;
+    private const string ProtectionPurpose = "DeezSpoTag.Deezer.Login";
 
     // Deezer API constants from deezspotag
     private const string CLIENT_ID = "172365";
@@ -53,13 +57,16 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
     public DeezerAuthenticationService(
         DeezerClient deezerClient,
         DeezerAuthUtils authUtils,
-        ILogger<DeezerAuthenticationService> logger)
+        ILogger<DeezerAuthenticationService> logger,
+        IDataProtectionProvider dataProtectionProvider)
     {
         _deezerClient = deezerClient ?? throw new ArgumentNullException(nameof(deezerClient));
         _authUtils = authUtils ?? throw new ArgumentNullException(nameof(authUtils));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        ArgumentNullException.ThrowIfNull(dataProtectionProvider);
 
         _configPath = ResolveConfigPath();
+        _credentialStore = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
 
         EnsureConfigDirectory();
     }
@@ -617,7 +624,13 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
 
         try
         {
-            var json = await File.ReadAllTextAsync(credentialsPath);
+            var json = await _credentialStore.ReadTextAndMigrateAsync(credentialsPath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                _loginData = new LoginCredentials();
+                return;
+            }
+
             _loginData = JsonSerializer.Deserialize<LoginCredentials>(json) ?? new LoginCredentials();
         }
         catch (JsonException ex)
@@ -655,7 +668,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             // EXACT PORT: Write with indentation like deezspotag (JSON.stringify with 2 spaces)
             var json = JsonSerializer.Serialize(_loginData, IndentedJsonOptions);
 
-            await System.IO.File.WriteAllTextAsync(credentialsPath, json);
+            await _credentialStore.WriteTextAsync(credentialsPath, json);
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug("Saved login credentials to: {Path}", credentialsPath);
@@ -684,7 +697,7 @@ public class DeezerAuthenticationService : IDeezerAuthenticationService
             // EXACT PORT: Write defaults with indentation like deezspotag
             var json = JsonSerializer.Serialize(defaultCredentials, IndentedJsonOptions);
 
-            await System.IO.File.WriteAllTextAsync(credentialsPath, json);
+            await _credentialStore.WriteTextAsync(credentialsPath, json);
 
             // EXACT PORT: Update in-memory data like deezspotag
             _loginData = JsonSerializer.Deserialize<LoginCredentials>(json) ?? new LoginCredentials();

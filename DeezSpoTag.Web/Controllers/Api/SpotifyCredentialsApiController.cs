@@ -21,11 +21,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         TimeSpan.FromMilliseconds(250));
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CachedSpotifyConnectionStatus> SpotifyConnectionStatusCache = new(StringComparer.Ordinal);
     private static readonly TimeSpan SpotifyConnectionStatusCacheTtl = TimeSpan.FromMinutes(2);
-    private static readonly System.Text.Json.JsonSerializerOptions SpotifyUserAuthSerializerOptions = new()
-    {
-        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
-    };
-
     public sealed class SpotifyCredentialsCollaborators
     {
         public required PlatformAuthService PlatformAuthService { get; init; }
@@ -2316,18 +2311,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                     continue;
                 }
 
-                SpotifyUserAuthState? state = null;
-                try
-                {
-                    var json = System.IO.File.ReadAllText(authPath);
-                    state = System.Text.Json.JsonSerializer.Deserialize<SpotifyUserAuthState>(
-                        json,
-                        SpotifyUserAuthSerializerOptions);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    continue;
-                }
+                var state = _userAuthStore.LoadAsync(id).GetAwaiter().GetResult();
 
                 if (state == null || (state.Accounts.Count == 0 && string.IsNullOrWhiteSpace(state.ActiveAccount)))
                 {

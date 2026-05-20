@@ -6,12 +6,14 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Linq;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.DataProtection;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Web.Services.CoverPort;
 using DeezSpoTag.Web.Services.AutoTag;
@@ -244,6 +246,7 @@ public partial class AutoTagService
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly UserPreferencesStore _userPreferencesStore;
     private readonly ActivitiesRealtimeService _activitiesRealtime;
+    private readonly ProtectedCredentialFileStore _oneTaggerSpotifyTokenStore;
     private readonly string _jobsDir;
     private readonly string _historyDir;
     private readonly string _workersHistoryDir;
@@ -440,6 +443,7 @@ public partial class AutoTagService
         public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
         public required UserPreferencesStore UserPreferencesStore { get; init; }
         public required ActivitiesRealtimeService ActivitiesRealtime { get; init; }
+        public required IDataProtectionProvider DataProtectionProvider { get; init; }
     }
 
     public event Action<AutoTagJob>? JobCompleted;
@@ -471,6 +475,9 @@ public partial class AutoTagService
         _profileResolutionService = collaborators.ProfileResolutionService;
         _userPreferencesStore = collaborators.UserPreferencesStore;
         _activitiesRealtime = collaborators.ActivitiesRealtime;
+        _oneTaggerSpotifyTokenStore = new ProtectedCredentialFileStore(
+            collaborators.DataProtectionProvider,
+            "DeezSpoTag.OneTagger.SpotifyTokenCache");
         var appDataRoot = AppDataPaths.GetDataRoot(env);
         var autoTagRoot = Path.Join(appDataRoot, AutoTagFolderName);
         _jobsDir = Path.Join(autoTagRoot, "jobs");
@@ -647,11 +654,11 @@ public partial class AutoTagService
         runtimeConfigJson = InjectRunTrigger(runtimeConfigJson, normalizedTrigger);
         runtimeConfigJson = InjectTechnicalSettings(runtimeConfigJson, technicalOverride, job.ProfileId, job.ProfileName);
         var persistedConfigJson = RedactSensitiveConfigJson(runtimeConfigJson);
-        await TrySeedSpotifyTokenCacheAsync();
+        var seededSpotifyTokenCachePath = await TrySeedSpotifyTokenCacheAsync();
         var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
         TrySaveLastConfig(persistedConfigJson);
 
-        _ = RunJobAsync(job, normalizedPath, runtimeConfigPath);
+        _ = RunJobAsync(job, normalizedPath, runtimeConfigPath, seededSpotifyTokenCachePath);
 
         return job;
     }
@@ -1875,7 +1882,11 @@ public partial class AutoTagService
         return stopped;
     }
 
-    private async Task RunJobAsync(AutoTagJob job, string path, string configPath)
+    private async Task RunJobAsync(
+        AutoTagJob job,
+        string path,
+        string configPath,
+        string? seededSpotifyTokenCachePath)
     {
         var fileOutcomes = new Dictionary<string, FileTagOutcome>(StringComparer.OrdinalIgnoreCase);
         var runtimeConfigPaths = InitializeRuntimeConfigPaths(configPath);
@@ -1898,6 +1909,11 @@ public partial class AutoTagService
         }
         finally
         {
+            if (!HasOtherActiveJobs(job.Id))
+            {
+                await ProtectSeededSpotifyTokenCacheAsync(seededSpotifyTokenCachePath);
+            }
+
             if (!ShouldPreserveRuntimeConfigFilesForResume(job))
             {
                 CleanupRuntimeConfigFiles(runtimeConfigPaths);
@@ -1909,6 +1925,11 @@ public partial class AutoTagService
                 cancellation.Dispose();
             }
         }
+    }
+
+    private bool HasOtherActiveJobs(string jobId)
+    {
+        return _activeJobIds.Keys.Any(activeJobId => !string.Equals(activeJobId, jobId, StringComparison.Ordinal));
     }
 
     private async Task RunJobCoreAsync(
@@ -4688,7 +4709,7 @@ public partial class AutoTagService
         target[key] = value.Trim();
     }
 
-    private async Task TrySeedSpotifyTokenCacheAsync()
+    private async Task<string?> TrySeedSpotifyTokenCacheAsync()
     {
         try
         {
@@ -4696,7 +4717,7 @@ public partial class AutoTagService
             var spotify = state?.Spotify;
             if (spotify == null || string.IsNullOrWhiteSpace(spotify.ActiveAccount))
             {
-                return;
+                return null;
             }
 
             var active = spotify.Accounts.FirstOrDefault(a =>
@@ -4704,25 +4725,25 @@ public partial class AutoTagService
             var blobPath = active?.LibrespotBlobPath ?? active?.BlobPath;
             if (string.IsNullOrWhiteSpace(blobPath))
             {
-                return;
+                return null;
             }
 
             if (!_spotifyBlobService.BlobExists(blobPath)
                 || !await _spotifyBlobService.IsLibrespotBlobAsync(blobPath))
             {
-                return;
+                return null;
             }
 
             var tokenResult = await _spotifyBlobService.GetWebApiAccessTokenAsync(blobPath);
             if (string.IsNullOrWhiteSpace(tokenResult.AccessToken))
             {
-                return;
+                return null;
             }
 
             var cachePath = ResolveSpotifyTokenCachePath();
             if (string.IsNullOrWhiteSpace(cachePath))
             {
-                return;
+                return null;
             }
 
             var expiresAt = tokenResult.ExpiresAtUnixMs.HasValue && tokenResult.ExpiresAtUnixMs.Value > 0
@@ -4741,10 +4762,35 @@ public partial class AutoTagService
             };
 
             await File.WriteAllTextAsync(cachePath, JsonSerializer.Serialize(payload));
+            return cachePath;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed to seed Spotify token cache for AutoTag.");
+            return null;
+        }
+    }
+
+    private async Task ProtectSeededSpotifyTokenCacheAsync(string? cachePath)
+    {
+        if (string.IsNullOrWhiteSpace(cachePath) || !File.Exists(cachePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var stored = await File.ReadAllTextAsync(cachePath);
+            if (_oneTaggerSpotifyTokenStore.IsProtectedText(stored))
+            {
+                return;
+            }
+
+            await _oneTaggerSpotifyTokenStore.WriteTextAsync(cachePath, stored);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to protect Spotify token cache for AutoTag.");
         }
     }
 

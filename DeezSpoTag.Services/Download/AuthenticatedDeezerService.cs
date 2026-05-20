@@ -1,6 +1,6 @@
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Services.Authentication;
 using Microsoft.Extensions.Logging;
-using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace DeezSpoTag.Services.Download;
@@ -14,11 +14,16 @@ public class AuthenticatedDeezerService
 {
     private readonly ILogger<AuthenticatedDeezerService> _logger;
     private readonly DeezerClient _deezerClient;
+    private readonly ILoginStorageService _loginStorage;
 
-    public AuthenticatedDeezerService(ILogger<AuthenticatedDeezerService> logger, DeezerClient deezerClient)
+    public AuthenticatedDeezerService(
+        ILogger<AuthenticatedDeezerService> logger,
+        DeezerClient deezerClient,
+        ILoginStorageService loginStorage)
     {
         _logger = logger;
         _deezerClient = deezerClient;
+        _loginStorage = loginStorage;
     }
 
     /// <summary>
@@ -114,24 +119,8 @@ public class AuthenticatedDeezerService
     {
         try
         {
-            var configFolder = DeezSpoTag.Services.Authentication.DeezSpoTagConfigPathResolver.GetConfigFolder();
-            var loginFilePath = Path.Join(configFolder, "login.json");
-
-            if (!System.IO.File.Exists(loginFilePath))
-            {
-                return null;
-            }
-
-            var json = await File.ReadAllTextAsync(loginFilePath);
-            using var document = JsonDocument.Parse(json);
-            if (!document.RootElement.TryGetProperty("arl", out var arlElement))
-            {
-                return null;
-            }
-
-            return arlElement.ValueKind == JsonValueKind.String
-                ? arlElement.GetString()
-                : null;
+            var loginData = await _loginStorage.LoadLoginCredentialsAsync();
+            return loginData?.Arl;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

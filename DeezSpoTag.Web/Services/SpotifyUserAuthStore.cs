@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Collections.Concurrent;
+using DeezSpoTag.Services.Security;
+using Microsoft.AspNetCore.DataProtection;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -10,18 +12,25 @@ public sealed class SpotifyUserAuthStore
     private readonly ILogger<SpotifyUserAuthStore> _logger;
     private readonly string _dataRoot;
     private readonly bool _isSingleUserMode;
+    private readonly ProtectedCredentialFileStore _credentialStore;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _userFileGates = new(StringComparer.OrdinalIgnoreCase);
+    private const string ProtectionPurpose = "DeezSpoTag.Spotify.UserAuth";
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true
     };
 
-    public SpotifyUserAuthStore(IWebHostEnvironment env, IConfiguration configuration, ILogger<SpotifyUserAuthStore> logger)
+    public SpotifyUserAuthStore(
+        IWebHostEnvironment env,
+        IConfiguration configuration,
+        ILogger<SpotifyUserAuthStore> logger,
+        IDataProtectionProvider dataProtectionProvider)
     {
         _logger = logger;
         _dataRoot = AppDataPaths.GetDataRoot(env);
         _isSingleUserMode = configuration.GetValue<bool>("IsSingleUser", true);
+        _credentialStore = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
     }
 
     public string GetUserRoot(string userId)
@@ -45,7 +54,12 @@ public sealed class SpotifyUserAuthStore
                 return new SpotifyUserAuthState();
             }
 
-            var json = await File.ReadAllTextAsync(path);
+            var json = await _credentialStore.ReadTextAndMigrateAsync(path);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new SpotifyUserAuthState();
+            }
+
             var state = JsonSerializer.Deserialize<SpotifyUserAuthState>(json, _jsonOptions) ?? new SpotifyUserAuthState();
             var changed = NormalizeLegacyBlobPaths(userId, state);
             changed |= EnsureActiveAccount(state);
@@ -152,7 +166,12 @@ public sealed class SpotifyUserAuthStore
         SpotifyUserAuthState? state;
         try
         {
-            var json = await File.ReadAllTextAsync(authPath);
+            var json = await _credentialStore.ReadTextAndMigrateAsync(authPath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
             state = JsonSerializer.Deserialize<SpotifyUserAuthState>(json, _jsonOptions);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -204,29 +223,7 @@ public sealed class SpotifyUserAuthStore
         Directory.CreateDirectory(directory);
 
         var json = JsonSerializer.Serialize(state, _jsonOptions);
-        var tempPath = $"{path}.tmp-{Guid.NewGuid():N}";
-        try
-        {
-            await File.WriteAllTextAsync(tempPath, json);
-            File.Move(tempPath, path, overwrite: true);
-        }
-        finally
-        {
-            try
-            {
-                if (File.Exists(tempPath))
-                {
-                    File.Delete(tempPath);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Failed to clean up temporary Spotify auth state file {Path}", tempPath);
-                }
-            }
-        }
+        await _credentialStore.WriteTextAsync(path, json);
     }
 
     public static SpotifyUserAccount? ResolveActiveAccount(SpotifyUserAuthState state)

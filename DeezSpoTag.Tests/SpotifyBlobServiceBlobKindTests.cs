@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -19,7 +20,11 @@ public sealed class SpotifyBlobServiceBlobKindTests : IDisposable
     {
         _tempRoot = Path.Join(Path.GetTempPath(), $"deezspotag-blob-kind-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempRoot);
-        _service = new SpotifyBlobService(new StubWebHostEnvironment(_tempRoot), NullLogger<SpotifyBlobService>.Instance);
+        var dataProtectionProvider = DataProtectionProvider.Create(new DirectoryInfo(Path.Join(_tempRoot, "keys")));
+        _service = new SpotifyBlobService(
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<SpotifyBlobService>.Instance,
+            dataProtectionProvider);
     }
 
     [Fact]

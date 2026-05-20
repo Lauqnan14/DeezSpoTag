@@ -11,6 +11,8 @@ using DeezSpoTag.Core.Models.Settings;
 using System.Linq;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Security;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Services.Download.Utils;
@@ -42,6 +44,7 @@ public class LyricsService
     private readonly LrclibLyricsService _lrclibLyricsService;
     private readonly SongLinkResolver? _songLinkResolver;
     private readonly DeezerClient? _deezerClient;
+    private readonly ProtectedCredentialFileStore _spotifyWebPlayerCredentialStore;
     private string? _cachedGwToken;
     private DateTime _cachedGwTokenExpiry = DateTime.MinValue;
     private readonly SemaphoreSlim _spotifyTokenGate = new(1, 1);
@@ -58,6 +61,7 @@ public class LyricsService
     private const string LrclibProvider = "lrclib";
     private const string MusixmatchProvider = "musixmatch";
     private const string ApplicationJson = "application/json";
+    private const string SpotifyWebPlayerProtectionPurpose = "DeezSpoTag.Spotify.WebPlayer";
     private const string LyricsClientName = "LyricsService";
     private const string UserAgentHeader = "User-Agent";
     private const string AuthorityHeader = "authority";
@@ -111,7 +115,8 @@ public class LyricsService
         AuthenticatedDeezerService authenticatedDeezerService,
         DeezSpoTag.Services.Apple.AppleLyricsService appleLyricsService,
         LrclibLyricsService lrclibLyricsService,
-        IServiceProvider serviceProvider)
+        IServiceProvider serviceProvider,
+        IDataProtectionProvider dataProtectionProvider)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -121,6 +126,9 @@ public class LyricsService
         _lrclibLyricsService = lrclibLyricsService;
         _songLinkResolver = serviceProvider.GetService<SongLinkResolver>();
         _deezerClient = serviceProvider.GetService<DeezerClient>();
+        _spotifyWebPlayerCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            SpotifyWebPlayerProtectionPurpose);
     }
 
     /// <summary>
@@ -1315,7 +1323,7 @@ public class LyricsService
 
         try
         {
-            var json = await File.ReadAllTextAsync(blobPath, cancellationToken);
+            var json = await _spotifyWebPlayerCredentialStore.ReadTextAndMigrateAsync(blobPath, cancellationToken);
             if (string.IsNullOrWhiteSpace(json))
             {
                 return null;
