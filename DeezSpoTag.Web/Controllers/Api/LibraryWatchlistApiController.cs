@@ -16,6 +16,7 @@ public class LibraryWatchlistApiController : ControllerBase
     private const string AppleSource = "apple";
     private const string DeezerSource = "deezer";
     private const string AddWatchlistFailedMessage = "Failed to add watchlist entry.";
+    private const string ExplicitField = "explicit";
 
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
@@ -305,24 +306,18 @@ public class LibraryWatchlistApiController : ControllerBase
             .Select(folder => folder.Id)
             .ToHashSet();
 
-        if (request?.DestinationFolderId is long folderId)
+        if (request.DestinationFolderId is long folderId && !validFolderIds.Contains(folderId))
         {
-            if (!validFolderIds.Contains(folderId))
-            {
-                return BadRequest("Destination folder was not found or is disabled.");
-            }
+            return BadRequest("Destination folder was not found or is disabled.");
         }
 
-        if (request?.AtmosDestinationFolderId is long atmosFolderId)
+        if (request.AtmosDestinationFolderId is long atmosFolderId && !validFolderIds.Contains(atmosFolderId))
         {
-            if (!validFolderIds.Contains(atmosFolderId))
-            {
-                return BadRequest("Atmos destination folder was not found or is disabled.");
-            }
+            return BadRequest("Atmos destination folder was not found or is disabled.");
         }
 
         IReadOnlyList<string>? normalizedAlbumGroups = null;
-        if (request?.WatchedArtistAlbumGroup != null)
+        if (request.WatchedArtistAlbumGroup != null)
         {
             normalizedAlbumGroups = ArtistWatchService.NormalizeAlbumGroups(request.WatchedArtistAlbumGroup);
             if (normalizedAlbumGroups.Count == 0 && request.WatchArtistTopSongsEnabled != true)
@@ -331,29 +326,30 @@ public class LibraryWatchlistApiController : ControllerBase
             }
         }
 
-        var preferredEngine = NormalizePreferredEngine(request?.PreferredEngine);
-        var downloadVariantMode = NormalizeDownloadVariantMode(request?.DownloadVariantMode);
-        var topSongsSyncMode = NormalizeTopSongsSyncMode(request?.TopSongsSyncMode);
-        var routingRules = NormalizeRoutingRules(request?.RoutingRules);
+        var preferredEngine = NormalizePreferredEngine(request.PreferredEngine);
+        var downloadVariantMode = NormalizeDownloadVariantMode(request.DownloadVariantMode);
+        var topSongsSyncMode = NormalizeTopSongsSyncMode(request.TopSongsSyncMode);
+        var routingRules = NormalizeRoutingRules(request.RoutingRules);
         if (routingRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
         {
             return BadRequest("Routing destination folder was not found or is disabled.");
         }
-        var blockRules = NormalizeBlockRules(request?.BlockRules);
+        var blockRules = NormalizeBlockRules(request.BlockRules);
 
         var updated = await _repository.UpdateWatchlistPreferencesAsync(
-            artistId,
-            request?.DestinationFolderId,
-            normalizedAlbumGroups,
-            request?.WatchArtistTopSongsEnabled,
-            request?.WatchArtistLatestReleasesOnly,
-            preferredEngine,
-            routingRules,
-            request?.AtmosDestinationFolderId,
-            downloadVariantMode,
-            topSongsSyncMode,
-            request?.DownloadDiscographyEnabled,
-            blockRules,
+            new LibraryRepository.ArtistWatchPreferenceUpdateInput(
+                artistId,
+                request.DestinationFolderId,
+                normalizedAlbumGroups,
+                request.WatchArtistTopSongsEnabled,
+                request.WatchArtistLatestReleasesOnly,
+                preferredEngine,
+                routingRules,
+                request.AtmosDestinationFolderId,
+                downloadVariantMode,
+                topSongsSyncMode,
+                request.DownloadDiscographyEnabled,
+                blockRules),
             cancellationToken);
         if (!updated)
         {
@@ -648,7 +644,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return normalized == "append" ? "append" : "mirror";
     }
 
-    private static IReadOnlyList<PlaylistTrackRoutingRule>? NormalizeRoutingRules(IReadOnlyList<PlaylistTrackRoutingRule>? rules)
+    private static List<PlaylistTrackRoutingRule>? NormalizeRoutingRules(IReadOnlyList<PlaylistTrackRoutingRule>? rules)
     {
         if (rules == null || rules.Count == 0)
         {
@@ -669,12 +665,12 @@ public class LibraryWatchlistApiController : ControllerBase
                 };
             })
             .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, "explicit", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
                     || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
             .ToList();
     }
 
-    private static IReadOnlyList<PlaylistTrackBlockRule>? NormalizeBlockRules(IReadOnlyList<PlaylistTrackBlockRule>? rules)
+    private static List<PlaylistTrackBlockRule>? NormalizeBlockRules(IReadOnlyList<PlaylistTrackBlockRule>? rules)
     {
         if (rules == null || rules.Count == 0)
         {
@@ -694,7 +690,7 @@ public class LibraryWatchlistApiController : ControllerBase
                 };
             })
             .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, "explicit", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
                     || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
             .ToList();
     }
@@ -704,7 +700,7 @@ public class LibraryWatchlistApiController : ControllerBase
         var normalized = value?.Trim().ToLowerInvariant();
         return normalized switch
         {
-            "artist" or "title" or "album" or "genre" or "year" or "explicit" => normalized,
+            "artist" or "title" or "album" or "genre" or "year" or ExplicitField => normalized,
             _ => string.Empty
         };
     }
@@ -712,7 +708,7 @@ public class LibraryWatchlistApiController : ControllerBase
     private static string NormalizeRoutingOperator(string? field, string? value)
     {
         var normalized = value?.Trim().ToLowerInvariant();
-        if (string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(field, ExplicitField, StringComparison.OrdinalIgnoreCase))
         {
             return normalized == "is_false" ? "is_false" : "is_true";
         }

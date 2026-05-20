@@ -194,16 +194,18 @@ public class DeezSpoTagAppFactory : IDeezSpoTagAppFactory
         var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         var cancellationRegistry = serviceProvider.GetRequiredService<DownloadCancellationRegistry>();
         var executionGate = serviceProvider.GetRequiredService<IDownloadQueueExecutionGate>();
-
-        // Use the root service provider to avoid disposal issues when creating new scopes
-        return new DeezSpoTagApp(
-            logger,
+        var dependencies = new DeezSpoTagApp.Dependencies(
             settingsService,
             listener,
             retryScheduler,
             queueRepository,
             cancellationRegistry,
-            executionGate,
+            executionGate);
+
+        // Use the root service provider to avoid disposal issues when creating new scopes
+        return new DeezSpoTagApp(
+            logger,
+            dependencies,
             _rootServiceProvider);
     }
 }

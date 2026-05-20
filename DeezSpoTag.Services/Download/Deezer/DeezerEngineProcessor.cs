@@ -46,7 +46,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
     private const string DeezerLoginRequiredMessage = "Deezer login required";
     private const string TrackType = "track";
     private const string EpisodeCollectionType = "episode";
-    private static readonly IReadOnlyDictionary<int, string> StagingExtensions = new Dictionary<int, string>
+    private static readonly Dictionary<int, string> StagingExtensions = new()
     {
         [9] = ".flac",
         [3] = ".mp3",

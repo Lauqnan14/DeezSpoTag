@@ -1265,8 +1265,9 @@ function renderUnmatchedArtistsResolverList(elements) {
     elements.unmatchedModalList.innerHTML = rows.map(item => {
         const suggestions = state.suggestions.get(item.artistId) || [];
         const loadingSuggestions = state.loadingSuggestionIds?.has(item.artistId) === true;
-        const options = suggestions.length > 0
-            ? suggestions.map(suggestion => {
+        let options = '<option value="">Load suggestions first</option>';
+        if (suggestions.length > 0) {
+            options = suggestions.map(suggestion => {
                 const overlapText = Number(suggestion.localAlbumOverlap || 0) > 0
                     ? ` • overlap ${suggestion.localAlbumOverlap}`
                     : '';
@@ -1275,10 +1276,10 @@ function renderUnmatchedArtistsResolverList(elements) {
                     : '';
                 const verifiedText = suggestion.verified ? ' • verified' : '';
                 return `<option value="${escapeHtml(suggestion.spotifyId)}">${escapeHtml(suggestion.name)}${overlapText}${catalogText}${verifiedText}</option>`;
-            }).join('')
-            : loadingSuggestions
-                ? '<option value="">Searching suggestions...</option>'
-            : '<option value="">Load suggestions first</option>';
+            }).join('');
+        } else if (loadingSuggestions) {
+            options = '<option value="">Searching suggestions...</option>';
+        }
         const suggestionsButtonContent = loadingSuggestions
             ? '<span class="unmatched-artist-row__spinner" aria-hidden="true"></span><span>Searching</span>'
             : 'Suggestions';

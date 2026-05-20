@@ -122,6 +122,20 @@ public sealed class LibraryRepository
         string? BatchProcessingSnapshotId,
         DateTimeOffset? LastCheckedUtc);
 
+    public sealed record ArtistWatchPreferenceUpdateInput(
+        long ArtistId,
+        long? DestinationFolderId,
+        IReadOnlyCollection<string>? AlbumGroups,
+        bool? TopSongsEnabled,
+        bool? LatestReleasesOnly,
+        string? PreferredEngine,
+        IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,
+        long? AtmosDestinationFolderId,
+        string? DownloadVariantMode,
+        string? TopSongsSyncMode,
+        bool? DownloadDiscographyEnabled,
+        IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules);
+
     private const DateTimeStyles ParseDateStyles = DateTimeStyles.RoundtripKind | DateTimeStyles.AllowWhiteSpaces;
     private const string ArtistType = "artist";
     private const string AlbumType = "album";
@@ -5103,41 +5117,7 @@ ORDER BY w.created_at DESC;";
         var items = new List<WatchlistArtistDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var created = await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6));
-            var lastChecked = await reader.IsDBNullAsync(7, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(7));
-            var destinationFolderId = await reader.IsDBNullAsync(8, cancellationToken) ? (long?)null : reader.GetInt64(8);
-            var albumGroups = await reader.IsDBNullAsync(9, cancellationToken) ? null : DeserializeStringList(reader.GetString(9));
-            var topSongsEnabled = await reader.IsDBNullAsync(10, cancellationToken) ? (bool?)null : reader.GetInt32(10) != 0;
-            var latestReleasesOnly = await reader.IsDBNullAsync(11, cancellationToken) ? (bool?)null : reader.GetInt32(11) != 0;
-            var preferredEngine = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
-            var routingRulesJson = await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13);
-            var routingRules = routingRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(routingRulesJson);
-            var atmosDestinationFolderId = await reader.IsDBNullAsync(14, cancellationToken) ? (long?)null : reader.GetInt64(14);
-            var downloadVariantMode = await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetString(15);
-            var topSongsSyncMode = await reader.IsDBNullAsync(16, cancellationToken) ? null : reader.GetString(16);
-            var downloadDiscographyEnabled = await reader.IsDBNullAsync(17, cancellationToken) ? (bool?)null : reader.GetInt32(17) != 0;
-            var ignoreRulesJson = await reader.IsDBNullAsync(18, cancellationToken) ? null : reader.GetString(18);
-            var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
-            items.Add(new WatchlistArtistDto(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
-                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
-                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
-                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-                created,
-                lastChecked,
-                destinationFolderId,
-                albumGroups,
-                topSongsEnabled,
-                latestReleasesOnly,
-                preferredEngine,
-                routingRules,
-                atmosDestinationFolderId,
-                downloadVariantMode,
-                topSongsSyncMode,
-                downloadDiscographyEnabled,
-                ignoreRules));
+            items.Add(await ReadWatchlistArtistAsync(reader, hasLastCheckedUtc: true, cancellationToken));
         }
 
         return items;
@@ -5212,54 +5192,61 @@ LIMIT 1;";
             return null;
         }
 
-        var created = await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6));
-        var destinationFolderId = await reader.IsDBNullAsync(7, cancellationToken) ? (long?)null : reader.GetInt64(7);
-        var albumGroups = await reader.IsDBNullAsync(8, cancellationToken) ? null : DeserializeStringList(reader.GetString(8));
-        var topSongsEnabled = await reader.IsDBNullAsync(9, cancellationToken) ? (bool?)null : reader.GetInt32(9) != 0;
-        var latestReleasesOnly = await reader.IsDBNullAsync(10, cancellationToken) ? (bool?)null : reader.GetInt32(10) != 0;
-        var preferredEngine = await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11);
-        var routingRulesJson = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
-        var routingRules = routingRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(routingRulesJson);
-        var atmosDestinationFolderId = await reader.IsDBNullAsync(13, cancellationToken) ? (long?)null : reader.GetInt64(13);
-        var downloadVariantMode = await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetString(14);
-        var topSongsSyncMode = await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetString(15);
-        var downloadDiscographyEnabled = await reader.IsDBNullAsync(16, cancellationToken) ? (bool?)null : reader.GetInt32(16) != 0;
-        var ignoreRulesJson = await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetString(17);
-        var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
+        return await ReadWatchlistArtistAsync(reader, hasLastCheckedUtc: false, cancellationToken);
+    }
+
+    private static async Task<WatchlistArtistDto> ReadWatchlistArtistAsync(
+        SqliteDataReader reader,
+        bool hasLastCheckedUtc,
+        CancellationToken cancellationToken)
+    {
+        var created = await ReadDateTimeOffsetAsync(reader, 6, cancellationToken) ?? DateTimeOffset.MinValue;
+        var offset = hasLastCheckedUtc ? 1 : 0;
+        var lastChecked = hasLastCheckedUtc
+            ? await ReadDateTimeOffsetAsync(reader, 7, cancellationToken)
+            : null;
+        var routingRulesJson = await ReadStringAsync(reader, 12 + offset, cancellationToken);
+        var ignoreRulesJson = await ReadStringAsync(reader, 17 + offset, cancellationToken);
+
         return new WatchlistArtistDto(
             reader.GetInt64(0),
             reader.GetString(1),
-            await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
-            await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
-            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
-            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+            await ReadStringAsync(reader, 2, cancellationToken),
+            await ReadStringAsync(reader, 3, cancellationToken),
+            await ReadStringAsync(reader, 4, cancellationToken),
+            await ReadStringAsync(reader, 5, cancellationToken),
             created,
-            DestinationFolderId: destinationFolderId,
-            WatchedAlbumGroups: albumGroups,
-            TopSongsEnabled: topSongsEnabled,
-            LatestReleasesOnly: latestReleasesOnly,
-            PreferredEngine: preferredEngine,
-            RoutingRules: routingRules,
-            AtmosDestinationFolderId: atmosDestinationFolderId,
-            DownloadVariantMode: downloadVariantMode,
-            TopSongsSyncMode: topSongsSyncMode,
-            DownloadDiscographyEnabled: downloadDiscographyEnabled,
-            IgnoreRules: ignoreRules);
+            lastChecked,
+            await ReadInt64Async(reader, 7 + offset, cancellationToken),
+            await ReadStringListAsync(reader, 8 + offset, cancellationToken),
+            await ReadBooleanAsync(reader, 9 + offset, cancellationToken),
+            await ReadBooleanAsync(reader, 10 + offset, cancellationToken),
+            await ReadStringAsync(reader, 11 + offset, cancellationToken),
+            routingRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(routingRulesJson),
+            await ReadInt64Async(reader, 13 + offset, cancellationToken),
+            await ReadStringAsync(reader, 14 + offset, cancellationToken),
+            await ReadStringAsync(reader, 15 + offset, cancellationToken),
+            await ReadBooleanAsync(reader, 16 + offset, cancellationToken),
+            ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson));
     }
 
+    private static async Task<string?> ReadStringAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+        => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetString(ordinal);
+
+    private static async Task<long?> ReadInt64Async(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+        => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetInt64(ordinal);
+
+    private static async Task<bool?> ReadBooleanAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+        => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetInt32(ordinal) != 0;
+
+    private static async Task<DateTimeOffset?> ReadDateTimeOffsetAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+        => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(ordinal));
+
+    private static async Task<IReadOnlyList<string>?> ReadStringListAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+        => await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : DeserializeStringList(reader.GetString(ordinal));
+
     public async Task<bool> UpdateWatchlistPreferencesAsync(
-        long artistId,
-        long? destinationFolderId,
-        IReadOnlyCollection<string>? albumGroups,
-        bool? topSongsEnabled,
-        bool? latestReleasesOnly,
-        string? preferredEngine,
-        IReadOnlyList<PlaylistTrackRoutingRule>? routingRules,
-        long? atmosDestinationFolderId,
-        string? downloadVariantMode,
-        string? topSongsSyncMode,
-        bool? downloadDiscographyEnabled,
-        IReadOnlyList<PlaylistTrackBlockRule>? ignoreRules,
+        ArtistWatchPreferenceUpdateInput input,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -5278,20 +5265,36 @@ SET destination_folder_id = @destinationFolderId,
     ignore_rules_json = @ignoreRulesJson
 WHERE artist_id = @artistId;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistId", artistId);
-        command.Parameters.AddWithValue("destinationFolderId", (object?)destinationFolderId ?? DBNull.Value);
-        command.Parameters.AddWithValue("albumGroupsJson", albumGroups == null ? DBNull.Value : (object)JsonSerializer.Serialize(albumGroups));
-        command.Parameters.AddWithValue("topSongsEnabled", topSongsEnabled.HasValue ? (object)(topSongsEnabled.Value ? 1 : 0) : DBNull.Value);
-        command.Parameters.AddWithValue("latestReleasesOnly", latestReleasesOnly.HasValue ? (object)(latestReleasesOnly.Value ? 1 : 0) : DBNull.Value);
-        command.Parameters.AddWithValue("preferredEngine", string.IsNullOrWhiteSpace(preferredEngine) ? DBNull.Value : (object)preferredEngine.Trim().ToLowerInvariant());
-        command.Parameters.AddWithValue("routingRulesJson", routingRules is { Count: > 0 } ? (object)JsonSerializer.Serialize(routingRules) : DBNull.Value);
-        command.Parameters.AddWithValue("atmosDestinationFolderId", (object?)atmosDestinationFolderId ?? DBNull.Value);
-        command.Parameters.AddWithValue("downloadVariantMode", string.IsNullOrWhiteSpace(downloadVariantMode) ? DBNull.Value : (object)downloadVariantMode.Trim().ToLowerInvariant());
-        command.Parameters.AddWithValue("topSongsSyncMode", string.IsNullOrWhiteSpace(topSongsSyncMode) ? DBNull.Value : (object)topSongsSyncMode.Trim().ToLowerInvariant());
-        command.Parameters.AddWithValue("downloadDiscographyEnabled", downloadDiscographyEnabled.HasValue ? (object)(downloadDiscographyEnabled.Value ? 1 : 0) : DBNull.Value);
-        command.Parameters.AddWithValue("ignoreRulesJson", ignoreRules is { Count: > 0 } ? (object)JsonSerializer.Serialize(ignoreRules) : DBNull.Value);
+        command.Parameters.AddWithValue("artistId", input.ArtistId);
+        command.Parameters.AddWithValue("destinationFolderId", (object?)input.DestinationFolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("albumGroupsJson", ToJsonDbValue(input.AlbumGroups));
+        command.Parameters.AddWithValue("topSongsEnabled", ToDbBoolean(input.TopSongsEnabled));
+        command.Parameters.AddWithValue("latestReleasesOnly", ToDbBoolean(input.LatestReleasesOnly));
+        command.Parameters.AddWithValue("preferredEngine", ToLowerTextDbValue(input.PreferredEngine));
+        command.Parameters.AddWithValue("routingRulesJson", ToJsonDbValue(input.RoutingRules));
+        command.Parameters.AddWithValue("atmosDestinationFolderId", (object?)input.AtmosDestinationFolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("downloadVariantMode", ToLowerTextDbValue(input.DownloadVariantMode));
+        command.Parameters.AddWithValue("topSongsSyncMode", ToLowerTextDbValue(input.TopSongsSyncMode));
+        command.Parameters.AddWithValue("downloadDiscographyEnabled", ToDbBoolean(input.DownloadDiscographyEnabled));
+        command.Parameters.AddWithValue("ignoreRulesJson", ToJsonDbValue(input.IgnoreRules));
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
+
+    private static object ToDbBoolean(bool? value)
+    {
+        if (!value.HasValue)
+        {
+            return DBNull.Value;
+        }
+
+        return value.Value ? 1 : 0;
+    }
+
+    private static object ToLowerTextDbValue(string? value)
+        => string.IsNullOrWhiteSpace(value) ? DBNull.Value : value.Trim().ToLowerInvariant();
+
+    private static object ToJsonDbValue<T>(IReadOnlyCollection<T>? values)
+        => values is { Count: > 0 } ? JsonSerializer.Serialize(values) : DBNull.Value;
 
     public async Task<bool> RemoveWatchlistAsync(long artistId, CancellationToken cancellationToken = default)
     {

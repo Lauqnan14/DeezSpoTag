@@ -16,6 +16,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryPlaylistWatchlistApiController : ControllerBase
 {
+    private const string ExplicitField = "explicit";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly PlaylistWatchService _playlistWatchService;
@@ -232,6 +233,9 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var routingRules = request.RoutingRules == null
             ? existing?.RoutingRules
             : NormalizeRoutingRules(request.RoutingRules);
+        var blockRules = request.BlockRules == null
+            ? existing?.IgnoreRules
+            : NormalizeBlockRules(request.BlockRules);
 
         return await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
@@ -249,7 +253,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 normalizedArtwork.UpdateArtwork,
                 normalizedArtwork.ReuseSavedArtwork,
                 routingRules,
-                NormalizeBlockRules(request.BlockRules ?? existing?.IgnoreRules),
+                blockRules,
                 request.AtmosFolderId),
             cancellationToken);
     }
@@ -800,7 +804,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         };
     }
 
-    private static IReadOnlyList<PlaylistTrackRoutingRule>? NormalizeRoutingRules(IReadOnlyList<PlaylistTrackRoutingRule>? rules)
+    private static List<PlaylistTrackRoutingRule>? NormalizeRoutingRules(List<PlaylistTrackRoutingRule>? rules)
     {
         if (rules == null || rules.Count == 0)
         {
@@ -821,12 +825,12 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 };
             })
             .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, "explicit", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
                     || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
             .ToList();
     }
 
-    private static IReadOnlyList<PlaylistTrackBlockRule>? NormalizeBlockRules(IReadOnlyList<PlaylistTrackBlockRule>? rules)
+    private static List<PlaylistTrackBlockRule>? NormalizeBlockRules(List<PlaylistTrackBlockRule>? rules)
     {
         if (rules == null || rules.Count == 0)
         {
@@ -846,7 +850,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 };
             })
             .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, "explicit", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
                     || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
             .ToList();
     }
@@ -856,7 +860,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var normalized = value?.Trim().ToLowerInvariant();
         return normalized switch
         {
-            "artist" or "title" or "album" or "genre" or "year" or "explicit" => normalized,
+            "artist" or "title" or "album" or "genre" or "year" or ExplicitField => normalized,
             _ => string.Empty
         };
     }
@@ -864,7 +868,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     private static string NormalizeRoutingOperator(string? field, string? value)
     {
         var normalized = value?.Trim().ToLowerInvariant();
-        if (string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(field, ExplicitField, StringComparison.OrdinalIgnoreCase))
         {
             return normalized == "is_false" ? "is_false" : "is_true";
         }

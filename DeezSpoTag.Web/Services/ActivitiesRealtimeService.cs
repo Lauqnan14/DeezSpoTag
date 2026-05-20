@@ -56,7 +56,10 @@ public sealed class ActivitiesRealtimeService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to broadcast activities event {EventName}.", eventName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to broadcast activities event {EventName}.", eventName);
+            }
         }
     }
 }

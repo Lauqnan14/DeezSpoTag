@@ -218,7 +218,12 @@ public partial class AutoTagService
             var organizerReport = options.GenerateReconciliationReport
                 ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
                 : null;
-            await _libraryOrganizer.OrganizePathAsync(path, options, organizerReport, line => AppendLog(job, $"folder uniformity: {line}"));
+            await _libraryOrganizer.OrganizePathAsync(
+                path,
+                options,
+                organizerReport,
+                line => AppendLog(job, $"folder uniformity: {line}"),
+                cancellationToken);
             if (organizerReport != null)
             {
                 AppendLog(job,

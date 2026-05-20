@@ -34,23 +34,26 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     public DeezSpoTagSettings Settings { get; private set; }
     public IDeezSpoTagListener? Listener { get; set; }
 
+    public sealed record Dependencies(
+        DeezSpoTag.Services.Settings.DeezSpoTagSettingsService SettingsService,
+        IDeezSpoTagListener Listener,
+        DownloadRetryScheduler RetryScheduler,
+        DownloadQueueRepository QueueRepository,
+        DownloadCancellationRegistry CancellationRegistry,
+        IDownloadQueueExecutionGate ExecutionGate);
+
     public DeezSpoTagApp(
         ILogger<DeezSpoTagApp> logger,
-        DeezSpoTag.Services.Settings.DeezSpoTagSettingsService settingsService,
-        IDeezSpoTagListener listener,
-        DownloadRetryScheduler retryScheduler,
-        DownloadQueueRepository queueRepository,
-        DownloadCancellationRegistry cancellationRegistry,
-        IDownloadQueueExecutionGate executionGate,
+        Dependencies dependencies,
         IServiceProvider serviceProvider)
     {
         _logger = logger;
-        _settingsService = settingsService;
-        Listener = listener;
-        _retryScheduler = retryScheduler;
-        _queueRepository = queueRepository;
-        _cancellationRegistry = cancellationRegistry;
-        _executionGate = executionGate;
+        _settingsService = dependencies.SettingsService;
+        Listener = dependencies.Listener;
+        _retryScheduler = dependencies.RetryScheduler;
+        _queueRepository = dependencies.QueueRepository;
+        _cancellationRegistry = dependencies.CancellationRegistry;
+        _executionGate = dependencies.ExecutionGate;
         _serviceProvider = serviceProvider;
 
         Settings = LoadSettings();

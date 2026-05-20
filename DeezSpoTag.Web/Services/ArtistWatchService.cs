@@ -112,114 +112,176 @@ public sealed class ArtistWatchService
         IReadOnlyCollection<string> albumGroups,
         CancellationToken cancellationToken)
     {
-        var spotifyId = artist.SpotifyId;
+        var spotifyId = await ResolveSpotifyWatchIdAsync(artist, cancellationToken);
         if (string.IsNullOrWhiteSpace(spotifyId))
         {
-            spotifyId = await _spotifyArtistService.EnsureSpotifyArtistIdAsync(
-                artist.ArtistId,
-                artist.ArtistName,
-                cancellationToken);
-        }
-
-        if (string.IsNullOrWhiteSpace(spotifyId))
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Spotify artist watch skipped - missing Spotify ID for {ArtistId}", artist.ArtistId);
-            }
+            LogMissingSpotifyId(artist.ArtistId);
             return;
         }
 
         var state = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
-        var latestReleasesOnly = artist.LatestReleasesOnly ?? settings.WatchArtistLatestReleasesOnly;
-        var downloadEntireDiscography = artist.DownloadDiscographyEnabled ?? !latestReleasesOnly;
-        var topSongsEnabled = artist.TopSongsEnabled ?? settings.WatchArtistTopSongsEnabled;
-        var offset = !downloadEntireDiscography
-            ? 0
-            : Math.Max(0, state?.BatchNextOffset ?? 0);
+        var watchState = ResolveSpotifyWatchState(artist, settings, state?.BatchNextOffset);
         var existing = await _libraryRepository.GetArtistWatchAlbumIdsAsync(artist.ArtistId, SpotifySource, cancellationToken);
-        var topTrackInserts = topSongsEnabled
+        var topTrackInserts = watchState.TopSongsEnabled
             ? await QueueSpotifyArtistTopSongsAsync(artist, spotifyId, existing, cancellationToken)
             : new List<ArtistWatchAlbumInsert>();
 
         var page = await _spotifyArtistService.FetchArtistAlbumsPageAsync(
             spotifyId,
             albumGroups,
-            offset,
+            watchState.Offset,
             Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit),
             cancellationToken);
         if (page == null)
         {
-            await _libraryRepository.UpsertArtistWatchStateAsync(
-                artist.ArtistId,
-                spotifyId,
-                offset,
-                DateTimeOffset.UtcNow,
-                cancellationToken);
+            await UpsertSpotifyWatchStateAsync(artist.ArtistId, spotifyId, watchState.Offset, cancellationToken);
             await PersistArtistWatchAlbumsAsync(artist.ArtistId, topTrackInserts, cancellationToken);
             return;
         }
 
-        var newAlbums = page.Albums
-            .Where(album => !string.IsNullOrWhiteSpace(album.Id) && !existing.Contains(album.Id))
-            .ToList();
-
         var insertedAlbums = new List<ArtistWatchAlbumInsert>(topTrackInserts);
-        foreach (var album in newAlbums)
-        {
-            var tracks = await _spotifyMetadataService.FetchAlbumTracksAsync(album.Id, cancellationToken);
-            if (tracks.Count > 0)
-            {
-                var queuedCount = await _playlistWatchService.QueueSpotifyWatchTracksAsync(
-                    album.Name ?? string.Empty,
-                    AlbumGroup,
-                    tracks,
-                    artist.DestinationFolderId,
-                    artist.PreferredEngine,
-                    artist.RoutingRules,
-                    artist.DownloadVariantMode,
-                    artist.AtmosDestinationFolderId,
-                    artist.IgnoreRules,
-                    cancellationToken);
-
-                if (queuedCount > 0)
-                {
-                    await AddArtistAlbumWatchHistoryAsync(
-                        SpotifySource,
-                        album.Id,
-                        album.Name ?? "Album",
-                        queuedCount,
-                        artist.ArtistName,
-                        AlbumGroup,
-                        cancellationToken);
-                }
-            }
-
-            insertedAlbums.Add(new ArtistWatchAlbumInsert(SpotifySource, album.Id));
-        }
-
+        await QueueSpotifyAlbumReleasesAsync(artist, page.Albums, existing, insertedAlbums, cancellationToken);
         await PersistArtistWatchAlbumsAsync(artist.ArtistId, insertedAlbums, cancellationToken);
+        var storedOffset = ResolveStoredSpotifyOffset(watchState.DownloadEntireDiscography, watchState.Offset, page);
+        await UpsertSpotifyWatchStateAsync(artist.ArtistId, spotifyId, storedOffset, cancellationToken);
+    }
 
-        var nextOffset = offset + page.Albums.Count;
-        var completed = !page.HasMore;
-        if (page.Total.HasValue && nextOffset >= page.Total.Value)
+    private async Task<string?> ResolveSpotifyWatchIdAsync(WatchlistArtistDto artist, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(artist.SpotifyId))
         {
-            completed = true;
+            return artist.SpotifyId;
         }
 
-        var storedOffset = !downloadEntireDiscography || completed ? 0 : nextOffset;
-        await _libraryRepository.UpsertArtistWatchStateAsync(
+        return await _spotifyArtistService.EnsureSpotifyArtistIdAsync(
             artist.ArtistId,
+            artist.ArtistName,
+            cancellationToken);
+    }
+
+    private void LogMissingSpotifyId(long artistId)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Spotify artist watch skipped - missing Spotify ID for {ArtistId}", artistId);
+        }
+    }
+
+    private static SpotifyWatchState ResolveSpotifyWatchState(
+        WatchlistArtistDto artist,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        int? batchNextOffset)
+    {
+        var latestReleasesOnly = artist.LatestReleasesOnly ?? settings.WatchArtistLatestReleasesOnly;
+        var downloadEntireDiscography = artist.DownloadDiscographyEnabled ?? !latestReleasesOnly;
+        var offset = downloadEntireDiscography ? Math.Max(0, batchNextOffset ?? 0) : 0;
+        return new SpotifyWatchState(
+            offset,
+            downloadEntireDiscography,
+            artist.TopSongsEnabled ?? settings.WatchArtistTopSongsEnabled);
+    }
+
+    private async Task QueueSpotifyAlbumReleasesAsync(
+        WatchlistArtistDto artist,
+        IEnumerable<SpotifyAlbum> albums,
+        HashSet<string> existing,
+        List<ArtistWatchAlbumInsert> insertedAlbums,
+        CancellationToken cancellationToken)
+    {
+        foreach (var album in albums.Where(album => !string.IsNullOrWhiteSpace(album.Id) && !existing.Contains(album.Id)))
+        {
+            await QueueSpotifyAlbumReleaseAsync(artist, album, insertedAlbums, cancellationToken);
+        }
+    }
+
+    private async Task QueueSpotifyAlbumReleaseAsync(
+        WatchlistArtistDto artist,
+        SpotifyAlbum album,
+        List<ArtistWatchAlbumInsert> insertedAlbums,
+        CancellationToken cancellationToken)
+    {
+        var tracks = await _spotifyMetadataService.FetchAlbumTracksAsync(album.Id, cancellationToken);
+        if (tracks.Count > 0)
+        {
+            var queuedCount = await _playlistWatchService.QueueSpotifyWatchTracksAsync(
+                tracks,
+                BuildArtistQueueOptions(artist, album.Name ?? string.Empty, AlbumGroup),
+                cancellationToken);
+            await AddSpotifyAlbumWatchHistoryIfQueuedAsync(artist, album, queuedCount, cancellationToken);
+        }
+
+        insertedAlbums.Add(new ArtistWatchAlbumInsert(SpotifySource, album.Id));
+    }
+
+    private async Task AddSpotifyAlbumWatchHistoryIfQueuedAsync(
+        WatchlistArtistDto artist,
+        SpotifyAlbum album,
+        int queuedCount,
+        CancellationToken cancellationToken)
+    {
+        if (queuedCount <= 0)
+        {
+            return;
+        }
+
+        await AddArtistAlbumWatchHistoryAsync(
+            SpotifySource,
+            album.Id,
+            album.Name ?? "Album",
+            queuedCount,
+            artist.ArtistName,
+            AlbumGroup,
+            cancellationToken);
+    }
+
+    private static int ResolveStoredSpotifyOffset(
+        bool downloadEntireDiscography,
+        int offset,
+        SpotifyAlbumPage page)
+    {
+        var nextOffset = offset + page.Albums.Count;
+        var completed = !page.HasMore || (page.Total.HasValue && nextOffset >= page.Total.Value);
+        return !downloadEntireDiscography || completed ? 0 : nextOffset;
+    }
+
+    private async Task UpsertSpotifyWatchStateAsync(
+        long artistId,
+        string spotifyId,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        await _libraryRepository.UpsertArtistWatchStateAsync(
+            artistId,
             spotifyId,
-            storedOffset,
+            offset,
             DateTimeOffset.UtcNow,
             cancellationToken);
+    }
+
+    private sealed record SpotifyWatchState(int Offset, bool DownloadEntireDiscography, bool TopSongsEnabled);
+
+    private static PlaylistWatchService.ArtistWatchQueueOptions BuildArtistQueueOptions(
+        WatchlistArtistDto artist,
+        string collectionName,
+        string collectionType)
+    {
+        return new PlaylistWatchService.ArtistWatchQueueOptions
+        {
+            CollectionName = collectionName,
+            CollectionType = collectionType,
+            DestinationFolderId = artist.DestinationFolderId,
+            PreferredEngine = artist.PreferredEngine,
+            RoutingRules = artist.RoutingRules,
+            DownloadVariantMode = artist.DownloadVariantMode,
+            AtmosDestinationFolderId = artist.AtmosDestinationFolderId,
+            BlockRules = artist.IgnoreRules
+        };
     }
 
     private async Task<List<ArtistWatchAlbumInsert>> QueueSpotifyArtistTopSongsAsync(
         WatchlistArtistDto artist,
         string spotifyId,
-        ISet<string> existing,
+        HashSet<string> existing,
         CancellationToken cancellationToken)
     {
         var artistPage = await _spotifyArtistService.GetArtistPageBySpotifyIdAsync(
@@ -261,15 +323,8 @@ public sealed class ArtistWatchService
             .ToList();
         var collectionName = $"{artist.ArtistName} - Top Songs";
         var queuedCount = await _playlistWatchService.QueueSpotifyWatchTracksAsync(
-            collectionName,
-            TopSongsGroup,
             summaries,
-            artist.DestinationFolderId,
-            artist.PreferredEngine,
-            artist.RoutingRules,
-            artist.DownloadVariantMode,
-            artist.AtmosDestinationFolderId,
-            artist.IgnoreRules,
+            BuildArtistQueueOptions(artist, collectionName, TopSongsGroup),
             cancellationToken);
         if (queuedCount > 0)
         {
@@ -470,15 +525,8 @@ public sealed class ArtistWatchService
         CancellationToken cancellationToken)
     {
         var queuedCount = await _playlistWatchService.QueueAppleWatchIntentsAsync(
-            albumName,
-            AlbumGroup,
             intents,
-            artist.DestinationFolderId,
-            artist.PreferredEngine,
-            artist.RoutingRules,
-            artist.DownloadVariantMode,
-            artist.AtmosDestinationFolderId,
-            artist.IgnoreRules,
+            BuildArtistQueueOptions(artist, albumName, AlbumGroup),
             cancellationToken);
 
         if (queuedCount > 0)
@@ -557,15 +605,8 @@ public sealed class ArtistWatchService
         if (tracks.Count > 0)
         {
             var queuedCount = await _playlistWatchService.QueueDeezerWatchTracksAsync(
-                albumName,
-                AlbumGroup,
                 tracks,
-                artist.DestinationFolderId,
-                artist.PreferredEngine,
-                artist.RoutingRules,
-                artist.DownloadVariantMode,
-                artist.AtmosDestinationFolderId,
-                artist.IgnoreRules,
+                BuildArtistQueueOptions(artist, albumName, AlbumGroup),
                 cancellationToken);
             if (queuedCount > 0)
             {

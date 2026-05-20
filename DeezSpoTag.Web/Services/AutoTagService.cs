@@ -1884,68 +1884,12 @@ public partial class AutoTagService
 
         try
         {
-            var stages = await BuildStageConfigsAsync(job, configPath);
-            var includesEnrichmentStage = stages.Any(stage =>
-                string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase));
-            var includesEnhancementStage = stages.Any(stage =>
-                string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase));
-            RegisterStageRuntimeConfigPaths(runtimeConfigPaths, stages);
-            if (TryMarkNoStagesConfigured(job, stages))
-            {
-                return;
-            }
-
-            var execution = await ExecuteStagesAsync(job, stages, path, configPath, fileOutcomes, jobCancellation.Token);
-            var success = execution.Success;
-
-            if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                job.Status = success ? AutoTagLiterals.CompletedStatus : AutoTagLiterals.FailedStatus;
-            }
-            if (string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                job.ResumeCheckpoint = null;
-                job.ResumeFromJobId = null;
-            }
-            job.ExitCode = success ? 0 : 1;
-            job.FinishedAt = DateTimeOffset.UtcNow;
-            AppendPlatformSummary(job);
-            SaveJob(job);
-            AppendActivityLog(job.Id, $"autotag finished: status={job.Status}");
-
-            if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                await RunSuccessPostProcessingAsync(
-                    job,
-                    path,
-                    configPath,
-                    includesEnrichmentStage,
-                    includesEnhancementStage,
-                    fileOutcomes,
-                    execution.EarlyAutoMove,
-                    jobCancellation.Token);
-            }
-
+            await RunJobCoreAsync(job, path, configPath, fileOutcomes, runtimeConfigPaths, jobCancellation.Token);
             NotifyCompleted(job);
         }
         catch (OperationCanceledException)
         {
-            if (!string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                job.Status = IsEnhancementRunIntent(job.RunIntent)
-                    ? AutoTagLiterals.InterruptedStatus
-                    : AutoTagLiterals.CanceledStatus;
-                job.Error = IsEnhancementRunIntent(job.RunIntent)
-                    ? "Interrupted. Resume is available."
-                    : "Stopped.";
-                job.ExitCode = 1;
-                job.FinishedAt = DateTimeOffset.UtcNow;
-                SaveJob(job);
-            }
-
+            HandleRunJobCanceled(job);
             NotifyCompleted(job);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1965,6 +1909,86 @@ public partial class AutoTagService
                 cancellation.Dispose();
             }
         }
+    }
+
+    private async Task RunJobCoreAsync(
+        AutoTagJob job,
+        string path,
+        string configPath,
+        Dictionary<string, FileTagOutcome> fileOutcomes,
+        HashSet<string> runtimeConfigPaths,
+        CancellationToken cancellationToken)
+    {
+        var stages = await BuildStageConfigsAsync(job, configPath);
+        var includesEnrichmentStage = stages.Any(stage =>
+            string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase));
+        var includesEnhancementStage = stages.Any(stage =>
+            string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase));
+        RegisterStageRuntimeConfigPaths(runtimeConfigPaths, stages);
+        if (TryMarkNoStagesConfigured(job, stages))
+        {
+            return;
+        }
+
+        var execution = await ExecuteStagesAsync(job, stages, path, configPath, fileOutcomes, cancellationToken);
+        FinalizeStageExecution(job, execution.Success);
+        if (!IsTerminalStopStatus(job.Status))
+        {
+            await RunSuccessPostProcessingAsync(
+                job,
+                path,
+                new SuccessPostProcessingContext
+                {
+                    ConfigPath = configPath,
+                    IncludesEnrichmentStage = includesEnrichmentStage,
+                    IncludesEnhancementStage = includesEnhancementStage,
+                    FileOutcomes = fileOutcomes,
+                    EarlyAutoMove = execution.EarlyAutoMove
+                },
+                cancellationToken);
+        }
+    }
+
+    private void FinalizeStageExecution(AutoTagJob job, bool success)
+    {
+        if (!IsTerminalStopStatus(job.Status))
+        {
+            job.Status = success ? AutoTagLiterals.CompletedStatus : AutoTagLiterals.FailedStatus;
+        }
+        if (string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            job.ResumeCheckpoint = null;
+            job.ResumeFromJobId = null;
+        }
+        job.ExitCode = success ? 0 : 1;
+        job.FinishedAt = DateTimeOffset.UtcNow;
+        AppendPlatformSummary(job);
+        SaveJob(job);
+        AppendActivityLog(job.Id, $"autotag finished: status={job.Status}");
+    }
+
+    private void HandleRunJobCanceled(AutoTagJob job)
+    {
+        if (IsTerminalStopStatus(job.Status))
+        {
+            return;
+        }
+
+        job.Status = IsEnhancementRunIntent(job.RunIntent)
+            ? AutoTagLiterals.InterruptedStatus
+            : AutoTagLiterals.CanceledStatus;
+        job.Error = IsEnhancementRunIntent(job.RunIntent)
+            ? "Interrupted. Resume is available."
+            : "Stopped.";
+        job.ExitCode = 1;
+        job.FinishedAt = DateTimeOffset.UtcNow;
+        SaveJob(job);
+    }
+
+    private static bool IsTerminalStopStatus(string? status)
+    {
+        return string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ShouldPreserveRuntimeConfigFilesForResume(AutoTagJob job)
@@ -2187,18 +2211,15 @@ public partial class AutoTagService
     private async Task RunSuccessPostProcessingAsync(
         AutoTagJob job,
         string path,
-        string configPath,
-        bool includesEnrichmentStage,
-        bool includesEnhancementStage,
-        Dictionary<string, FileTagOutcome> fileOutcomes,
-        AutoMoveExecutionResult? earlyAutoMove,
+        SuccessPostProcessingContext context,
         CancellationToken cancellationToken)
     {
-        var autoMove = earlyAutoMove ?? await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes, cancellationToken);
-        if (ShouldRunGenericOrganizer(job, configPath))
+        var autoMove = context.EarlyAutoMove
+            ?? await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
+        if (ShouldRunGenericOrganizer(job, context.ConfigPath))
         {
             AppendLog(job, "post-processing organizer starting");
-            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary, cancellationToken);
+            await OrganizeAfterAutoMoveAsync(job, path, context.ConfigPath, autoMove.Summary, cancellationToken);
         }
         else
         {
@@ -2207,19 +2228,19 @@ public partial class AutoTagService
         await RunIntegratedEnhancementWorkflowsAsync(
             job,
             path,
-            configPath,
-            includesEnhancementStage,
+            context.ConfigPath,
+            context.IncludesEnhancementStage,
             cancellationToken);
         await RunManualEnrichmentArtworkMaintenanceAsync(
             job,
             path,
-            includesEnrichmentStage,
-            includesEnhancementStage,
+            context.IncludesEnrichmentStage,
+            context.IncludesEnhancementStage,
             autoMove.Summary,
             cancellationToken);
         var plexTriggeredByEnhancement = await TriggerTargetedPlexRefreshAfterEnhancementAsync(
             job,
-            includesEnhancementStage,
+            context.IncludesEnhancementStage,
             cancellationToken);
         if (autoMove.Completed && !plexTriggeredByEnhancement)
         {
@@ -2229,6 +2250,15 @@ public partial class AutoTagService
             job,
             autoMove.Summary,
             cancellationToken);
+    }
+
+    private sealed class SuccessPostProcessingContext
+    {
+        public required string ConfigPath { get; init; }
+        public required bool IncludesEnrichmentStage { get; init; }
+        public required bool IncludesEnhancementStage { get; init; }
+        public required Dictionary<string, FileTagOutcome> FileOutcomes { get; init; }
+        public AutoMoveExecutionResult? EarlyAutoMove { get; init; }
     }
 
     private async Task OrganizeAfterAutoMoveAsync(
@@ -5749,7 +5779,7 @@ public partial class AutoTagService
         }
     }
 
-    private IReadOnlyList<AutoTagRunSummary> NormalizeRunIndexSummaries(IEnumerable<AutoTagRunSummary> summaries)
+    private List<AutoTagRunSummary> NormalizeRunIndexSummaries(IEnumerable<AutoTagRunSummary> summaries)
     {
         return summaries
             .Where(static summary => !string.IsNullOrWhiteSpace(summary.Id))
@@ -6014,7 +6044,10 @@ public partial class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to read AutoTag resume source for {JobId}.", jobId);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to read AutoTag resume source for {JobId}.", jobId);
+            }
             return null;
         }
     }

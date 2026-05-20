@@ -718,26 +718,12 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    border-radius: 16px;
-    background: var(--bg-tertiary);
-    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
-    overflow: visible;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.watchlist-artist-card:hover,
-.watchlist-playlist-card-v2:hover {
-    border-color: color-mix(in srgb, var(--primary-color) 50%, transparent);
-    box-shadow: 0 4px 16px color-mix(in srgb, var(--primary-color) 10%, transparent);
-}
-
-/* Spotify-style monitored watchlist tiles: no outer boxed background. */
-.watchlist-artist-card,
-.watchlist-playlist-card-v2 {
     background: transparent;
     border: none;
     border-radius: 0;
     box-shadow: none;
+    overflow: visible;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .watchlist-artist-card:hover,

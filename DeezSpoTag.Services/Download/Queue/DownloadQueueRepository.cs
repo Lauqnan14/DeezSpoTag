@@ -796,6 +796,17 @@ WHERE queue_uuid = @queueUuid;";
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<int> DeleteByStatusAsync(string engine, string status, CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"DELETE FROM download_task WHERE status = @status AND engine = @engine;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("status", status);
+        command.Parameters.AddWithValue("engine", engine);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<int> MarkActivitiesClearedByStatusAsync(string status, CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -856,17 +867,6 @@ WHERE status = @status
   );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("status", status);
-        return await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async Task<int> DeleteByStatusAsync(string engine, string status, CancellationToken cancellationToken = default)
-    {
-        await EnsureSchemaAsync(cancellationToken);
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"DELETE FROM download_task WHERE status = @status AND engine = @engine;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("status", status);
-        command.Parameters.AddWithValue("engine", engine);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

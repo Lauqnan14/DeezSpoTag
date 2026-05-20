@@ -42,6 +42,7 @@ public sealed class LibraryDbService
     private const string DeezerIdColumn = "deezer_id";
     private const string CreatedAtColumn = "created_at";
     private const string UpdatedAtColumn = "updated_at";
+    private const string DestinationFolderIdColumn = "destination_folder_id";
     private static readonly string[] DownloadSources = ["deezer", "spotify", "apple"];
     private static readonly Dictionary<string, (string Table, string Column, bool Unique)> KnownIndexDefinitions =
         new Dictionary<string, (string Table, string Column, bool Unique)>(StringComparer.Ordinal)
@@ -57,7 +58,7 @@ public sealed class LibraryDbService
             ["idx_download_task_apple_track"] = (DownloadTaskTable, "apple_track_id", false),
             ["idx_download_task_apple_album"] = (DownloadTaskTable, "apple_album_id", false),
             ["idx_download_task_apple_artist"] = (DownloadTaskTable, "apple_artist_id", false),
-            ["idx_download_task_destination_folder"] = (DownloadTaskTable, "destination_folder_id", false),
+            ["idx_download_task_destination_folder"] = (DownloadTaskTable, DestinationFolderIdColumn, false),
             ["idx_folder_library_id"] = (FolderTable, LibraryIdColumn, false),
             ["idx_download_blocklist_field"] = (DownloadBlocklistTable, "field, is_enabled", false),
             ["idx_download_blocklist_normalized"] = (DownloadBlocklistTable, "normalized_value, is_enabled", false),
@@ -194,7 +195,7 @@ public sealed class LibraryDbService
             await EnsureColumnAsync(connection, DownloadTaskTable, $"{source}_artist_id", TextType, cancellationToken);
         }
 
-        await EnsureColumnAsync(connection, DownloadTaskTable, "destination_folder_id", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, DestinationFolderIdColumn, IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "move_status", TextType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "final_destinations_json", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_download_task_isrc", DownloadTaskTable, "isrc", unique: false, cancellationToken);
@@ -206,7 +207,7 @@ public sealed class LibraryDbService
             await EnsureIndexAsync(connection, $"idx_download_task_{source}_artist", DownloadTaskTable, $"{source}_artist_id", unique: false, cancellationToken);
         }
 
-        await EnsureIndexAsync(connection, "idx_download_task_destination_folder", DownloadTaskTable, "destination_folder_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_download_task_destination_folder", DownloadTaskTable, DestinationFolderIdColumn, unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, FolderTable, LibraryIdColumn, BigIntType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_folder_library_id", FolderTable, LibraryIdColumn, unique: false, cancellationToken);

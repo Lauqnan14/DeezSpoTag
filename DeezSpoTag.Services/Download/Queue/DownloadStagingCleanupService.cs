@@ -103,47 +103,91 @@ public sealed class DownloadStagingCleanupService
         CancellationToken cancellationToken)
     {
         var deletedFiles = 0;
-        var deletedDirectories = 0;
         var skippedPaths = 0;
         var errors = new List<string>();
         var parentDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rawFilePath in candidates.FilePaths)
+
+        deletedFiles = DeleteCandidateFiles(candidates.FilePaths, rootPath, parentDirectories, errors, ref skippedPaths, cancellationToken);
+        CollectCandidateDirectories(candidates.DirectoryPaths, rootPath, parentDirectories, ref skippedPaths, cancellationToken);
+        var deletedDirectories = DeleteEmptyCandidateDirectories(parentDirectories, rootPath, errors, cancellationToken);
+
+        return BuildCleanupResult(queueUuid, deletedFiles, deletedDirectories, skippedPaths, errors);
+    }
+
+    private static int DeleteCandidateFiles(
+        IEnumerable<string> filePaths,
+        string rootPath,
+        HashSet<string> parentDirectories,
+        List<string> errors,
+        ref int skippedPaths,
+        CancellationToken cancellationToken)
+    {
+        var deletedFiles = 0;
+        foreach (var rawFilePath in filePaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var expandedPaths = ExpandRelatedFileCandidates(rawFilePath);
-            var resolvedAny = false;
-            foreach (var expandedPath in expandedPaths)
-            {
-                if (!TryResolveOwnedChildPath(expandedPath, rootPath, out var fullPath))
-                {
-                    continue;
-                }
-
-                resolvedAny = true;
-                if (File.Exists(fullPath))
-                {
-                    try
-                    {
-                        File.Delete(fullPath);
-                        deletedFiles++;
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        errors.Add($"{fullPath}: {ex.Message}");
-                        continue;
-                    }
-                }
-
-                AddParentDirectory(fullPath, rootPath, parentDirectories);
-            }
-
-            if (!resolvedAny)
-            {
-                skippedPaths++;
-            }
+            deletedFiles += DeleteExpandedFileCandidates(rawFilePath, rootPath, parentDirectories, errors, ref skippedPaths);
         }
 
-        foreach (var rawDirectoryPath in candidates.DirectoryPaths)
+        return deletedFiles;
+    }
+
+    private static int DeleteExpandedFileCandidates(
+        string rawFilePath,
+        string rootPath,
+        HashSet<string> parentDirectories,
+        List<string> errors,
+        ref int skippedPaths)
+    {
+        var deletedFiles = 0;
+        var resolvedAny = false;
+        foreach (var expandedPath in ExpandRelatedFileCandidates(rawFilePath))
+        {
+            if (!TryResolveOwnedChildPath(expandedPath, rootPath, out var fullPath))
+            {
+                continue;
+            }
+
+            resolvedAny = true;
+            deletedFiles += DeleteFileIfExists(fullPath, errors);
+            AddParentDirectory(fullPath, rootPath, parentDirectories);
+        }
+
+        if (!resolvedAny)
+        {
+            skippedPaths++;
+        }
+
+        return deletedFiles;
+    }
+
+    private static int DeleteFileIfExists(string fullPath, List<string> errors)
+    {
+        if (!File.Exists(fullPath))
+        {
+            return 0;
+        }
+
+        try
+        {
+            File.Delete(fullPath);
+            return 1;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            errors.Add($"{fullPath}: {ex.Message}");
+            return 0;
+        }
+    }
+
+    private static void CollectCandidateDirectories(
+        IEnumerable<string> directoryPaths,
+        string rootPath,
+        HashSet<string> parentDirectories,
+        ref int skippedPaths,
+        CancellationToken cancellationToken)
+    {
+        foreach (var rawDirectoryPath in directoryPaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!TryResolveOwnedChildPath(rawDirectoryPath, rootPath, out var fullPath))
@@ -157,40 +201,68 @@ public sealed class DownloadStagingCleanupService
                 parentDirectories.Add(fullPath);
             }
         }
+    }
 
+    private static int DeleteEmptyCandidateDirectories(
+        HashSet<string> parentDirectories,
+        string rootPath,
+        List<string> errors,
+        CancellationToken cancellationToken)
+    {
+        var deletedDirectories = 0;
         foreach (var directory in parentDirectories.OrderByDescending(static path => path.Length))
         {
             cancellationToken.ThrowIfCancellationRequested();
             deletedDirectories += DeleteEmptyParents(directory, rootPath, errors);
         }
 
+        return deletedDirectories;
+    }
+
+    private DownloadStagingCleanupResult BuildCleanupResult(
+        string queueUuid,
+        int deletedFiles,
+        int deletedDirectories,
+        int skippedPaths,
+        List<string> errors)
+    {
         if (errors.Count > 0)
         {
-            var message = string.Join("; ", errors.Distinct(StringComparer.OrdinalIgnoreCase));
-            _logger.LogWarning(
-                "Staging cleanup failed for {QueueUuid}: {Message}",
-                LogSanitizer.OneLine(queueUuid),
-                LogSanitizer.OneLine(message));
-            return DownloadStagingCleanupResult.Failed(message, deletedFiles, deletedDirectories, skippedPaths);
+            return BuildFailedCleanupResult(queueUuid, deletedFiles, deletedDirectories, skippedPaths, errors);
         }
 
         if (deletedFiles == 0 && deletedDirectories == 0)
         {
-            if (skippedPaths > 0)
-            {
-                return DownloadStagingCleanupResult.Failed("recorded staging paths were outside the download folder", 0, 0, skippedPaths);
-            }
-
-            return DownloadStagingCleanupResult.Skipped("no existing staging files or empty folders were found", 0);
+            return skippedPaths > 0
+                ? DownloadStagingCleanupResult.Failed("recorded staging paths were outside the download folder", 0, 0, skippedPaths)
+                : DownloadStagingCleanupResult.Skipped("no existing staging files or empty folders were found", 0);
         }
 
-        _logger.LogInformation(
-            "Cleaned staging files for {QueueUuid}: files={DeletedFiles}, folders={DeletedDirectories}, skipped={SkippedPaths}",
-            LogSanitizer.OneLine(queueUuid),
-            deletedFiles,
-            deletedDirectories,
-            skippedPaths);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Cleaned staging files for {QueueUuid}: files={DeletedFiles}, folders={DeletedDirectories}, skipped={SkippedPaths}",
+                LogSanitizer.OneLine(queueUuid),
+                deletedFiles,
+                deletedDirectories,
+                skippedPaths);
+        }
         return DownloadStagingCleanupResult.Completed(deletedFiles, deletedDirectories, skippedPaths);
+    }
+
+    private DownloadStagingCleanupResult BuildFailedCleanupResult(
+        string queueUuid,
+        int deletedFiles,
+        int deletedDirectories,
+        int skippedPaths,
+        List<string> errors)
+    {
+        var message = string.Join("; ", errors.Distinct(StringComparer.OrdinalIgnoreCase));
+        _logger.LogWarning(
+            "Staging cleanup failed for {QueueUuid}: {Message}",
+            LogSanitizer.OneLine(queueUuid),
+            LogSanitizer.OneLine(message));
+        return DownloadStagingCleanupResult.Failed(message, deletedFiles, deletedDirectories, skippedPaths);
     }
 
     private static IEnumerable<string> ExpandRelatedFileCandidates(string rawFilePath)
@@ -214,7 +286,7 @@ public sealed class DownloadStagingCleanupService
         }
     }
 
-    private static int DeleteEmptyParents(string startDirectory, string rootPath, ICollection<string> errors)
+    private static int DeleteEmptyParents(string startDirectory, string rootPath, List<string> errors)
     {
         var deleted = 0;
         var current = startDirectory;
@@ -244,7 +316,7 @@ public sealed class DownloadStagingCleanupService
         return deleted;
     }
 
-    private static void AddParentDirectory(string fullPath, string rootPath, ISet<string> parentDirectories)
+    private static void AddParentDirectory(string fullPath, string rootPath, HashSet<string> parentDirectories)
     {
         var parent = Directory.GetParent(fullPath)?.FullName;
         if (!string.IsNullOrWhiteSpace(parent) && IsStrictChildOfRoot(parent, rootPath))
@@ -419,13 +491,12 @@ public sealed class DownloadStagingCleanupService
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
-            foreach (var property in element.EnumerateObject())
+            var property = element.EnumerateObject()
+                .FirstOrDefault(candidate => string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase));
+            if (property.Value.ValueKind != JsonValueKind.Undefined)
             {
-                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-                {
-                    value = property.Value;
-                    return true;
-                }
+                value = property.Value;
+                return true;
             }
         }
 

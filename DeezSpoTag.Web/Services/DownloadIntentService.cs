@@ -339,19 +339,19 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false)
-        => EnqueueCoreAsync(intent, cancellationToken, preferIsrcOnly, allowManualQueueDuringEnrichment: false);
+        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: false, cancellationToken);
 
     public Task<DownloadIntentResult> EnqueueManualAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false)
-        => EnqueueCoreAsync(intent, cancellationToken, preferIsrcOnly, allowManualQueueDuringEnrichment: true);
+        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: true, cancellationToken);
 
     private async Task<DownloadIntentResult> EnqueueCoreAsync(
         DownloadIntent intent,
-        CancellationToken cancellationToken,
         bool preferIsrcOnly,
-        bool allowManualQueueDuringEnrichment)
+        bool allowManualQueueDuringEnrichment,
+        CancellationToken cancellationToken)
     {
         var resolution = await TryPrepareEnqueueResolutionAsync(
             intent,
