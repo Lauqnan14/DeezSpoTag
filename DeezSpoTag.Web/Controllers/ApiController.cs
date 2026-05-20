@@ -358,7 +358,7 @@ namespace DeezSpoTag.Web.Controllers
                 var cacheKey = GetHomeCacheKey(channel, cacheScope, timeZone);
                 var allowCache = HomeCacheEnabled;
 
-                var cachedResult = ResolveHomeCacheResult(cacheKey, allowCache, rawEnabled, refreshEnabled);
+                var cachedResult = ResolveHomeCacheResult(cacheKey, allowCache, rawEnabled, refreshEnabled, channel);
                 if (cachedResult != null)
                 {
                     return Ok(cachedResult);
@@ -609,7 +609,12 @@ namespace DeezSpoTag.Web.Controllers
             return string.IsNullOrWhiteSpace(remoteIp) ? "anonymous" : $"ip:{remoteIp}";
         }
 
-        private static object? ResolveHomeCacheResult(string cacheKey, bool allowCache, bool rawEnabled, bool refreshEnabled)
+        private static object? ResolveHomeCacheResult(
+            string cacheKey,
+            bool allowCache,
+            bool rawEnabled,
+            bool refreshEnabled,
+            string? channel)
         {
             if (rawEnabled || !allowCache)
             {
@@ -631,11 +636,31 @@ namespace DeezSpoTag.Web.Controllers
                 if (HomeCache.TryGetValue(cacheKey, out var cached)
                     && DateTimeOffset.UtcNow - cached.Stamp <= HomeCacheTtl)
                 {
+                    if (string.IsNullOrWhiteSpace(channel) &&
+                        HomeResponseContainsSpotifySection(cached.Payload) &&
+                        !HomeResponseContainsSection(cached.Payload, "Trending songs"))
+                    {
+                        HomeCache.Remove(cacheKey);
+                        return null;
+                    }
+
                     return cached.Payload;
                 }
             }
 
             return null;
+        }
+
+        private static bool HomeResponseContainsSection(object value, string title)
+        {
+            return ExtractHomeSections(value).Any(section =>
+                string.Equals(TryReadAnonymousString(section, TitleField), title, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool HomeResponseContainsSpotifySection(object value)
+        {
+            return ExtractHomeSections(value).Any(section =>
+                string.Equals(TryReadAnonymousString(section, SourceField), SpotifySource, StringComparison.OrdinalIgnoreCase));
         }
 
         private string ResolveDeezerLanguage()

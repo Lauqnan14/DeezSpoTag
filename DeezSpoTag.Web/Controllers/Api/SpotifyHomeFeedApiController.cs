@@ -221,11 +221,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             if (settings.SpotifyHomeFeedCacheEnabled &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
             {
+                var cachedSections = await EnsureTrendingSectionAsync(cacheKey, cachedFeed.Greeting, cachedFeed.Sections, cancellationToken);
                 return Ok(new
                 {
                     success = true,
                     greeting = cachedFeed.Greeting,
-                    sections = cachedFeed.Sections,
+                    sections = cachedSections,
                     cached = true
                 });
             }
@@ -273,7 +274,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             if (settings.SpotifyHomeFeedCacheEnabled &&
                 TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
             {
-                var mapped = await MapHomeSectionsAsync(cachedFeed.Sections, cancellationToken);
+                var cachedSections = await EnsureTrendingSectionAsync(cacheKey, cachedFeed.Greeting, cachedFeed.Sections, cancellationToken);
+                var mapped = await MapHomeSectionsAsync(cachedSections, cancellationToken);
                 return Ok(new { success = mapped.Count > 0, sections = mapped, cached = true });
             }
 
@@ -1348,6 +1350,26 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return updated;
     }
 
+    private async Task<List<object>> EnsureTrendingSectionAsync(
+        string cacheKey,
+        string greeting,
+        IReadOnlyList<object> sections,
+        CancellationToken cancellationToken)
+    {
+        if (ContainsSectionTitle(sections, TrendingSongsTitle))
+        {
+            return sections.ToList();
+        }
+
+        var updated = AddTrendingSection(sections, await TryFetchTrendingSongsSectionAsync(cancellationToken));
+        if (updated.Count != sections.Count)
+        {
+            StoreHomeFeedCache(cacheKey, greeting, updated);
+        }
+
+        return updated;
+    }
+
     private async Task<string?> ResolveDeezerUrlAsync(string url, CancellationToken cancellationToken)
     {
         try
@@ -2384,18 +2406,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
     private async Task<object?> TryFetchTrendingSongsSectionByUriAsync(CancellationToken cancellationToken)
     {
-        var sectionDoc = await _pathfinderClient.FetchBrowseSectionWithBlobAsync(
+        var tracks = await _pathfinderClient.FetchBrowseSectionTrackSummariesWithBlobAsync(
             TrendingSongsSectionUri,
             0,
             20,
             cancellationToken);
-        if (sectionDoc is null)
-        {
-            return null;
-        }
-
-        var items = ParseBrowseSectionTrackItems(sectionDoc);
-        if (items.Count == 0)
+        if (tracks.Count == 0)
         {
             return null;
         }
@@ -2404,7 +2420,32 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         {
             uri = TrendingSongsSectionUri,
             title = TrendingSongsTitle,
-            items
+            items = tracks.Select(MapSpotifyTrackSummaryToHomeTrendingItem).ToList()
+        };
+    }
+
+    private static object MapSpotifyTrackSummaryToHomeTrendingItem(SpotifyTrackSummary track)
+    {
+        var uri = string.IsNullOrWhiteSpace(track.Id)
+            ? track.SourceUrl
+            : $"spotify:track:{track.Id}";
+
+        return new
+        {
+            id = track.Id,
+            uri,
+            sourceUrl = track.SourceUrl,
+            source = SpotifySource,
+            type = TrackType,
+            name = track.Name,
+            artists = track.Artists ?? string.Empty,
+            description = default(string?),
+            coverUrl = track.ImageUrl,
+            albumId = track.AlbumId,
+            albumName = track.Album,
+            durationMs = track.DurationMs,
+            isrc = track.Isrc,
+            previewUrl = track.PreviewUrl
         };
     }
 
@@ -2937,6 +2978,18 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         var itemId = TryGetAnonymousString(item, "id") ?? string.Empty;
         var itemUri = ResolveMappedItemUri(item, itemType, itemId);
         var name = TryGetAnonymousString(item, "name") ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (!string.Equals(itemType, ArtistType, StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(itemId)
+            && string.IsNullOrWhiteSpace(itemUri))
+        {
+            return null;
+        }
+
         var artists = TryGetAnonymousString(item, ArtistsKey);
         var description = TryGetAnonymousString(item, DescriptionKey);
         if (IsPersonalSpotifyHomeItem(sectionTitle, itemType, name, artists, description, itemUri))

@@ -2192,6 +2192,7 @@ function renderHomeSections(sections) {
         }
         return normalizedTitle.startsWith('new release')
             || normalizedTitle.startsWith('new releases')
+            || normalizedTitle === 'recommended new releases for you today'
             || normalizedTitle.includes('nouveaut')
             || normalizedTitle.includes('novedad');
     };
