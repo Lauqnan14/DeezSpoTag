@@ -483,7 +483,7 @@ namespace DeezSpoTag.Web.Controllers.Api
 
         private UnauthorizedObjectResult? EnsureAccess()
         {
-            return LocalApiAccess.IsAllowed(HttpContext)
+            return LocalApiAccess.IsAllowedForSensitiveAuth(HttpContext)
                 ? null
                 : Unauthorized("Authentication required.");
         }

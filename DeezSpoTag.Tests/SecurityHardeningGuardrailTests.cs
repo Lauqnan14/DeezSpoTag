@@ -84,6 +84,15 @@ public sealed class SecurityHardeningGuardrailTests
     }
 
     [Fact]
+    public void LocalApiAuthorizeAttribute_MustNotImplementAllowAnonymous()
+    {
+        var sourcePath = Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Controllers", "Api", "LocalApiAuthorizeAttribute.cs");
+        var source = File.ReadAllText(sourcePath);
+
+        Assert.DoesNotContain("IAllowAnonymous", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WebProgram_MustApplyDefaultApiRateLimitToControllersWithoutLimitingLibraryBrowsing()
     {
         var webProgramPath = Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Program.cs");

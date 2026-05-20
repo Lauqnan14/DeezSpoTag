@@ -6,7 +6,7 @@ using System.Reflection;
 namespace DeezSpoTag.Web.Controllers.Api;
 
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
-internal sealed class LocalApiAuthorizeAttribute : Attribute, IAsyncAuthorizationFilter, IAllowAnonymous
+internal sealed class LocalApiAuthorizeAttribute : Attribute, IAsyncAuthorizationFilter
 {
     private static readonly PropertyInfo AuthorizationFilterResultProperty =
         typeof(AuthorizationFilterContext).GetProperty("Result")

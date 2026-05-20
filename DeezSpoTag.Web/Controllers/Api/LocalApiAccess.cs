@@ -22,6 +22,22 @@ internal static class LocalApiAccess
         return IsTrustedLocal(context.Connection.RemoteIpAddress);
     }
 
+    public static bool IsAllowedForSensitiveAuth(HttpContext context)
+    {
+        if (context.User?.Identity?.IsAuthenticated == true)
+        {
+            return true;
+        }
+
+        if (HasForwardedClientHeaders(context))
+        {
+            return false;
+        }
+
+        var remote = context.Connection.RemoteIpAddress;
+        return remote is not null && IPAddress.IsLoopback(remote);
+    }
+
     public static bool IsTrustedLocal(IPAddress? remote)
     {
         if (remote is null)
