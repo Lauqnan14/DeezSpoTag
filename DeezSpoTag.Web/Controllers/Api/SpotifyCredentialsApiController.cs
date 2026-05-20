@@ -2318,13 +2318,6 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                     continue;
                 }
 
-                var state = _userAuthStore.LoadAsync(id).GetAwaiter().GetResult();
-
-                if (state == null || (state.Accounts.Count == 0 && string.IsNullOrWhiteSpace(state.ActiveAccount)))
-                {
-                    continue;
-                }
-
                 candidates.Add(id);
             }
 

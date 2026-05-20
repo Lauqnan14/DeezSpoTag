@@ -163,30 +163,39 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
     {
         var tempRoot = CreateTempDirectory();
         var service = CreateServiceForVisualPreparation(tempRoot);
-        var managedRoot = Path.Join(tempRoot, "Data", "library-artist-images", "spotify", "artists", "42");
-        Directory.CreateDirectory(managedRoot);
-
-        var avatarPath = Path.Join(managedRoot, "avatar.png");
-        var backgroundPath = Path.Join(managedRoot, "background.png");
-        WriteSolidPng(avatarPath, new Rgba32(220, 20, 60));
-        WriteSolidPng(backgroundPath, new Rgba32(25, 80, 210));
-        var expectedAvatar = await File.ReadAllBytesAsync(avatarPath);
-        var expectedBackground = await File.ReadAllBytesAsync(backgroundPath);
-
-        var tracked = new MetadataUpdaterTrackedArtist
+        var previousDataRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", Path.Join(tempRoot, "Data"));
+        try
         {
-            ArtistId = 42,
-            ArtistName = "Artist",
-            IncludeAvatar = true,
-            IncludeBackground = true
-        };
+            var managedRoot = Path.Join(tempRoot, "Data", "library-artist-images", "spotify", "artists", "42");
+            Directory.CreateDirectory(managedRoot);
 
-        var prepared = await InvokePrepareVisualsAsync(service, tracked);
+            var avatarPath = Path.Join(managedRoot, "avatar.png");
+            var backgroundPath = Path.Join(managedRoot, "background.png");
+            WriteSolidPng(avatarPath, new Rgba32(220, 20, 60));
+            WriteSolidPng(backgroundPath, new Rgba32(25, 80, 210));
+            var expectedAvatar = await File.ReadAllBytesAsync(avatarPath);
+            var expectedBackground = await File.ReadAllBytesAsync(backgroundPath);
 
-        Assert.Equal(Path.GetFullPath(avatarPath), Path.GetFullPath(GetPreparedPath(prepared, "AvatarPath")!));
-        Assert.Equal(Path.GetFullPath(backgroundPath), Path.GetFullPath(GetPreparedPath(prepared, "BackgroundPath")!));
-        Assert.Equal(expectedAvatar, await File.ReadAllBytesAsync(avatarPath));
-        Assert.Equal(expectedBackground, await File.ReadAllBytesAsync(backgroundPath));
+            var tracked = new MetadataUpdaterTrackedArtist
+            {
+                ArtistId = 42,
+                ArtistName = "Artist",
+                IncludeAvatar = true,
+                IncludeBackground = true
+            };
+
+            var prepared = await InvokePrepareVisualsAsync(service, tracked);
+
+            Assert.Equal(Path.GetFullPath(avatarPath), Path.GetFullPath(GetPreparedPath(prepared, "AvatarPath")!));
+            Assert.Equal(Path.GetFullPath(backgroundPath), Path.GetFullPath(GetPreparedPath(prepared, "BackgroundPath")!));
+            Assert.Equal(expectedAvatar, await File.ReadAllBytesAsync(avatarPath));
+            Assert.Equal(expectedBackground, await File.ReadAllBytesAsync(backgroundPath));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", previousDataRoot);
+        }
     }
 
     [Fact]
