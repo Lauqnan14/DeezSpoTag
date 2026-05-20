@@ -90,12 +90,11 @@ int curl_easy_setopt_hook(void *curl, int32_t option, ...) {
     void* param = va_arg(args, void*);
     va_end(args);
  
-    if (option == CURLOPT_SSL_VERIFYPEER || 
-        option == CURLOPT_SSL_VERIFYHOST || 
+    if (option == CURLOPT_SSL_VERIFYPEER ||
+        option == CURLOPT_SSL_VERIFYHOST ||
         option == CURLOPT_PINNEDPUBLICKEY) {
-        printf("[+] hooked curl_easy_setopt %d\n", option);
-        orig_curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-        return orig_curl_easy_setopt(curl, option, 0L);
+        printf("[+] observed curl_easy_setopt %d\n", option);
+        return orig_curl_easy_setopt(curl, option, param);
     }  else {
         return orig_curl_easy_setopt(curl, option, param);
     }

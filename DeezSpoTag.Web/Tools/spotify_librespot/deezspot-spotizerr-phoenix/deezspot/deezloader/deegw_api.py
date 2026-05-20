@@ -20,6 +20,18 @@ REQUEST_TIMEOUT_SECONDS = 20
 
 class ApiGw:
 
+    @staticmethod
+    def __host_matches_domain(host, expected_domain):
+        normalized_host = (host or "").strip().lower().rstrip(".")
+        normalized_expected = (expected_domain or "").strip().lower().rstrip(".")
+        if not normalized_host or not normalized_expected:
+            return False
+        host_labels = normalized_host.split(".")
+        expected_labels = normalized_expected.split(".")
+        if len(host_labels) < len(expected_labels):
+            return False
+        return host_labels[-len(expected_labels):] == expected_labels
+
     @classmethod
     def __init__(
         cls,
@@ -211,8 +223,7 @@ class ApiGw:
     @staticmethod
     def __is_spreaker_link(song_link):
         parsed_host = urlparse(song_link).hostname if song_link else None
-        host = (parsed_host or '').lower()
-        return host == 'spreaker.com' or host.endswith('.spreaker.com')
+        return ApiGw.__host_matches_domain(parsed_host, "spreaker.com")
 
     @staticmethod
     def __is_empty_response(response):

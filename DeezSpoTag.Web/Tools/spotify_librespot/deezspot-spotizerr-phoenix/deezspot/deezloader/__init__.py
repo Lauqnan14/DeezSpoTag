@@ -65,11 +65,21 @@ from deezspot.models.callback.album import AlbumObject as albumCbObject
 from deezspot.models.callback.playlist import PlaylistObject as playlistCbObject
 from deezspot.models.callback.common import IDs
 
+def _host_matches_domain(host, expected_domain):
+    normalized_host = (host or "").strip().lower().rstrip(".")
+    normalized_expected = (expected_domain or "").strip().lower().rstrip(".")
+    if not normalized_host or not normalized_expected:
+        return False
+    host_labels = normalized_host.split(".")
+    expected_labels = normalized_expected.split(".")
+    if len(host_labels) < len(expected_labels):
+        return False
+    return host_labels[-len(expected_labels):] == expected_labels
+
+
 def _link_host_matches(link, expected_host):
     parsed_host = urlparse(link).hostname or ""
-    host = parsed_host.lower()
-    expected = expected_host.lower()
-    return host == expected or host.endswith(f".{expected}")
+    return _host_matches_domain(parsed_host, expected_host)
 from deezspot.models.callback.user import UserObject
 from rapidfuzz import fuzz
 

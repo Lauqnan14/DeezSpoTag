@@ -8272,6 +8272,29 @@ function setFavoriteProviderVisibility(sectionId, hasAnyContent) {
     section.hidden = !hasAnyContent;
 }
 
+function hostMatchesDomain(hostname, expectedDomain) {
+    if (typeof hostname !== 'string' || typeof expectedDomain !== 'string') {
+        return false;
+    }
+    const host = hostname.trim().toLowerCase().replace(/\.+$/, '');
+    const expected = expectedDomain.trim().toLowerCase().replace(/\.+$/, '');
+    if (!host || !expected) {
+        return false;
+    }
+    const hostLabels = host.split('.');
+    const expectedLabels = expected.split('.');
+    if (hostLabels.length < expectedLabels.length) {
+        return false;
+    }
+    const offset = hostLabels.length - expectedLabels.length;
+    for (let i = 0; i < expectedLabels.length; i += 1) {
+        if (hostLabels[offset + i] !== expectedLabels[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 function isSpotifySourceUrl(url) {
     if (typeof url !== 'string' || !url.trim()) {
         return false;
@@ -8280,10 +8303,8 @@ function isSpotifySourceUrl(url) {
     try {
         const parsed = new URL(url, globalThis.location.origin);
         const host = parsed.hostname.toLowerCase();
-        return host === 'spotify.com'
-            || host.endsWith('.spotify.com')
-            || host === 'scdn.co'
-            || host.endsWith('.scdn.co');
+        return hostMatchesDomain(host, 'spotify.com')
+            || hostMatchesDomain(host, 'scdn.co');
     } catch {
         return false;
     }
