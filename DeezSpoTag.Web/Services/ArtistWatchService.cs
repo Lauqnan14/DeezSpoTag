@@ -41,11 +41,13 @@ public sealed class ArtistWatchService
     private const string SingleGroup = "single";
     private const string CompilationGroup = "compilation";
     private const string AppearsOnGroup = "appears_on";
+    private const string TopSongsGroup = "top songs";
     private const string ArtistEntityType = "artist";
     private const string QueuedStatus = "queued";
     private const string AppleSource = "apple";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
+    private const string SpotifyTopTrackWatchIdPrefix = "top-track:";
     internal const int MaxReleasesPerArtistLimit = 100;
 
     private readonly LibraryRepository _libraryRepository;
@@ -97,7 +99,7 @@ public sealed class ArtistWatchService
             return;
         }
 
-        var albumGroups = NormalizeAlbumGroups(settings.WatchedArtistAlbumGroup);
+        var albumGroups = NormalizeAlbumGroups(artist.WatchedAlbumGroups ?? settings.WatchedArtistAlbumGroup);
         await CheckSpotifyArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckAppleArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckDeezerArtistAsync(artist, settings, albumGroups, cancellationToken);
@@ -129,7 +131,16 @@ public sealed class ArtistWatchService
         }
 
         var state = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
-        var offset = Math.Max(0, state?.BatchNextOffset ?? 0);
+        var latestReleasesOnly = artist.LatestReleasesOnly ?? settings.WatchArtistLatestReleasesOnly;
+        var downloadEntireDiscography = artist.DownloadDiscographyEnabled ?? !latestReleasesOnly;
+        var topSongsEnabled = artist.TopSongsEnabled ?? settings.WatchArtistTopSongsEnabled;
+        var offset = !downloadEntireDiscography
+            ? 0
+            : Math.Max(0, state?.BatchNextOffset ?? 0);
+        var existing = await _libraryRepository.GetArtistWatchAlbumIdsAsync(artist.ArtistId, SpotifySource, cancellationToken);
+        var topTrackInserts = topSongsEnabled
+            ? await QueueSpotifyArtistTopSongsAsync(artist, spotifyId, existing, cancellationToken)
+            : new List<ArtistWatchAlbumInsert>();
 
         var page = await _spotifyArtistService.FetchArtistAlbumsPageAsync(
             spotifyId,
@@ -145,15 +156,15 @@ public sealed class ArtistWatchService
                 offset,
                 DateTimeOffset.UtcNow,
                 cancellationToken);
+            await PersistArtistWatchAlbumsAsync(artist.ArtistId, topTrackInserts, cancellationToken);
             return;
         }
 
-        var existing = await _libraryRepository.GetArtistWatchAlbumIdsAsync(artist.ArtistId, SpotifySource, cancellationToken);
         var newAlbums = page.Albums
             .Where(album => !string.IsNullOrWhiteSpace(album.Id) && !existing.Contains(album.Id))
             .ToList();
 
-        var insertedAlbums = new List<ArtistWatchAlbumInsert>();
+        var insertedAlbums = new List<ArtistWatchAlbumInsert>(topTrackInserts);
         foreach (var album in newAlbums)
         {
             var tracks = await _spotifyMetadataService.FetchAlbumTracksAsync(album.Id, cancellationToken);
@@ -163,7 +174,12 @@ public sealed class ArtistWatchService
                     album.Name ?? string.Empty,
                     AlbumGroup,
                     tracks,
-                    destinationFolderId: null,
+                    artist.DestinationFolderId,
+                    artist.PreferredEngine,
+                    artist.RoutingRules,
+                    artist.DownloadVariantMode,
+                    artist.AtmosDestinationFolderId,
+                    artist.IgnoreRules,
                     cancellationToken);
 
                 if (queuedCount > 0)
@@ -174,6 +190,7 @@ public sealed class ArtistWatchService
                         album.Name ?? "Album",
                         queuedCount,
                         artist.ArtistName,
+                        AlbumGroup,
                         cancellationToken);
                 }
             }
@@ -190,13 +207,85 @@ public sealed class ArtistWatchService
             completed = true;
         }
 
-        var storedOffset = completed ? 0 : nextOffset;
+        var storedOffset = !downloadEntireDiscography || completed ? 0 : nextOffset;
         await _libraryRepository.UpsertArtistWatchStateAsync(
             artist.ArtistId,
             spotifyId,
             storedOffset,
             DateTimeOffset.UtcNow,
             cancellationToken);
+    }
+
+    private async Task<List<ArtistWatchAlbumInsert>> QueueSpotifyArtistTopSongsAsync(
+        WatchlistArtistDto artist,
+        string spotifyId,
+        ISet<string> existing,
+        CancellationToken cancellationToken)
+    {
+        var artistPage = await _spotifyArtistService.GetArtistPageBySpotifyIdAsync(
+            spotifyId,
+            artist.ArtistName,
+            forceRefresh: false,
+            cancellationToken);
+        if (artistPage is null)
+        {
+            return new List<ArtistWatchAlbumInsert>();
+        }
+
+        var topTracks = artistPage.TopTracks;
+        var currentTopTrackIds = topTracks
+            .Where(track => !string.IsNullOrWhiteSpace(track.Id))
+            .Select(track => BuildSpotifyTopTrackWatchId(track.Id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!string.Equals(artist.TopSongsSyncMode, "append", StringComparison.OrdinalIgnoreCase))
+        {
+            await _libraryRepository.RemoveArtistWatchAlbumsExceptAsync(
+                artist.ArtistId,
+                SpotifySource,
+                SpotifyTopTrackWatchIdPrefix,
+                currentTopTrackIds,
+                cancellationToken);
+            existing = await _libraryRepository.GetArtistWatchAlbumIdsAsync(artist.ArtistId, SpotifySource, cancellationToken);
+        }
+
+        var newTracks = topTracks
+            .Where(track => !string.IsNullOrWhiteSpace(track.Id) && !existing.Contains(BuildSpotifyTopTrackWatchId(track.Id)))
+            .ToList();
+        if (newTracks.Count == 0)
+        {
+            return new List<ArtistWatchAlbumInsert>();
+        }
+
+        var summaries = newTracks
+            .Select(track => MapSpotifyTopTrackSummary(track, artist.ArtistName))
+            .ToList();
+        var collectionName = $"{artist.ArtistName} - Top Songs";
+        var queuedCount = await _playlistWatchService.QueueSpotifyWatchTracksAsync(
+            collectionName,
+            TopSongsGroup,
+            summaries,
+            artist.DestinationFolderId,
+            artist.PreferredEngine,
+            artist.RoutingRules,
+            artist.DownloadVariantMode,
+            artist.AtmosDestinationFolderId,
+            artist.IgnoreRules,
+            cancellationToken);
+        if (queuedCount > 0)
+        {
+            await AddArtistAlbumWatchHistoryAsync(
+                SpotifySource,
+                $"artist-top:{spotifyId}",
+                collectionName,
+                queuedCount,
+                artist.ArtistName,
+                TopSongsGroup,
+                cancellationToken);
+        }
+
+        return newTracks
+            .Select(track => new ArtistWatchAlbumInsert(SpotifySource, BuildSpotifyTopTrackWatchId(track.Id)))
+            .ToList();
     }
 
     private async Task CheckAppleArtistAsync(
@@ -384,7 +473,12 @@ public sealed class ArtistWatchService
             albumName,
             AlbumGroup,
             intents,
-            destinationFolderId: null,
+            artist.DestinationFolderId,
+            artist.PreferredEngine,
+            artist.RoutingRules,
+            artist.DownloadVariantMode,
+            artist.AtmosDestinationFolderId,
+            artist.IgnoreRules,
             cancellationToken);
 
         if (queuedCount > 0)
@@ -395,6 +489,7 @@ public sealed class ArtistWatchService
                 albumName,
                 queuedCount,
                 artist.ArtistName,
+                AlbumGroup,
                 cancellationToken);
         }
     }
@@ -465,7 +560,12 @@ public sealed class ArtistWatchService
                 albumName,
                 AlbumGroup,
                 tracks,
-                destinationFolderId: null,
+                artist.DestinationFolderId,
+                artist.PreferredEngine,
+                artist.RoutingRules,
+                artist.DownloadVariantMode,
+                artist.AtmosDestinationFolderId,
+                artist.IgnoreRules,
                 cancellationToken);
             if (queuedCount > 0)
             {
@@ -475,6 +575,7 @@ public sealed class ArtistWatchService
                     albumName,
                     queuedCount,
                     artist.ArtistName,
+                    AlbumGroup,
                     cancellationToken);
             }
         }
@@ -689,6 +790,7 @@ public sealed class ArtistWatchService
         string albumName,
         int queuedCount,
         string artistName,
+        string collectionType,
         CancellationToken cancellationToken)
     {
         if (queuedCount <= 0)
@@ -702,7 +804,7 @@ public sealed class ArtistWatchService
                 ArtistEntityType,
                 albumId,
                 albumName,
-                AlbumGroup,
+                collectionType,
                 queuedCount,
                 QueuedStatus,
                 artistName),
@@ -761,6 +863,43 @@ public sealed class ArtistWatchService
 
         return groups.ToList();
     }
+
+    private static SpotifyTrackSummary MapSpotifyTopTrackSummary(SpotifyTrack track, string artistName)
+    {
+        var trackId = track.Id.Trim();
+        return new SpotifyTrackSummary(
+            trackId,
+            track.Name,
+            artistName,
+            track.AlbumName,
+            track.DurationMs > 0 ? track.DurationMs : null,
+            ResolveSpotifyTrackSourceUrl(track.SourceUrl, trackId),
+            SelectSpotifyTrackImageUrl(track.AlbumImages),
+            track.Isrc,
+            track.ReleaseDate,
+            Explicit: track.Explicit)
+        {
+            AlbumId = track.AlbumId
+        };
+    }
+
+    private static string BuildSpotifyTopTrackWatchId(string trackId)
+        => $"{SpotifyTopTrackWatchIdPrefix}{trackId.Trim()}";
+
+    private static string ResolveSpotifyTrackSourceUrl(string? sourceUrl, string trackId)
+    {
+        var normalized = sourceUrl?.Trim();
+        return string.IsNullOrWhiteSpace(normalized)
+            ? $"https://open.spotify.com/track/{trackId}"
+            : normalized;
+    }
+
+    private static string? SelectSpotifyTrackImageUrl(IReadOnlyList<SpotifyImage>? images)
+        => images?
+            .Where(static image => !string.IsNullOrWhiteSpace(image.Url))
+            .OrderByDescending(static image => image.Width ?? 0)
+            .Select(static image => image.Url)
+            .FirstOrDefault();
 
     private static bool ShouldIncludeAlbumGroup(string? albumGroup, IReadOnlyCollection<string> groups)
     {

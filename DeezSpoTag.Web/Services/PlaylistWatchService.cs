@@ -1415,13 +1415,26 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string collectionType,
         IReadOnlyCollection<SpotifyTrackSummary> tracks,
         long? destinationFolderId,
+        string? preferredEngine,
+        IReadOnlyList<PlaylistTrackRoutingRule>? routingRules,
+        string? downloadVariantMode,
+        long? atmosDestinationFolderId,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         CancellationToken cancellationToken)
     {
         var sourceLabel = BuildQueueSourceLabel(SpotifyLabel, collectionType, collectionName);
         var result = await QueueSpotifyTracksAsync(
             tracks,
             destinationFolderId,
-            BuildQueueWatchOptions(sourceLabel, null, null, watchlistOrigin: ArtistWatchOrigin),
+            BuildQueueWatchOptions(
+                sourceLabel,
+                null,
+                null,
+                preferredEngine,
+                downloadVariantMode,
+                atmosDestinationFolderId,
+                new QueueWatchRuleSet(routingRules, blockRules),
+                watchlistOrigin: ArtistWatchOrigin),
             cancellationToken);
         return result.QueuedCount;
     }
@@ -1431,13 +1444,26 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string collectionType,
         IReadOnlyCollection<GwTrack> tracks,
         long? destinationFolderId,
+        string? preferredEngine,
+        IReadOnlyList<PlaylistTrackRoutingRule>? routingRules,
+        string? downloadVariantMode,
+        long? atmosDestinationFolderId,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         CancellationToken cancellationToken)
     {
         var sourceLabel = BuildQueueSourceLabel(DeezerLabel, collectionType, collectionName);
         var result = await QueueDeezerTracksAsync(
             tracks,
             destinationFolderId,
-            BuildQueueWatchOptions(sourceLabel, null, null, watchlistOrigin: ArtistWatchOrigin),
+            BuildQueueWatchOptions(
+                sourceLabel,
+                null,
+                null,
+                preferredEngine,
+                downloadVariantMode,
+                atmosDestinationFolderId,
+                new QueueWatchRuleSet(routingRules, blockRules),
+                watchlistOrigin: ArtistWatchOrigin),
             cancellationToken);
         return result.QueuedCount;
     }
@@ -1447,6 +1473,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string collectionType,
         IReadOnlyCollection<DownloadIntent> intents,
         long? destinationFolderId,
+        string? preferredEngine,
+        IReadOnlyList<PlaylistTrackRoutingRule>? routingRules,
+        string? downloadVariantMode,
+        long? atmosDestinationFolderId,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         CancellationToken cancellationToken)
     {
         if (intents.Count == 0)
@@ -1473,7 +1504,15 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var result = await QueueWatchIntentTracksAsync(
             watchTracks,
             destinationFolderId,
-            BuildQueueWatchOptions(sourceLabel, null, null, watchlistOrigin: ArtistWatchOrigin),
+            BuildQueueWatchOptions(
+                sourceLabel,
+                null,
+                null,
+                preferredEngine,
+                downloadVariantMode,
+                atmosDestinationFolderId,
+                new QueueWatchRuleSet(routingRules, blockRules),
+                watchlistOrigin: ArtistWatchOrigin),
             cancellationToken);
         return result.QueuedCount;
     }

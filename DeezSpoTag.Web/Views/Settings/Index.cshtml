@@ -1061,6 +1061,14 @@
                             <input type="checkbox" id="watchAlbumGroupAppearsOn">
                             <label for="watchAlbumGroupAppearsOn">Appears On</label>
                         </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="watchArtistTopSongsEnabled">
+                            <label for="watchArtistTopSongsEnabled">Spotify's Top Songs</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="watchArtistLatestReleasesOnly">
+                            <label for="watchArtistLatestReleasesOnly">Latest Releases</label>
+                        </div>
                     </div>
                 </div>
 
@@ -3249,6 +3257,8 @@ function loadSettings(settings) {
     setFieldValue('watchDelayBetweenPlaylistsSeconds', settings.watchDelayBetweenPlaylistsSeconds);
     setFieldValue('watchDelayBetweenArtistsSeconds', settings.watchDelayBetweenArtistsSeconds);
     setCheckboxValue('watchUseSnapshotIdChecking', settings.watchUseSnapshotIdChecking);
+    setCheckboxValue('watchArtistTopSongsEnabled', settings.watchArtistTopSongsEnabled);
+    setCheckboxValue('watchArtistLatestReleasesOnly', settings.watchArtistLatestReleasesOnly);
 
     const albumGroups = Array.isArray(settings.watchedArtistAlbumGroup)
         ? settings.watchedArtistAlbumGroup.map(group => String(group).toLowerCase())
@@ -3577,6 +3587,8 @@ function collectFormData() {
         watchDelayBetweenPlaylistsSeconds: getNumber('watchDelayBetweenPlaylistsSeconds', baseSettings.watchDelayBetweenPlaylistsSeconds ?? 2),
         watchDelayBetweenArtistsSeconds: getNumber('watchDelayBetweenArtistsSeconds', baseSettings.watchDelayBetweenArtistsSeconds ?? 5),
         watchUseSnapshotIdChecking: getChecked('watchUseSnapshotIdChecking', baseSettings.watchUseSnapshotIdChecking ?? true),
+        watchArtistTopSongsEnabled: getChecked('watchArtistTopSongsEnabled', baseSettings.watchArtistTopSongsEnabled ?? false),
+        watchArtistLatestReleasesOnly: getChecked('watchArtistLatestReleasesOnly', baseSettings.watchArtistLatestReleasesOnly ?? false),
         watchedArtistAlbumGroup: selectedAlbumGroups,
 
         tags: {

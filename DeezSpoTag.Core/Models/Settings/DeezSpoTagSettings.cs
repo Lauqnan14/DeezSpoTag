@@ -202,6 +202,8 @@ public class DeezSpoTagSettings
     public int WatchDelayBetweenPlaylistsSeconds { get; set; } = 2;
     public int WatchDelayBetweenArtistsSeconds { get; set; } = 5;
     public bool WatchUseSnapshotIdChecking { get; set; } = true;
+    public bool WatchArtistTopSongsEnabled { get; set; } = false;
+    public bool WatchArtistLatestReleasesOnly { get; set; } = false;
     public List<string> WatchedArtistAlbumGroup { get; set; } = new() { "album", "single" };
 
     // Download layout preferences

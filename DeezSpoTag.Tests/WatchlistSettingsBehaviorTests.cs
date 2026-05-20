@@ -15,6 +15,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     private const string WatchMaxReleasesPerArtistName = "WatchMaxReleasesPerArtist";
     private const string WatchMaxReleasesPerArtistJsonName = "watchMaxReleasesPerArtist";
     private const string WatchMaxTracksPerPlaylistCheckJsonName = "watchMaxTracksPerPlaylistCheck";
+    private const string WatchArtistTopSongsEnabledJsonName = "watchArtistTopSongsEnabled";
+    private const string WatchArtistLatestReleasesOnlyJsonName = "watchArtistLatestReleasesOnly";
     private const string AlbumGroup = "album";
     private const string SingleGroup = "single";
     private const string AppearsOnGroup = "appears_on";
@@ -124,6 +126,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("Max Monitored Items Per Run", source, StringComparison.Ordinal);
         Assert.Contains(WatchMaxReleasesPerArtistJsonName, source, StringComparison.Ordinal);
         Assert.Contains(WatchMaxTracksPerPlaylistCheckJsonName, source, StringComparison.Ordinal);
+        Assert.Contains(WatchArtistTopSongsEnabledJsonName, source, StringComparison.Ordinal);
+        Assert.Contains(WatchArtistLatestReleasesOnlyJsonName, source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -135,11 +139,34 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var artistWatchSource = File.ReadAllText(Path.Join(serviceRoot, "ArtistWatchService.cs"));
         var playlistWatchSource = File.ReadAllText(Path.Join(serviceRoot, "PlaylistWatchService.cs"));
         var hostedSource = File.ReadAllText(Path.Join(serviceRoot, "PlaylistWatchHostedService.cs"));
+        var repoSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var artistControllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryWatchlistApiController.cs"));
+        var watchlistScriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
 
         Assert.DoesNotContain(WatchMaxItemsPerRunName, artistWatchSource, StringComparison.Ordinal);
         Assert.DoesNotContain(WatchMaxItemsPerRunName, playlistWatchSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxItemsPerRunName, hostedSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxReleasesPerArtistName, artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("WatchArtistTopSongsEnabled", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("WatchArtistLatestReleasesOnly", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("top-track:", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("artist-top:", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("UpdateWatchlistPreferencesAsync", repoSource, StringComparison.Ordinal);
+        Assert.Contains("{artistId:long}/preferences", artistControllerSource, StringComparison.Ordinal);
+        Assert.Contains("/api/library/watchlist/${encodeURIComponent(artistId)}/preferences", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("watchedArtistAlbumGroup", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("watchArtistTopSongsEnabled", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("watchArtistLatestReleasesOnly", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("preferredEngine", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("routingRules", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("data-artist-engine", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("data-artist-routing-rules", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("PreferredEngine", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("RoutingRules", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("preferred_engine", repoSource, StringComparison.Ordinal);
+        Assert.Contains("routing_rules_json", repoSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizePreferredEngine", artistControllerSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeRoutingRules", artistControllerSource, StringComparison.Ordinal);
     }
 
     public void Dispose()

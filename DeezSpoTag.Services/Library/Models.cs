@@ -462,7 +462,18 @@ public sealed record WatchlistArtistDto(
     string? AppleId,
     string? ArtistImagePath,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? LastCheckedUtc = null);
+    DateTimeOffset? LastCheckedUtc = null,
+    long? DestinationFolderId = null,
+    IReadOnlyList<string>? WatchedAlbumGroups = null,
+    bool? TopSongsEnabled = null,
+    bool? LatestReleasesOnly = null,
+    string? PreferredEngine = null,
+    IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules = null,
+    long? AtmosDestinationFolderId = null,
+    string? DownloadVariantMode = null,
+    string? TopSongsSyncMode = null,
+    bool? DownloadDiscographyEnabled = null,
+    IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null);
 
 public sealed record PlaylistWatchlistDto(
     long Id,

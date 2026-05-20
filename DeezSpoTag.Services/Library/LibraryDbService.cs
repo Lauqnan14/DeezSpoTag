@@ -233,6 +233,17 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "status", $"{TextType} DEFAULT 'queued'", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, SourceIdColumn, TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "destination_folder_id", BigIntType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "album_groups_json", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "top_songs_enabled", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "latest_releases_only", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "preferred_engine", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "routing_rules_json", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "atmos_destination_folder_id", BigIntType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "download_variant_mode", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "top_songs_sync_mode", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "download_discography_enabled", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistWatchlistTable, "ignore_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchIgnoreTable, SourceIdColumn, TextType, cancellationToken);

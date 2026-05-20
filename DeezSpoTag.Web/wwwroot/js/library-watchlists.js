@@ -79,12 +79,6 @@ async function loadWatchlist() {
             }
         }
 
-        const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
-        const folderOptions = enabledFolders
-            .map(folder => `<option value="${escapeHtml(String(folder.id || ''))}">${escapeHtml(folder.displayName || 'Folder')}</option>`)
-            .join('');
-        const artistPrefs = getStoredPreferences('artistWatchlist');
-
         container.innerHTML = items.map(item => {
             const cover = item.artistImagePath
                 ? appendCacheKey(`/api/library/image?path=${encodeURIComponent(item.artistImagePath)}&size=300`)
@@ -106,13 +100,6 @@ async function loadWatchlist() {
                 lastChecked ? `<span class="watchlist-card-stat">Checked ${lastChecked}</span>` : ''
             ].filter(Boolean).join('');
 
-            const folderSelect = folderOptions
-                ? `<select class="watchlist-card-folder-select form-select" data-watchlist-folder="${escapeHtml(String(item.artistId || ''))}">
-                       <option value="">No folder</option>
-                       ${folderOptions}
-                   </select>`
-                : `<div class="watchlist-folder-empty">No folders configured.</div>`;
-
             const deezerId = item.deezerId || '';
             const spotifyId = item.spotifyId || '';
 
@@ -125,20 +112,104 @@ async function loadWatchlist() {
                     ${badges ? `<div class="watchlist-card-badges">${badges}</div>` : ''}
                     ${statsHtml ? `<div class="watchlist-card-stats">${statsHtml}</div>` : ''}
                 </button>
+                <div class="watchlist-action-menu watchlist-action-menu--hover">
+                    <button class="watchlist-kebab-btn" type="button" title="Actions" data-artist-menu-toggle="${escapeHtml(String(item.artistId || ''))}" aria-expanded="false">
+                        <i class="fa-solid fa-ellipsis-vertical"></i>
+                    </button>
+                    <div class="watchlist-action-dropdown watchlist-action-dropdown--hover" data-artist-menu="${escapeHtml(String(item.artistId || ''))}" hidden>
+                        <button class="dropdown-item" data-artist-action="settings" data-artist-id="${escapeHtml(String(item.artistId || ''))}" data-artist-name="${escapeHtml(item.artistName)}" data-artist-folder="${escapeHtml(item.destinationFolderId == null ? '' : String(item.destinationFolderId))}" data-artist-groups="${escapeHtml(JSON.stringify(item.watchedAlbumGroups || []))}" data-artist-top-songs="${escapeHtml(item.topSongsEnabled == null ? '' : String(item.topSongsEnabled))}" data-artist-latest="${escapeHtml(item.latestReleasesOnly == null ? '' : String(item.latestReleasesOnly))}" data-artist-engine="${escapeHtml(item.preferredEngine || '')}" data-artist-routing-rules="${escapeHtml(JSON.stringify(item.routingRules || []))}" data-artist-atmos-folder="${escapeHtml(item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId))}" data-artist-download-mode="${escapeHtml(item.downloadVariantMode || 'standard')}" data-artist-top-songs-sync="${escapeHtml(item.topSongsSyncMode || 'mirror')}" data-artist-discography="${escapeHtml(item.downloadDiscographyEnabled == null ? '' : String(item.downloadDiscographyEnabled))}" data-artist-block-rules="${escapeHtml(JSON.stringify(item.ignoreRules || []))}" type="button">
+                            <i class="fa-solid fa-gear"></i>
+                            <span>Settings</span>
+                        </button>
+                        <button class="dropdown-item danger" data-watchlist-remove="${escapeHtml(String(item.artistId || ''))}" type="button">
+                            <i class="fa-solid fa-trash"></i>
+                            <span>Unmonitor</span>
+                        </button>
+                    </div>
+                </div>
                 <div class="watchlist-card-strip">
                     <div class="watchlist-card-name">${escapeHtml(item.artistName)}</div>
-                    ${folderSelect}
-                    <button class="btn btn-danger action-btn btn-sm watchlist-card-unmonitor" data-watchlist-remove="${escapeHtml(String(item.artistId || ''))}" type="button">Unmonitor</button>
                 </div>
             </div>`;
         }).join('');
 
-        container.querySelectorAll('[data-watchlist-folder]').forEach(select => {
-            const artistId = select.dataset.watchlistFolder;
-            const stored = artistId ? artistPrefs[artistId] : '';
-            if (stored) {
-                select.value = stored;
-            }
+        const closeArtistActionMenus = () => {
+            container.querySelectorAll('[data-artist-menu]').forEach(menu => {
+                menu.hidden = true;
+            });
+            container.querySelectorAll('[data-artist-menu-toggle]').forEach(toggle => {
+                toggle.setAttribute('aria-expanded', 'false');
+            });
+        };
+
+        container.querySelectorAll('[data-artist-menu-toggle]').forEach(button => {
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const artistId = button.dataset.artistMenuToggle;
+                const menu = artistId
+                    ? container.querySelector(`[data-artist-menu="${artistId}"]`)
+                    : null;
+                const shouldOpen = Boolean(menu?.hidden);
+                closeArtistActionMenus();
+                if (menu && shouldOpen) {
+                    menu.hidden = false;
+                    button.setAttribute('aria-expanded', 'true');
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-artist-menu]').forEach(menu => {
+            menu.addEventListener('click', event => event.stopPropagation());
+        });
+
+        if (container.dataset.artistMenuBound !== 'true') {
+            document.addEventListener('click', () => {
+                closeArtistActionMenus();
+            });
+            container.dataset.artistMenuBound = 'true';
+        }
+
+        container.querySelectorAll('[data-artist-action="settings"]').forEach(button => {
+            button.addEventListener('click', async () => {
+                const artistId = button.dataset.artistId;
+                if (!artistId) {
+                    return;
+                }
+
+                closeArtistActionMenus();
+                try {
+                    const savedSettings = await openArtistSettingsPanel(
+                        artistId,
+                        button.dataset.artistName || 'Artist',
+                        button.dataset.artistFolder || '',
+                        parseArtistSettingsGroups(button.dataset.artistGroups),
+                        button.dataset.artistTopSongs || '',
+                        button.dataset.artistLatest || '',
+                        button.dataset.artistEngine || '',
+                        parseArtistRoutingRules(button.dataset.artistRoutingRules),
+                        button.dataset.artistAtmosFolder || '',
+                        button.dataset.artistDownloadMode || 'standard',
+                        button.dataset.artistTopSongsSync || 'mirror',
+                        button.dataset.artistDiscography || '',
+                        parseArtistRoutingRules(button.dataset.artistBlockRules)
+                    );
+                    if (savedSettings !== null) {
+                        button.dataset.artistFolder = savedSettings.folderId;
+                        button.dataset.artistGroups = JSON.stringify(savedSettings.groups);
+                        button.dataset.artistTopSongs = String(savedSettings.topSongs);
+                        button.dataset.artistLatest = String(savedSettings.latest);
+                        button.dataset.artistEngine = savedSettings.preferredEngine;
+                        button.dataset.artistRoutingRules = JSON.stringify(savedSettings.routingRules);
+                        button.dataset.artistAtmosFolder = savedSettings.atmosFolderId;
+                        button.dataset.artistDownloadMode = savedSettings.downloadVariantMode;
+                        button.dataset.artistTopSongsSync = savedSettings.topSongsSyncMode;
+                        button.dataset.artistDiscography = String(savedSettings.downloadDiscography);
+                        button.dataset.artistBlockRules = JSON.stringify(savedSettings.blockRules);
+                    }
+                } catch (error) {
+                    showToast(`Artist settings failed: ${error.message}`, true);
+                }
+            });
         });
 
         container.querySelectorAll('[data-watchlist-remove]').forEach(button => {
@@ -446,6 +517,504 @@ function renderSharedPlaylistActions(options = {}) {
         return '';
     }
     return renderer(options);
+}
+
+function parseArtistSettingsGroups(rawValue) {
+    try {
+        const parsed = JSON.parse(String(rawValue || '[]'));
+        return Array.isArray(parsed) ? parsed.map(value => String(value || '').toLowerCase()) : [];
+    } catch {
+        return [];
+    }
+}
+
+function parseArtistRoutingRules(rawValue) {
+    try {
+        const parsed = JSON.parse(String(rawValue || '[]'));
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+function createArtistWatchOption(id, label, checked) {
+    const row = document.createElement('label');
+    row.className = 'checkbox-group';
+    row.innerHTML = `
+        <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} />
+        <span>${label}</span>
+    `;
+    return row;
+}
+
+async function openArtistSettingsPanel(
+    artistId,
+    artistName,
+    currentFolderId,
+    currentGroups,
+    currentTopSongs,
+    currentLatestOnly,
+    currentPreferredEngine,
+    currentRoutingRules,
+    currentAtmosFolderId,
+    currentDownloadMode,
+    currentTopSongsSyncMode,
+    currentDiscography,
+    currentBlockRules) {
+    if (!globalThis.DeezSpoTag?.ui?.showModal) {
+        throw new Error('Settings panel unavailable.');
+    }
+
+    await ensurePlaylistSettingsFoldersLoaded();
+    const globalSettingsResponse = await fetchJson('/api/getSettings').catch(() => null);
+    const globalSettings = globalSettingsResponse?.settings || {};
+    const globalGroups = Array.isArray(globalSettings.watchedArtistAlbumGroup)
+        ? globalSettings.watchedArtistAlbumGroup.map(value => String(value || '').toLowerCase())
+        : ['album', 'single'];
+    const selectedGroups = Array.isArray(currentGroups) && currentGroups.length > 0
+        ? currentGroups
+        : globalGroups;
+    const topSongsEnabled = currentTopSongs === ''
+        ? globalSettings.watchArtistTopSongsEnabled === true
+        : currentTopSongs === 'true';
+    let latestOnly = currentLatestOnly === ''
+        ? globalSettings.watchArtistLatestReleasesOnly === true
+        : currentLatestOnly === 'true';
+    const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
+    const panel = document.createElement('div');
+    panel.className = 'playlist-settings-panel watchlist-playlist-settings';
+
+    const intro = document.createElement('div');
+    intro.className = 'playlist-settings-intro';
+    intro.textContent = 'Configure where monitored artist releases and Spotify top songs are downloaded.';
+    panel.appendChild(intro);
+
+    const folderSection = document.createElement('div');
+    folderSection.className = 'playlist-settings-section';
+    const folderTitle = document.createElement('div');
+    folderTitle.className = 'playlist-settings-section-title';
+    folderTitle.textContent = 'Destination folder';
+    const folderSelect = document.createElement('select');
+    folderSelect.className = 'form-select ps-folder-select';
+    const noFolderOption = document.createElement('option');
+    noFolderOption.value = '';
+    noFolderOption.textContent = 'No folder';
+    folderSelect.appendChild(noFolderOption);
+    enabledFolders.forEach((folder) => {
+        const option = document.createElement('option');
+        option.value = String(folder.id ?? '');
+        option.textContent = String(folder.displayName || 'Folder');
+        folderSelect.appendChild(option);
+    });
+    folderSelect.value = currentFolderId ? String(currentFolderId) : '';
+    const folderHint = document.createElement('div');
+    folderHint.className = 'playlist-settings-help';
+    folderHint.textContent = 'Used by artist watchlist downloads, including latest releases and Spotify top songs.';
+    folderSection.appendChild(folderTitle);
+    folderSection.appendChild(folderSelect);
+    folderSection.appendChild(folderHint);
+    panel.appendChild(folderSection);
+
+    const atmosFolderSection = document.createElement('div');
+    atmosFolderSection.className = 'playlist-settings-section';
+    const atmosFolderTitle = document.createElement('div');
+    atmosFolderTitle.className = 'playlist-settings-section-title';
+    atmosFolderTitle.textContent = 'Atmos destination folder';
+    const atmosFolderSelect = document.createElement('select');
+    atmosFolderSelect.className = 'form-select ps-atmos-folder-select';
+    atmosFolderSelect.appendChild(new Option('Use global Atmos folder', ''));
+    enabledFolders.forEach((folder) => {
+        atmosFolderSelect.appendChild(new Option(String(folder.displayName || 'Folder'), String(folder.id ?? '')));
+    });
+    atmosFolderSelect.value = currentAtmosFolderId ? String(currentAtmosFolderId) : '';
+    const atmosFolderHint = document.createElement('div');
+    atmosFolderHint.className = 'playlist-settings-help';
+    atmosFolderHint.textContent = 'Used when artist watchlist download mode includes Atmos.';
+    atmosFolderSection.appendChild(atmosFolderTitle);
+    atmosFolderSection.appendChild(atmosFolderSelect);
+    atmosFolderSection.appendChild(atmosFolderHint);
+    panel.appendChild(atmosFolderSection);
+
+    const engineSection = document.createElement('div');
+    engineSection.className = 'playlist-settings-section';
+    const engineTitle = document.createElement('div');
+    engineTitle.className = 'playlist-settings-section-title';
+    engineTitle.textContent = 'Download engine';
+    const engineSelect = document.createElement('select');
+    engineSelect.className = 'form-select ps-engine-select';
+    [
+        ['', 'Follow global download source'],
+        ['auto', 'Auto'],
+        ['amazon', 'Amazon'],
+        ['apple', 'Apple Music'],
+        ['deezer', 'Deezer'],
+        ['qobuz', 'Qobuz'],
+        ['tidal', 'Tidal']
+    ].forEach(([value, label]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        engineSelect.appendChild(option);
+    });
+    engineSelect.value = String(currentPreferredEngine || '').toLowerCase();
+    const engineHint = document.createElement('div');
+    engineHint.className = 'playlist-settings-help';
+    engineHint.textContent = 'Overrides the global source only for this watched artist.';
+    engineSection.appendChild(engineTitle);
+    engineSection.appendChild(engineSelect);
+    engineSection.appendChild(engineHint);
+    panel.appendChild(engineSection);
+
+    const downloadModeSection = document.createElement('div');
+    downloadModeSection.className = 'playlist-settings-section';
+    const downloadModeTitle = document.createElement('div');
+    downloadModeTitle.className = 'playlist-settings-section-title';
+    downloadModeTitle.textContent = 'Download mode';
+    const downloadModeSelect = document.createElement('select');
+    downloadModeSelect.className = 'form-select ps-download-mode-select';
+    [
+        ['standard', 'Standard only'],
+        ['dual_quality', 'Dual quality (standard + Atmos)'],
+        ['atmos_only', 'Atmos only']
+    ].forEach(([value, label]) => {
+        downloadModeSelect.appendChild(new Option(label, value));
+    });
+    downloadModeSelect.value = String(currentDownloadMode || 'standard').toLowerCase();
+    const syncAtmosFolderVisibility = () => {
+        const selectedMode = String(downloadModeSelect.value || 'standard').toLowerCase();
+        const shouldShowAtmosFolder = selectedMode === 'dual_quality' || selectedMode === 'atmos_only';
+        atmosFolderSection.hidden = !shouldShowAtmosFolder;
+        atmosFolderSelect.disabled = !shouldShowAtmosFolder;
+    };
+    downloadModeSelect.addEventListener('change', syncAtmosFolderVisibility);
+    downloadModeSection.appendChild(downloadModeTitle);
+    downloadModeSection.appendChild(downloadModeSelect);
+    panel.appendChild(downloadModeSection);
+    syncAtmosFolderVisibility();
+
+    const artistOptionsSection = document.createElement('div');
+    artistOptionsSection.className = 'playlist-settings-section';
+    const artistOptionsTitle = document.createElement('div');
+    artistOptionsTitle.className = 'playlist-settings-section-title';
+    artistOptionsTitle.textContent = 'Artist watch options';
+    const artistOptionsGrid = document.createElement('div');
+    artistOptionsGrid.className = 'artist-watch-options-grid';
+    const downloadDiscography = currentDiscography === ''
+        ? latestOnly !== true
+        : currentDiscography === 'true';
+    if (downloadDiscography) {
+        latestOnly = false;
+    }
+    const discographyOption = createArtistWatchOption('artist-watch-discography', 'Discography', downloadDiscography);
+    discographyOption.classList.add('artist-watch-option-discography');
+    artistOptionsGrid.appendChild(discographyOption);
+    const coveredOptions = [
+        ['artist-watch-album', 'Album', 'album'],
+        ['artist-watch-single', 'Single', 'single'],
+        ['artist-watch-compilation', 'Compilation', 'compilation'],
+        ['artist-watch-appears-on', 'Appears On', 'appears_on'],
+        ['artist-watch-top-songs', "Spotify's Top Songs", null],
+        ['artist-watch-latest-releases', 'Latest Releases', null]
+    ];
+    coveredOptions.forEach(([id, label, value]) => {
+        const checked = value
+            ? selectedGroups.includes(value)
+            : id === 'artist-watch-top-songs'
+                ? topSongsEnabled
+                : latestOnly;
+        artistOptionsGrid.appendChild(createArtistWatchOption(id, label, checked));
+    });
+    const latestOnlyInput = artistOptionsGrid.querySelector('#artist-watch-latest-releases');
+    const discographyInput = artistOptionsGrid.querySelector('#artist-watch-discography');
+    const coveredInputs = [
+        'artist-watch-album',
+        'artist-watch-single',
+        'artist-watch-compilation',
+        'artist-watch-appears-on',
+        'artist-watch-top-songs',
+        'artist-watch-latest-releases'
+    ]
+        .map(id => artistOptionsGrid.querySelector(`#${id}`))
+        .filter(Boolean);
+    const syncDiscographyCoveredOptions = () => {
+        const discographySelected = discographyInput?.checked === true;
+        coveredInputs.forEach(input => {
+            input.disabled = discographySelected;
+            input.closest('.checkbox-group')?.classList.toggle('is-disabled', discographySelected);
+        });
+    };
+    latestOnlyInput?.addEventListener('change', () => {
+        if (latestOnlyInput.checked && discographyInput) {
+            discographyInput.checked = false;
+            syncDiscographyCoveredOptions();
+        }
+    });
+    discographyInput?.addEventListener('change', () => {
+        if (discographyInput.checked && latestOnlyInput) {
+            latestOnlyInput.checked = false;
+        }
+        syncDiscographyCoveredOptions();
+    });
+    syncDiscographyCoveredOptions();
+    artistOptionsSection.appendChild(artistOptionsTitle);
+    artistOptionsSection.appendChild(artistOptionsGrid);
+    panel.appendChild(artistOptionsSection);
+
+    const syncModeSection = document.createElement('div');
+    syncModeSection.className = 'playlist-settings-section';
+    const syncModeTitle = document.createElement('div');
+    syncModeTitle.className = 'playlist-settings-section-title';
+    syncModeTitle.textContent = 'Spotify top songs sync behavior';
+    const topSongsSyncSelect = document.createElement('select');
+    topSongsSyncSelect.className = 'form-select ps-sync-mode-select';
+    [
+        ['mirror', 'Mirror Spotify top songs'],
+        ['append', 'Append new top songs only']
+    ].forEach(([value, label]) => {
+        topSongsSyncSelect.appendChild(new Option(label, value));
+    });
+    topSongsSyncSelect.value = String(currentTopSongsSyncMode || 'mirror').toLowerCase() === 'append'
+        ? 'append'
+        : 'mirror';
+    const syncModeHint = document.createElement('div');
+    syncModeHint.className = 'playlist-settings-help';
+    syncModeHint.textContent = 'Applies only to Spotify top songs for this artist.';
+    syncModeSection.appendChild(syncModeTitle);
+    syncModeSection.appendChild(topSongsSyncSelect);
+    syncModeSection.appendChild(syncModeHint);
+    panel.appendChild(syncModeSection);
+
+    const routingSection = document.createElement('div');
+    routingSection.className = 'playlist-settings-section';
+    const routingTitle = document.createElement('div');
+    routingTitle.className = 'playlist-settings-section-title';
+    routingTitle.textContent = 'Routing rules';
+    const routingHelp = document.createElement('div');
+    routingHelp.className = 'playlist-settings-help';
+    routingHelp.textContent = 'Send matching artist watchlist downloads to a specific destination folder.';
+    const rulesList = document.createElement('div');
+    rulesList.className = 'playlist-routing-rules';
+    const addRuleButton = document.createElement('button');
+    addRuleButton.type = 'button';
+    addRuleButton.className = 'btn btn-secondary action-btn btn-sm';
+    addRuleButton.textContent = 'Add routing rule';
+
+    const createRuleRow = (rule = {}) => {
+        const row = document.createElement('div');
+        row.className = 'routing-rule-row';
+        row.innerHTML = `
+            <select class="rr-field" aria-label="Rule field">
+                <option value="artist">Artist</option>
+                <option value="title">Title</option>
+                <option value="album">Album</option>
+                <option value="genre">Genre</option>
+                <option value="year">Year</option>
+                <option value="explicit">Explicit</option>
+            </select>
+            <select class="rr-operator" aria-label="Rule operator"></select>
+            <div class="rr-value-wrap">
+                <input class="rr-value rr-value-choice" type="text" aria-label="Rule value" />
+                <select class="rr-value rr-value-explicit" aria-label="Explicit value">
+                    <option value="is_true">Explicit tracks only</option>
+                    <option value="is_false">Clean/non-explicit tracks only</option>
+                </select>
+            </div>
+            <select class="rr-folder" aria-label="Destination folder">
+                <option value="">No folder</option>
+            </select>
+            <button class="routing-rule-remove" type="button" title="Remove rule"><i class="fa-solid fa-xmark"></i></button>`;
+
+        const supportedFields = ['artist', 'title', 'album', 'genre', 'year', 'explicit'];
+        const fieldSelect = row.querySelector('.rr-field');
+        const operatorSelect = row.querySelector('.rr-operator');
+        const valueInput = row.querySelector('.rr-value-choice');
+        const explicitSelect = row.querySelector('.rr-value-explicit');
+        const folderSelect = row.querySelector('.rr-folder');
+        const normalizedField = supportedFields.includes(String(rule.conditionField || '').toLowerCase())
+            ? String(rule.conditionField).toLowerCase()
+            : 'artist';
+
+        enabledFolders.forEach(folder => {
+            folderSelect.appendChild(new Option(String(folder.displayName || 'Folder'), String(folder.id ?? '')));
+        });
+
+        const refreshOperatorOptions = () => {
+            const field = fieldSelect.value;
+            const operators = field === 'explicit'
+                ? [['is_true', 'explicit only'], ['is_false', 'clean only']]
+                : field === 'year'
+                    ? [['equals', 'equals'], ['gte', 'at least'], ['lte', 'at most']]
+                    : [['contains', 'contains'], ['equals', 'equals'], ['starts_with', 'starts with']];
+            operatorSelect.innerHTML = '';
+            operators.forEach(([value, label]) => {
+                operatorSelect.appendChild(new Option(label, value));
+            });
+            const requestedOperator = String(rule.conditionOperator || '').toLowerCase();
+            operatorSelect.value = operators.some(([value]) => value === requestedOperator)
+                ? requestedOperator
+                : operators[0][0];
+            const explicit = field === 'explicit';
+            valueInput.hidden = explicit;
+            explicitSelect.hidden = !explicit;
+        };
+
+        fieldSelect.value = normalizedField;
+        valueInput.value = String(rule.conditionValue || '');
+        explicitSelect.value = String(rule.conditionOperator || '').toLowerCase() === 'is_false' ? 'is_false' : 'is_true';
+        folderSelect.value = rule.destinationFolderId == null ? '' : String(rule.destinationFolderId);
+        refreshOperatorOptions();
+        fieldSelect.addEventListener('change', refreshOperatorOptions);
+        row.querySelector('.routing-rule-remove')?.addEventListener('click', () => row.remove());
+        return row;
+    };
+
+    (Array.isArray(currentRoutingRules) ? currentRoutingRules : []).forEach(rule => {
+        rulesList.appendChild(createRuleRow(rule));
+    });
+    addRuleButton.addEventListener('click', () => {
+        rulesList.appendChild(createRuleRow());
+    });
+    routingSection.appendChild(routingTitle);
+    routingSection.appendChild(routingHelp);
+    routingSection.appendChild(rulesList);
+    routingSection.appendChild(addRuleButton);
+    panel.appendChild(routingSection);
+
+    const blockSection = document.createElement('div');
+    blockSection.className = 'playlist-settings-section playlist-rule-section';
+    const blockHeader = document.createElement('div');
+    blockHeader.className = 'playlist-settings-title-row';
+    const blockTitle = document.createElement('div');
+    blockTitle.className = 'playlist-settings-section-title';
+    blockTitle.textContent = 'Blocked track rules';
+    const blockCount = document.createElement('span');
+    blockCount.className = 'playlist-settings-rule-count';
+    blockHeader.appendChild(blockTitle);
+    blockHeader.appendChild(blockCount);
+    const blockHelp = document.createElement('div');
+    blockHelp.className = 'playlist-settings-help';
+    blockHelp.textContent = 'Skip matching artist watchlist tracks before download.';
+    const blockColumns = document.createElement('div');
+    blockColumns.className = 'routing-rule-columns blocked-rule-columns';
+    blockColumns.innerHTML = `
+        <span>Field</span>
+        <span>Match</span>
+        <span>Value</span>
+        <span></span>
+    `;
+    const blockRulesList = document.createElement('div');
+    blockRulesList.className = 'routing-rules-list';
+    const blockEmpty = document.createElement('div');
+    blockEmpty.className = 'routing-rules-empty';
+    blockEmpty.textContent = 'No blocked-track rules yet.';
+    const refreshBlockState = () => {
+        const count = blockRulesList.querySelectorAll('.block-rule-row').length;
+        blockCount.textContent = count === 1 ? '1 rule' : `${count} rules`;
+        blockEmpty.hidden = count > 0;
+    };
+    const createBlockRow = (rule = {}) => {
+        const row = createRuleRow(rule);
+        row.classList.add('block-rule-row');
+        row.querySelector('.rr-field')?.classList.replace('rr-field', 'br-field');
+        row.querySelector('.rr-operator')?.classList.replace('rr-operator', 'br-operator');
+        row.querySelector('.rr-value-choice')?.classList.replace('rr-value-choice', 'br-value-choice');
+        row.querySelector('.rr-value-explicit')?.classList.replace('rr-value-explicit', 'br-value-explicit');
+        row.querySelector('.rr-folder')?.remove();
+        row.querySelector('.routing-rule-remove')?.addEventListener('click', refreshBlockState);
+        return row;
+    };
+    (Array.isArray(currentBlockRules) ? currentBlockRules : []).forEach(rule => {
+        blockRulesList.appendChild(createBlockRow(rule));
+    });
+    const addBlockRuleButton = document.createElement('button');
+    addBlockRuleButton.type = 'button';
+    addBlockRuleButton.className = 'btn btn-secondary action-btn btn-sm routing-rules-add-btn';
+    addBlockRuleButton.textContent = 'Add block rule';
+    addBlockRuleButton.addEventListener('click', () => {
+        blockRulesList.appendChild(createBlockRow());
+        refreshBlockState();
+    });
+    blockSection.appendChild(blockHeader);
+    blockSection.appendChild(blockHelp);
+    blockSection.appendChild(blockColumns);
+    blockSection.appendChild(blockRulesList);
+    blockSection.appendChild(blockEmpty);
+    blockSection.appendChild(addBlockRuleButton);
+    panel.appendChild(blockSection);
+    refreshBlockState();
+
+    const confirmed = await globalThis.DeezSpoTag.ui.showModal({
+        title: `Settings — ${artistName}`,
+        message: '',
+        allowHtml: false,
+        dialogClass: 'is-resizable playlist-settings-modal',
+        contentElement: panel,
+        buttons: [
+            { label: 'Save', value: 'save', primary: true },
+            { label: 'Cancel', value: 'cancel' }
+        ]
+    });
+
+    if (confirmed?.value !== 'save') {
+        return null;
+    }
+
+    const destinationFolderId = folderSelect.value ? Number(folderSelect.value) : null;
+    const collectGroup = (id, value) => panel.querySelector(`#${id}`)?.checked ? value : null;
+    const downloadDiscographyEnabled = panel.querySelector('#artist-watch-discography')?.checked === true;
+    const watchedArtistAlbumGroup = downloadDiscographyEnabled
+        ? ['album', 'single', 'compilation', 'appears_on']
+        : [
+            collectGroup('artist-watch-album', 'album'),
+            collectGroup('artist-watch-single', 'single'),
+            collectGroup('artist-watch-compilation', 'compilation'),
+            collectGroup('artist-watch-appears-on', 'appears_on')
+        ].filter(Boolean);
+    const watchArtistTopSongsEnabled = !downloadDiscographyEnabled
+        && panel.querySelector('#artist-watch-top-songs')?.checked === true;
+    const watchArtistLatestReleasesOnly = !downloadDiscographyEnabled
+        && panel.querySelector('#artist-watch-latest-releases')?.checked === true;
+    const preferredEngine = engineSelect.value || null;
+    const routingRules = collectPlaylistRoutingRules(rulesList);
+    const blockRules = collectPlaylistBlockRules(blockRulesList);
+    const downloadVariantMode = downloadModeSelect.value || 'standard';
+    const atmosDestinationFolderId = atmosFolderSelect.value ? Number(atmosFolderSelect.value) : null;
+    const topSongsSyncMode = topSongsSyncSelect.value || 'mirror';
+    if (watchedArtistAlbumGroup.length === 0 && !watchArtistTopSongsEnabled) {
+        throw new Error('Select at least one artist watch option.');
+    }
+
+    await fetchJson(`/api/library/watchlist/${encodeURIComponent(artistId)}/preferences`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            destinationFolderId,
+            watchedArtistAlbumGroup,
+            watchArtistTopSongsEnabled,
+            watchArtistLatestReleasesOnly,
+            preferredEngine,
+            routingRules,
+            atmosDestinationFolderId,
+            downloadVariantMode,
+            topSongsSyncMode,
+            downloadDiscographyEnabled,
+            blockRules
+        })
+    });
+    showToast('Artist settings saved.');
+    return {
+        folderId: folderSelect.value || '',
+        groups: watchedArtistAlbumGroup,
+        topSongs: watchArtistTopSongsEnabled,
+        latest: watchArtistLatestReleasesOnly,
+        preferredEngine: preferredEngine || '',
+        routingRules,
+        atmosFolderId: atmosFolderSelect.value || '',
+        downloadVariantMode,
+        topSongsSyncMode,
+        downloadDiscography: downloadDiscographyEnabled,
+        blockRules
+    };
 }
 
 async function openSharedPlaylistArtworkPickerViaShared(source, sourceId, playlistName, options = {}) {
@@ -2064,18 +2633,6 @@ async function persistPlaylistPreference(container, source, sourceId) {
         body: JSON.stringify(payload),
         headers: { 'Content-Type': 'application/json' }
     });
-}
-
-function saveArtistWatchlistPreferences() {
-    const prefs = {};
-    document.querySelectorAll('[data-watchlist-folder]').forEach(select => {
-        const artistId = select.dataset.watchlistFolder;
-        if (artistId) {
-            prefs[artistId] = select.value || '';
-        }
-    });
-    storePreferences('artistWatchlist', prefs);
-    showToast('Artist preferences saved.');
 }
 
 function savePlaylistWatchlistPreferences() {

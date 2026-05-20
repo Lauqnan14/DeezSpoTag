@@ -322,6 +322,17 @@ CREATE TABLE IF NOT EXISTS artist_watchlist (
     artist_name TEXT NOT NULL,
     spotify_id TEXT,
     deezer_id TEXT,
+    destination_folder_id BIGINT,
+    album_groups_json TEXT,
+    top_songs_enabled INTEGER,
+    latest_releases_only INTEGER,
+    preferred_engine TEXT,
+    routing_rules_json TEXT,
+    atmos_destination_folder_id BIGINT,
+    download_variant_mode TEXT,
+    top_songs_sync_mode TEXT,
+    download_discography_enabled INTEGER,
+    ignore_rules_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

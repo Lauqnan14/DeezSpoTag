@@ -956,6 +956,8 @@
     border-color: var(--primary-color);
 }
 
+.watchlist-artist-card:hover .watchlist-kebab-btn,
+.watchlist-artist-card:focus-within .watchlist-kebab-btn,
 .watchlist-playlist-card-v2:hover .watchlist-kebab-btn,
 .watchlist-playlist-card-v2:focus-within .watchlist-kebab-btn {
     opacity: 1;
@@ -1125,6 +1127,55 @@
     border-radius: 12px;
     border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
     background: color-mix(in srgb, var(--bg-secondary) 94%, black 6%);
+}
+
+.watchlist-playlist-settings .artist-watch-options-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px 16px;
+}
+
+.watchlist-playlist-settings .artist-watch-options-grid .checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.watchlist-playlist-settings .artist-watch-options-grid .checkbox-group span {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.watchlist-playlist-settings .artist-watch-options-grid .checkbox-group input[type="checkbox"] {
+    margin-top: 0;
+    flex: 0 0 auto;
+}
+
+.watchlist-playlist-settings .artist-watch-option-discography {
+    grid-column: 1 / -1;
+}
+
+.watchlist-playlist-settings .checkbox-group.is-disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.watchlist-playlist-settings .checkbox-group.is-disabled input,
+.watchlist-playlist-settings .checkbox-group.is-disabled span {
+    cursor: not-allowed;
 }
 
 .watchlist-playlist-settings .playlist-settings-title-row {
