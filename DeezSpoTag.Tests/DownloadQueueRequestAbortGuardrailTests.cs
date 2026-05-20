@@ -21,6 +21,9 @@ public sealed class DownloadQueueRequestAbortGuardrailTests
         var source = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "DownloadIntentApiController.cs");
 
         Assert.Contains("EnqueueImmediatelyAsync(request, CancellationToken.None)", source, StringComparison.Ordinal);
+        Assert.Contains("StatusCodes.Status500InternalServerError", source, StringComparison.Ordinal);
+        Assert.Contains("download_enqueue_internal_error", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("throw;", source, StringComparison.Ordinal);
     }
 
     [Fact]

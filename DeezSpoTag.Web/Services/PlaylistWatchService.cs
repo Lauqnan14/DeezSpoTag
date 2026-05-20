@@ -1144,7 +1144,6 @@ public sealed class PlaylistWatchService
             force: forceMediaServerSync,
             cancellationToken);
 
-        _lastPlaylistMediaSyncUtc[syncKey] = DateTimeOffset.UtcNow;
         if (!result.Success)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -1157,6 +1156,8 @@ public sealed class PlaylistWatchService
             }
             return;
         }
+
+        _lastPlaylistMediaSyncUtc[syncKey] = DateTimeOffset.UtcNow;
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
@@ -2039,6 +2040,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var queuedCount = 0;
         var completedCount = 0;
         var failedCount = 0;
+        var deferred = false;
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2084,6 +2086,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             if (ShouldDeferWatchTrack(result))
             {
                 LogWatchTrackDeferred(options.SourceLabel, track.TrackId, result.Message);
+                deferred = true;
                 break;
             }
 
@@ -2106,7 +2109,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             }
         }
 
-        return new QueueWatchResult(queuedCount, completedCount, failedCount, Deferred: false);
+        return new QueueWatchResult(queuedCount, completedCount, failedCount, Deferred: deferred);
     }
 
     private async Task<WatchQueueCapacity?> TryResolveWatchQueueCapacityAsync(
@@ -2116,8 +2119,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
+        var capacity = await ResolveWatchQueueCapacityAsync(queueRepository, settings.WatchMaxTracksPerPlaylistCheck, cancellationToken);
         var unfinishedWatchlistCount = await queueRepository.GetUnfinishedWatchlistDownloadCountAsync(cancellationToken);
-        if (unfinishedWatchlistCount > 0)
+        if (unfinishedWatchlistCount > 0 && capacity.ActiveCount > 0)
         {
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -2130,7 +2134,14 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
-        var capacity = await ResolveWatchQueueCapacityAsync(queueRepository, settings.WatchMaxTracksPerPlaylistCheck, cancellationToken);
+        if (unfinishedWatchlistCount > 0 && capacity.ActiveCount <= 0 && _logger.IsEnabled(LogLevel.Warning))
+        {
+            _logger.LogWarning(
+                "{Source} watch queue found unfinished watchlist rows but no active downloads. Continuing queue flow to avoid stale watch deadlock. unfinished={UnfinishedWatchlistDownloads}",
+                options.SourceLabel,
+                unfinishedWatchlistCount);
+        }
+
         if (capacity.Remaining <= 0)
         {
             if (_logger.IsEnabled(LogLevel.Information))

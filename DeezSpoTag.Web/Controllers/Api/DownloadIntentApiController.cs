@@ -14,13 +14,16 @@ public sealed class DownloadIntentApiController : ControllerBase
 {
     private readonly DownloadIntentService _intentService;
     private readonly IDownloadIntentBackgroundQueue _backgroundQueue;
+    private readonly ILogger<DownloadIntentApiController> _logger;
 
     public DownloadIntentApiController(
         DownloadIntentService intentService,
-        IDownloadIntentBackgroundQueue backgroundQueue)
+        IDownloadIntentBackgroundQueue backgroundQueue,
+        ILogger<DownloadIntentApiController> logger)
     {
         _intentService = intentService;
         _backgroundQueue = backgroundQueue;
+        _logger = logger;
     }
 
     [HttpPost]
@@ -32,13 +35,34 @@ public sealed class DownloadIntentApiController : ControllerBase
             return validationResult;
         }
 
-        if (!request.ResolveImmediately)
+        try
         {
-            return Ok(EnqueueDeferred(request));
-        }
+            if (!request.ResolveImmediately)
+            {
+                return Ok(EnqueueDeferred(request));
+            }
 
-        var immediateResponse = await EnqueueImmediatelyAsync(request, CancellationToken.None);
-        return Ok(immediateResponse);
+            var immediateResponse = await EnqueueImmediatelyAsync(request, CancellationToken.None);
+            return Ok(immediateResponse);
+        }
+        catch (OperationCanceledException)
+        {
+            return StatusCode(StatusCodes.Status408RequestTimeout, new
+            {
+                success = false,
+                message = "Download request was canceled."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Download intent enqueue failed.");
+            return StatusCode(StatusCodes.Status500InternalServerError, new
+            {
+                success = false,
+                message = "Download enqueue failed due to an internal error.",
+                reasonCodes = new[] { "download_enqueue_internal_error" }
+            });
+        }
     }
 
     private BadRequestObjectResult? ValidateRequest(DownloadIntentBatchRequest? request)

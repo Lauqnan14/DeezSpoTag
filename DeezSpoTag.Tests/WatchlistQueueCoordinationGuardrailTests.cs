@@ -33,6 +33,25 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("\"failed\",\r\n                    cancellationToken);\r\n                failedCount++;\r\n                break;", watchSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PlaylistWatchQueue_DoesNotDeadlockOnStaleUnfinishedRowsWithoutActiveDownloads()
+    {
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+
+        Assert.Contains("unfinishedWatchlistCount > 0 && capacity.ActiveCount > 0", watchSource, StringComparison.Ordinal);
+        Assert.Contains("Continuing queue flow to avoid stale watch deadlock", watchSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatchQueue_SetsDeferredWhenTrackIsDeferredByDownloadGate()
+    {
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+
+        Assert.Contains("var deferred = false;", watchSource, StringComparison.Ordinal);
+        Assert.Contains("deferred = true;", watchSource, StringComparison.Ordinal);
+        Assert.Contains("new QueueWatchResult(queuedCount, completedCount, failedCount, Deferred: deferred)", watchSource, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }
