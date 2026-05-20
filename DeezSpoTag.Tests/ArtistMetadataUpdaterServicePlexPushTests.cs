@@ -23,6 +23,7 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
 {
+    private static readonly SemaphoreSlim DataRootEnvironmentGate = new(1, 1);
     private readonly List<string> _tempPaths = new();
 
     [Fact]
@@ -161,6 +162,7 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
     [Fact]
     public async Task PrepareVisualsAsync_DoesNotUseBackgroundSlotAsAvatarOrAvatarSlotAsBackground()
     {
+        await DataRootEnvironmentGate.WaitAsync();
         var tempRoot = CreateTempDirectory();
         var service = CreateServiceForVisualPreparation(tempRoot);
         var previousDataRoot = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
@@ -195,6 +197,7 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         finally
         {
             Environment.SetEnvironmentVariable("DEEZSPOTAG_DATA_DIR", previousDataRoot);
+            DataRootEnvironmentGate.Release();
         }
     }
 
