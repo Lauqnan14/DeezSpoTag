@@ -149,6 +149,33 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task GetUnfinishedWatchlistDownloadCountAsync_IgnoresTerminalFailedAndCanceledRows()
+    {
+        await using var context = await CreateContextAsync();
+        const string payloadJson = """
+            {"WatchlistOrigin":"playlist","WatchlistSource":"spotify","WatchlistPlaylistId":"playlist-1","WatchlistTrackId":"track-1"}
+            """;
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("watch-failed", "Artist", "Failed", 1) with
+            {
+                PayloadJson = payloadJson,
+                Status = "failed"
+            },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("watch-canceled", "Artist", "Canceled", 2) with
+            {
+                PayloadJson = payloadJson,
+                Status = "canceled"
+            },
+            CancellationToken.None);
+
+        var count = await context.QueueRepository.GetUnfinishedWatchlistDownloadCountAsync(CancellationToken.None);
+
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
     public async Task GetActivitiesTasksAsync_KeepsAllActiveAndLimitsTerminalRows()
     {
         await using var context = await CreateContextAsync();

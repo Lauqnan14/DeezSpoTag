@@ -350,9 +350,12 @@ AND (
     OR lower(COALESCE(json_extract(payload, '$.WatchlistPlaylistId'), json_extract(payload, '$.watchlistPlaylistId'), '')) <> ''
     OR lower(COALESCE(json_extract(payload, '$.WatchlistTrackId'), json_extract(payload, '$.watchlistTrackId'), '')) <> ''
 )
-AND NOT (
-    lower(status) IN ('completed', 'complete')
-    AND lower(COALESCE(move_status, '')) IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"')
+AND (
+    lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+    OR (
+        lower(status) IN ('completed', 'complete')
+        AND lower(COALESCE(move_status, '')) NOT IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"')
+    )
 );";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);

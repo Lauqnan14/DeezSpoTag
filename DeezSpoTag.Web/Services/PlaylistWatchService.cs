@@ -22,7 +22,7 @@ public sealed class PlaylistWatchService
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
 
     private readonly record struct AtmosQueueRequest(string SourceLabel, string TrackId, bool AfterPrimarySkip);
-    private readonly record struct QueueWatchResult(int QueuedCount, int CompletedCount, int FailedCount);
+    private readonly record struct QueueWatchResult(int QueuedCount, int CompletedCount, int FailedCount, bool Deferred);
 
     private readonly record struct QueueWatchTrackResult(int QueuedCount, bool Completed, bool Failed);
     private readonly record struct QueuedWatchIntentContext(
@@ -284,7 +284,7 @@ public sealed class PlaylistWatchService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Playlist watch reconciled {Source}:{SourceId}. sourceTracks={SourceTracks}, ignored={IgnoredTracks}, local={LocalTracks}, queued={QueuedTracks}, completed={CompletedTracks}, failed={FailedTracks}",
+                "Playlist watch reconciled {Source}:{SourceId}. sourceTracks={SourceTracks}, ignored={IgnoredTracks}, local={LocalTracks}, queued={QueuedTracks}, completed={CompletedTracks}, failed={FailedTracks}, deferred={Deferred}",
                 source,
                 sourceId,
                 candidates.Count,
@@ -292,12 +292,18 @@ public sealed class PlaylistWatchService
                 localCount,
                 queueResult.QueuedCount,
                 queueResult.CompletedCount,
-                queueResult.FailedCount);
+                queueResult.FailedCount,
+                queueResult.Deferred);
         }
 
+        var success = !queueResult.Deferred && queueResult.FailedCount == 0;
         return new PlaylistReconciliationResult(
-            queueResult.FailedCount == 0,
-            queueResult.FailedCount == 0 ? "Playlist reconciled." : "Playlist reconciled with queue failures.",
+            success,
+            queueResult.Deferred
+                ? "Playlist queue deferred."
+                : success
+                    ? "Playlist reconciled."
+                    : "Playlist reconciled with queue failures.",
             candidates.Count,
             ignoredCount,
             localCount,
@@ -1968,7 +1974,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var capacity = await TryResolveWatchQueueCapacityAsync(queueRepository, orchestrationService, options, cancellationToken);
         if (capacity is null)
         {
-            return default;
+            return new QueueWatchResult(0, 0, 0, Deferred: true);
         }
 
         var queueContext = new QueuedWatchIntentContext(intentService, options, normalizedDownloadVariantMode);
@@ -2042,7 +2048,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             }
         }
 
-        return new QueueWatchResult(queuedCount, completedCount, failedCount);
+        return new QueueWatchResult(queuedCount, completedCount, failedCount, Deferred: false);
     }
 
     private async Task<WatchQueueCapacity?> TryResolveWatchQueueCapacityAsync(
