@@ -15,6 +15,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("DataRoot Environment")]
 public sealed class CredentialProtectionTests : IDisposable
 {
     private readonly string _tempRoot;

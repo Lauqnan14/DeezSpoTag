@@ -21,6 +21,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
+[Collection("DataRoot Environment")]
 public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
 {
     private static readonly SemaphoreSlim DataRootEnvironmentGate = new(1, 1);
