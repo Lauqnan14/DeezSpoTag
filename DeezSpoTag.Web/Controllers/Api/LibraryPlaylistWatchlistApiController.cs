@@ -194,9 +194,16 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
+        var validFolderIds = await GetValidFolderIdsAsync(cancellationToken);
         var results = new List<object>(requests.Count);
         foreach (var request in requests)
         {
+            var validationError = ValidatePlaylistPreferenceRequest(request, validFolderIds);
+            if (validationError != null)
+            {
+                return BadRequest(validationError);
+            }
+
             var saved = await SaveSinglePreferenceAsync(request, cancellationToken);
             if (saved is null)
             {
@@ -222,19 +229,27 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, request.SourceId, cancellationToken);
         var normalizedArtwork = NormalizeArtworkPreference(
             request.ReuseSavedArtwork ?? existing?.ReuseSavedArtwork ?? false);
+        var routingRules = request.RoutingRules == null
+            ? existing?.RoutingRules
+            : NormalizeRoutingRules(request.RoutingRules);
+
         return await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
                 normalizedSource,
                 request.SourceId,
                 request.FolderId,
-                string.IsNullOrWhiteSpace(request.Service) ? null : request.Service.Trim(),
-                string.IsNullOrWhiteSpace(request.PreferredEngine) ? null : request.PreferredEngine.Trim().ToLowerInvariant(),
-                string.IsNullOrWhiteSpace(request.DownloadVariantMode) ? existing?.DownloadVariantMode : request.DownloadVariantMode.Trim().ToLowerInvariant(),
-                string.IsNullOrWhiteSpace(request.SyncMode) ? existing?.SyncMode : request.SyncMode.Trim().ToLowerInvariant(),
+                NormalizeIncomingText(request.Service),
+                NormalizePreferredEngine(request.PreferredEngine),
+                string.IsNullOrWhiteSpace(request.DownloadVariantMode)
+                    ? existing?.DownloadVariantMode
+                    : NormalizeDownloadVariantMode(request.DownloadVariantMode),
+                string.IsNullOrWhiteSpace(request.SyncMode)
+                    ? existing?.SyncMode
+                    : NormalizeSyncMode(request.SyncMode),
                 normalizedArtwork.UpdateArtwork,
                 normalizedArtwork.ReuseSavedArtwork,
-                request.RoutingRules ?? existing?.RoutingRules,
-                request.BlockRules ?? existing?.IgnoreRules,
+                routingRules,
+                NormalizeBlockRules(request.BlockRules ?? existing?.IgnoreRules),
                 request.AtmosFolderId),
             cancellationToken);
     }
@@ -547,9 +562,16 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        await UpsertWatchPreferenceRulesAsync(source, sourceId, rules, ignoreRules: null, cancellationToken);
+        var normalizedRules = NormalizeRoutingRules(rules);
+        var validFolderIds = await GetValidFolderIdsAsync(cancellationToken);
+        if (normalizedRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
+        {
+            return BadRequest("Routing destination folder was not found or is disabled.");
+        }
 
-        return Ok(new { saved = rules?.Count ?? 0 });
+        await UpsertWatchPreferenceRulesAsync(source, sourceId, normalizedRules, ignoreRules: null, cancellationToken);
+
+        return Ok(new { saved = normalizedRules?.Count ?? 0 });
     }
 
     [HttpGet("{source}/{sourceId}/ignore-rules")]
@@ -573,9 +595,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        await UpsertWatchPreferenceRulesAsync(source, sourceId, routingRules: null, rules, cancellationToken);
+        var normalizedRules = NormalizeBlockRules(rules);
+        await UpsertWatchPreferenceRulesAsync(source, sourceId, routingRules: null, normalizedRules, cancellationToken);
 
-        return Ok(new { saved = rules?.Count ?? 0 });
+        return Ok(new { saved = normalizedRules?.Count ?? 0 });
     }
 
     [HttpGet("{source}/{sourceId}/tracks")]
@@ -704,6 +727,154 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         // Keep exactly one option selected when reuse is not selected.
         return (true, false);
+    }
+
+    private async Task<HashSet<long>> GetValidFolderIdsAsync(CancellationToken cancellationToken)
+    {
+        var folders = await _repository.GetFoldersAsync(cancellationToken);
+        return folders
+            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Select(folder => folder.Id)
+            .ToHashSet();
+    }
+
+    private static string? ValidatePlaylistPreferenceRequest(
+        PlaylistWatchPreferenceRequest request,
+        HashSet<long> validFolderIds)
+    {
+        if (request is null)
+        {
+            return "Playlist preference request is required.";
+        }
+
+        if (request.FolderId is long folderId && !validFolderIds.Contains(folderId))
+        {
+            return "Destination folder was not found or is disabled.";
+        }
+
+        if (request.AtmosFolderId is long atmosFolderId && !validFolderIds.Contains(atmosFolderId))
+        {
+            return "Atmos destination folder was not found or is disabled.";
+        }
+
+        var routingRules = NormalizeRoutingRules(request.RoutingRules);
+        if (routingRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
+        {
+            return "Routing destination folder was not found or is disabled.";
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeIncomingText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? NormalizePreferredEngine(string? value)
+    {
+        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
+        return normalized switch
+        {
+            "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal" => normalized,
+            _ => null
+        };
+    }
+
+    private static string? NormalizeDownloadVariantMode(string? value)
+    {
+        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
+        return normalized switch
+        {
+            "dual_quality" or "atmos_only" => normalized,
+            "standard" => "standard",
+            _ => null
+        };
+    }
+
+    private static string? NormalizeSyncMode(string? value)
+    {
+        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
+        return normalized switch
+        {
+            "append" or "mirror" => normalized,
+            _ => null
+        };
+    }
+
+    private static IReadOnlyList<PlaylistTrackRoutingRule>? NormalizeRoutingRules(IReadOnlyList<PlaylistTrackRoutingRule>? rules)
+    {
+        if (rules == null || rules.Count == 0)
+        {
+            return null;
+        }
+
+        return rules
+            .Where(static rule => rule.DestinationFolderId > 0)
+            .Select(static (rule, index) =>
+            {
+                var field = NormalizeRoutingField(rule.ConditionField);
+                return rule with
+                {
+                    ConditionField = field,
+                    ConditionOperator = NormalizeRoutingOperator(field, rule.ConditionOperator),
+                    ConditionValue = rule.ConditionValue?.Trim() ?? string.Empty,
+                    Order = index
+                };
+            })
+            .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
+                && (string.Equals(rule.ConditionField, "explicit", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
+            .ToList();
+    }
+
+    private static IReadOnlyList<PlaylistTrackBlockRule>? NormalizeBlockRules(IReadOnlyList<PlaylistTrackBlockRule>? rules)
+    {
+        if (rules == null || rules.Count == 0)
+        {
+            return null;
+        }
+
+        return rules
+            .Select(static (rule, index) =>
+            {
+                var field = NormalizeRoutingField(rule.ConditionField);
+                return rule with
+                {
+                    ConditionField = field,
+                    ConditionOperator = NormalizeRoutingOperator(field, rule.ConditionOperator),
+                    ConditionValue = rule.ConditionValue?.Trim() ?? string.Empty,
+                    Order = index
+                };
+            })
+            .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
+                && (string.Equals(rule.ConditionField, "explicit", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
+            .ToList();
+    }
+
+    private static string NormalizeRoutingField(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "artist" or "title" or "album" or "genre" or "year" or "explicit" => normalized,
+            _ => string.Empty
+        };
+    }
+
+    private static string NormalizeRoutingOperator(string? field, string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant();
+        if (string.Equals(field, "explicit", StringComparison.OrdinalIgnoreCase))
+        {
+            return normalized == "is_false" ? "is_false" : "is_true";
+        }
+
+        if (string.Equals(field, "year", StringComparison.OrdinalIgnoreCase))
+        {
+            return normalized is "gte" or "lte" ? normalized : "equals";
+        }
+
+        return normalized is "equals" or "starts_with" ? normalized : "contains";
     }
 
     private static string NormalizePlaylistSource(string? source)

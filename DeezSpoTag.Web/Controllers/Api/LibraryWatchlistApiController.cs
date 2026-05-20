@@ -289,6 +289,11 @@ public class LibraryWatchlistApiController : ControllerBase
         [FromBody] ArtistWatchlistPreferenceRequest request,
         CancellationToken cancellationToken)
     {
+        if (request is null)
+        {
+            return BadRequest("Artist watchlist preference request is required.");
+        }
+
         if (!_repository.IsConfigured)
         {
             return DatabaseNotConfigured();

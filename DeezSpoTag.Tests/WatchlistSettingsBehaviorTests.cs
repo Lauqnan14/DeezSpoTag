@@ -169,6 +169,56 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("NormalizeRoutingRules", artistControllerSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PlaylistWatch_RespectsSnapshotToggleAndCandidateLimit()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+
+        Assert.Contains("WatchUseSnapshotIdChecking", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveWatchCandidateLimit(settings.WatchMaxTracksPerPlaylistCheck)", source, StringComparison.Ordinal);
+        Assert.Contains("FetchLivePlaylistTrackCandidatesAsync(source, sourceId, maxCandidates, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("FetchPlaylistPageAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("Math.Min(100, maxCandidates)", source, StringComparison.Ordinal);
+        Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistPreferenceApi_NormalizesAndValidatesIncomingSettings()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryPlaylistWatchlistApiController.cs"));
+
+        Assert.Contains("GetValidFolderIdsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ValidatePlaylistPreferenceRequest", source, StringComparison.Ordinal);
+        Assert.Contains("NormalizePreferredEngine", source, StringComparison.Ordinal);
+        Assert.Contains("NormalizeDownloadVariantMode", source, StringComparison.Ordinal);
+        Assert.Contains("NormalizeSyncMode", source, StringComparison.Ordinal);
+        Assert.Contains("NormalizeRoutingRules", source, StringComparison.Ordinal);
+        Assert.Contains("NormalizeBlockRules", source, StringComparison.Ordinal);
+        Assert.Contains("Routing destination folder was not found or is disabled.", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArtistPreferenceApi_RejectsNullRequestBody()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryWatchlistApiController.cs"));
+
+        Assert.Contains("if (request is null)", source, StringComparison.Ordinal);
+        Assert.Contains("Artist watchlist preference request is required.", source, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         _configScope.Dispose();

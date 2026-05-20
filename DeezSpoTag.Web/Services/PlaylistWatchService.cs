@@ -55,6 +55,7 @@ public sealed class PlaylistWatchService
     private const string DeezerLabel = "Deezer";
     private const string SpotifyHomeTrendingSourceId = "home-trending-songs";
     private const string SpotifyTrendingSongsSectionUri = "spotify:section:0JQ5DB5E8N831KzFzsBBQ2";
+    private const int MaxPlaylistCandidateFetchCount = 1000;
     private static readonly string[] JsonStringObjectPropertyNames = ["standard", "short", "text"];
     private static readonly TimeSpan PlaylistMediaSyncCooldown = TimeSpan.FromMinutes(2);
     private readonly LibraryRepository _libraryRepository;
@@ -200,10 +201,12 @@ public sealed class PlaylistWatchService
             return new PlaylistReconciliationResult(false, "Playlist source is not available.", 0, 0, 0, 0, 0, 0, null);
         }
 
+        var settings = _settingsService.LoadSettings();
+        var maxCandidates = ResolveWatchCandidateLimit(settings.WatchMaxTracksPerPlaylistCheck);
         var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
         var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
         var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
-        var candidates = await FetchLivePlaylistTrackCandidatesAsync(source, sourceId, cancellationToken);
+        var candidates = await FetchLivePlaylistTrackCandidatesAsync(source, sourceId, maxCandidates, cancellationToken);
         await TouchPlaylistWatchStateAsync(source, sourceId, candidates.Count, cancellationToken);
         if (candidates.Count == 0)
         {
@@ -375,13 +378,19 @@ public sealed class PlaylistWatchService
 
         if (!_libraryRepository.IsConfigured)
         {
-            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, cancellationToken);
+            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, MaxPlaylistCandidateFetchCount, cancellationToken);
         }
 
         var isMonitored = await _libraryRepository.IsPlaylistWatchlistedAsync(normalizedSource, normalizedSourceId, cancellationToken);
         if (!isMonitored)
         {
-            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, cancellationToken);
+            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, MaxPlaylistCandidateFetchCount, cancellationToken);
+        }
+
+        var settings = _settingsService.LoadSettings();
+        if (!settings.WatchUseSnapshotIdChecking)
+        {
+            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, MaxPlaylistCandidateFetchCount, cancellationToken);
         }
 
         var watchState = await _libraryRepository.GetPlaylistWatchStateAsync(normalizedSource, normalizedSourceId, cancellationToken);
@@ -390,7 +399,7 @@ public sealed class PlaylistWatchService
             && (string.Equals(normalizedSource, QobuzSource, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(normalizedSource, TidalSource, StringComparison.OrdinalIgnoreCase)))
         {
-            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, cancellationToken);
+            return await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, MaxPlaylistCandidateFetchCount, cancellationToken);
         }
 
         var cached = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, normalizedSourceId, cancellationToken);
@@ -409,7 +418,7 @@ public sealed class PlaylistWatchService
             }
         }
 
-        var freshCandidates = await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, cancellationToken);
+        var freshCandidates = await FetchLivePlaylistTrackCandidatesAsync(normalizedSource, normalizedSourceId, MaxPlaylistCandidateFetchCount, cancellationToken);
         await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
             normalizedSource,
             normalizedSourceId,
@@ -422,11 +431,12 @@ public sealed class PlaylistWatchService
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> FetchLivePlaylistTrackCandidatesAsync(
         string normalizedSource,
         string normalizedSourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
-        return normalizedSource switch
+        var candidates = normalizedSource switch
         {
-            SpotifySource => await GetSpotifyTrackCandidatesAsync(normalizedSourceId, cancellationToken),
+            SpotifySource => await GetSpotifyTrackCandidatesAsync(normalizedSourceId, maxCandidates, cancellationToken),
             DeezerSource => await GetDeezerTrackCandidatesAsync(normalizedSourceId, cancellationToken),
             SmartTracklistSource => await GetSmartTracklistTrackCandidatesAsync(normalizedSourceId, cancellationToken),
             AppleSource => await GetAppleTrackCandidatesAsync(normalizedSourceId, cancellationToken),
@@ -436,6 +446,9 @@ public sealed class PlaylistWatchService
             TidalSource => await GetTidalTrackCandidatesAsync(normalizedSourceId, cancellationToken),
             _ => Array.Empty<PlaylistTrackCandidate>()
         };
+        return candidates.Count <= maxCandidates
+            ? candidates
+            : candidates.Take(maxCandidates).ToList();
     }
 
     private static IReadOnlyList<PlaylistTrackCandidate>? TryDeserializePlaylistTrackCandidates(string candidatesJson)
@@ -463,8 +476,14 @@ public sealed class PlaylistWatchService
         return string.IsNullOrWhiteSpace(snapshotId) ? null : snapshotId.Trim();
     }
 
+    private static int ResolveWatchCandidateLimit(int configuredLimit)
+    {
+        return Math.Clamp(configuredLimit, 1, MaxPlaylistCandidateFetchCount);
+    }
+
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetSpotifyTrackCandidatesAsync(
         string sourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -472,7 +491,7 @@ public sealed class PlaylistWatchService
 
         if (IsSpotifyHomeTrendingSourceId(sourceId))
         {
-            await AddSpotifyHomeTrendingCandidatesAsync(candidates, seen, cancellationToken);
+            await AddSpotifyHomeTrendingCandidatesAsync(candidates, seen, maxCandidates, cancellationToken);
             return candidates;
         }
 
@@ -482,19 +501,20 @@ public sealed class PlaylistWatchService
             return candidates;
         }
 
-        await AddSpotifyPlaylistCandidatesAsync(candidates, seen, sourceId, cancellationToken);
+        await AddSpotifyPlaylistCandidatesAsync(candidates, seen, sourceId, maxCandidates, cancellationToken);
         return candidates;
     }
 
     private async Task AddSpotifyHomeTrendingCandidatesAsync(
         List<PlaylistTrackCandidate> candidates,
         HashSet<string> seen,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
         var tracks = await _spotifyPathfinderMetadataClient.FetchBrowseSectionTrackSummariesWithBlobAsync(
             SpotifyTrendingSongsSectionUri,
             0,
-            200,
+            maxCandidates,
             cancellationToken);
 
         foreach (var track in tracks)
@@ -556,13 +576,13 @@ public sealed class PlaylistWatchService
         List<PlaylistTrackCandidate> candidates,
         HashSet<string> seen,
         string sourceId,
+        int maxCandidates,
         CancellationToken cancellationToken)
     {
-        const int pageSize = 100;
-        const int hardCap = 1000;
+        var pageSize = Math.Min(100, maxCandidates);
         var offset = 0;
 
-        while (candidates.Count < hardCap)
+        while (candidates.Count < maxCandidates)
         {
             var page = await _spotifyMetadataService.FetchPlaylistPageAsync(
                 sourceId,
@@ -590,7 +610,7 @@ public sealed class PlaylistWatchService
                         track.DurationMs,
                         track.Explicit,
                         track.Genres));
-                if (candidates.Count >= hardCap)
+                if (candidates.Count >= maxCandidates)
                 {
                     break;
                 }
