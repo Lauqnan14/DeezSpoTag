@@ -795,6 +795,13 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
                 mappedResult = StatusCode(StatusCodes.Status500InternalServerError, "Spotify credentials generation failed due to an I/O error.");
                 return true;
             case InvalidOperationException invalidOperationException:
+                if (invalidOperationException is SpotifyBlobService.SpotifyBlobGenerationInProgressException)
+                {
+                    _logger.LogWarning(invalidOperationException, "Spotify credentials generation conflict for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
+                    mappedResult = Conflict(invalidOperationException.Message);
+                    return true;
+                }
+
                 _logger.LogWarning(invalidOperationException, "Spotify credentials generation failed for account {AccountName}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(accountName));
                 mappedResult = BadRequest(invalidOperationException.Message);
                 return true;

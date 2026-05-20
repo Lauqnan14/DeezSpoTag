@@ -12,7 +12,6 @@ using System.Linq;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Security;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Services.Download.Utils;
@@ -61,7 +60,6 @@ public class LyricsService
     private const string LrclibProvider = "lrclib";
     private const string MusixmatchProvider = "musixmatch";
     private const string ApplicationJson = "application/json";
-    private const string SpotifyWebPlayerProtectionPurpose = "DeezSpoTag.Spotify.WebPlayer";
     private const string LyricsClientName = "LyricsService";
     private const string UserAgentHeader = "User-Agent";
     private const string AuthorityHeader = "authority";
@@ -115,8 +113,7 @@ public class LyricsService
         AuthenticatedDeezerService authenticatedDeezerService,
         DeezSpoTag.Services.Apple.AppleLyricsService appleLyricsService,
         LrclibLyricsService lrclibLyricsService,
-        IServiceProvider serviceProvider,
-        IDataProtectionProvider dataProtectionProvider)
+        IServiceProvider serviceProvider)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -126,9 +123,7 @@ public class LyricsService
         _lrclibLyricsService = lrclibLyricsService;
         _songLinkResolver = serviceProvider.GetService<SongLinkResolver>();
         _deezerClient = serviceProvider.GetService<DeezerClient>();
-        _spotifyWebPlayerCredentialStore = new ProtectedCredentialFileStore(
-            dataProtectionProvider,
-            SpotifyWebPlayerProtectionPurpose);
+        _spotifyWebPlayerCredentialStore = serviceProvider.GetRequiredService<ProtectedCredentialFileStore>();
     }
 
     /// <summary>

@@ -4781,7 +4781,7 @@ public partial class AutoTagService
         try
         {
             var stored = await File.ReadAllTextAsync(cachePath);
-            if (_oneTaggerSpotifyTokenStore.IsProtectedText(stored))
+            if (ProtectedCredentialFileStore.IsProtectedText(stored))
             {
                 return;
             }

@@ -1059,6 +1059,7 @@ let connectedPlatformsRefreshOptions = null;
 const LOGIN_TAB_STORAGE_KEY = 'deezspotag-login-active-tab';
 let spotifyConfigRequested = false;
 let spotifyConfigLoadSequence = 0;
+let spotifyBlobGenerationInFlight = false;
 let deezerStatusRequested = false;
 let platformAuthStateRequested = false;
 let appleMusicBootstrapRequested = false;
@@ -2827,6 +2828,11 @@ async function savePlatformAuth(url, payload, statusElementId, isConnected) {
 }
 
 async function generateSpotifyBlob() {
+    if (spotifyBlobGenerationInFlight) {
+        showToast('Spotify credentials generation is already in progress.', 'warning');
+        return;
+    }
+
     const name = document.getElementById('spotifyAccountName').value.trim();
     const region = document.getElementById('spotifyAccountRegion').value.trim();
     if (!name) {
@@ -2834,7 +2840,17 @@ async function generateSpotifyBlob() {
         return;
     }
 
+    const generateButton = document.getElementById('spotifyGenerateBlobBtn');
+    const originalButtonText = generateButton?.dataset?.originalText || generateButton?.textContent || 'Login';
+
     try {
+        spotifyBlobGenerationInFlight = true;
+        if (generateButton) {
+            generateButton.dataset.originalText = originalButtonText;
+            generateButton.disabled = true;
+            generateButton.textContent = 'Generating...';
+        }
+
         const response = await fetch(`/api/spotify-credentials/accounts/${encodeURIComponent(name)}/generate`, {
             method: 'POST',
             credentials: 'same-origin',
@@ -2865,6 +2881,12 @@ async function generateSpotifyBlob() {
     } catch (error) {
         console.error('Spotify credentials generation error:', error);
         showToast('Network error generating Spotify credentials', 'error');
+    } finally {
+        spotifyBlobGenerationInFlight = false;
+        if (generateButton) {
+            generateButton.disabled = false;
+            generateButton.textContent = originalButtonText;
+        }
     }
 }
 

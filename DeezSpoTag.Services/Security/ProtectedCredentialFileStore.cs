@@ -70,7 +70,7 @@ public sealed class ProtectedCredentialFileStore
         await WriteTextAtomicallyAsync(path, envelope, cancellationToken);
     }
 
-    public bool IsProtectedText(string? stored)
+    public static bool IsProtectedText(string? stored)
         => TryReadEnvelope(stored, out _);
 
     public bool IsProtectedForPurpose(string? stored)

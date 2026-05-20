@@ -68,11 +68,19 @@ public sealed class SpotifyBlobService
     private readonly ILogger<SpotifyBlobService> _logger;
     private readonly ProtectedCredentialFileStore _webPlayerCredentialStore;
     private readonly ProtectedCredentialFileStore _librespotCredentialStore;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> BlobGenerationLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Token, DateTimeOffset ExpiresAt)> TokenCache = new();
+    public sealed class SpotifyBlobGenerationInProgressException : InvalidOperationException
+    {
+        public SpotifyBlobGenerationInProgressException(string accountName)
+            : base($"Spotify credentials generation already in progress for account '{accountName}'.")
+        {
+        }
+    }
 
     public SpotifyBlobService(
         IWebHostEnvironment environment,
@@ -124,6 +132,13 @@ public sealed class SpotifyBlobService
         bool removeExisting,
         CancellationToken cancellationToken)
     {
+        var lockKey = NormalizeAccountLockKey(blobDir, accountName);
+        var generationLock = BlobGenerationLocks.GetOrAdd(lockKey, static _ => new SemaphoreSlim(1, 1));
+        if (!await generationLock.WaitAsync(0, cancellationToken))
+        {
+            throw new SpotifyBlobGenerationInProgressException(accountName);
+        }
+
         var configRoot = GetConfigRoot();
         Directory.CreateDirectory(blobDir);
         if (removeExisting)
@@ -155,7 +170,9 @@ public sealed class SpotifyBlobService
             var startInfo = CreatePythonScriptStartInfo(
                 pythonExecutable,
                 helperPath,
+                authWorkingDir,
                 "--output", blobPath,
+                "--credentials-dir", authWorkingDir,
                 "--device-name", "DeezSpoTag",
                 "--timeout", timeoutSeconds.ToString());
 
@@ -166,7 +183,10 @@ public sealed class SpotifyBlobService
             var stderr = processOutput.StandardError;
             if (!string.IsNullOrWhiteSpace(stderr))
             {
-                _logger.LogWarning("Spotify credentials stderr: {Message}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderr));
+                foreach (var stderrLine in stderr.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    _logger.LogWarning("Spotify credentials stderr: {Message}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderrLine));
+                }
             }
 
             if (string.IsNullOrWhiteSpace(stdout))
@@ -209,6 +229,11 @@ public sealed class SpotifyBlobService
         finally
         {
             TryDeleteDirectory(authWorkingDir);
+            generationLock.Release();
+            if (generationLock.CurrentCount == 1)
+            {
+                BlobGenerationLocks.TryRemove(lockKey, out _);
+            }
         }
     }
 
@@ -1049,7 +1074,7 @@ public sealed class SpotifyBlobService
             return await _librespotCredentialStore.ReadTextAsync(blobPath, cancellationToken);
         }
 
-        if (_webPlayerCredentialStore.IsProtectedText(stored))
+        if (ProtectedCredentialFileStore.IsProtectedText(stored))
         {
             return null;
         }
@@ -1066,7 +1091,7 @@ public sealed class SpotifyBlobService
         }
 
         var stored = await File.ReadAllTextAsync(blobPath, cancellationToken);
-        if (_webPlayerCredentialStore.IsProtectedText(stored))
+        if (ProtectedCredentialFileStore.IsProtectedText(stored))
         {
             return;
         }
@@ -1203,6 +1228,7 @@ public sealed class SpotifyBlobService
                 var startInfo = CreatePythonScriptStartInfo(
                     pythonExecutable,
                     scriptPath,
+                    null,
                     ReplaceCredentialArgument(arguments, tempCredentialPath));
 
                 using var process = new Process { StartInfo = startInfo };
@@ -1447,11 +1473,12 @@ public sealed class SpotifyBlobService
     private static ProcessStartInfo CreatePythonScriptStartInfo(
         string pythonExecutable,
         string scriptPath,
+        string? workingDirectory,
         params string[] arguments)
     {
         var validatedPythonExecutable = EnsureSafeExecutablePath(pythonExecutable);
         var validatedScriptPath = EnsureSafeExecutablePath(scriptPath);
-        var resolvedWorkingDirectory = Path.GetDirectoryName(validatedScriptPath) ?? Environment.CurrentDirectory;
+        var resolvedWorkingDirectory = ResolveWorkingDirectory(workingDirectory, validatedScriptPath);
         var startInfo = new ProcessStartInfo
         {
             FileName = validatedPythonExecutable,
@@ -1470,6 +1497,18 @@ public sealed class SpotifyBlobService
 
         ApplyPythonCompatibilityEnvironment(startInfo);
         return startInfo;
+    }
+
+    private static string ResolveWorkingDirectory(string? preferredWorkingDirectory, string validatedScriptPath)
+    {
+        if (!string.IsNullOrWhiteSpace(preferredWorkingDirectory))
+        {
+            var fullPath = Path.GetFullPath(preferredWorkingDirectory);
+            Directory.CreateDirectory(fullPath);
+            return fullPath;
+        }
+
+        return Path.GetDirectoryName(validatedScriptPath) ?? Environment.CurrentDirectory;
     }
 
     private static string CreateAuthWorkingDirectory(string blobDir, string configRoot)
@@ -1641,6 +1680,7 @@ public sealed class SpotifyBlobService
         var startInfo = CreatePythonScriptStartInfo(
             pythonExecutable,
             scriptPath,
+            null,
             arguments);
         using var process = new Process { StartInfo = startInfo };
         process.Start();
@@ -1732,6 +1772,12 @@ public sealed class SpotifyBlobService
         [property: JsonPropertyName(ErrorField)] string? Error);
     private sealed record LibrespotPayloadResult(string? PayloadJson, string? Error);
     private sealed record ProcessOutputResult(int ExitCode, string StandardOutput, string StandardError);
+
+    private static string NormalizeAccountLockKey(string blobDir, string accountName)
+    {
+        var normalizedDir = Path.GetFullPath(blobDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return $"{normalizedDir}::{accountName.Trim()}";
+    }
     private enum SpotifyBlobKind
     {
         Unknown = 0,

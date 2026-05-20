@@ -5,7 +5,9 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Matching;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Utils;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
 using System.Net.Security;
@@ -53,6 +55,10 @@ public static class ServiceCollectionExtensions
 
         // Lyrics services
         services.AddSingleton<JwtTokenService>();
+        services.AddSingleton(sp =>
+            new ProtectedCredentialFileStore(
+                sp.GetRequiredService<IDataProtectionProvider>(),
+                "DeezSpoTag.Spotify.WebPlayer"));
         services.AddSingleton<LyricsService>();
         services.AddSingleton<LrclibLyricsService>();
         services.AddSingleton<AppleLyricsService>();

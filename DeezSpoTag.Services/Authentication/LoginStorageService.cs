@@ -198,7 +198,7 @@ public class LoginStorageService : ILoginStorageService
             }
 
             var content = await File.ReadAllTextAsync(_loginFilePath);
-            if (_credentialStore.IsProtectedText(content) || content.TrimStart().StartsWith('{'))
+            if (ProtectedCredentialFileStore.IsProtectedText(content) || content.TrimStart().StartsWith('{'))
             {
                 _logger.LogInformation("Login file is not corrupted");
                 return;

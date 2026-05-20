@@ -51,6 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Headless Spotify Connect credentials capture."
     )
     parser.add_argument("--output", required=True, help="Output credentials.json path")
+    parser.add_argument("--credentials-dir", default="", help="Writable directory for transient credentials.json")
     parser.add_argument("--device-name", default="DeezSpoTag", help="Spotify Connect device name")
     parser.add_argument("--timeout", type=int, default=90, help="Timeout in seconds")
     return parser
@@ -119,11 +120,18 @@ def main():
 
     output_path = pathlib.Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    credentials_dir = (
+        pathlib.Path(args.credentials_dir).expanduser().resolve()
+        if args.credentials_dir
+        else pathlib.Path.cwd().resolve()
+    )
+    credentials_dir.mkdir(parents=True, exist_ok=True)
     logging.info("Starting Spotify Zeroconf auth helper.")
     logging.info("Working directory: %s", pathlib.Path.cwd())
     logging.info("Output path: %s", output_path)
+    logging.info("Credentials dir: %s", credentials_dir)
 
-    credential_file = pathlib.Path.cwd() / "credentials.json"
+    credential_file = credentials_dir / "credentials.json"
     cleanup_error = _remove_existing_credentials_file(credential_file)
     if cleanup_error is not None:
         _write_result(False, error=cleanup_error)

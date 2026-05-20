@@ -1353,7 +1353,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private async Task<List<object>> EnsureTrendingSectionAsync(
         string cacheKey,
         string greeting,
-        IReadOnlyList<object> sections,
+        List<object> sections,
         CancellationToken cancellationToken)
     {
         if (ContainsSectionTitle(sections, TrendingSongsTitle))
@@ -2593,37 +2593,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return items;
     }
 
-    private static List<object> ParseBrowseSectionTrackItems(JsonDocument doc)
-    {
-        if (!doc.RootElement.TryGetProperty(DataKey, out var dataElement))
-        {
-            return new List<object>();
-        }
-
-        var items = new List<object>();
-
-        foreach (var sectionItems in EnumerateSectionItems(dataElement))
-        {
-            foreach (var item in sectionItems.EnumerateArray())
-            {
-                if (!TryGetContentData(item, out var contentData))
-                {
-                    continue;
-                }
-
-                var candidates = ExpandContentCandidates(contentData);
-                var trackItem = TryBuildBrowseSectionTrackItem(item, contentData, candidates);
-                if (trackItem is null)
-                {
-                    continue;
-                }
-                items.Add(trackItem);
-            }
-        }
-
-        return items;
-    }
-
     private static IEnumerable<JsonElement> EnumerateSectionItems(JsonElement element)
     {
         if (TryGetSectionItemsArray(element, out var items))
@@ -2683,45 +2652,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 ?? FindFirstImageUrl(contentData),
             type = PlaylistType,
             uri
-        };
-    }
-
-    private static object? TryBuildBrowseSectionTrackItem(
-        JsonElement item,
-        JsonElement contentData,
-        IEnumerable<JsonElement> candidates)
-    {
-        var uri = TryGetString(item, UriKey)
-                  ?? TryGetStringFromCandidates(candidates, UriKey)
-                  ?? TryGetStringAtFromCandidates(candidates, ProfileKey, UriKey)
-                  ?? TryGetStringAtFromCandidates(candidates, ProfileKey, DataKey, UriKey);
-        var (itemType, itemId) = TryParseSpotifyUri(uri);
-        if (!string.Equals(itemType, TrackType, StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(itemId))
-        {
-            return null;
-        }
-
-        var name = TryGetStringFromCandidates(candidates, NameKey)
-                   ?? TryGetStringFromCandidates(candidates, ProfileKey, NameKey)
-                   ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return null;
-        }
-
-        var metadata = BuildTrackMetadata(contentData, candidates);
-        return new
-        {
-            id = itemId,
-            uri = uri ?? $"spotify:track:{itemId}",
-            type = TrackType,
-            name,
-            artists = metadata.Artists,
-            description = default(string?),
-            coverUrl = metadata.CoverUrl,
-            albumId = metadata.AlbumId,
-            albumName = metadata.AlbumName,
-            durationMs = metadata.DurationMs
         };
     }
 
