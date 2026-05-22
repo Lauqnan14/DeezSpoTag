@@ -81,7 +81,8 @@ public class AutoTagJobsController : ControllerBase
             null,
             selectedProfileResult.Profile?.Id,
             selectedProfileResult.Profile?.Name,
-            request.RunIntent);
+            request.RunIntent,
+            selectedProfileResult.Profile?.FolderStructure);
         if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(job.Id))
         {

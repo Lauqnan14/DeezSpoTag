@@ -6,19 +6,6 @@ namespace DeezSpoTag.Web.Services;
 public partial class AutoTagService
 {
     private const string ShazamPlatformId = "shazam";
-    private static readonly string[] ManualShazamBootstrapTags =
-    {
-        "title",
-        AutoTagLiterals.ArtistTag,
-        "album",
-        "albumArt",
-        "duration",
-        "isrc",
-        "trackId",
-        "source",
-        "url",
-        AutoTagLiterals.ReleaseDateTag
-    };
 
     private enum EnrichmentRunMode
     {
@@ -30,7 +17,9 @@ public partial class AutoTagService
         List<string> RequestedTags,
         IReadOnlyList<string> Platforms,
         string? ExcludedPlatform,
-        bool ForceShazamFingerprint = false);
+        bool ForceShazamFingerprint = false,
+        bool OrganizeSidecarsIntoTemplateFolders = false,
+        bool MaterializeToTemplatePath = false);
 
     private bool TryBuildEnrichmentStages(
         JsonObject baseRoot,
@@ -76,59 +65,34 @@ public partial class AutoTagService
             return false;
         }
 
-        var shazamPlan = plan with
+        var enrichmentPlatforms = plan.Platforms
+            .Where(platform => !string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (enrichmentPlatforms.Count == 0)
         {
-            RequestedTags = plan.RequestedTags
-                .Concat(ManualShazamBootstrapTags)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList(),
-            Platforms = new[] { ShazamPlatformId },
+            enrichmentPlatforms.Add(ShazamPlatformId);
+        }
+
+        var manualPlan = plan with
+        {
+            Platforms = enrichmentPlatforms,
             ForceShazamFingerprint = true
         };
         if (!TryBuildEnrichmentStageFromPlan(
             baseRoot,
             platformCaps,
             context,
-            shazamPlan,
-            out var shazamStage,
+            manualPlan,
+            out var manualStage,
             out skipReason,
-            out var shazamStrippedKeys))
+            out var manualStrippedKeys))
         {
-            skipReason = $"manual enrichment Shazam bootstrap failed: {skipReason}";
+            skipReason = $"manual enrichment failed: {skipReason}";
             return false;
         }
 
-        strippedKeys.AddRange(shazamStrippedKeys);
-        stages.Add(shazamStage);
-
-        var remainingPlatforms = plan.Platforms
-            .Where(platform => !string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        if (remainingPlatforms.Count == 0)
-        {
-            skipReason = string.Empty;
-            return true;
-        }
-
-        var remainingPlan = plan with
-        {
-            Platforms = remainingPlatforms
-        };
-        if (!TryBuildEnrichmentStageFromPlan(
-            baseRoot,
-            platformCaps,
-            context,
-            remainingPlan,
-            out var remainingStage,
-            out skipReason,
-            out var remainingStrippedKeys))
-        {
-            skipReason = $"manual enrichment remaining platforms failed: {skipReason}";
-            return false;
-        }
-
-        strippedKeys.AddRange(remainingStrippedKeys);
-        stages.Add(remainingStage);
+        strippedKeys.AddRange(manualStrippedKeys);
+        stages.Add(manualStage);
         skipReason = string.Empty;
         return true;
     }
@@ -159,7 +123,9 @@ public partial class AutoTagService
         return new EnrichmentStagePlan(
             RequestedTags: ResolveEnrichmentRequestedTags(baseRoot),
             Platforms: eligiblePlatforms.ToList(),
-            ExcludedPlatform: null);
+            ExcludedPlatform: null,
+            OrganizeSidecarsIntoTemplateFolders: true,
+            MaterializeToTemplatePath: true);
     }
 
     private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan(
@@ -219,6 +185,14 @@ public partial class AutoTagService
         if (plan.ForceShazamFingerprint)
         {
             ConfigureShazamFingerprintBootstrap(stageRoot);
+        }
+        if (plan.OrganizeSidecarsIntoTemplateFolders)
+        {
+            stageRoot["organizeSidecarsIntoTemplateFolders"] = true;
+        }
+        if (plan.MaterializeToTemplatePath)
+        {
+            stageRoot["materializeToTemplatePath"] = true;
         }
 
         strippedKeys = ApplyStageSchema(stageRoot, EnrichmentStageAllowedKeys);

@@ -321,4 +321,33 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
 
         Assert.Equal(expected, result);
     }
+
+    [Fact]
+    public void Runner_HonorsForcedShazamEvenWhenShazamIsNotTaggingPlatform()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("if (config.ForceShazam || (hasShazamConfig && shazamConfig.ForceMatch))", source, StringComparison.Ordinal);
+        Assert.Contains("if (context.Plan.ForceShazamMatch", source, StringComparison.Ordinal);
+        Assert.Contains("return new ShazamEnrichmentResult(false, \"shazam unavailable\", true)", source, StringComparison.Ordinal);
+    }
+
+    private static string ReadSource(params string[] pathParts)
+        => File.ReadAllText(Path.Join([ResolveRepoRoot(), .. pathParts]));
+
+    private static string ResolveRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current != null)
+        {
+            if (File.Exists(Path.Join(current.FullName, "Directory.Build.props")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new InvalidOperationException("Repository root could not be resolved.");
+    }
 }

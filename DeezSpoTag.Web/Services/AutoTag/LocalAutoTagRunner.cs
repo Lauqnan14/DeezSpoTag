@@ -606,7 +606,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (shazamResult.IsFatal)
         {
-            if (ShouldShortCircuitOnShazamIdentifyFailure(context.Platform, context.Plan.PlatformCount))
+            if (context.Plan.ForceShazamMatch
+                || ShouldShortCircuitOnShazamIdentifyFailure(context.Platform, context.Plan.PlatformCount))
             {
                 EmitSkippedStatus(
                     context,
@@ -726,7 +727,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
+            var originalFile = context.File;
             PreserveRicherArtistCreditsFromSource(info, match.Track, context.Plan.Settings);
+            context.File = MaterializeFileToTemplatePath(
+                context.File,
+                match.Track,
+                context.Plan.Config,
+                context.Plan.Settings,
+                context.Plan.TagSettings);
+            context.Plan.Files[context.FileIndex] = context.File;
             await EnsureArtworkFallbackAsync(context, info, match.Track);
             await PopulatePlatformLyricsAsync(
                 context.Platform,
@@ -749,6 +758,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Plan.Settings,
                 context.Platform,
                 context.Token);
+            context.Plan.TaggedByAnyPlatform.Add(originalFile);
             context.Plan.TaggedByAnyPlatform.Add(context.File);
             EmitTaggedStatus(context, match.Accuracy, usedShazamForStatus);
         }
@@ -1222,6 +1232,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void ApplyRuntimeConfigOverrides(DeezSpoTagSettings settings, AutoTagRunnerConfig config)
     {
+        ApplyFolderStructureOverrides(settings, config.FolderStructure);
+
         if (config.SaveArtwork.HasValue)
         {
             settings.SaveArtwork = config.SaveArtwork.Value;
@@ -1261,6 +1273,41 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (config.JpegImageQuality.HasValue)
         {
             settings.JpegImageQuality = Math.Clamp(config.JpegImageQuality.Value, 1, 100);
+        }
+    }
+
+    private static void ApplyFolderStructureOverrides(DeezSpoTagSettings settings, FolderStructureSettings? folderStructure)
+    {
+        if (folderStructure == null)
+        {
+            return;
+        }
+
+        settings.CreateArtistFolder = folderStructure.CreateArtistFolder;
+        settings.CreateAlbumFolder = folderStructure.CreateAlbumFolder;
+        settings.CreateCDFolder = folderStructure.CreateCDFolder;
+        settings.CreateStructurePlaylist = folderStructure.CreateStructurePlaylist;
+        settings.CreateSingleFolder = folderStructure.CreateSingleFolder;
+        settings.CreatePlaylistFolder = folderStructure.CreatePlaylistFolder;
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.ArtistNameTemplate))
+        {
+            settings.ArtistNameTemplate = folderStructure.ArtistNameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.AlbumNameTemplate))
+        {
+            settings.AlbumNameTemplate = folderStructure.AlbumNameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.PlaylistNameTemplate))
+        {
+            settings.PlaylistNameTemplate = folderStructure.PlaylistNameTemplate.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderStructure.IllegalCharacterReplacer))
+        {
+            settings.IllegalCharacterReplacer = folderStructure.IllegalCharacterReplacer.Trim();
         }
     }
 
@@ -2547,7 +2594,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (!IsShazamRecognitionAvailable())
         {
-            // Degrade gracefully when Shazam is unavailable so other platforms can still tag.
+            if (forceShazamMatch)
+            {
+                return new ShazamEnrichmentResult(false, "shazam unavailable", true);
+            }
+
+            // Degrade gracefully when optional Shazam fallback is unavailable.
             return new ShazamEnrichmentResult(false, "shazam unavailable", false);
         }
 
@@ -2633,16 +2685,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static (bool EnableFallback, bool ForceMatch) ResolveShazamEnrichmentBehavior(AutoTagRunnerConfig config)
     {
         var shazamEnabled = IsShazamPlatformEnabled(config);
-        if (!shazamEnabled)
-        {
-            return (false, false);
-        }
-
         var shazamConfig = LoadConfig(config.Custom, ShazamPlatform, new ShazamMatchConfig());
 
         var hasShazamConfig = config.Custom != null
             && config.Custom.TryGetPropertyValue(ShazamPlatform, out var shazamNode)
             && shazamNode is JsonObject;
+
+        if (config.ForceShazam || (hasShazamConfig && shazamConfig.ForceMatch))
+        {
+            return (true, true);
+        }
+
+        if (!shazamEnabled)
+        {
+            return (false, false);
+        }
 
         if (hasShazamConfig)
         {
@@ -2729,12 +2786,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             WriteLrc = raw.WriteLrc,
             CapitalizeGenres = raw.CapitalizeGenres,
             TracknameTemplate = raw.TracknameTemplate,
+            FolderStructure = raw.FolderStructure,
             SaveArtwork = effectiveSaveArtwork,
             DlAlbumcoverForPlaylist = raw.DlAlbumcoverForPlaylist,
             SaveArtworkArtist = raw.SaveArtworkArtist,
             CoverImageTemplate = raw.CoverImageTemplate,
             ArtistImageTemplate = raw.ArtistImageTemplate,
             LocalArtworkFormat = raw.LocalArtworkFormat,
+            MaterializeToTemplatePath = raw.MaterializeToTemplatePath,
             OrganizeSidecarsIntoTemplateFolders = raw.OrganizeSidecarsIntoTemplateFolders,
             EmbedMaxQualityCover = raw.EmbedMaxQualityCover,
             JpegImageQuality = raw.JpegImageQuality,
@@ -4784,6 +4843,105 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return pathInfo;
     }
 
+    private static string MaterializeFileToTemplatePath(
+        string sourcePath,
+        AutoTagTrack track,
+        AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings,
+        TagSettings tagSettings)
+    {
+        if (config.MaterializeToTemplatePath != true)
+        {
+            return sourcePath;
+        }
+
+        var separator = ResolveArtistSeparator(config, sourcePath);
+        var coreTrack = BuildCoreTrack(track, separator, tagSettings.SingleAlbumArtist, settings);
+        var pathInfo = BuildTemplatePathInfo(coreTrack, settings);
+        if (string.IsNullOrWhiteSpace(pathInfo.FilePath)
+            || string.IsNullOrWhiteSpace(pathInfo.Filename))
+        {
+            return sourcePath;
+        }
+
+        var destinationPath = Path.Join(pathInfo.FilePath, $"{pathInfo.Filename}{Path.GetExtension(sourcePath)}");
+        if (PathsReferToSameFile(sourcePath, destinationPath))
+        {
+            return sourcePath;
+        }
+
+        Directory.CreateDirectory(pathInfo.FilePath);
+        destinationPath = ResolveTemplateMaterializationDestination(sourcePath, destinationPath, settings);
+        FileMoveFallbackHelper.MoveWithFallback(sourcePath, destinationPath);
+        MoveAdjacentSidecars(sourcePath, destinationPath);
+        return destinationPath;
+    }
+
+    private static string ResolveTemplateMaterializationDestination(
+        string sourcePath,
+        string destinationPath,
+        DeezSpoTagSettings settings)
+    {
+        if (!IOFile.Exists(destinationPath) || ShouldOverwriteMaterializedFile(settings))
+        {
+            return destinationPath;
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath) ?? "";
+        var filename = Path.GetFileNameWithoutExtension(destinationPath);
+        var extension = Path.GetExtension(destinationPath);
+        for (var index = 1; index < 10_000; index++)
+        {
+            var candidate = Path.Join(directory, $"{filename} ({index}){extension}");
+            if (!IOFile.Exists(candidate) && !PathsReferToSameFile(sourcePath, candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new IOException($"Could not allocate a unique manual enrichment destination for {destinationPath}.");
+    }
+
+    private static bool ShouldOverwriteMaterializedFile(DeezSpoTagSettings settings)
+        => string.Equals(settings.OverwriteFile, "y", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(settings.OverwriteFile, "overwrite", StringComparison.OrdinalIgnoreCase);
+
+    private static void MoveAdjacentSidecars(string sourcePath, string destinationPath)
+    {
+        foreach (var extension in new[] { ".lrc", TtmlExtension, ".txt" })
+        {
+            var sourceSidecar = Path.ChangeExtension(sourcePath, extension);
+            if (!IOFile.Exists(sourceSidecar))
+            {
+                continue;
+            }
+
+            var destinationSidecar = Path.ChangeExtension(destinationPath, extension);
+            if (PathsReferToSameFile(sourceSidecar, destinationSidecar) || IOFile.Exists(destinationSidecar))
+            {
+                continue;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationSidecar) ?? "");
+            FileMoveFallbackHelper.MoveWithFallback(sourceSidecar, destinationSidecar);
+        }
+    }
+
+    private static bool PathsReferToSameFile(string left, string right)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(left),
+                Path.GetFullPath(right),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     private static bool ShouldWriteArtworkSidecar(AutoTagRunnerConfig config)
         => config.SaveArtwork ?? false;
 
@@ -4846,7 +5004,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             && (context.AllowsSyncedType || context.AllowsUnsyncedType)
             && sidecarLrcLines.Count > 0)
         {
-            var lrcPath = Path.ChangeExtension(context.FilePath, ".lrc");
+            var lrcPath = BuildLyricsSidecarPath(context, ".lrc");
             if (!IOFile.Exists(lrcPath))
             {
                 await IOFile.WriteAllLinesAsync(lrcPath, sidecarLrcLines, token);
@@ -4860,7 +5018,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             && context.AllowsTtmlByFormat
             && !string.IsNullOrWhiteSpace(sidecarTtml))
         {
-            var ttmlPath = Path.ChangeExtension(context.FilePath, TtmlExtension);
+            var ttmlPath = BuildLyricsSidecarPath(context, TtmlExtension);
             if (!IOFile.Exists(ttmlPath))
             {
                 await IOFile.WriteAllTextAsync(ttmlPath, sidecarTtml, token);
@@ -4869,6 +5027,22 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return new LyricsSidecarWriteResult(wroteLrcSidecar, wroteTtmlSidecar);
+    }
+
+    private static string BuildLyricsSidecarPath(TagWriteExecutionContext context, string extension)
+    {
+        if (context.Config.OrganizeSidecarsIntoTemplateFolders == true)
+        {
+            var pathInfo = BuildTemplatePathInfo(context.CoreTrack, context.Settings);
+            if (!string.IsNullOrWhiteSpace(pathInfo.FilePath)
+                && !string.IsNullOrWhiteSpace(pathInfo.Filename))
+            {
+                Directory.CreateDirectory(pathInfo.FilePath);
+                return Path.Join(pathInfo.FilePath, $"{pathInfo.Filename}{extension}");
+            }
+        }
+
+        return Path.ChangeExtension(context.FilePath, extension);
     }
 
     private void CleanupUpgradedTxtSidecar(TagWriteExecutionContext context, LyricsSidecarWriteResult sidecarWriteResult)
@@ -7852,7 +8026,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required string Platform { get; init; }
         public required int PlatformIndex { get; init; }
         public required int FileIndex { get; init; }
-        public required string File { get; init; }
+        public required string File { get; set; }
         public required double Progress { get; init; }
         public required Action<TaggingStatusWrap> StatusCallback { get; init; }
         public required Action<string> LogCallback { get; init; }
@@ -7927,12 +8101,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool WriteLrc { get; set; } = true;
         public bool CapitalizeGenres { get; set; }
         public string? TracknameTemplate { get; set; }
+        public FolderStructureSettings? FolderStructure { get; set; }
         public bool? SaveArtwork { get; set; }
         public bool? DlAlbumcoverForPlaylist { get; set; }
         public bool? SaveArtworkArtist { get; set; }
         public string? CoverImageTemplate { get; set; }
         public string? ArtistImageTemplate { get; set; }
         public string? LocalArtworkFormat { get; set; }
+        public bool? MaterializeToTemplatePath { get; set; }
         public bool? OrganizeSidecarsIntoTemplateFolders { get; set; }
         public bool? EmbedMaxQualityCover { get; set; }
         public int? JpegImageQuality { get; set; }

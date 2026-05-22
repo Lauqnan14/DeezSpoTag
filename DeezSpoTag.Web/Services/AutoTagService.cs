@@ -560,7 +560,8 @@ public partial class AutoTagService
         TechnicalTagSettings? technicalOverride = null,
         string? profileId = null,
         string? profileName = null,
-        string? runIntent = null)
+        string? runIntent = null,
+        FolderStructureSettings? folderStructureOverride = null)
     {
         var normalizedPath = NormalizePathForJob(path);
         var normalizedTrigger = NormalizeRunTrigger(trigger);
@@ -652,7 +653,12 @@ public partial class AutoTagService
         runtimeConfigJson = await InjectPlatformDefaultsAsync(runtimeConfigJson);
         runtimeConfigJson = await InjectPlatformAuthAsync(runtimeConfigJson);
         runtimeConfigJson = InjectRunTrigger(runtimeConfigJson, normalizedTrigger);
-        runtimeConfigJson = InjectTechnicalSettings(runtimeConfigJson, technicalOverride, job.ProfileId, job.ProfileName);
+        runtimeConfigJson = InjectProfileRuntimeSettings(
+            runtimeConfigJson,
+            technicalOverride,
+            folderStructureOverride,
+            job.ProfileId,
+            job.ProfileName);
         var persistedConfigJson = RedactSensitiveConfigJson(runtimeConfigJson);
         var seededSpotifyTokenCachePath = await TrySeedSpotifyTokenCacheAsync();
         var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
@@ -2939,6 +2945,8 @@ public partial class AutoTagService
             "jpegImageQuality",
             "runTrigger",
             "technical",
+            "folderStructure",
+            "materializeToTemplatePath",
             "profileId",
             "profileName",
             "threads"
@@ -4573,13 +4581,17 @@ public partial class AutoTagService
         }
     }
 
-    private string InjectTechnicalSettings(
+    private string InjectProfileRuntimeSettings(
         string configJson,
         TechnicalTagSettings? technical,
+        FolderStructureSettings? folderStructure,
         string? profileId,
         string? profileName)
     {
-        if (technical == null && string.IsNullOrWhiteSpace(profileId) && string.IsNullOrWhiteSpace(profileName))
+        if (technical == null
+            && folderStructure == null
+            && string.IsNullOrWhiteSpace(profileId)
+            && string.IsNullOrWhiteSpace(profileName))
         {
             return configJson;
         }
@@ -4601,6 +4613,11 @@ public partial class AutoTagService
                 root["technical"] = JsonSerializer.SerializeToNode(technical, _jsonOptions);
             }
 
+            if (folderStructure != null)
+            {
+                root["folderStructure"] = JsonSerializer.SerializeToNode(folderStructure, _jsonOptions);
+            }
+
             if (!string.IsNullOrWhiteSpace(profileId))
             {
                 root["profileId"] = profileId.Trim();
@@ -4619,7 +4636,7 @@ public partial class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to inject profile technical settings into AutoTag config.");
+            _logger.LogDebug(ex, "Failed to inject profile runtime settings into AutoTag config.");
             return configJson;
         }
     }
