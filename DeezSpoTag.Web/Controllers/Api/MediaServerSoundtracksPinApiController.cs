@@ -16,19 +16,25 @@ public sealed class MediaServerSoundtracksPinApiController : ControllerBase
     private const int LibraryPinHashBytes = 32;
     private const int LibraryPinPbkdf2Iterations = 120_000;
     private readonly UserPreferencesStore _userPreferencesStore;
+    private readonly MediaServerLibraryPinUnlockService _unlockService;
 
-    public MediaServerSoundtracksPinApiController(UserPreferencesStore userPreferencesStore)
+    public MediaServerSoundtracksPinApiController(
+        UserPreferencesStore userPreferencesStore,
+        MediaServerLibraryPinUnlockService unlockService)
     {
         _userPreferencesStore = userPreferencesStore;
+        _unlockService = unlockService;
     }
 
     [HttpGet("status")]
     public async Task<IActionResult> GetLibraryPinStatus()
     {
         var prefs = await _userPreferencesStore.LoadAsync();
+        var configured = IsLibraryPinConfigured(prefs);
         return Ok(new MediaServerLibraryPinStatusDto
         {
-            Configured = IsLibraryPinConfigured(prefs)
+            Configured = configured,
+            Unlocked = configured && _unlockService.IsUnlocked(User)
         });
     }
 
@@ -65,6 +71,7 @@ public sealed class MediaServerSoundtracksPinApiController : ControllerBase
             prefs.MediaServerLibraryPinSalt = Convert.ToBase64String(salt);
             prefs.MediaServerLibraryPinHash = Convert.ToBase64String(hash);
             await _userPreferencesStore.SaveAsync(prefs);
+            _unlockService.Unlock(User);
             return Ok(new MediaServerLibraryPinUnlockResultDto
             {
                 Unlocked = true,
@@ -77,10 +84,23 @@ public sealed class MediaServerSoundtracksPinApiController : ControllerBase
             return Unauthorized(new { error = "Invalid PIN." });
         }
 
+        _unlockService.Unlock(User);
         return Ok(new MediaServerLibraryPinUnlockResultDto
         {
             Unlocked = true,
             Created = false
+        });
+    }
+
+    [HttpPost("lock")]
+    public async Task<IActionResult> LockLibraries()
+    {
+        _unlockService.Lock(User);
+        var prefs = await _userPreferencesStore.LoadAsync();
+        return Ok(new MediaServerLibraryPinStatusDto
+        {
+            Configured = IsLibraryPinConfigured(prefs),
+            Unlocked = false
         });
     }
 
@@ -126,9 +146,11 @@ public sealed class MediaServerSoundtracksPinApiController : ControllerBase
         prefs.MediaServerLibraryPinSalt = Convert.ToBase64String(salt);
         prefs.MediaServerLibraryPinHash = Convert.ToBase64String(hash);
         await _userPreferencesStore.SaveAsync(prefs);
+        _unlockService.Lock(User);
         return Ok(new MediaServerLibraryPinStatusDto
         {
-            Configured = true
+            Configured = true,
+            Unlocked = false
         });
     }
 
@@ -144,9 +166,11 @@ public sealed class MediaServerSoundtracksPinApiController : ControllerBase
         var prefs = await _userPreferencesStore.LoadAsync();
         if (!IsLibraryPinConfigured(prefs))
         {
+            _unlockService.Lock(User);
             return Ok(new MediaServerLibraryPinStatusDto
             {
-                Configured = false
+                Configured = false,
+                Unlocked = false
             });
         }
 
@@ -158,9 +182,11 @@ public sealed class MediaServerSoundtracksPinApiController : ControllerBase
         prefs.MediaServerLibraryPinSalt = null;
         prefs.MediaServerLibraryPinHash = null;
         await _userPreferencesStore.SaveAsync(prefs);
+        _unlockService.Lock(User);
         return Ok(new MediaServerLibraryPinStatusDto
         {
-            Configured = false
+            Configured = false,
+            Unlocked = false
         });
     }
 

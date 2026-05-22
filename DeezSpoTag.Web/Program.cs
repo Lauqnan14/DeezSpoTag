@@ -500,6 +500,7 @@ public partial class Program
             options.Filters.Add(new Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryTokenAttribute());
         });
         services.AddRazorPages();
+        services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryPinUnlockService>();
         services.AddHttpClient();
         services.AddAntiforgery(options =>
         {

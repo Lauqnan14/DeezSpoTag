@@ -126,11 +126,14 @@ public sealed partial class MediaServerSoundtrackService
         _logger = logger;
     }
 
-    public async Task<MediaServerSoundtrackConfigurationDto> GetConfigurationAsync(bool refreshDiscovery, CancellationToken cancellationToken)
+    public async Task<MediaServerSoundtrackConfigurationDto> GetConfigurationAsync(
+        bool refreshDiscovery,
+        bool includeHiddenLibraries,
+        CancellationToken cancellationToken)
     {
         if (refreshDiscovery)
         {
-            await RefreshDiscoveredLibrariesAsync(cancellationToken);
+            await RefreshDiscoveredLibrariesAsync(includeHiddenLibraries, cancellationToken);
         }
 
         var auth = await _platformAuthService.LoadAsync();
@@ -141,20 +144,35 @@ public sealed partial class MediaServerSoundtrackService
             return BuildConfigurationDto(
                 settings,
                 auth,
-                new List<MediaServerLibraryDescriptor>());
+                new List<MediaServerLibraryDescriptor>(),
+                includeHiddenLibraries);
         }
 
-        return BuildConfigurationDto(settings, auth, await DiscoverLibrariesAsync(auth, cancellationToken));
+        return BuildConfigurationDto(
+            settings,
+            auth,
+            await DiscoverLibrariesAsync(auth, cancellationToken),
+            includeHiddenLibraries);
     }
 
     public async Task<MediaServerSoundtrackConfigurationDto> SaveConfigurationAsync(
         MediaServerSoundtrackConfigurationUpdateRequest request,
+        bool includeHiddenLibraries,
         CancellationToken cancellationToken)
     {
         request ??= new MediaServerSoundtrackConfigurationUpdateRequest();
         await _store.UpdateAsync(settings => ApplyConfigurationUpdates(settings, request), cancellationToken);
 
-        return await GetConfigurationAsync(refreshDiscovery: false, cancellationToken);
+        return await GetConfigurationAsync(
+            refreshDiscovery: false,
+            includeHiddenLibraries,
+            cancellationToken);
+    }
+
+    public bool HasHiddenLibraryMutation(MediaServerSoundtrackConfigurationUpdateRequest? request)
+    {
+        return request?.Servers.Any(static server =>
+            server?.Libraries.Any(static library => library?.Ignored.HasValue == true) == true) == true;
     }
 
     private static bool ApplyConfigurationUpdates(
@@ -258,7 +276,9 @@ public sealed partial class MediaServerSoundtrackService
         return true;
     }
 
-    public async Task<MediaServerSoundtrackConfigurationDto> RefreshDiscoveredLibrariesAsync(CancellationToken cancellationToken)
+    public async Task<MediaServerSoundtrackConfigurationDto> RefreshDiscoveredLibrariesAsync(
+        bool includeHiddenLibraries,
+        CancellationToken cancellationToken)
     {
         var auth = await _platformAuthService.LoadAsync();
         var discovered = await DiscoverLibrariesAsync(auth, cancellationToken);
@@ -266,7 +286,7 @@ public sealed partial class MediaServerSoundtrackService
 
         await _store.UpdateAsync(settings => MergeDiscoveredLibraries(settings, discovered, now), cancellationToken);
         var reloaded = await _store.LoadAsync(cancellationToken);
-        return BuildConfigurationDto(reloaded, auth, discovered);
+        return BuildConfigurationDto(reloaded, auth, discovered, includeHiddenLibraries);
     }
 
     public async Task<MediaServerSoundtrackItemsResponseDto> GetItemsAsync(
@@ -789,7 +809,7 @@ public sealed partial class MediaServerSoundtrackService
 
         if (ShouldRefreshDiscovery())
         {
-            await RefreshDiscoveredLibrariesAsync(cancellationToken);
+            await RefreshDiscoveredLibrariesAsync(includeHiddenLibraries: true, cancellationToken);
             _lastDiscoveryRefreshUtc = DateTimeOffset.UtcNow;
 
             auth = await _platformAuthService.LoadAsync();
@@ -1711,11 +1731,12 @@ public sealed partial class MediaServerSoundtrackService
     private static MediaServerSoundtrackConfigurationDto BuildConfigurationDto(
         MediaServerSoundtrackSettings settings,
         PlatformAuthState auth,
-        IReadOnlyList<MediaServerLibraryDescriptor> discovered)
+        IReadOnlyList<MediaServerLibraryDescriptor> discovered,
+        bool includeHiddenLibraries)
     {
         var discoveredLookup = BuildDiscoveredLookup(discovered);
         var servers = GetSupportedServerTypes()
-            .Select(serverType => BuildServerConfigurationDto(serverType, settings, auth, discoveredLookup))
+            .Select(serverType => BuildServerConfigurationDto(serverType, settings, auth, discoveredLookup, includeHiddenLibraries))
             .ToList();
 
         return new MediaServerSoundtrackConfigurationDto
@@ -1752,7 +1773,8 @@ public sealed partial class MediaServerSoundtrackService
         string serverType,
         MediaServerSoundtrackSettings settings,
         PlatformAuthState auth,
-        Dictionary<string, Dictionary<string, MediaServerLibraryDescriptor>> discoveredLookup)
+        Dictionary<string, Dictionary<string, MediaServerLibraryDescriptor>> discoveredLookup,
+        bool includeHiddenLibraries)
     {
         var serverSettings = settings.Servers.TryGetValue(serverType, out var found)
             ? found
@@ -1760,7 +1782,11 @@ public sealed partial class MediaServerSoundtrackService
         var discoveredById = discoveredLookup.TryGetValue(serverType, out var lookup)
             ? lookup
             : new Dictionary<string, MediaServerLibraryDescriptor>(StringComparer.OrdinalIgnoreCase);
-        var libraries = BuildServerLibraryDtos(serverSettings, discoveredById);
+        var allLibraries = BuildServerLibraryDtos(serverSettings, discoveredById);
+        var hiddenLibraryCount = allLibraries.Count(static library => library.Ignored);
+        var libraries = includeHiddenLibraries
+            ? allLibraries
+            : allLibraries.Where(static library => !library.Ignored).ToList();
 
         return new MediaServerSoundtrackServerDto
         {
@@ -1768,6 +1794,7 @@ public sealed partial class MediaServerSoundtrackService
             DisplayName = GetServerDisplayName(serverType),
             Connected = IsServerConnected(serverType, auth),
             AutoIncludeNewLibraries = serverSettings.AutoIncludeNewLibraries,
+            HiddenLibraryCount = includeHiddenLibraries ? 0 : hiddenLibraryCount,
             Libraries = libraries
         };
     }

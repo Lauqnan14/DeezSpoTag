@@ -15,21 +15,27 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
     private readonly MediaServerSoundtrackService _service;
     private readonly PlatformAuthService _platformAuthService;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly MediaServerLibraryPinUnlockService _pinUnlockService;
 
     public MediaServerSoundtracksApiController(
         MediaServerSoundtrackService service,
         PlatformAuthService platformAuthService,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        MediaServerLibraryPinUnlockService pinUnlockService)
     {
         _service = service;
         _platformAuthService = platformAuthService;
         _httpClientFactory = httpClientFactory;
+        _pinUnlockService = pinUnlockService;
     }
 
     [HttpGet("configuration")]
     public async Task<IActionResult> GetConfiguration([FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
     {
-        var configuration = await _service.GetConfigurationAsync(refresh, cancellationToken);
+        var configuration = await _service.GetConfigurationAsync(
+            refreshDiscovery: false,
+            includeHiddenLibraries: _pinUnlockService.IsUnlocked(User),
+            cancellationToken);
         return Ok(configuration);
     }
 
@@ -38,14 +44,22 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
         [FromBody] MediaServerSoundtrackConfigurationUpdateRequest request,
         CancellationToken cancellationToken)
     {
-        var configuration = await _service.SaveConfigurationAsync(request, cancellationToken);
+        var includeHiddenLibraries = _pinUnlockService.IsUnlocked(User);
+        if (!includeHiddenLibraries && _service.HasHiddenLibraryMutation(request))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "Unlock hidden libraries before changing hidden library settings." });
+        }
+
+        var configuration = await _service.SaveConfigurationAsync(request, includeHiddenLibraries, cancellationToken);
         return Ok(configuration);
     }
 
     [HttpPost("sync")]
     public async Task<IActionResult> SyncLibraries(CancellationToken cancellationToken)
     {
-        var configuration = await _service.RefreshDiscoveredLibrariesAsync(cancellationToken);
+        var configuration = await _service.RefreshDiscoveredLibrariesAsync(
+            includeHiddenLibraries: _pinUnlockService.IsUnlocked(User),
+            cancellationToken);
         _service.TriggerPersistentMediaCacheSync(fullRefresh: true);
         return Ok(configuration);
     }

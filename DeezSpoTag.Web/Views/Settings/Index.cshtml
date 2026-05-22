@@ -1357,9 +1357,10 @@ let settingsSaveQueuedToast = false;
 let mediaServerLibraryConfig = null;
 let mediaServerLibraryAdvancedUnlocked = false;
 let mediaServerLibraryPinConfigured = false;
+let mediaServerLibraryPinStateAvailable = null;
 let mediaServerLibraryAutoSaveTimer = 0;
 let mediaServerLibraryAutoSaveInFlight = false;
-const SERVER_LIBRARY_LEGACY_PIN_STORAGE_KEY = 'deezspotag-server-library-pin';
+let mediaServerLibraryAutoSavePending = false;
 const APPLE_NOTIFICATION_MODE_KEY = 'apple-download-notification-mode';
 const DOWNLOAD_SOURCE_SETTING_KEY = 'deezspotag-download-source-updated';
 const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
@@ -2272,21 +2273,6 @@ function normalizeMediaServerLibraryPin(value) {
     return String(value || '').trim();
 }
 
-function getLegacyMediaServerLibraryPin() {
-    try {
-        return normalizeMediaServerLibraryPin(localStorage.getItem(SERVER_LIBRARY_LEGACY_PIN_STORAGE_KEY));
-    } catch {
-        return '';
-    }
-}
-
-function clearLegacyMediaServerLibraryPin() {
-    try {
-        localStorage.removeItem(SERVER_LIBRARY_LEGACY_PIN_STORAGE_KEY);
-    } catch {
-    }
-}
-
 async function readMediaServerLibraryPinApiError(response, fallback) {
     if (!response) {
         return fallback;
@@ -2367,7 +2353,23 @@ async function requestMediaServerLibraryPinReset(currentPin) {
     return payload?.configured === true;
 }
 
+async function requestMediaServerLibraryPinLock() {
+    const response = await fetch('/api/media-server/soundtracks/pin/lock', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin'
+    });
+
+    if (!response.ok) {
+        throw new Error(await readMediaServerLibraryPinApiError(response, `HTTP ${response.status}: ${response.statusText}`));
+    }
+}
+
 async function loadMediaServerLibraryPinState() {
+    setMediaServerLibraryPinStatus('Checking PIN state...');
+    const wasUnlocked = mediaServerLibraryAdvancedUnlocked === true;
     try {
         const response = await fetch('/api/media-server/soundtracks/pin/status', {
             credentials: 'same-origin'
@@ -2379,21 +2381,17 @@ async function loadMediaServerLibraryPinState() {
 
         const payload = await response.json();
         mediaServerLibraryPinConfigured = payload?.configured === true;
-
-        if (!mediaServerLibraryPinConfigured) {
-            const legacyPin = getLegacyMediaServerLibraryPin();
-            if (legacyPin) {
-                const migrated = await requestMediaServerLibraryPinUnlock(legacyPin, legacyPin);
-                if (migrated.unlocked) {
-                    mediaServerLibraryPinConfigured = true;
-                    clearLegacyMediaServerLibraryPin();
-                }
-            }
+        mediaServerLibraryAdvancedUnlocked = mediaServerLibraryPinConfigured && payload?.unlocked === true;
+        mediaServerLibraryPinStateAvailable = true;
+        if (mediaServerLibraryAdvancedUnlocked && !wasUnlocked) {
+            await loadMediaServerLibraryConfiguration(false);
         }
     } catch (error) {
         console.error('Failed to load media server PIN state.', error);
-        mediaServerLibraryPinConfigured = normalizeMediaServerLibraryPin(getLegacyMediaServerLibraryPin()).length > 0;
-        setMediaServerLibraryPinStatus('PIN state sync failed. Falling back to local browser PIN state.', true);
+        mediaServerLibraryPinConfigured = false;
+        mediaServerLibraryAdvancedUnlocked = false;
+        mediaServerLibraryPinStateAvailable = false;
+        setMediaServerLibraryPinStatus('PIN state unavailable. Hidden libraries cannot be managed until status loads.', true);
     } finally {
         updateMediaServerLibraryPinControls();
     }
@@ -2460,6 +2458,29 @@ function updateMediaServerLibraryPinControls() {
         return;
     }
 
+    if (mediaServerLibraryPinStateAvailable !== true) {
+        pinInput.disabled = true;
+        pinInput.hidden = false;
+        pinInput.value = '';
+        pinInput.placeholder = mediaServerLibraryPinStateAvailable === false ? 'PIN state unavailable' : 'Checking PIN state';
+        pinConfirmInput.disabled = true;
+        pinConfirmInput.value = '';
+        pinConfirmInput.hidden = true;
+        unlockButton.hidden = false;
+        unlockButton.disabled = true;
+        lockButton.hidden = true;
+        changeButton.hidden = true;
+        resetButton.hidden = true;
+        setMediaServerLibraryUnlockButtonLabel('Unlock');
+        if (mediaServerLibraryPinStateAvailable === false) {
+            setMediaServerLibraryPinStatus('PIN state unavailable. Hidden libraries cannot be managed until status loads.', true);
+        } else {
+            setMediaServerLibraryPinStatus('Checking PIN state...');
+        }
+        return;
+    }
+
+    unlockButton.disabled = false;
     if (mediaServerLibraryAdvancedUnlocked) {
         pinInput.disabled = true;
         pinInput.hidden = true;
@@ -2558,10 +2579,10 @@ function bindMediaServerLibraryPinActions() {
             }
 
             mediaServerLibraryPinConfigured = true;
-            clearLegacyMediaServerLibraryPin();
             pinInput.value = '';
             pinConfirmInput.value = '';
             setMediaServerLibraryAdvancedUnlocked(true);
+            await loadMediaServerLibraryConfiguration(false);
             if (result.created) {
                 setMediaServerLibraryPinStatus('PIN created. Hidden libraries are now unlocked.');
             } else {
@@ -2574,8 +2595,17 @@ function bindMediaServerLibraryPinActions() {
         }
     });
 
-    lockButton.addEventListener('click', () => {
-        setMediaServerLibraryAdvancedUnlocked(false);
+    lockButton.addEventListener('click', async () => {
+        lockButton.disabled = true;
+        try {
+            await requestMediaServerLibraryPinLock();
+            setMediaServerLibraryAdvancedUnlocked(false);
+            await loadMediaServerLibraryConfiguration(false);
+        } catch (error) {
+            setMediaServerLibraryPinStatus(error?.message || 'Failed to lock hidden libraries.', true);
+        } finally {
+            lockButton.disabled = false;
+        }
     });
 
     changeButton.addEventListener('click', async () => {
@@ -2606,10 +2636,10 @@ function bindMediaServerLibraryPinActions() {
         try {
             await requestMediaServerLibraryPinChange(currentPin, newPin, confirmationPin);
             mediaServerLibraryPinConfigured = true;
-            clearLegacyMediaServerLibraryPin();
             pinInput.value = '';
             pinConfirmInput.value = '';
-            updateMediaServerLibraryPinControls();
+            setMediaServerLibraryAdvancedUnlocked(false);
+            await loadMediaServerLibraryConfiguration(false);
             setMediaServerLibraryPinStatus('PIN changed successfully.');
         } catch (error) {
             setMediaServerLibraryPinStatus(error?.message || 'Failed to change PIN.', true);
@@ -2638,10 +2668,10 @@ function bindMediaServerLibraryPinActions() {
         try {
             const configured = await requestMediaServerLibraryPinReset(currentPin);
             mediaServerLibraryPinConfigured = configured === true;
-            clearLegacyMediaServerLibraryPin();
             pinInput.value = '';
             pinConfirmInput.value = '';
             setMediaServerLibraryAdvancedUnlocked(false);
+            await loadMediaServerLibraryConfiguration(false);
             setMediaServerLibraryPinStatus('PIN reset. Hidden libraries are now locked.', false);
         } catch (error) {
             setMediaServerLibraryPinStatus(error?.message || 'Failed to reset PIN.', true);
@@ -2708,8 +2738,10 @@ function renderMediaServerLibraryConfiguration(configuration) {
 
         const visibleLibraries = mediaServerLibraryAdvancedUnlocked
             ? sortedLibraries
-            : sortedLibraries.filter(library => !(library?.ignored === true || library?.enabled === false));
-        const hiddenCount = sortedLibraries.length - visibleLibraries.length;
+            : sortedLibraries.filter(library => library?.ignored !== true);
+        const hiddenCount = mediaServerLibraryAdvancedUnlocked
+            ? sortedLibraries.filter(library => library?.ignored === true).length
+            : Math.max(Number(server?.hiddenLibraryCount || 0), sortedLibraries.length - visibleLibraries.length);
 
         const libraryRows = visibleLibraries.length === 0
             ? `<tr><td colspan="${mediaServerLibraryAdvancedUnlocked ? 5 : 4}" class="server-library-empty">${
@@ -2725,7 +2757,7 @@ function renderMediaServerLibraryConfiguration(configuration) {
                 const category = getMediaServerCategoryLabel(categoryKey);
                 const libraryConnected = library?.connected === true;
                 const include = library?.enabled !== false && library?.ignored !== true;
-                const hidden = library?.ignored === true || library?.enabled === false;
+                const hidden = library?.ignored === true;
                 const includeToggleId = `server-include-${serverIdToken}-${libraryIdToken}`;
                 const hideToggleId = `server-hide-${serverIdToken}-${libraryIdToken}`;
                 return `<tr data-library-row="${escapeHtml(libraryId)}">
@@ -2802,10 +2834,20 @@ async function loadMediaServerLibraryConfiguration(refresh = false) {
 
     setMediaServerLibraryStatus(refresh ? 'Refreshing server libraries...' : 'Loading server libraries...');
     try {
-        const endpoint = refresh
-            ? '/api/media-server/soundtracks/configuration?refresh=true'
-            : '/api/media-server/soundtracks/configuration';
-        const response = await fetch(endpoint, { credentials: 'same-origin' });
+        if (refresh) {
+            const refreshResponse = await fetch('/api/media-server/soundtracks/sync', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                credentials: 'same-origin'
+            });
+            if (!refreshResponse.ok) {
+                throw new Error(`HTTP ${refreshResponse.status}: ${refreshResponse.statusText}`);
+            }
+        }
+
+        const response = await fetch('/api/media-server/soundtracks/configuration', { credentials: 'same-origin' });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
@@ -2847,12 +2889,15 @@ function collectMediaServerLibraryConfigurationUpdateRequest() {
             const includeInput = row.querySelector('[data-library-include]');
             const hideInput = row.querySelector('[data-library-hide]');
             const include = includeInput?.checked === true;
-            const hidden = hideInput?.checked === true;
-            libraries.push({
+            const library = {
                 libraryId,
-                enabled: include,
-                ignored: hidden || !include
-            });
+                enabled: include
+            };
+            if (mediaServerLibraryAdvancedUnlocked) {
+                library.ignored = hideInput?.checked === true;
+            }
+
+            libraries.push(library);
         });
 
         servers.push({
@@ -2894,18 +2939,25 @@ function queueMediaServerLibraryAutoSave() {
 
     mediaServerLibraryAutoSaveTimer = window.setTimeout(async () => {
         if (mediaServerLibraryAutoSaveInFlight) {
+            mediaServerLibraryAutoSavePending = true;
             return;
         }
 
         mediaServerLibraryAutoSaveInFlight = true;
         try {
-            setMediaServerLibraryStatus('Saving server libraries...');
-            await saveMediaServerLibraryConfiguration();
+            do {
+                mediaServerLibraryAutoSavePending = false;
+                setMediaServerLibraryStatus('Saving server libraries...');
+                await saveMediaServerLibraryConfiguration();
+            } while (mediaServerLibraryAutoSavePending);
         } catch (error) {
             console.error('Failed to auto-save media server library configuration.', error);
             setMediaServerLibraryStatus(error?.message || 'Failed to save server libraries.', true);
         } finally {
             mediaServerLibraryAutoSaveInFlight = false;
+            if (mediaServerLibraryAutoSavePending) {
+                queueMediaServerLibraryAutoSave();
+            }
         }
     }, 450);
 }

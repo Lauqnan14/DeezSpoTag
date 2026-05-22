@@ -49,6 +49,8 @@ public sealed class MediaServerSoundtrackServerDto
 
     public bool AutoIncludeNewLibraries { get; set; } = true;
 
+    public int HiddenLibraryCount { get; set; }
+
     public List<MediaServerSoundtrackLibraryDto> Libraries { get; set; } = new();
 }
 
@@ -106,6 +108,8 @@ public sealed class MediaServerSoundtrackConfigurationUpdateRequest
 public sealed class MediaServerLibraryPinStatusDto
 {
     public bool Configured { get; set; }
+
+    public bool Unlocked { get; set; }
 }
 
 public sealed class MediaServerLibraryPinUnlockRequest
