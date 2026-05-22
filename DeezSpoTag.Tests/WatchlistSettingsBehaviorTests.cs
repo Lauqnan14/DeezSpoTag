@@ -170,14 +170,16 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void PlaylistWatch_RespectsSnapshotToggleAndCandidateLimit()
+    public void PlaylistWatch_RefreshesFullSnapshotAndUsesSnapshotCache()
     {
         var repoRoot = ResolveRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
 
         Assert.Contains("WatchUseSnapshotIdChecking", source, StringComparison.Ordinal);
-        Assert.Contains("ResolveWatchCandidateLimit(settings.WatchMaxTracksPerPlaylistCheck)", source, StringComparison.Ordinal);
-        Assert.Contains("FetchLivePlaylistTrackCandidatesAsync(source, sourceId, maxCandidates, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("var maxCandidates = MaxPlaylistCandidateFetchCount;", source, StringComparison.Ordinal);
+        Assert.Contains("FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlaylistWatchlistMetadataAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RemovePlaylistWatchTracksNotInAsync", source, StringComparison.Ordinal);
         Assert.Contains("FetchPlaylistPageAsync(", source, StringComparison.Ordinal);
         Assert.Contains("Math.Min(100, maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);

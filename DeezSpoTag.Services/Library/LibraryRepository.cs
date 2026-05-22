@@ -6211,6 +6211,84 @@ VALUES (@source, @sourceId, @trackSourceId, @isrc, 'queued');";
             cancellationToken);
     }
 
+    public async Task<int> RemovePlaylistWatchTracksNotInAsync(
+        string source,
+        string sourceId,
+        IReadOnlyCollection<string> currentTrackSourceIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return 0;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        if (currentTrackSourceIds.Count == 0)
+        {
+            const string deleteAllSql = @"
+DELETE FROM playlist_watch_track
+WHERE source = @source AND source_id = @sourceId;";
+            await using var deleteAllCommand = new SqliteCommand(deleteAllSql, connection, transaction);
+            deleteAllCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            deleteAllCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            var deletedAll = await deleteAllCommand.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return deletedAll;
+        }
+
+        const string createTempSql = @"
+CREATE TEMP TABLE IF NOT EXISTS temp_current_playlist_watch_track (
+    track_source_id TEXT NOT NULL PRIMARY KEY
+);";
+        await using (var createTempCommand = new SqliteCommand(createTempSql, connection, transaction))
+        {
+            await createTempCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string clearTempSql = "DELETE FROM temp_current_playlist_watch_track;";
+        await using (var clearTempCommand = new SqliteCommand(clearTempSql, connection, transaction))
+        {
+            await clearTempCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string insertTempSql = @"
+INSERT OR IGNORE INTO temp_current_playlist_watch_track (track_source_id)
+VALUES (@trackSourceId);";
+        await using (var insertTempCommand = new SqliteCommand(insertTempSql, connection, transaction))
+        {
+            var trackParam = insertTempCommand.Parameters.Add("trackSourceId", SqliteType.Text);
+            foreach (var trackSourceId in currentTrackSourceIds)
+            {
+                if (string.IsNullOrWhiteSpace(trackSourceId))
+                {
+                    continue;
+                }
+
+                trackParam.Value = trackSourceId.Trim();
+                await insertTempCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        const string deleteStaleSql = @"
+DELETE FROM playlist_watch_track
+WHERE source = @source
+  AND source_id = @sourceId
+  AND NOT EXISTS (
+      SELECT 1
+      FROM temp_current_playlist_watch_track current_track
+      WHERE current_track.track_source_id = playlist_watch_track.track_source_id
+  );";
+        await using var deleteStaleCommand = new SqliteCommand(deleteStaleSql, connection, transaction);
+        deleteStaleCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+        deleteStaleCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        var deleted = await deleteStaleCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return deleted;
+    }
+
     public async Task<bool> UpdatePlaylistWatchTrackStatusAsync(
         string source,
         string sourceId,

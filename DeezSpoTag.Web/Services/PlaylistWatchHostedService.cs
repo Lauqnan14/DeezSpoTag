@@ -45,6 +45,13 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     {
     }
 
+    public PlaylistWatchHostedService(
+        IServiceProvider serviceProvider,
+        ILogger<PlaylistWatchHostedService> logger)
+        : this(serviceProvider, new ConfigurationBuilder().Build(), logger)
+    {
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "Watchlist"))
