@@ -183,6 +183,31 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("FetchPlaylistPageAsync(", source, StringComparison.Ordinal);
         Assert.Contains("Math.Min(100, maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);
+        Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
+        Assert.Contains("HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson)", source, StringComparison.Ordinal);
+        Assert.Contains("forceMediaServerSync || sourceChanged || queueResult.QueuedCount > 0 || queueResult.CompletedCount > 0", source, StringComparison.Ordinal);
+        Assert.Contains("ShouldKeepSharedQueueClaimPending(result)", source, StringComparison.Ordinal);
+        Assert.Contains("UpsertPlaylistWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("duplicate_shared_track_linked", source, StringComparison.Ordinal);
+        Assert.Contains("metadata_refreshed", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("source_unchanged", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("pre_sync_run", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryNotifyDuplicateWatchClaimAsync", source, StringComparison.Ordinal);
+        Assert.Contains("media_sync_completed", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistSync_AppliesCurrentArtworkAccordingToPreference()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
+        var postDownloadSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
+
+        Assert.Contains("preference?.ReuseSavedArtwork == true", syncSource, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlaylistPosterFromUrlAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("UpdateItemPrimaryImageFromUrlAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("watcher.ReconcilePlaylistAsync(", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]

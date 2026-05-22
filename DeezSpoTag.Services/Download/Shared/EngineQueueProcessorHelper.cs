@@ -404,7 +404,8 @@ internal static class EngineQueueProcessorHelper
             workContext.Payload,
             "completed",
             workContext.Deps.ServiceProvider,
-            workContext.ItemToken);
+            workContext.ItemToken,
+            workContext.Item.QueueUuid);
         var completedEngine = string.IsNullOrWhiteSpace(workContext.Payload.Engine)
             ? workContext.EngineName
             : workContext.Payload.Engine;

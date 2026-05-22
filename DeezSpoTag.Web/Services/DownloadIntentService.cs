@@ -97,6 +97,7 @@ public sealed class DownloadIntentService
         int? RequestedQualityRank,
         bool UseAtmosStereoDual,
         List<string> Queued,
+        List<string> RelatedQueueUuids,
         List<string> SkipReasonCodes,
         List<string> SkipReasons,
         SongLinkResult? Availability,
@@ -144,6 +145,7 @@ public sealed class DownloadIntentService
         SongLinkResult? Availability,
         bool PreferIsrcOnly,
         List<string> Queued,
+        List<string> RelatedQueueUuids,
         List<string> SkipReasonCodes,
         List<string> SkipReasons,
         (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) FallbackInfo,
@@ -388,6 +390,7 @@ public sealed class DownloadIntentService
             cancellationToken);
         var durationSeconds = intent.DurationMs > 0 ? (int)Math.Round(intent.DurationMs / 1000d) : 0;
         var queued = new List<string>();
+        var relatedQueueUuids = new List<string>();
         var skipReasonCodes = new List<string>();
         var skipReasons = new List<string>();
         var primaryFallback = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
@@ -444,6 +447,7 @@ public sealed class DownloadIntentService
             availability,
             preferIsrcOnly,
             queued,
+            relatedQueueUuids,
             skipReasonCodes,
             skipReasons,
             primaryFallback,
@@ -476,6 +480,7 @@ public sealed class DownloadIntentService
             Success = queued.Count > 0,
             Engine = engine,
             Queued = queued,
+            RelatedQueueUuids = relatedQueueUuids,
             Skipped = skipped,
             Message = message,
             SkipReasonCodes = skipReasonCodes,
@@ -979,6 +984,7 @@ public sealed class DownloadIntentService
             request.RequestedQualityRank,
             request.UseAtmosStereoDual,
             request.Queued,
+            request.RelatedQueueUuids,
             request.SkipReasonCodes,
             request.SkipReasons,
             request.Availability,
@@ -1222,7 +1228,7 @@ public sealed class DownloadIntentService
             return new EngineEnqueueOutcome(null, 0);
         }
 
-        RecordSkipReason(request.SkipReasonCodes, request.SkipReasons, enqueueDecision);
+        RecordSkipReason(request.SkipReasonCodes, request.SkipReasons, request.RelatedQueueUuids, enqueueDecision);
         if (request.UseAtmosStereoDual
             && !isVideo
             && !IsAtmosQuality(request.SelectedQuality)
@@ -5802,7 +5808,7 @@ public sealed class DownloadIntentService
             if (!context.AllowQualityUpgrade || !context.QueueQualityUpgradeRequested)
             {
                 return new QueueDuplicateResolution(
-                    EnqueueItemDecision.Fail("queue_recently_downloaded", BuildCooldownMessage(context.Settings.RedownloadCooldownMinutes)),
+                    EnqueueItemDecision.Fail("queue_recently_downloaded", BuildCooldownMessage(context.Settings.RedownloadCooldownMinutes), existing.QueueUuid),
                     false);
             }
 
@@ -5812,7 +5818,8 @@ public sealed class DownloadIntentService
                 return new QueueDuplicateResolution(
                     EnqueueItemDecision.Fail(
                         "queue_quality_not_higher",
-                        $"Skipped: queue already has this track at same or higher quality (status={status})."),
+                        $"Skipped: queue already has this track at same or higher quality (status={status}).",
+                        existing.QueueUuid),
                     false);
             }
 
@@ -5836,7 +5843,8 @@ public sealed class DownloadIntentService
         return new QueueDuplicateResolution(
             EnqueueItemDecision.Fail(
                 "queue_duplicate",
-                $"Skipped: matching track is already in queue (status={status})."),
+                $"Skipped: matching track is already in queue (status={status}).",
+                existing.QueueUuid),
             false);
     }
 
@@ -5855,7 +5863,8 @@ public sealed class DownloadIntentService
             return new QueueDuplicateResolution(
                 EnqueueItemDecision.Fail(
                     "queue_quality_not_higher",
-                    $"Skipped: queue already has this track at same or higher quality (status={status})."),
+                    $"Skipped: queue already has this track at same or higher quality (status={status}).",
+                    existing.QueueUuid),
                 false);
         }
 
@@ -5869,7 +5878,8 @@ public sealed class DownloadIntentService
             return new QueueDuplicateResolution(
                 EnqueueItemDecision.Fail(
                     "queue_upgrade_in_progress",
-                    "Skipped: matching track is currently downloading. Cancel it first to upgrade quality."),
+                    "Skipped: matching track is currently downloading. Cancel it first to upgrade quality.",
+                    existing.QueueUuid),
                 false);
         }
 
@@ -6071,7 +6081,7 @@ public sealed class DownloadIntentService
         }
         else
         {
-            RecordSkipReason(context.SkipReasonCodes, context.SkipReasons, enqueueDecision);
+            RecordSkipReason(context.SkipReasonCodes, context.SkipReasons, context.RelatedQueueUuids, enqueueDecision);
         }
 
         if (context.UseAtmosStereoDual
@@ -6137,6 +6147,7 @@ public sealed class DownloadIntentService
     private static void RecordSkipReason(
         List<string> reasonCodes,
         List<string> reasons,
+        List<string>? relatedQueueUuids,
         EnqueueItemDecision decision)
     {
         if (!string.IsNullOrWhiteSpace(decision.ReasonCode))
@@ -6147,6 +6158,11 @@ public sealed class DownloadIntentService
         if (!string.IsNullOrWhiteSpace(decision.Message))
         {
             reasons.Add(decision.Message);
+        }
+
+        if (relatedQueueUuids != null && !string.IsNullOrWhiteSpace(decision.QueueUuid))
+        {
+            relatedQueueUuids.Add(decision.QueueUuid);
         }
     }
 
@@ -6200,6 +6216,9 @@ public sealed class DownloadIntentService
 
         public static EnqueueItemDecision Fail(string reasonCode, string message) =>
             new(false, null, reasonCode ?? string.Empty, message ?? string.Empty);
+
+        public static EnqueueItemDecision Fail(string reasonCode, string message, string? queueUuid) =>
+            new(false, string.IsNullOrWhiteSpace(queueUuid) ? null : queueUuid, reasonCode ?? string.Empty, message ?? string.Empty);
     }
 
     private static string? TryGetPayloadIsrc<TPayload>(TPayload payload)

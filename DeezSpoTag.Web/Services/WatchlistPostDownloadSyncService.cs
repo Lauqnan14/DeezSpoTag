@@ -16,6 +16,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         TimeSpan.FromMinutes(2),
         TimeSpan.FromMinutes(5)
     ];
+    private static readonly TimeSpan FollowUpDelay = TimeSpan.FromMinutes(10);
+    private const int MaxFollowUpPasses = 12;
 
     private readonly Channel<SyncRequest> _queue = Channel.CreateUnbounded<SyncRequest>(
         new UnboundedChannelOptions
@@ -56,7 +58,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             playlistId.Trim(),
             trackId.Trim(),
             destinationFolderId,
-            NormalizeChangedFilePaths(changedFilePaths));
+            NormalizeChangedFilePaths(changedFilePaths),
+            FollowUpPass: 0);
         return _queue.Writer.WriteAsync(request, cancellationToken);
     }
 
@@ -103,6 +106,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 request.Source,
                 request.PlaylistId,
                 request.TrackId);
+            ScheduleFollowUp(request, stoppingToken);
         }
         catch (OperationCanceledException ex) when (stoppingToken.IsCancellationRequested)
         {
@@ -129,6 +133,55 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     private static string BuildKey(SyncRequest request)
         => $"{request.Source}:{request.PlaylistId}";
 
+    private void ScheduleFollowUp(SyncRequest request, CancellationToken cancellationToken)
+    {
+        if (request.FollowUpPass >= MaxFollowUpPasses)
+        {
+            _logger.LogWarning(
+                "Watchlist post-download sync stopped after {FollowUpPasses} follow-up passes for {Source}:{PlaylistId} after completed track {TrackId}.",
+                request.FollowUpPass,
+                request.Source,
+                request.PlaylistId,
+                request.TrackId);
+            return;
+        }
+
+        var followUp = request with { FollowUpPass = request.FollowUpPass + 1 };
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Watchlist post-download sync scheduled follow-up pass {FollowUpPass}/{MaxFollowUpPasses} for {Source}:{PlaylistId} after completed track {TrackId}.",
+                followUp.FollowUpPass,
+                MaxFollowUpPasses,
+                followUp.Source,
+                followUp.PlaylistId,
+                followUp.TrackId);
+        }
+
+        _ = DelayAndQueueFollowUpAsync(followUp, cancellationToken);
+    }
+
+    private async Task DelayAndQueueFollowUpAsync(SyncRequest followUp, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(FollowUpDelay, cancellationToken);
+            await _queue.Writer.WriteAsync(followUp, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Watchlist post-download sync failed to schedule follow-up for {Source}:{PlaylistId} after completed track {TrackId}.",
+                followUp.Source,
+                followUp.PlaylistId,
+                followUp.TrackId);
+        }
+    }
+
     private async Task<bool> TrySyncOnceAsync(SyncRequest request, int attempt, CancellationToken cancellationToken)
     {
         try
@@ -153,8 +206,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken);
             var effectiveRequest = ResolveEffectiveRequest(request, preference);
 
-        await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken);
-        await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
+            await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken);
+            await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
 
             var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchService>();
             var candidates = await watcher.GetPlaylistTrackCandidatesAsync(
@@ -172,20 +225,18 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 return HandleNotReady(request, attempt, readiness);
             }
 
-            var result = await syncService.SyncPlaylistAsync(
+            var reconciliation = await watcher.ReconcilePlaylistAsync(
                 playlist,
-                preference,
-                candidates,
-                force: true,
-                cancellationToken);
+                cancellationToken,
+                forceMediaServerSync: true);
 
-            if (result.Success)
+            if (reconciliation.SyncResult?.Success == true)
             {
-                LogSyncCompleted(request, attempt, result.SyncedTracks);
+                LogSyncCompleted(request, attempt, reconciliation.SyncResult?.SyncedTracks ?? 0);
                 return true;
             }
 
-            LogSyncNotReady(request, attempt, result.Message);
+            LogSyncNotReady(request, attempt, reconciliation.SyncResult?.Message ?? reconciliation.Message);
             return false;
         }
         catch (OperationCanceledException)
@@ -335,11 +386,10 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             return;
         }
 
-        _logger.LogWarning(
-            "Watchlist post-download sync skipped local library scan for {Source}:{PlaylistId}:{TrackId} because the completed download did not provide changed file paths.",
-            request.Source,
-            request.PlaylistId,
-            request.TrackId);
+        await scanner.RunChangedFoldersAsync(
+            new[] { request.DestinationFolderId.Value },
+            skipSpotifyFetch: true,
+            cancellationToken);
     }
 
     private static List<string> NormalizeChangedFilePaths(IReadOnlyList<string>? changedFilePaths)
@@ -376,5 +426,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         string PlaylistId,
         string TrackId,
         long? DestinationFolderId,
-        IReadOnlyList<string> ChangedFilePaths);
+        IReadOnlyList<string> ChangedFilePaths,
+        int FollowUpPass);
 }

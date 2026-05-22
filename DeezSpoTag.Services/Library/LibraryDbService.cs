@@ -20,6 +20,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchStateTable = "playlist_watch_state";
     private const string PlaylistWatchPreferencesTable = "playlist_watch_preferences";
     private const string PlaylistWatchTrackTable = "playlist_watch_track";
+    private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
     private const string WatchlistHistoryTable = "watchlist_history";
@@ -82,6 +83,8 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_state_updated"] = (PlaylistWatchStateTable, UpdatedAtColumn, false)
             ,
             ["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
+            ,
+            ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
             ,
             ["idx_watchlist_history_source_created"] = (WatchlistHistoryTable, "source, created_at", false)
         };
@@ -232,6 +235,18 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "routing_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "ignore_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "status", $"{TextType} DEFAULT 'queued'", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    queue_uuid TEXT NOT NULL,
+    destination_folder_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, source_id, track_source_id, queue_uuid)
+);", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "destination_folder_id", BigIntType, cancellationToken);
@@ -283,6 +298,7 @@ CREATE TABLE IF NOT EXISTS song_link_cache (
         await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_source_status", PlaylistWatchTrackTable, "source, source_id, status", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_download_claim_queue", PlaylistWatchDownloadClaimTable, "queue_uuid, status", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_history_source_created", WatchlistHistoryTable, "source, created_at", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS download_blocklist (
@@ -845,6 +861,14 @@ WHERE rowid NOT IN (
     GROUP BY LOWER(TRIM(source)), TRIM(source_id), TRIM(track_source_id)
 );", cancellationToken);
 
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchDownloadClaimTable, @"
+DELETE FROM playlist_watch_download_claim
+WHERE rowid NOT IN (
+    SELECT MAX(rowid)
+    FROM playlist_watch_download_claim
+    GROUP BY LOWER(TRIM(source)), TRIM(source_id), TRIM(track_source_id), TRIM(queue_uuid)
+);", cancellationToken);
+
         await ExecuteIfTableExistsAsync(connection, PlaylistWatchIgnoreTable, @"
 DELETE FROM playlist_watch_ignore
 WHERE rowid NOT IN (
@@ -889,6 +913,17 @@ SET source = LOWER(TRIM(source)),
 WHERE source <> LOWER(TRIM(source))
    OR source_id <> TRIM(source_id)
    OR track_source_id <> TRIM(track_source_id);", cancellationToken);
+
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchDownloadClaimTable, @"
+UPDATE playlist_watch_download_claim
+SET source = LOWER(TRIM(source)),
+    source_id = TRIM(source_id),
+    track_source_id = TRIM(track_source_id),
+    queue_uuid = TRIM(queue_uuid)
+WHERE source <> LOWER(TRIM(source))
+   OR source_id <> TRIM(source_id)
+   OR track_source_id <> TRIM(track_source_id)
+   OR queue_uuid <> TRIM(queue_uuid);", cancellationToken);
 
         await ExecuteIfTableExistsAsync(connection, PlaylistWatchIgnoreTable, @"
 UPDATE playlist_watch_ignore

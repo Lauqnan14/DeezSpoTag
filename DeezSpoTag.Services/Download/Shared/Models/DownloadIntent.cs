@@ -87,6 +87,7 @@ public sealed class DownloadIntentResult
     public string Engine { get; set; } = "";
     public string Message { get; set; } = "";
     public List<string> Queued { get; set; } = new();
+    public List<string> RelatedQueueUuids { get; set; } = new();
     public int Skipped { get; set; }
     public List<string> SkipReasonCodes { get; set; } = new();
     public List<string> SkipReasons { get; set; } = new();

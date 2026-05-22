@@ -577,6 +577,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             status,
             cancellationToken);
 
+        var queueUuid = ResolveQueueUuid(payloadJson);
         if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
         {
             var changedFilePaths = ResolveChangedFilePaths(documentPayload: payloadJson);
@@ -590,8 +591,139 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                     destinationFolderId,
                     changedFilePaths,
                     cancellationToken);
+                await NotifySharedWatchDownloadClaimsAsync(
+                    libraryRepository,
+                    notifier,
+                    queueUuid,
+                    source,
+                    playlistId,
+                    trackId,
+                    destinationFolderId,
+                    changedFilePaths,
+                    cancellationToken);
+            }
+
+            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                queueUuid,
+                "completed",
+                cancellationToken);
+        }
+        else if (IsFailedOrCanceledWatchStatus(status))
+        {
+            await UpdateSharedWatchDownloadClaimsStatusAsync(
+                libraryRepository,
+                queueUuid,
+                source,
+                playlistId,
+                trackId,
+                status,
+                cancellationToken);
+            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                queueUuid,
+                status,
+                cancellationToken);
+        }
+    }
+
+    private static async Task NotifySharedWatchDownloadClaimsAsync(
+        LibraryRepository libraryRepository,
+        IWatchlistPostDownloadSyncNotifier notifier,
+        string queueUuid,
+        string source,
+        string playlistId,
+        string trackId,
+        long? destinationFolderId,
+        IReadOnlyList<string> changedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        foreach (var claim in claims)
+        {
+            if (string.Equals(source, claim.Source, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(playlistId, claim.SourceId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(trackId, claim.TrackSourceId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                "completed",
+                cancellationToken);
+            await notifier.NotifyCompletedAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                claim.DestinationFolderId ?? destinationFolderId,
+                changedFilePaths,
+                cancellationToken);
+        }
+    }
+
+    private static async Task UpdateSharedWatchDownloadClaimsStatusAsync(
+        LibraryRepository libraryRepository,
+        string queueUuid,
+        string source,
+        string playlistId,
+        string trackId,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        foreach (var claim in claims)
+        {
+            if (string.Equals(source, claim.Source, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(playlistId, claim.SourceId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(trackId, claim.TrackSourceId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                status,
+                cancellationToken);
+        }
+    }
+
+    private static bool IsFailedOrCanceledWatchStatus(string status)
+    {
+        return string.Equals(status, FailedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveQueueUuid(string payloadJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            if (TryGetString(document.RootElement, "uuid", out var uuid)
+                || TryGetString(document.RootElement, "id", out uuid)
+                || TryGetString(document.RootElement, "Id", out uuid))
+            {
+                return uuid.Trim();
             }
         }
+        catch (JsonException)
+        {
+        }
+
+        return string.Empty;
     }
 
     private static IReadOnlyList<string> ResolveChangedFilePaths(string documentPayload)

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -120,6 +122,34 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
         Assert.Equal("Track is not visible in the DeezSpoTag library yet.", readiness.Message);
     }
 
+    [Fact]
+    public async Task LoadTracksForSyncAsync_UsesWatchlistCandidatesBeforeReloadingSpotify()
+    {
+        var method = typeof(PlaylistSyncService).GetMethod(
+            "LoadTracksForSyncAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var task = (Task)method!.Invoke(
+            _syncService,
+            new object?[]
+            {
+                CreatePlaylist(),
+                new List<PlaylistWatchService.PlaylistTrackCandidate>
+                {
+                    CreateCandidate(),
+                    CreateCandidate("track-2", "Song Two")
+                },
+                CancellationToken.None
+            })!;
+        await task;
+
+        var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+        var tracks = (System.Collections.IEnumerable)result.GetType().GetField("Item1")!.GetValue(result)!;
+
+        Assert.Equal(2, tracks.Cast<object>().Count());
+    }
+
     private static PlaylistWatchlistDto CreatePlaylist()
         => new(
             Id: 1,
@@ -131,11 +161,13 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             TrackCount: 1,
             CreatedAt: DateTimeOffset.UtcNow);
 
-    private static PlaylistWatchService.PlaylistTrackCandidate CreateCandidate()
+    private static PlaylistWatchService.PlaylistTrackCandidate CreateCandidate(
+        string trackSourceId = "track-1",
+        string title = "Song One")
         => new(
-            TrackSourceId: "track-1",
+            TrackSourceId: trackSourceId,
             Isrc: "USRC17607839",
-            Title: "Song One",
+            Title: title,
             Artist: "Artist One",
             Album: "Album One",
             ReleaseYear: 2024,

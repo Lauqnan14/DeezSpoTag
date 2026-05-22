@@ -959,7 +959,8 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             payload,
             CompletedStatus,
             _serviceProvider,
-            itemToken);
+            itemToken,
+            queueUuid);
         _retryScheduler.Clear(queueUuid);
     }
 

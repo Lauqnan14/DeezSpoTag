@@ -95,8 +95,38 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.Contains("ChangedFilePaths", source, StringComparison.Ordinal);
         Assert.Contains("await scanner.RunChangedFilesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("did not provide changed file paths", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunChangedFoldersAsync", source, StringComparison.Ordinal);
+        Assert.Contains("await scanner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
+        Assert.Contains("watcher.ReconcilePlaylistAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatch_ReconcilesExistingFilesBeforeQueueingMissingTracks()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
+
+        Assert.Contains("PreQueuePlaylistSyncAsync(currentPlaylist, preference, candidates, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("await scanner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
+        Assert.Contains("selection.MissingTracks", source, StringComparison.Ordinal);
+        Assert.Contains("missing_tracks_queued", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("candidates.Select(candidate => new PlaylistWatchTrackInsert(candidate.TrackSourceId, candidate.Isrc))", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SharedWatchDownloadClaims_FanOutCompletionToAllClaimedPlaylists()
+    {
+        var helperSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+        var appSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagApp.cs");
+        var intentSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadIntentService.cs");
+
+        Assert.Contains("GetPlaylistWatchDownloadClaimsAsync", helperSource, StringComparison.Ordinal);
+        Assert.Contains("NotifySharedWatchDownloadClaimsAsync", helperSource, StringComparison.Ordinal);
+        Assert.Contains("status: \"pending\"", helperSource, StringComparison.Ordinal);
+        Assert.Contains("UpdateSharedWatchDownloadClaimsStatusAsync", helperSource, StringComparison.Ordinal);
+        Assert.Contains("GetPlaylistWatchDownloadClaimsAsync", appSource, StringComparison.Ordinal);
+        Assert.Contains("status: \"pending\"", appSource, StringComparison.Ordinal);
+        Assert.Contains("UpdateSharedWatchDownloadClaimsStatusAsync", appSource, StringComparison.Ordinal);
+        Assert.Contains("RelatedQueueUuids", intentSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueItemDecision.Fail(\"queue_duplicate\"", intentSource, StringComparison.Ordinal);
     }
 
     [Fact]

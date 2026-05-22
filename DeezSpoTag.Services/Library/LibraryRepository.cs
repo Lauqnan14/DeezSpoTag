@@ -247,6 +247,35 @@ WHERE id = 1;";
     private static DateTimeOffset ParseDateTimeOffsetInvariant(string value)
         => DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, ParseDateStyles);
 
+    private static DateTimeOffset ParseUtcDateTimeOffsetInvariant(string value)
+    {
+        var trimmed = value.Trim();
+        if (HasExplicitUtcOffset(trimmed))
+        {
+            return DateTimeOffset.Parse(trimmed, CultureInfo.InvariantCulture, ParseDateStyles);
+        }
+
+        var parsed = DateTime.Parse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces);
+        return new DateTimeOffset(DateTime.SpecifyKind(parsed, DateTimeKind.Utc));
+    }
+
+    private static bool HasExplicitUtcOffset(string value)
+    {
+        if (value.EndsWith("Z", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var timeSeparatorIndex = Math.Max(value.IndexOf('T', StringComparison.Ordinal), value.IndexOf(' ', StringComparison.Ordinal));
+        if (timeSeparatorIndex < 0)
+        {
+            return false;
+        }
+
+        var offsetIndex = Math.Max(value.LastIndexOf('+'), value.LastIndexOf('-'));
+        return offsetIndex > timeSeparatorIndex;
+    }
+
     public async Task<LibraryStatsDto> GetLibraryStatsAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -5583,7 +5612,8 @@ ORDER BY created_at DESC;";
         string? imageUrl,
         string? description,
         int? trackCount,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool clearImageUrl = false)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
@@ -5643,7 +5673,8 @@ LIMIT 1;";
         string? imageUrl,
         string? description,
         int? trackCount,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool clearImageUrl = false)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
@@ -5654,7 +5685,7 @@ LIMIT 1;";
         const string sql = @"
 UPDATE playlist_watchlist
 SET name = COALESCE(@name, name),
-    image_url = COALESCE(@imageUrl, image_url),
+    image_url = CASE WHEN @clearImageUrl = 1 THEN @imageUrl ELSE COALESCE(@imageUrl, image_url) END,
     description = COALESCE(@description, description),
     track_count = COALESCE(@trackCount, track_count)
 WHERE source = @source AND source_id = @sourceId;";
@@ -5665,6 +5696,7 @@ WHERE source = @source AND source_id = @sourceId;";
         command.Parameters.AddWithValue("imageUrl", (object?)imageUrl ?? DBNull.Value);
         command.Parameters.AddWithValue("description", (object?)description ?? DBNull.Value);
         command.Parameters.AddWithValue("trackCount", (object?)trackCount ?? DBNull.Value);
+        command.Parameters.AddWithValue("clearImageUrl", clearImageUrl ? 1 : 0);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -5678,8 +5710,9 @@ WHERE source = @source AND source_id = @sourceId;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         const string sql = @"
-DELETE FROM playlist_watch_track WHERE source = @source AND source_id = @sourceId;
-DELETE FROM playlist_watch_state WHERE source = @source AND source_id = @sourceId;
+	DELETE FROM playlist_watch_track WHERE source = @source AND source_id = @sourceId;
+	DELETE FROM playlist_watch_download_claim WHERE source = @source AND source_id = @sourceId;
+	DELETE FROM playlist_watch_state WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_track_candidate_cache WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_watch_preferences WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;";
@@ -6234,6 +6267,13 @@ WHERE source = @source AND source_id = @sourceId;";
             deleteAllCommand.Parameters.AddWithValue(SourceField, normalizedSource);
             deleteAllCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             var deletedAll = await deleteAllCommand.ExecuteNonQueryAsync(cancellationToken);
+            const string deleteAllClaimsSql = @"
+DELETE FROM playlist_watch_download_claim
+WHERE source = @source AND source_id = @sourceId;";
+            await using var deleteAllClaimsCommand = new SqliteCommand(deleteAllClaimsSql, connection, transaction);
+            deleteAllClaimsCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            deleteAllClaimsCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            await deleteAllClaimsCommand.ExecuteNonQueryAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return deletedAll;
         }
@@ -6285,6 +6325,20 @@ WHERE source = @source
         deleteStaleCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         var deleted = await deleteStaleCommand.ExecuteNonQueryAsync(cancellationToken);
 
+        const string deleteStaleClaimsSql = @"
+DELETE FROM playlist_watch_download_claim
+WHERE source = @source
+  AND source_id = @sourceId
+  AND NOT EXISTS (
+      SELECT 1
+      FROM temp_current_playlist_watch_track current_track
+      WHERE current_track.track_source_id = playlist_watch_download_claim.track_source_id
+  );";
+        await using var deleteStaleClaimsCommand = new SqliteCommand(deleteStaleClaimsSql, connection, transaction);
+        deleteStaleClaimsCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+        deleteStaleClaimsCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        await deleteStaleClaimsCommand.ExecuteNonQueryAsync(cancellationToken);
+
         await transaction.CommitAsync(cancellationToken);
         return deleted;
     }
@@ -6327,6 +6381,102 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
         return updated > 0;
     }
 
+    public async Task UpsertPlaylistWatchDownloadClaimsAsync(
+        string source,
+        string sourceId,
+        string trackSourceId,
+        IReadOnlyCollection<string> queueUuids,
+        long? destinationFolderId,
+        CancellationToken cancellationToken = default)
+    {
+        if (queueUuids.Count == 0
+            || string.IsNullOrWhiteSpace(trackSourceId)
+            || !TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO playlist_watch_download_claim (source, source_id, track_source_id, queue_uuid, destination_folder_id, status)
+VALUES (@source, @sourceId, @trackSourceId, @queueUuid, @destinationFolderId, 'pending')
+ON CONFLICT(source, source_id, track_source_id, queue_uuid) DO UPDATE SET
+    destination_folder_id = COALESCE(excluded.destination_folder_id, playlist_watch_download_claim.destination_folder_id),
+    status = 'pending',
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("trackSourceId", trackSourceId.Trim());
+        var queueUuidParam = command.Parameters.Add("queueUuid", SqliteType.Text);
+        command.Parameters.AddWithValue("destinationFolderId", (object?)destinationFolderId ?? DBNull.Value);
+
+        foreach (var queueUuid in queueUuids.Where(static value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            queueUuidParam.Value = queueUuid.Trim();
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    public async Task<IReadOnlyList<PlaylistWatchDownloadClaimDto>> GetPlaylistWatchDownloadClaimsAsync(
+        string queueUuid,
+        CancellationToken cancellationToken = default,
+        string? status = null)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return Array.Empty<PlaylistWatchDownloadClaimDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source, source_id, track_source_id, queue_uuid, destination_folder_id, status, updated_at
+FROM playlist_watch_download_claim
+WHERE queue_uuid = @queueUuid
+  AND (@status IS NULL OR lower(status) = lower(@status))
+ORDER BY source, source_id, track_source_id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid.Trim());
+        command.Parameters.AddWithValue("status", string.IsNullOrWhiteSpace(status) ? DBNull.Value : status.Trim());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var claims = new List<PlaylistWatchDownloadClaimDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            claims.Add(new PlaylistWatchDownloadClaimDto(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt64(4),
+                reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6))));
+        }
+
+        return claims;
+    }
+
+    public async Task<int> UpdatePlaylistWatchDownloadClaimStatusAsync(
+        string queueUuid,
+        string status,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid) || string.IsNullOrWhiteSpace(status))
+        {
+            return 0;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE playlist_watch_download_claim
+SET status = @status,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid.Trim());
+        command.Parameters.AddWithValue("status", status.Trim().ToLowerInvariant());
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<WatchlistHistoryDto?> AddWatchlistHistoryAsync(
         WatchlistHistoryInsert entry,
         CancellationToken cancellationToken = default)
@@ -6338,10 +6488,11 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO watchlist_history (source, watch_type, source_id, name, collection_type, track_count, status, artist_name)
-VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @status, @artistName)
+INSERT INTO watchlist_history (source, watch_type, source_id, name, collection_type, track_count, status, artist_name, created_at)
+VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @status, @artistName, @createdAt)
 RETURNING id, created_at;";
         await using var command = new SqliteCommand(sql, connection);
+        var createdAt = DateTimeOffset.UtcNow;
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("watchType", entry.WatchType);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -6350,6 +6501,7 @@ RETURNING id, created_at;";
         command.Parameters.AddWithValue("trackCount", entry.TrackCount);
         command.Parameters.AddWithValue("status", entry.Status);
         command.Parameters.AddWithValue("artistName", (object?)entry.ArtistName ?? DBNull.Value);
+        command.Parameters.AddWithValue("createdAt", createdAt.ToString("O", CultureInfo.InvariantCulture));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -6357,8 +6509,8 @@ RETURNING id, created_at;";
         }
 
         var created = await reader.IsDBNullAsync(1, cancellationToken)
-            ? DateTimeOffset.UtcNow
-            : ParseDateTimeOffsetInvariant(reader.GetString(1));
+            ? createdAt
+            : ParseUtcDateTimeOffsetInvariant(reader.GetString(1));
         return new WatchlistHistoryDto(
             reader.GetInt64(0),
             normalizedSource,
@@ -6408,7 +6560,7 @@ LIMIT @limit OFFSET @offset;";
         var items = new List<WatchlistHistoryDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(9));
+            var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseUtcDateTimeOffsetInvariant(reader.GetString(9));
             items.Add(new WatchlistHistoryDto(
                 reader.GetInt64(0),
                 reader.GetString(1),
@@ -6453,7 +6605,7 @@ LIMIT @limit;";
         var items = new List<WatchlistHistoryDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(9));
+            var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseUtcDateTimeOffsetInvariant(reader.GetString(9));
             items.Add(new WatchlistHistoryDto(
                 reader.GetInt64(0),
                 reader.GetString(1),

@@ -2005,7 +2005,8 @@ public static partial class EngineAudioPostDownloadHelper
         EngineQueueItemBase payload,
         string status,
         IServiceProvider serviceProvider,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? queueUuid = null)
     {
         if (string.IsNullOrWhiteSpace(payload.WatchlistSource)
             || string.IsNullOrWhiteSpace(payload.WatchlistPlaylistId)
@@ -2028,8 +2029,10 @@ public static partial class EngineAudioPostDownloadHelper
             status,
             cancellationToken);
 
+        var resolvedQueueUuid = ResolveQueueUuid(queueUuid, payload);
         if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
         {
+            var changedFilePaths = ResolveChangedFilePaths(payload);
             var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
             if (notifier != null)
             {
@@ -2038,10 +2041,122 @@ public static partial class EngineAudioPostDownloadHelper
                     payload.WatchlistPlaylistId,
                     payload.WatchlistTrackId,
                     payload.DestinationFolderId,
-                    ResolveChangedFilePaths(payload),
+                    changedFilePaths,
+                    cancellationToken);
+                await NotifySharedWatchDownloadClaimsAsync(
+                    libraryRepository,
+                    notifier,
+                    resolvedQueueUuid,
+                    payload,
+                    changedFilePaths,
                     cancellationToken);
             }
+
+            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                resolvedQueueUuid,
+                CompletedStatus,
+                cancellationToken);
         }
+        else if (IsFailedOrCanceledWatchStatus(status))
+        {
+            await UpdateSharedWatchDownloadClaimsStatusAsync(
+                libraryRepository,
+                resolvedQueueUuid,
+                payload,
+                status,
+                cancellationToken);
+            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                resolvedQueueUuid,
+                status,
+                cancellationToken);
+        }
+    }
+
+    private static async Task NotifySharedWatchDownloadClaimsAsync(
+        LibraryRepository libraryRepository,
+        IWatchlistPostDownloadSyncNotifier notifier,
+        string queueUuid,
+        EngineQueueItemBase payload,
+        IReadOnlyList<string> changedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        foreach (var claim in claims)
+        {
+            if (IsOriginalWatchClaim(payload, claim))
+            {
+                continue;
+            }
+
+            await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                CompletedStatus,
+                cancellationToken);
+            await notifier.NotifyCompletedAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                claim.DestinationFolderId ?? payload.DestinationFolderId,
+                changedFilePaths,
+                cancellationToken);
+        }
+    }
+
+    private static async Task UpdateSharedWatchDownloadClaimsStatusAsync(
+        LibraryRepository libraryRepository,
+        string queueUuid,
+        EngineQueueItemBase payload,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        foreach (var claim in claims)
+        {
+            if (IsOriginalWatchClaim(payload, claim))
+            {
+                continue;
+            }
+
+            await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                status,
+                cancellationToken);
+        }
+    }
+
+    private static bool IsFailedOrCanceledWatchStatus(string status)
+    {
+        return string.Equals(status, FailedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, CancelledStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, CanceledStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOriginalWatchClaim(EngineQueueItemBase payload, PlaylistWatchDownloadClaimDto claim)
+    {
+        return string.Equals(payload.WatchlistSource, claim.Source, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(payload.WatchlistPlaylistId, claim.SourceId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(payload.WatchlistTrackId, claim.TrackSourceId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveQueueUuid(string? queueUuid, EngineQueueItemBase payload)
+    {
+        return !string.IsNullOrWhiteSpace(queueUuid)
+            ? queueUuid.Trim()
+            : payload.Id ?? string.Empty;
     }
 
     private static List<string> ResolveChangedFilePaths(EngineQueueItemBase payload)

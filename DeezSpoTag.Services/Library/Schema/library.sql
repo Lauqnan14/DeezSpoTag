@@ -420,6 +420,21 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
 CREATE INDEX IF NOT EXISTS idx_playlist_watch_track_playlist
     ON playlist_watch_track (source, source_id);
 
+CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    queue_uuid TEXT NOT NULL,
+    destination_folder_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, source_id, track_source_id, queue_uuid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_watch_download_claim_queue
+    ON playlist_watch_download_claim (queue_uuid, status);
+
 CREATE TABLE IF NOT EXISTS playlist_watch_ignore (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,

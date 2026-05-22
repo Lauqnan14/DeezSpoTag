@@ -558,7 +558,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                         (item, value) => item.Downloaded = value))),
             cancellationToken);
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
-        await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, CompletedStatus, _serviceProvider, cancellationToken);
+        await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, CompletedStatus, _serviceProvider, cancellationToken, queueUuid);
         _retryScheduler.Clear(queueUuid);
 
         _deezspotagListener.Send(UpdateQueueEvent, new

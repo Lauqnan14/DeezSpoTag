@@ -155,12 +155,42 @@ SELECT spotify_id, deezer_id FROM artist_watchlist WHERE artist_id=1;";
         Assert.NotNull(second);
         Assert.Equal("spotify", first!.Source);
         Assert.Equal("one", first.SourceId);
+        Assert.Equal(TimeSpan.Zero, first.CreatedAt.Offset);
 
         var newer = await repository.GetWatchlistHistorySinceAsync(first.Id, 50);
 
         var single = Assert.Single(newer);
         Assert.Equal(second!.Id, single.Id);
         Assert.Equal("two", single.SourceId);
+    }
+
+    [Fact]
+    public async Task GetWatchlistHistoryAsync_TreatsLegacyOffsetlessTimestampAsUtc()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+        var repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+INSERT INTO watchlist_history (source, watch_type, source_id, name, collection_type, track_count, status, created_at)
+VALUES ('spotify', 'playlist', 'legacy', 'Legacy', 'playlist', 1, 'queued', '2026-05-23 12:34:56');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var history = await repository.GetWatchlistHistoryAsync(10, 0);
+        var entry = Assert.Single(history);
+        Assert.Equal("legacy", entry.SourceId);
+        Assert.Equal(TimeSpan.Zero, entry.CreatedAt.Offset);
+        Assert.Equal(2026, entry.CreatedAt.Year);
+        Assert.Equal(5, entry.CreatedAt.Month);
+        Assert.Equal(23, entry.CreatedAt.Day);
+        Assert.Equal(12, entry.CreatedAt.Hour);
+        Assert.Equal(34, entry.CreatedAt.Minute);
+        Assert.Equal(56, entry.CreatedAt.Second);
     }
 
     private static async Task<bool> IndexExistsAsync(SqliteConnection connection, string name)

@@ -512,6 +512,11 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var source = NormalizeSource(playlist.Source);
+        if (trackCandidates is { Count: > 0 })
+        {
+            return (trackCandidates.Select(ToSyncTrackSummary).ToList(), null);
+        }
+
         if (string.Equals(source, SpotifySource, StringComparison.OrdinalIgnoreCase))
         {
             var snapshot = await _spotifyMetadataService.FetchPlaylistSnapshotAsync(playlist.SourceId, cancellationToken);
@@ -520,21 +525,7 @@ public sealed class PlaylistSyncService
                 return (snapshot.Tracks.Select(ToSyncTrackSummary).ToList(), null);
             }
 
-            if (trackCandidates is { Count: > 0 })
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Spotify snapshot unavailable for {SourceId}; using cached track candidates.", playlist.SourceId);
-                }
-                return (trackCandidates.Select(ToSyncTrackSummary).ToList(), null);
-            }
-
             return (Array.Empty<SyncTrackSummary>(), "Spotify playlist could not be loaded.");
-        }
-
-        if (trackCandidates is { Count: > 0 })
-        {
-            return (trackCandidates.Select(ToSyncTrackSummary).ToList(), null);
         }
 
         return (Array.Empty<SyncTrackSummary>(), "Track candidates are unavailable for this source. Open playlist settings once and retry sync.");
@@ -860,17 +851,20 @@ public sealed class PlaylistSyncService
             return;
         }
 
-        var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
-        if (visual != null && File.Exists(visual.FilePath))
+        if (preference?.ReuseSavedArtwork == true)
         {
-            await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
-                plex.Url,
-                plex.Token,
-                playlistId,
-                visual.FilePath,
-                visual.ContentType,
-                cancellationToken);
-            return;
+            var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
+            if (visual != null && File.Exists(visual.FilePath))
+            {
+                await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
+                    plex.Url,
+                    plex.Token,
+                    playlistId,
+                    visual.FilePath,
+                    visual.ContentType,
+                    cancellationToken);
+                return;
+            }
         }
 
         if (IsAbsoluteHttpUrl(playlist.ImageUrl))
@@ -899,22 +893,25 @@ public sealed class PlaylistSyncService
             return;
         }
 
-        var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
-        if (visual != null && File.Exists(visual.FilePath))
+        if (preference?.ReuseSavedArtwork == true)
         {
-            var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
-                jellyfin.Url,
-                jellyfin.ApiKey,
-                playlistId,
-                visual.FilePath,
-                visual.ContentType,
-                cancellationToken);
-            if (!updated)
+            var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
+            if (visual != null && File.Exists(visual.FilePath))
             {
-                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.", playlist.Source, playlist.SourceId, visual.FilePath);
-            }
+                var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
+                    jellyfin.Url,
+                    jellyfin.ApiKey,
+                    playlistId,
+                    visual.FilePath,
+                    visual.ContentType,
+                    cancellationToken);
+                if (!updated)
+                {
+                    _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.", playlist.Source, playlist.SourceId, visual.FilePath);
+                }
 
-            return;
+                return;
+            }
         }
 
         if (IsAbsoluteHttpUrl(playlist.ImageUrl))

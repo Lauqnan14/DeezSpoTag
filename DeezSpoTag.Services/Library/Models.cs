@@ -533,6 +533,15 @@ public sealed record PlaylistTrackCandidateCacheDto(
 
 public sealed record PlaylistWatchTrackInsert(string TrackSourceId, string? Isrc);
 
+public sealed record PlaylistWatchDownloadClaimDto(
+    string Source,
+    string SourceId,
+    string TrackSourceId,
+    string QueueUuid,
+    long? DestinationFolderId,
+    string Status,
+    DateTimeOffset UpdatedAt);
+
 public sealed record ArtistWatchStateDto(
     long ArtistId,
     string? SpotifyId,
