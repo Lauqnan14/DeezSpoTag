@@ -1704,10 +1704,13 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadOrchestrationService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IDownloadQueueExecutionGate>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadOrchestrationService>());
-        AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadOrchestrationService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Download orchestration after HTTP readiness.");
+        if (DeezSpoTag.Web.Services.BackgroundAutomationPolicy.IsEnabled(configuration, "DownloadOrchestration"))
+        {
+            AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadOrchestrationService>(
+                services,
+                StartupWorkerCategory.Deferred,
+                "Download orchestration after HTTP readiness.");
+        }
         services.AddSingleton<DeezSpoTag.Web.Services.DuplicateCleanerService>();
         RegisterStartupWorker<DeezSpoTag.Web.Services.DuplicateCleanerService>(
             services,

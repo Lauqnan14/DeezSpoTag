@@ -139,6 +139,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
     private readonly LibraryConfigStore _configStore;
     private readonly BackgroundWorkCoordinator _workCoordinator;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<DownloadOrchestrationService> _logger;
     private readonly string _enhancementSchedulePath;
     private readonly string _processedCompletionPath;
@@ -181,6 +182,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _workCoordinator = serviceProvider.GetRequiredService<BackgroundWorkCoordinator>();
+        _configuration = serviceProvider.GetRequiredService<IConfiguration>();
         _logger = logger;
 
         var configuredDataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
@@ -363,6 +365,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "DownloadOrchestration"))
+        {
+            return;
+        }
+
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)

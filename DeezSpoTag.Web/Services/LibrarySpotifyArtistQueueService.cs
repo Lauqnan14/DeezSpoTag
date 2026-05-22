@@ -110,7 +110,6 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             static item => !string.IsNullOrWhiteSpace(item.ArtistName),
             _logger);
 
-        _ = EnqueueMissingAsync(cancellationToken);
         return base.StartAsync(cancellationToken);
     }
 
