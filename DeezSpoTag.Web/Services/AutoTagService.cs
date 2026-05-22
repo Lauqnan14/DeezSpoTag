@@ -258,10 +258,14 @@ public partial class AutoTagService
     private readonly TimeSpan _organizerCooldown = TimeSpan.FromSeconds(15);
     private readonly ConcurrentDictionary<string, object> _archiveLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _archivedRunSummariesCacheLock = new();
+    private readonly object _archivedRunPruneLock = new();
     private readonly object _runIndexLock = new();
     private IReadOnlyList<AutoTagRunSummary>? _archivedRunSummariesCache;
     private DateTimeOffset _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastArchivedRunPruneUtc = DateTimeOffset.MinValue;
     private static readonly TimeSpan ArchivedRunSummariesCacheTtl = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ArchivedRunRetentionPeriod = TimeSpan.FromDays(61);
+    private static readonly TimeSpan ArchivedRunPruneInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan RunIndexUpdateInterval = TimeSpan.FromSeconds(2);
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -495,9 +499,11 @@ public partial class AutoTagService
         Directory.CreateDirectory(_historyDir);
         Directory.CreateDirectory(_runtimeConfigDir);
         _disableAutoMove = ResolveDisableAutoMove();
+        PruneExpiredArchivedRuns(force: true);
         if (ShouldBackfillArchivedRunsOnStartup(configuration))
         {
             BackfillArchivedRuns();
+            PruneExpiredArchivedRuns(force: true);
         }
     }
 
@@ -1317,6 +1323,12 @@ public partial class AutoTagService
         var summary = LoadRunSummary(id);
         if (summary == null)
         {
+            return null;
+        }
+        if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ArchivedRunRetentionPeriod)))
+        {
+            DeleteArchivedRunFiles(summary.Id);
+            PruneExpiredArchivedRuns(force: true);
             return null;
         }
 
@@ -5700,6 +5712,7 @@ public partial class AutoTagService
 
     private IReadOnlyList<AutoTagRunSummary> GetArchivedRunSummaries()
     {
+        PruneExpiredArchivedRuns();
         lock (_archivedRunSummariesCacheLock)
         {
             if (_archivedRunSummariesCache is not null && _archivedRunSummariesCacheExpiresUtc > DateTimeOffset.UtcNow)
@@ -5732,6 +5745,7 @@ public partial class AutoTagService
 
     public void WarmRunIndexIfMissing()
     {
+        PruneExpiredArchivedRuns();
         if (File.Exists(_runIndexPath) && new FileInfo(_runIndexPath).Length > 0)
         {
             return;
@@ -5748,6 +5762,7 @@ public partial class AutoTagService
 
                 PersistRunIndex(LoadArchivedRunSummaries());
             }
+            PruneExpiredArchivedRuns(force: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -5800,6 +5815,7 @@ public partial class AutoTagService
 
         InvalidateArchivedRunSummariesCache();
         _activitiesRealtime.PublishAutoTagRunChanged(summary);
+        PruneExpiredArchivedRuns();
     }
 
     private bool ShouldUpdateRunIndex(AutoTagRunSummary summary)
@@ -5848,6 +5864,132 @@ public partial class AutoTagService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed to persist AutoTag run index.");
+        }
+    }
+
+    private void PruneExpiredArchivedRuns(bool force = false)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!force && now - _lastArchivedRunPruneUtc < ArchivedRunPruneInterval)
+        {
+            return;
+        }
+
+        lock (_archivedRunPruneLock)
+        {
+            now = DateTimeOffset.UtcNow;
+            if (!force && now - _lastArchivedRunPruneUtc < ArchivedRunPruneInterval)
+            {
+                return;
+            }
+
+            _lastArchivedRunPruneUtc = now;
+            var cutoffUtc = now.Subtract(ArchivedRunRetentionPeriod);
+            try
+            {
+                var summaries = TryLoadRunIndex().ToList();
+                if (summaries.Count == 0)
+                {
+                    summaries = LoadArchivedRunSummaries().ToList();
+                }
+
+                var retained = new List<AutoTagRunSummary>();
+                var expired = new List<AutoTagRunSummary>();
+                foreach (var summary in summaries)
+                {
+                    if (IsExpiredArchivedRun(summary, cutoffUtc))
+                    {
+                        expired.Add(summary);
+                    }
+                    else
+                    {
+                        retained.Add(summary);
+                    }
+                }
+
+                if (expired.Count == 0)
+                {
+                    return;
+                }
+
+                foreach (var summary in expired)
+                {
+                    DeleteArchivedRunFiles(summary.Id);
+                }
+
+                lock (_runIndexLock)
+                {
+                    PersistRunIndex(retained);
+                }
+                InvalidateArchivedRunSummariesCache();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Failed to prune expired AutoTag run history.");
+            }
+        }
+    }
+
+    private bool IsExpiredArchivedRun(AutoTagRunSummary summary, DateTimeOffset cutoffUtc)
+    {
+        if (string.IsNullOrWhiteSpace(summary.Id) || _activeJobIds.ContainsKey(summary.Id))
+        {
+            return false;
+        }
+
+        return GetRunHistoryTimestamp(summary).ToUniversalTime() < cutoffUtc;
+    }
+
+    private void DeleteArchivedRunFiles(string jobId)
+    {
+        if (string.IsNullOrWhiteSpace(jobId))
+        {
+            return;
+        }
+
+        var normalizedJobId = Path.GetFileName(jobId.Trim());
+        if (string.IsNullOrWhiteSpace(normalizedJobId))
+        {
+            return;
+        }
+
+        foreach (var root in EnumerateHistoryRoots())
+        {
+            TryDeleteDirectory(Path.Join(root, normalizedJobId));
+        }
+
+        TryDeleteFile(Path.Join(_jobsDir, normalizedJobId + ".json"));
+        _archiveLocks.TryRemove(normalizedJobId, out _);
+        _lastRunIndexUpdateUtc.TryRemove(normalizedJobId, out _);
+    }
+
+    private void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to delete expired AutoTag history directory {Path}.", path);
+        }
+    }
+
+    private void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to delete expired AutoTag history file {Path}.", path);
         }
     }
 
