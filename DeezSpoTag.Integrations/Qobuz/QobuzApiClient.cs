@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -12,6 +13,7 @@ public interface IQobuzApiClient
     Task<QobuzAutosuggestResponse?> SearchAutosuggestAsync(string store, string query, CancellationToken cancellationToken);
     Task<QobuzCatalogSearchResponse?> SearchCatalogAsync(string query, int limit, int offset, CancellationToken cancellationToken);
     Task<List<int>> GetAlbumPageTrackIdsAsync(string albumUrl, CancellationToken cancellationToken);
+    Task<List<QobuzTrack>> GetAlbumPageTracksAsync(string albumUrl, CancellationToken cancellationToken);
     Task<QobuzArtist?> GetArtistAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken);
     Task<QobuzTrackSearchResponse?> SearchTracksAsync(string query, int limit, int offset, CancellationToken cancellationToken);
     Task<QobuzAlbumSearchResponse?> SearchAlbumsAsync(string query, int limit, int offset, CancellationToken cancellationToken);
@@ -22,6 +24,10 @@ public interface IQobuzApiClient
 public sealed class QobuzApiClient : IQobuzApiClient
 {
     private static readonly Regex AlbumTrackIdRegex = new("data-track=\"(?<id>\\d+)\"", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
+    private static readonly Regex AlbumTrackBlockRegex = new(
+        "data-track=\"(?<id>\\d+)\"(?:(?!<div class=\"track(?:\\s|\")).)*?data-track-v2=\"(?<metadata>[^\"]+)\"(?:(?!<div class=\"track(?:\\s|\")).)*?<span class=\"track__item track__item--duration\">(?<duration>[^<]+)</span>",
+        RegexOptions.Compiled | RegexOptions.Singleline,
+        TimeSpan.FromSeconds(1));
     private readonly HttpClient _httpClient;
     private readonly IMemoryCache _cache;
     private readonly QobuzApiConfig _config;
@@ -87,13 +93,39 @@ public sealed class QobuzApiClient : IQobuzApiClient
 
     public async Task<List<int>> GetAlbumPageTrackIdsAsync(string albumUrl, CancellationToken cancellationToken)
     {
-        if (!Uri.TryCreate(albumUrl, UriKind.Absolute, out var uri)
-            || !uri.Host.EndsWith("qobuz.com", StringComparison.OrdinalIgnoreCase))
+        var html = await GetQobuzPageHtmlAsync(albumUrl, cancellationToken);
+        if (string.IsNullOrWhiteSpace(html))
         {
             return new List<int>();
         }
 
-        var html = await _httpClient.GetStringAsync(uri, cancellationToken);
+        return ParseAlbumPageTrackIds(html);
+    }
+
+    public async Task<List<QobuzTrack>> GetAlbumPageTracksAsync(string albumUrl, CancellationToken cancellationToken)
+    {
+        var html = await GetQobuzPageHtmlAsync(albumUrl, cancellationToken);
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return new List<QobuzTrack>();
+        }
+
+        return ParseAlbumPageTracks(html);
+    }
+
+    private async Task<string?> GetQobuzPageHtmlAsync(string albumUrl, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(albumUrl, UriKind.Absolute, out var uri)
+            || !uri.Host.EndsWith("qobuz.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return await _httpClient.GetStringAsync(uri, cancellationToken);
+    }
+
+    private static List<int> ParseAlbumPageTrackIds(string html)
+    {
         var trackIds = new List<int>();
         foreach (Match match in AlbumTrackIdRegex.Matches(html))
         {
@@ -104,6 +136,129 @@ public sealed class QobuzApiClient : IQobuzApiClient
         }
 
         return trackIds.Distinct().ToList();
+    }
+
+    private static List<QobuzTrack> ParseAlbumPageTracks(string html)
+    {
+        var tracks = new List<QobuzTrack>();
+        foreach (Match match in AlbumTrackBlockRegex.Matches(html))
+        {
+            if (!int.TryParse(match.Groups["id"].Value, out var trackId))
+            {
+                continue;
+            }
+
+            var track = ParseAlbumTrackMetadata(match.Groups["metadata"].Value);
+            if (track == null)
+            {
+                continue;
+            }
+
+            track.Id = track.Id > 0 ? track.Id : trackId;
+            track.Duration = ParseDurationSeconds(match.Groups["duration"].Value);
+            tracks.Add(track);
+        }
+
+        return tracks
+            .Where(static track => track.Id > 0)
+            .GroupBy(static track => track.Id)
+            .Select(static group => group.First())
+            .ToList();
+    }
+
+    private static QobuzTrack? ParseAlbumTrackMetadata(string encodedMetadata)
+    {
+        var metadata = WebUtility.HtmlDecode(encodedMetadata);
+        if (string.IsNullOrWhiteSpace(metadata))
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(metadata);
+        var root = document.RootElement;
+        var trackId = ReadInt32(root, "item_id");
+        var title = ReadString(root, "item_name");
+        if (trackId <= 0 && string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        var artistName = ReadString(root, "item_brand");
+        var albumTitle = ReadString(root, "item_category");
+        var track = new QobuzTrack
+        {
+            Id = trackId,
+            Title = title,
+            Performer = string.IsNullOrWhiteSpace(artistName) ? null : new QobuzArtist { Name = artistName },
+            Album = string.IsNullOrWhiteSpace(albumTitle)
+                ? null
+                : new QobuzAlbum
+                {
+                    Title = albumTitle,
+                    Artists = string.IsNullOrWhiteSpace(artistName) ? new List<QobuzArtist>() : [new QobuzArtist { Name = artistName }]
+                }
+        };
+
+        ApplyVariantQuality(track, ReadString(root, "item_variant_max"));
+        return track;
+    }
+
+    private static void ApplyVariantQuality(QobuzTrack track, string? variant)
+    {
+        if (string.IsNullOrWhiteSpace(variant))
+        {
+            return;
+        }
+
+        var bitDepthMatch = Regex.Match(variant, @"(?<bits>\d+)\s*-?\s*bits?", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
+        if (bitDepthMatch.Success && int.TryParse(bitDepthMatch.Groups["bits"].Value, out var bitDepth))
+        {
+            track.MaximumBitDepth = bitDepth;
+            track.HiRes = bitDepth >= 24;
+        }
+
+        var sampleRateMatch = Regex.Match(variant, @"(?<rate>\d+(?:\.\d+)?)\s*k\s*hz", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(250));
+        if (sampleRateMatch.Success && double.TryParse(sampleRateMatch.Groups["rate"].Value, out var sampleRate))
+        {
+            track.MaximumSamplingRate = sampleRate;
+        }
+    }
+
+    private static int ParseDurationSeconds(string duration)
+    {
+        var parts = duration.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 2
+            && int.TryParse(parts[0], out var minutes)
+            && int.TryParse(parts[1], out var seconds))
+        {
+            return (minutes * 60) + seconds;
+        }
+
+        if (parts.Length == 3
+            && int.TryParse(parts[0], out var hours)
+            && int.TryParse(parts[1], out minutes)
+            && int.TryParse(parts[2], out seconds))
+        {
+            return (hours * 3600) + (minutes * 60) + seconds;
+        }
+
+        return 0;
+    }
+
+    private static string? ReadString(JsonElement element, string property)
+    {
+        return element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+    }
+
+    private static int ReadInt32(JsonElement element, string property)
+    {
+        return element.TryGetProperty(property, out var value)
+               && value.ValueKind == JsonValueKind.Number
+               && value.TryGetInt32(out var result)
+            ? result
+            : 0;
     }
 
     public async Task<QobuzArtist?> GetArtistAsync(int artistId, string store, int offset, int limit, CancellationToken cancellationToken)

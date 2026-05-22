@@ -8,6 +8,7 @@ public sealed class QobuzResolveRequest
     public string? UPC { get; set; }
     public string? Title { get; set; }
     public string? Artist { get; set; }
+    public string? Album { get; set; }
     public int? TrackNumber { get; set; }
 }
 

@@ -90,13 +90,32 @@ public sealed class QobuzResolveController : ControllerBase
         QobuzResolveRequest request,
         CancellationToken cancellationToken)
     {
-        var query = $"{request.Artist} {request.Title}".Trim();
-        if (string.IsNullOrWhiteSpace(query))
+        var queries = BuildFuzzyQueries(request);
+        if (queries.Count == 0)
         {
             return new QobuzResolveResult();
         }
 
-        var candidates = await _metadataService.SearchTracks(query, cancellationToken);
+        var candidatesById = new Dictionary<int, QobuzTrack>();
+        foreach (var query in BuildAlbumQueries(request))
+        {
+            var albumCandidates = await _metadataService.SearchAlbumTracks(query, cancellationToken);
+            foreach (var candidate in albumCandidates.Where(static candidate => candidate.Id > 0))
+            {
+                candidatesById.TryAdd(candidate.Id, candidate);
+            }
+        }
+
+        foreach (var query in queries)
+        {
+            var queryCandidates = await _metadataService.SearchTracks(query, cancellationToken);
+            foreach (var candidate in queryCandidates.Where(static candidate => candidate.Id > 0))
+            {
+                candidatesById.TryAdd(candidate.Id, candidate);
+            }
+        }
+
+        var candidates = candidatesById.Values.ToList();
         var bestMatch = QobuzTrackMatchingService.FindBestMatch(request.Title, request.Artist, null, candidates);
         if (bestMatch == null)
         {
@@ -109,5 +128,34 @@ public sealed class QobuzResolveController : ControllerBase
             MatchMethod = "Fuzzy",
             Confidence = 0.8
         };
+    }
+
+    private static List<string> BuildFuzzyQueries(QobuzResolveRequest request)
+    {
+        var queries = new List<string>();
+        AddQuery(queries, request.Artist, request.Title);
+        AddQuery(queries, request.Title, request.Artist, request.Album);
+        return queries;
+    }
+
+    private static List<string> BuildAlbumQueries(QobuzResolveRequest request)
+    {
+        var queries = new List<string>();
+        AddQuery(queries, request.Artist, request.Album);
+        AddQuery(queries, request.Album, request.Artist);
+        return queries;
+    }
+
+    private static void AddQuery(List<string> queries, params string?[] parts)
+    {
+        var query = string.Join(
+            ' ',
+            parts
+                .Where(static part => !string.IsNullOrWhiteSpace(part))
+                .Select(static part => part!.Trim()));
+        if (!string.IsNullOrWhiteSpace(query) && !queries.Contains(query, StringComparer.OrdinalIgnoreCase))
+        {
+            queries.Add(query);
+        }
     }
 }

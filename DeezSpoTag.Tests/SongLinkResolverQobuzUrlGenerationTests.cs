@@ -132,6 +132,9 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
 
         public Task<List<QobuzTrack>> SearchTracks(string query, CancellationToken ct) => Task.FromResult(searchHandler(query));
 
+        public Task<List<QobuzTrack>> SearchAlbumTracks(string query, CancellationToken ct)
+            => Task.FromResult(new List<QobuzTrack>());
+
         public Task<List<QobuzTrack>> SearchTracksAutosuggest(string query, string? store, CancellationToken ct)
             => Task.FromResult(new List<QobuzTrack>());
 

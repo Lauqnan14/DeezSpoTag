@@ -84,6 +84,34 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         return merged.Count > 0 ? merged.Values.ToList() : tracks;
     }
 
+    public async Task<List<QobuzTrack>> SearchAlbumTracks(string query, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return new List<QobuzTrack>();
+        }
+
+        var response = await _apiClient.SearchAlbumsAsync(query, limit: 10, offset: 0, ct);
+        var albums = response?.Albums?.Items ?? new List<QobuzAlbum>();
+        if (albums.Count == 0)
+        {
+            return new List<QobuzTrack>();
+        }
+
+        var results = new Dictionary<int, QobuzTrack>();
+        foreach (var album in albums.Where(static album => !string.IsNullOrWhiteSpace(album.Url)))
+        {
+            var pageTracks = await _apiClient.GetAlbumPageTracksAsync(album.Url!, ct);
+            foreach (var track in pageTracks.Where(static track => track.Id > 0))
+            {
+                MergeAlbumMetadata(track, album);
+                results.TryAdd(track.Id, track);
+            }
+        }
+
+        return results.Values.ToList();
+    }
+
     public async Task<List<QobuzTrack>> SearchTracksAutosuggest(string query, string? store, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -279,6 +307,34 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
             Performer = artist,
             Album = album
         };
+    }
+
+    private static void MergeAlbumMetadata(QobuzTrack track, QobuzAlbum album)
+    {
+        if (track.Album == null)
+        {
+            track.Album = album;
+            return;
+        }
+
+        track.Album.Id ??= album.Id;
+        track.Album.QobuzId = track.Album.QobuzId > 0 ? track.Album.QobuzId : album.QobuzId;
+        track.Album.Title ??= album.Title;
+        track.Album.Version ??= album.Version;
+        track.Album.Url ??= album.Url;
+        track.Album.Duration = track.Album.Duration > 0 ? track.Album.Duration : album.Duration;
+        track.Album.TracksCount = track.Album.TracksCount > 0 ? track.Album.TracksCount : album.TracksCount;
+        track.Album.MaximumBitDepth = track.Album.MaximumBitDepth > 0 ? track.Album.MaximumBitDepth : album.MaximumBitDepth;
+        track.Album.MaximumSamplingRate = track.Album.MaximumSamplingRate > 0 ? track.Album.MaximumSamplingRate : album.MaximumSamplingRate;
+        track.Album.HiRes = track.Album.HiRes || album.HiRes;
+        track.Album.Streamable = track.Album.Streamable || album.Streamable;
+        track.Album.Downloadable = track.Album.Downloadable || album.Downloadable;
+        track.Album.Purchasable = track.Album.Purchasable || album.Purchasable;
+
+        if (track.Album.Artists.Count == 0 && album.Artists.Count > 0)
+        {
+            track.Album.Artists.AddRange(album.Artists);
+        }
     }
 
     private static string? ReadString(System.Text.Json.JsonElement element, string property)

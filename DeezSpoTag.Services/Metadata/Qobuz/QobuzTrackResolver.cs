@@ -56,6 +56,7 @@ public sealed class QobuzTrackResolver
         }
 
         var candidates = new Dictionary<int, QobuzTrack>();
+        await CollectAlbumCandidatesAsync(candidates, artist, album, cancellationToken);
         await CollectCandidatesAsync(candidates, title, artist, album, cancellationToken);
 
         if (!string.IsNullOrWhiteSpace(isrc))
@@ -103,6 +104,22 @@ public sealed class QobuzTrackResolver
         }
     }
 
+    private async Task CollectAlbumCandidatesAsync(
+        Dictionary<int, QobuzTrack> candidates,
+        string? artist,
+        string? album,
+        CancellationToken cancellationToken)
+    {
+        foreach (var query in BuildAlbumQueries(artist, album))
+        {
+            var albumTracks = await SearchAlbumTracksSafeAsync(query, cancellationToken);
+            foreach (var track in albumTracks.Where(static track => track.Id > 0))
+            {
+                candidates[track.Id] = track;
+            }
+        }
+    }
+
     private async Task<QobuzTrack?> TryFindTrackByISRCAsync(string isrc, CancellationToken cancellationToken)
     {
         try
@@ -137,6 +154,19 @@ public sealed class QobuzTrackResolver
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Qobuz track search failed for query {Query}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
+            return new List<QobuzTrack>();
+        }
+    }
+
+    private async Task<List<QobuzTrack>> SearchAlbumTracksSafeAsync(string query, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _metadataService.SearchAlbumTracks(query, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Qobuz album track search failed for query {Query}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             return new List<QobuzTrack>();
         }
     }
@@ -345,6 +375,27 @@ public sealed class QobuzTrackResolver
         if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
         {
             seen.Add($"{title.Trim()} {artist.Trim()}");
+        }
+
+        return seen;
+    }
+
+    private static HashSet<string> BuildAlbumQueries(string? artist, string? album)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(album))
+        {
+            return seen;
+        }
+
+        if (!string.IsNullOrWhiteSpace(artist))
+        {
+            seen.Add($"{artist.Trim()} {album.Trim()}");
+            seen.Add($"{album.Trim()} {artist.Trim()}");
+        }
+        else
+        {
+            seen.Add(album.Trim());
         }
 
         return seen;

@@ -68,7 +68,7 @@ public sealed class QobuzTrackResolverTests
     public async Task ResolveTrackAsync_UsesAlbumAwareQueries()
     {
         var service = new StubQobuzMetadataService();
-        service.SearchHandler = query => query.Contains("Discovery", StringComparison.OrdinalIgnoreCase)
+        service.AlbumSearchHandler = query => query.Contains("Discovery", StringComparison.OrdinalIgnoreCase)
             ? new List<QobuzTrack>
             {
                 new()
@@ -112,6 +112,7 @@ public sealed class QobuzTrackResolverTests
     {
         public QobuzTrack? IsrcResult { get; init; }
         public Func<string, List<QobuzTrack>> SearchHandler { get; set; } = _ => new List<QobuzTrack>();
+        public Func<string, List<QobuzTrack>> AlbumSearchHandler { get; set; } = _ => new List<QobuzTrack>();
         public List<string> Queries { get; } = new();
 
         public Task<QobuzTrack?> FindTrackByISRC(string isrc, CancellationToken ct)
@@ -133,6 +134,12 @@ public sealed class QobuzTrackResolverTests
         {
             Queries.Add(query);
             return Task.FromResult(SearchHandler(query));
+        }
+
+        public Task<List<QobuzTrack>> SearchAlbumTracks(string query, CancellationToken ct)
+        {
+            Queries.Add($"album:{query}");
+            return Task.FromResult(AlbumSearchHandler(query));
         }
 
         public Task<List<QobuzTrack>> SearchTracksAutosuggest(string query, string? store, CancellationToken ct)

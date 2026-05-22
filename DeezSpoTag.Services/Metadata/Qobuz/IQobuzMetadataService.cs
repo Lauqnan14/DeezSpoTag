@@ -8,6 +8,7 @@ public interface IQobuzMetadataService
     Task<QobuzAlbum?> FindAlbumByUPC(string upc, CancellationToken ct);
     Task<QobuzArtist?> FindArtistByName(string name, CancellationToken ct);
     Task<List<QobuzTrack>> SearchTracks(string query, CancellationToken ct);
+    Task<List<QobuzTrack>> SearchAlbumTracks(string query, CancellationToken ct);
     Task<List<QobuzTrack>> SearchTracksAutosuggest(string query, string? store, CancellationToken ct);
     Task<List<QobuzAlbum>> SearchAlbums(string query, CancellationToken ct);
     Task<List<QobuzArtist>> SearchArtists(string query, CancellationToken ct);
