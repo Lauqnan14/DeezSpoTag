@@ -113,21 +113,26 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void SettingsView_BlocksSavingWhenNoWatchlistAlbumGroupIsSelected()
+    public void SettingsView_DoesNotExposeGlobalArtistAlbumGroupPreferences()
     {
         var repoRoot = ResolveRepoRoot();
         var viewPath = Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml");
         Assert.True(File.Exists(viewPath), $"Missing settings view: {viewPath}");
 
         var source = File.ReadAllText(viewPath);
-        Assert.Contains("Select at least one release group for artist watchlist monitoring.", source, StringComparison.Ordinal);
-        Assert.Contains("Select at least one artist album group.", source, StringComparison.Ordinal);
-        Assert.Contains("settings.watchedArtistAlbumGroup.length === 0", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Artist Album Groups", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("watchAlbumGroupAlbum", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("watchAlbumGroupSingle", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("watchAlbumGroupCompilation", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("watchAlbumGroupAppearsOn", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Select at least one artist album group.", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("settings.watchedArtistAlbumGroup.length === 0", source, StringComparison.Ordinal);
         Assert.Contains("Max Monitored Items Per Run", source, StringComparison.Ordinal);
         Assert.Contains(WatchMaxReleasesPerArtistJsonName, source, StringComparison.Ordinal);
         Assert.Contains(WatchMaxTracksPerPlaylistCheckJsonName, source, StringComparison.Ordinal);
         Assert.Contains(WatchArtistTopSongsEnabledJsonName, source, StringComparison.Ordinal);
         Assert.Contains(WatchArtistLatestReleasesOnlyJsonName, source, StringComparison.Ordinal);
+        Assert.Contains("watchedArtistAlbumGroup: Array.isArray(baseSettings.watchedArtistAlbumGroup) ? [...baseSettings.watchedArtistAlbumGroup] : []", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -147,8 +152,13 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain(WatchMaxItemsPerRunName, playlistWatchSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxItemsPerRunName, hostedSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxReleasesPerArtistName, artistWatchSource, StringComparison.Ordinal);
-        Assert.Contains("WatchArtistTopSongsEnabled", artistWatchSource, StringComparison.Ordinal);
-        Assert.Contains("WatchArtistLatestReleasesOnly", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveArtistAlbumGroups(artist)", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("DefaultArtistAlbumGroups = new[] { AlbumGroup, SingleGroup }", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("artist.TopSongsEnabled ?? false", artistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("artist.LatestReleasesOnly ?? false", artistWatchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("artist.WatchedAlbumGroups ?? settings.WatchedArtistAlbumGroup", artistWatchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("settings.WatchArtistTopSongsEnabled", artistWatchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("settings.WatchArtistLatestReleasesOnly", artistWatchSource, StringComparison.Ordinal);
         Assert.Contains("top-track:", artistWatchSource, StringComparison.Ordinal);
         Assert.Contains("artist-top:", artistWatchSource, StringComparison.Ordinal);
         Assert.Contains("UpdateWatchlistPreferencesAsync", repoSource, StringComparison.Ordinal);
@@ -157,6 +167,11 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("watchedArtistAlbumGroup", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("watchArtistTopSongsEnabled", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("watchArtistLatestReleasesOnly", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("const selectedGroups = Array.isArray(currentGroups) && currentGroups.length > 0", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains(": ['album', 'single'];", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("globalSettings.watchedArtistAlbumGroup", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("globalSettings.watchArtistTopSongsEnabled", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("globalSettings.watchArtistLatestReleasesOnly", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("preferredEngine", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("routingRules", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("data-artist-engine", watchlistScriptSource, StringComparison.Ordinal);

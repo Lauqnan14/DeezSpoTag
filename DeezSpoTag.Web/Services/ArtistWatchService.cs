@@ -48,6 +48,7 @@ public sealed class ArtistWatchService
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
     private const string SpotifyTopTrackWatchIdPrefix = "top-track:";
+    private static readonly IReadOnlyList<string> DefaultArtistAlbumGroups = new[] { AlbumGroup, SingleGroup };
     internal const int MaxReleasesPerArtistLimit = 100;
 
     private readonly LibraryRepository _libraryRepository;
@@ -99,7 +100,7 @@ public sealed class ArtistWatchService
             return;
         }
 
-        var albumGroups = NormalizeAlbumGroups(artist.WatchedAlbumGroups ?? settings.WatchedArtistAlbumGroup);
+        var albumGroups = ResolveArtistAlbumGroups(artist);
         await CheckSpotifyArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckAppleArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckDeezerArtistAsync(artist, settings, albumGroups, cancellationToken);
@@ -172,13 +173,19 @@ public sealed class ArtistWatchService
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         int? batchNextOffset)
     {
-        var latestReleasesOnly = artist.LatestReleasesOnly ?? settings.WatchArtistLatestReleasesOnly;
+        var latestReleasesOnly = artist.LatestReleasesOnly ?? false;
         var downloadEntireDiscography = artist.DownloadDiscographyEnabled ?? !latestReleasesOnly;
         var offset = downloadEntireDiscography ? Math.Max(0, batchNextOffset ?? 0) : 0;
         return new SpotifyWatchState(
             offset,
             downloadEntireDiscography,
-            artist.TopSongsEnabled ?? settings.WatchArtistTopSongsEnabled);
+            artist.TopSongsEnabled ?? false);
+    }
+
+    private static IReadOnlyList<string> ResolveArtistAlbumGroups(WatchlistArtistDto artist)
+    {
+        var normalized = NormalizeAlbumGroups(artist.WatchedAlbumGroups);
+        return normalized.Count > 0 ? normalized : DefaultArtistAlbumGroups;
     }
 
     private async Task QueueSpotifyAlbumReleasesAsync(

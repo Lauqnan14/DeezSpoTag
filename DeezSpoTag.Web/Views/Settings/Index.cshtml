@@ -1041,37 +1041,6 @@
                     <input type="checkbox" id="watchUseSnapshotIdChecking">
                     <label for="watchUseSnapshotIdChecking">Use Snapshot ID Checking</label>
                 </div>
-                <div class="form-group">
-                        <div class="form-label">Artist Album Groups</div>
-                    <div class="warning-text">Select at least one release group for artist watchlist monitoring.</div>
-                    <div class="form-row-3">
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="watchAlbumGroupAlbum">
-                            <label for="watchAlbumGroupAlbum">Album</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="watchAlbumGroupSingle">
-                            <label for="watchAlbumGroupSingle">Single</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="watchAlbumGroupCompilation">
-                            <label for="watchAlbumGroupCompilation">Compilation</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="watchAlbumGroupAppearsOn">
-                            <label for="watchAlbumGroupAppearsOn">Appears On</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="watchArtistTopSongsEnabled">
-                            <label for="watchArtistTopSongsEnabled">Spotify's Top Songs</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="watchArtistLatestReleasesOnly">
-                            <label for="watchArtistLatestReleasesOnly">Latest Releases</label>
-                        </div>
-                    </div>
-                </div>
-
             </div>
         </div>
         <div class="settings-section" id="video-settings">
@@ -3257,16 +3226,6 @@ function loadSettings(settings) {
     setFieldValue('watchDelayBetweenPlaylistsSeconds', settings.watchDelayBetweenPlaylistsSeconds);
     setFieldValue('watchDelayBetweenArtistsSeconds', settings.watchDelayBetweenArtistsSeconds);
     setCheckboxValue('watchUseSnapshotIdChecking', settings.watchUseSnapshotIdChecking);
-    setCheckboxValue('watchArtistTopSongsEnabled', settings.watchArtistTopSongsEnabled);
-    setCheckboxValue('watchArtistLatestReleasesOnly', settings.watchArtistLatestReleasesOnly);
-
-    const albumGroups = Array.isArray(settings.watchedArtistAlbumGroup)
-        ? settings.watchedArtistAlbumGroup.map(group => String(group).toLowerCase())
-        : [];
-    setCheckboxValue('watchAlbumGroupAlbum', albumGroups.includes('album'));
-    setCheckboxValue('watchAlbumGroupSingle', albumGroups.includes('single'));
-    setCheckboxValue('watchAlbumGroupCompilation', albumGroups.includes('compilation'));
-    setCheckboxValue('watchAlbumGroupAppearsOn', albumGroups.includes('appears_on'));
     
     setFieldValue('deezerLanguage', settings.deezerLanguage || 'en');
     setFieldValue('deezerCountry', settings.deezerCountry || 'US');
@@ -3409,34 +3368,6 @@ function collectFormData() {
     );
     const baseVideo = baseSettings.video || {};
     const baseTags = baseSettings.tags || {};
-    const getAlbumGroups = () => {
-        const albumControl = document.getElementById('watchAlbumGroupAlbum');
-        const singleControl = document.getElementById('watchAlbumGroupSingle');
-        const compilationControl = document.getElementById('watchAlbumGroupCompilation');
-        const appearsOnControl = document.getElementById('watchAlbumGroupAppearsOn');
-        if (!albumControl && !singleControl && !compilationControl && !appearsOnControl) {
-            return Array.isArray(baseSettings.watchedArtistAlbumGroup)
-                ? [...baseSettings.watchedArtistAlbumGroup]
-                : [];
-        }
-
-        const groups = [];
-        if (albumControl?.checked) {
-            groups.push('album');
-        }
-        if (singleControl?.checked) {
-            groups.push('single');
-        }
-        if (compilationControl?.checked) {
-            groups.push('compilation');
-        }
-        if (appearsOnControl?.checked) {
-            groups.push('appears_on');
-        }
-        return groups;
-    };
-    const selectedAlbumGroups = getAlbumGroups();
-
     const formData = {
         downloadLocation: getValue('downloadLocation'),
 
@@ -3587,9 +3518,9 @@ function collectFormData() {
         watchDelayBetweenPlaylistsSeconds: getNumber('watchDelayBetweenPlaylistsSeconds', baseSettings.watchDelayBetweenPlaylistsSeconds ?? 2),
         watchDelayBetweenArtistsSeconds: getNumber('watchDelayBetweenArtistsSeconds', baseSettings.watchDelayBetweenArtistsSeconds ?? 5),
         watchUseSnapshotIdChecking: getChecked('watchUseSnapshotIdChecking', baseSettings.watchUseSnapshotIdChecking ?? true),
-        watchArtistTopSongsEnabled: getChecked('watchArtistTopSongsEnabled', baseSettings.watchArtistTopSongsEnabled ?? false),
-        watchArtistLatestReleasesOnly: getChecked('watchArtistLatestReleasesOnly', baseSettings.watchArtistLatestReleasesOnly ?? false),
-        watchedArtistAlbumGroup: selectedAlbumGroups,
+        watchArtistTopSongsEnabled: baseSettings.watchArtistTopSongsEnabled ?? false,
+        watchArtistLatestReleasesOnly: baseSettings.watchArtistLatestReleasesOnly ?? false,
+        watchedArtistAlbumGroup: Array.isArray(baseSettings.watchedArtistAlbumGroup) ? [...baseSettings.watchedArtistAlbumGroup] : [],
 
         tags: {
             title: getChecked('tagTitle', baseTags.title ?? true),
@@ -3636,11 +3567,6 @@ async function saveSettings(showSuccessToast = true) {
     settingsSaveInFlight = true;
     try {
         const settings = collectFormData();
-        if (Array.isArray(settings.watchedArtistAlbumGroup) && settings.watchedArtistAlbumGroup.length === 0) {
-            showToast('Select at least one artist album group.', 'error');
-            return;
-        }
-        
         const response = await fetch('/api/settings', {
             method: 'POST',
             headers: {

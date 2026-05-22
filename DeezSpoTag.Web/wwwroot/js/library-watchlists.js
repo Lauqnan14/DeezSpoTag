@@ -572,17 +572,14 @@ function resolveRoutingOperatorOptions(field) {
 }
 
 function resolveArtistSettingsDefaults(currentGroups, currentTopSongs, currentLatestOnly, globalSettings) {
-    const globalGroups = Array.isArray(globalSettings.watchedArtistAlbumGroup)
-        ? globalSettings.watchedArtistAlbumGroup.map(value => String(value || '').toLowerCase())
-        : ['album', 'single'];
     const selectedGroups = Array.isArray(currentGroups) && currentGroups.length > 0
         ? currentGroups
-        : globalGroups;
+        : ['album', 'single'];
     const topSongsEnabled = currentTopSongs === ''
-        ? globalSettings.watchArtistTopSongsEnabled === true
+        ? false
         : currentTopSongs === 'true';
     const latestOnly = currentLatestOnly === ''
-        ? globalSettings.watchArtistLatestReleasesOnly === true
+        ? false
         : currentLatestOnly === 'true';
 
     return { selectedGroups, topSongsEnabled, latestOnly };
