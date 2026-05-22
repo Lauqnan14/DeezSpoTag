@@ -422,6 +422,7 @@ public partial class AutoTagService
 
     public sealed class AutoTagServiceCollaborators
     {
+        public required IConfiguration Configuration { get; init; }
         public required LibraryConfigStore ActivityLog { get; init; }
         public required AuthenticatedDeezerService DeezerAuth { get; init; }
         public required AutoTagMetadataService MetadataService { get; init; }
@@ -478,6 +479,7 @@ public partial class AutoTagService
         _oneTaggerSpotifyTokenStore = new ProtectedCredentialFileStore(
             collaborators.DataProtectionProvider,
             "DeezSpoTag.OneTagger.SpotifyTokenCache");
+        var configuration = collaborators.Configuration;
         var appDataRoot = AppDataPaths.GetDataRoot(env);
         var autoTagRoot = Path.Join(appDataRoot, AutoTagFolderName);
         _jobsDir = Path.Join(autoTagRoot, "jobs");
@@ -493,7 +495,10 @@ public partial class AutoTagService
         Directory.CreateDirectory(_historyDir);
         Directory.CreateDirectory(_runtimeConfigDir);
         _disableAutoMove = ResolveDisableAutoMove();
-        BackfillArchivedRuns();
+        if (ShouldBackfillArchivedRunsOnStartup(configuration))
+        {
+            BackfillArchivedRuns();
+        }
     }
 
     public bool HasRunningJobs()
@@ -6582,6 +6587,19 @@ public partial class AutoTagService
         {
             _logger.LogDebug(ex, "Failed to backfill archived AutoTag runs.");
         }
+    }
+
+    private static bool ShouldBackfillArchivedRunsOnStartup(IConfiguration configuration)
+    {
+        var configured = Environment.GetEnvironmentVariable("DEEZSPOTAG_AUTOTAG_BACKFILL_ON_STARTUP");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return string.Equals(configured, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(configured, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(configured, "yes", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return configuration.GetValue("AutoTag:ArchiveBackfillOnStartup", false);
     }
 
     private bool ShouldRepairRunArchive(string jobId)

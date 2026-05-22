@@ -7,20 +7,28 @@ public sealed class SpotifyHomeFeedRefreshHostedService : BackgroundService
     private static readonly TimeSpan DisabledPollInterval = TimeSpan.FromMinutes(15);
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BackgroundWorkCoordinator _workCoordinator;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<SpotifyHomeFeedRefreshHostedService> _logger;
 
     public SpotifyHomeFeedRefreshHostedService(
         IServiceScopeFactory scopeFactory,
         BackgroundWorkCoordinator workCoordinator,
+        IConfiguration configuration,
         ILogger<SpotifyHomeFeedRefreshHostedService> logger)
     {
         _scopeFactory = scopeFactory;
         _workCoordinator = workCoordinator;
+        _configuration = configuration;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "SpotifyHomeFeedRefresh"))
+        {
+            return;
+        }
+
         try
         {
             await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);

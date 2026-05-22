@@ -4,14 +4,17 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class AutoTagRunIndexWarmupHostedService : BackgroundService
 {
-    private readonly AutoTagService _autoTagService;
+    private readonly IServiceProvider _serviceProvider;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<AutoTagRunIndexWarmupHostedService> _logger;
 
     public AutoTagRunIndexWarmupHostedService(
-        AutoTagService autoTagService,
+        IServiceProvider serviceProvider,
+        IConfiguration configuration,
         ILogger<AutoTagRunIndexWarmupHostedService> logger)
     {
-        _autoTagService = autoTagService;
+        _serviceProvider = serviceProvider;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -24,7 +27,12 @@ public sealed class AutoTagRunIndexWarmupHostedService : BackgroundService
 
         try
         {
-            _autoTagService.WarmRunIndexIfMissing();
+            if (!_configuration.GetValue("AutoTag:RunIndexWarmupOnStartup", false))
+            {
+                return Task.CompletedTask;
+            }
+
+            _serviceProvider.GetRequiredService<AutoTagService>().WarmRunIndexIfMissing();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

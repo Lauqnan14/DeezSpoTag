@@ -4,18 +4,26 @@ public sealed class QualityScannerAutomationHostedService : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(1);
     private readonly QualityScannerService _qualityScannerService;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<QualityScannerAutomationHostedService> _logger;
 
     public QualityScannerAutomationHostedService(
         QualityScannerService qualityScannerService,
+        IConfiguration configuration,
         ILogger<QualityScannerAutomationHostedService> logger)
     {
         _qualityScannerService = qualityScannerService;
+        _configuration = configuration;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "QualityScanner"))
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             if (!await ExecuteAutomationIterationAsync(stoppingToken))

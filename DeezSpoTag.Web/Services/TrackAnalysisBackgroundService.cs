@@ -79,6 +79,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly VibeAnalysisSettingsStore _settingsStore;
     private readonly LastFmTagService _lastFmTagService;
     private readonly MoodBucketService _moodBucketService;
+    private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _analysisLock = new(1, 1);
     private readonly object _mlCapabilityLock = new();
     private MlCapability? _mlCapability;
@@ -97,7 +98,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         ILogger<TrackAnalysisBackgroundService> logger,
         VibeAnalysisSettingsStore settingsStore,
         LastFmTagService lastFmTagService,
-        MoodBucketService moodBucketService)
+        MoodBucketService moodBucketService,
+        IConfiguration configuration)
     {
         _repository = repository;
         _configStore = configStore;
@@ -105,10 +107,16 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         _settingsStore = settingsStore;
         _lastFmTagService = lastFmTagService;
         _moodBucketService = moodBucketService;
+        _configuration = configuration;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "VibeAnalysis"))
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try

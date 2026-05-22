@@ -94,5 +94,5 @@ public sealed class VibeAnalysisSettingsStore
 
 public sealed record VibeAnalysisSettingsDto(bool Enabled, int BatchSize, int IntervalMinutes)
 {
-    public static VibeAnalysisSettingsDto Defaults() => new(true, 50, 30);
+    public static VibeAnalysisSettingsDto Defaults() => new(false, 50, 30);
 }

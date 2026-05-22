@@ -8,16 +8,16 @@ public sealed class AutoTagStuckRecoveryHostedService : BackgroundService
     private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan DefaultStaleWindow = TimeSpan.FromMinutes(30);
 
-    private readonly AutoTagService _autoTagService;
+    private readonly IServiceProvider _serviceProvider;
     private readonly IConfiguration _configuration;
     private readonly ILogger<AutoTagStuckRecoveryHostedService> _logger;
 
     public AutoTagStuckRecoveryHostedService(
-        AutoTagService autoTagService,
+        IServiceProvider serviceProvider,
         IConfiguration configuration,
         ILogger<AutoTagStuckRecoveryHostedService> logger)
     {
-        _autoTagService = autoTagService;
+        _serviceProvider = serviceProvider;
         _configuration = configuration;
         _logger = logger;
     }
@@ -54,7 +54,7 @@ public sealed class AutoTagStuckRecoveryHostedService : BackgroundService
 
     private async Task RunRecoveryPassAsync(CancellationToken stoppingToken)
     {
-        if (!_configuration.GetValue("AutoTag:StuckRecovery:Enabled", true))
+        if (!_configuration.GetValue("AutoTag:StuckRecovery:Enabled", false))
         {
             return;
         }
@@ -67,7 +67,7 @@ public sealed class AutoTagStuckRecoveryHostedService : BackgroundService
 
         try
         {
-            await _autoTagService.RecoverStuckJobsAsync(
+            await _serviceProvider.GetRequiredService<AutoTagService>().RecoverStuckJobsAsync(
                 TimeSpan.FromMinutes(timeoutMinutes),
                 restart,
                 stoppingToken);

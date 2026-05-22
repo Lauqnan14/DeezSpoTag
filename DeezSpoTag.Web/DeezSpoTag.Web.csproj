@@ -8,6 +8,7 @@
     <AssemblyDescription>DeezSpoTag Frontend UI</AssemblyDescription>
     <Copyright>Copyright © 2025</Copyright>
     <EnableDefaultContentItems>true</EnableDefaultContentItems>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>

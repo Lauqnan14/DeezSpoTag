@@ -13,20 +13,28 @@ public sealed class MoodBucketBackgroundService : BackgroundService
 
     private readonly MoodBucketService _moodBucketService;
     private readonly LibraryRepository _repository;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<MoodBucketBackgroundService> _logger;
 
     public MoodBucketBackgroundService(
         MoodBucketService moodBucketService,
         LibraryRepository repository,
+        IConfiguration configuration,
         ILogger<MoodBucketBackgroundService> logger)
     {
         _moodBucketService = moodBucketService;
         _repository = repository;
+        _configuration = configuration;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "MoodBucket"))
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try

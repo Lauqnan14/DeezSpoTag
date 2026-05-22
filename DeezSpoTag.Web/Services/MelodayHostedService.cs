@@ -7,6 +7,7 @@ public sealed class MelodayHostedService : BackgroundService
     private readonly MelodayService _melodayService;
     private readonly MelodayOptions _options;
     private readonly MelodaySettingsStore _settingsStore;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<MelodayHostedService> _logger;
     private string? _lastPeriod;
 
@@ -14,16 +15,23 @@ public sealed class MelodayHostedService : BackgroundService
         MelodayService melodayService,
         IOptions<MelodayOptions> options,
         ILogger<MelodayHostedService> logger,
-        MelodaySettingsStore settingsStore)
+        MelodaySettingsStore settingsStore,
+        IConfiguration configuration)
     {
         _melodayService = melodayService;
         _options = options.Value;
         _logger = logger;
         _settingsStore = settingsStore;
+        _configuration = configuration;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "Meloday"))
+        {
+            return;
+        }
+
         var effective = await _settingsStore.LoadAsync(_options);
         var loggedDisabledState = false;
 

@@ -14,7 +14,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class MelodayOptions
 {
-    public bool Enabled { get; set; } = true;
+    public bool Enabled { get; set; }
     public string? LibraryName { get; set; }
     public string PlaylistPrefix { get; set; } = "Meloday for";
     public string? BaseUrl { get; set; }

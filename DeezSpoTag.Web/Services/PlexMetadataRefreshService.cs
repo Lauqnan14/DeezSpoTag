@@ -8,6 +8,7 @@ public sealed class PlexMetadataRefreshService : BackgroundService
     private readonly PlexApiClient _plexApiClient;
     private readonly PlatformAuthService _authService;
     private readonly LibraryRepository _libraryRepository;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<PlexMetadataRefreshService> _logger;
     private readonly TimeSpan _interval = TimeSpan.FromHours(6);
 
@@ -15,16 +16,23 @@ public sealed class PlexMetadataRefreshService : BackgroundService
         PlexApiClient plexApiClient,
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
+        IConfiguration configuration,
         ILogger<PlexMetadataRefreshService> logger)
     {
         _plexApiClient = plexApiClient;
         _authService = authService;
         _libraryRepository = libraryRepository;
+        _configuration = configuration;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "PlexMetadataRefresh"))
+        {
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try

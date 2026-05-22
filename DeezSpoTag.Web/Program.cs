@@ -1252,6 +1252,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagService.AutoTagServiceCollaborators>(sp =>
             new DeezSpoTag.Web.Services.AutoTagService.AutoTagServiceCollaborators
             {
+                Configuration = sp.GetRequiredService<IConfiguration>(),
                 ActivityLog = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
                 DeezerAuth = sp.GetRequiredService<DeezSpoTag.Services.Download.AuthenticatedDeezerService>(),
                 MetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagMetadataService>(),

@@ -5,18 +5,26 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
     private static readonly TimeSpan InitialWarmupDelay = TimeSpan.FromSeconds(45);
 
     private readonly LibraryRecommendationService _recommendationService;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<LibraryRecommendationAutomationHostedService> _logger;
 
     public LibraryRecommendationAutomationHostedService(
         LibraryRecommendationService recommendationService,
+        IConfiguration configuration,
         ILogger<LibraryRecommendationAutomationHostedService> logger)
     {
         _recommendationService = recommendationService;
+        _configuration = configuration;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "LibraryRecommendations"))
+        {
+            return;
+        }
+
         if (InitialWarmupDelay > TimeSpan.Zero)
         {
             try

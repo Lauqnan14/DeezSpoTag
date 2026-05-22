@@ -16,6 +16,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private const string PlaylistKind = "playlist";
     private readonly IServiceProvider _serviceProvider;
     private readonly BackgroundWorkCoordinator _workCoordinator;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<PlaylistWatchHostedService> _logger;
     private readonly SemaphoreSlim _runLock = new(1, 1);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _itemLocks = new();
@@ -27,22 +28,30 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     public PlaylistWatchHostedService(
         IServiceProvider serviceProvider,
         BackgroundWorkCoordinator workCoordinator,
+        IConfiguration configuration,
         ILogger<PlaylistWatchHostedService> logger)
     {
         _serviceProvider = serviceProvider;
         _workCoordinator = workCoordinator;
+        _configuration = configuration;
         _logger = logger;
     }
 
     public PlaylistWatchHostedService(
         IServiceProvider serviceProvider,
+        IConfiguration configuration,
         ILogger<PlaylistWatchHostedService> logger)
-        : this(serviceProvider, new BackgroundWorkCoordinator(), logger)
+        : this(serviceProvider, new BackgroundWorkCoordinator(), configuration, logger)
     {
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "Watchlist"))
+        {
+            return;
+        }
+
         _logger.LogInformation("Playlist watch service started.");
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
 
