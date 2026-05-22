@@ -8272,12 +8272,20 @@ function setFavoriteProviderVisibility(sectionId, hasAnyContent) {
     section.hidden = !hasAnyContent;
 }
 
+function trimTrailingDots(value) {
+    let end = value.length;
+    while (end > 0 && value[end - 1] === '.') {
+        end -= 1;
+    }
+    return value.slice(0, end);
+}
+
 function hostMatchesDomain(hostname, expectedDomain) {
     if (typeof hostname !== 'string' || typeof expectedDomain !== 'string') {
         return false;
     }
-    const host = hostname.trim().toLowerCase().replace(/\.+$/, '');
-    const expected = expectedDomain.trim().toLowerCase().replace(/\.+$/, '');
+    const host = trimTrailingDots(hostname.trim().toLowerCase());
+    const expected = trimTrailingDots(expectedDomain.trim().toLowerCase());
     if (!host || !expected) {
         return false;
     }

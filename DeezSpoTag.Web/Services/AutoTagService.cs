@@ -558,20 +558,24 @@ public partial class AutoTagService
         return false;
     }
 
+    public sealed record StartJobOptions(
+        string Trigger = AutoTagLiterals.ManualTrigger,
+        TechnicalTagSettings? TechnicalOverride = null,
+        string? ProfileId = null,
+        string? ProfileName = null,
+        string? RunIntent = null,
+        FolderStructureSettings? FolderStructureOverride = null);
+
     public async Task<AutoTagJob> StartJob(
         string path,
         string configJson,
-        string trigger = AutoTagLiterals.ManualTrigger,
-        TechnicalTagSettings? technicalOverride = null,
-        string? profileId = null,
-        string? profileName = null,
-        string? runIntent = null,
-        FolderStructureSettings? folderStructureOverride = null)
+        StartJobOptions? options = null)
     {
+        options ??= new StartJobOptions();
         var normalizedPath = NormalizePathForJob(path);
-        var normalizedTrigger = NormalizeRunTrigger(trigger);
-        var normalizedRunIntent = NormalizeRunIntent(runIntent);
-        var resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, profileId);
+        var normalizedTrigger = NormalizeRunTrigger(options.Trigger);
+        var normalizedRunIntent = NormalizeRunIntent(options.RunIntent);
+        var resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, options.ProfileId);
         var resumeSourceJob = resumeSeed == null ? null : GetJob(resumeSeed.SourceJobId) ?? LoadJob(resumeSeed.SourceJobId);
         var resumedJobId = resumeSeed?.ResumeJobId ?? Guid.NewGuid().ToString("N");
         var resumedStartedAt = resumeSeed?.StartedAt ?? DateTimeOffset.UtcNow;
@@ -580,8 +584,8 @@ public partial class AutoTagService
             normalizedPath,
             normalizedTrigger,
             normalizedRunIntent,
-            profileId,
-            profileName);
+            options.ProfileId,
+            options.ProfileName);
         if (blockedByTriggerPolicy != null)
         {
             return blockedByTriggerPolicy;
@@ -591,8 +595,8 @@ public partial class AutoTagService
             normalizedPath,
             normalizedTrigger,
             normalizedRunIntent,
-            profileId,
-            profileName);
+            options.ProfileId,
+            options.ProfileName);
         if (blockedByActiveDownloads != null)
         {
             return blockedByActiveDownloads;
@@ -602,8 +606,8 @@ public partial class AutoTagService
             normalizedPath,
             normalizedTrigger,
             normalizedRunIntent,
-            profileId,
-            profileName);
+            options.ProfileId,
+            options.ProfileName);
         if (blockedByScope != null)
         {
             return blockedByScope;
@@ -616,8 +620,8 @@ public partial class AutoTagService
                 normalizedPath,
                 normalizedTrigger,
                 normalizedRunIntent,
-                profileId,
-                profileName);
+                options.ProfileId,
+                options.ProfileName);
         }
 
         var job = new AutoTagJob
@@ -628,8 +632,8 @@ public partial class AutoTagService
             RootPath = normalizedPath,
             Trigger = normalizedTrigger,
             RunIntent = normalizedRunIntent,
-            ProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId.Trim(),
-            ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim(),
+            ProfileId = string.IsNullOrWhiteSpace(options.ProfileId) ? null : options.ProfileId.Trim(),
+            ProfileName = string.IsNullOrWhiteSpace(options.ProfileName) ? null : options.ProfileName.Trim(),
             ResumeCheckpoint = resumeSeed?.Checkpoint,
             ResumeFromJobId = null,
             LastActivityAt = DateTimeOffset.UtcNow
@@ -660,8 +664,8 @@ public partial class AutoTagService
         runtimeConfigJson = InjectRunTrigger(runtimeConfigJson, normalizedTrigger);
         runtimeConfigJson = InjectProfileRuntimeSettings(
             runtimeConfigJson,
-            technicalOverride,
-            folderStructureOverride,
+            options.TechnicalOverride,
+            options.FolderStructureOverride,
             job.ProfileId,
             job.ProfileName);
         var persistedConfigJson = RedactSensitiveConfigJson(runtimeConfigJson);
@@ -6963,11 +6967,11 @@ public partial class AutoTagService
             var resumed = await StartJob(
                 job.RootPath!,
                 configJson,
-                job.Trigger,
-                null,
-                job.ProfileId,
-                job.ProfileName,
-                job.RunIntent);
+                new StartJobOptions(
+                    Trigger: job.Trigger,
+                    ProfileId: job.ProfileId,
+                    ProfileName: job.ProfileName,
+                    RunIntent: job.RunIntent));
             AppendLog(job, $"stuck watchdog: auto-resume created job {resumed.Id} (status={resumed.Status}).");
         }
         catch (OperationCanceledException)

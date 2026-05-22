@@ -77,12 +77,11 @@ public class AutoTagJobsController : ControllerBase
         var job = await _autoTagService.StartJob(
             normalizedPath,
             SerializeConfig(configNode),
-            "manual",
-            null,
-            selectedProfileResult.Profile?.Id,
-            selectedProfileResult.Profile?.Name,
-            request.RunIntent,
-            selectedProfileResult.Profile?.FolderStructure);
+            new AutoTagService.StartJobOptions(
+                ProfileId: selectedProfileResult.Profile?.Id,
+                ProfileName: selectedProfileResult.Profile?.Name,
+                RunIntent: request.RunIntent,
+                FolderStructureOverride: selectedProfileResult.Profile?.FolderStructure));
         if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(job.Id))
         {

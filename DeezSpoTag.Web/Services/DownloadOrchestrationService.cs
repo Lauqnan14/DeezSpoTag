@@ -643,11 +643,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             enrichmentJob = await _autoTagService.StartJob(
                 downloadRootPath,
                 enrichmentConfig,
-                AutoTagLiterals.AutomationTrigger,
-                null,
-                automationProfile?.Id,
-                automationProfile?.Name,
-                AutoTagLiterals.RunIntentDownloadEnrichment);
+                new AutoTagService.StartJobOptions(
+                    Trigger: AutoTagLiterals.AutomationTrigger,
+                    ProfileId: automationProfile?.Id,
+                    ProfileName: automationProfile?.Name,
+                    RunIntent: AutoTagLiterals.RunIntentDownloadEnrichment));
             await WaitForJobCompletionAsync(enrichmentJob, cancellationToken);
         }
         finally
@@ -1019,11 +1019,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             enhancementJob = await _autoTagService.StartJob(
                 folderRootPath,
                 enhancementConfig,
-                AutoTagLiterals.ScheduleTrigger,
-                null,
-                enhancementProfile.Id,
-                enhancementProfile.Name,
-                AutoTagLiterals.RunIntentEnhancementRecentDownloads);
+                new AutoTagService.StartJobOptions(
+                    Trigger: AutoTagLiterals.ScheduleTrigger,
+                    ProfileId: enhancementProfile.Id,
+                    ProfileName: enhancementProfile.Name,
+                    RunIntent: AutoTagLiterals.RunIntentEnhancementRecentDownloads));
             MarkEnhancementStageStarted(enhancementJob);
             await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
         }
@@ -1720,11 +1720,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             enhancementJob = await _autoTagService.StartJob(
                 target.RootPath,
                 enhancementConfig,
-                AutoTagLiterals.ScheduleTrigger,
-                null,
-                enhancementProfile?.Id,
-                enhancementProfile?.Name,
-                AutoTagLiterals.RunIntentEnhancementOnly);
+                new AutoTagService.StartJobOptions(
+                    Trigger: AutoTagLiterals.ScheduleTrigger,
+                    ProfileId: enhancementProfile?.Id,
+                    ProfileName: enhancementProfile?.Name,
+                    RunIntent: AutoTagLiterals.RunIntentEnhancementOnly));
             MarkEnhancementStageStarted(enhancementJob);
             await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
         }

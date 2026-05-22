@@ -13,7 +13,7 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
         var serviceSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("selectedProfileResult.Profile?.FolderStructure", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("FolderStructureSettings? folderStructureOverride", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("FolderStructureSettings? FolderStructureOverride", serviceSource, StringComparison.Ordinal);
         Assert.Contains("root[\"folderStructure\"] = JsonSerializer.SerializeToNode(folderStructure", serviceSource, StringComparison.Ordinal);
         Assert.Contains("\"folderStructure\"", serviceSource, StringComparison.Ordinal);
     }

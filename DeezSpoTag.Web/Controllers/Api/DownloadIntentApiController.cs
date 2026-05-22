@@ -12,6 +12,8 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class DownloadIntentApiController : ControllerBase
 {
+    private static readonly string[] InternalErrorReasonCodes = { "download_enqueue_internal_error" };
+
     private readonly DownloadIntentService _intentService;
     private readonly IDownloadIntentBackgroundQueue _backgroundQueue;
     private readonly ILogger<DownloadIntentApiController> _logger;
@@ -60,7 +62,7 @@ public sealed class DownloadIntentApiController : ControllerBase
             {
                 success = false,
                 message = "Download enqueue failed due to an internal error.",
-                reasonCodes = new[] { "download_enqueue_internal_error" }
+                reasonCodes = InternalErrorReasonCodes
             });
         }
     }

@@ -15,7 +15,7 @@ public partial class AutoTagService
 
     private sealed record EnrichmentStagePlan(
         List<string> RequestedTags,
-        IReadOnlyList<string> Platforms,
+        List<string> Platforms,
         string? ExcludedPlatform,
         bool ForceShazamFingerprint = false,
         bool OrganizeSidecarsIntoTemplateFolders = false,

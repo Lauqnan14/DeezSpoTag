@@ -8,12 +8,14 @@ using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Services;
 
 public sealed class MelodayOptions
 {
+    [JsonRequired]
     public bool Enabled { get; set; }
     public string? LibraryName { get; set; }
     public string PlaylistPrefix { get; set; } = "Meloday for";

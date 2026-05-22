@@ -37,43 +37,63 @@ public sealed class MoodBucketBackgroundService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
-            {
-                var trackIds = await _repository.GetUnbucketedAnalyzedTrackIdsAsync(BatchSize, stoppingToken);
-                if (trackIds.Count > 0)
-                {
-                    var totalAssigned = 0;
-                    foreach (var trackId in trackIds)
-                    {
-                        var moods = await _moodBucketService.AssignTrackToMoodsAsync(trackId, stoppingToken);
-                        totalAssigned += moods.Count;
-                    }
-
-                    if (_logger.IsEnabled(LogLevel.Information))
-                    {
-                        _logger.LogInformation(
-                            "MoodBucket backfill: processed {Count} tracks, {Assigned} mood assignments",
-                            trackIds.Count, totalAssigned);
-                    }
-                }
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            await ProcessBatchSafelyAsync(stoppingToken);
+            if (!await WaitForNextBatchAsync(stoppingToken))
             {
                 break;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "MoodBucket worker error");
-            }
+        }
+    }
 
-            try
-            {
-                await Task.Delay(Interval, stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+    private async Task ProcessBatchSafelyAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await ProcessBatchAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "MoodBucket worker error");
+        }
+    }
+
+    private async Task ProcessBatchAsync(CancellationToken stoppingToken)
+    {
+        var trackIds = await _repository.GetUnbucketedAnalyzedTrackIdsAsync(BatchSize, stoppingToken);
+        if (trackIds.Count == 0)
+        {
+            return;
+        }
+
+        var totalAssigned = 0;
+        foreach (var trackId in trackIds)
+        {
+            var moods = await _moodBucketService.AssignTrackToMoodsAsync(trackId, stoppingToken);
+            totalAssigned += moods.Count;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "MoodBucket backfill: processed {Count} tracks, {Assigned} mood assignments",
+                trackIds.Count, totalAssigned);
+        }
+    }
+
+    private static async Task<bool> WaitForNextBatchAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await Task.Delay(Interval, stoppingToken);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
         }
     }
 }

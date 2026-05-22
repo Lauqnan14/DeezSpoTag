@@ -523,13 +523,6 @@ public sealed class PlaylistWatchService
         return freshCandidates;
     }
 
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> FetchLivePlaylistTrackCandidatesAsync(
-        string normalizedSource,
-        string normalizedSourceId,
-        int maxCandidates,
-        CancellationToken cancellationToken)
-        => (await FetchLivePlaylistSnapshotAsync(normalizedSource, normalizedSourceId, maxCandidates, cancellationToken)).Candidates;
-
     private async Task<LivePlaylistSnapshot> FetchLivePlaylistSnapshotAsync(
         string normalizedSource,
         string normalizedSourceId,
@@ -605,11 +598,6 @@ public sealed class PlaylistWatchService
         return string.IsNullOrWhiteSpace(snapshotId) ? null : snapshotId.Trim();
     }
 
-    private static int ResolveWatchCandidateLimit(int configuredLimit)
-    {
-        return Math.Clamp(configuredLimit, 1, MaxPlaylistCandidateFetchCount);
-    }
-
     private async Task<LivePlaylistSnapshot> GetSpotifyPlaylistSnapshotAsync(
         string sourceId,
         int maxCandidates,
@@ -618,16 +606,15 @@ public sealed class PlaylistWatchService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<PlaylistTrackCandidate>();
 
-        if (IsSpotifyHomeTrendingSourceId(sourceId))
+        var virtualSnapshot = await TryGetSpotifyVirtualPlaylistSnapshotAsync(
+            sourceId,
+            candidates,
+            seen,
+            maxCandidates,
+            cancellationToken);
+        if (virtualSnapshot is not null)
         {
-            await AddSpotifyHomeTrendingCandidatesAsync(candidates, seen, maxCandidates, cancellationToken);
-            return BuildLivePlaylistSnapshot(candidates);
-        }
-
-        if (TryGetSpotifyArtistTopTracksSourceId(sourceId, out var artistId))
-        {
-            await AddSpotifyArtistTopTrackCandidatesAsync(candidates, seen, artistId, cancellationToken);
-            return BuildLivePlaylistSnapshot(candidates);
+            return virtualSnapshot;
         }
 
         string? snapshotId = null;
@@ -653,39 +640,14 @@ public sealed class PlaylistWatchService
                 break;
             }
 
-            snapshotId ??= page.SnapshotId;
-            name ??= page.Name;
-            description ??= page.Description;
-            imageUrl ??= page.ImageUrl;
-            totalTracks ??= page.TotalTracks;
+            ApplySpotifyPlaylistPageMetadata(page, ref snapshotId, ref name, ref description, ref imageUrl, ref totalTracks);
 
             if (page.Tracks.Count == 0)
             {
                 break;
             }
 
-            foreach (var track in page.Tracks)
-            {
-                AddSpotifyTrackCandidate(
-                    seen,
-                    candidates,
-                    new SpotifyTrackSeed(
-                        track.Id,
-                        track.Isrc,
-                        track.Name,
-                        track.Artists,
-                        track.Album,
-                        track.ReleaseDate,
-                        track.DurationMs,
-                        track.Explicit,
-                        track.Genres));
-                if (candidates.Count >= maxCandidates)
-                {
-                    isComplete = !page.HasMore
-                        && (!page.TotalTracks.HasValue || candidates.Count >= page.TotalTracks.Value);
-                    break;
-                }
-            }
+            isComplete = AddSpotifyPlaylistPageCandidates(page, candidates, seen, maxCandidates, isComplete);
 
             if (!page.HasMore)
             {
@@ -707,28 +669,73 @@ public sealed class PlaylistWatchService
         return BuildLivePlaylistSnapshot(candidates, snapshotId, name, description, imageUrl, totalTracks, isComplete);
     }
 
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetSpotifyTrackCandidatesAsync(
+    private async Task<LivePlaylistSnapshot?> TryGetSpotifyVirtualPlaylistSnapshotAsync(
         string sourceId,
+        List<PlaylistTrackCandidate> candidates,
+        HashSet<string> seen,
         int maxCandidates,
         CancellationToken cancellationToken)
     {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var candidates = new List<PlaylistTrackCandidate>();
-
         if (IsSpotifyHomeTrendingSourceId(sourceId))
         {
             await AddSpotifyHomeTrendingCandidatesAsync(candidates, seen, maxCandidates, cancellationToken);
-            return candidates;
+            return BuildLivePlaylistSnapshot(candidates);
         }
 
         if (TryGetSpotifyArtistTopTracksSourceId(sourceId, out var artistId))
         {
             await AddSpotifyArtistTopTrackCandidatesAsync(candidates, seen, artistId, cancellationToken);
-            return candidates;
+            return BuildLivePlaylistSnapshot(candidates);
         }
 
-        await AddSpotifyPlaylistCandidatesAsync(candidates, seen, sourceId, maxCandidates, cancellationToken);
-        return candidates;
+        return null;
+    }
+
+    private static void ApplySpotifyPlaylistPageMetadata(
+        SpotifyPlaylistPage page,
+        ref string? snapshotId,
+        ref string? name,
+        ref string? description,
+        ref string? imageUrl,
+        ref int? totalTracks)
+    {
+        snapshotId ??= page.SnapshotId;
+        name ??= page.Name;
+        description ??= page.Description;
+        imageUrl ??= page.ImageUrl;
+        totalTracks ??= page.TotalTracks;
+    }
+
+    private static bool AddSpotifyPlaylistPageCandidates(
+        SpotifyPlaylistPage page,
+        List<PlaylistTrackCandidate> candidates,
+        HashSet<string> seen,
+        int maxCandidates,
+        bool isComplete)
+    {
+        foreach (var track in page.Tracks)
+        {
+            AddSpotifyTrackCandidate(
+                seen,
+                candidates,
+                new SpotifyTrackSeed(
+                    track.Id,
+                    track.Isrc,
+                    track.Name,
+                    track.Artists,
+                    track.Album,
+                    track.ReleaseDate,
+                    track.DurationMs,
+                    track.Explicit,
+                    track.Genres));
+            if (candidates.Count >= maxCandidates)
+            {
+                return !page.HasMore
+                    && (!page.TotalTracks.HasValue || candidates.Count >= page.TotalTracks.Value);
+            }
+        }
+
+        return isComplete;
     }
 
     private async Task AddSpotifyHomeTrendingCandidatesAsync(
@@ -795,63 +802,6 @@ public sealed class PlaylistWatchService
                     track.DurationMs,
                     ExplicitFlag: null,
                     Genres: null));
-        }
-    }
-
-    private async Task AddSpotifyPlaylistCandidatesAsync(
-        List<PlaylistTrackCandidate> candidates,
-        HashSet<string> seen,
-        string sourceId,
-        int maxCandidates,
-        CancellationToken cancellationToken)
-    {
-        var pageSize = Math.Min(100, maxCandidates);
-        var offset = 0;
-
-        while (candidates.Count < maxCandidates)
-        {
-            var page = await _spotifyMetadataService.FetchPlaylistPageAsync(
-                sourceId,
-                offset,
-                pageSize,
-                cancellationToken);
-
-            if (page == null || page.Tracks.Count == 0)
-            {
-                break;
-            }
-
-            foreach (var track in page.Tracks)
-            {
-                AddSpotifyTrackCandidate(
-                    seen,
-                    candidates,
-                    new SpotifyTrackSeed(
-                        track.Id,
-                        track.Isrc,
-                        track.Name,
-                        track.Artists,
-                        track.Album,
-                        track.ReleaseDate,
-                        track.DurationMs,
-                        track.Explicit,
-                        track.Genres));
-                if (candidates.Count >= maxCandidates)
-                {
-                    break;
-                }
-            }
-
-            if (!page.HasMore)
-            {
-                break;
-            }
-
-            offset += page.Tracks.Count;
-            if (page.TotalTracks.HasValue && offset >= page.TotalTracks.Value)
-            {
-                break;
-            }
         }
     }
 
@@ -938,19 +888,6 @@ public sealed class PlaylistWatchService
         bool? ExplicitFlag,
         IReadOnlyList<string>? Genres);
 
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetSmartTracklistTrackCandidatesAsync(
-        string sourceId,
-        CancellationToken cancellationToken)
-    {
-        if (!_deezerClient.LoggedIn)
-        {
-            return Array.Empty<PlaylistTrackCandidate>();
-        }
-
-        var playlistData = await GetSmartTracklistWatchDataAsync(sourceId, cancellationToken);
-        return MapWatchIntentTrackCandidates(playlistData?.Tracks);
-    }
-
     private async Task<LivePlaylistSnapshot> GetSmartTracklistSnapshotAsync(
         string sourceId,
         CancellationToken cancellationToken)
@@ -970,14 +907,6 @@ public sealed class PlaylistWatchService
             trackCount: playlistData?.TrackCount);
     }
 
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetAppleTrackCandidatesAsync(
-        string sourceId,
-        CancellationToken cancellationToken)
-    {
-        var playlistData = await GetApplePlaylistWatchDataAsync(sourceId, cancellationToken);
-        return MapWatchIntentTrackCandidates(playlistData?.Tracks);
-    }
-
     private async Task<LivePlaylistSnapshot> GetAppleSnapshotAsync(
         string sourceId,
         CancellationToken cancellationToken)
@@ -990,14 +919,6 @@ public sealed class PlaylistWatchService
             description: playlistData?.Description,
             imageUrl: playlistData?.ImageUrl,
             trackCount: playlistData?.TrackCount);
-    }
-
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetBoomplayTrackCandidatesAsync(
-        string sourceId,
-        CancellationToken cancellationToken)
-    {
-        var playlistData = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
-        return MapWatchIntentTrackCandidates(playlistData?.Tracks);
     }
 
     private async Task<LivePlaylistSnapshot> GetBoomplaySnapshotAsync(
@@ -1064,11 +985,6 @@ public sealed class PlaylistWatchService
 
         return candidates;
     }
-
-    private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetTidalTrackCandidatesAsync(
-        string sourceId,
-        CancellationToken cancellationToken)
-        => (await GetTidalSnapshotAsync(sourceId, cancellationToken)).Candidates;
 
     private async Task<LivePlaylistSnapshot> GetTidalSnapshotAsync(
         string sourceId,
