@@ -58,7 +58,7 @@ namespace DeezSpoTag.Web.Controllers.Api
         /// Get login status - exact port from deezspotag connect.ts
         /// </summary>
         [HttpGet("status")]
-        public async Task<IActionResult> Status([FromQuery] bool validate = false, CancellationToken cancellationToken = default)
+        public async Task<IActionResult> Status(CancellationToken cancellationToken = default)
         {
             var gate = EnsureAccess();
             if (gate != null)
@@ -94,14 +94,55 @@ namespace DeezSpoTag.Web.Controllers.Api
                     return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
                 }
 
-                if (!validate)
+                return Ok(BuildStatusResponse(
+                    LOGIN_STATUS_SUCCESS,
+                    hasStoredCredentials,
+                    loginData.User,
+                    live: false,
+                    authState: AuthStateStored));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Error getting login status");
+                return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
+            }
+        }
+
+        [HttpGet("status/validate")]
+        public async Task<IActionResult> ValidateStatus(CancellationToken cancellationToken = default)
+        {
+            var gate = EnsureAccess();
+            if (gate != null)
+            {
+                return gate;
+            }
+
+            try
+            {
+                var loginData = await _loginStorage.LoadLoginCredentialsAsync();
+
+                if (loginData?.Arl == null || loginData.User == null)
+                {
+                    return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
+                }
+
+                var normalizedArl = DeezSpoTag.Services.Utils.DeezerAuthUtils.NormalizeArl(loginData.Arl);
+                var hasStoredCredentials = !string.IsNullOrWhiteSpace(normalizedArl);
+                var hasLiveSession = _deezerClient.LoggedIn && _deezerClient.CurrentUser != null;
+                if (hasLiveSession)
                 {
                     return Ok(BuildStatusResponse(
                         LOGIN_STATUS_SUCCESS,
                         hasStoredCredentials,
                         loginData.User,
-                        live: false,
-                        authState: AuthStateStored));
+                        live: true,
+                        authState: AuthStateLive));
+                }
+
+                if (string.IsNullOrEmpty(normalizedArl))
+                {
+                    await _loginStorage.ResetLoginCredentialsAsync();
+                    return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false, authState: AuthStateDisconnected));
                 }
 
                 try

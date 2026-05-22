@@ -22,7 +22,7 @@ public sealed class DeezerLoginStatusBehaviorTests
     private const string StoredAuthState = "stored";
     private const string LiveAuthState = "live";
     private const string StatusUrl = "/api/login/status";
-    private const string ValidateStatusUrl = "/api/login/status?validate=true";
+    private const string ValidateStatusUrl = "/api/login/status/validate";
     private const string ConnectedPlatformsCacheKey = "connected-platforms-cache";
     private const string DeezerWarmupServiceName = "DeezerLoginWarmupService";
     private const string DeezSpoTagWebDirectory = "DeezSpoTag.Web";

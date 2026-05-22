@@ -1641,7 +1641,7 @@ async function checkPersistentLoginState() {
 
 async function validatePersistentLoginState() {
     try {
-        const response = await fetch('/api/login/status?validate=true', { cache: 'no-store' });
+        const response = await fetch('/api/login/status/validate', { cache: 'no-store' });
         if (!response.ok) {
             throw new Error(`status ${response.status}`);
         }
