@@ -10,6 +10,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
@@ -687,7 +688,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "AutoTag platform {Platform} failed for {File}", context.Platform, context.File);
+            _logger.LogWarning(ex, "AutoTag platform {Platform} failed for {File}", SanitizeLogValue(context.Platform), SanitizeLogValue(context.File));
             EmitErrorStatus(context, ex.Message, usedShazamForStatus);
             return null;
         }
@@ -764,7 +765,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", context.File, context.Platform);
+            _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", SanitizeLogValue(context.File), SanitizeLogValue(context.Platform));
             EmitErrorStatus(context, ex.Message, usedShazamForStatus);
         }
     }
@@ -1009,7 +1010,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             track.Art = fallbackArt;
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Artwork fallback resolved for {File} via {Platform}.", context.File, platform);
+                _logger.LogDebug("Artwork fallback resolved for {File} via {Platform}.", SanitizeLogValue(context.File), SanitizeLogValue(platform));
             }
 
             return;
@@ -1020,7 +1021,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug(ex, "Artwork fallback match failed for {File} using {Platform}.", filePath, platform);
+            _logger.LogDebug(ex, "Artwork fallback match failed for {File} using {Platform}.", SanitizeLogValue(filePath), SanitizeLogValue(platform));
         }
     }
 
@@ -1436,14 +1437,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    _logger.LogInformation("AutoTag Apple animated artwork saved for {Title} in {OutputDir}", track.Title, outputDir);
+                    _logger.LogInformation("AutoTag Apple animated artwork saved for {Title} in {OutputDir}", SanitizeLogValue(track.Title), SanitizeLogValue(outputDir));
                 }
             }
             else
             {
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    _logger.LogInformation("AutoTag Apple animated artwork unavailable for {Title}", track.Title);
+                    _logger.LogInformation("AutoTag Apple animated artwork unavailable for {Title}", SanitizeLogValue(track.Title));
                 }
             }
         }
@@ -1451,7 +1452,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple animated artwork resolution failed for {Title}.", track.Title);
+                _logger.LogDebug(ex, "Apple animated artwork resolution failed for {Title}.", SanitizeLogValue(track.Title));
             }
         }
     }
@@ -1503,7 +1504,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Lyrics resolution failed for platform {Platform} and track {Title}.", platformId, track.Title);
+                _logger.LogDebug(ex, "Lyrics resolution failed for platform {Platform} and track {Title}.", SanitizeLogValue(platformId), SanitizeLogValue(track.Title));
             }
             return;
         }
@@ -1535,7 +1536,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for animated artwork {Isrc}.", track.Isrc);
+                _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for animated artwork {Isrc}.", SanitizeLogValue(track.Isrc));
             }
             return null;
         }
@@ -1765,7 +1766,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple lyrics resolution failed for {Title}.", track.Title);
+                _logger.LogDebug(ex, "Apple lyrics resolution failed for {Title}.", SanitizeLogValue(track.Title));
             }
             return;
         }
@@ -2813,7 +2814,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Shazam recognize failed for {File}", filePath);
+                _logger.LogDebug(ex, "Shazam recognize failed for {File}", SanitizeLogValue(filePath));
             }
             return null;
         }
@@ -3002,7 +3003,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed reading tags for {File}", filePath);
+            _logger.LogWarning(ex, "Failed reading tags for {File}", SanitizeLogValue(filePath));
             return BuildAudioInfoFallback(filePath, rootPath, parseFilename, tracknameTemplate, titleRegex);
         }
     }
@@ -5064,7 +5065,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to remove upgraded TXT lyrics sidecar {Path}", context.SidecarState.TxtPath);
+                _logger.LogDebug(ex, "Failed to remove upgraded TXT lyrics sidecar {Path}", SanitizeLogValue(context.SidecarState.TxtPath));
             }
         }
     }
@@ -5238,7 +5239,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed applying custom tags for {File}", filePath);
+            _logger.LogWarning(ex, "Failed applying custom tags for {File}", SanitizeLogValue(filePath));
         }
 
         return Task.CompletedTask;
@@ -8064,6 +8065,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             return !WantsTtml || HasTtml;
         }
+    }
+
+    private static string SanitizeLogValue(string? value)
+    {
+        return LogSanitizer.OneLine(value);
     }
 
     private sealed class AutoTagRunnerConfig

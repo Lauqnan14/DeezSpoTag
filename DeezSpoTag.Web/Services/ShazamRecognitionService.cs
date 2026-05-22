@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Security;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -171,7 +172,7 @@ public sealed class ShazamRecognitionService
             {
                 _logger.LogDebug(
                     "Shazam search-assisted fallback matched after audio-only retries for {Path}.",
-                    filePath);
+                    LogSanitizer.OneLine(filePath));
             }
             return assistedAttempt;
         }
@@ -307,7 +308,7 @@ public sealed class ShazamRecognitionService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Shazam search failed for query '{Query}' and file {Path}.", query, filePath);
+                _logger.LogDebug(ex, "Shazam search failed for query '{Query}' and file {Path}.", LogSanitizer.OneLine(query), LogSanitizer.OneLine(filePath));
             }
             return Array.Empty<ShazamTrackCard>();
         }

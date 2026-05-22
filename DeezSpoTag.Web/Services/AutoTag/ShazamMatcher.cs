@@ -1,4 +1,5 @@
 using System.Globalization;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.Logging;
 
@@ -61,7 +62,7 @@ public sealed class ShazamMatcher
             {
                 _logger.LogInformation(
                     "Rejected Shazam fingerprint match for {File}: titleSim={TitleSim:0.000} artistSim={ArtistSim:0.000} durationDiff={DurationDiff}s thresholds(title>={MinTitle:0.000}, artist>={MinArtist:0.000}, maxDurationDiff={MaxDiff}s)",
-                    filePath,
+                    LogSanitizer.OneLine(filePath),
                     titleSimilarity,
                     artistSimilarity,
                     durationDiffSeconds,
