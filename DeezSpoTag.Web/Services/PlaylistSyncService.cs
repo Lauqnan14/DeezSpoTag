@@ -452,20 +452,58 @@ public sealed class PlaylistSyncService
             return new PlaylistTrackSyncReadiness(false, true, "No eligible tracks after blocked/ignored filtering.");
         }
 
+        var checkedLocalTracks = 0;
         foreach (var candidate in candidates.Where(candidate => eligibleIds.Contains(candidate.TrackSourceId)))
         {
-            var readiness = await CheckTrackReadyForAutomaticSyncAsync(
-                playlist,
-                preference,
-                candidate,
-                cancellationToken);
+            var track = ToSyncTrackSummary(candidate);
+            var localTrackId = await ResolveLocalTrackIdAsync(playlist.Source, track, cancellationToken);
+            if (!localTrackId.HasValue)
+            {
+                continue;
+            }
+
+            checkedLocalTracks++;
+            var readiness = await CheckTargetTrackReadyAsync(preference, track, localTrackId.Value, cancellationToken);
             if (!readiness.Ready)
             {
                 return readiness;
             }
         }
 
-        return new PlaylistTrackSyncReadiness(true, false, "All playlist tracks are visible in the target server.");
+        if (checkedLocalTracks == 0)
+        {
+            return new PlaylistTrackSyncReadiness(
+                false,
+                false,
+                "No eligible playlist tracks are visible in the DeezSpoTag library yet.");
+        }
+
+        return new PlaylistTrackSyncReadiness(true, false, "All locally available playlist tracks are visible in the target server.");
+    }
+
+    private async Task<PlaylistTrackSyncReadiness> CheckTargetTrackReadyAsync(
+        PlaylistWatchPreferenceDto? preference,
+        SyncTrackSummary track,
+        long localTrackId,
+        CancellationToken cancellationToken)
+    {
+        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
+        if (string.IsNullOrWhiteSpace(service))
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "No target server selected.");
+        }
+
+        if (string.Equals(service, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return new PlaylistTrackSyncReadiness(false, true, "Playlist sync target is disabled.", service, localTrackId);
+        }
+
+        return service switch
+        {
+            PlexService => await CheckPlexTrackReadyAsync(localTrackId, track, cancellationToken),
+            JellyfinService => await CheckJellyfinTrackReadyAsync(localTrackId, track, cancellationToken),
+            _ => new PlaylistTrackSyncReadiness(false, true, "Unsupported playlist sync target.", service, localTrackId)
+        };
     }
 
     private async Task<(IReadOnlyList<SyncTrackSummary> Tracks, string? ErrorMessage)> LoadTracksForSyncAsync(
