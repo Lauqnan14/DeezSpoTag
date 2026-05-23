@@ -393,8 +393,8 @@ public sealed class LocalLibraryScanner
             return false;
         }
 
-        artistDir = Path.Combine(rootPath, segments[0]);
-        albumDir = Path.Combine(artistDir, segments[1]);
+        artistDir = Path.Join(rootPath, segments[0]);
+        albumDir = Path.Join(artistDir, segments[1]);
         return Directory.Exists(artistDir) && Directory.Exists(albumDir);
     }
 
@@ -1084,7 +1084,7 @@ public sealed class LocalLibraryScanner
             return false;
         }
 
-        return LyricsSidecarExtensions.Any(extension => System.IO.File.Exists(Path.Combine(directory, fileName + extension)));
+        return LyricsSidecarExtensions.Any(extension => System.IO.File.Exists(Path.Join(directory, fileName + extension)));
     }
 
     private static string? NormalizePath(string? path)
@@ -2142,7 +2142,7 @@ public sealed class LocalLibraryScanner
 
     private static LyricsScanResult ReadLyricsSidecars(string audioFilePath)
     {
-        var basePath = Path.Combine(
+        var basePath = Path.Join(
             Path.GetDirectoryName(audioFilePath) ?? string.Empty,
             Path.GetFileNameWithoutExtension(audioFilePath));
         var hasSynced = false;

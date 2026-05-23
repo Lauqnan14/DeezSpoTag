@@ -12,7 +12,12 @@ public static class AppDataPaths
 
     private static string NormalizeDataRoot(string path)
     {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return Path.GetFullPath("Data");
+        }
+
         return AppDataPathResolver.NormalizeConfiguredDataRoot(path)
-            ?? Path.GetFullPath(path.Trim());
+            ?? Path.GetFullPath(path);
     }
 }

@@ -288,7 +288,7 @@ public sealed class TrackAvailabilityService
         }
 
         var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
-        if (Volatile.Read(ref _appleSearchPausedUntilUtcTicks) > nowTicks)
+        if (IsAppleSearchPaused(nowTicks))
         {
             return AppleSearchOutcome.RateLimited;
         }
@@ -302,7 +302,7 @@ public sealed class TrackAvailabilityService
             }
 
             nowTicks = DateTimeOffset.UtcNow.UtcTicks;
-            if (Volatile.Read(ref _appleSearchPausedUntilUtcTicks) > nowTicks)
+            if (IsAppleSearchPaused(nowTicks))
             {
                 return AppleSearchOutcome.RateLimited;
             }
@@ -315,7 +315,7 @@ public sealed class TrackAvailabilityService
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
         {
             var outcome = AppleSearchOutcome.RateLimited;
-            Volatile.Write(ref _appleSearchPausedUntilUtcTicks, DateTimeOffset.UtcNow.Add(AppleSearchRateLimitTtl).UtcTicks);
+            PauseAppleSearchUntil(DateTimeOffset.UtcNow.Add(AppleSearchRateLimitTtl));
             CacheAppleSearch(cacheKey, outcome);
             return outcome;
         }
@@ -324,6 +324,12 @@ public sealed class TrackAvailabilityService
             AppleSearchGate.Release();
         }
     }
+
+    private static bool IsAppleSearchPaused(long nowUtcTicks)
+        => Volatile.Read(ref _appleSearchPausedUntilUtcTicks) > nowUtcTicks;
+
+    private static void PauseAppleSearchUntil(DateTimeOffset pausedUntilUtc)
+        => Volatile.Write(ref _appleSearchPausedUntilUtcTicks, pausedUntilUtc.UtcTicks);
 
     private static AppleSearchOutcome SelectAppleCandidate(
         AvailabilityInput input,

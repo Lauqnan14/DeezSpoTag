@@ -116,6 +116,7 @@ public class LibraryFoldersApiController : ControllerBase
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && string.IsNullOrWhiteSpace(path))
         {
+            string? parentPath = null;
             var drives = DriveInfo.GetDrives()
                 .Where(drive => drive.IsReady)
                 .Select(drive => new BrowseFolderEntry(drive.Name, drive.RootDirectory.FullName, "folder"))
@@ -125,7 +126,7 @@ public class LibraryFoldersApiController : ControllerBase
             return Ok(new
             {
                 path = string.Empty,
-                parentPath = (string?)null,
+                parentPath,
                 entries = drives
             });
         }

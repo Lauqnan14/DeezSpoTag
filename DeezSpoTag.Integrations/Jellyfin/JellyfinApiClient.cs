@@ -186,11 +186,12 @@ public class JellyfinApiClient
         var startIndex = Math.Max(offset, 0);
         var remaining = Math.Clamp(maxItems.GetValueOrDefault(200), 1, 2000);
         const int maxPageSize = 200;
+        var query = new StringBuilder();
 
         while (true)
         {
             var pageSize = Math.Min(maxPageSize, remaining);
-            var query = new StringBuilder();
+            query.Clear();
             query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
             query.Append($"?ParentId={Uri.EscapeDataString(libraryId)}");
             query.Append("&Recursive=true");

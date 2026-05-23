@@ -185,7 +185,7 @@ public static class AppDataPathResolver
                 continue;
             }
 
-            var destinationPath = Path.Combine(targetPath, fileName);
+            var destinationPath = Path.Join(targetPath, fileName);
             if (!File.Exists(destinationPath))
             {
                 File.Copy(filePath, destinationPath);
@@ -200,7 +200,7 @@ public static class AppDataPathResolver
                 continue;
             }
 
-            CopyDirectoryRecursive(directoryPath, Path.Combine(targetPath, directoryName));
+            CopyDirectoryRecursive(directoryPath, Path.Join(targetPath, directoryName));
         }
     }
 

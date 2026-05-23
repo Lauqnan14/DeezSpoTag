@@ -23,8 +23,8 @@ internal static class FfmpegPathResolver
             var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
             return
             [
-                Path.Combine(programFiles, "ffmpeg", "bin", "ffmpeg.exe"),
-                Path.Combine(programFilesX86, "ffmpeg", "bin", "ffmpeg.exe"),
+                Path.Join(programFiles, "ffmpeg", "bin", "ffmpeg.exe"),
+                Path.Join(programFilesX86, "ffmpeg", "bin", "ffmpeg.exe"),
                 @"C:\ffmpeg\bin\ffmpeg.exe"
             ];
         }

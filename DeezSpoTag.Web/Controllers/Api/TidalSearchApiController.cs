@@ -233,6 +233,7 @@ public sealed class TidalSearchApiController : ControllerBase
         {
             url = $"https://tidal.com/browse/artist/{Uri.EscapeDataString(id)}";
         }
+        int? followers = null;
 
         return new
         {
@@ -240,7 +241,7 @@ public sealed class TidalSearchApiController : ControllerBase
             type = ArtistType,
             name = GetString(item, "name"),
             image = BuildImageUrl(GetString(item, "picture")),
-            followers = (int?)null,
+            followers,
             tidalId = id,
             tidalType = ArtistType,
             tidalUrl = url,

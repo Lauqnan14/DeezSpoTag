@@ -65,6 +65,7 @@ public class AutoTagJobsController : ControllerBase
         {
             return configError!;
         }
+        var selectedProfile = selectedProfileResult.Profile!;
 
         if (!TryValidateEnrichmentScope(normalizedPath, configNode, startRequest.RunIntent, out var enrichmentError))
         {
@@ -79,10 +80,10 @@ public class AutoTagJobsController : ControllerBase
             normalizedPath,
             SerializeConfig(configNode),
             new AutoTagService.StartJobOptions(
-                ProfileId: selectedProfileResult.Profile?.Id,
-                ProfileName: selectedProfileResult.Profile?.Name,
+                ProfileId: selectedProfile.Id,
+                ProfileName: selectedProfile.Name,
                 RunIntent: startRequest.RunIntent,
-                FolderStructureOverride: selectedProfileResult.Profile?.FolderStructure));
+                FolderStructureOverride: selectedProfile.FolderStructure));
         return CreateStartJobResponse(job);
     }
 
@@ -438,29 +439,42 @@ public class AutoTagJobsController : ControllerBase
 
     private static object CreateIdleJobResponse()
     {
+        string? id = null;
+        DateTimeOffset? startedAt = null;
+        DateTimeOffset? finishedAt = null;
+        int? exitCode = null;
+        string? error = null;
+        string? rootPath = null;
+        string? profileId = null;
+        string? profileName = null;
+        object? autoMoveSummary = null;
+        string? currentPlatform = null;
+        object? lastStatus = null;
+        string? lastLogLine = null;
+
         return new
         {
-            id = (string?)null,
+            id,
             status = "idle",
-            startedAt = (DateTimeOffset?)null,
-            finishedAt = (DateTimeOffset?)null,
-            exitCode = (int?)null,
-            error = (string?)null,
+            startedAt,
+            finishedAt,
+            exitCode,
+            error,
             progress = 0d,
             okCount = 0,
             errorCount = 0,
             reviewCount = 0,
             skippedCount = 0,
-            rootPath = (string?)null,
+            rootPath,
             trigger = "manual",
-            profileId = (string?)null,
-            profileName = (string?)null,
-            autoMoveSummary = (object?)null,
-            currentPlatform = (string?)null,
-            lastStatus = (object?)null,
+            profileId,
+            profileName,
+            autoMoveSummary,
+            currentPlatform,
+            lastStatus,
             logCount = 0,
             statusEntryCount = 0,
-            lastLogLine = (string?)null,
+            lastLogLine,
             logs = Array.Empty<string>(),
             statusHistory = Array.Empty<object>()
         };

@@ -359,16 +359,16 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new
         {
             artistId,
-            destinationFolderId = request?.DestinationFolderId,
+            destinationFolderId = request.DestinationFolderId,
             watchedArtistAlbumGroup = normalizedAlbumGroups,
-            watchArtistTopSongsEnabled = request?.WatchArtistTopSongsEnabled,
-            watchArtistLatestReleasesOnly = request?.WatchArtistLatestReleasesOnly,
+            watchArtistTopSongsEnabled = request.WatchArtistTopSongsEnabled,
+            watchArtistLatestReleasesOnly = request.WatchArtistLatestReleasesOnly,
             preferredEngine,
             routingRules,
-            atmosDestinationFolderId = request?.AtmosDestinationFolderId,
+            atmosDestinationFolderId = request.AtmosDestinationFolderId,
             downloadVariantMode,
             topSongsSyncMode,
-            downloadDiscographyEnabled = request?.DownloadDiscographyEnabled,
+            downloadDiscographyEnabled = request.DownloadDiscographyEnabled,
             blockRules
         });
     }

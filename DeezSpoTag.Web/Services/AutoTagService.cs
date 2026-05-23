@@ -2039,10 +2039,7 @@ public partial class AutoTagService
             }
             _activeJobStages.TryRemove(job.Id, out _);
             _activeJobIds.TryRemove(job.Id, out _);
-            if (_jobCancellationSources.TryRemove(job.Id, out var cancellation))
-            {
-                cancellation.Dispose();
-            }
+            _jobCancellationSources.TryRemove(job.Id, out _);
         }
     }
 
@@ -4795,7 +4792,7 @@ public partial class AutoTagService
         }
 
         var discogs = GetOrCreatePlatformCustomNode(custom, AutoTagLiterals.DiscogsPlatform);
-        SetIfEmpty(discogs, "token", discogsAuth?.Token);
+        SetIfEmpty(discogs, "token", discogsAuth.Token);
     }
 
     private static void ApplyLastFmAuthDefaults(JsonObject custom, LastFmAuth? lastFmAuth)
@@ -4806,7 +4803,7 @@ public partial class AutoTagService
         }
 
         var lastFm = GetOrCreatePlatformCustomNode(custom, AutoTagLiterals.LastFmPlatform);
-        SetIfEmpty(lastFm, "apiKey", lastFmAuth?.ApiKey);
+        SetIfEmpty(lastFm, "apiKey", lastFmAuth.ApiKey);
     }
 
     private static void ApplyBpmSupremeAuthDefaults(JsonObject custom, BpmSupremeAuth? bpmAuth)

@@ -1192,6 +1192,14 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
         var coverUrl = TryGetAnonymousString(browseItem, "imageUrl");
         var description = TryGetAnonymousString(browseItem, DescriptionKey);
+        string? artists = null;
+        int? trackCount = null;
+        int? followers = null;
+        bool? publicFlag = null;
+        bool? collaborative = null;
+        string? albumId = null;
+        string? albumName = null;
+        int? durationMs = null;
 
         return new
         {
@@ -1199,16 +1207,16 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             uri = uri ?? $"spotify:{PlaylistType}:{itemId}",
             type = PlaylistType,
             name,
-            artists = (string?)null,
+            artists,
             description,
             coverUrl,
-            trackCount = (int?)null,
-            followers = (int?)null,
-            @public = (bool?)null,
-            collaborative = (bool?)null,
-            albumId = (string?)null,
-            albumName = (string?)null,
-            durationMs = (int?)null
+            trackCount,
+            followers,
+            @public = publicFlag,
+            collaborative,
+            albumId,
+            albumName,
+            durationMs
         };
     }
 

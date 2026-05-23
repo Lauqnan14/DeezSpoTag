@@ -614,7 +614,12 @@ WHERE server_type = {ServerTypeParameterName}
 
     private static DateTimeOffset? ResolveMatchTimestamp(MediaServerSoundtrackMatchDto? match, DateTimeOffset nowUtc)
     {
-        if (match?.ResolvedAtUtc != null)
+        if (match is null)
+        {
+            return null;
+        }
+
+        if (match.ResolvedAtUtc != null)
         {
             return match.ResolvedAtUtc;
         }

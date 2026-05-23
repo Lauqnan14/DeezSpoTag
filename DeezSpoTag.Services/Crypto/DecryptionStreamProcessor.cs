@@ -883,7 +883,7 @@ public class DecryptionStreamProcessor
         bool flushedFirstChunk)
     {
         public long ChunkLength = chunkLength;
-        public string Error = error;
+        public readonly string Error = error;
         public List<byte> ModifiedStream { get; } = modifiedStream;
         public bool IsDepadderStart = isDepadderStart;
         public int DropBytes = dropBytes;

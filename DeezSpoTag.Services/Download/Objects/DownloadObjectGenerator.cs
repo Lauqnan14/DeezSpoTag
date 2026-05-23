@@ -891,7 +891,7 @@ public class DownloadObjectGenerator
     private static bool RequiresEpisodeGatewayMetadata(EpisodeMetadata metadata)
     {
         return string.IsNullOrWhiteSpace(metadata.DirectUrl)
-            || IsDeezerEpisodePage(metadata.DirectUrl ?? string.Empty);
+            || IsDeezerEpisodePage(metadata.DirectUrl);
     }
 
     private static void MergeEpisodeMetadata(EpisodeMetadata metadata, EpisodeMetadata? gatewayMetadata)

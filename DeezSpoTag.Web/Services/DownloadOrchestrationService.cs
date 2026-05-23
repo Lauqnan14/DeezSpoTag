@@ -1891,8 +1891,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 enhancementConfig,
                 new AutoTagService.StartJobOptions(
                     Trigger: AutoTagLiterals.ScheduleTrigger,
-                    ProfileId: enhancementProfile?.Id,
-                    ProfileName: enhancementProfile?.Name,
+                    ProfileId: enhancementProfile.Id,
+                    ProfileName: enhancementProfile.Name,
                     RunIntent: AutoTagLiterals.RunIntentEnhancementOnly));
             MarkEnhancementStageStarted(enhancementJob);
             await WaitForJobCompletionAsync(enhancementJob, cancellationToken);

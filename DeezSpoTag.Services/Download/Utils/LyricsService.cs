@@ -2199,7 +2199,7 @@ public class LyricsService
             return false;
         }
 
-        var syncedLyrics = lyrics.SyncedLyrics ?? new List<SynchronizedLyric>();
+        var syncedLyrics = lyrics.SyncedLyrics!;
         var validLines = syncedLyrics.Count(l => l.IsValid());
         if (validLines < 1)
         {

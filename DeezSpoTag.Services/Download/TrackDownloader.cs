@@ -2399,10 +2399,8 @@ public class TrackDownloader
             {
                 _logger.LogDebug("Downloading {ArtworkType} image: {Url} to {OutputPath}", request.ArtworkType, request.ImageUrl.Url, outputPath);            }
 
-            string? downloadedPath;
-            if (IsAppleArtworkUrl(request.ImageUrl.Url))
-            {
-                downloadedPath = await AppleQueueHelpers.DownloadAppleArtworkAsync(
+            string? downloadedPath = IsAppleArtworkUrl(request.ImageUrl.Url)
+                ? await AppleQueueHelpers.DownloadAppleArtworkAsync(
                     _imageDownloader,
                     new AppleQueueHelpers.AppleArtworkDownloadRequest
                     {
@@ -2414,17 +2412,13 @@ public class TrackDownloader
                         PreferMaxQuality = true,
                         Logger = _logger
                     },
-                    cancellationToken);
-            }
-            else
-            {
-                downloadedPath = await _imageDownloader.DownloadImageAsync(
+                    cancellationToken)
+                : await _imageDownloader.DownloadImageAsync(
                     request.ImageUrl.Url,
                     outputPath,
                     request.OverwritePolicyOverride ?? request.Settings.OverwriteFile,
                     true,
                     cancellationToken);
-            }
 
             if (downloadedPath != null)
             {

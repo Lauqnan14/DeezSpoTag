@@ -205,8 +205,7 @@ public partial class Program
 
     static string TrimDotEnvValue(string value)
     {
-        if (value.Length >= 2 &&
-            ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\'')))
+        if (IsQuotedDotEnvValue(value))
         {
             return value[1..^1];
         }
@@ -218,6 +217,16 @@ public partial class Program
         }
 
         return value;
+    }
+
+    static bool IsQuotedDotEnvValue(string value)
+    {
+        return value.Length >= 2 && (HasMatchingQuote(value, '"') || HasMatchingQuote(value, '\''));
+    }
+
+    static bool HasMatchingQuote(string value, char quote)
+    {
+        return value[0] == quote && value[^1] == quote;
     }
 
     static void ApplyPathAliasFallback(string targetEnv, string aliasEnv, string? envBaseDir)
@@ -313,7 +322,7 @@ public partial class Program
         var relative = trimmed[(ContainerDataRoot.Length + 1)..]
             .Replace('\\', Path.DirectorySeparatorChar)
             .Replace('/', Path.DirectorySeparatorChar);
-        var mapped = Path.GetFullPath(Path.Combine(hostDataRoot, relative));
+        var mapped = Path.GetFullPath(Path.Join(hostDataRoot, relative));
         Environment.SetEnvironmentVariable(DataProtectionKeysEnv, mapped);
     }
 
@@ -391,7 +400,7 @@ public partial class Program
     {
         var configuredKeyDirectory = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR");
         var keyDirectory = string.IsNullOrWhiteSpace(configuredKeyDirectory)
-            ? Path.GetFullPath(Path.Combine(dataDir, "security", "data-protection-keys"))
+            ? Path.GetFullPath(Path.Join(dataDir, "security", "data-protection-keys"))
             : Path.GetFullPath(configuredKeyDirectory.Trim());
         Directory.CreateDirectory(keyDirectory);
         HardenDataProtectionKeyDirectoryPermissions(keyDirectory);

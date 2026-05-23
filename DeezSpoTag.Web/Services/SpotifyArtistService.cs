@@ -2609,14 +2609,9 @@ public sealed class SpotifyArtistService
                 continue;
             }
 
-            if (candidateVotes.TryGetValue(spotifyArtistId, out var current))
-            {
-                candidateVotes[spotifyArtistId] = current + voteWeight;
-            }
-            else
-            {
-                candidateVotes[spotifyArtistId] = voteWeight;
-            }
+            candidateVotes[spotifyArtistId] = candidateVotes.TryGetValue(spotifyArtistId, out var current)
+                ? current + voteWeight
+                : voteWeight;
         }
     }
 
@@ -3507,14 +3502,14 @@ public sealed class SpotifyArtistService
             return FolderMoveOutcome.Skipped;
         }
 
-        var sourceAlbumDir = Path.Combine(root, sourceArtistSegment, albumSegment);
+        var sourceAlbumDir = Path.Join(root, sourceArtistSegment, albumSegment);
         if (!Directory.Exists(sourceAlbumDir) || !movedAlbumDirs.Add(sourceAlbumDir))
         {
             return FolderMoveOutcome.Skipped;
         }
 
-        var targetArtistDir = Path.Combine(root, targetArtistSegment);
-        var targetAlbumDir = Path.Combine(targetArtistDir, albumSegment);
+        var targetArtistDir = Path.Join(root, targetArtistSegment);
+        var targetAlbumDir = Path.Join(targetArtistDir, albumSegment);
         if (Directory.Exists(targetAlbumDir))
         {
             return FolderMoveOutcome.Conflict;
@@ -3524,7 +3519,7 @@ public sealed class SpotifyArtistService
         {
             Directory.CreateDirectory(targetArtistDir);
             Directory.Move(sourceAlbumDir, targetAlbumDir);
-            sourceArtistDirs.Add(Path.Combine(root, sourceArtistSegment));
+            sourceArtistDirs.Add(Path.Join(root, sourceArtistSegment));
             return FolderMoveOutcome.Moved;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

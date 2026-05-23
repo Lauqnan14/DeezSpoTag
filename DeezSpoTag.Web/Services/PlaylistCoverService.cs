@@ -122,7 +122,7 @@ public sealed class PlaylistCoverService
 
     public async Task LogStartupStatusAsync(CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref _startupStatusLogged, 1) == 1)
+        if (MarkStartupStatusLogged())
         {
             return;
         }
@@ -136,6 +136,9 @@ public sealed class PlaylistCoverService
                 status.ModelPath);
         }
     }
+
+    private static bool MarkStartupStatusLogged()
+        => Interlocked.Exchange(ref _startupStatusLogged, 1) == 1;
 
     private async Task<PlaylistCoverResult?> TryUseCachedAsync(
         string url,

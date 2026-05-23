@@ -567,10 +567,10 @@ public sealed class SpotifyPathfinderMetadataClient
             }
             PlatformAuthState state = await _platformAuthService.LoadAsync();
             var spotifyState = state.Spotify;
-            string? active = spotifyState?.ActiveAccount;
-            if (!string.IsNullOrWhiteSpace(active))
+            if (spotifyState is not null && !string.IsNullOrWhiteSpace(spotifyState.ActiveAccount))
             {
-                SpotifyAccount? account = spotifyState?.Accounts.FirstOrDefault((SpotifyAccount a) => a.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
+                var active = spotifyState.ActiveAccount;
+                SpotifyAccount? account = spotifyState.Accounts.FirstOrDefault((SpotifyAccount a) => a.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
                 string? platformBlobPath = account?.LibrespotBlobPath ?? account?.BlobPath;
                 if (!string.IsNullOrWhiteSpace(platformBlobPath)
                     && _blobService.BlobExists(platformBlobPath)
@@ -1039,8 +1039,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             concurrencyLimit = 1;
         }
-        SemaphoreSlim gate = new SemaphoreSlim(concurrencyLimit, concurrencyLimit);
-        try
+        using (SemaphoreSlim gate = new SemaphoreSlim(concurrencyLimit, concurrencyLimit))
         {
             List<Task> tasks = new List<Task>(toFetch.Count);
             foreach (string id2 in toFetch)
@@ -1050,10 +1049,6 @@ public sealed class SpotifyPathfinderMetadataClient
             }
             await Task.WhenAll(tasks);
             return results;
-        }
-        finally
-        {
-            gate.Dispose();
         }
     }
 
@@ -1119,8 +1114,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return new List<SpotifyTrackSummary>();
         }
         int concurrencyLimit = Math.Clamp(maxConcurrency ?? 8, 1, 16);
-        SemaphoreSlim gate = new SemaphoreSlim(concurrencyLimit, concurrencyLimit);
-        try
+        using (SemaphoreSlim gate = new SemaphoreSlim(concurrencyLimit, concurrencyLimit))
         {
             List<Task> tasks = new List<Task>(distinct.Count);
             foreach (string id in distinct)
@@ -1134,10 +1128,6 @@ public sealed class SpotifyPathfinderMetadataClient
                     select results.TryGetValue(key, out value) ? value : null into summary
                     where summary is not null
                     select summary).ToList();
-        }
-        finally
-        {
-            gate.Dispose();
         }
     }
 
@@ -1330,12 +1320,12 @@ public sealed class SpotifyPathfinderMetadataClient
                 return null;
             }
             SpotifyBlobService.SpotifyWebPlayerTokenInfo? tokenInfo = await _blobService.GetWebPlayerTokenInfoAsync(blobPath, cancellationToken);
-            string? accessToken = tokenInfo?.AccessToken;
-            if (string.IsNullOrWhiteSpace(accessToken))
+            if (tokenInfo is null || string.IsNullOrWhiteSpace(tokenInfo.AccessToken))
             {
                 _logger.LogWarning("Spotify Pathfinder auth unavailable: missing web player access token.");
                 return null;
             }
+            var accessToken = tokenInfo.AccessToken;
             WebPlayerSessionInfo? sessionInfo = await FetchWebPlayerSessionInfoFromBlobAsync(cookieClient, payload, cancellationToken);
             if (sessionInfo is null || string.IsNullOrWhiteSpace(sessionInfo.ClientVersion))
             {
@@ -1345,7 +1335,7 @@ public sealed class SpotifyPathfinderMetadataClient
             string? clientId = sessionInfo.ClientId;
             if (string.IsNullOrWhiteSpace(clientId))
             {
-                clientId = tokenInfo?.ClientId;
+                clientId = tokenInfo.ClientId;
             }
             if (string.IsNullOrWhiteSpace(clientId))
             {
@@ -1361,7 +1351,7 @@ public sealed class SpotifyPathfinderMetadataClient
                 return null;
             }
             PathfinderAuthContext context = new PathfinderAuthContext(accessToken, clientToken, sessionInfo.ClientVersion, deviceId);
-            CacheBlobContext(blobPath, context, ResolveWebPlayerAccessTokenExpiry(tokenInfo?.ExpiresAtUnixMs), (_clientTokenExpiresAt != default(DateTimeOffset)) ? _clientTokenExpiresAt : DateTimeOffset.UtcNow.AddMinutes(50.0));
+            CacheBlobContext(blobPath, context, ResolveWebPlayerAccessTokenExpiry(tokenInfo.ExpiresAtUnixMs), (_clientTokenExpiresAt != default(DateTimeOffset)) ? _clientTokenExpiresAt : DateTimeOffset.UtcNow.AddMinutes(50.0));
             return context;
         }
         finally
@@ -1390,9 +1380,9 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        string clientId = string.IsNullOrWhiteSpace(config?.ClientId)
-            ? WebPlayerClientIdFallback
-            : config!.ClientId!;
+            string clientId = string.IsNullOrWhiteSpace(config!.ClientId)
+                ? WebPlayerClientIdFallback
+                : config.ClientId;
         string deviceId = GenerateStableDeviceId(blobPath);
         string? clientToken = await GetClientTokenAsync(client, clientId, clientVersion, deviceId, cancellationToken);
         if (string.IsNullOrWhiteSpace(clientToken))
@@ -1999,17 +1989,11 @@ public sealed class SpotifyPathfinderMetadataClient
             if (!response.IsSuccessStatusCode)
             {
                 string errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                string snippet;
-                if (string.IsNullOrWhiteSpace(errorBody))
-                {
-                    snippet = "(empty)";
-                }
-                else
-                {
-                    snippet = errorBody.Length > 200
+                var snippet = string.IsNullOrWhiteSpace(errorBody)
+                    ? "(empty)"
+                    : errorBody.Length > 200
                         ? new string(errorBody.AsSpan(0, 200))
                         : errorBody;
-                }
                 _logger.LogWarning("Spotify client token request failed: status={Status} body={Body} clientId={ClientId} clientVersion={ClientVersion} deviceId={DeviceId} payload={Payload}", (int)response.StatusCode, snippet, requestContext.ClientId, requestContext.ClientVersion, requestContext.DeviceId, payloadJson);
                 return null;
             }
@@ -2208,17 +2192,11 @@ public sealed class SpotifyPathfinderMetadataClient
 
         if (status != HttpStatusCode.OK)
         {
-            string snippet;
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                snippet = "empty";
-            }
-            else
-            {
-                snippet = json.Length > 200
+            var snippet = string.IsNullOrWhiteSpace(json)
+                ? "empty"
+                : json.Length > 200
                     ? string.Concat(json.AsSpan(0, 200), "…")
                     : json;
-            }
 
             _logger.LogWarning("Spotify Pathfinder query failed: operation={OperationName} status={Status} {Snippet}", operationName, status, snippet);
         }
@@ -4050,13 +4028,10 @@ public sealed class SpotifyPathfinderMetadataClient
         if (dateTimeOffset.HasValue)
         {
             DateTimeOffset valueOrDefault2 = dateTimeOffset.GetValueOrDefault();
-            if (true)
+            TimeSpan timeSpan2 = valueOrDefault2 - DateTimeOffset.UtcNow;
+            if (timeSpan2 > TimeSpan.Zero)
             {
-                TimeSpan timeSpan2 = valueOrDefault2 - DateTimeOffset.UtcNow;
-                if (timeSpan2 > TimeSpan.Zero)
-                {
-                    return ClampRetryDelay(timeSpan2);
-                }
+                return ClampRetryDelay(timeSpan2);
             }
         }
         int num = Math.Min(30, (int)Math.Pow(2.0, attempt + 1));

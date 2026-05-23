@@ -216,30 +216,49 @@ public sealed class LibraryRealtimeScanService : BackgroundService
 
     private IOException? RefreshWatcher(long folderId, FolderState state)
     {
-        var existing = _watchers.GetValueOrDefault(folderId);
-        if (existing is not null &&
-            string.Equals(existing.NormalizedRootPath, state.NormalizedRootPath, StringComparison.OrdinalIgnoreCase) &&
-            existing.AutoTagEnabled == state.Folder.AutoTagEnabled)
+        if (HasReusableWatcher(folderId, state))
         {
             return null;
         }
 
+        var existing = _watchers.GetValueOrDefault(folderId);
         try
         {
             existing?.Dispose();
-            _watchers[folderId] = CreateWatcher(
+
+            var replacement = CreateWatcher(
                 state.Folder,
                 state.NormalizedRootPath,
                 state.BaselineFiles ?? new Dictionary<string, FileBaselineState>(StringComparer.OrdinalIgnoreCase),
                 _bootstrappingFolders.Contains(folderId));
-            return null;
+            try
+            {
+                _watchers[folderId] = replacement;
+                return null;
+            }
+            catch
+            {
+                replacement.Dispose();
+                throw;
+            }
         }
-        catch (IOException ex) when (IsWatcherResourceLimit(ex))
+        catch (IOException ex)
         {
-            existing?.Dispose();
+            if (!IsWatcherResourceLimit(ex))
+            {
+                throw;
+            }
+
             _watchers.Remove(folderId);
             return ex;
         }
+    }
+
+    private bool HasReusableWatcher(long folderId, FolderState state)
+    {
+        return _watchers.TryGetValue(folderId, out var existing)
+            && string.Equals(existing.NormalizedRootPath, state.NormalizedRootPath, StringComparison.OrdinalIgnoreCase)
+            && existing.AutoTagEnabled == state.Folder.AutoTagEnabled;
     }
 
     private async Task ProcessDueScansAsync(CancellationToken cancellationToken)
@@ -398,8 +417,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         RequeueFolder(folderId, SettleDelay, changedFilePath: fullPath);
         if (_taggingJobQueue != null
             && watchedFolder is not null
-            && watchedFolder.AutoTagEnabled
-            && shouldQueueScan)
+            && watchedFolder.AutoTagEnabled)
         {
             _ = QueueRetagAsync(fullPath);
         }

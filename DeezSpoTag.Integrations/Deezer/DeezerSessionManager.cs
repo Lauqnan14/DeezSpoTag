@@ -263,7 +263,9 @@ public sealed class DeezerSessionManager : IDisposable
         {
             if (typeof(T) == typeof(Newtonsoft.Json.Linq.JObject))
             {
-                return (T)(object)new Newtonsoft.Json.Linq.JObject();
+                var emptyObject = new Newtonsoft.Json.Linq.JObject();
+                return emptyObject as T
+                    ?? throw new RetryableApiResponseException($"Gateway response missing results for {method}");
             }
 
             throw new RetryableApiResponseException($"Gateway response missing results for {method}");

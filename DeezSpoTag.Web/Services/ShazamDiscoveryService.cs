@@ -168,13 +168,13 @@ public sealed partial class ShazamDiscoveryService
         }
 
         var scriptDirectory = Path.GetDirectoryName(scriptPath) ?? string.Empty;
-        var venvPython = Path.Combine(scriptDirectory, ".venv", "bin", "python");
+        var venvPython = Path.Join(scriptDirectory, ".venv", "bin", "python");
         if (File.Exists(venvPython))
         {
             return venvPython;
         }
 
-        var venvPython3 = Path.Combine(scriptDirectory, ".venv", "bin", "python3");
+        var venvPython3 = Path.Join(scriptDirectory, ".venv", "bin", "python3");
         if (File.Exists(venvPython3))
         {
             return venvPython3;
@@ -194,17 +194,17 @@ public sealed partial class ShazamDiscoveryService
         var candidates = new List<string>();
         if (!string.IsNullOrWhiteSpace(contentRootPath))
         {
-            candidates.Add(Path.Combine(contentRootPath, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
-            candidates.Add(Path.Combine(contentRootPath, "..", "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+            candidates.Add(Path.Join(contentRootPath, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+            candidates.Add(Path.Join(contentRootPath, "..", "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
         }
 
         var current = Directory.GetCurrentDirectory();
-        candidates.Add(Path.Combine(current, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
-        candidates.Add(Path.Combine(current, "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+        candidates.Add(Path.Join(current, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+        candidates.Add(Path.Join(current, "DeezSpoTag.Web", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
 
         var baseDir = AppContext.BaseDirectory;
-        candidates.Add(Path.Combine(baseDir, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
-        candidates.Add(Path.Combine(baseDir, "..", "..", "..", "..", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+        candidates.Add(Path.Join(baseDir, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
+        candidates.Add(Path.Join(baseDir, "..", "..", "..", "..", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
 
         foreach (var candidate in candidates)
         {
@@ -232,7 +232,7 @@ public sealed partial class ShazamDiscoveryService
             if (string.IsNullOrWhiteSpace(projectRoot))
             {
                 var baseDir = AppContext.BaseDirectory;
-                projectRoot = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", ".."));
+                projectRoot = Path.GetFullPath(Path.Join(baseDir, "..", "..", "..", ".."));
             }
             var scriptPath = ResolveShazamPortDiscoverScriptPath(projectRoot);
             if (string.IsNullOrWhiteSpace(scriptPath))

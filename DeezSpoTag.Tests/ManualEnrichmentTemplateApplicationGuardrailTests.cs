@@ -12,7 +12,10 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
         var controllerSource = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs");
         var serviceSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
-        Assert.Contains("selectedProfileResult.Profile?.FolderStructure", controllerSource, StringComparison.Ordinal);
+        Assert.True(
+            controllerSource.Contains("selectedProfileResult.Profile?.FolderStructure", StringComparison.Ordinal)
+                || controllerSource.Contains("selectedProfile.FolderStructure", StringComparison.Ordinal),
+            "Manual starts must pass the selected profile folder structure into the runtime config.");
         Assert.Contains("FolderStructureSettings? FolderStructureOverride", serviceSource, StringComparison.Ordinal);
         Assert.Contains("root[\"folderStructure\"] = JsonSerializer.SerializeToNode(folderStructure", serviceSource, StringComparison.Ordinal);
         Assert.Contains("\"folderStructure\"", serviceSource, StringComparison.Ordinal);

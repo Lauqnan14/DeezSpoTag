@@ -436,10 +436,9 @@ public class LibraryAnalysisApiController : ControllerBase
     private IActionResult CreateTrackAudioFileResult(long trackId, string resolvedPath)
     {
         var contentType = GetAudioContentType(resolvedPath);
-        FileStream stream;
         try
         {
-            stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
@@ -450,10 +449,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 title: "Local playback unavailable");
         }
 
-        return new FileStreamResult(stream, contentType)
-        {
-            EnableRangeProcessing = true
-        };
+        return PhysicalFile(resolvedPath, contentType, enableRangeProcessing: true);
     }
 
     private async Task<string?> ResolveTrackFilePathAsync(
@@ -794,7 +790,7 @@ public class LibraryAnalysisApiController : ControllerBase
             var suffixSegments = segments[^suffixLength..];
             foreach (var root in playbackRoots)
             {
-                var candidate = Path.Combine(new[] { root }.Concat(suffixSegments).ToArray());
+                var candidate = Path.Join(new[] { root }.Concat(suffixSegments).ToArray());
                 if (System.IO.File.Exists(candidate))
                 {
                     return candidate;

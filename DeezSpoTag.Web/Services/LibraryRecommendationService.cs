@@ -86,7 +86,7 @@ public sealed class LibraryRecommendationService
         _songLinkResolver = collaborators.SongLinkResolver;
         _recommendationArtworkRootPath = string.IsNullOrWhiteSpace(webHostEnvironment.WebRootPath)
             ? string.Empty
-            : Path.Combine(webHostEnvironment.WebRootPath, "images", "recommendations");
+            : Path.Join(webHostEnvironment.WebRootPath, "images", "recommendations");
         _logger = logger;
     }
 
@@ -3249,15 +3249,15 @@ public sealed class LibraryRecommendationService
         var mergedArtistId = !string.IsNullOrWhiteSpace(current.Artist?.Id)
             ? NormalizeReferenceId(current.Artist.Id)
             : NormalizeReferenceId(deezerMetadata.Artist?.Id);
-        var mergedArtistName = IsMissingOrUnknown(current.Artist?.Name, UnknownArtist)
+        var mergedArtistName = IsMissingOrUnknown(current.Artist!.Name, UnknownArtist)
             ? NormalizeText(deezerMetadata.Artist?.Name, UnknownArtist)
-            : NormalizeText(current.Artist?.Name, UnknownArtist);
+            : NormalizeText(current.Artist.Name, UnknownArtist);
         var mergedAlbumId = !string.IsNullOrWhiteSpace(current.Album?.Id)
             ? NormalizeReferenceId(current.Album.Id)
             : NormalizeReferenceId(deezerMetadata.Album?.Id);
-        var mergedAlbumTitle = IsMissingOrUnknown(current.Album?.Title, UnknownAlbum)
+        var mergedAlbumTitle = IsMissingOrUnknown(current.Album!.Title, UnknownAlbum)
             ? NormalizeText(deezerMetadata.Album?.Title, UnknownAlbum)
-            : NormalizeText(current.Album?.Title, UnknownAlbum);
+            : NormalizeText(current.Album.Title, UnknownAlbum);
         var currentCover = NormalizeCoverMedium(current.Album?.CoverMedium);
         var deezerCover = NormalizeCoverMedium(deezerMetadata.Album?.CoverMedium);
         var mergedCover = !string.IsNullOrWhiteSpace(currentCover)
@@ -3279,9 +3279,9 @@ public sealed class LibraryRecommendationService
     private static bool NeedsRecommendationMetadataEnrichment(RecommendationTrackDto track)
     {
         return track.Duration <= 0
-            || IsMissingOrUnknown(track.Artist?.Name, UnknownArtist)
-            || IsMissingOrUnknown(track.Album?.Title, UnknownAlbum)
-            || string.IsNullOrWhiteSpace(track.Album?.CoverMedium);
+            || IsMissingOrUnknown(track.Artist.Name, UnknownArtist)
+            || IsMissingOrUnknown(track.Album.Title, UnknownAlbum)
+            || string.IsNullOrWhiteSpace(track.Album.CoverMedium);
     }
 
     private static bool IsMissingOrUnknown(string? value, string unknownLabel)

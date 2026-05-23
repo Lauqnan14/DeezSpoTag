@@ -147,13 +147,13 @@ public sealed class SpotifyMetadataResolver : IMetadataResolver
     {
         if (!string.IsNullOrWhiteSpace(summary.Label))
         {
-            track.Album ??= new Album(summary.Album ?? track.Album?.Title ?? string.Empty);
+            track.Album ??= new Album(summary.Album ?? string.Empty);
             track.Album.Label = summary.Label;
         }
 
         if (summary.Genres is { Count: > 0 })
         {
-            track.Album ??= new Album(summary.Album ?? track.Album?.Title ?? string.Empty);
+            track.Album ??= new Album(summary.Album ?? string.Empty);
             track.Album.Genre = summary.Genres
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Distinct(StringComparer.OrdinalIgnoreCase)

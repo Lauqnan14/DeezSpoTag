@@ -640,7 +640,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     {
         var dataRoot = ResolveDataRootPath();
         var baseDirectory = string.IsNullOrWhiteSpace(dataRoot) ? AppContext.BaseDirectory : dataRoot;
-        var tempDirectory = Path.Combine(baseDirectory, "analysis", "tmp", "vibe");
+        var tempDirectory = Path.Join(baseDirectory, "analysis", "tmp", "vibe");
         Directory.CreateDirectory(tempDirectory);
         return tempDirectory;
     }
@@ -1163,7 +1163,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             var downloaded = 0;
             foreach (var (fileName, url) in RequiredModelFiles)
             {
-                var destinationPath = Path.Combine(modelsDir, fileName);
+                var destinationPath = Path.Join(modelsDir, fileName);
                 if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length > 0)
                 {
                     continue;
@@ -1242,7 +1242,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return;
         }
 
-        var venvRoot = Path.Combine(dataRoot, DefaultVibeVenvRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        var venvRoot = Path.Join(dataRoot, DefaultVibeVenvRelativePath.Replace('/', Path.DirectorySeparatorChar));
         var venvPython = ResolveVenvPythonPath(venvRoot);
         try
         {
@@ -1358,17 +1358,17 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         var dataRoot = ResolveDataRootPath();
         if (!string.IsNullOrWhiteSpace(dataRoot))
         {
-            return Path.Combine(dataRoot, DefaultVibeModelsRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            return Path.Join(dataRoot, DefaultVibeModelsRelativePath.Replace('/', Path.DirectorySeparatorChar));
         }
 
-        return Path.Combine(AppContext.BaseDirectory, ToolsDirectoryName, ModelsDirectoryName);
+        return Path.Join(AppContext.BaseDirectory, ToolsDirectoryName, ModelsDirectoryName);
     }
 
     private static string ResolveAbsolutePath(string path)
     {
         return Path.IsPathRooted(path)
             ? Path.GetFullPath(path)
-            : Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), path));
+            : Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), path));
     }
 
     private static string? ResolveDataRootPath()
@@ -1390,13 +1390,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     private static string? ResolveVenvPythonPath(string venvRoot)
     {
-        var linuxPath = Path.Combine(venvRoot, "bin", Python3Executable);
+        var linuxPath = Path.Join(venvRoot, "bin", Python3Executable);
         if (File.Exists(linuxPath))
         {
             return linuxPath;
         }
 
-        var windowsPath = Path.Combine(venvRoot, "Scripts", "python.exe");
+        var windowsPath = Path.Join(venvRoot, "Scripts", "python.exe");
         return File.Exists(windowsPath) ? windowsPath : null;
     }
 
@@ -1543,7 +1543,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         var dataRoot = ResolveDataRootPath();
         if (!string.IsNullOrWhiteSpace(dataRoot))
         {
-            var managedVenv = ResolveVenvPythonPath(Path.Combine(dataRoot, DefaultVibeVenvRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+            var managedVenv = ResolveVenvPythonPath(Path.Join(dataRoot, DefaultVibeVenvRelativePath.Replace('/', Path.DirectorySeparatorChar)));
             if (!string.IsNullOrWhiteSpace(managedVenv))
             {
                 return managedVenv;
@@ -1562,11 +1562,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return null;
         }
 
-        var venvDir = Path.Combine(scriptDir, "venv");
+        var venvDir = Path.Join(scriptDir, "venv");
         var linuxPython = new[]
         {
-            Path.Combine(venvDir, "bin", Python3Executable),
-            Path.Combine(venvDir, "bin", "python")
+            Path.Join(venvDir, "bin", Python3Executable),
+            Path.Join(venvDir, "bin", "python")
         }.FirstOrDefault(File.Exists);
         if (!string.IsNullOrWhiteSpace(linuxPython))
         {
@@ -1575,8 +1575,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
         return new[]
         {
-            Path.Combine(venvDir, "Scripts", "python.exe"),
-            Path.Combine(venvDir, "Scripts", "python")
+            Path.Join(venvDir, "Scripts", "python.exe"),
+            Path.Join(venvDir, "Scripts", "python")
         }.FirstOrDefault(File.Exists);
     }
 
@@ -1616,15 +1616,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return null;
         }
 
-        var venvDir = Path.Combine(scriptDir, "venv");
+        var venvDir = Path.Join(scriptDir, "venv");
 
-        var windowsSitePackages = Path.Combine(venvDir, "Lib", "site-packages");
+        var windowsSitePackages = Path.Join(venvDir, "Lib", "site-packages");
         if (Directory.Exists(windowsSitePackages))
         {
             return windowsSitePackages;
         }
 
-        var linuxLibRoot = Path.Combine(venvDir, "lib");
+        var linuxLibRoot = Path.Join(venvDir, "lib");
         if (!Directory.Exists(linuxLibRoot))
         {
             return null;
@@ -1632,7 +1632,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
         foreach (var pythonDir in Directory.GetDirectories(linuxLibRoot, "python*"))
         {
-            var sitePackages = Path.Combine(pythonDir, "site-packages");
+            var sitePackages = Path.Join(pythonDir, "site-packages");
             if (Directory.Exists(sitePackages))
             {
                 return sitePackages;
@@ -1737,11 +1737,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
         var candidates = new[]
         {
-            Path.Combine(AppContext.BaseDirectory, ToolsDirectoryName, VibeAnalyzerScriptFileName),
-            Path.Combine(AppContext.BaseDirectory, "..", ToolsDirectoryName, VibeAnalyzerScriptFileName),
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ToolsDirectoryName, VibeAnalyzerScriptFileName),
-            Path.Combine(Directory.GetCurrentDirectory(), ToolsDirectoryName, VibeAnalyzerScriptFileName),
-            Path.Combine(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, VibeAnalyzerScriptFileName)
+            Path.Join(AppContext.BaseDirectory, ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Join(AppContext.BaseDirectory, "..", ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Join(AppContext.BaseDirectory, "..", "..", "..", ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Join(Directory.GetCurrentDirectory(), ToolsDirectoryName, VibeAnalyzerScriptFileName),
+            Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, VibeAnalyzerScriptFileName)
         };
 
         foreach (var candidate in candidates)
@@ -1783,20 +1783,20 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         var dataRoot = ResolveDataRootPath();
         if (!string.IsNullOrWhiteSpace(dataRoot))
         {
-            var dataModels = Path.Combine(dataRoot, DefaultVibeModelsRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var dataModels = Path.Join(dataRoot, DefaultVibeModelsRelativePath.Replace('/', Path.DirectorySeparatorChar));
             var resolvedDataModels = TryResolveExistingDirectoryPath(dataModels);
             AddUniqueCandidate(resolvedCandidates, resolvedDataModels);
         }
 
         var candidates = new[]
         {
-            Path.Combine(AppContext.BaseDirectory, ModelsDirectoryName),
-            Path.Combine(AppContext.BaseDirectory, ToolsDirectoryName, ModelsDirectoryName),
-            Path.Combine(AppContext.BaseDirectory, "..", ToolsDirectoryName, ModelsDirectoryName),
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ToolsDirectoryName, ModelsDirectoryName),
-            Path.Combine(Directory.GetCurrentDirectory(), ToolsDirectoryName, ModelsDirectoryName),
-            Path.Combine(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, ModelsDirectoryName),
-            Path.Combine(Path.DirectorySeparatorChar.ToString(), "app", ModelsDirectoryName)
+            Path.Join(AppContext.BaseDirectory, ModelsDirectoryName),
+            Path.Join(AppContext.BaseDirectory, ToolsDirectoryName, ModelsDirectoryName),
+            Path.Join(AppContext.BaseDirectory, "..", ToolsDirectoryName, ModelsDirectoryName),
+            Path.Join(AppContext.BaseDirectory, "..", "..", "..", ToolsDirectoryName, ModelsDirectoryName),
+            Path.Join(Directory.GetCurrentDirectory(), ToolsDirectoryName, ModelsDirectoryName),
+            Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, ModelsDirectoryName),
+            Path.Join(Path.DirectorySeparatorChar.ToString(), "app", ModelsDirectoryName)
         };
 
         foreach (var candidate in candidates)
@@ -1821,7 +1821,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return false;
         }
 
-        return RequiredEnhancedModelFiles.All(requiredModelFile => File.Exists(Path.Combine(modelsDirectory, requiredModelFile)));
+        return RequiredEnhancedModelFiles.All(requiredModelFile => File.Exists(Path.Join(modelsDirectory, requiredModelFile)));
     }
 
     private static string? TryResolveExistingFilePath(string path)
@@ -1847,8 +1847,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             yield break;
         }
 
-        yield return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), path));
-        yield return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
+        yield return Path.GetFullPath(Path.Join(Directory.GetCurrentDirectory(), path));
+        yield return Path.GetFullPath(Path.Join(AppContext.BaseDirectory, path));
     }
 
     private sealed record MoodScores(
@@ -2218,7 +2218,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return (0, 0);
         }
 
-        var frequency = maxIndex * sampleRate / (double)n;
+        var frequency = (double)maxIndex * sampleRate / n;
         var strength = maxMagnitude / sumMagnitude;
         return (frequency, strength);
     }
@@ -2313,7 +2313,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         for (var i = 0; i < half; i++)
         {
             var magnitude = fft[i].Magnitude;
-            var frequency = i * sampleRate / (double)n;
+            var frequency = (double)i * sampleRate / n;
             weightedSum += frequency * magnitude;
             magnitudeSum += magnitude;
         }

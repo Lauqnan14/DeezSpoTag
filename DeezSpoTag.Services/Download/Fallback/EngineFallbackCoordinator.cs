@@ -501,7 +501,7 @@ public sealed class EngineFallbackCoordinator
             songLink,
             resolvedUrl,
             cancellationToken);
-        (resolvedUrl, songLink) = await TryResolveFromSpotifyFallbackSearchAsync(
+        (resolvedUrl, _) = await TryResolveFromSpotifyFallbackSearchAsync(
             request,
             songLink,
             resolvedUrl,

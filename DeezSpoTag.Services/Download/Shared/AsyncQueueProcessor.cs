@@ -31,7 +31,8 @@ public class AsyncQueueProcessor<T> : IDisposable
 
         if (_logger?.IsEnabled(LogLevel.Debug) == true)
         {
-            _logger?.LogDebug("Created AsyncQueueProcessor with concurrency: {Concurrency}", _concurrency);        }
+            _logger.LogDebug("Created AsyncQueueProcessor with concurrency: {Concurrency}", _concurrency);
+        }
     }
 
     /// <summary>
@@ -51,7 +52,8 @@ public class AsyncQueueProcessor<T> : IDisposable
 
         if (_logger?.IsEnabled(LogLevel.Debug) == true)
         {
-            _logger?.LogDebug("Pushed item to queue, current length: {QueueLength}", _queue.Count);        }
+            _logger.LogDebug("Pushed item to queue, current length: {QueueLength}", _queue.Count);
+        }
 
         // Start processing if not already at capacity
         _ = ProcessQueueAsync();
@@ -65,7 +67,8 @@ public class AsyncQueueProcessor<T> : IDisposable
     {
         if (_logger?.IsEnabled(LogLevel.Debug) == true)
         {
-            _logger?.LogDebug("Starting queue drain, current queue length: {QueueLength}", _queue.Count);        }
+            _logger.LogDebug("Starting queue drain, current queue length: {QueueLength}", _queue.Count);
+        }
 
         _isDraining = true;
 

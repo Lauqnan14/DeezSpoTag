@@ -2707,10 +2707,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return (shazamConfig.FallbackMissingCoreTags, shazamConfig.ForceMatch);
         }
 
-        // Legacy fallback for older profiles/configs.
-        var legacyEnableFallback = config.EnableShazam || shazamEnabled;
-        var legacyForceMatch = shazamEnabled && config.ForceShazam;
-        return (legacyEnableFallback, legacyForceMatch);
+        // Legacy fallback for older profiles/configs. At this point Shazam is enabled,
+        // no explicit Shazam platform block exists, and ForceShazam was already handled.
+        return (true, false);
     }
 
     private bool IsShazamRecognitionAvailable()
@@ -5162,7 +5161,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             foreach (var ext in preferredExtensions)
             {
-                var candidate = Path.Combine(directory, name + ext);
+                var candidate = Path.Join(directory, name + ext);
                 if (IOFile.Exists(candidate))
                 {
                     return candidate;

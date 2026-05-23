@@ -309,7 +309,7 @@ public static partial class EngineAudioPostDownloadHelper
             return false;
         }
 
-        var resolver = registry?.GetResolver(source);
+        var resolver = registry.GetResolver(source);
         if (resolver == null)
         {
             request.Logger.LogWarning(

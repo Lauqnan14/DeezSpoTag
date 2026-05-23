@@ -712,14 +712,9 @@ public sealed class DownloadIntentService
         }
 
         var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
-        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
-        {
-            intent.DeezerId = NormalizeDeezerTrackId(TryExtractDeezerTrackId(intent.SourceUrl)) ?? string.Empty;
-        }
-        else
-        {
-            intent.DeezerId = normalizedDeezerId;
-        }
+        intent.DeezerId = string.IsNullOrWhiteSpace(normalizedDeezerId)
+            ? NormalizeDeezerTrackId(TryExtractDeezerTrackId(intent.SourceUrl)) ?? string.Empty
+            : normalizedDeezerId;
 
         if (string.IsNullOrWhiteSpace(intent.SourceUrl))
         {
@@ -1849,14 +1844,16 @@ public sealed class DownloadIntentService
             var step = DownloadSourceOrder.DecodeAutoSource(routing.AutoSources[i]);
             if (!TryAcceptAutoResolutionCandidate(intent, step.Source, step.Quality ?? routing.TargetQuality, routing.Availability, out var skipReason))
             {
-                _activityLog.Warn($"Auto mapping skip: engine={step.Source} quality={(step.Quality ?? routing.TargetQuality) ?? AutoService} reason={skipReason}");
+                var attemptedQuality = step.Quality ?? routing.TargetQuality;
+                _activityLog.Warn($"Auto mapping skip: engine={step.Source} quality={attemptedQuality} reason={skipReason}");
                 continue;
             }
 
             var candidate = await ResolveIntentAsync(intent, step.Source, preferIsrcOnly, routing.Availability, cancellationToken);
             if (!TryAcceptResolvedCandidate(step.Source, candidate, out skipReason))
             {
-                _activityLog.Warn($"Auto mapping skip: engine={step.Source} quality={(step.Quality ?? routing.TargetQuality) ?? AutoService} reason={skipReason}");
+                var attemptedQuality = step.Quality ?? routing.TargetQuality;
+                _activityLog.Warn($"Auto mapping skip: engine={step.Source} quality={attemptedQuality} reason={skipReason}");
                 continue;
             }
 
@@ -3473,16 +3470,11 @@ public sealed class DownloadIntentService
     private static string? BootstrapIntentDeezerIdentity(DownloadIntent intent, string sourceUrl, bool isPodcastIntent, ref string normalizedSourceUrl)
     {
         var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
-        if (string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
-        {
-            intent.DeezerId = isPodcastIntent
-                ? (TryExtractDeezerEpisodeId(sourceUrl) ?? string.Empty)
-                : (TryExtractDeezerTrackId(sourceUrl) ?? string.Empty);
-        }
-        else
-        {
-            intent.DeezerId = normalizedExistingDeezerId;
-        }
+        intent.DeezerId = string.IsNullOrWhiteSpace(normalizedExistingDeezerId)
+            ? isPodcastIntent
+                ? TryExtractDeezerEpisodeId(sourceUrl) ?? string.Empty
+                : TryExtractDeezerTrackId(sourceUrl) ?? string.Empty
+            : normalizedExistingDeezerId;
 
         var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
         if (string.IsNullOrWhiteSpace(normalizedSourceUrl) && !string.IsNullOrWhiteSpace(normalizedDeezerId))
@@ -4246,7 +4238,7 @@ public sealed class DownloadIntentService
                 .ToList();
         }
 
-        var protectedEngine = intentRequestsAuto ? null : normalizedPreferredEngine;
+        var protectedEngine = normalizedPreferredEngine;
         return _apiHealthTracker.PrioritizeSources(sources, protectedEngine).ToList();
     }
 
@@ -5062,7 +5054,7 @@ public sealed class DownloadIntentService
 
         if (ContainsAppleMusicUrl(availability?.AppleMusicUrl))
         {
-            return availability?.AppleMusicUrl;
+            return availability!.AppleMusicUrl;
         }
 
         if (string.IsNullOrWhiteSpace(intent.AppleId))
@@ -5826,7 +5818,7 @@ public sealed class DownloadIntentService
             return new QueueDuplicateResolution(null, true);
         }
 
-        if (!isCompletedStatus && context.QueueQualityUpgradeRequested)
+        if (context.QueueQualityUpgradeRequested)
         {
             var upgradeResolution = await TryResolveQueuedQualityUpgradeAsync(
                 payload,

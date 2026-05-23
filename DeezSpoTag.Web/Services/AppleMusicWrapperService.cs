@@ -916,7 +916,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
     private static SharedControlProbeResult ProbeSharedWrapperControl(string dataProbeFileName, string sessionProbeFileName)
     {
         var dataPath = ResolveExternalWrapperSharedDataDir();
-        var sessionPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
+        var sessionPath = Path.Join(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
         var dataReady = TryProbeSharedControlPath(dataPath, dataProbeFileName, out var dataError);
         var sessionReady = TryProbeSharedControlPath(sessionPath, sessionProbeFileName, out var sessionError);
         var ready = dataReady && sessionReady;
@@ -948,7 +948,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         try
         {
             Directory.CreateDirectory(path);
-            var probePath = Path.Combine(path, probeFileName);
+            var probePath = Path.Join(path, probeFileName);
             File.WriteAllText(probePath, "probe");
             File.Delete(probePath);
             return true;
@@ -1185,7 +1185,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             case HelperModeCompose:
                 startInfo.Environment["APPLE_WRAPPER_DISABLE_COMPOSE"] = "0";
                 startInfo.Environment["APPLE_WRAPPER_ALLOW_COMPOSE_IN_CONTAINER"] = "1";
-                startInfo.Environment["APPLE_WRAPPER_ENV_FILE"] = Path.Combine(helperTempDir, "apple-wrapper.env");
+                startInfo.Environment["APPLE_WRAPPER_ENV_FILE"] = Path.Join(helperTempDir, "apple-wrapper.env");
                 break;
             case HelperModeAuto:
                 break;
@@ -1344,7 +1344,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private static string ResolveExternalWrapperHelperTempDirectory()
     {
-        var helperTempDir = Path.Combine(ResolveExternalWrapperSharedDataDir(), "helper-runtime");
+        var helperTempDir = Path.Join(ResolveExternalWrapperSharedDataDir(), "helper-runtime");
         Directory.CreateDirectory(helperTempDir);
         return helperTempDir;
     }
@@ -1492,7 +1492,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         var dataDir = Environment.GetEnvironmentVariable(DeezSpoTagDataDirEnv);
         if (!string.IsNullOrWhiteSpace(dataDir))
         {
-            return NormalizePath(Path.Combine(dataDir.Trim(), "apple-wrapper", "data"));
+            return NormalizePath(Path.Join(dataDir.Trim(), "apple-wrapper", "data"));
         }
 
         return NormalizePath(DefaultHostSharedDataDir);
@@ -1509,7 +1509,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         var dataDir = Environment.GetEnvironmentVariable(DeezSpoTagDataDirEnv);
         if (!string.IsNullOrWhiteSpace(dataDir))
         {
-            return NormalizePath(Path.Combine(dataDir.Trim(), "apple-wrapper", "session"));
+            return NormalizePath(Path.Join(dataDir.Trim(), "apple-wrapper", "session"));
         }
 
         return NormalizePath(DefaultHostSharedSessionDir);
@@ -1530,32 +1530,32 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private static string ResolveExternalWrapperSharedLoginFilePath()
     {
-        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedLoginFileName);
+        return Path.Join(ResolveExternalWrapperSharedDataDir(), SharedLoginFileName);
     }
 
     private static string ResolveExternalWrapperSharedLogoutFilePath()
     {
-        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedLogoutFileName);
+        return Path.Join(ResolveExternalWrapperSharedDataDir(), SharedLogoutFileName);
     }
 
     private static string ResolveExternalWrapperSharedLogoutStateFilePath()
     {
-        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedLogoutStateFileName);
+        return Path.Join(ResolveExternalWrapperSharedDataDir(), SharedLogoutStateFileName);
     }
 
     private static string ResolveExternalWrapperSharedTwoFactorStateFilePath()
     {
-        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedTwoFactorStateFileName);
+        return Path.Join(ResolveExternalWrapperSharedDataDir(), SharedTwoFactorStateFileName);
     }
 
     private static string ResolveExternalWrapperSharedTwoFactorCodeFilePath()
     {
-        return Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName, "2fa.txt");
+        return Path.Join(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName, "2fa.txt");
     }
 
     private static string ResolveExternalWrapperSharedAuthActiveFilePath()
     {
-        return Path.Combine(ResolveExternalWrapperSharedDataDir(), SharedAuthActiveFileName);
+        return Path.Join(ResolveExternalWrapperSharedDataDir(), SharedAuthActiveFileName);
     }
 
     private static bool TryQueueSharedLoginCredentials(string email, string password, out string? error)
@@ -1792,7 +1792,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             Directory.CreateDirectory(parentDir);
         }
 
-        var tempPath = Path.Combine(
+        var tempPath = Path.Join(
             parentDir ?? Path.GetTempPath(),
             $".{Path.GetFileName(filePath)}.{Guid.NewGuid():N}.tmp");
 
@@ -2563,7 +2563,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return BuildWaitingForTwoFactorStatus(context);
         }
 
-        return !context.HasAuthentication ? BuildLoginInProgressStatus(context) : null;
+        return BuildLoginInProgressStatus(context);
     }
 
     private AppleMusicWrapperStatusSnapshot? TryBuildLoginTimeoutStatus(ExternalStatusContext context)
@@ -2641,19 +2641,19 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
     private static bool HasSharedWrapperSessionCache()
     {
-        var filesPath = Path.Combine(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
+        var filesPath = Path.Join(ResolveExternalWrapperSharedSessionDir(), SharedFilesDirectoryName);
         if (!Directory.Exists(filesPath))
         {
             return false;
         }
 
-        var icInfo = Path.Combine(filesPath, "IC-Info.sido");
+        var icInfo = Path.Join(filesPath, "IC-Info.sido");
         if (File.Exists(icInfo))
         {
             return true;
         }
 
-        var musicToken = Path.Combine(filesPath, "MUSIC_TOKEN");
+        var musicToken = Path.Join(filesPath, "MUSIC_TOKEN");
         return File.Exists(musicToken);
     }
 
@@ -2869,7 +2869,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return "Wrapper reachable, but Apple Music did not return a music token. The Apple ID may not have an active Apple Music subscription.";
         }
 
-        if (!context.HasDevToken || !context.HasMusicToken)
+        if (!context.HasMusicToken)
         {
             return "Wrapper reachable, but auth tokens are missing. Login not completed.";
         }

@@ -229,7 +229,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
             if (reconciliation.SyncResult?.Success == true)
             {
-                LogSyncCompleted(request, attempt, reconciliation.SyncResult?.SyncedTracks ?? 0);
+                LogSyncCompleted(request, attempt, reconciliation.SyncResult.SyncedTracks);
                 return true;
             }
 

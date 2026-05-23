@@ -84,7 +84,7 @@ public sealed class PlaylistVisualService
             var extension = ResolveImageExtension(response.Content.Headers.ContentType?.MediaType, remoteUrl);
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var fileName = $"cover-{hash}{extension}";
-            var targetPath = Path.Combine(visualDir, fileName);
+            var targetPath = Path.Join(visualDir, fileName);
             if (!File.Exists(targetPath))
             {
                 await File.WriteAllBytesAsync(targetPath, bytes, cancellationToken);
@@ -114,7 +114,7 @@ public sealed class PlaylistVisualService
 
         var activeFileName = ReadActiveFileName(visualDir);
         var file = !string.IsNullOrWhiteSpace(activeFileName)
-            ? Path.Combine(visualDir, activeFileName)
+            ? Path.Join(visualDir, activeFileName)
             : EnumerateVisualFiles(visualDir)
                 .OrderByDescending(path => File.GetLastWriteTimeUtc(path))
                 .FirstOrDefault();
@@ -178,20 +178,20 @@ public sealed class PlaylistVisualService
             return false;
         }
 
-        var targetPath = Path.Combine(visualDir, fileName);
+        var targetPath = Path.Join(visualDir, fileName);
         if (!File.Exists(targetPath))
         {
             return false;
         }
 
-        File.WriteAllText(Path.Combine(visualDir, "active.txt"), fileName);
+        File.WriteAllText(Path.Join(visualDir, "active.txt"), fileName);
         return true;
     }
 
     private string GetVisualDirectory(string source, string sourceId)
     {
         var dataRoot = AppDataPaths.GetDataRoot(_environment);
-        return Path.Combine(
+        return Path.Join(
             dataRoot,
             "playlist-visuals",
             SanitizeSegment(source),
@@ -230,7 +230,7 @@ public sealed class PlaylistVisualService
 
     private static string? ReadActiveFileName(string visualDir)
     {
-        var markerPath = Path.Combine(visualDir, "active.txt");
+        var markerPath = Path.Join(visualDir, "active.txt");
         if (!File.Exists(markerPath))
         {
             return null;

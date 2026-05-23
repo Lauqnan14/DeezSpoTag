@@ -207,17 +207,11 @@ public class AudioTagger
     public async Task TagTrackAsync(string extension, string writePath, DeezSpoTag.Core.Models.Track track, TagSettings tags)
     {
         var finalPathExtension = Path.GetExtension(writePath);
-        string normalizedExtension;
-        if (!string.IsNullOrWhiteSpace(finalPathExtension))
-        {
-            normalizedExtension = finalPathExtension.Trim().ToLowerInvariant();
-        }
-        else
-        {
-            normalizedExtension = string.IsNullOrWhiteSpace(extension)
+        var normalizedExtension = !string.IsNullOrWhiteSpace(finalPathExtension)
+            ? finalPathExtension.Trim().ToLowerInvariant()
+            : string.IsNullOrWhiteSpace(extension)
                 ? string.Empty
                 : extension.Trim().ToLowerInvariant();
-        }
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -870,7 +864,7 @@ public class AudioTagger
         string tempExtension)
     {
         var directory = Path.GetDirectoryName(path);
-        var tempPath = Path.Combine(
+        var tempPath = Path.Join(
             string.IsNullOrWhiteSpace(directory) ? Path.GetTempPath() : directory,
             $".{Path.GetFileNameWithoutExtension(path)}.{Guid.NewGuid():N}.remux{tempExtension}");
 
@@ -2290,10 +2284,10 @@ public class AudioTagger
             return;
         }
 
-        var mimeType = CoverArtMimeTypeResolver.Resolve(track.Album?.EmbeddedCoverPath, coverData);
+        var mimeType = CoverArtMimeTypeResolver.Resolve(track.Album.EmbeddedCoverPath, coverData);
         if (tag is TagLib.Id3v2.Tag id3Tag)
         {
-            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8, track.Album?.EmbeddedCoverPath);
+            SetId3CoverFrame(id3Tag, coverData, save.CoverDescriptionUTF8, track.Album.EmbeddedCoverPath);
             return;
         }
 

@@ -378,8 +378,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var normalizedSelections = request.Playlists
-            .Where(selection => !string.IsNullOrWhiteSpace(selection?.Source)
-                && !string.IsNullOrWhiteSpace(selection?.SourceId))
+            .Where(selection => selection is not null)
+            .Select(selection => selection!)
+            .Where(selection => !string.IsNullOrWhiteSpace(selection.Source)
+                && !string.IsNullOrWhiteSpace(selection.SourceId))
             .Select(selection => new
             {
                 Source = NormalizePlaylistSource(selection.Source),

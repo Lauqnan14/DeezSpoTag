@@ -81,7 +81,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
         var audioFile = audio!;
         var extension = ResolveAudioExtension(audioFile.FileName);
-        var tempPath = Path.Combine(Path.GetTempPath(), $"deezspotag-shazam-{Guid.NewGuid():N}{extension}");
+        var tempPath = Path.Join(Path.GetTempPath(), $"deezspotag-shazam-{Guid.NewGuid():N}{extension}");
 
         try
         {

@@ -627,7 +627,7 @@ public class Track : AudioFeaturesBase
             Duration = gwTrack.Duration,
             TrackToken = gwTrack.TrackToken ?? "",
             TrackTokenExpire = gwTrack.TrackTokenExpire,
-            Md5Origin = ((object?)gwTrack.Md5Origin)?.ToString() ?? "0",
+            Md5Origin = Convert.ToString(gwTrack.Md5Origin) ?? "0",
             MediaVersion = gwTrack.MediaVersion,
             FallbackId = gwTrack.FallbackId,
             Filesizes = new Dictionary<string, object>()

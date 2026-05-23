@@ -393,7 +393,7 @@ public sealed class ShazamRecognitionService
 
     private string GetRecognizerScriptPath()
     {
-        return Path.Combine(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, "recognize.py");
+        return Path.Join(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, "recognize.py");
     }
 
     private string ResolvePythonExecutable()
@@ -404,7 +404,7 @@ public sealed class ShazamRecognitionService
             return explicitPython;
         }
 
-        var shazamRuntimeRoot = Path.Combine(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, ".venv");
+        var shazamRuntimeRoot = Path.Join(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, ".venv");
         var runtimeCandidate = EnumeratePythonCandidates(shazamRuntimeRoot)
             .FirstOrDefault(File.Exists);
         if (!string.IsNullOrWhiteSpace(runtimeCandidate))
@@ -418,7 +418,7 @@ public sealed class ShazamRecognitionService
             return vibePython;
         }
 
-        var localVenvRoot = Path.Combine(_environment.ContentRootPath, ToolsDirectory, "venv");
+        var localVenvRoot = Path.Join(_environment.ContentRootPath, ToolsDirectory, "venv");
         var localCandidate = EnumeratePythonCandidates(localVenvRoot)
             .FirstOrDefault(File.Exists);
         if (!string.IsNullOrWhiteSpace(localCandidate))
@@ -431,9 +431,9 @@ public sealed class ShazamRecognitionService
 
     private static IEnumerable<string> EnumeratePythonCandidates(string venvRoot)
     {
-        yield return Path.Combine(venvRoot, "bin", "python3");
-        yield return Path.Combine(venvRoot, "bin", "python");
-        yield return Path.Combine(venvRoot, "Scripts", "python.exe");
+        yield return Path.Join(venvRoot, "bin", "python3");
+        yield return Path.Join(venvRoot, "bin", "python");
+        yield return Path.Join(venvRoot, "Scripts", "python.exe");
     }
 
     private PortedRecognizerExecution RunPortedRecognizer(
@@ -704,7 +704,7 @@ public sealed class ShazamRecognitionService
 
     private string GetRuntimeSetupScriptPath()
     {
-        return Path.Combine(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, "setup_runtime.sh");
+        return Path.Join(_environment.ContentRootPath, ToolsDirectory, ShazamPortDirectory, "setup_runtime.sh");
     }
 
     private static string? ResolveBashExecutable()

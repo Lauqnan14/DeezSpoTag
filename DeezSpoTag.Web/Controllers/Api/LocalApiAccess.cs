@@ -77,11 +77,19 @@ internal static class LocalApiAccess
         }
 
         // RFC1918 private ranges + link-local.
-        return bytes[0] == 10
-            || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
-            || (bytes[0] == 192 && bytes[1] == 168)
-            || (bytes[0] == 169 && bytes[1] == 254);
+        return IsPrivate10Network(bytes)
+            || IsPrivate172Network(bytes)
+            || IsPrivate192Network(bytes)
+            || IsLinkLocal169Network(bytes);
     }
+
+    private static bool IsPrivate10Network(byte[] bytes) => bytes[0] == 10;
+
+    private static bool IsPrivate172Network(byte[] bytes) => bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31;
+
+    private static bool IsPrivate192Network(byte[] bytes) => bytes[0] == 192 && bytes[1] == 168;
+
+    private static bool IsLinkLocal169Network(byte[] bytes) => bytes[0] == 169 && bytes[1] == 254;
 
     private static bool IsTrustedPrivateIpv6(IPAddress remote)
     {

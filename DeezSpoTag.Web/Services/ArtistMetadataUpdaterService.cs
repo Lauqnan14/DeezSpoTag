@@ -1438,7 +1438,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         return new ArtworkBandAnalysis(
             edgePixels / (double)totalPixels,
-            transitions / (double)(rows * Math.Max(1, image.Width - 2)));
+            transitions / ((double)rows * Math.Max(1, image.Width - 2)));
     }
 
     private static bool IsTextHeavyBand(ArtworkBandAnalysis band, ArtworkBandAnalysis middle)

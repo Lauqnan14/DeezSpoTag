@@ -30,11 +30,11 @@ public sealed class VibeAnalysisSettingsStore
         }
 
         var baseDataDir = string.IsNullOrWhiteSpace(configuredDataDir)
-            ? Path.Combine(env.ContentRootPath, "Data")
+            ? Path.Join(env.ContentRootPath, "Data")
             : configuredDataDir;
-        var dataDir = Path.Combine(baseDataDir, "analysis");
+        var dataDir = Path.Join(baseDataDir, "analysis");
         Directory.CreateDirectory(dataDir);
-        _settingsPath = Path.Combine(dataDir, "settings.json");
+        _settingsPath = Path.Join(dataDir, "settings.json");
     }
 
     public async Task<VibeAnalysisSettingsDto> LoadAsync()

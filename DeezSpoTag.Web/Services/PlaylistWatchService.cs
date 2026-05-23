@@ -530,8 +530,8 @@ public sealed class PlaylistWatchService
             _logger.LogWarning(
                 ex,
                 "Playlist pre-queue library scan failed for {Source}:{SourceId}.",
-                preference?.Source ?? string.Empty,
-                preference?.SourceId ?? string.Empty);
+                preference.Source ?? string.Empty,
+                preference.SourceId ?? string.Empty);
         }
     }
 
@@ -1008,7 +1008,7 @@ public sealed class PlaylistWatchService
                     track.Id,
                     track.Isrc,
                     track.Name,
-                    artistPage?.Artist?.Name,
+                    artistPage!.Artist?.Name,
                     track.AlbumName,
                     track.ReleaseDate,
                     track.DurationMs,

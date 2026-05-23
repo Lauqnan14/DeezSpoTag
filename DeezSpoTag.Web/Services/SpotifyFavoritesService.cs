@@ -117,13 +117,14 @@ public sealed class SpotifyFavoritesService
             }
 
             var state = await _platformAuthService.LoadAsync();
-            var active = state.Spotify?.ActiveAccount;
-            if (string.IsNullOrWhiteSpace(active))
+            var spotifyState = state.Spotify;
+            if (spotifyState is null || string.IsNullOrWhiteSpace(spotifyState.ActiveAccount))
             {
                 return null;
             }
 
-            var platformBlobPath = state.Spotify?.Accounts
+            var active = spotifyState.ActiveAccount;
+            var platformBlobPath = spotifyState.Accounts
                 .FirstOrDefault(a => a.Name.Equals(active, StringComparison.OrdinalIgnoreCase))
                 ?.WebPlayerBlobPath;
             if (string.IsNullOrWhiteSpace(platformBlobPath) || !_blobService.BlobExists(platformBlobPath))

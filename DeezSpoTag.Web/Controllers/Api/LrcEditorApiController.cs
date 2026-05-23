@@ -580,7 +580,7 @@ public sealed class LrcEditorApiController : ControllerBase
 
         var fullPath = string.IsNullOrWhiteSpace(relativePath)
             ? root.RootPath
-            : Path.GetFullPath(Path.Combine(root.RootPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            : Path.GetFullPath(Path.Join(root.RootPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
 
         if (!string.Equals(fullPath, root.RootPath, StringComparison.OrdinalIgnoreCase)
             && !fullPath.StartsWith(root.RootPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))

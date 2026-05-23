@@ -1233,7 +1233,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     {
         try
         {
-            var probePath = Path.Combine(path, $".write-test-{Guid.NewGuid():N}");
+            var probePath = Path.Join(path, $".write-test-{Guid.NewGuid():N}");
             using var probeStream = File.Create(probePath);
 
             File.Delete(probePath);

@@ -3209,15 +3209,9 @@ public sealed class AppleDownloadService : IAppleDownloadService
         string artistName,
         string? explicitOutputRoot)
     {
-        string baseDir;
-        if (!string.IsNullOrWhiteSpace(explicitOutputRoot))
-        {
-            baseDir = explicitOutputRoot;
-        }
-        else
-        {
-            baseDir = settings.Video.VideoDownloadLocation;
-        }
+        var baseDir = !string.IsNullOrWhiteSpace(explicitOutputRoot)
+            ? explicitOutputRoot
+            : settings.Video.VideoDownloadLocation;
 
         if (string.IsNullOrWhiteSpace(baseDir))
         {

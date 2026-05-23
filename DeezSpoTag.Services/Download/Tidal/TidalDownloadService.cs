@@ -397,25 +397,17 @@ public sealed class TidalDownloadService
 
     private async Task<List<TidalTrack>> SearchTracksViaPublicApiAsync(string query, int limit, CancellationToken cancellationToken)
     {
-        return await SendTidalJsonOrDefaultAsync<TidalSearchResponse, List<TidalTrack>>(
-            _ =>
+        var url = BuildTidalPublicApiUrl(
+            "search/tracks",
+            new Dictionary<string, string>
             {
-                var url = BuildTidalPublicApiUrl(
-                    "search/tracks",
-                    new Dictionary<string, string>
-                    {
-                        ["query"] = query,
-                        ["limit"] = limit > 0 ? limit.ToString() : "20",
-                        ["offset"] = "0"
-                    });
-
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
-                request.Headers.TryAddWithoutValidation("Accept", "application/json");
-                return Task.FromResult(request);
-            },
-            static payload => payload?.Items ?? new List<TidalTrack>(),
-            new List<TidalTrack>(),
+                ["query"] = query,
+                ["limit"] = limit > 0 ? limit.ToString() : "20",
+                ["offset"] = "0"
+            });
+        var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(
+            url,
+            null,
             ex =>
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -424,6 +416,69 @@ public sealed class TidalDownloadService
                 }
             },
             cancellationToken);
+        return payload?.Items ?? new List<TidalTrack>();
+    }
+
+    private async Task<TidalTrack?> TryGetTrackInfoByIdViaPublicApiAsync(long trackId, CancellationToken cancellationToken)
+    {
+        return await SendTidalPublicJsonOrDefaultAsync<TidalTrack>(
+            BuildTidalPublicApiUrl($"tracks/{trackId}"),
+            null,
+            ex =>
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Tidal public API track lookup failed for track ID {TrackId}.", trackId);
+                }
+            },
+            cancellationToken);
+    }
+
+    private async Task<TPayload?> SendTidalPublicJsonOrDefaultAsync<TPayload>(
+        string url,
+        TPayload? fallback,
+        Action<Exception> logFailure,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
+            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+
+            using var response = await _client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return fallback;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            return JsonSerializer.Deserialize<TPayload>(body, SerializerOptions);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (HttpRequestException ex)
+        {
+            logFailure(ex);
+            return fallback;
+        }
+        catch (IOException ex)
+        {
+            logFailure(ex);
+            return fallback;
+        }
+        catch (JsonException ex)
+        {
+            logFailure(ex);
+            return fallback;
+        }
+        catch (InvalidOperationException ex)
+        {
+            logFailure(ex);
+            return fallback;
+        }
     }
 
     private async Task<TidalTrack?> TryGetTrackInfoByIdViaOauthAsync(long trackId, CancellationToken cancellationToken)
@@ -445,29 +500,6 @@ public sealed class TidalDownloadService
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
                     _logger.LogDebug(ex, "Tidal OAuth track lookup failed for track ID {TrackId}.", trackId);
-                }
-            },
-            cancellationToken);
-    }
-
-    private async Task<TidalTrack?> TryGetTrackInfoByIdViaPublicApiAsync(long trackId, CancellationToken cancellationToken)
-    {
-        return await SendTidalJsonOrDefaultAsync<TidalTrack, TidalTrack?>(
-            _ =>
-            {
-                var url = BuildTidalPublicApiUrl($"tracks/{trackId}");
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
-                request.Headers.TryAddWithoutValidation("Accept", "application/json");
-                return Task.FromResult(request);
-            },
-            static payload => payload,
-            null,
-            ex =>
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Tidal public API track lookup failed for track ID {TrackId}.", trackId);
                 }
             },
             cancellationToken);
