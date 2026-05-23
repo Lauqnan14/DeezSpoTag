@@ -1014,9 +1014,10 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     {
         Assert.NotEmpty(tracks);
 
+        var libraryRoot = Path.Join(_tempRoot, "music", "library-a");
         var folder = await _repository.AddFolderAsync(
             new LibraryRepository.FolderUpsertInput(
-                RootPath: "/music/library-a",
+                RootPath: libraryRoot,
                 DisplayName: "Library A",
                 Enabled: true,
                 LibraryName: "Music",
@@ -1045,7 +1046,9 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         for (var i = 0; i < tracks.Length; i++)
         {
             var item = tracks[i];
-            var filePath = $"/music/library-a/Artist One/Album One/{i + 1:00} - {item.Title}.flac";
+            var filePath = Path.Join(libraryRoot, "Artist One", "Album One", $"{i + 1:00} - {item.Title}.flac");
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+            await File.WriteAllTextAsync(filePath, "audio placeholder");
             pathByTitle[item.Title] = filePath;
             trackDtos.Add(CreateTrackScan(
                 title: item.Title,

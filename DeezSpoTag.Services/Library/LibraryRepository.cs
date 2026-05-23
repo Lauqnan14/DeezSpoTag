@@ -7761,18 +7761,19 @@ WHERE LOWER(dt.artist_name) = LOWER(@artistName)
         var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string defaultSql = @"
-SELECT EXISTS(
-    SELECT 1
-    FROM track_source te
-    WHERE te.source = @source
-      AND te.source_id = @sourceId
-);";
-        const string variantSql = @"
-SELECT EXISTS(
-    SELECT 1
+SELECT f.root_path, af.relative_path, af.path
     FROM track_source te
     JOIN track_local tl ON tl.track_id = te.track_id
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE te.source = @source
+      AND te.source_id = @sourceId;";
+        const string variantSql = @"
+SELECT f.root_path, af.relative_path, af.path
+    FROM track_source te
+    JOIN track_local tl ON tl.track_id = te.track_id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
     WHERE te.source = @source
       AND te.source_id = @sourceId
       AND (
@@ -7817,8 +7818,7 @@ SELECT EXISTS(
               ) THEN 1
               ELSE 0
           END
-      ) = @requireAtmos
-);";
+      ) = @requireAtmos;";
         await using var command = new SqliteCommand(requireAtmosVariant.HasValue ? variantSql : defaultSql, connection);
         command.Parameters.AddWithValue(SourceField, source);
         command.Parameters.AddWithValue(SourceIdField, sourceId);
@@ -7826,8 +7826,7 @@ SELECT EXISTS(
         {
             command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.Value);
         }
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
+        return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
     }
 
     public sealed record LibraryExistenceInput(string? Isrc, string? TrackTitle, string? ArtistName, int? DurationMs);
@@ -8134,11 +8133,11 @@ LIMIT 100;";
         var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT EXISTS(
-    SELECT 1
+SELECT f.root_path, af.relative_path, af.path
     FROM track_source te
     JOIN track_local tl ON tl.track_id = te.track_id
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
     WHERE te.source = @source
       AND te.source_id = @sourceId
       AND af.folder_id = @folderId
@@ -8188,14 +8187,13 @@ SELECT EXISTS(
               END
           ) = @requireAtmos
       )
-);";
+;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, source);
         command.Parameters.AddWithValue(SourceIdField, sourceId);
         command.Parameters.AddWithValue("folderId", folderId);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
+        return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
     }
 
     public async Task<bool> ExistsArtistSourceAsync(string source, string sourceId, CancellationToken cancellationToken = default)
@@ -8281,13 +8279,13 @@ SELECT EXISTS(
         var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT EXISTS(
-    SELECT 1
+SELECT f.root_path, af.relative_path, af.path
     FROM album_source als
     JOIN album al ON al.id = als.album_id
     JOIN track t ON t.album_id = al.id
     JOIN track_local tl ON tl.track_id = t.id
     JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
     WHERE als.source = @source
       AND als.source_id = @albumSourceId
       AND LOWER(t.title) = LOWER(@trackTitle)
@@ -8348,7 +8346,7 @@ SELECT EXISTS(
                 AND ars.source_id = @artistSourceId
           )
       )
-);";
+;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, source);
         command.Parameters.AddWithValue("albumSourceId", albumSourceId);
@@ -8356,8 +8354,27 @@ SELECT EXISTS(
         command.Parameters.AddWithValue("artistSourceId", string.IsNullOrWhiteSpace(artistSourceId) ? (object)DBNull.Value : artistSourceId);
         command.Parameters.AddWithValue("folderId", folderId.HasValue ? folderId.Value : (object)DBNull.Value);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
+        return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
+    }
+
+    private static async Task<bool> AnyStoredAudioFileExistsAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var rootPath = await ReadNullableStringAsync(reader, 0, cancellationToken);
+            var relativePath = await ReadNullableStringAsync(reader, 1, cancellationToken);
+            var rawPath = await ReadNullableStringAsync(reader, 2, cancellationToken);
+            var fullPath = BuildAbsolutePath(rootPath, relativePath, rawPath);
+            if (!string.IsNullOrWhiteSpace(fullPath) && File.Exists(fullPath))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static int? NormalizeAudioVariantFlag(string? audioVariant)
