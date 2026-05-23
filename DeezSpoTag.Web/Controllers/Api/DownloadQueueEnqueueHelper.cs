@@ -47,10 +47,9 @@ internal static class DownloadQueueEnqueueHelper
     {
         var durationMs = ResolveDurationMs(payload);
         var duplicateRequest = BuildDuplicateLookupRequest(payload, durationMs, redownloadCooldownMinutes);
-        var duplicate = await queueRepository.GetDuplicateAsync(duplicateRequest, cancellationToken);
-        if (duplicate != null)
+        if (await queueRepository.ExistsDuplicateAsync(duplicateRequest, cancellationToken))
         {
-            return await HandleDuplicateStatusAsync(payload, duplicate, queueRepository, listener, logger, cancellationToken);
+            return await HandleDuplicateLookupMatchAsync(payload, queueRepository, listener, logger, cancellationToken);
         }
 
         var existing = await queueRepository.GetByMetadataAsync(
@@ -92,6 +91,34 @@ internal static class DownloadQueueEnqueueHelper
     private static int? ResolveDurationMs<TPayload>(TPayload payload)
         where TPayload : EngineQueueItemBase
         => payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : (int?)null;
+
+    private static async Task<EnqueueOutcome> HandleDuplicateLookupMatchAsync<TPayload>(
+        TPayload payload,
+        DownloadQueueRepository queueRepository,
+        IDeezSpoTagListener listener,
+        ILogger logger,
+        CancellationToken cancellationToken)
+        where TPayload : EngineQueueItemBase
+    {
+        var duplicate = await queueRepository.GetByMetadataAsync(
+            payload.Engine,
+            payload.Artist,
+            payload.Title,
+            payload.ContentType,
+            payload.DestinationFolderId,
+            cancellationToken);
+        if (duplicate is null)
+        {
+            logger.LogWarning(
+                "Skip enqueue (engine={Engine} reason=duplicate): {Artist} - {Title}",
+                payload.Engine,
+                payload.Artist,
+                payload.Title);
+            return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
+        }
+
+        return await HandleDuplicateStatusAsync(payload, duplicate, queueRepository, listener, logger, cancellationToken);
+    }
 
     private static async Task<EnqueueOutcome> HandleDuplicateStatusAsync<TPayload>(
         TPayload payload,
@@ -165,11 +192,6 @@ internal static class DownloadQueueEnqueueHelper
 
         if (IsCompletedStatus(existingStatus))
         {
-            if (!DownloadQueueRepository.HasExistingMaterializedFile(existing))
-            {
-                return await EnqueueNewItemAsync(payload, ResolveDurationMs(payload), queueRepository, cancellationToken);
-            }
-
             return EnqueueOutcome.Skipped("queue_recently_downloaded", "Skipped: track was downloaded recently.");
         }
 

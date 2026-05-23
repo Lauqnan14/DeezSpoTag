@@ -42,9 +42,6 @@ public sealed class DownloadQueueEnqueueHelperTests
     {
         await using var context = await CreateContextAsync();
         var payload = CreatePayload("completed-1");
-        payload.FilePath = Path.Join(context.TempRoot, "downloads", "Shared Artist", "Shared Track.flac");
-        Directory.CreateDirectory(Path.GetDirectoryName(payload.FilePath)!);
-        await File.WriteAllTextAsync(payload.FilePath, "audio", CancellationToken.None);
 
         await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "queued"), CancellationToken.None);
         await context.QueueRepository.UpdateStatusAsync(
@@ -63,33 +60,6 @@ public sealed class DownloadQueueEnqueueHelperTests
         Assert.False(outcome.Success);
         Assert.True(outcome.AlreadyQueued);
         Assert.Equal("queue_recently_downloaded", outcome.ReasonCode);
-    }
-
-    [Fact]
-    public async Task EnqueueWithDedupAsync_AllowsCompletedDuplicateWhenPayloadFileWasDeleted()
-    {
-        await using var context = await CreateContextAsync();
-        var payload = CreatePayload("completed-deleted-1");
-        payload.FilePath = Path.Join(context.TempRoot, "downloads", "Shared Artist", "Shared Track.flac");
-
-        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "queued"), CancellationToken.None);
-        await context.QueueRepository.UpdateStatusAsync(
-            payload.Id,
-            "completed",
-            cancellationToken: CancellationToken.None);
-
-        var retryPayload = CreatePayload("completed-deleted-2");
-        retryPayload.FilePath = payload.FilePath;
-        var outcome = await DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
-            retryPayload,
-            redownloadCooldownMinutes: 720,
-            context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
-            CancellationToken.None);
-
-        Assert.True(outcome.Success);
-        Assert.False(outcome.AlreadyQueued);
     }
 
     [Fact]

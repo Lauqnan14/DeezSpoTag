@@ -5769,12 +5769,22 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken)
         where TPayload : class
     {
-        var existing = await _queueRepository.GetDuplicateAsync(
+        var duplicateExists = await _queueRepository.ExistsDuplicateAsync(
             BuildDuplicateLookupRequest(context),
+            cancellationToken);
+        if (!duplicateExists)
+        {
+            return new QueueDuplicateResolution(null, true);
+        }
+
+        var existing = await _queueRepository.GetByMetadataAsync(
+            BuildMetadataLookupRequest(context),
             cancellationToken);
         if (existing == null)
         {
-            return new QueueDuplicateResolution(null, true);
+            return new QueueDuplicateResolution(
+                EnqueueItemDecision.Fail("queue_duplicate", "Skipped: matching track is already in queue."),
+                false);
         }
 
         var status = existing.Status ?? string.Empty;
