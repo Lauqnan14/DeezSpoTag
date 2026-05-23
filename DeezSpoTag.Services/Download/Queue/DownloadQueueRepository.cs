@@ -988,16 +988,23 @@ SELECT EXISTS(
     public async Task<bool> ExistsDuplicateAsync(
         DuplicateLookupRequest request,
         CancellationToken cancellationToken = default)
+        => await GetDuplicateAsync(request, cancellationToken) != null;
+
+    public async Task<DownloadQueueItem?> GetDuplicateAsync(
+        DuplicateLookupRequest request,
+        CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         // Queue dedupe must remain track-granular; album/artist IDs are intentionally excluded
         // so different tracks from the same release can be queued independently.
         const string sql = @"
-SELECT EXISTS(
-    SELECT 1
-    FROM download_task
-    WHERE (
+SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
+       status, payload, progress, downloaded, failed, error, created_at, updated_at
+FROM download_task
+WHERE (
         (
             @isrc IS NOT NULL
             AND @isrc <> ''
@@ -1047,7 +1054,14 @@ SELECT EXISTS(
         OR @cooldownMinutes <= 0
         OR updated_at >= datetime('now', '-' || @cooldownMinutes || ' minutes')
     )
-        );";
+ORDER BY
+    CASE
+        WHEN lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying') THEN 0
+        WHEN lower(status) IN ('failed', 'canceled', 'cancelled') THEN 1
+        WHEN lower(status) IN ('completed', 'complete') THEN 2
+        ELSE 3
+    END,
+    updated_at DESC;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("isrc", NormalizeIsrc(request.Isrc) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("deezerTrackId", NormalizeId(request.DeezerTrackId) ?? (object)DBNull.Value);
@@ -1060,8 +1074,19 @@ SELECT EXISTS(
         command.Parameters.AddWithValue("destinationFolderId", (object?)request.DestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("contentType", NormalizeId(request.ContentType) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("cooldownMinutes", (object?)request.RedownloadCooldownMinutes ?? DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result != DBNull.Value && Convert.ToInt32(result) == 1;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var item = ReadItem(reader);
+            if (IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item))
+            {
+                continue;
+            }
+
+            return item;
+        }
+
+        return null;
     }
 
     public async Task<DownloadQueueItem?> GetByMetadataAsync(
@@ -1627,6 +1652,8 @@ LIMIT 1;";
 
             AddPayloadFilePathsProperty(document.RootElement, "Files", target);
             AddPayloadFilePathsProperty(document.RootElement, FilesPropertyLower, target);
+            AddPayloadMapPathsProperty(document.RootElement, "FinalDestinations", target);
+            AddPayloadMapPathsProperty(document.RootElement, "finalDestinations", target);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1669,6 +1696,41 @@ LIMIT 1;";
             AddPayloadPathProperty(file, "filename", target);
             AddPayloadPathProperty(file, "Filename", target);
         }
+    }
+
+    private static void AddPayloadMapPathsProperty(JsonElement root, string propertyName, ISet<string> target)
+    {
+        if (!root.TryGetProperty(propertyName, out var map) || map.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        foreach (var property in map.EnumerateObject())
+        {
+            AddPath(property.Name, target);
+            if (property.Value.ValueKind == JsonValueKind.String)
+            {
+                AddPath(property.Value.GetString(), target);
+            }
+        }
+    }
+
+    public static bool HasExistingMaterializedFile(DownloadQueueItem item)
+    {
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddPayloadPaths(item.PayloadJson, paths);
+        return paths.Any(PathExists);
+    }
+
+    private static bool PathExists(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(path);
+        return !string.IsNullOrWhiteSpace(ioPath) && File.Exists(ioPath);
     }
 
     private static void AddPath(string? raw, ISet<string> target)

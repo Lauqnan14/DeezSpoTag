@@ -84,6 +84,76 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task ExistsDuplicateAsync_IgnoresCompletedRowWhenPayloadFileIsMissing()
+    {
+        await using var context = await CreateContextAsync();
+        var missingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Missing.flac");
+        var payloadJson = $$"""{ "FilePath": "{{missingPath}}" }""";
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                queueUuid: "completed-missing-file",
+                artist: "Shared Artist",
+                title: "Original Title",
+                destinationFolderId: 9,
+                deezerTrackId: "dz-track-missing") with
+            {
+                Status = "completed",
+                PayloadJson = payloadJson
+            },
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Different Artist Name",
+                TrackTitle = "Different Track Name",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-track-missing",
+                RedownloadCooldownMinutes = 720
+            },
+            CancellationToken.None);
+
+        Assert.False(exists);
+    }
+
+    [Fact]
+    public async Task ExistsDuplicateAsync_MatchesCompletedRowWhenPayloadFileExists()
+    {
+        await using var context = await CreateContextAsync();
+        var existingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Existing.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(existingPath)!);
+        await File.WriteAllTextAsync(existingPath, "audio", CancellationToken.None);
+        var payloadJson = $$"""{ "FilePath": "{{existingPath}}" }""";
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                queueUuid: "completed-existing-file",
+                artist: "Shared Artist",
+                title: "Original Title",
+                destinationFolderId: 9,
+                deezerTrackId: "dz-track-existing") with
+            {
+                Status = "completed",
+                PayloadJson = payloadJson
+            },
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Different Artist Name",
+                TrackTitle = "Different Track Name",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-track-existing",
+                RedownloadCooldownMinutes = 720
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    [Fact]
     public async Task GetActiveDownloadCountAsync_CountsEveryDownloadActiveStatus()
     {
         await using var context = await CreateContextAsync();
