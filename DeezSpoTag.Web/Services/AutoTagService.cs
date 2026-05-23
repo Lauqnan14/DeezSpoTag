@@ -361,7 +361,7 @@ public partial class AutoTagService
         ["rating"] = "rating",
         [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag
     };
-    private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: false);
+    private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: true);
     private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true);
     private static readonly HashSet<string> EligibleAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -620,6 +620,17 @@ public partial class AutoTagService
             return blockedByScope;
         }
 
+        var blockedByActiveJob = TryCreateBlockedJobForActiveJobPolicy(
+            normalizedPath,
+            normalizedTrigger,
+            normalizedRunIntent,
+            options.ProfileId,
+            options.ProfileName);
+        if (blockedByActiveJob != null)
+        {
+            return blockedByActiveJob;
+        }
+
         if (!HasEligibleInputFiles(normalizedPath, configJson))
         {
             return CreateSkippedJob(
@@ -735,6 +746,36 @@ public partial class AutoTagService
             profileName);
         AppendActivityLog(blockedJob.Id, "autotag skipped: downloads active");
         _logger.LogInformation("AutoTag skipped: downloads active.");
+        return blockedJob;
+    }
+
+    private AutoTagJob? TryCreateBlockedJobForActiveJobPolicy(
+        string normalizedPath,
+        string normalizedTrigger,
+        string normalizedRunIntent,
+        string? profileId,
+        string? profileName)
+    {
+        var activeJobId = _activeJobIds.Keys.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(activeJobId))
+        {
+            return null;
+        }
+
+        var blockedJob = CreateBlockedJob(
+            $"AutoTag run blocked: another AutoTag job is already running ({activeJobId}).",
+            normalizedPath,
+            normalizedTrigger,
+            normalizedRunIntent,
+            profileId,
+            profileName);
+        AppendActivityLog(blockedJob.Id, "autotag blocked: another job is already running");
+        _logger.LogInformation(
+            "AutoTag run blocked because another job is already running. activeJobId={ActiveJobId}, intent={Intent}, trigger={Trigger}, path={Path}",
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(activeJobId),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedRunIntent),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedTrigger),
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPath));
         return blockedJob;
     }
 

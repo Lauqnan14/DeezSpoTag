@@ -33,6 +33,53 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void DownloadOrchestration_GroupsPostDownloadWorkByDestinationProfile()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var autoTagSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+
+        Assert.Contains("private sealed record PipelineWorkGroup", source, StringComparison.Ordinal);
+        Assert.Contains("BuildPipelineWorkGroups(profileContext, pendingItems, downloadRootPath)", source, StringComparison.Ordinal);
+        Assert.Contains(".GroupBy(item => item.DestinationFolderId!.Value)", source, StringComparison.Ordinal);
+        Assert.Contains("ApplyTargetFiles(configJson, sourceFiles)", source, StringComparison.Ordinal);
+        Assert.Contains("RunPipelineEnrichmentAsync(context, group, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("includeTargetFiles: true", autoTagSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("The latest completed item will determine the AutoTag profile", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadOrchestration_DoesNotPersistFailedEnrichmentAsProcessed()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("ResolvePipelineEnrichmentResult", source, StringComparison.Ordinal);
+        Assert.Contains("SafeToPersist: false", source, StringComparison.Ordinal);
+        Assert.Contains("if (enrichmentResult.SafeToPersist)", source, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.FailedStatus", source, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.InterruptedStatus", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadOrchestration_UsesQueueCompletionTimeForRecentEnhancementWindow()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("group.PendingItems.Max(item => item.UpdatedAt)", source, StringComparison.Ordinal);
+        Assert.Contains("latestQueueCompletionUtc >= cutoff", source, StringComparison.Ordinal);
+        Assert.Contains("file timestamp fallback", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadOrchestration_StagingGateDoesNotBlockOnUnrelatedAudioForever()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("pending completed download still present in staging", source, StringComparison.Ordinal);
+        Assert.Contains("unrelated audio file present in download staging; not blocking", source, StringComparison.Ordinal);
+        Assert.Contains("HasUnrelatedStagingAudio", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LibraryStatusPolling_DoesNotReloadArtistsDuringActiveScans()
     {
         var source = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library.js");

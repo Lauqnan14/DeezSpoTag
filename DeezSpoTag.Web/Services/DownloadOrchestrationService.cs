@@ -32,12 +32,18 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         IReadOnlyDictionary<long, FolderDto> FoldersById);
     private sealed record PipelineRunContext(
         DateTimeOffset PipelineStartedAt,
-        string AutomationConfigJson,
-        TaggingProfile? AutomationProfile,
-        AutoTagStages Stages,
         string DownloadRootPath,
+        IReadOnlyList<PipelineWorkGroup> Groups);
+    private sealed record PipelineWorkGroup(
+        long DestinationFolderId,
+        TaggingProfile AutomationProfile,
+        string AutomationConfigJson,
+        AutoTagStages Stages,
+        IReadOnlyList<DownloadQueueItem> PendingItems,
         IReadOnlyList<string> PendingQueueUuids,
+        IReadOnlyList<string> SourceFilePaths,
         IReadOnlyDictionary<string, DateTimeOffset> PendingCompletionMarkers);
+    private sealed record PipelineEnrichmentResult(string Status, bool SafeToContinue, bool SafeToPersist);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
     private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
     private sealed record EnhancementPauseRequest(
@@ -481,27 +487,52 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return;
         }
 
-        await RunPipelineEnrichmentAsync(context, cancellationToken);
-        if (!await EnsurePipelineStillIdleAsync(cancellationToken))
+        foreach (var group in context.Groups)
         {
-            await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
-            return;
-        }
+            var enrichmentResult = await RunPipelineEnrichmentAsync(context, group, cancellationToken);
+            if (!enrichmentResult.SafeToContinue)
+            {
+                _pipelineRequested = true;
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WarningLogLevel,
+                    $"Automation: post-download pipeline deferred for destination folder {group.DestinationFolderId} (enrichment status={enrichmentResult.Status})."));
+                continue;
+            }
 
-        if (await RunRecentDownloadEnhancementAsync(context, cancellationToken))
-        {
-            await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
-            return;
-        }
+            if (!await EnsurePipelineStillIdleAsync(cancellationToken))
+            {
+                if (enrichmentResult.SafeToPersist)
+                {
+                    await PersistPipelineCompletionMarkersAsync(context, group, cancellationToken);
+                }
+                return;
+            }
 
-        if (!await EnsurePipelineStillIdleAsync(cancellationToken))
-        {
-            await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
-            return;
-        }
+            if (await RunRecentDownloadEnhancementAsync(context, group, cancellationToken))
+            {
+                if (enrichmentResult.SafeToPersist)
+                {
+                    await PersistPipelineCompletionMarkersAsync(context, group, cancellationToken);
+                }
+                return;
+            }
 
-        await RunPostAutoTagStagesAsync(context, cancellationToken);
-        await PersistPipelineCompletionMarkersAsync(context, cancellationToken);
+            if (!await EnsurePipelineStillIdleAsync(cancellationToken))
+            {
+                if (enrichmentResult.SafeToPersist)
+                {
+                    await PersistPipelineCompletionMarkersAsync(context, group, cancellationToken);
+                }
+                return;
+            }
+
+            await RunPostAutoTagStagesAsync(group, cancellationToken);
+            if (enrichmentResult.SafeToPersist)
+            {
+                await PersistPipelineCompletionMarkersAsync(context, group, cancellationToken);
+            }
+        }
     }
 
     private async Task<bool> ResumeInterruptedEnhancementAsync(CancellationToken cancellationToken)
@@ -559,17 +590,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return null;
         }
 
-        var automationProfile = ResolveAutomationProfileForPendingDownloads(profileContext, pendingItems);
-        if (automationProfile == null)
+        var groups = BuildPipelineWorkGroups(profileContext, pendingItems, downloadRootPath);
+        if (groups.Count == 0)
         {
-            _logger.LogWarning("Orchestration skipped: destination folder has no valid current AutoTag profile.");
-            return null;
-        }
-
-        var configJson = GetAutoTagConfigJson(automationProfile);
-        if (string.IsNullOrWhiteSpace(configJson))
-        {
-            _logger.LogWarning("Orchestration skipped: the destination folder profile could not be materialized into AutoTag config.");
+            _logger.LogWarning("Orchestration skipped: no completed download groups had a valid AutoTag profile and candidate source files.");
             return null;
         }
 
@@ -590,55 +614,54 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         return new PipelineRunContext(
             pipelineStartedAt,
-            configJson,
-            automationProfile,
-            GetAutoTagStages(configJson),
             downloadRootPath,
-            pendingItems
-                .Select(item => item.QueueUuid)
-                .Where(queueUuid => !string.IsNullOrWhiteSpace(queueUuid))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList(),
-            BuildCompletionMarkers(pendingItems));
+            groups);
     }
 
-    private async Task RunPipelineEnrichmentAsync(PipelineRunContext context, CancellationToken cancellationToken)
+    private async Task<PipelineEnrichmentResult> RunPipelineEnrichmentAsync(
+        PipelineRunContext context,
+        PipelineWorkGroup group,
+        CancellationToken cancellationToken)
     {
-        if (context.Stages.HasEnrichment)
+        if (group.Stages.HasEnrichment)
         {
-            await RunPostDownloadEnrichmentAsync(
-                context.AutomationConfigJson,
-                context.AutomationProfile,
+            return await RunPostDownloadEnrichmentAsync(
+                group.AutomationConfigJson,
+                group.AutomationProfile,
                 context.DownloadRootPath,
+                group.DestinationFolderId,
+                group.SourceFilePaths,
                 cancellationToken);
-            return;
         }
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            "Automation: post-download enrichment skipped (no enrichment tags configured)."));
+            $"Automation: post-download enrichment skipped for destination folder {group.DestinationFolderId} (no enrichment tags configured)."));
+        return new PipelineEnrichmentResult("skipped_no_enrichment_tags", SafeToContinue: true, SafeToPersist: true);
     }
 
-    private async Task RunPostDownloadEnrichmentAsync(
+    private async Task<PipelineEnrichmentResult> RunPostDownloadEnrichmentAsync(
         string automationConfigJson,
         TaggingProfile? automationProfile,
         string downloadRootPath,
+        long destinationFolderId,
+        IReadOnlyCollection<string> sourceFilePaths,
         CancellationToken cancellationToken)
     {
-        if (!HasCandidateStagingAudioFiles(downloadRootPath))
+        if (sourceFilePaths.Count == 0 || !HasCandidateStagingAudioFiles(sourceFilePaths))
         {
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                $"Automation: post-download enrichment skipped (no candidate audio files under {downloadRootPath})."));
-            return;
+                $"Automation: post-download enrichment skipped for destination folder {destinationFolderId} (no candidate audio files under {downloadRootPath})."));
+            return new PipelineEnrichmentResult("skipped_no_candidate_files", SafeToContinue: true, SafeToPersist: true);
         }
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: post-download enrichment starting for {downloadRootPath}."));
+            $"Automation: post-download enrichment starting for destination folder {destinationFolderId} ({downloadRootPath})."));
 
         AutoTagJob? enrichmentJob = null;
         try
@@ -663,7 +686,42 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: enrichment finished (status={enrichmentJob?.Status ?? "skipped"})."));
+            $"Automation: enrichment finished for destination folder {destinationFolderId} (status={enrichmentJob?.Status ?? "skipped"})."));
+
+        return ResolvePipelineEnrichmentResult(enrichmentJob);
+    }
+
+    private static bool HasCandidateStagingAudioFiles(IEnumerable<string> sourceFilePaths)
+    {
+        return sourceFilePaths.Any(path =>
+            !string.IsNullOrWhiteSpace(path)
+            && File.Exists(path)
+            && StagingAudioExtensions.Contains(Path.GetExtension(path)));
+    }
+
+    private static PipelineEnrichmentResult ResolvePipelineEnrichmentResult(AutoTagJob? enrichmentJob)
+    {
+        var status = enrichmentJob?.Status ?? "skipped";
+        if (string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return new PipelineEnrichmentResult(status, SafeToContinue: true, SafeToPersist: true);
+        }
+
+        if (string.Equals(status, AutoTagLiterals.SkippedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return new PipelineEnrichmentResult(status, SafeToContinue: true, SafeToPersist: false);
+        }
+
+        if (string.Equals(status, "blocked", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.ErrorStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return new PipelineEnrichmentResult(status, SafeToContinue: false, SafeToPersist: false);
+        }
+
+        return new PipelineEnrichmentResult(status, SafeToContinue: false, SafeToPersist: false);
     }
 
     private static bool HasCandidateStagingAudioFiles(string rootPath)
@@ -691,14 +749,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task<bool> RunRecentDownloadEnhancementAsync(
         PipelineRunContext context,
+        PipelineWorkGroup group,
         CancellationToken cancellationToken)
     {
-        if (context.PendingQueueUuids.Count == 0)
+        if (group.PendingQueueUuids.Count == 0)
         {
             return false;
         }
 
-        if (ShouldDeferEnhancementForDownloadStagingAudio(cancellationToken))
+        if (ShouldDeferEnhancementForDownloadStagingAudio(group, context.DownloadRootPath, cancellationToken))
         {
             _pipelineRequested = true;
             _queueIdleSince = null;
@@ -706,7 +765,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
-            context.PendingQueueUuids,
+            group.PendingQueueUuids,
             cancellationToken);
         if (movedFilesByDestination.Count == 0)
         {
@@ -723,6 +782,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             var pausePipeline = await ProcessRecentDownloadEnhancementDestinationAsync(
                 destination,
                 profileContext,
+                group.PendingItems.Max(item => item.UpdatedAt),
                 cancellationToken);
             if (pausePipeline)
             {
@@ -736,6 +796,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private async Task<bool> ProcessRecentDownloadEnhancementDestinationAsync(
         KeyValuePair<long, List<string>> destination,
         AutomationProfileContext profileContext,
+        DateTimeOffset latestQueueCompletionUtc,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -763,7 +824,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var recentDownloadWindowHours = ResolveRecentDownloadWindowHours(enhancementProfile, profileContext.Defaults);
-        if (!TryApplyRecentDownloadWindow(folder.RootPath, recentDownloadWindowHours, ref scopedFiles))
+        if (!TryApplyRecentDownloadWindow(folder.RootPath, recentDownloadWindowHours, latestQueueCompletionUtc, ref scopedFiles))
         {
             return false;
         }
@@ -873,7 +934,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
-        if (!IsAutomationInterruptibleEnhancementTrigger(job.Trigger))
+        if (!IsInterruptibleEnhancementTrigger(job.Trigger))
         {
             return false;
         }
@@ -934,6 +995,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private bool TryApplyRecentDownloadWindow(
         string folderRootPath,
         int recentDownloadWindowHours,
+        DateTimeOffset latestQueueCompletionUtc,
         ref List<string> scopedFiles)
     {
         if (recentDownloadWindowHours <= 0)
@@ -941,9 +1003,19 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return true;
         }
 
+        var cutoff = DateTimeOffset.UtcNow.AddHours(-recentDownloadWindowHours);
+        if (latestQueueCompletionUtc >= cutoff)
+        {
+            return true;
+        }
+
         var recentFiles = FilterRecentFiles(scopedFiles, recentDownloadWindowHours);
         if (recentFiles.Count > 0)
         {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: recent-download enhancement using file timestamp fallback for {folderRootPath}."));
             scopedFiles = recentFiles;
             return true;
         }
@@ -993,7 +1065,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         enhancementConfig = ClearEnrichmentTags(profileConfigJson);
-        enhancementConfig = ApplyEnhancementTargetFiles(enhancementConfig, scopedFiles);
+        enhancementConfig = ApplyTargetFiles(enhancementConfig, scopedFiles);
         if (GetAutoTagStages(enhancementConfig).HasEnhancement)
         {
             return true;
@@ -1364,8 +1436,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     continue;
                 }
 
-                LogStagingEnhancementGate($"audio file still present in download staging ({filePath})");
-                return true;
+                LogStagingEnhancementGate($"unrelated audio file present in download staging; not blocking scheduled enhancement ({filePath})");
+                return false;
             }
         }
         catch (OperationCanceledException)
@@ -1380,6 +1452,98 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         _lastStagingGateLogAt = null;
         _lastStagingGateLogReason = null;
+        return false;
+    }
+
+    private bool ShouldDeferEnhancementForDownloadStagingAudio(
+        PipelineWorkGroup group,
+        string downloadRootPath,
+        CancellationToken cancellationToken)
+    {
+        foreach (var sourceFilePath in group.SourceFilePaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(sourceFilePath))
+            {
+                continue;
+            }
+
+            var ioPath = DownloadPathResolver.ResolveIoPath(sourceFilePath);
+            if (string.IsNullOrWhiteSpace(ioPath) || !File.Exists(ioPath))
+            {
+                continue;
+            }
+
+            var extension = Path.GetExtension(ioPath);
+            if (string.IsNullOrWhiteSpace(extension) || !StagingAudioExtensions.Contains(extension))
+            {
+                continue;
+            }
+
+            LogStagingEnhancementGate($"pending completed download still present in staging ({ioPath})");
+            return true;
+        }
+
+        if (HasUnrelatedStagingAudio(downloadRootPath, group.SourceFilePaths, cancellationToken, out var unrelatedPath))
+        {
+            LogStagingEnhancementGate($"unrelated audio file present in download staging; not blocking recent-download enhancement ({unrelatedPath})");
+        }
+
+        _lastStagingGateLogAt = null;
+        _lastStagingGateLogReason = null;
+        return false;
+    }
+
+    private static bool HasUnrelatedStagingAudio(
+        string downloadRootPath,
+        IReadOnlyCollection<string> relatedSourceFiles,
+        CancellationToken cancellationToken,
+        out string filePath)
+    {
+        filePath = string.Empty;
+        if (string.IsNullOrWhiteSpace(downloadRootPath) || !Directory.Exists(downloadRootPath))
+        {
+            return false;
+        }
+
+        var related = relatedSourceFiles
+            .Select(DownloadPathResolver.ResolveIoPath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizePathScope)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                ReturnSpecialDirectories = false,
+                AttributesToSkip = 0
+            };
+            foreach (var candidate in Directory.EnumerateFiles(downloadRootPath, "*", options))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var extension = Path.GetExtension(candidate);
+                if (string.IsNullOrWhiteSpace(extension) || !StagingAudioExtensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var normalized = NormalizePathScope(candidate);
+                if (related.Contains(normalized))
+                {
+                    continue;
+                }
+
+                filePath = candidate;
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
         return false;
     }
 
@@ -1421,10 +1585,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             out error);
     }
 
-    private async Task RunPostAutoTagStagesAsync(PipelineRunContext context, CancellationToken cancellationToken)
+    private async Task RunPostAutoTagStagesAsync(PipelineWorkGroup group, CancellationToken cancellationToken)
     {
         var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
-            context.PendingQueueUuids,
+            group.PendingQueueUuids,
             cancellationToken);
         var changedFolderIds = movedFilesByDestination.Keys
             .Where(folderId => folderId > 0)
@@ -2190,6 +2354,85 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             ? null
             : _configBuilder.BuildConfigJson(profile);
 
+    private List<PipelineWorkGroup> BuildPipelineWorkGroups(
+        AutomationProfileContext profileContext,
+        IReadOnlyList<DownloadQueueItem> pendingItems,
+        string downloadRootPath)
+    {
+        var groups = new List<PipelineWorkGroup>();
+        foreach (var destinationGroup in pendingItems
+                     .Where(item => item.DestinationFolderId.HasValue)
+                     .GroupBy(item => item.DestinationFolderId!.Value)
+                     .OrderBy(group => group.Key))
+        {
+            var destinationFolderId = destinationGroup.Key;
+            var folderProfileReference = profileContext.FoldersById.TryGetValue(destinationFolderId, out var folder)
+                ? folder.AutoTagProfileId
+                : null;
+            var profile = ResolveAutomationProfileForFolder(
+                profileContext,
+                destinationFolderId.ToString(CultureInfo.InvariantCulture),
+                folderProfileReference);
+            if (profile == null)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WarningLogLevel,
+                    $"Automation: completed downloads skipped for destination folder {destinationFolderId} (folder has no valid current AutoTag profile)."));
+                continue;
+            }
+
+            var configJson = GetAutoTagConfigJson(profile);
+            if (string.IsNullOrWhiteSpace(configJson))
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WarningLogLevel,
+                    $"Automation: completed downloads skipped for destination folder {destinationFolderId} (profile config could not be built)."));
+                continue;
+            }
+
+            var items = destinationGroup
+                .OrderByDescending(item => item.UpdatedAt)
+                .ThenByDescending(item => item.Id)
+                .ToList();
+            var sourceFiles = ResolveExistingSourceAudioFilesUnderRoot(items, downloadRootPath);
+            if (sourceFiles.Count == 0)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WarningLogLevel,
+                    $"Automation: completed downloads skipped for destination folder {destinationFolderId} (no candidate source audio files remain under download staging)."));
+                continue;
+            }
+
+            var scopedConfigJson = ApplyTargetFiles(configJson, sourceFiles);
+            groups.Add(new PipelineWorkGroup(
+                destinationFolderId,
+                profile,
+                scopedConfigJson,
+                GetAutoTagStages(scopedConfigJson),
+                items,
+                items
+                    .Select(item => item.QueueUuid)
+                    .Where(queueUuid => !string.IsNullOrWhiteSpace(queueUuid))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+                sourceFiles,
+                BuildCompletionMarkers(items)));
+        }
+
+        if (groups.Count > 1)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: split completed downloads into {groups.Count} destination/profile group(s)."));
+        }
+
+        return groups;
+    }
+
     private static AutoTagStages GetAutoTagStages(string configJson)
     {
         if (string.IsNullOrWhiteSpace(configJson))
@@ -2224,7 +2467,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return ClearStageTags(configJson, clearEnrichment: true, clearEnhancement: false);
     }
 
-    private static string ApplyEnhancementTargetFiles(string configJson, List<string> targetFiles)
+    private static string ApplyTargetFiles(string configJson, IReadOnlyCollection<string> targetFiles)
     {
         if (string.IsNullOrWhiteSpace(configJson) || targetFiles.Count == 0)
         {
@@ -2354,6 +2597,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 .ThenByDescending(item => item.Id)
                 .ToList(),
             cancellationToken);
+        LogCompletedDownloadEligibilityDiagnostics(completedItems, foldersById);
         completedItems = completedItems
             .Where(item => item.DestinationFolderId.HasValue)
             .OrderByDescending(item => item.UpdatedAt)
@@ -2388,20 +2632,60 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
     }
 
-    private async Task PersistPipelineCompletionMarkersAsync(PipelineRunContext context, CancellationToken cancellationToken)
+    private void LogCompletedDownloadEligibilityDiagnostics(
+        IReadOnlyList<DownloadQueueItem> completedItems,
+        IReadOnlyDictionary<long, FolderDto>? foldersById)
     {
-        var safeMarkers = await FilterCompletedMarkersReadyToPersistAsync(context, cancellationToken);
+        if (completedItems.Count == 0)
+        {
+            return;
+        }
+
+        var missingDestination = completedItems.Count(item => !item.DestinationFolderId.HasValue);
+        if (missingDestination > 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                WarningLogLevel,
+                $"Automation: ignored {missingDestination} completed download item(s) without destination folder metadata."));
+        }
+
+        if (foldersById == null || foldersById.Count == 0)
+        {
+            return;
+        }
+
+        var ineligible = completedItems.Count(item =>
+            item.DestinationFolderId.HasValue
+            && foldersById.TryGetValue(item.DestinationFolderId.Value, out var folder)
+            && !RequiresAutoTagProfile(folder));
+        if (ineligible > 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: ignored {ineligible} completed download item(s) for folders that do not require AutoTag profiles."));
+        }
+    }
+
+    private async Task PersistPipelineCompletionMarkersAsync(
+        PipelineRunContext context,
+        PipelineWorkGroup group,
+        CancellationToken cancellationToken)
+    {
+        var safeMarkers = await FilterCompletedMarkersReadyToPersistAsync(context, group, cancellationToken);
         MarkCompletedItemsAsProcessed(safeMarkers);
         _lastPipelineCompletedAt = context.PipelineStartedAt;
     }
 
     private async Task<IReadOnlyDictionary<string, DateTimeOffset>> FilterCompletedMarkersReadyToPersistAsync(
         PipelineRunContext context,
+        PipelineWorkGroup group,
         CancellationToken cancellationToken)
     {
-        if (context.PendingCompletionMarkers.Count == 0)
+        if (group.PendingCompletionMarkers.Count == 0)
         {
-            return context.PendingCompletionMarkers;
+            return group.PendingCompletionMarkers;
         }
 
         var currentItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
@@ -2411,7 +2695,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             .ToDictionary(entry => entry.Marker, entry => entry.Item, StringComparer.OrdinalIgnoreCase);
         var safeMarkers = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var (marker, updatedAt) in context.PendingCompletionMarkers)
+        foreach (var (marker, updatedAt) in group.PendingCompletionMarkers)
         {
             if (!currentByMarker.TryGetValue(marker, out var currentItem))
             {
@@ -2425,7 +2709,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
         }
 
-        var deferredCount = context.PendingCompletionMarkers.Count - safeMarkers.Count;
+        var deferredCount = group.PendingCompletionMarkers.Count - safeMarkers.Count;
         if (deferredCount > 0)
         {
             _logger.LogWarning(
@@ -2706,7 +2990,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private void PruneProcessedCompletionMarkers()
     {
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-3);
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-61);
         var staleKeys = _processedCompletionByQueueItem
             .Where(pair => pair.Value < cutoff)
             .Select(pair => pair.Key)
@@ -2742,11 +3026,30 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             .ToList();
     }
 
-    private static bool PayloadHasExistingSourceUnderRoot(string? payloadJson, string rootPath)
+    private static List<string> ResolveExistingSourceAudioFilesUnderRoot(
+        IEnumerable<DownloadQueueItem> items,
+        string rootPath)
     {
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            foreach (var sourceFile in ResolveExistingSourceAudioFilesUnderRoot(item.PayloadJson, rootPath))
+            {
+                files.Add(sourceFile);
+            }
+        }
+
+        return files
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> ResolveExistingSourceAudioFilesUnderRoot(string? payloadJson, string rootPath)
+    {
+        var files = new List<string>();
         if (string.IsNullOrWhiteSpace(payloadJson) || string.IsNullOrWhiteSpace(rootPath))
         {
-            return false;
+            return files;
         }
 
         try
@@ -2755,7 +3058,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
-                return false;
+                return files;
             }
 
             var candidatePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2774,24 +3077,47 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     continue;
                 }
 
-                if (File.Exists(ioPath))
-                {
-                    return true;
-                }
-
-                if (Directory.Exists(ioPath)
-                    && Directory.EnumerateFiles(ioPath, "*", SearchOption.AllDirectories).Any())
-                {
-                    return true;
-                }
+                AddExistingAudioFiles(ioPath, files);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return false;
+            return files;
         }
 
-        return false;
+        return files;
+    }
+
+    private static void AddExistingAudioFiles(string ioPath, List<string> files)
+    {
+        if (File.Exists(ioPath))
+        {
+            var extension = Path.GetExtension(ioPath);
+            if (!string.IsNullOrWhiteSpace(extension) && StagingAudioExtensions.Contains(extension))
+            {
+                files.Add(NormalizePathScope(ioPath));
+            }
+            return;
+        }
+
+        if (!Directory.Exists(ioPath))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(ioPath, "*", SearchOption.AllDirectories))
+        {
+            var extension = Path.GetExtension(file);
+            if (!string.IsNullOrWhiteSpace(extension) && StagingAudioExtensions.Contains(extension))
+            {
+                files.Add(NormalizePathScope(file));
+            }
+        }
+    }
+
+    private static bool PayloadHasExistingSourceUnderRoot(string? payloadJson, string rootPath)
+    {
+        return ResolveExistingSourceAudioFilesUnderRoot(payloadJson, rootPath).Count > 0;
     }
 
     private static void CollectPayloadSourcePaths(JsonElement root, HashSet<string> paths)
@@ -2930,47 +3256,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static bool IsPathUnderRoot(string rootPath, string candidatePath)
     {
         return PathComparisonHelper.IsPathUnderRoot(rootPath, candidatePath);
-    }
-
-    private TaggingProfile? ResolveAutomationProfileForPendingDownloads(
-        AutomationProfileContext context,
-        List<DownloadQueueItem> pendingItems)
-    {
-        if (pendingItems.Count == 0)
-        {
-            return null;
-        }
-
-        var distinctFolderIds = pendingItems
-            .Select(item => item.DestinationFolderId!.Value)
-            .Distinct()
-            .ToList();
-        if (distinctFolderIds.Count > 1)
-        {
-            _logger.LogWarning(
-                "Multiple destination folders were queued for one post-download automation pass ({FolderIds}). The latest completed item will determine the AutoTag profile.",
-                string.Join(", ", distinctFolderIds));
-        }
-
-        var selectedItem = pendingItems[0];
-        var selectedFolderId = selectedItem.DestinationFolderId!.Value;
-        var selectedFolderReference = context.FoldersById.TryGetValue(selectedFolderId, out var folder)
-            ? folder.AutoTagProfileId
-            : null;
-        var selectedProfile = ResolveAutomationProfileForFolder(
-            context,
-            selectedFolderId.ToString(CultureInfo.InvariantCulture),
-            selectedFolderReference);
-
-        if (selectedProfile == null)
-        {
-            _logger.LogWarning(
-                "No resolvable AutoTag profile was found for destination folder {FolderId}.",
-                selectedFolderId);
-            return null;
-        }
-
-        return selectedProfile;
     }
 
     private static TaggingProfile? ResolveProfileReference(IEnumerable<TaggingProfile> profiles, string? reference)

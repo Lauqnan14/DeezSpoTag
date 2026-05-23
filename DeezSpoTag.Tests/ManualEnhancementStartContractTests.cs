@@ -66,6 +66,7 @@ public sealed class ManualEnhancementStartContractTests
         Assert.Contains("IsAutomationInterruptibleEnhancementTrigger", source, StringComparison.Ordinal);
         Assert.Contains("return IsInterruptibleEnhancementTrigger(job.Trigger);", source, StringComparison.Ordinal);
         Assert.DoesNotContain("? IsAutomationInterruptibleEnhancementTrigger(job.Trigger)", source, StringComparison.Ordinal);
+        Assert.Contains("if (!IsInterruptibleEnhancementTrigger(job.Trigger))", source, StringComparison.Ordinal);
         Assert.Contains("StopJobAsync(jobId, \"automation\")", source, StringComparison.Ordinal);
         Assert.Contains("StopJobAsync(runningEnhancementJobId, \"automation\")", source, StringComparison.Ordinal);
     }
@@ -79,6 +80,20 @@ public sealed class ManualEnhancementStartContractTests
         Assert.Contains("StopJobAsync(string id, string? stopReason = null)", source, StringComparison.Ordinal);
         Assert.Contains("Interrupted by automation. Resume is available.", source, StringComparison.Ordinal);
         Assert.Contains("autotag interrupted by {actor}", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStart_BlocksIncompatibleConcurrentJobs()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("TryCreateBlockedJobForActiveJobPolicy", source, StringComparison.Ordinal);
+        Assert.Contains("another AutoTag job is already running", source, StringComparison.Ordinal);
+        Assert.True(
+            source.IndexOf("TryCreateBlockedJobForActiveJobPolicy", StringComparison.Ordinal)
+            < source.IndexOf("HasEligibleInputFiles(normalizedPath, configJson)", StringComparison.Ordinal));
+        Assert.Contains("_activeJobIds.TryAdd(job.Id, 0)", source, StringComparison.Ordinal);
     }
 
     private static string FindRepoRoot()
