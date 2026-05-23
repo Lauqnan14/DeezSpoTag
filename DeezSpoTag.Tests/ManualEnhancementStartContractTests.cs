@@ -58,14 +58,14 @@ public sealed class ManualEnhancementStartContractTests
     }
 
     [Fact]
-    public void AutomationPendingPipeline_DoesNotInterruptManualEnhancement()
+    public void AutomationPendingPipeline_CanInterruptManualOrScheduledEnhancement()
     {
         var repoRoot = FindRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
 
         Assert.Contains("IsAutomationInterruptibleEnhancementTrigger", source, StringComparison.Ordinal);
-        Assert.Contains("reason == EnhancementPauseReason.PendingPipeline", source, StringComparison.Ordinal);
-        Assert.Contains("? IsAutomationInterruptibleEnhancementTrigger(job.Trigger)", source, StringComparison.Ordinal);
+        Assert.Contains("return IsInterruptibleEnhancementTrigger(job.Trigger);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("? IsAutomationInterruptibleEnhancementTrigger(job.Trigger)", source, StringComparison.Ordinal);
         Assert.Contains("StopJobAsync(jobId, \"automation\")", source, StringComparison.Ordinal);
         Assert.Contains("StopJobAsync(runningEnhancementJobId, \"automation\")", source, StringComparison.Ordinal);
     }

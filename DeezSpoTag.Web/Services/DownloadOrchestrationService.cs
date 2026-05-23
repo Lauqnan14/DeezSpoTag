@@ -76,9 +76,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
-        return reason == EnhancementPauseReason.PendingPipeline
-            ? IsAutomationInterruptibleEnhancementTrigger(job.Trigger)
-            : IsInterruptibleEnhancementTrigger(job.Trigger);
+        return IsInterruptibleEnhancementTrigger(job.Trigger);
     }
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
     public sealed record DownloadGateDecision(bool Allowed, string Message, bool EnhancementPaused);
