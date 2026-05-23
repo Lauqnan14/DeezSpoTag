@@ -3421,19 +3421,6 @@ async function startFolderEnhancement(folder, profileReference) {
     }
 
     const resolvedProfileName = (profile?.name || resolvedProfileReference).trim();
-    const baseConfig = profile?.autoTag?.data || profile?.autoTag;
-    if (!baseConfig || typeof baseConfig !== 'object') {
-        throw new Error(`Profile "${resolvedProfileName}" has no AutoTag settings.`);
-    }
-
-    const gapFillTags = Array.isArray(baseConfig.gapFillTags)
-        ? baseConfig.gapFillTags.filter((tag) => typeof tag === 'string' && tag.trim().length > 0)
-        : [];
-
-    if (!gapFillTags.length) {
-        throw new Error(`Profile "${resolvedProfileName}" has no Library Enhancement tags.`);
-    }
-
     const response = await fetchJson('/api/autotag/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3445,11 +3432,67 @@ async function startFolderEnhancement(folder, profileReference) {
     });
 
     const jobId = response?.jobId ? String(response.jobId) : '';
-    if (!jobId) {
-        throw new Error('AutoTag did not return a job id.');
+    const status = String(response?.status || '').trim().toLowerCase();
+    if (!jobId || status !== 'running') {
+        throw new Error(response?.error || `AutoTag did not start${status ? ` (${status})` : ''}.`);
     }
 
     return { jobId, profileName: resolvedProfileName };
+}
+
+function setFolderEnhancementButtonState(button, state) {
+    if (!button) {
+        return;
+    }
+
+    const icon = button.querySelector('i');
+    if (!button.dataset.originalTitle) {
+        button.dataset.originalTitle = button.getAttribute('title') || 'Run enhancement now';
+    }
+
+    if (state === 'running') {
+        button.disabled = true;
+        button.setAttribute('title', 'Enhancement running');
+        if (icon) {
+            icon.className = 'fas fa-spinner fa-spin';
+        }
+        return;
+    }
+
+    button.disabled = false;
+    button.setAttribute('title', button.dataset.originalTitle || 'Run enhancement now');
+    if (icon) {
+        icon.className = 'fas fa-magic';
+    }
+}
+
+async function monitorFolderEnhancementJob(button, folder, started) {
+    const jobId = String(started?.jobId || '').trim();
+    if (!jobId) {
+        setFolderEnhancementButtonState(button, 'idle');
+        return;
+    }
+
+    setFolderEnhancementButtonState(button, 'running');
+    try {
+        while (true) {
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            const job = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(jobId)}?includeLogs=false&includeStatusHistory=false`);
+            const status = String(job?.status || '').trim().toLowerCase();
+            if (status === 'running' || status === 'queued' || status === 'tagging') {
+                continue;
+            }
+
+            if (status && status !== 'completed') {
+                showToast(`Enhancement ${status} for ${folder.displayName}: ${job?.error || 'check AutoTag history for details'}`, true);
+            }
+            break;
+        }
+    } catch (error) {
+        showToast(`Enhancement status check failed: ${error?.message || error}`, true);
+    } finally {
+        setFolderEnhancementButtonState(button, 'idle');
+    }
 }
 
 async function loadFolders() {
@@ -9379,14 +9422,14 @@ function bindFolderEnhanceAction(enhanceButton, wrapper, folder) {
     enhanceButton.addEventListener('click', async () => {
         const profileSelectRef = wrapper.querySelector('[data-folder-profile]');
         const selectedProfile = profileSelectRef ? profileSelectRef.value : '';
-        enhanceButton.disabled = true;
+        setFolderEnhancementButtonState(enhanceButton, 'running');
         try {
             const started = await startFolderEnhancement(folder, selectedProfile);
             showToast(`Enhancement started for ${folder.displayName} (${started.profileName}). Job ${started.jobId}.`);
+            await monitorFolderEnhancementJob(enhanceButton, folder, started);
         } catch (error) {
             showToast(`Failed to start enhancement: ${error?.message || error}`, true);
-        } finally {
-            enhanceButton.disabled = false;
+            setFolderEnhancementButtonState(enhanceButton, 'idle');
         }
     });
 }

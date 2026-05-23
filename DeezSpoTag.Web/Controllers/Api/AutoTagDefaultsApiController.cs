@@ -138,7 +138,7 @@ public sealed class AutoTagDefaultsApiController : ControllerBase
             return;
         }
 
-        var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId);
+        var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId, "schedule");
         if (stopped && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(

@@ -33,6 +33,7 @@ internal static class AutoTagLiterals
     internal const string ManualTrigger = "manual";
     internal const string AutomationTrigger = "automation";
     internal const string ScheduleTrigger = "schedule";
+    internal const string InvalidTrigger = "invalid";
     internal const string RunIntentDefault = "default";
     internal const string RunIntentDownloadEnrichment = "download_enrichment";
     internal const string RunIntentEnhancementOnly = "enhancement_only";
@@ -1865,7 +1866,7 @@ public partial class AutoTagService
         }
     }
 
-    public async Task<bool> StopJobAsync(string id)
+    public async Task<bool> StopJobAsync(string id, string? stopReason = null)
     {
         if (!_jobs.TryGetValue(id, out var job))
         {
@@ -1891,15 +1892,12 @@ public partial class AutoTagService
                 ? AutoTagLiterals.InterruptedStatus
                 : AutoTagLiterals.CanceledStatus;
             job.Status = interruptedStatus;
-            job.Error = IsEnhancementRunIntent(job.RunIntent)
-                ? "Interrupted by user. Resume is available."
-                : "Stopped by user.";
+            var normalizedStopReason = NormalizeStopReason(stopReason);
+            job.Error = BuildStopError(job, normalizedStopReason);
             SaveJob(job);
             AppendActivityLog(
                 job.Id,
-                string.Equals(interruptedStatus, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
-                    ? "autotag interrupted by user"
-                    : "autotag canceled by user");
+                BuildStopActivityLog(interruptedStatus, normalizedStopReason));
             if (IsEnhancementRunIntent(job.RunIntent))
             {
                 await TriggerTargetedPlexRefreshForEnhancedFilesAsync(job, TimeSpan.FromSeconds(20), CancellationToken.None);
@@ -1907,6 +1905,59 @@ public partial class AutoTagService
         }
 
         return stopped;
+    }
+
+    private static string NormalizeStopReason(string? stopReason)
+    {
+        if (string.IsNullOrWhiteSpace(stopReason))
+        {
+            return "user";
+        }
+
+        return stopReason.Trim().ToLowerInvariant() switch
+        {
+            "automation" => "automation",
+            "schedule" => "schedule",
+            "recovery" => "recovery",
+            _ => "user"
+        };
+    }
+
+    private static string BuildStopError(AutoTagJob job, string stopReason)
+    {
+        if (!IsEnhancementRunIntent(job.RunIntent))
+        {
+            return stopReason switch
+            {
+                "automation" => "Stopped by automation.",
+                "schedule" => "Stopped after schedule change.",
+                "recovery" => "Stopped by stale recovery.",
+                _ => "Stopped by user."
+            };
+        }
+
+        return stopReason switch
+        {
+            "automation" => "Interrupted by automation. Resume is available.",
+            "schedule" => "Interrupted after schedule change. Resume is available.",
+            "recovery" => "Interrupted by stale recovery. Resume is available.",
+            _ => "Interrupted by user. Resume is available."
+        };
+    }
+
+    private static string BuildStopActivityLog(string interruptedStatus, string stopReason)
+    {
+        var actor = stopReason switch
+        {
+            "automation" => "automation",
+            "schedule" => "schedule change",
+            "recovery" => "stale recovery",
+            _ => "user"
+        };
+
+        return string.Equals(interruptedStatus, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            ? $"autotag interrupted by {actor}"
+            : $"autotag canceled by {actor}";
     }
 
     private async Task RunJobAsync(
@@ -4524,9 +4575,10 @@ public partial class AutoTagService
 
         return trigger.Trim().ToLowerInvariant() switch
         {
+            AutoTagLiterals.ManualTrigger => AutoTagLiterals.ManualTrigger,
             AutoTagLiterals.AutomationTrigger => AutoTagLiterals.AutomationTrigger,
             AutoTagLiterals.ScheduleTrigger => AutoTagLiterals.ScheduleTrigger,
-            _ => AutoTagLiterals.ManualTrigger
+            _ => AutoTagLiterals.InvalidTrigger
         };
     }
 
@@ -6990,7 +7042,7 @@ public partial class AutoTagService
 
             try
             {
-                if (await StopJobAsync(job.Id)
+                if (await StopJobAsync(job.Id, "recovery")
                     && await WaitForJobToLeaveActiveSetAsync(job.Id, TimeSpan.FromSeconds(30), cancellationToken))
                 {
                     await TryAutoResumeRecoveredJobAsync(job, cancellationToken);

@@ -41,20 +41,21 @@ public class AutoTagJobsController : ControllerBase
     }
 
     [HttpPost("start")]
-    public async Task<IActionResult> Start([FromBody] AutoTagStartRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> Start([FromBody] AutoTagStartRequest? request, CancellationToken cancellationToken)
     {
         if (!TryNormalizeStartRequest(request, out var normalizedPath, out var validationError))
         {
             return validationError;
         }
 
+        var startRequest = request!;
         var scopeError = await ValidateStartScopeAsync(normalizedPath, cancellationToken);
         if (scopeError != null)
         {
             return scopeError;
         }
 
-        var selectedProfileResult = await ResolveSelectedProfileAsync(request.ProfileId);
+        var selectedProfileResult = await ResolveSelectedProfileAsync(startRequest.ProfileId);
         if (selectedProfileResult.Error != null)
         {
             return selectedProfileResult.Error;
@@ -65,7 +66,7 @@ public class AutoTagJobsController : ControllerBase
             return configError!;
         }
 
-        if (!TryValidateEnrichmentScope(normalizedPath, configNode, request.RunIntent, out var enrichmentError))
+        if (!TryValidateEnrichmentScope(normalizedPath, configNode, startRequest.RunIntent, out var enrichmentError))
         {
             return enrichmentError;
         }
@@ -80,24 +81,24 @@ public class AutoTagJobsController : ControllerBase
             new AutoTagService.StartJobOptions(
                 ProfileId: selectedProfileResult.Profile?.Id,
                 ProfileName: selectedProfileResult.Profile?.Name,
-                RunIntent: request.RunIntent,
+                RunIntent: startRequest.RunIntent,
                 FolderStructureOverride: selectedProfileResult.Profile?.FolderStructure));
-        if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(job.Id))
-        {
-            return Conflict(job.Error ?? "AutoTag did not start.");
-        }
-
-        return Ok(new { jobId = job.Id, status = job.Status });
+        return CreateStartJobResponse(job);
     }
 
     private static bool TryNormalizeStartRequest(
-        AutoTagStartRequest request,
+        AutoTagStartRequest? request,
         out string normalizedPath,
         out IActionResult validationError)
     {
         normalizedPath = string.Empty;
         validationError = new BadRequestObjectResult("Invalid request.");
+
+        if (request == null)
+        {
+            validationError = new BadRequestObjectResult("Invalid request.");
+            return false;
+        }
 
         if (string.IsNullOrWhiteSpace(request.Path))
         {
@@ -116,6 +117,43 @@ public class AutoTagJobsController : ControllerBase
         }
 
         return true;
+    }
+
+    private static IActionResult CreateStartJobResponse(AutoTagJob job)
+    {
+        var payload = new
+        {
+            jobId = job.Id,
+            status = job.Status,
+            error = job.Error
+        };
+
+        if (string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return new OkObjectResult(payload);
+        }
+
+        if (string.Equals(job.Status, AutoTagLiterals.SkippedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return new UnprocessableEntityObjectResult(payload);
+        }
+
+        if (string.Equals(job.Status, "blocked", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return new ConflictObjectResult(payload);
+        }
+
+        if (string.Equals(job.Status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.Status, AutoTagLiterals.ErrorStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return new ObjectResult(payload) { StatusCode = StatusCodes.Status500InternalServerError };
+        }
+
+        return string.IsNullOrWhiteSpace(job.Id)
+            ? new ConflictObjectResult(payload)
+            : new ObjectResult(payload) { StatusCode = StatusCodes.Status500InternalServerError };
     }
 
     private bool TryBuildEffectiveConfigNode(

@@ -57,7 +57,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                || string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool ShouldPauseEnhancementJobForEnrichment(AutoTagJob? job)
+    private static bool IsAutomationInterruptibleEnhancementTrigger(string? trigger)
+    {
+        return string.Equals(trigger, AutoTagLiterals.ScheduleTrigger, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldPauseEnhancementJobForEnrichment(AutoTagJob? job, EnhancementPauseReason reason)
     {
         if (job == null
             || !string.Equals(job.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase))
@@ -71,7 +76,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
-        return IsInterruptibleEnhancementTrigger(job.Trigger);
+        return reason == EnhancementPauseReason.PendingPipeline
+            ? IsAutomationInterruptibleEnhancementTrigger(job.Trigger)
+            : IsInterruptibleEnhancementTrigger(job.Trigger);
     }
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
     public sealed record DownloadGateDecision(bool Allowed, string Message, bool EnhancementPaused);
@@ -831,7 +838,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 "info",
                 "Automation: pausing global enhancement to prioritize recent-download enhancement."));
 
-            var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId);
+            var stopped = await _autoTagService.StopJobAsync(runningEnhancementJobId, "automation");
             if (!stopped)
             {
                 _enhancementPauseRequested = false;
@@ -868,7 +875,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
-        if (!IsInterruptibleEnhancementTrigger(job.Trigger))
+        if (!IsAutomationInterruptibleEnhancementTrigger(job.Trigger))
         {
             return false;
         }
@@ -1840,7 +1847,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
             var runningJob = _autoTagService.GetJob(jobId);
-            if (!ShouldPauseEnhancementJobForEnrichment(runningJob))
+            if (!ShouldPauseEnhancementJobForEnrichment(runningJob, request.Reason))
             {
                 return false;
             }
@@ -1854,7 +1861,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 "info",
                 request.ConfigLogMessage));
 
-            var stopped = await _autoTagService.StopJobAsync(jobId);
+            var stopped = await _autoTagService.StopJobAsync(jobId, "automation");
             if (stopped)
             {
                 await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
@@ -2097,7 +2104,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 "info",
                 "Automation: enrichment pause requested for incoming download."));
 
-            var stopped = await _autoTagService.StopJobAsync(enrichmentJobId);
+            var stopped = await _autoTagService.StopJobAsync(enrichmentJobId, "automation");
             if (stopped)
             {
                 if (_logger.IsEnabled(LogLevel.Information))
