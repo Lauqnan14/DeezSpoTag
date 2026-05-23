@@ -141,7 +141,8 @@ public class AutoTagJobsController : ControllerBase
 
         if (string.Equals(job.Status, "blocked", StringComparison.OrdinalIgnoreCase)
             || string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
+            || string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase))
         {
             return new ConflictObjectResult(payload);
         }

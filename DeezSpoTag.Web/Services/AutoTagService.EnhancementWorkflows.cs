@@ -93,8 +93,12 @@ public partial class AutoTagService
         }
         catch (OperationCanceledException)
         {
-            result.Status = AutoTagLiterals.InterruptedStatus;
-            result.Message = "interrupted";
+            result.Status = string.Equals(job.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+                ? AutoTagLiterals.PausedStatus
+                : AutoTagLiterals.InterruptedStatus;
+            result.Message = string.Equals(result.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+                ? "paused"
+                : "interrupted";
             throw;
         }
         catch (Exception ex)

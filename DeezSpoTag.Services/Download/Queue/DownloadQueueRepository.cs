@@ -699,6 +699,11 @@ WHERE queue_uuid = @queueUuid;";
         await UpdateMoveStatusAsync(queueUuid, MoveStatusFailed, cancellationToken);
     }
 
+    public async Task MarkMoveNotRequiredAsync(string queueUuid, CancellationToken cancellationToken = default)
+    {
+        await UpdateMoveStatusAsync(queueUuid, MoveStatusNotRequired, cancellationToken);
+    }
+
     private async Task UpdateMoveStatusAsync(string queueUuid, string moveStatus, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(queueUuid))

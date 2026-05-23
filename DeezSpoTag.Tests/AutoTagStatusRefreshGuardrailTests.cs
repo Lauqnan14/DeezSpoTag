@@ -82,6 +82,19 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
+    public void AutoTagStatusScript_TreatsPausedRunsAsTerminalWarningState()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        Assert.Contains("const STATUS_PAUSED = \"paused\";", source, StringComparison.Ordinal);
+        Assert.Contains("normalized === STATUS_PAUSED", source, StringComparison.Ordinal);
+        Assert.Contains("case STATUS_PAUSED:", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTagStatusScript_GuardsAgainstOutOfOrderHistoryResponses()
     {
         var repoRoot = ResolveRepoRoot();

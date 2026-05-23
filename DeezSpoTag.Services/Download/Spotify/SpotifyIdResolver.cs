@@ -82,6 +82,7 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
 
     private static string? ResolveTrackIdFromItems(JsonElement items, string normalizedTitle, string normalizedArtist, string? isrc)
     {
+        var requireIsrcMatch = !string.IsNullOrWhiteSpace(isrc);
         string? fallbackId = null;
         foreach (var item in items.EnumerateArray())
         {
@@ -94,6 +95,11 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
             if (IsIsrcMatch(item, isrc))
             {
                 return itemId;
+            }
+
+            if (requireIsrcMatch)
+            {
+                continue;
             }
 
             fallbackId ??= itemId;

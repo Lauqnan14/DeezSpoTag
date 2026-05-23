@@ -22,13 +22,15 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
     {
         if (!string.IsNullOrWhiteSpace(isrc))
         {
-            var isrcQuery = $"isrc:{isrc}";
+            var isrcQuery = $"isrc:{isrc.Trim()}";
             var isrcResponse = await _searchService.SearchByTypeAsync(isrcQuery, "track", 5, 0, cancellationToken);
             var isrcItem = isrcResponse?.Items?.FirstOrDefault();
             if (!string.IsNullOrWhiteSpace(isrcItem?.Id))
             {
                 return isrcItem.Id;
             }
+
+            return null;
         }
 
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))

@@ -40,6 +40,7 @@ internal static class AutoTagLiterals
     internal const string RunIntentEnhancementRecentDownloads = "enhancement_recent_downloads";
     internal const string CanceledStatus = "canceled";
     internal const string InterruptedStatus = "interrupted";
+    internal const string PausedStatus = "paused";
     internal const string FailedStatus = "failed";
     internal const string CompletedStatus = "completed";
     internal const string EnrichmentStage = "enrichment";
@@ -1131,6 +1132,7 @@ public partial class AutoTagService
             && !_activeJobIds.ContainsKey(job.Id);
         if (!string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
             && !staleRunning)
         {
@@ -1929,16 +1931,14 @@ public partial class AutoTagService
 
         if (stopped)
         {
-            var interruptedStatus = IsEnhancementRunIntent(job.RunIntent)
-                ? AutoTagLiterals.InterruptedStatus
-                : AutoTagLiterals.CanceledStatus;
-            job.Status = interruptedStatus;
+            var stopStatus = ResolveStopStatus(job, NormalizeStopReason(stopReason));
+            job.Status = stopStatus;
             var normalizedStopReason = NormalizeStopReason(stopReason);
             job.Error = BuildStopError(job, normalizedStopReason);
             SaveJob(job);
             AppendActivityLog(
                 job.Id,
-                BuildStopActivityLog(interruptedStatus, normalizedStopReason));
+                BuildStopActivityLog(stopStatus, normalizedStopReason));
             if (IsEnhancementRunIntent(job.RunIntent))
             {
                 await TriggerTargetedPlexRefreshForEnhancedFilesAsync(job, TimeSpan.FromSeconds(20), CancellationToken.None);
@@ -1946,6 +1946,18 @@ public partial class AutoTagService
         }
 
         return stopped;
+    }
+
+    private static string ResolveStopStatus(AutoTagJob job, string stopReason)
+    {
+        if (!IsEnhancementRunIntent(job.RunIntent))
+        {
+            return AutoTagLiterals.CanceledStatus;
+        }
+
+        return string.Equals(stopReason, "automation", StringComparison.OrdinalIgnoreCase)
+            ? AutoTagLiterals.PausedStatus
+            : AutoTagLiterals.InterruptedStatus;
     }
 
     private static string NormalizeStopReason(string? stopReason)
@@ -1979,14 +1991,14 @@ public partial class AutoTagService
 
         return stopReason switch
         {
-            "automation" => "Interrupted by automation. Resume is available.",
+            "automation" => "Paused by automation. Resume is available after download finalization.",
             "schedule" => "Interrupted after schedule change. Resume is available.",
             "recovery" => "Interrupted by stale recovery. Resume is available.",
             _ => "Interrupted by user. Resume is available."
         };
     }
 
-    private static string BuildStopActivityLog(string interruptedStatus, string stopReason)
+    private static string BuildStopActivityLog(string stopStatus, string stopReason)
     {
         var actor = stopReason switch
         {
@@ -1996,7 +2008,12 @@ public partial class AutoTagService
             _ => "user"
         };
 
-        return string.Equals(interruptedStatus, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(stopStatus, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"autotag paused by {actor}";
+        }
+
+        return string.Equals(stopStatus, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
             ? $"autotag interrupted by {actor}"
             : $"autotag canceled by {actor}";
     }
@@ -2125,7 +2142,8 @@ public partial class AutoTagService
     private static bool IsTerminalStopStatus(string? status)
     {
         return string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase);
+            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ShouldPreserveRuntimeConfigFilesForResume(AutoTagJob job)
@@ -2137,6 +2155,7 @@ public partial class AutoTagService
 
         return string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(job.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(job.Status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -2166,6 +2185,20 @@ public partial class AutoTagService
         if (stages.Count > 0)
         {
             return false;
+        }
+
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            job.Status = AutoTagLiterals.SkippedStatus;
+            job.Error = "No runnable download enrichment stage was configured.";
+            job.ExitCode = 0;
+            job.FinishedAt = DateTimeOffset.UtcNow;
+            job.ResumeCheckpoint = null;
+            job.ResumeFromJobId = null;
+            SaveJob(job);
+            AppendActivityLog(job.Id, "autotag skipped: no runnable download enrichment stage configured");
+            NotifyCompleted(job);
+            return true;
         }
 
         job.Status = AutoTagLiterals.FailedStatus;
@@ -2335,6 +2368,11 @@ public partial class AutoTagService
 
     private static StageExecutionResult HandleStoppedStage(AutoTagJob job)
     {
+        if (IsTerminalStopStatus(job.Status))
+        {
+            return new StageExecutionResult(false);
+        }
+
         var interrupted = IsEnhancementRunIntent(job.RunIntent);
         job.Status = interrupted
             ? AutoTagLiterals.InterruptedStatus
@@ -2426,6 +2464,17 @@ public partial class AutoTagService
             var summary = new AutoTagMoveSummary
             {
                 Error = "auto-move skipped for enhancement run."
+            };
+            ApplyAutoMoveSummary(job, summary);
+            return new AutoMoveExecutionResult(false, summary);
+        }
+
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            AppendLog(job, "auto-move skipped: download enrichment finalization is owned by download orchestration");
+            var summary = new AutoTagMoveSummary
+            {
+                Error = "auto-move skipped for download enrichment run."
             };
             ApplyAutoMoveSummary(job, summary);
             return new AutoMoveExecutionResult(false, summary);
@@ -5933,6 +5982,7 @@ public partial class AutoTagService
             || string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.SkippedStatus, StringComparison.OrdinalIgnoreCase);
     }
 

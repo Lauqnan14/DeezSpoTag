@@ -48,25 +48,31 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void DownloadOrchestration_DoesNotPersistFailedEnrichmentAsProcessed()
+    public void DownloadOrchestration_FinalizesCompletedDownloadsAfterAnyEnrichmentOutcome()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
         Assert.Contains("ResolvePipelineEnrichmentResult", source, StringComparison.Ordinal);
-        Assert.Contains("SafeToPersist: false", source, StringComparison.Ordinal);
-        Assert.Contains("if (enrichmentResult.SafeToPersist)", source, StringComparison.Ordinal);
+        Assert.Contains("RunPostDownloadFinalizationAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_downloadMoveService.MoveForRootWithSummaryAsync", source, StringComparison.Ordinal);
+        Assert.Contains("Automation: post-download finalization starting", source, StringComparison.Ordinal);
+        Assert.Contains("Automation: post-download finalization completed", source, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.FailedStatus", source, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.InterruptedStatus", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void DownloadOrchestration_UsesQueueCompletionTimeForRecentEnhancementWindow()
+    public void DownloadOrchestration_DoesNotTriggerRecentDownloadEnhancementFromCompletedDownloads()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var pipelineStart = source.IndexOf("private async Task RunPipelineAsync", StringComparison.Ordinal);
+        Assert.True(pipelineStart >= 0);
+        var pipelineEnd = source.IndexOf("private async Task<bool> ResumePausedEnhancementAsync", pipelineStart, StringComparison.Ordinal);
+        Assert.True(pipelineEnd > pipelineStart);
+        var pipelineBody = source.Substring(pipelineStart, pipelineEnd - pipelineStart);
 
-        Assert.Contains("group.PendingItems.Max(item => item.UpdatedAt)", source, StringComparison.Ordinal);
-        Assert.Contains("latestQueueCompletionUtc >= cutoff", source, StringComparison.Ordinal);
-        Assert.Contains("file timestamp fallback", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunRecentDownloadEnhancementAsync", pipelineBody, StringComparison.Ordinal);
+        Assert.Contains("RunPostDownloadFinalizationAsync", pipelineBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -74,9 +80,8 @@ public sealed class LibraryScanTriggerGuardrailTests
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
-        Assert.Contains("pending completed download still present in staging", source, StringComparison.Ordinal);
         Assert.Contains("unrelated audio file present in download staging; not blocking", source, StringComparison.Ordinal);
-        Assert.Contains("HasUnrelatedStagingAudio", source, StringComparison.Ordinal);
+        Assert.Contains("ShouldDeferEnhancementForDownloadStagingAudio", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -106,6 +111,17 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("TriggerLibraryScanAfterAutoMoveAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagDownloadEnrichment_DoesNotOwnFinalMoveOrFailWhenNoStagesBuild()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+
+        Assert.Contains("No runnable download enrichment stage was configured.", source, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.SkippedStatus", source, StringComparison.Ordinal);
+        Assert.Contains("download enrichment finalization is owned by download orchestration", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))\n        {\n            AppendLog(job, \"tagging completed, auto-move starting\")", source, StringComparison.Ordinal);
     }
 
     [Fact]

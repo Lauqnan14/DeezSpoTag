@@ -9,6 +9,7 @@
     const STATUS_RUNNING = "running";
     const STATUS_COMPLETED = "completed";
     const STATUS_FAILED = "failed";
+    const STATUS_PAUSED = "paused";
     const pollIntervalMs = 3000;
     const runningDetailRefreshMs = 6000;
     const idleDetailRefreshMs = 20000;
@@ -146,6 +147,7 @@
             case STATUS_REVIEW:
                 return "text-warning";
             case STATUS_SKIPPED:
+            case STATUS_PAUSED:
                 return "text-warning";
             default:
                 return "";
@@ -213,6 +215,7 @@
             || normalized === "canceled"
             || normalized === "cancelled"
             || normalized === "interrupted"
+            || normalized === STATUS_PAUSED
             || normalized === "idle"
             || normalized === "error";
     }

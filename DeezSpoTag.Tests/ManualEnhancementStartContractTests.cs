@@ -58,7 +58,7 @@ public sealed class ManualEnhancementStartContractTests
     }
 
     [Fact]
-    public void AutomationPendingPipeline_CanInterruptManualOrScheduledEnhancement()
+    public void AutomationPendingPipeline_CanPauseManualOrScheduledEnhancement()
     {
         var repoRoot = FindRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
@@ -66,20 +66,20 @@ public sealed class ManualEnhancementStartContractTests
         Assert.Contains("IsAutomationInterruptibleEnhancementTrigger", source, StringComparison.Ordinal);
         Assert.Contains("return IsInterruptibleEnhancementTrigger(job.Trigger);", source, StringComparison.Ordinal);
         Assert.DoesNotContain("? IsAutomationInterruptibleEnhancementTrigger(job.Trigger)", source, StringComparison.Ordinal);
-        Assert.Contains("if (!IsInterruptibleEnhancementTrigger(job.Trigger))", source, StringComparison.Ordinal);
+        Assert.Contains("ShouldPauseEnhancementJobForEnrichment", source, StringComparison.Ordinal);
         Assert.Contains("StopJobAsync(jobId, \"automation\")", source, StringComparison.Ordinal);
-        Assert.Contains("StopJobAsync(runningEnhancementJobId, \"automation\")", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AutoTagStopReason_DoesNotLabelAutomationInterruptionsAsUserInterruptions()
+    public void AutoTagStopReason_LabelsAutomationEnhancementStopsAsPaused()
     {
         var repoRoot = FindRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
 
         Assert.Contains("StopJobAsync(string id, string? stopReason = null)", source, StringComparison.Ordinal);
-        Assert.Contains("Interrupted by automation. Resume is available.", source, StringComparison.Ordinal);
-        Assert.Contains("autotag interrupted by {actor}", source, StringComparison.Ordinal);
+        Assert.Contains("Paused by automation. Resume is available after download finalization.", source, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.PausedStatus", source, StringComparison.Ordinal);
+        Assert.Contains("autotag paused by {actor}", source, StringComparison.Ordinal);
     }
 
     [Fact]

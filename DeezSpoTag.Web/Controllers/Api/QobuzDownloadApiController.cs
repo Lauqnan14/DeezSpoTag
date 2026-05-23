@@ -17,6 +17,10 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class QobuzDownloadApiController : ControllerBase
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly Regex QobuzTrackUrlRegex = new(
+        @"qobuz\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?track\/(?<id>\d+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadOrchestrationService _orchestrationService;
@@ -103,6 +107,11 @@ public sealed class QobuzDownloadApiController : ControllerBase
                     cancellationToken);
         }
 
+        if (string.IsNullOrWhiteSpace(track.QobuzId))
+        {
+            track.QobuzId = TryExtractQobuzTrackId(track.SourceUrl);
+        }
+
         return BuildPayload(track, quality, destinationFolderId, settings);
     }
 
@@ -145,6 +154,16 @@ public sealed class QobuzDownloadApiController : ControllerBase
         return QobuzQualityCodeNormalizer.Normalize(quality, defaultCode: "27");
     }
 
+    private static string? TryExtractQobuzTrackId(string? sourceUrl)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return null;
+        }
+
+        var match = QobuzTrackUrlRegex.Match(sourceUrl);
+        return match.Success ? match.Groups["id"].Value : null;
+    }
 }
 
 public sealed class QobuzDownloadBatchRequest : EngineDownloadBatchRequestBase
