@@ -2648,6 +2648,9 @@ function mapRecommendationsTracklist(payload) {
         id: track.id || '',
         deezerId: track.id || '',
         deezer_id: track.id || '',
+        recommendationStationId: payload.station?.id || tracklistId || '',
+        recommendationLibraryId: tracklistLibraryId || '',
+        recommendationStatus: payload.status || payload.station?.status || '',
         title: track.title || 'Unknown',
         artist: {
             id: track.artist?.id || '',
@@ -3245,6 +3248,7 @@ function renderTracklist(data, options = {}) {
     }
     applyIgnoredTrackState();
     bindIgnoreButtons();
+    bindRecommendationRejectButtons();
     scheduleAvailabilityChecks(tracks, isLocalSource);
 
     const externalSource = (tracklistSource || '').toLowerCase();
@@ -5754,6 +5758,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
     const ignoreToggleClass = shouldShowIgnore ? '' : 'is-hidden';
     const isSpotifyExternalSource = playbackSource === 'spotify';
     const isBoomplayExternalSource = playbackSource === 'boomplay';
+    const isRecommendationSource = isRecommendationTracklistContext();
     const isGenericExternalSource = playbackSource === 'youtube'
         || playbackSource === 'soundcloud'
         || playbackSource === 'tidal'
@@ -5818,6 +5823,14 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const rowSourceAttr = escapeHtml(playbackSource);
         const rowClass = isDeadExternalRow ? ' class="track-row-dead"' : '';
         const checkboxDisabledAttr = isDeadExternalRow ? ' disabled aria-disabled="true" title="Waiting for Deezer match"' : ' title="Select track"';
+        const recommendationRejectButton = isRecommendationSource
+            ? `<button class="track-recommendation-reject-btn" type="button"
+                    data-recommendation-track-id="${escapeHtml(track.id || deezerId || '')}"
+                    data-recommendation-track-isrc="${escapeHtml(track.isrc || '')}"
+                    data-recommendation-track-title="${escapeHtml(track.title || '')}"
+                    data-recommendation-track-artist="${escapeHtml(artistName || '')}"
+                    title="Not interested">Not interested</button>`
+            : '';
         const requiresPreparedExternalPreview = isDeezerMatchedExternalSource(playbackSource)
             && !!deezerId
             && !playbackContext;
@@ -5898,6 +5911,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                         data-ignore-track-id="${track.id}"
                         data-ignore-track-isrc="${escapeHtml(track.isrc || '')}"
                         title="${isPodcastShow ? 'Ignore episode' : 'Ignore track'}">Ignore</button>
+                    ${recommendationRejectButton}
                 </div>
             </td>
         </tr>
@@ -6113,6 +6127,57 @@ function bindIgnoreButtonsForRows(rows) {
                 }
             } catch (error) {
                 DeezSpoTag.ui.alert(`Ignore failed: ${error.message}`, { title: 'Ignore Track' });
+            }
+        });
+    });
+}
+
+function bindRecommendationRejectButtons() {
+    if (!isRecommendationTracklistContext() || !tracklistLibraryId) {
+        return;
+    }
+
+    const buttons = Array.from(document.querySelectorAll('.track-recommendation-reject-btn'));
+    buttons.forEach((button) => {
+        if (!button || button.dataset.rejectBound === 'true') {
+            return;
+        }
+
+        button.dataset.rejectBound = 'true';
+        button.addEventListener('click', async () => {
+            const trackSourceId = button.getAttribute('data-recommendation-track-id') || '';
+            if (!trackSourceId) {
+                return;
+            }
+
+            button.disabled = true;
+            try {
+                const payload = await fetchJson('/api/library/recommendations/reject', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        libraryId: Number(tracklistLibraryId),
+                        stationId: tracklistId || currentTracklistMeta?.sourceId || '',
+                        trackSourceId,
+                        isrc: button.getAttribute('data-recommendation-track-isrc') || null,
+                        title: button.getAttribute('data-recommendation-track-title') || null,
+                        artist: button.getAttribute('data-recommendation-track-artist') || null,
+                        limit: 50
+                    })
+                });
+
+                if (payload?.station && Array.isArray(payload.tracks)) {
+                    renderTracklist(mapRecommendationsTracklist(payload));
+                    return;
+                }
+
+                const row = button.closest('tr');
+                if (row) {
+                    row.remove();
+                }
+            } catch (error) {
+                button.disabled = false;
+                DeezSpoTag.ui.alert(`Recommendation update failed: ${error.message}`, { title: 'Recommendations' });
             }
         });
     });

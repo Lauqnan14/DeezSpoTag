@@ -101,6 +101,7 @@ public sealed class LibraryRecommendationService
         DateTimeOffset GeneratedAtUtc,
         IReadOnlyList<RecommendationTrackDto> Tracks,
         string? StationImageUrl = null);
+    private sealed record RecommendationBuildResult(RecommendationDetailDto? Detail, IReadOnlyList<string> ReasonCodes);
 
     private async Task<IReadOnlyList<FolderDto>> GetRecommendationEligibleFoldersAsync(CancellationToken cancellationToken)
     {
@@ -459,27 +460,33 @@ public sealed class LibraryRecommendationService
         var stations = new List<RecommendationStationDto>(folders.Count);
         foreach (var folder in folders.OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase))
         {
-            var stationId = BuildStationId(libraryId, folder.Id);
-            var detail = await GetRecommendationsAsync(
-                libraryId,
-                stationId: stationId,
-                folderId: folder.Id,
-                limit: MaxDailyRecommendations,
-                cancellationToken: cancellationToken);
-
-            if (detail is not null)
-            {
-                stations.Add(detail.Station with
-                {
-                    TrackCount = Math.Min(MaxDailyRecommendations, detail.Tracks.Count)
-                });
-                continue;
-            }
+            var scope = BuildScope(libraryId, folder);
+            var stationId = scope.StationId;
 
             watchlistMap.TryGetValue(stationId, out var watchlistEntry);
             var imageUrl = !string.IsNullOrWhiteSpace(watchlistEntry?.ImageUrl)
                 ? watchlistEntry.ImageUrl
                 : ResolveRecommendationArtworkUrl(stationId, artworkAssignments);
+            var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
+            var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
+            var persistedPool = await GetDailyPoolAsync(
+                cacheKey,
+                scope,
+                dayLocal,
+                imageUrl,
+                cancellationToken);
+            if (persistedPool is not null)
+            {
+                stations.Add(persistedPool.Station with
+                {
+                    TrackCount = Math.Min(MaxDailyRecommendations, persistedPool.Tracks.Count),
+                    Status = persistedPool.Tracks.Count > 0 ? "ready" : "empty",
+                    ReasonCodes = Array.Empty<string>(),
+                    Message = null
+                });
+                continue;
+            }
+
             stations.Add(new RecommendationStationDto(
                 stationId,
                 $"Recommendations - {folder.DisplayName}",
@@ -487,7 +494,10 @@ public sealed class LibraryRecommendationService
                 RecommendationSourceId,
                 folder.DisplayName,
                 0,
-                imageUrl));
+                imageUrl,
+                "missing",
+                ["daily_pool_missing"],
+                "Recommendations have not been generated for this station today."));
         }
 
         return stations;
@@ -534,17 +544,33 @@ public sealed class LibraryRecommendationService
             cancellationToken);
         if (basePool == null)
         {
-            return null;
+            await RefreshShazamScopeAsync(scope, cancellationToken);
+            var buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+            if (buildResult.Detail is null)
+            {
+                return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, buildResult.ReasonCodes);
+            }
+
+            basePool = buildResult.Detail;
+            await PersistDailyPoolAsync(scope, dayLocal, basePool, cancellationToken);
+            _dailyPoolCache[cacheKey] = basePool;
         }
 
         var ignoredTrackIds = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(
             RecommendationSource,
             scope.StationId,
             cancellationToken);
+        var rejectedTrackIds = await _repository.GetRecommendationRejectedTrackIdsAsync(
+            scope.LibraryId,
+            scope.FolderId,
+            scope.StationId,
+            cancellationToken);
+        var excludedTrackIds = BuildNormalizedRecommendationIdSet(ignoredTrackIds);
+        excludedTrackIds.UnionWith(BuildNormalizedRecommendationIdSet(rejectedTrackIds));
 
         var visibleTracks = BuildVisibleDailySelection(
             basePool.Tracks,
-            ignoredTrackIds,
+            excludedTrackIds,
             cappedLimit,
             dayLocal);
         IReadOnlyList<RecommendationTrackDto> enriched;
@@ -569,7 +595,7 @@ public sealed class LibraryRecommendationService
                 cappedLimit,
                 enriched.Count,
                 Math.Min(cappedLimit, basePool.Tracks.Count),
-                ignoredTrackIds.Count);
+                excludedTrackIds.Count);
         }
 
         var imageUrl = stationImageUrl
@@ -582,10 +608,16 @@ public sealed class LibraryRecommendationService
             basePool.Station with
             {
                 TrackCount = enriched.Count,
-                ImageUrl = imageUrl
+                ImageUrl = imageUrl,
+                Status = enriched.Count > 0 ? "ready" : "empty",
+                ReasonCodes = enriched.Count > 0 ? Array.Empty<string>() : ["all_candidates_rejected_or_ignored"],
+                Message = enriched.Count > 0 ? null : "No recommendation tracks are available after user rejections and ignores."
             },
             enriched,
-            basePool.GeneratedAtUtc);
+            basePool.GeneratedAtUtc,
+            enriched.Count > 0 ? "ready" : "empty",
+            enriched.Count > 0 ? Array.Empty<string>() : ["all_candidates_rejected_or_ignored"],
+            enriched.Count > 0 ? null : "No recommendation tracks are available after user rejections and ignores.");
     }
 
     private async Task<RecommendationDetailDto?> GetDailyPoolAsync(
@@ -609,7 +641,54 @@ public sealed class LibraryRecommendationService
         return basePool;
     }
 
-public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellationToken = default)
+    private static RecommendationDetailDto CreateUnavailableRecommendationDetail(
+        RecommendationScope scope,
+        string? stationImageUrl,
+        DateOnly dayLocal,
+        IReadOnlyList<string> reasonCodes)
+    {
+        var reasons = reasonCodes.Count > 0
+            ? reasonCodes
+            : ["empty_pool"];
+        var message = BuildRecommendationUnavailableMessage(reasons);
+        var station = new RecommendationStationDto(
+            scope.StationId,
+            $"Recommendations - {scope.FolderName}",
+            BuildDailyRecommendationDescription(scope.FolderName, dayLocal.DayOfWeek),
+            RecommendationSourceId,
+            scope.FolderName,
+            0,
+            stationImageUrl,
+            "unavailable",
+            reasons,
+            message);
+
+        return new RecommendationDetailDto(
+            station,
+            Array.Empty<RecommendationTrackDto>(),
+            DateTimeOffset.UtcNow,
+            "unavailable",
+            reasons,
+            message);
+    }
+
+    private static string BuildRecommendationUnavailableMessage(IReadOnlyList<string> reasonCodes)
+    {
+        if (reasonCodes.Contains("no_deezer_source_ids", StringComparer.Ordinal)
+            || reasonCodes.Contains("no_library_tracks", StringComparer.Ordinal))
+        {
+            return "No library tracks are available to seed recommendations.";
+        }
+
+        if (reasonCodes.Contains("all_candidates_rejected_or_ignored", StringComparer.Ordinal))
+        {
+            return "No recommendation tracks are available after user rejections and ignores.";
+        }
+
+        return "No recommendations are available for this station today.";
+    }
+
+    public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellationToken = default)
     {
         if (!_repository.IsConfigured)
         {
@@ -655,10 +734,10 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
                 await RefreshShazamScopeAsync(scope, cancellationToken);
 
                 var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
-                if (dailyPool is not null)
+                if (dailyPool.Detail is not null)
                 {
-                    await PersistDailyPoolAsync(scope, dayLocal, dailyPool, cancellationToken);
-                    _dailyPoolCache[cacheKey] = dailyPool;
+                    await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken);
+                    _dailyPoolCache[cacheKey] = dailyPool.Detail;
                 }
             }
             catch (OperationCanceledException)
@@ -796,12 +875,100 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
             _backgroundScans.ContainsKey(scope.ScopeKey));
     }
 
-    private async Task<RecommendationDetailDto?> BuildDailyPoolAsync(
+    public async Task<RecommendationDetailDto?> RebuildRecommendationsAsync(
+        long libraryId,
+        string? stationId = null,
+        long? folderId = null,
+        int limit = MaxDailyRecommendations,
+        CancellationToken cancellationToken = default)
+    {
+        if (libraryId <= 0 || !_repository.IsConfigured)
+        {
+            return null;
+        }
+
+        var allRecommendationFolders = await GetRecommendationEligibleFoldersAsync(cancellationToken);
+        var folders = FilterScopedFolders(allRecommendationFolders, libraryId, folderId);
+        var scope = ResolveScope(libraryId, folders, stationId, folderId);
+        if (scope is null)
+        {
+            return null;
+        }
+
+        var nowLocal = DateTimeOffset.Now;
+        var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
+        var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
+        var watchlistMap = await GetRecommendationWatchlistMapAsync(cancellationToken);
+        watchlistMap.TryGetValue(scope.StationId, out var watchlistEntry);
+        var stationImageUrl = !string.IsNullOrWhiteSpace(watchlistEntry?.ImageUrl)
+            ? watchlistEntry.ImageUrl
+            : ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
+
+        await RefreshShazamScopeAsync(scope, cancellationToken);
+        var buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+        var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
+        if (buildResult.Detail is null)
+        {
+            _dailyPoolCache.TryRemove(cacheKey, out _);
+            await _repository.DeletePlaylistTrackCandidateCacheAsync(
+                DailyPoolCacheSource,
+                scope.ScopeKey,
+                cancellationToken);
+            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, buildResult.ReasonCodes);
+        }
+
+        await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, cancellationToken);
+        _dailyPoolCache[cacheKey] = buildResult.Detail;
+        return await GetRecommendationsAsync(libraryId, scope.StationId, scope.FolderId, limit, cancellationToken);
+    }
+
+    public async Task<RecommendationDetailDto?> RejectRecommendationTrackAsync(
+        RecommendationRejectionUpsertInput input,
+        int limit = MaxDailyRecommendations,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTrackSourceId = NormalizeId(input.TrackSourceId);
+        if (input.LibraryId <= 0
+            || string.IsNullOrWhiteSpace(input.StationId)
+            || string.IsNullOrWhiteSpace(normalizedTrackSourceId)
+            || !TryParseStationId(input.StationId, out _, out _))
+        {
+            return null;
+        }
+
+        var allRecommendationFolders = await GetRecommendationEligibleFoldersAsync(cancellationToken);
+        var folders = FilterScopedFolders(allRecommendationFolders, input.LibraryId, input.FolderId);
+        var scope = ResolveScope(input.LibraryId, folders, input.StationId, input.FolderId);
+        if (scope is null)
+        {
+            return null;
+        }
+
+        await _repository.AddRecommendationRejectionAsync(
+            new RecommendationRejectionUpsertInput(
+                scope.LibraryId,
+                scope.FolderId,
+                scope.StationId,
+                normalizedTrackSourceId,
+                input.Isrc,
+                input.Title,
+                input.Artist),
+            cancellationToken);
+        return await GetRecommendationsAsync(
+            scope.LibraryId,
+            scope.StationId,
+            scope.FolderId,
+            Math.Clamp(limit, 1, MaxDailyRecommendations),
+            cancellationToken);
+    }
+
+    private async Task<RecommendationBuildResult> BuildDailyPoolAsync(
         RecommendationScope scope,
         DateOnly dayUtc,
         string? stationImageUrl,
         CancellationToken cancellationToken)
     {
+        var reasonCodes = new List<string>();
         var libraryDeezerIds = await _repository.GetLibraryDeezerTrackSourceIdsAsync(
             scope.LibraryId,
             scope.FolderId,
@@ -811,6 +978,16 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
                 .Select(NormalizeId)
                 .Where(id => !string.IsNullOrWhiteSpace(id)),
             StringComparer.Ordinal);
+        if (libraryIdSet.Count == 0)
+        {
+            reasonCodes.Add("no_deezer_source_ids");
+        }
+
+        var rejectedTrackIds = await _repository.GetRecommendationRejectedTrackIdsAsync(
+            scope.LibraryId,
+            scope.FolderId,
+            scope.StationId,
+            cancellationToken);
 
         var deezerTracks = new List<RecommendationTrackDto>();
         if (libraryIdSet.Count > 0)
@@ -826,10 +1003,16 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
                     .Where(track => !libraryIdSet.Contains(NormalizeId(track.Id)))
                     .Select(track => NormalizeRecommendationTrack(track))
                     .Where(track => !string.IsNullOrWhiteSpace(track.Id))
+                    .Where(track => !rejectedTrackIds.Contains(track.Id))
                     .ToList();
+                if (deezerTracks.Count == 0)
+                {
+                    reasonCodes.Add("deezer_empty");
+                }
             }
             catch (Exception ex)
             {
+                reasonCodes.Add("deezer_failed");
                 _logger.LogWarning(
                     ex,
                     "Failed to load Deezer recommendations for library {LibraryId}, folder {FolderId}.",
@@ -846,9 +1029,17 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
                 dayUtc,
                 libraryIdSet,
                 cancellationToken);
+            shazamTracks = shazamTracks
+                .Where(track => !rejectedTrackIds.Contains(NormalizeId(track.Id)))
+                .ToList();
+            if (shazamTracks.Count == 0)
+            {
+                reasonCodes.Add(IsShazamRecommendationAvailable() ? "shazam_empty" : "shazam_unavailable");
+            }
         }
         catch (Exception ex)
         {
+            reasonCodes.Add("shazam_failed");
             _logger.LogWarning(
                 ex,
                 "Failed to build Shazam recommendations for library {LibraryId}, folder {FolderId}.",
@@ -862,6 +1053,12 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
             OrderDeterministically(shazamTracks, dayUtc, "shazam"),
             RecommendationPoolLimit,
             dayUtc);
+        if (merged.Count == 0)
+        {
+            reasonCodes.Add("empty_pool");
+            return new RecommendationBuildResult(null, reasonCodes.Distinct(StringComparer.Ordinal).ToList());
+        }
+
         var station = new RecommendationStationDto(
             scope.StationId,
             $"Recommendations - {scope.FolderName}",
@@ -871,10 +1068,12 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
             Math.Min(MaxDailyRecommendations, merged.Count),
             stationImageUrl);
 
-        return new RecommendationDetailDto(
-            station,
-            merged,
-            DateTimeOffset.UtcNow);
+        return new RecommendationBuildResult(
+            new RecommendationDetailDto(
+                station,
+                merged,
+                DateTimeOffset.UtcNow),
+            reasonCodes.Distinct(StringComparer.Ordinal).ToList());
     }
 
     private async Task<RecommendationDetailDto?> TryLoadPersistedDailyPoolAsync(
@@ -914,6 +1113,10 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
                 .Where(track => !string.IsNullOrWhiteSpace(track.Id))
                 .Select((track, index) => track with { TrackPosition = index + 1 })
                 .ToList();
+            if (normalizedTracks.Count == 0)
+            {
+                return null;
+            }
 
             var station = new RecommendationStationDto(
                 scope.StationId,
@@ -964,6 +1167,11 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
         RecommendationDetailDto detail,
         CancellationToken cancellationToken)
     {
+        if (detail.Tracks.Count == 0)
+        {
+            return;
+        }
+
         try
         {
             var payload = new PersistedDailyPoolDto(
@@ -2642,24 +2850,29 @@ public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellatio
 
     private static List<RecommendationTrackDto> BuildVisibleDailySelection(
         IReadOnlyList<RecommendationTrackDto> tracks,
-        HashSet<string> ignoredTrackIds,
+        HashSet<string> excludedTrackIds,
         int limit,
         DateOnly dayUtc)
     {
-        var dailySelection = BuildDiversifiedTrackSelection(tracks, limit, dayUtc);
-        if (ignoredTrackIds.Count == 0)
-        {
-            return TopUpRecommendationSelection(
-                dailySelection,
-                Array.Empty<RecommendationTrackDto>(),
-                limit,
-                dayUtc);
-        }
+        var eligibleTracks = excludedTrackIds.Count == 0
+            ? tracks
+            : tracks
+                .Where(track => !excludedTrackIds.Contains(NormalizeId(track.Id)))
+                .ToList();
+        var dailySelection = BuildDiversifiedTrackSelection(eligibleTracks, limit, dayUtc);
+        return TopUpRecommendationSelection(
+            dailySelection,
+            eligibleTracks,
+            limit,
+            dayUtc);
+    }
 
-        return dailySelection
-            .Where(track => !ignoredTrackIds.Contains(track.Id))
-            .Select((track, index) => track with { TrackPosition = index + 1 })
-            .ToList();
+    private static HashSet<string> BuildNormalizedRecommendationIdSet(IEnumerable<string> ids)
+    {
+        return ids
+            .Select(NormalizeId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private static string BuildRecommendationLaneKey(RecommendationTrackDto track)

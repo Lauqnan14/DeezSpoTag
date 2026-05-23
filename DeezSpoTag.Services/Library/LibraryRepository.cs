@@ -5998,6 +5998,129 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<bool> DeletePlaylistTrackCandidateCacheAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+DELETE FROM playlist_track_candidate_cache
+WHERE source = @source AND source_id = @sourceId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task AddRecommendationRejectionAsync(
+        RecommendationRejectionUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTrackSourceId = NormalizeRecommendationTrackSourceId(input.TrackSourceId);
+        if (input.LibraryId <= 0
+            || string.IsNullOrWhiteSpace(input.StationId)
+            || string.IsNullOrWhiteSpace(normalizedTrackSourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO recommendation_rejection (
+    library_id,
+    folder_id,
+    station_id,
+    track_source_id,
+    isrc,
+    title,
+    artist,
+    rejected_at_utc)
+VALUES (
+    @libraryId,
+    @folderId,
+    @stationId,
+    @trackSourceId,
+    @isrc,
+    @title,
+    @artist,
+    @rejectedAtUtc)
+ON CONFLICT(station_id, track_source_id) DO UPDATE SET
+    library_id = excluded.library_id,
+    folder_id = excluded.folder_id,
+    isrc = COALESCE(excluded.isrc, recommendation_rejection.isrc),
+    title = COALESCE(excluded.title, recommendation_rejection.title),
+    artist = COALESCE(excluded.artist, recommendation_rejection.artist),
+    rejected_at_utc = excluded.rejected_at_utc;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(LibraryIdField, input.LibraryId);
+        command.Parameters.AddWithValue("folderId", (object?)input.FolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("stationId", input.StationId.Trim());
+        command.Parameters.AddWithValue("trackSourceId", normalizedTrackSourceId);
+        command.Parameters.AddWithValue("isrc", string.IsNullOrWhiteSpace(input.Isrc) ? DBNull.Value : input.Isrc.Trim());
+        command.Parameters.AddWithValue("title", string.IsNullOrWhiteSpace(input.Title) ? DBNull.Value : input.Title.Trim());
+        command.Parameters.AddWithValue("artist", string.IsNullOrWhiteSpace(input.Artist) ? DBNull.Value : input.Artist.Trim());
+        command.Parameters.AddWithValue("rejectedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<HashSet<string>> GetRecommendationRejectedTrackIdsAsync(
+        long libraryId,
+        long? folderId,
+        string stationId,
+        CancellationToken cancellationToken = default)
+    {
+        if (libraryId <= 0 || string.IsNullOrWhiteSpace(stationId))
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT track_source_id
+FROM recommendation_rejection
+WHERE library_id = @libraryId
+  AND station_id = @stationId
+  AND (@folderId IS NULL OR folder_id = @folderId OR folder_id IS NULL);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue("stationId", stationId.Trim());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (await reader.IsDBNullAsync(0, cancellationToken))
+            {
+                continue;
+            }
+
+            var value = NormalizeRecommendationTrackSourceId(reader.GetString(0));
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                ids.Add(value);
+            }
+        }
+
+        return ids;
+    }
+
+    private static string NormalizeRecommendationTrackSourceId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = value.Trim();
+        return long.TryParse(trimmed, out _) ? trimmed : string.Empty;
+    }
+
     public async Task<HashSet<string>> GetPlaylistWatchTrackIdsAsync(
         string source,
         string sourceId,

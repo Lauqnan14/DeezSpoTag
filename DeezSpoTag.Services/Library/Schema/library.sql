@@ -407,6 +407,24 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     PRIMARY KEY (source, source_id)
 );
 
+CREATE TABLE IF NOT EXISTS recommendation_rejection (
+    library_id BIGINT NOT NULL,
+    folder_id BIGINT,
+    station_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    isrc TEXT,
+    title TEXT,
+    artist TEXT,
+    rejected_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (station_id, track_source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_rejection_library
+    ON recommendation_rejection (library_id, folder_id, station_id);
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_rejection_rejected
+    ON recommendation_rejection (rejected_at_utc);
+
 CREATE TABLE IF NOT EXISTS playlist_watch_track (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,

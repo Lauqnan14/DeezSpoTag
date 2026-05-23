@@ -61,7 +61,10 @@ public sealed record RecommendationStationDto(
     string Type,
     string? Value,
     int TrackCount,
-    string? ImageUrl = null);
+    string? ImageUrl = null,
+    string Status = "ready",
+    IReadOnlyList<string>? ReasonCodes = null,
+    string? Message = null);
 
 public sealed record RecommendationArtistDto(
     string Id,
@@ -84,7 +87,19 @@ public sealed record RecommendationTrackDto(
 public sealed record RecommendationDetailDto(
     RecommendationStationDto Station,
     IReadOnlyList<RecommendationTrackDto> Tracks,
-    DateTimeOffset GeneratedAtUtc);
+    DateTimeOffset GeneratedAtUtc,
+    string Status = "ready",
+    IReadOnlyList<string>? ReasonCodes = null,
+    string? Message = null);
+
+public sealed record RecommendationRejectionUpsertInput(
+    long LibraryId,
+    long? FolderId,
+    string StationId,
+    string TrackSourceId,
+    string? Isrc,
+    string? Title,
+    string? Artist);
 
 public sealed record ShazamTrackCacheDto(
     long TrackId,

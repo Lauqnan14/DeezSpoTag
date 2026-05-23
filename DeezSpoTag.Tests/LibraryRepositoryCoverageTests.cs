@@ -397,6 +397,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var cache = await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "pl-123");
         Assert.NotNull(cache);
         Assert.Equal("snap-1", cache!.SnapshotId);
+        Assert.True(await _repository.DeletePlaylistTrackCandidateCacheAsync(" spotify ", " pl-123 "));
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "pl-123"));
 
         await _repository.AddPlaylistWatchTracksAsync(
             " spotify ",
@@ -898,6 +900,31 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
 
         var trackIdsByRatingKey = await _repository.GetTrackIdsByPlexRatingKeysAsync(PlexRatingKeys);
         Assert.Equal(trackId, trackIdsByRatingKey["rk-1"]);
+    }
+
+    [Fact]
+    public async Task RecommendationRejection_RoundTrip_Works()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
+        var stationId = $"library:{seeded.LibraryId}:folder:{seeded.Folder.Id}";
+
+        await _repository.AddRecommendationRejectionAsync(
+            new RecommendationRejectionUpsertInput(
+                seeded.LibraryId,
+                null,
+                stationId,
+                " 12345 ",
+                "ISRC00000001",
+                "Recommended Song",
+                "Recommended Artist"));
+
+        var rejectedIds = await _repository.GetRecommendationRejectedTrackIdsAsync(
+            seeded.LibraryId,
+            seeded.Folder.Id,
+            stationId);
+
+        Assert.Contains("12345", rejectedIds);
     }
 
     [Fact]

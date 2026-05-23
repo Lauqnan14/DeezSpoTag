@@ -103,24 +103,24 @@ public sealed class LibraryRecommendationServiceTests
     }
 
     [Fact]
-    public void BuildVisibleDailySelection_DoesNotTopUpIgnoredTracks()
+    public void BuildVisibleDailySelection_BackfillsIgnoredTracks()
     {
         var day = new DateOnly(2026, 4, 12);
-        var tracks = CreateTracks("daily", 80, 1);
+        var tracks = CreateTracks("daily", 120, 1);
         var baseline = (List<RecommendationTrackDto>)BuildVisibleDailySelectionMethod.Invoke(
             null,
             [tracks, new HashSet<string>(StringComparer.Ordinal), 50, day])!;
-        var ignored = new HashSet<string>(StringComparer.Ordinal) { baseline[0].Id };
+        var ignored = new HashSet<string>(
+            baseline.Take(10).Select(track => track.Id),
+            StringComparer.Ordinal);
 
         var result = (List<RecommendationTrackDto>)BuildVisibleDailySelectionMethod.Invoke(
             null,
             [tracks, ignored, 50, day])!;
 
-        Assert.Equal(49, result.Count);
-        Assert.DoesNotContain(result, track => track.Id == baseline[0].Id);
-        Assert.Subset(
-            new HashSet<string>(baseline.Select(track => track.Id), StringComparer.Ordinal),
-            new HashSet<string>(result.Select(track => track.Id), StringComparer.Ordinal));
+        Assert.Equal(50, result.Count);
+        Assert.DoesNotContain(result, track => ignored.Contains(track.Id));
+        Assert.Equal(Enumerable.Range(1, 50), result.Select(track => track.TrackPosition));
     }
 
     [Fact]

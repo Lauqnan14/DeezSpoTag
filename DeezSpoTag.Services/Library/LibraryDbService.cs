@@ -23,6 +23,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
+    private const string RecommendationRejectionTable = "recommendation_rejection";
     private const string WatchlistHistoryTable = "watchlist_history";
     private const string ArtistWatchlistTable = "artist_watchlist";
     private const string TrackAnalysisTable = "track_analysis";
@@ -85,6 +86,10 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
             ,
             ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
+            ,
+            ["idx_recommendation_rejection_library"] = (RecommendationRejectionTable, "library_id, folder_id, station_id", false)
+            ,
+            ["idx_recommendation_rejection_rejected"] = (RecommendationRejectionTable, "rejected_at_utc", false)
             ,
             ["idx_watchlist_history_source_created"] = (WatchlistHistoryTable, "source, created_at", false)
         };
@@ -273,6 +278,20 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS recommendation_rejection (
+    library_id BIGINT NOT NULL,
+    folder_id BIGINT,
+    station_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    isrc TEXT,
+    title TEXT,
+    artist TEXT,
+    rejected_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (station_id, track_source_id)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_recommendation_rejection_library", RecommendationRejectionTable, "library_id, folder_id, station_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_recommendation_rejection_rejected", RecommendationRejectionTable, "rejected_at_utc", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS song_link_cache (
     cache_key TEXT NOT NULL PRIMARY KEY,
