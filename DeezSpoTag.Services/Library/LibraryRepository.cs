@@ -151,6 +151,7 @@ public sealed class LibraryRepository
     private const string SourceIdField = "sourceId";
     private const string LibraryIdField = "libraryId";
     private const string DurationMsField = "durationMs";
+    private const string TrackCountField = "trackCount";
     private const string ArtistSearchParameter = "artistSearch";
     private const string TrackIdsJsonParameter = "trackIdsJson";
     private const string EntityIdParameter = "entityId";
@@ -4439,7 +4440,7 @@ RETURNING id;";
         command.Parameters.AddWithValue(LibraryIdField, input.LibraryId);
         command.Parameters.AddWithValue("name", input.Name);
         command.Parameters.AddWithValue("description", input.Description);
-        command.Parameters.AddWithValue("trackCount", input.TrackCount);
+        command.Parameters.AddWithValue(TrackCountField, input.TrackCount);
         command.Parameters.AddWithValue("coverUrls", System.Text.Json.JsonSerializer.Serialize(input.CoverUrls));
         command.Parameters.AddWithValue("generatedAt", input.GeneratedAtUtc.ToString("O"));
         command.Parameters.AddWithValue("expiresAt", input.ExpiresAtUtc.ToString("O"));
@@ -5608,12 +5609,8 @@ ORDER BY created_at DESC;";
     public async Task<PlaylistWatchlistDto?> AddPlaylistWatchlistAsync(
         string source,
         string sourceId,
-        string name,
-        string? imageUrl,
-        string? description,
-        int? trackCount,
-        CancellationToken cancellationToken = default,
-        bool clearImageUrl = false)
+        PlaylistWatchlistMetadataInput metadata,
+        CancellationToken cancellationToken = default)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
@@ -5627,10 +5624,10 @@ VALUES (@source, @sourceId, @name, @imageUrl, @description, @trackCount);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        command.Parameters.AddWithValue("name", name);
-        command.Parameters.AddWithValue("imageUrl", (object?)imageUrl ?? DBNull.Value);
-        command.Parameters.AddWithValue("description", (object?)description ?? DBNull.Value);
-        command.Parameters.AddWithValue("trackCount", (object?)trackCount ?? DBNull.Value);
+        command.Parameters.AddWithValue("name", metadata.Name ?? string.Empty);
+        command.Parameters.AddWithValue("imageUrl", (object?)metadata.ImageUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue("description", (object?)metadata.Description ?? DBNull.Value);
+        command.Parameters.AddWithValue(TrackCountField, (object?)metadata.TrackCount ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         const string selectSql = @"
@@ -5669,12 +5666,8 @@ LIMIT 1;";
     public async Task UpdatePlaylistWatchlistMetadataAsync(
         string source,
         string sourceId,
-        string? name,
-        string? imageUrl,
-        string? description,
-        int? trackCount,
-        CancellationToken cancellationToken = default,
-        bool clearImageUrl = false)
+        PlaylistWatchlistMetadataInput metadata,
+        CancellationToken cancellationToken = default)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
@@ -5692,11 +5685,11 @@ WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        command.Parameters.AddWithValue("name", (object?)name ?? DBNull.Value);
-        command.Parameters.AddWithValue("imageUrl", (object?)imageUrl ?? DBNull.Value);
-        command.Parameters.AddWithValue("description", (object?)description ?? DBNull.Value);
-        command.Parameters.AddWithValue("trackCount", (object?)trackCount ?? DBNull.Value);
-        command.Parameters.AddWithValue("clearImageUrl", clearImageUrl ? 1 : 0);
+        command.Parameters.AddWithValue("name", (object?)metadata.Name ?? DBNull.Value);
+        command.Parameters.AddWithValue("imageUrl", (object?)metadata.ImageUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue("description", (object?)metadata.Description ?? DBNull.Value);
+        command.Parameters.AddWithValue(TrackCountField, (object?)metadata.TrackCount ?? DBNull.Value);
+        command.Parameters.AddWithValue("clearImageUrl", metadata.ClearImageUrl ? 1 : 0);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -5890,7 +5883,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("snapshotId", (object?)input.SnapshotId ?? DBNull.Value);
-        command.Parameters.AddWithValue("trackCount", (object?)input.TrackCount ?? DBNull.Value);
+        command.Parameters.AddWithValue(TrackCountField, (object?)input.TrackCount ?? DBNull.Value);
         command.Parameters.AddWithValue("batchNextOffset", (object?)input.BatchNextOffset ?? DBNull.Value);
         command.Parameters.AddWithValue("batchProcessingSnapshotId", (object?)input.BatchProcessingSnapshotId ?? DBNull.Value);
         command.Parameters.AddWithValue("lastCheckedUtc", input.LastCheckedUtc?.ToString("O") ?? (object)DBNull.Value);
@@ -6420,8 +6413,8 @@ ON CONFLICT(source, source_id, track_source_id, queue_uuid) DO UPDATE SET
 
     public async Task<IReadOnlyList<PlaylistWatchDownloadClaimDto>> GetPlaylistWatchDownloadClaimsAsync(
         string queueUuid,
-        CancellationToken cancellationToken = default,
-        string? status = null)
+        string? status = null,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(queueUuid))
         {
@@ -6498,7 +6491,7 @@ RETURNING id, created_at;";
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("name", entry.Name);
         command.Parameters.AddWithValue("collectionType", entry.CollectionType);
-        command.Parameters.AddWithValue("trackCount", entry.TrackCount);
+        command.Parameters.AddWithValue(TrackCountField, entry.TrackCount);
         command.Parameters.AddWithValue("status", entry.Status);
         command.Parameters.AddWithValue("artistName", (object?)entry.ArtistName ?? DBNull.Value);
         command.Parameters.AddWithValue("createdAt", createdAt.ToString("O", CultureInfo.InvariantCulture));

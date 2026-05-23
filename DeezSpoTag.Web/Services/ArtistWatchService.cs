@@ -121,7 +121,7 @@ public sealed class ArtistWatchService
         }
 
         var state = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
-        var watchState = ResolveSpotifyWatchState(artist, settings, state?.BatchNextOffset);
+        var watchState = ResolveSpotifyWatchState(artist, state?.BatchNextOffset);
         var existing = await _libraryRepository.GetArtistWatchAlbumIdsAsync(artist.ArtistId, SpotifySource, cancellationToken);
         var topTrackInserts = watchState.TopSongsEnabled
             ? await QueueSpotifyArtistTopSongsAsync(artist, spotifyId, existing, cancellationToken)
@@ -170,7 +170,6 @@ public sealed class ArtistWatchService
 
     private static SpotifyWatchState ResolveSpotifyWatchState(
         WatchlistArtistDto artist,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         int? batchNextOffset)
     {
         var latestReleasesOnly = artist.LatestReleasesOnly ?? false;

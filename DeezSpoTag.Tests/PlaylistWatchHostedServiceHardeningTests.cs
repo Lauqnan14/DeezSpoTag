@@ -134,9 +134,9 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     public async Task RunOnce_UsesBackoff_ToAvoidImmediateFailureThrash()
     {
         // Failing source path: spotify (service dependencies intentionally null).
-        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-fail", "Failing", null, null, null);
+        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-fail", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
         // Successful/no-op source path: unsupported source branch.
-        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-ok", "Noop", null, null, null);
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-ok", new PlaylistWatchlistMetadataInput("Noop", null, null, null));
 
         var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
         var failKey = "playlist:spotify:pl-fail";
@@ -164,7 +164,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     [Fact]
     public async Task RunOnce_CleansStaleFailureState_WhenWatchItemIsRemoved()
     {
-        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-stale", "StaleFailing", null, null, null);
+        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-stale", new PlaylistWatchlistMetadataInput("StaleFailing", null, null, null));
 
         var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
         var staleKey = "playlist:spotify:pl-stale";
@@ -229,7 +229,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         settings.WatchDelayBetweenPlaylistsSeconds = 3600;
         _settingsService.SaveSettings(settings);
 
-        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-persisted-delay", "Persisted Delay", null, null, null);
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-persisted-delay", new PlaylistWatchlistMetadataInput("Persisted Delay", null, null, null));
 
         var firstHosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
         await InvokeRunOnceAsync(firstHosted);
@@ -252,7 +252,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     [Fact]
     public async Task RunOnce_BackoffWarnings_OnlyLogAtThresholdMilestones()
     {
-        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-log-threshold", "Failing", null, null, null);
+        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-log-threshold", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
 
         var logger = new ListLogger<PlaylistWatchHostedService>();
         var hosted = new PlaylistWatchHostedService(_provider, logger);

@@ -5974,7 +5974,10 @@ public partial class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to delete expired AutoTag history directory {Path}.", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to delete expired AutoTag history directory {Path}.", path);
+            }
         }
     }
 
@@ -5989,7 +5992,10 @@ public partial class AutoTagService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to delete expired AutoTag history file {Path}.", path);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to delete expired AutoTag history file {Path}.", path);
+            }
         }
     }
 

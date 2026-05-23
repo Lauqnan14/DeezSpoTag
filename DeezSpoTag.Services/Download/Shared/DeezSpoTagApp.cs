@@ -21,6 +21,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private const string FailedStatus = "failed";
     private const string CanceledStatus = "canceled";
     private const string PausedStatus = "paused";
+    private const string PendingStatus = "pending";
+    private const string CompletedStatus = "completed";
     private readonly ILogger<DeezSpoTagApp> _logger;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
@@ -578,12 +580,21 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             cancellationToken);
 
         var queueUuid = ResolveQueueUuid(payloadJson);
-        if (string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
         {
             var changedFilePaths = ResolveChangedFilePaths(documentPayload: payloadJson);
             var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
             if (notifier != null)
             {
+                var notification = new SharedWatchDownloadNotification(
+                    libraryRepository,
+                    notifier,
+                    queueUuid,
+                    source,
+                    playlistId,
+                    trackId,
+                    destinationFolderId,
+                    changedFilePaths);
                 await notifier.NotifyCompletedAsync(
                     source,
                     playlistId,
@@ -592,20 +603,13 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                     changedFilePaths,
                     cancellationToken);
                 await NotifySharedWatchDownloadClaimsAsync(
-                    libraryRepository,
-                    notifier,
-                    queueUuid,
-                    source,
-                    playlistId,
-                    trackId,
-                    destinationFolderId,
-                    changedFilePaths,
+                    notification,
                     cancellationToken);
             }
 
             await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 queueUuid,
-                "completed",
+                CompletedStatus,
                 cancellationToken);
         }
         else if (IsFailedOrCanceledWatchStatus(status))
@@ -626,43 +630,39 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     }
 
     private static async Task NotifySharedWatchDownloadClaimsAsync(
-        LibraryRepository libraryRepository,
-        IWatchlistPostDownloadSyncNotifier notifier,
-        string queueUuid,
-        string source,
-        string playlistId,
-        string trackId,
-        long? destinationFolderId,
-        IReadOnlyList<string> changedFilePaths,
+        SharedWatchDownloadNotification notification,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(queueUuid))
+        if (string.IsNullOrWhiteSpace(notification.QueueUuid))
         {
             return;
         }
 
-        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        var claims = await notification.LibraryRepository.GetPlaylistWatchDownloadClaimsAsync(
+            notification.QueueUuid,
+            status: PendingStatus,
+            cancellationToken);
         foreach (var claim in claims)
         {
-            if (string.Equals(source, claim.Source, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(playlistId, claim.SourceId, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(trackId, claim.TrackSourceId, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(notification.Source, claim.Source, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(notification.PlaylistId, claim.SourceId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(notification.TrackId, claim.TrackSourceId, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+            await notification.LibraryRepository.UpdatePlaylistWatchTrackStatusAsync(
                 claim.Source,
                 claim.SourceId,
                 claim.TrackSourceId,
-                "completed",
+                CompletedStatus,
                 cancellationToken);
-            await notifier.NotifyCompletedAsync(
+            await notification.Notifier.NotifyCompletedAsync(
                 claim.Source,
                 claim.SourceId,
                 claim.TrackSourceId,
-                claim.DestinationFolderId ?? destinationFolderId,
-                changedFilePaths,
+                claim.DestinationFolderId ?? notification.DestinationFolderId,
+                notification.ChangedFilePaths,
                 cancellationToken);
         }
     }
@@ -681,7 +681,10 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return;
         }
 
-        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(
+            queueUuid,
+            status: PendingStatus,
+            cancellationToken);
         foreach (var claim in claims)
         {
             if (string.Equals(source, claim.Source, StringComparison.OrdinalIgnoreCase)
@@ -721,10 +724,21 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
         catch (JsonException)
         {
+            return string.Empty;
         }
 
         return string.Empty;
     }
+
+    private sealed record SharedWatchDownloadNotification(
+        LibraryRepository LibraryRepository,
+        IWatchlistPostDownloadSyncNotifier Notifier,
+        string QueueUuid,
+        string Source,
+        string PlaylistId,
+        string TrackId,
+        long? DestinationFolderId,
+        IReadOnlyList<string> ChangedFilePaths);
 
     private static IReadOnlyList<string> ResolveChangedFilePaths(string documentPayload)
     {

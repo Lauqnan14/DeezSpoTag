@@ -141,21 +141,21 @@ public sealed class QobuzApiClient : IQobuzApiClient
     private static List<QobuzTrack> ParseAlbumPageTracks(string html)
     {
         var tracks = new List<QobuzTrack>();
-        foreach (Match match in AlbumTrackBlockRegex.Matches(html))
+        foreach (var groups in AlbumTrackBlockRegex.Matches(html).Select(static match => match.Groups))
         {
-            if (!int.TryParse(match.Groups["id"].Value, out var trackId))
+            if (!int.TryParse(groups["id"].Value, out var trackId))
             {
                 continue;
             }
 
-            var track = ParseAlbumTrackMetadata(match.Groups["metadata"].Value);
+            var track = ParseAlbumTrackMetadata(groups["metadata"].Value);
             if (track == null)
             {
                 continue;
             }
 
             track.Id = track.Id > 0 ? track.Id : trackId;
-            track.Duration = ParseDurationSeconds(match.Groups["duration"].Value);
+            track.Duration = ParseDurationSeconds(groups["duration"].Value);
             tracks.Add(track);
         }
 
@@ -185,6 +185,9 @@ public sealed class QobuzApiClient : IQobuzApiClient
 
         var artistName = ReadString(root, "item_brand");
         var albumTitle = ReadString(root, "item_category");
+        var albumArtists = string.IsNullOrWhiteSpace(artistName)
+            ? new List<QobuzArtist>()
+            : [new QobuzArtist { Name = artistName }];
         var track = new QobuzTrack
         {
             Id = trackId,
@@ -195,7 +198,7 @@ public sealed class QobuzApiClient : IQobuzApiClient
                 : new QobuzAlbum
                 {
                     Title = albumTitle,
-                    Artists = string.IsNullOrWhiteSpace(artistName) ? new List<QobuzArtist>() : [new QobuzArtist { Name = artistName }]
+                    Artists = albumArtists
                 }
         };
 

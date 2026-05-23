@@ -45,7 +45,7 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var includeHiddenLibraries = _pinUnlockService.IsUnlocked(User);
-        if (!includeHiddenLibraries && _service.HasHiddenLibraryMutation(request))
+        if (!includeHiddenLibraries && MediaServerSoundtrackService.HasHiddenLibraryMutation(request))
         {
             return StatusCode(StatusCodes.Status403Forbidden, new { error = "Unlock hidden libraries before changing hidden library settings." });
         }

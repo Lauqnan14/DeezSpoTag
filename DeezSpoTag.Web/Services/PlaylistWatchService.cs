@@ -214,6 +214,15 @@ public sealed class PlaylistWatchService
         bool IsComplete,
         bool CanClearImageUrl);
 
+    private sealed record LivePlaylistSnapshotMetadata(
+        string? SnapshotId = null,
+        string? Name = null,
+        string? Description = null,
+        string? ImageUrl = null,
+        int? TrackCount = null,
+        bool IsComplete = true,
+        bool CanClearImageUrl = false);
+
     public sealed record PlaylistReconciliationResult(
         bool Success,
         string Message,
@@ -257,12 +266,13 @@ public sealed class PlaylistWatchService
         await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
             source,
             sourceId,
-            currentPlaylist.Name,
-            currentPlaylist.ImageUrl,
-            currentPlaylist.Description,
-            liveTrackCount,
-            cancellationToken,
-            clearImageUrl: liveSnapshot.CanClearImageUrl);
+            new PlaylistWatchlistMetadataInput(
+                currentPlaylist.Name,
+                currentPlaylist.ImageUrl,
+                currentPlaylist.Description,
+                liveTrackCount,
+                liveSnapshot.CanClearImageUrl),
+            cancellationToken);
         if (sourceChanged)
         {
             await AddPlaylistWatchHistoryStageAsync(
@@ -740,22 +750,19 @@ public sealed class PlaylistWatchService
 
     private static LivePlaylistSnapshot BuildLivePlaylistSnapshot(
         IReadOnlyList<PlaylistTrackCandidate> candidates,
-        string? snapshotId = null,
-        string? name = null,
-        string? description = null,
-        string? imageUrl = null,
-        int? trackCount = null,
-        bool isComplete = true,
-        bool canClearImageUrl = false)
-        => new(
+        LivePlaylistSnapshotMetadata? metadata = null)
+    {
+        metadata ??= new LivePlaylistSnapshotMetadata();
+        return new(
             candidates,
-            NormalizeSnapshotId(snapshotId),
-            EmptyToNull(name),
-            EmptyToNull(description),
-            EmptyToNull(imageUrl),
-            trackCount ?? candidates.Count,
-            isComplete,
-            canClearImageUrl);
+            NormalizeSnapshotId(metadata.SnapshotId),
+            EmptyToNull(metadata.Name),
+            EmptyToNull(metadata.Description),
+            EmptyToNull(metadata.ImageUrl),
+            metadata.TrackCount ?? candidates.Count,
+            metadata.IsComplete,
+            metadata.CanClearImageUrl);
+    }
 
     private static LivePlaylistSnapshot LimitLivePlaylistSnapshot(LivePlaylistSnapshot snapshot, int maxCandidates)
     {
@@ -862,7 +869,16 @@ public sealed class PlaylistWatchService
             isComplete = false;
         }
 
-        return BuildLivePlaylistSnapshot(candidates, snapshotId, name, description, imageUrl, totalTracks, isComplete, canClearImageUrl: true);
+        return BuildLivePlaylistSnapshot(
+            candidates,
+            new LivePlaylistSnapshotMetadata(
+                SnapshotId: snapshotId,
+                Name: name,
+                Description: description,
+                ImageUrl: imageUrl,
+                TrackCount: totalTracks,
+                IsComplete: isComplete,
+                CanClearImageUrl: true));
     }
 
     private async Task<LivePlaylistSnapshot?> TryGetSpotifyVirtualPlaylistSnapshotAsync(
@@ -1097,11 +1113,12 @@ public sealed class PlaylistWatchService
         var candidates = MapWatchIntentTrackCandidates(playlistData?.Tracks);
         return BuildLivePlaylistSnapshot(
             candidates,
-            name: playlistData?.Name,
-            description: playlistData?.Description,
-            imageUrl: playlistData?.ImageUrl,
-            trackCount: playlistData?.TrackCount,
-            canClearImageUrl: true);
+            new LivePlaylistSnapshotMetadata(
+                Name: playlistData?.Name,
+                Description: playlistData?.Description,
+                ImageUrl: playlistData?.ImageUrl,
+                TrackCount: playlistData?.TrackCount,
+                CanClearImageUrl: true));
     }
 
     private async Task<LivePlaylistSnapshot> GetAppleSnapshotAsync(
@@ -1112,11 +1129,12 @@ public sealed class PlaylistWatchService
         var candidates = MapWatchIntentTrackCandidates(playlistData?.Tracks);
         return BuildLivePlaylistSnapshot(
             candidates,
-            name: playlistData?.Name,
-            description: playlistData?.Description,
-            imageUrl: playlistData?.ImageUrl,
-            trackCount: playlistData?.TrackCount,
-            canClearImageUrl: true);
+            new LivePlaylistSnapshotMetadata(
+                Name: playlistData?.Name,
+                Description: playlistData?.Description,
+                ImageUrl: playlistData?.ImageUrl,
+                TrackCount: playlistData?.TrackCount,
+                CanClearImageUrl: true));
     }
 
     private async Task<LivePlaylistSnapshot> GetBoomplaySnapshotAsync(
@@ -1127,11 +1145,12 @@ public sealed class PlaylistWatchService
         var candidates = MapWatchIntentTrackCandidates(playlistData?.Tracks);
         return BuildLivePlaylistSnapshot(
             candidates,
-            name: playlistData?.Name,
-            description: playlistData?.Description,
-            imageUrl: playlistData?.ImageUrl,
-            trackCount: playlistData?.TrackCount,
-            canClearImageUrl: true);
+            new LivePlaylistSnapshotMetadata(
+                Name: playlistData?.Name,
+                Description: playlistData?.Description,
+                ImageUrl: playlistData?.ImageUrl,
+                TrackCount: playlistData?.TrackCount,
+                CanClearImageUrl: true));
     }
 
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetRecommendationTrackCandidatesAsync(
@@ -1218,7 +1237,9 @@ public sealed class PlaylistWatchService
             offset += page.Items.GetArrayLength();
         }
 
-        return BuildLivePlaylistSnapshot(candidates, trackCount: total == int.MaxValue ? candidates.Count : total);
+        return BuildLivePlaylistSnapshot(
+            candidates,
+            new LivePlaylistSnapshotMetadata(TrackCount: total == int.MaxValue ? candidates.Count : total));
     }
 
     private static async Task<TidalPlaylistItemsPage> FetchTidalPlaylistItemsPageAsync(

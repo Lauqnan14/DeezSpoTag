@@ -22,6 +22,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     private static readonly string[] MixCoverUrls = ["https://example.com/mix.jpg"];
     private static readonly string[] EssentiaGenreTags = ["soundtrack"];
     private static readonly string[] LastfmGenreTags = ["score"];
+    private static readonly string[] SharedQueueUuids = ["queue-shared-1"];
 
     private sealed record SeededLibrary(
         long LibraryId,
@@ -325,10 +326,11 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var added = await _repository.AddPlaylistWatchlistAsync(
             source: "  SpOtIfY  ",
             sourceId: "  pl-123  ",
-            name: "Road Mix",
-            imageUrl: "https://example.com/cover.jpg",
-            description: "Playlist description",
-            trackCount: 24);
+            metadata: new PlaylistWatchlistMetadataInput(
+                "Road Mix",
+                "https://example.com/cover.jpg",
+                "Playlist description",
+                24));
         Assert.NotNull(added);
         Assert.Equal("spotify", added!.Source);
         Assert.Equal("pl-123", added.SourceId);
@@ -340,10 +342,11 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         await _repository.UpdatePlaylistWatchlistMetadataAsync(
             source: " SPOTIFY ",
             sourceId: " pl-123 ",
-            name: "Road Mix Updated",
-            imageUrl: null,
-            description: "Updated description",
-            trackCount: 25);
+            metadata: new PlaylistWatchlistMetadataInput(
+                "Road Mix Updated",
+                null,
+                "Updated description",
+                25));
         var watchlist = await _repository.GetPlaylistWatchlistAsync();
         Assert.Contains(watchlist, item => item.Source == "spotify" && item.SourceId == "pl-123" && item.Name == "Road Mix Updated");
 
@@ -412,7 +415,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             " SPOTIFY ",
             " pl-123 ",
             "dz-song-2",
-            new[] { "queue-shared-1" },
+            SharedQueueUuids,
             seeded.Folder.Id);
         var claims = await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1");
         var claim = Assert.Single(claims);

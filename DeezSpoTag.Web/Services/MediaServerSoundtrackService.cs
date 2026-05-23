@@ -169,7 +169,7 @@ public sealed partial class MediaServerSoundtrackService
             cancellationToken);
     }
 
-    public bool HasHiddenLibraryMutation(MediaServerSoundtrackConfigurationUpdateRequest? request)
+    public static bool HasHiddenLibraryMutation(MediaServerSoundtrackConfigurationUpdateRequest? request)
     {
         return request?.Servers.Any(static server =>
             server?.Libraries.Any(static library => library?.Ignored.HasValue == true) == true) == true;

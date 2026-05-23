@@ -2085,7 +2085,10 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
-        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(
+            queueUuid,
+            status: "pending",
+            cancellationToken);
         foreach (var claim in claims)
         {
             if (IsOriginalWatchClaim(payload, claim))
@@ -2121,7 +2124,10 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
-        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(queueUuid, cancellationToken, status: "pending");
+        var claims = await libraryRepository.GetPlaylistWatchDownloadClaimsAsync(
+            queueUuid,
+            status: "pending",
+            cancellationToken);
         foreach (var claim in claims)
         {
             if (IsOriginalWatchClaim(payload, claim))

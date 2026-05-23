@@ -116,10 +116,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var added = await _repository.AddPlaylistWatchlistAsync(
             normalizedSource,
             request.SourceId,
-            request.Name,
-            request.ImageUrl,
-            request.Description,
-            request.TrackCount,
+            new PlaylistWatchlistMetadataInput(
+                request.Name,
+                request.ImageUrl,
+                request.Description,
+                request.TrackCount),
             cancellationToken);
 
         if (added is null)
@@ -535,10 +536,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             await _repository.UpdatePlaylistWatchlistMetadataAsync(
                 normalizedSource,
                 sourceId,
-                null,
-                activeVisual.Url,
-                null,
-                null,
+                new PlaylistWatchlistMetadataInput(
+                    null,
+                    activeVisual.Url,
+                    null,
+                    null),
                 cancellationToken);
         }
 

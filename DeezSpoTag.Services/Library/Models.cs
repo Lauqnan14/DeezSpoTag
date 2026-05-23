@@ -485,6 +485,13 @@ public sealed record PlaylistWatchlistDto(
     int? TrackCount,
     DateTimeOffset CreatedAt);
 
+public sealed record PlaylistWatchlistMetadataInput(
+    string? Name,
+    string? ImageUrl,
+    string? Description,
+    int? TrackCount,
+    bool ClearImageUrl = false);
+
 public sealed record PlaylistTrackRoutingRule(
     string ConditionField,
     string ConditionOperator,

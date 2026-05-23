@@ -123,7 +123,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("status: \"pending\"", helperSource, StringComparison.Ordinal);
         Assert.Contains("UpdateSharedWatchDownloadClaimsStatusAsync", helperSource, StringComparison.Ordinal);
         Assert.Contains("GetPlaylistWatchDownloadClaimsAsync", appSource, StringComparison.Ordinal);
-        Assert.Contains("status: \"pending\"", appSource, StringComparison.Ordinal);
+        Assert.Contains("private const string PendingStatus = \"pending\";", appSource, StringComparison.Ordinal);
+        Assert.Contains("status: PendingStatus", appSource, StringComparison.Ordinal);
         Assert.Contains("UpdateSharedWatchDownloadClaimsStatusAsync", appSource, StringComparison.Ordinal);
         Assert.Contains("RelatedQueueUuids", intentSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueItemDecision.Fail(\"queue_duplicate\"", intentSource, StringComparison.Ordinal);

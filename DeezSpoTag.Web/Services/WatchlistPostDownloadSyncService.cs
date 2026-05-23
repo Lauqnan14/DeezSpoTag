@@ -168,10 +168,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             await Task.Delay(FollowUpDelay, cancellationToken);
             await _queue.Writer.WriteAsync(followUp, cancellationToken);
         }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
                 ex,
@@ -358,7 +355,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task RunLocalLibraryScanAsync(
+    private static async Task RunLocalLibraryScanAsync(
         IServiceProvider services,
         SyncRequest request,
         CancellationToken cancellationToken)
