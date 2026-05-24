@@ -1274,7 +1274,7 @@ WHERE id = 1;";
         {
             return new QualityScannerAutomationSettingsDto(
                 false,
-                360,
+                1440,
                 "watchlist",
                 null,
                 false,
@@ -1285,7 +1285,7 @@ WHERE id = 1;";
 
         return new QualityScannerAutomationSettingsDto(
             !await reader.IsDBNullAsync(0, cancellationToken) && reader.GetBoolean(0),
-            await reader.IsDBNullAsync(1, cancellationToken) ? 360 : Math.Clamp(reader.GetInt32(1), 15, 10080),
+            await reader.IsDBNullAsync(1, cancellationToken) ? 1440 : Math.Clamp(reader.GetInt32(1), 15, 10080),
             await reader.IsDBNullAsync(2, cancellationToken) ? "watchlist" : NormalizeQualityScannerScope(reader.GetString(2)),
             await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetInt64(3),
             !await reader.IsDBNullAsync(4, cancellationToken) && reader.GetBoolean(4),
@@ -8775,7 +8775,17 @@ WHERE folder_id IN (SELECT id FROM purge_non_library_folder);";
     private async Task EnsureQualityScannerAutomationSettingsRowAsync(CancellationToken cancellationToken)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = "INSERT INTO quality_scan_automation_settings (id) VALUES (1) ON CONFLICT DO NOTHING;";
+        const string sql = @"
+INSERT INTO quality_scan_automation_settings (
+    id,
+    enabled,
+    interval_minutes,
+    scope,
+    queue_atmos_alternatives,
+    cooldown_minutes
+)
+VALUES (1, 0, 1440, 'watchlist', 0, 1440)
+ON CONFLICT DO NOTHING;";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

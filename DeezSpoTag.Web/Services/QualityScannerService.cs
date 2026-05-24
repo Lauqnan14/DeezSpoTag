@@ -98,7 +98,7 @@ public sealed class QualityScannerService
             _logger.LogWarning(ex, "Failed to load quality scanner automation settings. Using defaults.");
             automationSettings = new QualityScannerAutomationSettingsDto(
                 Enabled: false,
-                IntervalMinutes: 360,
+                IntervalMinutes: 1440,
                 Scope: "watchlist",
                 FolderId: null,
                 QueueAtmosAlternatives: false,
