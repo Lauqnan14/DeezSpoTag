@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Metadata;
 using DeezerSdkClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
@@ -9,6 +10,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class DeezerMetadataResolver : IMetadataResolver
 {
+    private static readonly string[] BlockedGenres = ["other", "others"];
     private static readonly Regex DeezerTrackUrlRegex = new(
         @"deezer\.com/(?:[a-z]{2}/)?track/(\d+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
@@ -365,12 +367,10 @@ public sealed class DeezerMetadataResolver : IMetadataResolver
 
         if (deezerAlbum.Genres?.Data?.Count > 0)
         {
-            album.Genre = deezerAlbum.Genres.Data
+            album.Genre = GenreTagAliasNormalizer.DedupeValues(deezerAlbum.Genres.Data
                 .Select(genre => genre.Name)
                 .Where(name => !string.IsNullOrWhiteSpace(name))
-                .Select(name => name!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+                .Select(name => name!), BlockedGenres);
         }
     }
 

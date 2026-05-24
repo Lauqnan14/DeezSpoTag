@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
@@ -9,6 +10,7 @@ public sealed class ArtistPageCacheRepository
 {
     private const string SourceParameterName = "$source";
     private const string SourceIdParameterName = "$source_id";
+    private static readonly string[] BlockedGenres = ["other", "others"];
     private readonly IConfiguration _configuration;
     private readonly ILogger<ArtistPageCacheRepository> _logger;
     private readonly TimeSpan _ttl = TimeSpan.FromDays(7);
@@ -205,8 +207,7 @@ GROUP BY source;";
             return;
         }
 
-        var genreList = genres?.Where(g => !string.IsNullOrWhiteSpace(g)).Select(g => g.Trim()).Distinct().ToList()
-            ?? new List<string>();
+        var genreList = GenreTagAliasNormalizer.DedupeValues(genres, BlockedGenres);
         if (genreList.Count == 0)
         {
             return;

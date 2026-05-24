@@ -1179,6 +1179,12 @@
                         <button type="button" class="btn btn-secondary" id="addGenreTagAliasRule">Add rule</button>
                     </div>
                 </div>
+
+                <div class="form-group" id="genreTagBlockListGroup">
+                    <label for="genreTagBlockList">Blocked genres</label>
+                    <textarea id="genreTagBlockList" rows="4" placeholder="One genre per line, or comma-separated"></textarea>
+                    <div class="warning-text">Blocked genres are removed before genre tags are written. Other, Others, and Worldwide are blocked by default.</div>
+                </div>
             </div>
         </div>
 
@@ -1346,6 +1352,7 @@
 <script>
 let currentSettings = {};
 let defaultSettings = {};
+const defaultGenreTagBlockList = ['other', 'others', 'Worldwide'];
 let currentLibraryScanSettings = {
     livePreviewIngest: false,
     enableSignalAnalysis: false
@@ -2188,6 +2195,41 @@ function collectGenreTagAliasRules() {
     });
 
     return rules;
+}
+
+function renderGenreTagBlockList(values) {
+    const input = document.getElementById('genreTagBlockList');
+    if (!input) {
+        return;
+    }
+
+    const list = Array.isArray(values) ? values : defaultGenreTagBlockList;
+    input.value = list
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+        .join('\n');
+}
+
+function collectGenreTagBlockList() {
+    const input = document.getElementById('genreTagBlockList');
+    if (!input) {
+        return [];
+    }
+
+    const seen = new Set();
+    const values = [];
+    String(input.value || '')
+        .split(/[\n,;]+/)
+        .map(value => value.trim())
+        .filter(Boolean)
+        .forEach(value => {
+            const key = buildGenreTagAliasLookupKey(value);
+            if (key && !seen.has(key)) {
+                seen.add(key);
+                values.push(value);
+            }
+        });
+    return values;
 }
 
 function buildGenreTagAliasLookupKey(value) {
@@ -3283,6 +3325,7 @@ function loadSettings(settings) {
     setFieldValue('deezerCountry', settings.deezerCountry || 'US');
     setCheckboxValue('normalizeGenreTags', settings.normalizeGenreTags === true);
     renderGenreTagAliasRules(settings.genreTagAliasRules || []);
+    renderGenreTagBlockList(settings.genreTagBlockList);
     updateGenreTagAliasRulesState();
     setCheckboxValue('shazamEnabled', settings.shazamEnabled !== false);
     setCheckboxValue('shazamUseCenteredOverlay', settings.shazamUseCenteredOverlay !== false);
@@ -3494,6 +3537,7 @@ function collectFormData() {
         deezerCountry: getValue('deezerCountry', baseSettings.deezerCountry || 'US'),
         normalizeGenreTags: getChecked('normalizeGenreTags', baseSettings.normalizeGenreTags ?? false),
         genreTagAliasRules: collectGenreTagAliasRules(),
+        genreTagBlockList: collectGenreTagBlockList(),
         apiToken: baseSettings.apiToken || '',
         shazamEnabled: getChecked('shazamEnabled', baseSettings.shazamEnabled !== false),
         shazamUseCenteredOverlay: getChecked('shazamUseCenteredOverlay', baseSettings.shazamUseCenteredOverlay !== false),

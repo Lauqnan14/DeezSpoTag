@@ -241,6 +241,7 @@ public sealed class DownloadIntentService
     private readonly IDownloadApiHealthTracker _apiHealthTracker;
     private readonly ILogger<DownloadIntentService> _logger;
     private IReadOnlyDictionary<string, string>? _genreAliasMap;
+    private IReadOnlyList<string>? _genreBlockList;
     private bool _genreTagNormalizationEnabled;
 
     public DownloadIntentService(
@@ -3302,23 +3303,11 @@ public sealed class DownloadIntentService
     private List<string> NormalizeGenres(IEnumerable<string>? values)
     {
         var aliasMap = GetGenreAliasMap();
-        var normalizedValues = GenreTagAliasNormalizer.NormalizeAndExpandValues(values, aliasMap, _genreTagNormalizationEnabled);
-        var output = new List<string>(normalizedValues.Count);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var genre in normalizedValues)
-        {
-            if (string.IsNullOrWhiteSpace(genre) || BlockedGenres.Contains(genre))
-            {
-                continue;
-            }
-
-            if (seen.Add(genre))
-            {
-                output.Add(genre);
-            }
-        }
-
-        return output;
+        return GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            values,
+            aliasMap,
+            _genreTagNormalizationEnabled,
+            GetGenreBlockList());
     }
 
     private IReadOnlyDictionary<string, string> GetGenreAliasMap()
@@ -3330,10 +3319,17 @@ public sealed class DownloadIntentService
 
         var settings = _settingsService.LoadSettings();
         _genreTagNormalizationEnabled = settings.NormalizeGenreTags;
+        _genreBlockList = settings.GenreTagBlockList;
         _genreAliasMap = settings.NormalizeGenreTags
             ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
             : new Dictionary<string, string>(StringComparer.Ordinal);
         return _genreAliasMap;
+    }
+
+    private IReadOnlyList<string> GetGenreBlockList()
+    {
+        _ = GetGenreAliasMap();
+        return _genreBlockList ?? GenreTagAliasNormalizer.DefaultBlockedGenres;
     }
 
     private async Task<List<string>> ResolveSpotifyGenresAsync(

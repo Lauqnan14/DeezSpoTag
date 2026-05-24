@@ -1,6 +1,7 @@
 using System.Linq;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Metadata;
 
@@ -9,6 +10,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class SpotifyMetadataResolver : IMetadataResolver
 {
     private const string SpotifySource = "spotify";
+    private static readonly string[] BlockedGenres = ["other", "others"];
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly SpotifyMetadataService _metadataService;
 
@@ -154,10 +156,7 @@ public sealed class SpotifyMetadataResolver : IMetadataResolver
         if (summary.Genres is { Count: > 0 })
         {
             track.Album ??= new Album(summary.Album ?? string.Empty);
-            track.Album.Genre = summary.Genres
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            track.Album.Genre = GenreTagAliasNormalizer.DedupeValues(summary.Genres, BlockedGenres);
         }
     }
 

@@ -472,27 +472,11 @@ public class Track : AudioFeaturesBase
         var aliasMap = settings.NormalizeGenreTags
             ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
             : null;
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var normalized = new List<string>();
-
-        foreach (var value in GenreTagAliasNormalizer.NormalizeAndExpandValues(
-                     Album.Genre,
-                     aliasMap,
-                     settings.NormalizeGenreTags))
-        {
-            if (value.Equals("other", StringComparison.OrdinalIgnoreCase)
-                || value.Equals("others", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (seen.Add(value))
-            {
-                normalized.Add(value);
-            }
-        }
-
-        Album.Genre = normalized;
+        Album.Genre = GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            Album.Genre,
+            aliasMap,
+            settings.NormalizeGenreTags,
+            settings.GenreTagBlockList);
     }
 
     /// <summary>
@@ -886,10 +870,9 @@ public class Track : AudioFeaturesBase
             return;
         }
 
-        foreach (var genre in existingTrack.Genres.Where(genre => !Album.Genre.Contains(genre)))
-        {
-            Album.Genre.Add(genre);
-        }
+        Album.Genre = GenreTagAliasNormalizer.DedupeValues(
+            Album.Genre.Concat(existingTrack.Genres),
+            GenreTagAliasNormalizer.DefaultBlockedGenres);
     }
 
     private static Dictionary<string, object>? ParseLyricsPayload(string? payload)

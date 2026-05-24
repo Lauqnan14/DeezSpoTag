@@ -287,8 +287,8 @@ public sealed class QuickTagService
         }
 
         var separators = request.Separators ?? QuickTagSeparators.Default;
-        var (genreAliasMap, splitCompositeGenres) = ResolveGenreNormalization();
-        var rawTagWriteOptions = new RawTagWriteOptions(separators, request.Id3CommLang, genreAliasMap, splitCompositeGenres);
+        var (genreAliasMap, genreBlockList, splitCompositeGenres) = ResolveGenreNormalization();
+        var rawTagWriteOptions = new RawTagWriteOptions(separators, request.Id3CommLang, genreAliasMap, genreBlockList, splitCompositeGenres);
         var chapterSnapshot = AtlTagHelper.CaptureChapters(fullPath, extension, _logger);
 
         using (var file = TagLib.File.Create(fullPath))
@@ -301,7 +301,7 @@ public sealed class QuickTagService
             file.Save();
         }
 
-        ApplyMp4AtlFallbackIfNeeded(fullPath, extension, request, separators, genreAliasMap, splitCompositeGenres);
+        ApplyMp4AtlFallbackIfNeeded(fullPath, extension, request, separators, genreAliasMap, genreBlockList, splitCompositeGenres);
 
         AtlTagHelper.RestoreChapters(fullPath, chapterSnapshot, _logger);
 
@@ -337,14 +337,15 @@ public sealed class QuickTagService
             var chapterSnapshot = AtlTagHelper.CaptureChapters(sourceFullPath, sourceExtension, _logger);
             var snapshot = BuildCloneTagSnapshot(sourceFullPath, sourceExtension, separators);
 
-            var (genreAliasMap, splitCompositeGenres) = ResolveGenreNormalization();
-            var cloneRawTagWriteOptions = new RawTagWriteOptions(separators, null, genreAliasMap, splitCompositeGenres);
+            var (genreAliasMap, genreBlockList, splitCompositeGenres) = ResolveGenreNormalization();
+            var cloneRawTagWriteOptions = new RawTagWriteOptions(separators, null, genreAliasMap, genreBlockList, splitCompositeGenres);
             WriteCloneTagSnapshot(
                 destinationFullPath,
                 destinationExtension,
                 snapshot,
                 cloneRawTagWriteOptions,
                 genreAliasMap,
+                genreBlockList,
                 splitCompositeGenres);
 
             AtlTagHelper.RestoreChapters(destinationFullPath, chapterSnapshot, _logger);
@@ -436,6 +437,7 @@ public sealed class QuickTagService
         CloneTagSnapshot snapshot,
         RawTagWriteOptions cloneRawTagWriteOptions,
         IReadOnlyDictionary<string, string> genreAliasMap,
+        IReadOnlyList<string> genreBlockList,
         bool splitCompositeGenres)
     {
         using var destinationFile = TagLib.File.Create(destinationFullPath);
@@ -444,7 +446,7 @@ public sealed class QuickTagService
         destinationFile.Tag.Album = snapshot.Album;
         destinationFile.Tag.AlbumArtists = snapshot.AlbumArtists;
         destinationFile.Tag.Composers = snapshot.Composers;
-        destinationFile.Tag.Genres = FilterBlockedGenres(snapshot.Genres, genreAliasMap, splitCompositeGenres).ToArray();
+        destinationFile.Tag.Genres = FilterBlockedGenres(snapshot.Genres, genreAliasMap, genreBlockList, splitCompositeGenres).ToArray();
         destinationFile.Tag.Year = snapshot.Year;
         destinationFile.Tag.BeatsPerMinute = snapshot.BeatsPerMinute;
         destinationFile.Tag.Track = snapshot.Track;
@@ -534,6 +536,7 @@ public sealed class QuickTagService
         QuickTagSaveRequest request,
         QuickTagSeparators separators,
         IReadOnlyDictionary<string, string> genreAliasMap,
+        IReadOnlyList<string> genreBlockList,
         bool splitCompositeGenres)
     {
         if (!AtlTagHelper.IsMp4Family(extension) || request.Changes.Count == 0)
@@ -566,7 +569,7 @@ public sealed class QuickTagService
 
             foreach (var change in request.Changes)
             {
-                ApplyMp4AtlChange(track, additional, change, separators, genreAliasMap, splitCompositeGenres);
+                ApplyMp4AtlChange(track, additional, change, separators, genreAliasMap, genreBlockList, splitCompositeGenres);
             }
 
             track.AdditionalFields = additional;
@@ -592,6 +595,7 @@ public sealed class QuickTagService
         QuickTagChangeRequest Change,
         QuickTagSeparators Separators,
         IReadOnlyDictionary<string, string> GenreAliasMap,
+        IReadOnlyList<string> GenreBlockList,
         bool SplitCompositeGenres);
 
     private static readonly Dictionary<string, Action<Mp4AtlChangeContext>> Mp4AtlChangeHandlers = new(StringComparer.Ordinal)
@@ -619,6 +623,7 @@ public sealed class QuickTagService
         QuickTagChangeRequest change,
         QuickTagSeparators separators,
         IReadOnlyDictionary<string, string> genreAliasMap,
+        IReadOnlyList<string> genreBlockList,
         bool splitCompositeGenres)
     {
         var type = (change.Type ?? string.Empty).Trim().ToLowerInvariant();
@@ -627,12 +632,12 @@ public sealed class QuickTagService
             return;
         }
 
-        handler(new Mp4AtlChangeContext(track, additional, change, separators, genreAliasMap, splitCompositeGenres));
+        handler(new Mp4AtlChangeContext(track, additional, change, separators, genreAliasMap, genreBlockList, splitCompositeGenres));
     }
 
     private static void ApplyMp4AtlGenre(Mp4AtlChangeContext context)
     {
-        var values = FilterBlockedGenres(ParseStringValues(context.Change.Value), context.GenreAliasMap, context.SplitCompositeGenres);
+        var values = FilterBlockedGenres(ParseStringValues(context.Change.Value), context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
         context.Track.Genre = JoinValues(values, context.Separators.Mp4 ?? ", ");
     }
 
@@ -698,7 +703,7 @@ public sealed class QuickTagService
         var values = ParseStringValues(context.Change.Value);
         if (IsGenreTag(rawTag) || normalized.Equals(GenreTag, StringComparison.OrdinalIgnoreCase))
         {
-            values = FilterBlockedGenres(values, context.GenreAliasMap, context.SplitCompositeGenres);
+            values = FilterBlockedGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
         }
 
         var joined = JoinValues(values, context.Separators.Mp4 ?? ", ");
@@ -1838,6 +1843,7 @@ public sealed class QuickTagService
         QuickTagSeparators Separators,
         string? Id3CommLang,
         IReadOnlyDictionary<string, string> GenreAliasMap,
+        IReadOnlyList<string> GenreBlockList,
         bool SplitCompositeGenres);
 
     private static void ApplyChange(
@@ -1854,6 +1860,7 @@ public sealed class QuickTagService
                     var values = FilterBlockedGenres(
                         ParseStringValues(change.Value),
                         rawTagWriteOptions.GenreAliasMap,
+                        rawTagWriteOptions.GenreBlockList,
                         rawTagWriteOptions.SplitCompositeGenres);
                     file.Tag.Genres = values.ToArray();
                     break;
@@ -1983,6 +1990,7 @@ public sealed class QuickTagService
                         values = FilterBlockedGenres(
                             values,
                             rawTagWriteOptions.GenreAliasMap,
+                            rawTagWriteOptions.GenreBlockList,
                             rawTagWriteOptions.SplitCompositeGenres);
                     }
 
@@ -2416,6 +2424,7 @@ public sealed class QuickTagService
             values = FilterBlockedGenres(
                 values,
                 rawTagWriteOptions.GenreAliasMap,
+                rawTagWriteOptions.GenreBlockList,
                 rawTagWriteOptions.SplitCompositeGenres);
         }
 
@@ -2507,31 +2516,34 @@ public sealed class QuickTagService
             || mp4Normalized.Equals("©gen", StringComparison.OrdinalIgnoreCase);
     }
 
-    private (IReadOnlyDictionary<string, string> AliasMap, bool SplitCompositeGenres) ResolveGenreNormalization()
+    private (IReadOnlyDictionary<string, string> AliasMap, IReadOnlyList<string> BlockList, bool SplitCompositeGenres) ResolveGenreNormalization()
     {
         try
         {
             var settings = _settingsService.LoadSettings();
+            var blockList = GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList);
             return settings.NormalizeGenreTags
-                ? (GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules), true)
-                : (new Dictionary<string, string>(StringComparer.Ordinal), false);
+                ? (GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules), blockList, true)
+                : (new Dictionary<string, string>(StringComparer.Ordinal), blockList, false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed to load genre alias rules for QuickTag save; continuing without alias normalization.");
-            return (new Dictionary<string, string>(StringComparer.Ordinal), false);
+            return (new Dictionary<string, string>(StringComparer.Ordinal), GenreTagAliasNormalizer.DefaultBlockedGenres, false);
         }
     }
 
     private static List<string> FilterBlockedGenres(
         IEnumerable<string> values,
         IReadOnlyDictionary<string, string> genreAliasMap,
+        IEnumerable<string> genreBlockList,
         bool splitCompositeGenres)
     {
-        return GenreTagAliasNormalizer.NormalizeAndExpandValues(values, genreAliasMap, splitCompositeGenres)
-            .Where(v => !BlockedGenres.Contains(v))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        return GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            values,
+            genreAliasMap,
+            splitCompositeGenres,
+            genreBlockList);
     }
 
     private static string ResolveSeparatorForExtension(string extension, QuickTagSeparators separators)

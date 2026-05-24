@@ -2267,20 +2267,28 @@ function switchDiscographyTab(tabKey) {
 }
 
 function mergeGenres(primaryGenres, localGenres) {
-    const merged = new Set();
+    const merged = new Map();
+    const addGenre = (genre) => {
+        const value = typeof genre === 'string' ? genre.trim() : '';
+        const key = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (value && key && !merged.has(key)) {
+            merged.set(key, value);
+        }
+    };
+
     if (Array.isArray(primaryGenres)) {
         primaryGenres.forEach((g) => {
-            if (g && typeof g === 'string') merged.add(g);
-            if (g && typeof g === 'object' && g.name) merged.add(g.name);
+            if (g && typeof g === 'string') addGenre(g);
+            if (g && typeof g === 'object' && g.name) addGenre(g.name);
         });
     }
     if (Array.isArray(localGenres)) {
         localGenres.forEach((g) => {
-            if (g && typeof g === 'string') merged.add(g);
-            if (g && typeof g === 'object' && g.name) merged.add(g.name);
+            if (g && typeof g === 'string') addGenre(g);
+            if (g && typeof g === 'object' && g.name) addGenre(g.name);
         });
     }
-    return Array.from(merged);
+    return Array.from(merged.values());
 }
 
 function formatNumber(value) {

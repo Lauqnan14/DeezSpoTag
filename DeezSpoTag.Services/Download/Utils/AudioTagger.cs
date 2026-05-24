@@ -70,6 +70,7 @@ public class AudioTagger
     private readonly PlatformCapabilitiesStore _capabilitiesStore;
     private readonly DeezSpoTagSettingsService _settingsService;
     private IReadOnlyDictionary<string, string>? _genreAliasMap;
+    private IReadOnlyList<string>? _genreBlockList;
     private bool _genreTagNormalizationEnabled;
 
     private static readonly HashSet<string> SupportedContributorRoles = new(StringComparer.Ordinal)
@@ -161,11 +162,12 @@ public class AudioTagger
     {
         var aliasMap = GetGenreAliasMap();
         var splitComposite = IsGenreTagNormalizationEnabled();
-        return GenreTagAliasNormalizer.NormalizeAndExpandValues(values, aliasMap, splitComposite)
-            .Where(value => !BlockedGenres.Contains(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray()
-            ;
+        return GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+                values,
+                aliasMap,
+                splitComposite,
+                GetGenreBlockList())
+            .ToArray();
     }
 
     private bool IsGenreTagNormalizationEnabled()
@@ -185,6 +187,7 @@ public class AudioTagger
         {
             var settings = _settingsService.LoadSettings();
             _genreTagNormalizationEnabled = settings.NormalizeGenreTags;
+            _genreBlockList = settings.GenreTagBlockList;
             _genreAliasMap = settings.NormalizeGenreTags
                 ? GenreTagAliasNormalizer.BuildAliasMap(settings.GenreTagAliasRules)
                 : new Dictionary<string, string>(StringComparer.Ordinal);
@@ -193,10 +196,17 @@ public class AudioTagger
         {
             _logger.LogDebug(ex, "Failed to load genre alias map; continuing without genre alias normalization.");
             _genreTagNormalizationEnabled = false;
+            _genreBlockList = GenreTagAliasNormalizer.DefaultBlockedGenres;
             _genreAliasMap = new Dictionary<string, string>(StringComparer.Ordinal);
         }
 
         return _genreAliasMap;
+    }
+
+    private IReadOnlyList<string> GetGenreBlockList()
+    {
+        _ = GetGenreAliasMap();
+        return _genreBlockList ?? GenreTagAliasNormalizer.DefaultBlockedGenres;
     }
 
     #region Audio Tagging (from AudioTagger)

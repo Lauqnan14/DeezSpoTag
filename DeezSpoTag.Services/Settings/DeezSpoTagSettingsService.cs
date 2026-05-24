@@ -607,6 +607,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         NormalizeRegionalAndLyricsSettings(settings, defaultSettings, fixes);
         EnsureApiToken(settings, fixes);
         NormalizeGenreTagAliasRules(settings, defaultSettings, fixes);
+        NormalizeGenreTagBlockList(settings, fixes);
         NormalizeShazamSettings(settings, defaultSettings, fixes);
 
         return fixes.Changes;
@@ -999,6 +1000,18 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
     }
 
+    private static void NormalizeGenreTagBlockList(
+        DeezSpoTagSettings settings,
+        SettingsFixTracker fixes)
+    {
+        var normalized = GenreTagAliasNormalizer.NormalizeBlockedValues(settings.GenreTagBlockList);
+        if (!AreStringListsEqual(settings.GenreTagBlockList, normalized))
+        {
+            settings.GenreTagBlockList = normalized;
+            fixes.Mark(nameof(settings.GenreTagBlockList));
+        }
+    }
+
     private static void NormalizeShazamSettings(
         DeezSpoTagSettings settings,
         DeezSpoTagSettings defaultSettings,
@@ -1096,6 +1109,24 @@ public class DeezSpoTagSettingsService : ISettingsService
 
             if (!string.Equals(currentRule.Alias?.Trim(), normalizedRule.Alias, StringComparison.Ordinal)
                 || !string.Equals(currentRule.Canonical?.Trim(), normalizedRule.Canonical, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AreStringListsEqual(List<string>? current, List<string> normalized)
+    {
+        if (current == null || current.Count != normalized.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < current.Count; i++)
+        {
+            if (!string.Equals(current[i]?.Trim(), normalized[i], StringComparison.Ordinal))
             {
                 return false;
             }

@@ -3946,6 +3946,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             context.PlatformId,
             context.EffectiveTagSettings.UseNullSeparator,
             context.GenreAliasMap,
+            context.GenreBlockList,
             context.SplitCompositeGenres);
         ApplyPrimaryTagWrites(tagWriteContext, context);
         ApplyAudioFeatureTagWrites(tagWriteContext, context);
@@ -3977,6 +3978,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var genreAliasMap = normalizeGenreTags
             ? GenreTagAliasNormalizer.BuildAliasMap(request.Settings.GenreTagAliasRules)
             : new Dictionary<string, string>(StringComparer.Ordinal);
+        var genreBlockList = GenreTagAliasNormalizer.NormalizeBlockedValues(request.Settings.GenreTagBlockList);
         var allowsSyncedByToggle = request.Settings.SyncedLyrics;
         var allowsUnsyncedByToggle = request.Settings.SaveLyrics;
         var allowsLyricsBySettings = allowsSyncedByToggle || allowsUnsyncedByToggle;
@@ -4001,6 +4003,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Extension = extension,
             EnabledTags = enabledTags,
             GenreAliasMap = genreAliasMap,
+            GenreBlockList = genreBlockList,
             SplitCompositeGenres = normalizeGenreTags,
             AllowsLyricsBySettings = allowsLyricsBySettings,
             AllowsSyncedType = allowsSyncedType,
@@ -4250,7 +4253,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         TagWriteContext tagWriteContext,
         TagWriteExecutionContext context)
     {
-        var genres = SanitizeGenres(context.CoreTrack.Album?.Genre ?? new List<string>(), context.GenreAliasMap, context.SplitCompositeGenres);
+        var genres = SanitizeGenres(context.CoreTrack.Album?.Genre ?? new List<string>(), context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
         var styles = context.SourceTrack.Styles.ToList();
         (genres, styles) = ApplyStylesOptions(genres, styles, context.Config.StylesOptions);
 
@@ -4258,12 +4261,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (context.Config.MergeGenres)
             {
-                var existing = SanitizeGenres(ReadExistingGenre(context.FilePath), context.GenreAliasMap, context.SplitCompositeGenres);
+                var existing = SanitizeGenres(ReadExistingGenre(context.FilePath), context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
                 var genreSet = new HashSet<string>(genres, StringComparer.OrdinalIgnoreCase);
                 genres.AddRange(existing.Where(genreSet.Add));
             }
 
-            genres = SanitizeGenres(genres, context.GenreAliasMap, context.SplitCompositeGenres);
+            genres = SanitizeGenres(genres, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
             if (context.Config.CapitalizeGenres)
             {
                 genres = genres.Select(CapitalizeGenre).ToList();
@@ -5900,6 +5903,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required string Extension { get; init; }
         public required HashSet<string> EnabledTags { get; init; }
         public required IReadOnlyDictionary<string, string> GenreAliasMap { get; init; }
+        public required IReadOnlyList<string> GenreBlockList { get; init; }
         public required bool SplitCompositeGenres { get; init; }
         public required bool AllowsLyricsBySettings { get; init; }
         public required bool AllowsSyncedType { get; init; }
@@ -5945,6 +5949,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string PlatformId,
         bool UseNullSeparator,
         IReadOnlyDictionary<string, string> GenreAliasMap,
+        IReadOnlyList<string> GenreBlockList,
         bool SplitCompositeGenres);
 
     private readonly record struct TagFieldBinding(
@@ -5983,7 +5988,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (binding.Tag == SupportedTag.Genre)
         {
-            values = SanitizeGenres(values, context.GenreAliasMap, context.SplitCompositeGenres);
+            values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
         }
 
         if (IsMp4Family(context.Extension))
@@ -5995,6 +6000,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Config,
                 context.PlatformId,
                 context.GenreAliasMap,
+                context.GenreBlockList,
                 context.SplitCompositeGenres);
             return;
         }
@@ -6012,7 +6018,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (tag == SupportedTag.Genre || IsGenreRawTag(rawName))
         {
-            values = SanitizeGenres(values, context.GenreAliasMap, context.SplitCompositeGenres);
+            values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
         }
 
         if (!force && !ShouldOverwriteTag(context.Config, tag))
@@ -6802,6 +6808,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             AutoTagRunnerConfig config,
             string platformId,
             IReadOnlyDictionary<string, string> genreAliasMap,
+            IReadOnlyList<string> genreBlockList,
             bool splitCompositeGenres)
         {
             if (!ShouldOverwriteTag(config, tag) && HasTag(file, ".mp4", tag, config, platformId))
@@ -6824,7 +6831,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     file.Tag.Album = values.FirstOrDefault() ?? "";
                     break;
                 case SupportedTag.Genre:
-                    file.Tag.Genres = SanitizeGenres(values, genreAliasMap, splitCompositeGenres).ToArray();
+                    file.Tag.Genres = SanitizeGenres(values, genreAliasMap, genreBlockList, splitCompositeGenres).ToArray();
                     break;
                 case SupportedTag.BPM:
                     if (int.TryParse(values.FirstOrDefault(), out var bpm))
@@ -6858,12 +6865,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             string rawName,
             string[] values,
             IReadOnlyDictionary<string, string> genreAliasMap,
+            IReadOnlyList<string> genreBlockList,
             bool splitCompositeGenres)
         {
             var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
             var normalized = Mp4RawTagNameNormalizer.Normalize(rawName);
             var output = IsGenreRawTag(normalized) || IsGenreRawTag(rawName)
-                ? SanitizeGenres(values, genreAliasMap, splitCompositeGenres).ToArray()
+                ? SanitizeGenres(values, genreAliasMap, genreBlockList, splitCompositeGenres).ToArray()
                 : values;
             TrySetAppleDashBox(apple, normalized, output);
         }
@@ -6944,12 +6952,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static List<string> SanitizeGenres(
         IEnumerable<string> values,
         IReadOnlyDictionary<string, string>? genreAliasMap = null,
+        IEnumerable<string>? genreBlockList = null,
         bool splitComposite = false)
     {
-        return GenreTagAliasNormalizer.NormalizeAndExpandValues(values, genreAliasMap, splitComposite)
-            .Where(value => !BlockedGenres.Contains(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        return GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            values,
+            genreAliasMap,
+            splitComposite,
+            genreBlockList ?? BlockedGenres);
     }
 
     private static string ToCamelot(string key)
@@ -7426,6 +7436,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 rawName,
                 ApplySeparator(values, context.Separator),
                 context.GenreAliasMap,
+                context.GenreBlockList,
                 context.SplitCompositeGenres);
         }
     }

@@ -1,6 +1,7 @@
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Metadata;
 using DeezSpoTag.Services.Metadata.Qobuz;
 
@@ -8,6 +9,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class QobuzMetadataResolver : IMetadataResolver
 {
+    private static readonly string[] BlockedGenres = ["other", "others"];
     private readonly IQobuzMetadataService _qobuzService;
     private readonly ILogger<QobuzMetadataResolver> _logger;
 
@@ -138,10 +140,9 @@ public sealed class QobuzMetadataResolver : IMetadataResolver
             if (qobuzTrack.Album.Genre?.Name != null)
             {
                 track.Album.Genre ??= new List<string>();
-                if (!track.Album.Genre.Contains(qobuzTrack.Album.Genre.Name))
-                {
-                    track.Album.Genre.Add(qobuzTrack.Album.Genre.Name);
-                }
+                track.Album.Genre = GenreTagAliasNormalizer.DedupeValues(
+                    track.Album.Genre.Append(qobuzTrack.Album.Genre.Name),
+                    BlockedGenres);
             }
 
             track.Album.QobuzQuality = track.QobuzQuality;

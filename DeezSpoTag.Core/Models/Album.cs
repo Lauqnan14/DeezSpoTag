@@ -1,11 +1,13 @@
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Core.Models.Qobuz;
+using DeezSpoTag.Core.Utils;
 
 namespace DeezSpoTag.Core.Models;
 
 public class Album
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly string[] BlockedGenres = ["other", "others"];
     public string Id { get; set; }
     public string Title { get; set; }
     public string? QobuzId { get; set; }
@@ -239,11 +241,11 @@ public class Album
             return;
         }
 
-        foreach (var name in albumAPI.Genres.Data
+        var incomingGenres = albumAPI.Genres.Data
                      .Select(static genre => genre.Name)
-                     .Where(static name => name != null))
-        {
-            Genre.Add(name!);
-        }
+                     .Where(static name => name != null)
+                     .Select(static name => name!);
+
+        Genre = GenreTagAliasNormalizer.DedupeValues(Genre.Concat(incomingGenres), BlockedGenres);
     }
 }

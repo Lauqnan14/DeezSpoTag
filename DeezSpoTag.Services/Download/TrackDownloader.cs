@@ -36,6 +36,7 @@ public class TrackDownloader
     private const string CompletedStatus = "completed";
     private const string FailedStatus = "failed";
     private const string NoLyricsStatus = "no-lyrics";
+    private static readonly string[] BlockedGenres = ["other", "others"];
     private readonly ILogger<TrackDownloader> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly EnhancedPathTemplateProcessor _pathProcessor;
@@ -2566,12 +2567,10 @@ public class TrackDownloader
             return;
         }
 
-        var incomingGenres = apiAlbum.Genres.Data
+        var incomingGenres = GenreTagAliasNormalizer.DedupeValues(apiAlbum.Genres.Data
             .Select(genre => genre.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Select(name => name!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .Select(name => name!), BlockedGenres);
         if (incomingGenres.Count == 0)
         {
             return;
@@ -2583,10 +2582,7 @@ public class TrackDownloader
             return;
         }
 
-        foreach (var genre in incomingGenres.Where(genre => !album.Genre.Contains(genre, StringComparer.OrdinalIgnoreCase)))
-        {
-            album.Genre.Add(genre);
-        }
+        album.Genre = GenreTagAliasNormalizer.DedupeValues(album.Genre.Concat(incomingGenres), BlockedGenres);
     }
 
     private static void TryApplyAlbumReleaseDate(Album album, string? releaseDateText)

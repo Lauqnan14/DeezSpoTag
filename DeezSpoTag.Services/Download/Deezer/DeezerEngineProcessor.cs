@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Models.Download;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -46,6 +47,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
     private const string DeezerLoginRequiredMessage = "Deezer login required";
     private const string TrackType = "track";
     private const string EpisodeCollectionType = "episode";
+    private static readonly string[] BlockedGenres = ["other", "others"];
     private static readonly Dictionary<int, string> StagingExtensions = new()
     {
         [9] = ".flac",
@@ -882,10 +884,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
 
         if (payload.Genres.Count > 0)
         {
-            album.Genre = payload.Genres
-                .Where(static genre => !string.IsNullOrWhiteSpace(genre))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            album.Genre = GenreTagAliasNormalizer.DedupeValues(payload.Genres, BlockedGenres);
         }
 
         if (!string.IsNullOrWhiteSpace(payload.Copyright))

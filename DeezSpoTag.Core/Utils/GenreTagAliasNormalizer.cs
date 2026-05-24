@@ -5,6 +5,7 @@ namespace DeezSpoTag.Core.Utils;
 public static class GenreTagAliasNormalizer
 {
     private static readonly char[] CompositeGenreSeparators = ['/', '\\', ',', ';'];
+    public static readonly string[] DefaultBlockedGenres = ["other", "others", "Worldwide"];
     private static readonly IReadOnlyDictionary<string, string> EmptyMap =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -82,6 +83,11 @@ public static class GenreTagAliasNormalizer
         return normalized;
     }
 
+    public static List<string> NormalizeBlockedValues(IEnumerable<string>? values)
+    {
+        return DedupeValues(values ?? DefaultBlockedGenres);
+    }
+
     public static string NormalizeValue(string value, IReadOnlyDictionary<string, string>? aliasMap)
     {
         var trimmed = value?.Trim() ?? string.Empty;
@@ -138,6 +144,66 @@ public static class GenreTagAliasNormalizer
                 {
                     output.Add(normalized);
                 }
+            }
+        }
+
+        return output;
+    }
+
+    public static List<string> NormalizeExpandFilterAndDedupeValues(
+        IEnumerable<string>? values,
+        IReadOnlyDictionary<string, string>? aliasMap,
+        bool splitComposite,
+        IEnumerable<string>? blockedValues = null)
+    {
+        var output = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var blocked = BuildLookupKeySet(blockedValues);
+
+        foreach (var value in NormalizeAndExpandValues(values, aliasMap, splitComposite))
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var key = ToLookupKey(value);
+            if (key.Length == 0 || blocked.Contains(key) || !seen.Add(key))
+            {
+                continue;
+            }
+
+            output.Add(value.Trim());
+        }
+
+        return output;
+    }
+
+    public static List<string> DedupeValues(
+        IEnumerable<string>? values,
+        IEnumerable<string>? blockedValues = null)
+    {
+        return NormalizeExpandFilterAndDedupeValues(
+            values,
+            aliasMap: null,
+            splitComposite: false,
+            blockedValues);
+    }
+
+    private static HashSet<string> BuildLookupKeySet(IEnumerable<string>? values)
+    {
+        var output = new HashSet<string>(StringComparer.Ordinal);
+        if (values == null)
+        {
+            return output;
+        }
+
+        foreach (var value in values)
+        {
+            var key = ToLookupKey(value);
+            if (key.Length > 0)
+            {
+                output.Add(key);
             }
         }
 

@@ -64,6 +64,7 @@ public class DeezSpoTagSettings
     public bool LyricsFallbackEnabled { get; set; } = true;
     public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch";
     public bool NormalizeGenreTags { get; set; } = false;
+    public List<string> GenreTagBlockList { get; set; } = new() { "other", "others", "Worldwide" };
     public List<GenreTagAliasRule> GenreTagAliasRules { get; set; } = new()
     {
         new GenreTagAliasRule
