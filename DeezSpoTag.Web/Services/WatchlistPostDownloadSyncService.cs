@@ -383,10 +383,13 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             return;
         }
 
-        await scanner.RunChangedFoldersAsync(
-            new[] { request.DestinationFolderId.Value },
-            skipSpotifyFetch: true,
-            cancellationToken);
+        // Missing changed paths are a notifier bug. Do not fall back to a folder scan,
+        // because that recreates repeated library scans when nothing changed.
+        var configStore = services.GetService<LibraryConfigStore>();
+        configStore?.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "warning",
+            $"Watchlist post-download library scan skipped because no changed file paths were provided for {request.Source}:{request.PlaylistId}:{request.TrackId} (destinationFolderId={request.DestinationFolderId})."));
     }
 
     private static List<string> NormalizeChangedFilePaths(IReadOnlyList<string>? changedFilePaths)

@@ -1070,6 +1070,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var changedFileCount = movedFilesByDestination.Sum(pair => pair.Value.Count);
+        if (changedFileCount <= 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                "Automation: post-download library scan skipped (no moved library file paths detected)."));
+            return;
+        }
+
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",

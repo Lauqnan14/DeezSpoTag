@@ -1646,11 +1646,6 @@ public partial class Program
             services,
             StartupWorkerCategory.Deferred,
             "Lyrics refresh queue after HTTP readiness.");
-        services.AddSingleton<DeezSpoTag.Web.Services.LibraryRealtimeScanService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>(
-            services,
-            StartupWorkerCategory.DisabledOnError,
-            "Realtime library watchers after HTTP readiness; disabled for process when host watcher limits are hit.");
         services.AddSingleton<DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies>(sp =>
             new DeezSpoTag.Web.Services.LibrarySpotifyArtistQueueService.Dependencies
             {

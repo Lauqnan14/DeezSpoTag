@@ -2664,13 +2664,8 @@ public partial class AutoTagService
         _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Post auto-move library scan starting for folder(s): {string.Join(", ", changedFolderIds)}."));
-        AppendLog(job, $"post auto-move library scan starting for folder(s): {string.Join(", ", changedFolderIds)}");
-
-        await _libraryScanRunner.RunChangedFoldersAsync(
-            changedFolderIds,
-            skipSpotifyFetch: false,
-            cancellationToken);
+            $"Post auto-move library scan skipped because no changed file paths were reported (folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})."));
+        AppendLog(job, $"post auto-move library scan skipped (no changed file paths; folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})");
     }
 
     private async Task<List<long>> ResolveChangedLibraryFolderIdsAsync(

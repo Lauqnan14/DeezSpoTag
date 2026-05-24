@@ -489,50 +489,12 @@ public sealed class PlaylistWatchService
         IReadOnlyList<PlaylistTrackCandidate> candidates,
         CancellationToken cancellationToken)
     {
-        await RunPreQueueLibraryScanAsync(preference, cancellationToken);
         await TrySyncPlaylistToMediaServerAsync(
             playlist,
             preference,
             forceMediaServerSync: true,
             candidates: candidates,
             cancellationToken);
-    }
-
-    private async Task RunPreQueueLibraryScanAsync(
-        PlaylistWatchPreferenceDto? preference,
-        CancellationToken cancellationToken)
-    {
-        if (preference?.DestinationFolderId is not long destinationFolderId)
-        {
-            return;
-        }
-
-        try
-        {
-            using var scope = _serviceProvider.CreateScope();
-            var scanner = scope.ServiceProvider.GetService<LibraryScanRunner>();
-            if (scanner == null)
-            {
-                return;
-            }
-
-            await scanner.RunChangedFoldersAsync(
-                new[] { destinationFolderId },
-                skipSpotifyFetch: true,
-                cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "Playlist pre-queue library scan failed for {Source}:{SourceId}.",
-                preference.Source ?? string.Empty,
-                preference.SourceId ?? string.Empty);
-        }
     }
 
     private async Task<bool> TryHandleKnownPlaylistTrackAsync(

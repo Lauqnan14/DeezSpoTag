@@ -222,7 +222,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("UpdatePlaylistPosterFromUrlAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("UpdateItemPrimaryImageFromUrlAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("RunChangedFilesAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]

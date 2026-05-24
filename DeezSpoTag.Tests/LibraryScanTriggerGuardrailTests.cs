@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -17,6 +18,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("GetRecentMovedAudioFilesByDestinationAsync", source);
         Assert.Contains("await _scanRunner.RunChangedFilesAsync", source);
         Assert.Contains("targeted library scan completed", source);
+        Assert.Contains("no moved library file paths detected", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_scanRunner.RunAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("await _scanRunner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
     }
@@ -103,11 +105,15 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void AutoTagPostMoveScan_UsesTargetedChangedFileScansWhenPathsAreKnown()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var methodBody = ExtractMethodBody(source, "private async Task TriggerLibraryScanAfterAutoMoveAsync");
 
         Assert.Contains("ResolveChangedLibraryFolderIdsAsync", source);
         Assert.Contains("autoMoveSummary.ChangedFilePaths", source);
-        Assert.Contains("await _libraryScanRunner.RunChangedFilesAsync", source);
-        Assert.Contains("await _libraryScanRunner.RunChangedFoldersAsync", source);
+        Assert.Contains("await _libraryScanRunner.RunChangedFilesAsync", methodBody);
+        Assert.Contains("Post auto-move library scan skipped because no changed file paths were reported", methodBody, StringComparison.Ordinal);
+        Assert.Contains("moved={autoMoveSummary.MovedCount}", methodBody, StringComparison.Ordinal);
+        Assert.Contains("failed={autoMoveSummary.FailedCount}", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _libraryScanRunner.RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("TriggerLibraryScanAfterAutoMoveAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync(", source, StringComparison.Ordinal);
@@ -155,20 +161,26 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void WatchlistPostDownloadSync_UsesTargetedChangedFileScansWhenPathsAreKnown()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs");
+        var methodBody = ExtractMethodBody(source, "private static async Task RunLocalLibraryScanAsync");
 
         Assert.Contains("ChangedFilePaths", source, StringComparison.Ordinal);
-        Assert.Contains("await scanner.RunChangedFilesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("await scanner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
+        Assert.Contains("await scanner.RunChangedFilesAsync", methodBody, StringComparison.Ordinal);
+        Assert.Contains("Missing changed paths are a notifier bug", methodBody, StringComparison.Ordinal);
+        Assert.Contains("Watchlist post-download library scan skipped because no changed file paths were provided", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void PlaylistWatch_ReconcilesExistingFilesBeforeQueueingMissingTracks()
+    public void PlaylistWatch_DoesNotRunPreQueueLibraryFolderScans()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
+        var methodBody = ExtractMethodBody(source, "private async Task PreQueuePlaylistSyncAsync");
 
         Assert.Contains("PreQueuePlaylistSyncAsync(currentPlaylist, preference, candidates, cancellationToken)", source, StringComparison.Ordinal);
-        Assert.Contains("await scanner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunPreQueueLibraryScanAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFilesAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("selection.MissingTracks", source, StringComparison.Ordinal);
         Assert.Contains("missing_tracks_queued", source, StringComparison.Ordinal);
         Assert.DoesNotContain("candidates.Select(candidate => new PlaylistWatchTrackInsert(candidate.TrackSourceId, candidate.Isrc))", source, StringComparison.Ordinal);
@@ -208,56 +220,30 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void RealtimeLibraryScanService_IsRegisteredAsHostedService()
+    public void RealtimeLibraryScanService_IsNotRegisteredAsHostedService()
     {
         var source = ReadSource("DeezSpoTag.Web", "Program.cs");
 
-        Assert.Contains("AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void RealtimeLibraryScanService_UsesTargetedChangedFileScans()
+    public void BackgroundServices_DoNotUseFolderLevelLibraryScans()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+        var serviceFiles = Directory
+            .EnumerateFiles(Path.Combine(GetRepositoryRoot(), "DeezSpoTag.Web", "Services"), "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.EndsWith($"{Path.DirectorySeparatorChar}LibraryScanRunner.cs", StringComparison.Ordinal))
+            .Where(path => !path.EndsWith($"{Path.DirectorySeparatorChar}LibraryRuntimeSnapshotService.cs", StringComparison.Ordinal))
+            .Where(path => !path.EndsWith($"{Path.DirectorySeparatorChar}LibraryRealtimeScanService.cs", StringComparison.Ordinal))
+            .ToList();
 
-        Assert.Contains("RunChangedFilesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("Realtime targeted library scan triggered", source, StringComparison.Ordinal);
-        Assert.Contains("PendingFolderScan", source, StringComparison.Ordinal);
-        Assert.Contains("ShouldQueueScan(fullPath)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("_scanRunner.RunAsync(", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RealtimeLibraryScanService_RefreshesBaselineAfterTargetedScans()
-    {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
-
-        Assert.Contains("RefreshWatcherBaseline(folderId", source, StringComparison.Ordinal);
-        Assert.Contains("public void RefreshBaseline(IEnumerable<string> filePaths)", source, StringComparison.Ordinal);
-        Assert.Contains("_baselineFiles[normalizedPath] = currentState", source, StringComparison.Ordinal);
-        Assert.Contains("_baselineFiles.Remove(normalizedPath)", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RealtimeLibraryScanService_HandlesDeletesAndRenameOldPathsWithoutFullFolderScans()
-    {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
-
-        Assert.Contains("watcher.Deleted +=", source, StringComparison.Ordinal);
-        Assert.Contains("OnFileRenamed(folderId, args.OldFullPath, args.FullPath)", source, StringComparison.Ordinal);
-        Assert.Contains("DeletedFilePaths", source, StringComparison.Ordinal);
-        Assert.Contains("RemoveLocalAudioFilesByPathAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("CleanupMissingFilesAsync", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RealtimeLibraryScanService_UsesPersistedBaselineWhenRepositoryIsConfigured()
-    {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
-
-        Assert.Contains("_repository.GetLocalScanFileStatesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("new FileBaselineState(state.LastWriteUtc, state.Size)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("BuildBaselineAudioFiles(NormalizedRootPath)", source, StringComparison.Ordinal);
+        foreach (var path in serviceFiles)
+        {
+            var source = File.ReadAllText(path);
+            Assert.DoesNotContain("RunChangedFoldersAsync(", source, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -293,6 +279,32 @@ public sealed class LibraryScanTriggerGuardrailTests
     {
         var path = Path.Combine(GetRepositoryRoot(), Path.Combine(pathParts));
         return File.ReadAllText(path);
+    }
+
+    private static string ExtractMethodBody(string source, string methodSignature)
+    {
+        var start = source.IndexOf(methodSignature, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Could not find method: {methodSignature}");
+        var brace = source.IndexOf('{', start);
+        Assert.True(brace > start, $"Could not find method body: {methodSignature}");
+        var depth = 0;
+        for (var index = brace; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source.Substring(brace, index - brace + 1);
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"Could not extract method body: {methodSignature}");
     }
 
     private static string GetRepositoryRoot()

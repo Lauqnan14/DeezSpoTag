@@ -17,7 +17,6 @@ public sealed class StartupBackgroundWorkGuardrailTests
             Path.Join(root, "DeezSpoTag.Web", "Services", "SpotifyAuthWarmupService.cs"),
             Path.Join(root, "DeezSpoTag.Web", "Services", "LyricsRefreshQueueService.cs"),
             Path.Join(root, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"),
-            Path.Join(root, "DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs"),
             Path.Join(root, "DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagServiceExtensions.cs")
         };
 
@@ -30,18 +29,14 @@ public sealed class StartupBackgroundWorkGuardrailTests
     }
 
     [Fact]
-    public void LibraryRealtimeWatcher_EntersDegradedModeWhenInotifyLimitIsReached()
+    public void LibraryRealtimeWatcher_IsNotStartedAutomatically()
     {
         var root = ResolveRepoRoot();
-        var servicePath = Path.Join(root, "DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
-        var source = File.ReadAllText(servicePath);
+        var programPath = Path.Join(root, "DeezSpoTag.Web", "Program.cs");
+        var source = File.ReadAllText(programPath);
 
-        Assert.Contains("EnterWatcherDegradedMode", source, StringComparison.Ordinal);
-        Assert.Contains("MarkLibraryWatchersDegraded", source, StringComparison.Ordinal);
-        Assert.Contains("IsWatcherResourceLimit", source, StringComparison.Ordinal);
-        Assert.Contains("DEEZSPOTAG_LIBRARY_REALTIME_WATCHERS_ENABLED", source, StringComparison.Ordinal);
-        Assert.Contains("_watchersDisabledForProcess", source, StringComparison.Ordinal);
-        Assert.Contains("inotify", source, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -98,9 +93,8 @@ public sealed class StartupBackgroundWorkGuardrailTests
         Assert.Contains("StartupWorkerCategory.Critical", source, StringComparison.Ordinal);
         Assert.Contains("StartupWorkerCategory.Deferred", source, StringComparison.Ordinal);
         Assert.Contains("StartupWorkerCategory.Manual", source, StringComparison.Ordinal);
-        Assert.Contains("StartupWorkerCategory.DisabledOnError", source, StringComparison.Ordinal);
         Assert.Contains("MandatoryStartupInitialization", source, StringComparison.Ordinal);
-        Assert.Contains("LibraryRealtimeScanService", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LibraryRealtimeScanService", source, StringComparison.Ordinal);
     }
 
     [Fact]
