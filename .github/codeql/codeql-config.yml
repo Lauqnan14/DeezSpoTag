@@ -4,4 +4,8 @@ paths-ignore:
   - "**/bin/**"
   - "**/obj/**"
   - "codeql-results/**"
+  - "codeql-db-*/**"
   - "Tools/AppleMusicWrapper/source/build/**"
+  - "Tools/**/build/**"
+  - "**/CMakeFiles/**"
+  - "**/compiler_depend.ts"

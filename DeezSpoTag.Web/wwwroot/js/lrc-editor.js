@@ -566,24 +566,20 @@
         }
     }
 
-    async function loadRawLyricsFromFile(path, silent = false) {
+    async function loadRawLyricsFromFile(path) {
         if (!path) {
             return;
         }
         try {
             const response = await fetch(`/api/lrc/file/txt?path=${encodeURIComponent(path)}`);
             if (!response.ok) {
-                if (!silent) {
-                    uiAlert('TXT file not found.', { title: 'TXT Not Found' });
-                }
+                uiAlert('TXT file not found.', { title: 'TXT Not Found' });
                 return;
             }
             const payload = await response.json();
             applyRawLyricsText(payload.content || '');
         } catch (error) {
-            if (!silent) {
-                uiAlert('Failed to load TXT file.', { title: 'TXT Load Failed' });
-            }
+            uiAlert('Failed to load TXT file.', { title: 'TXT Load Failed' });
             console.debug('TXT file load failed', error);
         }
     }
