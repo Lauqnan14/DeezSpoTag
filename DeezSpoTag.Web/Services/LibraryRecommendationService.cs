@@ -43,6 +43,9 @@ public sealed class LibraryRecommendationService
     private const string EmptyPoolReason = "empty_pool";
     private const string GenerationQueuedReason = "generation_queued";
     private const string BackgroundGenerationFailedReason = "background_generation_failed";
+    private const string PersistFailedReason = "persist_failed";
+    private const string PersistTimedOutReason = "persist_timed_out";
+    private const int PersistedFailureReasonMaxLength = 240;
 
     private const int MaxDailyRecommendations = 50;
     private const int RecommendationPoolMultiplier = 3;
@@ -113,6 +116,11 @@ public sealed class LibraryRecommendationService
         string? StationImageUrl = null);
     private sealed record RecommendationBuildResult(RecommendationDetailDto? Detail, IReadOnlyList<string> ReasonCodes);
     private sealed record RecommendationBuildFailure(DateTimeOffset RecordedAtUtc, IReadOnlyList<string> ReasonCodes);
+    private sealed record PersistDailyPoolResult(bool Success, string? ReasonCode = null)
+    {
+        public static PersistDailyPoolResult Ok { get; } = new(true);
+        public static PersistDailyPoolResult Failed(string reasonCode) => new(false, reasonCode);
+    }
 
     private async Task<IReadOnlyList<FolderDto>> GetRecommendationEligibleFoldersAsync(CancellationToken cancellationToken)
     {
@@ -719,6 +727,17 @@ public sealed class LibraryRecommendationService
             return "Recommendation generation is running in the background. Refresh this tracklist shortly.";
         }
 
+        if (reasonCodes.Contains(PersistFailedReason, StringComparer.Ordinal)
+            || reasonCodes.Contains(PersistTimedOutReason, StringComparer.Ordinal))
+        {
+            return "Recommendation generation completed but failed to save. Try regenerating the station.";
+        }
+
+        if (reasonCodes.Contains(BackgroundGenerationFailedReason, StringComparer.Ordinal))
+        {
+            return "Recommendation generation failed in the background. Try regenerating the station.";
+        }
+
         if (reasonCodes.Contains("no_deezer_source_ids", StringComparer.Ordinal)
             || reasonCodes.Contains("no_library_tracks", StringComparer.Ordinal))
         {
@@ -903,7 +922,13 @@ public sealed class LibraryRecommendationService
             return;
         }
 
-        await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, _backgroundCancellationToken);
+        var persistResult = await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, _backgroundCancellationToken);
+        if (!persistResult.Success)
+        {
+            RecordDailyPoolBuildFailure(scope, dayLocal, [persistResult.ReasonCode ?? PersistFailedReason]);
+            return;
+        }
+
         _dailyPoolCache[cacheKey] = buildResult.Detail;
         ClearDailyPoolBuildFailure(scope, dayLocal);
         if (_logger.IsEnabled(LogLevel.Information))
@@ -1024,7 +1049,13 @@ public sealed class LibraryRecommendationService
             return;
         }
 
-        await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken);
+        var persistResult = await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken);
+        if (!persistResult.Success)
+        {
+            RecordDailyPoolBuildFailure(scope, dayLocal, [persistResult.ReasonCode ?? PersistFailedReason]);
+            return;
+        }
+
         _dailyPoolCache[cacheKey] = dailyPool.Detail;
         ClearDailyPoolBuildFailure(scope, dayLocal);
     }
@@ -1202,7 +1233,15 @@ public sealed class LibraryRecommendationService
             return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, buildResult.ReasonCodes);
         }
 
-        await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, cancellationToken);
+        var persistResult = await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, cancellationToken);
+        if (!persistResult.Success)
+        {
+            var reason = persistResult.ReasonCode ?? PersistFailedReason;
+            _dailyPoolCache.TryRemove(cacheKey, out _);
+            RecordDailyPoolBuildFailure(scope, dayLocal, [reason]);
+            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, [reason]);
+        }
+
         _dailyPoolCache[cacheKey] = buildResult.Detail;
         ClearDailyPoolBuildFailure(scope, dayLocal);
         return await GetRecommendationsAsync(libraryId, scope.StationId, scope.FolderId, limit, cancellationToken);
@@ -1424,30 +1463,24 @@ public sealed class LibraryRecommendationService
         }
         catch (OperationCanceledException ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    ex,
-                    "Daily recommendation build timed out for scope {ScopeKey}.",
-                    scope.ScopeKey);
-            }
+            _logger.LogWarning(
+                ex,
+                "Daily recommendation build timed out for scope {ScopeKey}.",
+                scope.ScopeKey);
 
             return null;
         }
         catch (Exception ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    ex,
-                    "Failed to load persisted recommendation daily pool for scope {ScopeKey}.",
-                    scope.ScopeKey);
-            }
+            _logger.LogWarning(
+                ex,
+                "Failed to load persisted recommendation daily pool for scope {ScopeKey}.",
+                scope.ScopeKey);
             return null;
         }
     }
 
-    private async Task PersistDailyPoolAsync(
+    private async Task<PersistDailyPoolResult> PersistDailyPoolAsync(
         RecommendationScope scope,
         DateOnly dayUtc,
         RecommendationDetailDto detail,
@@ -1455,7 +1488,7 @@ public sealed class LibraryRecommendationService
     {
         if (detail.Tracks.Count == 0)
         {
-            return;
+            return PersistDailyPoolResult.Failed(EmptyPoolReason);
         }
 
         try
@@ -1475,6 +1508,7 @@ public sealed class LibraryRecommendationService
                 BuildDailyPoolSnapshotId(dayUtc),
                 JsonSerializer.Serialize(payload),
                 cancellationToken);
+            return PersistDailyPoolResult.Ok;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1482,23 +1516,19 @@ public sealed class LibraryRecommendationService
         }
         catch (OperationCanceledException ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    ex,
-                    "Persisting recommendation daily pool timed out for scope {ScopeKey}.",
-                    scope.ScopeKey);
-            }
+            _logger.LogWarning(
+                ex,
+                "Persisting recommendation daily pool timed out for scope {ScopeKey}.",
+                scope.ScopeKey);
+            return PersistDailyPoolResult.Failed(PersistTimedOutReason);
         }
         catch (Exception ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    ex,
-                    "Failed to persist recommendation daily pool for scope {ScopeKey}.",
-                    scope.ScopeKey);
-            }
+            _logger.LogWarning(
+                ex,
+                "Failed to persist recommendation daily pool for scope {ScopeKey}.",
+                scope.ScopeKey);
+            return PersistDailyPoolResult.Failed(PersistFailedReason);
         }
     }
 
@@ -1861,10 +1891,8 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Shazam recognition failed for library track {TrackId}.", trackId);
-            }
+            var reason = BuildPersistedFailureReason("Shazam recognition failed", ex);
+            _logger.LogWarning(ex, "Shazam recognition failed for library track {TrackId}.", trackId);
             await _repository.UpsertTrackShazamCacheAsync(
                 new LibraryRepository.TrackShazamCacheUpsertInput(
                     trackId,
@@ -1875,7 +1903,7 @@ public sealed class LibraryRecommendationService
                     null,
                     Array.Empty<RecommendationTrackDto>(),
                     scannedAtUtc,
-                    "Shazam recognition failed."),
+                    reason),
                 cancellationToken);
             return null;
         }
@@ -1975,14 +2003,11 @@ public sealed class LibraryRecommendationService
         }
         catch (Exception ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    ex,
-                    "Shazam related-track fetch failed for track {TrackId} ({ShazamTrackId}).",
-                    trackId,
-                    recognizedTrack.ShazamTrackId);
-            }
+            _logger.LogWarning(
+                ex,
+                "Shazam related-track fetch failed for track {TrackId} ({ShazamTrackId}). Persisting matched recognition without related tracks.",
+                trackId,
+                recognizedTrack.ShazamTrackId);
             await PersistMatchedShazamCacheAsync(
                 trackId,
                 recognizedTrack,
@@ -1991,6 +2016,17 @@ public sealed class LibraryRecommendationService
                 cancellationToken);
             return null;
         }
+    }
+
+    private static string BuildPersistedFailureReason(string prefix, Exception exception)
+    {
+        var message = exception.Message?.Trim();
+        var reason = string.IsNullOrWhiteSpace(message)
+            ? prefix
+            : $"{prefix}: {message}";
+        return reason.Length <= PersistedFailureReasonMaxLength
+            ? reason
+            : reason[..PersistedFailureReasonMaxLength];
     }
 
     private async Task<List<RecommendationTrackDto>> BuildRelatedShazamRecommendationsAsync(

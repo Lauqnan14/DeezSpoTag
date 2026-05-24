@@ -364,8 +364,16 @@ public sealed class AppleExternalToolRunner
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return new ToolRunResult(false, string.Empty, true);
+            return new ToolRunResult(false, BuildToolExceptionMessage(toolName, ex), true);
         }
+    }
+
+    private static string BuildToolExceptionMessage(string toolName, Exception exception)
+    {
+        var message = exception.Message?.Trim();
+        return string.IsNullOrWhiteSpace(message)
+            ? $"{toolName} failed before producing output."
+            : $"{toolName} failed before producing output. {message}";
     }
 
     private static bool HasTool(string toolName, IReadOnlyList<string> aliases, string? explicitPathEnvVar)

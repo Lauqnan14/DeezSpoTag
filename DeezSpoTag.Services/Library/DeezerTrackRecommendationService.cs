@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Library;
 
@@ -20,6 +21,7 @@ public sealed class DeezerTrackRecommendationService
     private const string AlbumKey = "album";
     private readonly LibraryRepository _repository;
     private readonly DeezerGatewayService _deezerGatewayService;
+    private readonly ILogger<DeezerTrackRecommendationService> _logger;
     private readonly ConcurrentDictionary<string, RecommendationDetailDto> _dailyCache = new(StringComparer.Ordinal);
 
     private sealed class RecommendationAccumulator
@@ -45,10 +47,12 @@ public sealed class DeezerTrackRecommendationService
 
     public DeezerTrackRecommendationService(
         LibraryRepository repository,
-        DeezerGatewayService deezerGatewayService)
+        DeezerGatewayService deezerGatewayService,
+        ILogger<DeezerTrackRecommendationService> logger)
     {
         _repository = repository;
         _deezerGatewayService = deezerGatewayService;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<RecommendationStationDto>> GetStationsAsync(
@@ -155,13 +159,30 @@ public sealed class DeezerTrackRecommendationService
             {
                 throw;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 accumulator.FailedSeedLoads++;
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "Deezer recommendation seed load failed for seed {SeedId} ({SeedIndex}/{SeedCount}).",
+                        orderedSeeds[seedIndex],
+                        seedIndex + 1,
+                        maxSeedsToProbe);
+                }
             }
         }
 
         AppendOverflowRecommendationTracks(accumulator, cappedLimit);
+        if (accumulator.FailedSeedLoads > 0)
+        {
+            _logger.LogWarning(
+                "Deezer recommendation generation completed with {FailedSeedLoads} failed seed loads out of {SeedCount} probed seeds.",
+                accumulator.FailedSeedLoads,
+                maxSeedsToProbe);
+        }
+
         return accumulator.DestinationTracks;
     }
 

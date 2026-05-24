@@ -306,10 +306,11 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Shazam search failed for query '{Query}' and file {Path}.", LogSanitizer.OneLine(query), LogSanitizer.OneLine(filePath));
-            }
+            _logger.LogWarning(
+                ex,
+                "Shazam search failed for query '{Query}' and file {Path}. Returning no search candidates for this query.",
+                LogSanitizer.OneLine(query),
+                LogSanitizer.OneLine(filePath));
             return Array.Empty<ShazamTrackCard>();
         }
     }
@@ -996,10 +997,10 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Shazam track enrichment lookup failed for trackId {TrackId}.", ported.TrackId);
-            }
+            _logger.LogWarning(
+                ex,
+                "Shazam track enrichment lookup failed for trackId {TrackId}. Falling back to recognizer metadata.",
+                ported.TrackId);
             return null;
         }
     }
@@ -1064,10 +1065,10 @@ public sealed class ShazamRecognitionService
         }
         catch (Exception ex)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Shazam detail lookup failed for track {TrackId}.", card.Id);
-            }
+            _logger.LogWarning(
+                ex,
+                "Shazam detail lookup failed for track {TrackId}. Keeping search result metadata.",
+                card.Id);
             return card;
         }
     }

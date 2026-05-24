@@ -979,8 +979,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
         catch (Exception ex)
         {
-            LogStagingEnhancementGate($"download staging scan failed ({ex.Message})");
-            return true;
+            LogStagingEnhancementScanBypass(ex, $"download staging scan failed ({ex.Message}); scheduled enhancement will continue");
+            return false;
         }
 
         _lastStagingGateLogAt = null;
@@ -1014,6 +1014,31 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             now,
             "info",
             $"Automation: enhancement deferred by staging gate ({reason})."));
+    }
+
+    private void LogStagingEnhancementScanBypass(Exception exception, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (string.Equals(reason, _lastStagingGateLogReason, StringComparison.Ordinal)
+            && _lastStagingGateLogAt.HasValue
+            && now - _lastStagingGateLogAt.Value < StagingGateLogThrottle)
+        {
+            return;
+        }
+
+        _lastStagingGateLogAt = now;
+        _lastStagingGateLogReason = reason;
+
+        _logger.LogWarning(exception, "Automation: staging gate scan failed; scheduled enhancement will continue ({Reason}).", reason);
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            now,
+            "warning",
+            $"Automation: staging gate scan failed; scheduled enhancement will continue ({reason})."));
     }
 
     private bool TryResolveDownloadEnrichmentRoot(out string downloadRootPath, out string error)

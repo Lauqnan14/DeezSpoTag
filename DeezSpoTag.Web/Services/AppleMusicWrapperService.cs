@@ -884,13 +884,15 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 out var hasDevToken,
                 out var hasMusicToken,
                 out var accountInfoReachable,
-                out var storefrontId);
+                out var storefrontId,
+                out var accountInfoFailureReason);
 
             context.Host = candidate;
             context.AccountInfoReachable = accountInfoReachable;
             context.HasDevToken = hasDevToken;
             context.HasMusicToken = hasMusicToken;
             context.StorefrontId = storefrontId;
+            context.AccountInfoFailureReason = accountInfoFailureReason;
 
             if (tokenStateValid || accountInfoReachable)
             {
@@ -999,7 +1001,19 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         if (!context.AccountInfoReachable)
         {
-            return "Wrapper ports are open, but the account endpoint is not reachable yet.";
+            return string.IsNullOrWhiteSpace(context.AccountInfoFailureReason)
+                ? "Wrapper ports are open, but the account endpoint is not reachable yet."
+                : $"Wrapper ports are open, but the account endpoint is not reachable yet. {context.AccountInfoFailureReason}";
+        }
+
+        if (!context.HasDevToken)
+        {
+            return "Wrapper account endpoint is reachable, but the Apple developer token is missing.";
+        }
+
+        if (!context.HasMusicToken)
+        {
+            return "Wrapper account endpoint is reachable, but the Apple music user token is missing.";
         }
 
         return string.IsNullOrWhiteSpace(context.StorefrontId)
@@ -2313,13 +2327,15 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 out var hasDevToken,
                 out var hasMusicToken,
                 out var accountInfoReachable,
-                out var storefrontId);
+                out var storefrontId,
+                out var accountInfoFailureReason);
 
             context.Host = candidate;
             context.AccountInfoReachable = accountInfoReachable;
             context.HasDevToken = hasDevToken;
             context.HasMusicToken = hasMusicToken;
             context.StorefrontId = storefrontId;
+            context.AccountInfoFailureReason = accountInfoFailureReason;
 
             if (tokenStateValid || accountInfoReachable)
             {
@@ -2861,7 +2877,14 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
 
         if (!context.AccountInfoReachable)
         {
-            return $"Wrapper is running, but account endpoint {context.Host}:30020 is not ready yet. Authentication may still be in progress.";
+            return string.IsNullOrWhiteSpace(context.AccountInfoFailureReason)
+                ? $"Wrapper is running, but account endpoint {context.Host}:30020 is not ready yet. Authentication may still be in progress."
+                : $"Wrapper is running, but account endpoint {context.Host}:30020 is not ready yet. {context.AccountInfoFailureReason}";
+        }
+
+        if (!context.HasDevToken)
+        {
+            return "Wrapper reachable, but the Apple developer token is missing. Login not completed.";
         }
 
         if (context.HasDevToken && !context.HasMusicToken)
@@ -2926,17 +2949,19 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         out bool hasDevToken,
         out bool hasMusicToken,
         out bool reachable,
-        out string? storefrontId)
+        out string? storefrontId,
+        out string? failureReason)
     {
         hasDevToken = false;
         hasMusicToken = false;
         reachable = false;
         storefrontId = null;
+        failureReason = null;
         for (var attempt = 0; attempt < 3; attempt++)
         {
             try
             {
-                if (!TryReadExternalAccountInfo(host, out var accountInfo, out reachable))
+                if (!TryReadExternalAccountInfo(host, out var accountInfo, out reachable, out failureReason))
                 {
                     return false;
                 }
@@ -2946,12 +2971,24 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 hasMusicToken = accountInfo.HasMusicToken;
                 return hasDevToken && hasMusicToken;
             }
-            catch (Exception) when (attempt < 2)
+            catch (OperationCanceledException ex) when (attempt < 2)
             {
+                failureReason = BuildExternalAccountInfoFailureReason(ex);
                 global::System.Threading.Thread.Sleep(150);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (attempt < 2)
             {
+                failureReason = BuildExternalAccountInfoFailureReason(ex);
+                global::System.Threading.Thread.Sleep(150);
+            }
+            catch (OperationCanceledException ex)
+            {
+                failureReason = BuildExternalAccountInfoFailureReason(ex);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                failureReason = BuildExternalAccountInfoFailureReason(ex);
                 return false;
             }
         }
@@ -2959,10 +2996,15 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         return false;
     }
 
-    private static bool TryReadExternalAccountInfo(string host, out ExternalAccountInfo accountInfo, out bool reachable)
+    private static bool TryReadExternalAccountInfo(
+        string host,
+        out ExternalAccountInfo accountInfo,
+        out bool reachable,
+        out string? failureReason)
     {
         accountInfo = ExternalAccountInfo.Empty;
         reachable = false;
+        failureReason = null;
 
         var url = new UriBuilder(Uri.UriSchemeHttp, host, 30020).Uri;
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -2970,13 +3012,28 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         reachable = true;
         if (!response.IsSuccessStatusCode)
         {
+            failureReason = $"Account endpoint returned HTTP {(int)response.StatusCode}.";
             return false;
         }
 
         using var stream = response.Content.ReadAsStream();
         using var reader = new StreamReader(stream);
         var json = reader.ReadToEnd();
-        return TryParseExternalAccountInfo(json, out accountInfo);
+        if (!TryParseExternalAccountInfo(json, out accountInfo))
+        {
+            failureReason = "Account endpoint returned an empty or malformed token payload.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string BuildExternalAccountInfoFailureReason(Exception exception)
+    {
+        var message = exception.Message?.Trim();
+        return string.IsNullOrWhiteSpace(message)
+            ? "Account endpoint check failed."
+            : $"Account endpoint check failed. {message}";
     }
 
     private static bool TryParseExternalAccountInfo(string? json, out ExternalAccountInfo accountInfo)
@@ -3113,6 +3170,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         public bool HasDevToken { get; set; }
         public bool HasMusicToken { get; set; }
         public string? StorefrontId { get; set; }
+        public string? AccountInfoFailureReason { get; set; }
         public bool SharedControlReady { get; set; }
         public string? SharedControlDetails { get; set; }
     }
@@ -3132,6 +3190,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         public bool HasDevToken { get; set; }
         public bool HasMusicToken { get; set; }
         public string? StorefrontId { get; set; }
+        public string? AccountInfoFailureReason { get; set; }
         public List<string> HostsWithPorts { get; } = new();
         public bool SharedControlReady { get; set; }
         public string? SharedControlDetails { get; set; }

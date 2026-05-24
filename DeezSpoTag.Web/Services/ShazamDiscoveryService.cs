@@ -298,10 +298,7 @@ public sealed partial class ShazamDiscoveryService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Shazam port discovery bridge failed for mode {Mode}.", mode);
-            }
+            _logger.LogWarning(ex, "Shazam port discovery bridge failed for mode {Mode}.", mode);
             return null;
         }
     }
