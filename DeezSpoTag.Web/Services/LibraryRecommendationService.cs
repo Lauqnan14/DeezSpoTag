@@ -8,6 +8,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Hosting;
 using GwTrack = DeezSpoTag.Core.Models.Deezer.GwTrack;
 
 namespace DeezSpoTag.Web.Services;
@@ -50,6 +51,7 @@ public sealed class LibraryRecommendationService
     private const int ShazamInlineRefreshBudget = 12;
     private const int ShazamBackgroundBatchSize = 120;
     private static readonly TimeSpan ShazamCacheTtl = TimeSpan.FromDays(14);
+    private static readonly TimeSpan DailyPoolBuildFailureTtl = TimeSpan.FromMinutes(10);
     private static readonly HashSet<string> RejectedDerivativeTerms = new(StringComparer.OrdinalIgnoreCase)
     {
         "cover",
@@ -68,14 +70,18 @@ public sealed class LibraryRecommendationService
     private readonly SongLinkResolver _songLinkResolver;
     private readonly string _recommendationArtworkRootPath;
     private readonly ILogger<LibraryRecommendationService> _logger;
+    private readonly CancellationToken _backgroundCancellationToken;
     private readonly ConcurrentDictionary<string, RecommendationDetailDto> _dailyPoolCache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _backgroundScans = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _backgroundDailyPoolBuilds = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, RecommendationBuildFailure> _dailyPoolBuildFailures = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RecommendationTrackDto> _deezerRecommendationMetadataCache = new(StringComparer.Ordinal);
 
     public LibraryRecommendationService(
         LibraryRecommendationCollaborators collaborators,
         IWebHostEnvironment webHostEnvironment,
-        ILogger<LibraryRecommendationService> logger)
+        ILogger<LibraryRecommendationService> logger,
+        IHostApplicationLifetime? hostApplicationLifetime = null)
     {
         _deezerRecommendations = collaborators.DeezerRecommendations;
         _repository = collaborators.Repository;
@@ -88,6 +94,7 @@ public sealed class LibraryRecommendationService
             ? string.Empty
             : Path.Join(webHostEnvironment.WebRootPath, "images", "recommendations");
         _logger = logger;
+        _backgroundCancellationToken = hostApplicationLifetime?.ApplicationStopping ?? CancellationToken.None;
     }
 
     private sealed record RecommendationScope(
@@ -102,6 +109,7 @@ public sealed class LibraryRecommendationService
         IReadOnlyList<RecommendationTrackDto> Tracks,
         string? StationImageUrl = null);
     private sealed record RecommendationBuildResult(RecommendationDetailDto? Detail, IReadOnlyList<string> ReasonCodes);
+    private sealed record RecommendationBuildFailure(DateTimeOffset RecordedAtUtc, IReadOnlyList<string> ReasonCodes);
 
     private async Task<IReadOnlyList<FolderDto>> GetRecommendationEligibleFoldersAsync(CancellationToken cancellationToken)
     {
@@ -202,7 +210,7 @@ public sealed class LibraryRecommendationService
 
     private static string? ResolveRecommendationArtworkUrl(
         string stationId,
-        Dictionary<string, string> artworkAssignments)
+        IReadOnlyDictionary<string, string> artworkAssignments)
     {
         if (string.IsNullOrWhiteSpace(stationId) || artworkAssignments.Count == 0)
         {
@@ -212,15 +220,6 @@ public sealed class LibraryRecommendationService
         return artworkAssignments.TryGetValue(stationId, out var imageUrl)
             ? imageUrl
             : null;
-    }
-
-    private async Task<IReadOnlyDictionary<string, PlaylistWatchlistDto>> GetRecommendationWatchlistMapAsync(
-        CancellationToken cancellationToken)
-    {
-        var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        return items
-            .Where(item => string.Equals(item.Source, RecommendationSource, StringComparison.OrdinalIgnoreCase))
-            .ToDictionary(item => item.SourceId, item => item, StringComparer.OrdinalIgnoreCase);
     }
 
     private Dictionary<string, string> BuildRecommendationArtworkAssignments(
@@ -456,17 +455,13 @@ public sealed class LibraryRecommendationService
 
         var nowLocal = DateTimeOffset.Now;
         var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
-        var watchlistMap = await GetRecommendationWatchlistMapAsync(cancellationToken);
         var stations = new List<RecommendationStationDto>(folders.Count);
         foreach (var folder in folders.OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase))
         {
             var scope = BuildScope(libraryId, folder);
             var stationId = scope.StationId;
 
-            watchlistMap.TryGetValue(stationId, out var watchlistEntry);
-            var imageUrl = !string.IsNullOrWhiteSpace(watchlistEntry?.ImageUrl)
-                ? watchlistEntry.ImageUrl
-                : ResolveRecommendationArtworkUrl(stationId, artworkAssignments);
+            var imageUrl = ResolveRecommendationArtworkUrl(stationId, artworkAssignments);
             var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
             var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
             var persistedPool = await GetDailyPoolAsync(
@@ -525,11 +520,7 @@ public sealed class LibraryRecommendationService
 
         var nowLocal = DateTimeOffset.Now;
         var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
-        var watchlistMap = await GetRecommendationWatchlistMapAsync(cancellationToken);
-        watchlistMap.TryGetValue(scope.StationId, out var watchlistEntry);
-        var stationImageUrl = !string.IsNullOrWhiteSpace(watchlistEntry?.ImageUrl)
-            ? watchlistEntry.ImageUrl
-            : ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
+        var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
 
         var cappedLimit = Math.Clamp(limit, 1, MaxDailyRecommendations);
         var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
@@ -544,16 +535,46 @@ public sealed class LibraryRecommendationService
             cancellationToken);
         if (basePool == null)
         {
-            await RefreshShazamScopeAsync(scope, cancellationToken);
-            var buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
-            if (buildResult.Detail is null)
+            if (TryGetRecentBuildFailure(scope, dayLocal, out var failureReasons))
             {
-                return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, buildResult.ReasonCodes);
+                return CreateUnavailableRecommendationDetail(
+                    scope,
+                    stationImageUrl,
+                    dayLocal,
+                    failureReasons);
             }
 
-            basePool = buildResult.Detail;
-            await PersistDailyPoolAsync(scope, dayLocal, basePool, cancellationToken);
-            _dailyPoolCache[cacheKey] = basePool;
+            var libraryTrackIds = await _repository.GetTrackIdsForLibraryScopeAsync(
+                scope.LibraryId,
+                scope.FolderId,
+                cancellationToken);
+            if (libraryTrackIds.Count == 0)
+            {
+                return CreateUnavailableRecommendationDetail(
+                    scope,
+                    stationImageUrl,
+                    dayLocal,
+                    ["no_library_tracks"]);
+            }
+
+            ClearDailyPoolBuildFailure(scope, dayLocal);
+            if (_shazamRecognitionService.IsAvailable)
+            {
+                StartBackgroundShazamRefresh(scope, explicitTrackIds: null);
+            }
+            StartBackgroundDailyPoolGeneration(scope, dayLocal, allRecommendationFolders, artworkAssignments);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Recommendation generation queued for scope {ScopeKey} ({DayLocal}) from on-demand request.",
+                    scope.ScopeKey,
+                    dayLocal);
+            }
+            return CreateUnavailableRecommendationDetail(
+                scope,
+                stationImageUrl,
+                dayLocal,
+                ["generation_queued"]);
         }
 
         var ignoredTrackIds = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(
@@ -651,6 +672,7 @@ public sealed class LibraryRecommendationService
             ? reasonCodes
             : ["empty_pool"];
         var message = BuildRecommendationUnavailableMessage(reasons);
+        var isGenerating = reasonCodes.Contains("generation_queued", StringComparer.Ordinal);
         var station = new RecommendationStationDto(
             scope.StationId,
             $"Recommendations - {scope.FolderName}",
@@ -659,7 +681,7 @@ public sealed class LibraryRecommendationService
             scope.FolderName,
             0,
             stationImageUrl,
-            "unavailable",
+            isGenerating ? "generating" : "unavailable",
             reasons,
             message);
 
@@ -667,13 +689,18 @@ public sealed class LibraryRecommendationService
             station,
             Array.Empty<RecommendationTrackDto>(),
             DateTimeOffset.UtcNow,
-            "unavailable",
+            isGenerating ? "generating" : "unavailable",
             reasons,
             message);
     }
 
     private static string BuildRecommendationUnavailableMessage(IReadOnlyList<string> reasonCodes)
     {
+        if (reasonCodes.Contains("generation_queued", StringComparer.Ordinal))
+        {
+            return "Recommendation generation is running in the background. Refresh this tracklist shortly.";
+        }
+
         if (reasonCodes.Contains("no_deezer_source_ids", StringComparer.Ordinal)
             || reasonCodes.Contains("no_library_tracks", StringComparer.Ordinal))
         {
@@ -686,6 +713,170 @@ public sealed class LibraryRecommendationService
         }
 
         return "No recommendations are available for this station today.";
+    }
+
+    private static string BuildDailyPoolBuildKey(RecommendationScope scope, DateOnly dayLocal)
+        => $"{scope.ScopeKey}:{dayLocal:yyyyMMdd}";
+
+    private bool TryEnterDailyPoolBuild(RecommendationScope scope, DateOnly dayLocal, out string buildKey)
+    {
+        buildKey = BuildDailyPoolBuildKey(scope, dayLocal);
+        return _backgroundDailyPoolBuilds.TryAdd(buildKey, 0);
+    }
+
+    private void ExitDailyPoolBuild(string buildKey)
+    {
+        _backgroundDailyPoolBuilds.TryRemove(buildKey, out _);
+    }
+
+    private bool TryGetRecentBuildFailure(
+        RecommendationScope scope,
+        DateOnly dayLocal,
+        out IReadOnlyList<string> reasonCodes)
+    {
+        reasonCodes = Array.Empty<string>();
+        var buildKey = BuildDailyPoolBuildKey(scope, dayLocal);
+        if (!_dailyPoolBuildFailures.TryGetValue(buildKey, out var failure))
+        {
+            return false;
+        }
+
+        if (DateTimeOffset.UtcNow - failure.RecordedAtUtc <= DailyPoolBuildFailureTtl)
+        {
+            reasonCodes = failure.ReasonCodes.Count > 0
+                ? failure.ReasonCodes
+                : ["empty_pool"];
+            return true;
+        }
+
+        _dailyPoolBuildFailures.TryRemove(buildKey, out _);
+        return false;
+    }
+
+    private void RecordDailyPoolBuildFailure(
+        RecommendationScope scope,
+        DateOnly dayLocal,
+        IReadOnlyList<string> reasonCodes)
+    {
+        _dailyPoolBuildFailures[BuildDailyPoolBuildKey(scope, dayLocal)] = new RecommendationBuildFailure(
+            DateTimeOffset.UtcNow,
+            reasonCodes.Count > 0 ? reasonCodes : ["empty_pool"]);
+    }
+
+    private void ClearDailyPoolBuildFailure(RecommendationScope scope, DateOnly dayLocal)
+    {
+        _dailyPoolBuildFailures.TryRemove(BuildDailyPoolBuildKey(scope, dayLocal), out _);
+    }
+
+    private void StartBackgroundDailyPoolGeneration(
+        RecommendationScope requestedScope,
+        DateOnly dayLocal,
+        IReadOnlyList<FolderDto> allRecommendationFolders,
+        IReadOnlyDictionary<string, string> artworkAssignments)
+    {
+        if (!TryEnterDailyPoolBuild(requestedScope, dayLocal, out var key))
+        {
+            return;
+        }
+
+        _ = RunBackgroundDailyPoolGenerationAsync(dayLocal, allRecommendationFolders, artworkAssignments, requestedScope.ScopeKey, key);
+    }
+
+    private async Task RunBackgroundDailyPoolGenerationAsync(
+        DateOnly dayLocal,
+        IReadOnlyList<FolderDto> allRecommendationFolders,
+        IReadOnlyDictionary<string, string> artworkAssignments,
+        string requestedScopeKey,
+        string ownershipKey)
+    {
+        try
+        {
+            foreach (var folder in allRecommendationFolders
+                         .Where(folder => folder.LibraryId.HasValue && folder.LibraryId.Value > 0)
+                         .OrderBy(folder => string.Equals(BuildScope(folder.LibraryId!.Value, folder).ScopeKey, requestedScopeKey, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                         .ThenBy(folder => folder.LibraryId!.Value)
+                         .ThenBy(folder => folder.DisplayName, StringComparer.OrdinalIgnoreCase))
+            {
+                var scope = BuildScope(folder.LibraryId!.Value, folder);
+                var scopeBuildKey = BuildDailyPoolBuildKey(scope, dayLocal);
+                if (!string.Equals(scopeBuildKey, ownershipKey, StringComparison.Ordinal)
+                    && !TryEnterDailyPoolBuild(scope, dayLocal, out scopeBuildKey))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    _backgroundCancellationToken.ThrowIfCancellationRequested();
+                    var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
+
+                    var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
+                    if (_dailyPoolCache.TryGetValue(cacheKey, out _))
+                    {
+                        continue;
+                    }
+
+                    var existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, _backgroundCancellationToken);
+                    if (existingPool is not null)
+                    {
+                        _dailyPoolCache[cacheKey] = existingPool;
+                        continue;
+                    }
+
+                    if (_shazamRecognitionService.IsAvailable)
+                    {
+                        StartBackgroundShazamRefresh(scope, explicitTrackIds: null);
+                    }
+
+                    var buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, _backgroundCancellationToken);
+                    if (buildResult.Detail is null)
+                    {
+                        RecordDailyPoolBuildFailure(scope, dayLocal, buildResult.ReasonCodes);
+                        continue;
+                    }
+
+                    await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, _backgroundCancellationToken);
+                    _dailyPoolCache[cacheKey] = buildResult.Detail;
+                    ClearDailyPoolBuildFailure(scope, dayLocal);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "Background recommendation pool generated for scope {ScopeKey} ({DayLocal}).",
+                            scope.ScopeKey,
+                            dayLocal);
+                    }
+                }
+                catch (OperationCanceledException) when (_backgroundCancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    RecordDailyPoolBuildFailure(scope, dayLocal, ["background_generation_failed"]);
+                    _logger.LogWarning(
+                        ex,
+                        "Background recommendation generation failed for scope {ScopeKey}.",
+                        scope.ScopeKey);
+                }
+                finally
+                {
+                    ExitDailyPoolBuild(scopeBuildKey);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (_backgroundCancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Background recommendation generation failed before all scopes could be processed.");
+        }
+        finally
+        {
+            ExitDailyPoolBuild(ownershipKey);
+        }
     }
 
     public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellationToken = default)
@@ -704,7 +895,6 @@ public sealed class LibraryRecommendationService
         var nowLocal = DateTimeOffset.Now;
         var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
         var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
-        var watchlistMap = await GetRecommendationWatchlistMapAsync(cancellationToken);
 
         PruneOldCache(dayLocal);
 
@@ -716,10 +906,7 @@ public sealed class LibraryRecommendationService
             cancellationToken.ThrowIfCancellationRequested();
 
             var scope = BuildScope(folder.LibraryId!.Value, folder);
-            watchlistMap.TryGetValue(scope.StationId, out var watchlistEntry);
-            var stationImageUrl = !string.IsNullOrWhiteSpace(watchlistEntry?.ImageUrl)
-                ? watchlistEntry.ImageUrl
-                : ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
+            var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
 
             try
             {
@@ -731,13 +918,37 @@ public sealed class LibraryRecommendationService
                     continue;
                 }
 
-                await RefreshShazamScopeAsync(scope, cancellationToken);
-
-                var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
-                if (dailyPool.Detail is not null)
+                if (!TryEnterDailyPoolBuild(scope, dayLocal, out var buildKey))
                 {
-                    await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken);
-                    _dailyPoolCache[cacheKey] = dailyPool.Detail;
+                    continue;
+                }
+
+                try
+                {
+                    existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+                    if (existingPool is not null)
+                    {
+                        _dailyPoolCache[cacheKey] = existingPool;
+                        continue;
+                    }
+
+                    await RefreshShazamScopeAsync(scope, cancellationToken);
+
+                    var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+                    if (dailyPool.Detail is not null)
+                    {
+                        await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken);
+                        _dailyPoolCache[cacheKey] = dailyPool.Detail;
+                        ClearDailyPoolBuildFailure(scope, dayLocal);
+                    }
+                    else
+                    {
+                        RecordDailyPoolBuildFailure(scope, dayLocal, dailyPool.ReasonCodes);
+                    }
+                }
+                finally
+                {
+                    ExitDailyPoolBuild(buildKey);
                 }
             }
             catch (OperationCanceledException)
@@ -898,18 +1109,29 @@ public sealed class LibraryRecommendationService
         var nowLocal = DateTimeOffset.Now;
         var dayLocal = DateOnly.FromDateTime(nowLocal.DateTime);
         var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
-        var watchlistMap = await GetRecommendationWatchlistMapAsync(cancellationToken);
-        watchlistMap.TryGetValue(scope.StationId, out var watchlistEntry);
-        var stationImageUrl = !string.IsNullOrWhiteSpace(watchlistEntry?.ImageUrl)
-            ? watchlistEntry.ImageUrl
-            : ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
+        var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
 
-        await RefreshShazamScopeAsync(scope, cancellationToken);
-        var buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+        if (!TryEnterDailyPoolBuild(scope, dayLocal, out var buildKey))
+        {
+            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, ["generation_queued"]);
+        }
+
+        RecommendationBuildResult buildResult;
+        try
+        {
+            await RefreshShazamScopeAsync(scope, cancellationToken);
+            buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+        }
+        finally
+        {
+            ExitDailyPoolBuild(buildKey);
+        }
+
         var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
         if (buildResult.Detail is null)
         {
             _dailyPoolCache.TryRemove(cacheKey, out _);
+            RecordDailyPoolBuildFailure(scope, dayLocal, buildResult.ReasonCodes);
             await _repository.DeletePlaylistTrackCandidateCacheAsync(
                 DailyPoolCacheSource,
                 scope.ScopeKey,
@@ -919,6 +1141,7 @@ public sealed class LibraryRecommendationService
 
         await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, cancellationToken);
         _dailyPoolCache[cacheKey] = buildResult.Detail;
+        ClearDailyPoolBuildFailure(scope, dayLocal);
         return await GetRecommendationsAsync(libraryId, scope.StationId, scope.FolderId, limit, cancellationToken);
     }
 

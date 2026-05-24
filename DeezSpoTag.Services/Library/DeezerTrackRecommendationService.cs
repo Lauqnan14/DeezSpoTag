@@ -2,6 +2,7 @@ using DeezSpoTag.Integrations.Deezer;
 using Newtonsoft.Json.Linq;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -13,6 +14,8 @@ public sealed class DeezerTrackRecommendationService
     private const int SeedProbeLimit = 32;
     private const int MaxArtistOccurrences = 2;
     private const int MaxAlbumOccurrences = 2;
+    private static readonly TimeSpan TrackMixRequestTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan DailyBuildSeedProbeBudget = TimeSpan.FromSeconds(45);
     private const string ArtistsKey = "ARTISTS";
     private const string AlbumKey = "album";
     private readonly LibraryRepository _repository;
@@ -129,17 +132,36 @@ public sealed class DeezerTrackRecommendationService
     {
         var accumulator = new RecommendationAccumulator(cappedLimit);
         var maxSeedsToProbe = Math.Min(orderedSeeds.Count, SeedProbeLimit);
+        var probeTimer = Stopwatch.StartNew();
 
         for (var seedIndex = 0; seedIndex < maxSeedsToProbe; seedIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (seedIndex > 0 && probeTimer.Elapsed >= DailyBuildSeedProbeBudget)
+            {
+                break;
+            }
+
             if (accumulator.DestinationTracks.Count >= cappedLimit && accumulator.OverflowTracks.Count >= cappedLimit)
             {
                 break;
             }
 
             var seedId = orderedSeeds[seedIndex];
-            var mixTracks = await LoadTrackMixAsync(seedId, cancellationToken);
+            IReadOnlyList<RecommendationTrackDto> mixTracks;
+            try
+            {
+                mixTracks = await LoadTrackMixAsync(seedId, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
             AddUniqueRecommendationTracks(
                 mixTracks,
                 normalizedLibraryIds,
@@ -277,8 +299,9 @@ public sealed class DeezerTrackRecommendationService
         string sourceTrackId,
         CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
-        var response = await _deezerGatewayService.GetContextualTrackMixAsync(new[] { sourceTrackId });
+        var response = await _deezerGatewayService
+            .GetContextualTrackMixAsync(new[] { sourceTrackId })
+            .WaitAsync(TrackMixRequestTimeout, cancellationToken);
         if (response is null)
         {
             return Array.Empty<RecommendationTrackDto>();

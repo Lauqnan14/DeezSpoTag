@@ -2640,7 +2640,30 @@ async function loadRecommendationsTracklist() {
 
     const mapped = mapRecommendationsTracklist(payload);
     await loadIgnoredTracks();
-    renderTracklist(mapped);
+    const status = String(payload.status || payload.station?.status || '').trim().toLowerCase();
+    const isGenerating = status === 'generating';
+    renderTracklist(mapped, { allowEmptyTracks: isGenerating });
+    if (isGenerating) {
+        const message = payload.message || payload.station?.message || 'Recommendation generation is running in the background.';
+        setTracksEmptyMessage(message);
+        scheduleRecommendationsReload();
+    } else {
+        globalThis.recommendationReloadAttempt = 0;
+    }
+}
+
+function scheduleRecommendationsReload() {
+    const currentAttempt = Number.parseInt(String(globalThis.recommendationReloadAttempt || '0'), 10) || 0;
+    if (currentAttempt >= 24) {
+        return;
+    }
+
+    globalThis.recommendationReloadAttempt = currentAttempt + 1;
+    setTimeout(() => {
+        if (tracklistSource === 'recommendations') {
+            void loadRecommendationsTracklist();
+        }
+    }, 5000);
 }
 
 function mapRecommendationsTracklist(payload) {
