@@ -2406,27 +2406,27 @@
             <div class="downloads-tab">
                 <div class="downloads-layout">
                     <div class="downloads-actions">
-                        <button class="action-btn action-btn-amber action-btn-sm" id="pauseBtn" onclick="pauseQueue()">
+                        <button class="action-btn action-btn-amber action-btn-sm" id="pauseBtn" type="button" onclick="pauseQueue()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5h3v14H8zm5 0h3v14h-3z"/></svg>
                             Pause
                         </button>
-                        <button class="action-btn action-btn-sm" id="resumeBtn" onclick="resumeQueue()">
+                        <button class="action-btn action-btn-sm" id="resumeBtn" type="button" onclick="resumeQueue()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>
                             Resume
                         </button>
-                        <button class="btn-danger action-btn action-btn-sm" id="cancelAllBtn" onclick="cancelAllTasks()">
+                        <button class="btn-danger action-btn action-btn-sm" id="cancelAllBtn" type="button" onclick="cancelAllTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm3.59 13.17-1.42 1.42L12 13.41l-2.17 2.18-1.42-1.42L10.59 12 8.41 9.83l1.42-1.42L12 10.59l2.17-2.18 1.42 1.42L13.41 12l2.18 2.17z"/></svg>
                             Cancel
                         </button>
-                        <button class="action-btn action-btn-sm" id="clearAllBtn" onclick="clearAllTasks()">
+                        <button class="action-btn action-btn-sm" id="clearAllBtn" type="button" onclick="clearAllTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 9v10H8V9h8zm-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1z"/></svg>
                             Clear
                         </button>
-                        <button class="action-btn action-btn-sm" id="clearCompletedBtn" onclick="clearCompletedTasks()">
+                        <button class="action-btn action-btn-sm" id="clearCompletedBtn" type="button" onclick="clearCompletedTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 7L9.97 15.03l-3.5-3.5-1.41 1.41 4.91 4.91L19.41 8.41zM13.41 8.41 12 7l-5.59 5.59L7.83 14z"/></svg>
                             Clear Completed
                         </button>
-                        <button class="action-btn action-btn-sm" id="clearCanceledBtn" onclick="clearCanceledTasks()">
+                        <button class="action-btn action-btn-sm" id="clearCanceledBtn" type="button" onclick="clearCanceledTasks()">
                             <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 13H7v-2h10v2z"/></svg>
                             Clear Canceled
                         </button>
@@ -2817,7 +2817,7 @@
                                     <p class="progress-details-label" id="metadata-progress-label">0 / 0 artists (0.0%)</p>
                                 </div>
                                 <div class="tool-card-footer">
-                                    <button id="metadata-update-button" class="action-btn action-btn-sm">Begin Update</button>
+                                    <button id="metadata-update-button" class="action-btn action-btn-sm" type="button">Begin Update</button>
                                     <button id="metadata-refresh-cache-button" class="action-btn action-btn-sm" type="button">Refresh Cache</button>
                                     <button id="metadata-cancel-button" class="action-btn action-btn-sm" type="button" disabled>Cancel Scan</button>
                                 </div>
@@ -2850,7 +2850,7 @@
                                     <p class="progress-details-label" id="media-scan-progress-label">0 / 0 items (0.0%)</p>
                                 </div>
                                 <div class="tool-card-footer">
-                                    <button id="media-scan-button" class="action-btn action-btn-sm">Run Scan</button>
+                                    <button id="media-scan-button" class="action-btn action-btn-sm" type="button">Run Scan</button>
                                 </div>
                             </div>
 
@@ -3044,7 +3044,15 @@ function loadActivityScript(key, src) {
     const promise = new Promise((resolve, reject) => {
         const existing = document.querySelector(`script[data-activity-script="${key}"]`);
         if (existing) {
-            resolve();
+            if (existing.dataset.activityLoaded === 'true') {
+                resolve();
+                return;
+            }
+            existing.addEventListener('load', () => resolve(), { once: true });
+            existing.addEventListener('error', () => {
+                existing.remove();
+                reject(new Error(`Failed to load ${src}`));
+            }, { once: true });
             return;
         }
 
@@ -3052,8 +3060,14 @@ function loadActivityScript(key, src) {
         script.src = src;
         script.async = true;
         script.dataset.activityScript = key;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error(`Failed to load ${src}`));
+        script.onload = () => {
+            script.dataset.activityLoaded = 'true';
+            resolve();
+        };
+        script.onerror = () => {
+            script.remove();
+            reject(new Error(`Failed to load ${src}`));
+        };
         document.body.appendChild(script);
     });
     promise.catch(() => activityLazyScripts.delete(key));
@@ -3535,6 +3549,21 @@ function notifyActivity(message, type = 'info') {
     }
 }
 
+async function runActivityButtonAction(button, action, options) {
+    if (!button || button.disabled) {
+        return;
+    }
+
+    button.disabled = true;
+    try {
+        await action();
+    } finally {
+        if (options?.restoreDisabled !== false) {
+            button.disabled = false;
+        }
+    }
+}
+
 function applyLibraryScanProgress(status, phaseLabel, progressLabel, progressBar, label) {
     if (!status) {
         return;
@@ -3657,15 +3686,18 @@ function initMetadataUpdater() {
 
     if (refreshCacheButton) {
         refreshCacheButton.addEventListener('click', async () => {
-            try {
-                const response = await activityFetch('/api/library/spotify-cache/refresh', { method: 'POST', keepalive: true });
-                if (!response.ok) {
-                    throw new Error(await response.text());
+            await runActivityButtonAction(refreshCacheButton, async () => {
+                try {
+                    const response = await activityFetch('/api/library/spotify-cache/refresh', { method: 'POST', keepalive: true });
+                    if (!response.ok) {
+                        throw new Error(await response.text());
+                    }
+                    notifyActivity('Metadata cache refresh started.');
+                    await refreshLibraryScanAndMetadataStatus();
+                } catch (error) {
+                    notifyActivity(`Metadata cache refresh failed: ${error?.message || error}`, 'error');
                 }
-                notifyActivity('Metadata cache refresh started.');
-            } catch (error) {
-                notifyActivity(`Metadata cache refresh failed: ${error?.message || error}`, 'error');
-            }
+            });
         });
     }
     if (cancelButton) {
@@ -3698,10 +3730,17 @@ function initMetadataUpdater() {
     }
 
     updateButton?.addEventListener('click', async () => {
+        if (updateButton.disabled) {
+            return;
+        }
+
+        updateButton.disabled = true;
         phaseLabel && (phaseLabel.textContent = 'Metadata update started');
         progressLabel && (progressLabel.textContent = 'Preparing run...');
         progressBar && (progressBar.style.width = '5%');
         await runMetadataUpdater(false);
+        const refreshed = await refreshLibraryScanAndMetadataStatus();
+        updateButton.disabled = refreshed?.metadataRunning === true;
     });
 }
 
@@ -3870,10 +3909,7 @@ function isMediaOperationsTabActive() {
     return !!pane?.classList.contains('active');
 }
 
-function startLibraryScanStatusPolling() {
-    if (libraryScanPollId) {
-        return;
-    }
+async function refreshLibraryScanAndMetadataStatus() {
     const dbPhase = document.getElementById('db-phase-label');
     const dbProgressLabel = document.getElementById('db-progress-label');
     const dbProgressBar = document.getElementById('db-progress-bar');
@@ -3883,42 +3919,53 @@ function startLibraryScanStatusPolling() {
     const metadataProgressLabel = document.getElementById('metadata-progress-label');
     const metadataProgressBar = document.getElementById('metadata-progress-bar');
     const metadataUpdate = document.getElementById('metadata-update-button');
+    let metadataRunning = null;
+
+    try {
+        const response = await activityFetch('/api/library/scan/status');
+        if (response.ok) {
+            const status = await response.json();
+            const running = Boolean(status?.running);
+            if (dbCancel) dbCancel.disabled = !running;
+            if (dbUpdate) dbUpdate.disabled = running;
+            if (running) {
+                applyLibraryScanProgress(status, dbPhase, dbProgressLabel, dbProgressBar, 'Database update');
+            } else {
+                await loadDatabaseUpdaterStatus();
+            }
+        }
+    } catch {
+        // ignore polling errors
+    }
+
+    try {
+        const metadataResponse = await activityFetch('/api/library/spotify-cache/metadata-updater/status');
+        if (metadataResponse.ok) {
+            const metadataStatus = await metadataResponse.json();
+            metadataRunning = Boolean(metadataStatus?.running);
+            applyMetadataUpdaterStatus(metadataStatus, metadataPhase, metadataProgressLabel, metadataProgressBar);
+            if (metadataUpdate) {
+                metadataUpdate.disabled = metadataRunning;
+            }
+        }
+    } catch {
+        // ignore polling errors
+    }
+
+    return { metadataRunning };
+}
+
+function startLibraryScanStatusPolling() {
+    if (libraryScanPollId) {
+        return;
+    }
 
     libraryScanPollId = setInterval(async () => {
         if (document.hidden || !isMediaOperationsTabActive()) {
             return;
         }
 
-        try {
-            const response = await activityFetch('/api/library/scan/status');
-            if (!response.ok) {
-                return;
-            }
-            const status = await response.json();
-            const running = Boolean(status?.running);
-            if (dbCancel) dbCancel.disabled = !running;
-            if (dbUpdate) dbUpdate.disabled = running;
-
-            if (running) {
-                applyLibraryScanProgress(status, dbPhase, dbProgressLabel, dbProgressBar, 'Database update');
-            }
-        } catch {
-            // ignore polling errors
-        }
-
-        try {
-            const metadataResponse = await activityFetch('/api/library/spotify-cache/metadata-updater/status');
-            if (!metadataResponse.ok) {
-                return;
-            }
-            const metadataStatus = await metadataResponse.json();
-            applyMetadataUpdaterStatus(metadataStatus, metadataPhase, metadataProgressLabel, metadataProgressBar);
-            if (metadataUpdate) {
-                metadataUpdate.disabled = Boolean(metadataStatus?.running);
-            }
-        } catch {
-            // ignore polling errors
-        }
+        await refreshLibraryScanAndMetadataStatus();
     }, 5000);
 }
 
@@ -3935,40 +3982,42 @@ function initMediaServerScan() {
     }
 
     scanButton.addEventListener('click', async () => {
-        try {
-            statusLabel && (statusLabel.textContent = 'Scanning');
-            phaseLabel && (phaseLabel.textContent = 'Scan started');
-            progressLabel && (progressLabel.textContent = 'Scanning libraries...');
-            progressBar && (progressBar.style.width = '10%');
-            notifyActivity('Media server scan started.');
+        await runActivityButtonAction(scanButton, async () => {
+            try {
+                statusLabel && (statusLabel.textContent = 'Scanning');
+                phaseLabel && (phaseLabel.textContent = 'Scan started');
+                progressLabel && (progressLabel.textContent = 'Scanning libraries...');
+                progressBar && (progressBar.style.width = '10%');
+                notifyActivity('Media server scan started.');
 
-            const response = await activityFetch('/api/media-server/scan', { method: 'POST', keepalive: true });
-            if (!response.ok) {
-                throw new Error(await response.text());
-            }
-            const payload = await response.json().catch(() => null);
-            if (payload && payload.success === false) {
-                phaseLabel && (phaseLabel.textContent = payload.message || 'Scan skipped');
-                progressLabel && (progressLabel.textContent = payload.message || 'No libraries refreshed');
-                progressBar && (progressBar.style.width = '0%');
+                const response = await activityFetch('/api/media-server/scan', { method: 'POST', keepalive: true });
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+                const payload = await response.json().catch(() => null);
+                if (payload && payload.success === false) {
+                    phaseLabel && (phaseLabel.textContent = payload.message || 'Scan skipped');
+                    progressLabel && (progressLabel.textContent = payload.message || 'No libraries refreshed');
+                    progressBar && (progressBar.style.width = '0%');
+                    statusLabel && (statusLabel.textContent = 'Idle');
+                    notifyActivity(payload.message || 'Media server scan skipped.', 'warning');
+                    return;
+                }
+
+                lastScanLabel && (lastScanLabel.textContent = new Date().toLocaleString());
+                phaseLabel && (phaseLabel.textContent = 'Scan completed');
+                progressLabel && (progressLabel.textContent = `${payload?.refreshed ?? 0} libraries refreshed`);
+                progressBar && (progressBar.style.width = '100%');
                 statusLabel && (statusLabel.textContent = 'Idle');
-                notifyActivity(payload.message || 'Media server scan skipped.', 'warning');
-                return;
+                notifyActivity('Media server scan completed.');
+            } catch (error) {
+                statusLabel && (statusLabel.textContent = 'Error');
+                phaseLabel && (phaseLabel.textContent = 'Scan failed');
+                progressLabel && (progressLabel.textContent = 'Unable to refresh media server');
+                progressBar && (progressBar.style.width = '0%');
+                notifyActivity(`Media server scan failed: ${error?.message || error}`, 'error');
             }
-
-            lastScanLabel && (lastScanLabel.textContent = new Date().toLocaleString());
-            phaseLabel && (phaseLabel.textContent = 'Scan completed');
-            progressLabel && (progressLabel.textContent = `${payload?.refreshed ?? 0} libraries refreshed`);
-            progressBar && (progressBar.style.width = '100%');
-            statusLabel && (statusLabel.textContent = 'Idle');
-            notifyActivity('Media server scan completed.');
-        } catch (error) {
-            statusLabel && (statusLabel.textContent = 'Error');
-            phaseLabel && (phaseLabel.textContent = 'Scan failed');
-            progressLabel && (progressLabel.textContent = 'Unable to refresh media server');
-            progressBar && (progressBar.style.width = '0%');
-            notifyActivity(`Media server scan failed: ${error?.message || error}`, 'error');
-        }
+        });
     });
 }
 
@@ -4408,11 +4457,11 @@ async function clearCanceledTasks() {
 	        const taskActionAttrs = taskActionInFlight ? ' disabled aria-disabled="true"' : '';
 
 		        const pauseButton = statusForUi === 'running'
-		            ? `<button class="action-btn action-btn-amber action-btn-sm"${taskActionAttrs} onclick="pauseTask('${safeTaskIdArg}')">${activityActionIconSvg('pause')}<span>Pause</span></button>`
+		            ? `<button type="button" class="action-btn action-btn-amber action-btn-sm"${taskActionAttrs} onclick="pauseTask('${safeTaskIdArg}')">${activityActionIconSvg('pause')}<span>Pause</span></button>`
 		            : '';
 
 		        const resumeButton = statusForUi === 'paused'
-		            ? `<button class="action-btn action-btn-sm"${taskActionAttrs} onclick="resumeTask('${safeTaskIdArg}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
+		            ? `<button type="button" class="action-btn action-btn-sm"${taskActionAttrs} onclick="resumeTask('${safeTaskIdArg}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
 		            : '';
 
 	        const canRetry = statusForUi === 'failed'
@@ -4421,21 +4470,21 @@ async function clearCanceledTasks() {
 	        const isRetrying = statusForUi === 'retrying' || task._retryInFlight;
 		        const retryButton = canRetry
 		            ? (isRetrying
-		                ? `<button class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retrying</span></button>`
+		                ? `<button type="button" class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retrying</span></button>`
 		                : taskActionInFlight
-		                    ? `<button class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retry</span></button>`
-		                    : `<button class="action-btn action-btn-sm" onclick="retryTask('${safeTaskIdArg}')">${activityActionIconSvg('retry')}<span>Retry</span></button>`)
+		                    ? `<button type="button" class="action-btn action-btn-sm" disabled aria-disabled="true">${activityActionIconSvg('retry')}<span>Retry</span></button>`
+		                    : `<button type="button" class="action-btn action-btn-sm" onclick="retryTask('${safeTaskIdArg}')">${activityActionIconSvg('retry')}<span>Retry</span></button>`)
 		            : '';
 
 		        const deleteFailedButton = statusForUi === 'failed'
-		            ? `<button class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
+		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
 		        const deleteCanceledButton = statusForUi === 'canceled'
-		            ? `<button class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
+		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
 
 		        const cancelButton = (statusForUi === 'queued' || statusForUi === 'running' || statusForUi === 'paused')
-		            ? `<button class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
+		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
 		            : '';
 
         const taskActions = (pauseButton || resumeButton || retryButton || deleteFailedButton || deleteCanceledButton || cancelButton)
@@ -6373,9 +6422,7 @@ if (document.readyState === 'loading') {
             const logger = window.DeezSpoTag?.DownloadLogger;
             const status = document.getElementById('download-logs-status');
             if (!logger || !status) return;
-            const confirmed = await DeezSpoTag.ui.confirm('Clear all logs? This cannot be undone.', {
-                title: 'Clear Logs'
-            });
+            const confirmed = await confirmAction('Clear all logs? This cannot be undone.', 'Clear Logs');
             if (!confirmed) {
                 return;
             }
@@ -6790,6 +6837,17 @@ function initAnalysisCard() {
     startAnalysisPolling();
 }
 
+async function refreshAnalysisCard() {
+    if (!document.getElementById('analysisStatus')) {
+        return;
+    }
+
+    await loadAnalysisActivity();
+    await loadAnalysisStatus();
+    await loadLatestAnalysis();
+    await loadProcessingAnalysis();
+}
+
 async function loadAnalysisSettings() {
     const enabledEl = document.getElementById('analysis-enabled');
     if (!enabledEl) {
@@ -7049,6 +7107,7 @@ let mediaOperationsInitialized = false;
 let mediaOperationsInitPromise = null;
 async function initMediaOperationsSection() {
     if (mediaOperationsInitialized) {
+        await refreshMediaOperationsSection();
         return;
     }
 
@@ -7070,6 +7129,7 @@ async function initMediaOperationsSection() {
         initLibraryMaintenance();
         startLibraryScanStatusPolling();
         mediaOperationsInitialized = true;
+        await refreshMediaOperationsSection();
     })();
 
     try {
@@ -7077,6 +7137,18 @@ async function initMediaOperationsSection() {
     } finally {
         mediaOperationsInitPromise = null;
     }
+}
+
+async function refreshMediaOperationsSection() {
+    if (!isMediaOperationsTabActive()) {
+        return;
+    }
+
+    await Promise.allSettled([
+        refreshLibraryScanAndMetadataStatus(),
+        refreshAnalysisCard(),
+        globalThis.DeezSpoTagMeloday?.refresh?.()
+    ]);
 }
 
 let activitiesTabRefreshBound = false;
@@ -7138,6 +7210,34 @@ function bindActivitiesTabSwitchRefresh() {
         }
     };
 
+    const activateRequestedTab = () => {
+        const requested = new URLSearchParams(window.location.search).get('tab') || window.location.hash.replace(/^#/, '');
+        if (!requested) {
+            return false;
+        }
+
+        const targetSelector = requested.startsWith('#') ? requested : `#${requested}`;
+        const escapedTargetSelector = globalThis.CSS && typeof globalThis.CSS.escape === 'function'
+            ? globalThis.CSS.escape(targetSelector)
+            : targetSelector.replace(/["\\]/g, '\\$&');
+        const trigger = activitiesTabs?.querySelector(`[data-bs-target="${escapedTargetSelector}"]`);
+        if (!trigger) {
+            return false;
+        }
+
+        if (globalThis.bootstrap?.Tab) {
+            globalThis.bootstrap.Tab.getOrCreateInstance(trigger).show();
+        } else {
+            activitiesTabs.querySelectorAll('[data-bs-toggle="tab"]').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('#activitiesTabsContent .tab-pane').forEach(pane => pane.classList.remove('show', 'active'));
+            trigger.classList.add('active');
+            document.querySelector(targetSelector)?.classList.add('show', 'active');
+            refreshByTarget(targetSelector);
+        }
+        keepActivitiesTabVisible(trigger);
+        return true;
+    };
+
     activitiesTabs?.addEventListener('shown.bs.tab', (event) => {
         const trigger = event.target?.closest?.('[data-bs-toggle="tab"]');
         if (!trigger) {
@@ -7149,6 +7249,10 @@ function bindActivitiesTabSwitchRefresh() {
         }
         keepActivitiesTabVisible(trigger);
     });
+
+    if (activateRequestedTab()) {
+        return;
+    }
 
     const activeTabTrigger = activitiesTabs?.querySelector('[data-bs-toggle="tab"].active');
     const activeTarget = activeTabTrigger?.dataset?.bsTarget;

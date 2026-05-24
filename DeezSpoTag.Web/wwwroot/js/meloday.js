@@ -186,6 +186,13 @@ function buildMelodayPayload(enabledOverride) {
 }
 
 async function saveMelodaySettings() {
+    const saveButton = document.getElementById('saveMelodaySettings');
+    if (saveButton?.disabled) {
+        return;
+    }
+    if (saveButton) {
+        saveButton.disabled = true;
+    }
     const payload = buildMelodayPayload();
     try {
         await melodayFetchJson('/api/meloday/settings', {
@@ -207,6 +214,10 @@ async function saveMelodaySettings() {
             showToast(`Failed to save Meloday settings: ${error.message}`, true);
         }
         melodayLog('error', `Failed to save Meloday settings: ${error.message}`);
+    } finally {
+        if (saveButton) {
+            saveButton.disabled = false;
+        }
     }
 }
 
@@ -284,6 +295,12 @@ async function runMeloday() {
 function initializeMelodayCard() {
     // Use the status pill as the presence check now that the text block is gone
     if (document.getElementById('melodayStatusPill')) {
+        globalThis.DeezSpoTagMeloday = {
+            refresh: async () => {
+                await loadMelodayStatus();
+                await loadMelodaySettings();
+            }
+        };
         loadMelodayStatus();
         loadMelodaySettings();
         const button = document.getElementById('runMeloday');
