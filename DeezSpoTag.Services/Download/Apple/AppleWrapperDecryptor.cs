@@ -103,7 +103,7 @@ public sealed class AppleWrapperDecryptor
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             // Best effort cleanup.
         }

@@ -213,11 +213,6 @@ public sealed class DownloadIntentService
     private const string DeezerDomain = "deezer.com";
     private const string QobuzDomain = "qobuz.com";
     private const string AttributesField = "attributes";
-    private static readonly HashSet<string> BlockedGenres = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "other",
-        "others"
-    };
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SearchValues<char> QueryFragmentSeparators = SearchValues.Create("?#");
     private readonly DownloadQueueRepository _queueRepository;
@@ -3466,11 +3461,16 @@ public sealed class DownloadIntentService
     private static string? BootstrapIntentDeezerIdentity(DownloadIntent intent, string sourceUrl, bool isPodcastIntent, ref string normalizedSourceUrl)
     {
         var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
-        intent.DeezerId = string.IsNullOrWhiteSpace(normalizedExistingDeezerId)
-            ? isPodcastIntent
+        if (!string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
+        {
+            intent.DeezerId = normalizedExistingDeezerId;
+        }
+        else
+        {
+            intent.DeezerId = isPodcastIntent
                 ? TryExtractDeezerEpisodeId(sourceUrl) ?? string.Empty
-                : TryExtractDeezerTrackId(sourceUrl) ?? string.Empty
-            : normalizedExistingDeezerId;
+                : TryExtractDeezerTrackId(sourceUrl) ?? string.Empty;
+        }
 
         var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
         if (string.IsNullOrWhiteSpace(normalizedSourceUrl) && !string.IsNullOrWhiteSpace(normalizedDeezerId))
@@ -5982,16 +5982,6 @@ public sealed class DownloadIntentService
             DestinationFolderId = context.Identity.DestinationFolderId,
             ContentType = context.Identity.ContentType,
             RedownloadCooldownMinutes = context.Settings.RedownloadCooldownMinutes,
-            ArtistPrimaryName = context.Identity.TrackPrimaryArtist
-        };
-
-    private static MetadataLookupRequest BuildMetadataLookupRequest(EnqueueItemContext context)
-        => new()
-        {
-            ArtistName = context.Identity.TrackArtist,
-            TrackTitle = context.Identity.TrackTitle,
-            DestinationFolderId = context.Identity.DestinationFolderId,
-            ContentType = context.Identity.ContentType,
             ArtistPrimaryName = context.Identity.TrackPrimaryArtist
         };
 

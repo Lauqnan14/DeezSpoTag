@@ -1989,11 +1989,13 @@ public sealed class SpotifyPathfinderMetadataClient
             if (!response.IsSuccessStatusCode)
             {
                 string errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                var snippet = string.IsNullOrWhiteSpace(errorBody)
-                    ? "(empty)"
-                    : errorBody.Length > 200
+                var snippet = "(empty)";
+                if (!string.IsNullOrWhiteSpace(errorBody))
+                {
+                    snippet = errorBody.Length > 200
                         ? new string(errorBody.AsSpan(0, 200))
                         : errorBody;
+                }
                 _logger.LogWarning("Spotify client token request failed: status={Status} body={Body} clientId={ClientId} clientVersion={ClientVersion} deviceId={DeviceId} payload={Payload}", (int)response.StatusCode, snippet, requestContext.ClientId, requestContext.ClientVersion, requestContext.DeviceId, payloadJson);
                 return null;
             }
@@ -2192,11 +2194,13 @@ public sealed class SpotifyPathfinderMetadataClient
 
         if (status != HttpStatusCode.OK)
         {
-            var snippet = string.IsNullOrWhiteSpace(json)
-                ? "empty"
-                : json.Length > 200
+            var snippet = "empty";
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                snippet = json.Length > 200
                     ? string.Concat(json.AsSpan(0, 200), "…")
                     : json;
+            }
 
             _logger.LogWarning("Spotify Pathfinder query failed: operation={OperationName} status={Status} {Snippet}", operationName, status, snippet);
         }

@@ -3434,7 +3434,8 @@ async function startFolderEnhancement(folder, profileReference) {
     const jobId = response?.jobId ? String(response.jobId) : '';
     const status = String(response?.status || '').trim().toLowerCase();
     if (!jobId || status !== 'running') {
-        throw new Error(response?.error || `AutoTag did not start${status ? ` (${status})` : ''}.`);
+        const statusSuffix = status ? ` (${status})` : '';
+        throw new Error(response?.error || `AutoTag did not start${statusSuffix}.`);
     }
 
     return { jobId, profileName: resolvedProfileName };

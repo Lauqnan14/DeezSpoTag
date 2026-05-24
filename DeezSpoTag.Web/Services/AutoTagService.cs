@@ -33,6 +33,7 @@ internal static class AutoTagLiterals
     internal const string ManualTrigger = "manual";
     internal const string AutomationTrigger = "automation";
     internal const string ScheduleTrigger = "schedule";
+    internal const string RecoveryTrigger = "recovery";
     internal const string InvalidTrigger = "invalid";
     internal const string RunIntentDefault = "default";
     internal const string RunIntentDownloadEnrichment = "download_enrichment";
@@ -771,12 +772,15 @@ public partial class AutoTagService
             profileId,
             profileName);
         AppendActivityLog(blockedJob.Id, "autotag blocked: another job is already running");
-        _logger.LogInformation(
-            "AutoTag run blocked because another job is already running. activeJobId={ActiveJobId}, intent={Intent}, trigger={Trigger}, path={Path}",
-            DeezSpoTag.Core.Security.LogSanitizer.OneLine(activeJobId),
-            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedRunIntent),
-            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedTrigger),
-            DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPath));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "AutoTag run blocked because another job is already running. activeJobId={ActiveJobId}, intent={Intent}, trigger={Trigger}, path={Path}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(activeJobId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedRunIntent),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedTrigger),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPath));
+        }
         return blockedJob;
     }
 
@@ -1955,7 +1959,7 @@ public partial class AutoTagService
             return AutoTagLiterals.CanceledStatus;
         }
 
-        return string.Equals(stopReason, "automation", StringComparison.OrdinalIgnoreCase)
+        return string.Equals(stopReason, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase)
             ? AutoTagLiterals.PausedStatus
             : AutoTagLiterals.InterruptedStatus;
     }
@@ -1969,9 +1973,9 @@ public partial class AutoTagService
 
         return stopReason.Trim().ToLowerInvariant() switch
         {
-            "automation" => "automation",
-            "schedule" => "schedule",
-            "recovery" => "recovery",
+            AutoTagLiterals.AutomationTrigger => AutoTagLiterals.AutomationTrigger,
+            AutoTagLiterals.ScheduleTrigger => AutoTagLiterals.ScheduleTrigger,
+            AutoTagLiterals.RecoveryTrigger => AutoTagLiterals.RecoveryTrigger,
             _ => "user"
         };
     }
@@ -1982,18 +1986,18 @@ public partial class AutoTagService
         {
             return stopReason switch
             {
-                "automation" => "Stopped by automation.",
-                "schedule" => "Stopped after schedule change.",
-                "recovery" => "Stopped by stale recovery.",
+                AutoTagLiterals.AutomationTrigger => "Stopped by automation.",
+                AutoTagLiterals.ScheduleTrigger => "Stopped after schedule change.",
+                AutoTagLiterals.RecoveryTrigger => "Stopped by stale recovery.",
                 _ => "Stopped by user."
             };
         }
 
         return stopReason switch
         {
-            "automation" => "Paused by automation. Resume is available after download finalization.",
-            "schedule" => "Interrupted after schedule change. Resume is available.",
-            "recovery" => "Interrupted by stale recovery. Resume is available.",
+            AutoTagLiterals.AutomationTrigger => "Paused by automation. Resume is available after download finalization.",
+            AutoTagLiterals.ScheduleTrigger => "Interrupted after schedule change. Resume is available.",
+            AutoTagLiterals.RecoveryTrigger => "Interrupted by stale recovery. Resume is available.",
             _ => "Interrupted by user. Resume is available."
         };
     }
@@ -2002,9 +2006,9 @@ public partial class AutoTagService
     {
         var actor = stopReason switch
         {
-            "automation" => "automation",
-            "schedule" => "schedule change",
-            "recovery" => "stale recovery",
+            AutoTagLiterals.AutomationTrigger => "automation",
+            AutoTagLiterals.ScheduleTrigger => "schedule change",
+            AutoTagLiterals.RecoveryTrigger => "stale recovery",
             _ => "user"
         };
 
@@ -6748,12 +6752,15 @@ public partial class AutoTagService
             }
             catch (Exception)
             {
-                skippedMalformed += 1;
+                RecordMalformedHistoryEntry(ref skippedMalformed);
             }
         }
 
         return (entries, skippedMalformed);
     }
+
+    private static void RecordMalformedHistoryEntry(ref int skippedMalformed)
+        => skippedMalformed += 1;
 
     private HashSet<string> EnumerateHistoryRoots()
     {

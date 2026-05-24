@@ -352,11 +352,15 @@ namespace DeezSpoTag.Web.Controllers.Api
                     return Ok(BuildFailedLoginResponse(LOGIN_STATUS_FAILED, hasStoredCredentials: false));
                 }
 
-                var response = _deezerClient.LoggedIn
-                    ? LOGIN_STATUS_ALREADY_LOGGED
-                    : (await _loginCoordinator.LoginViaArlAsync(normalizedArl, 0)).Success
-                        ? LOGIN_STATUS_SUCCESS
-                        : LOGIN_STATUS_FAILED;
+                var response = LOGIN_STATUS_FAILED;
+                if (_deezerClient.LoggedIn)
+                {
+                    response = LOGIN_STATUS_ALREADY_LOGGED;
+                }
+                else if ((await _loginCoordinator.LoginViaArlAsync(normalizedArl, 0)).Success)
+                {
+                    response = LOGIN_STATUS_SUCCESS;
+                }
 
                 if (!(await _authUtils.IsDeezerAvailableAsync()))
                 {

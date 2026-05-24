@@ -5994,14 +5994,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (IsMp4Family(context.Extension))
         {
             Mp4TagHelper.SetMp4Field(
-                context.File,
+                context,
                 binding.Tag,
-                values,
-                context.Config,
-                context.PlatformId,
-                context.GenreAliasMap,
-                context.GenreBlockList,
-                context.SplitCompositeGenres);
+                values);
             return;
         }
 
@@ -6802,16 +6797,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         public static void SetMp4Field(
-            TagLib.File file,
+            TagWriteContext context,
             SupportedTag tag,
-            List<string> values,
-            AutoTagRunnerConfig config,
-            string platformId,
-            IReadOnlyDictionary<string, string> genreAliasMap,
-            IReadOnlyList<string> genreBlockList,
-            bool splitCompositeGenres)
+            List<string> values)
         {
-            if (!ShouldOverwriteTag(config, tag) && HasTag(file, ".mp4", tag, config, platformId))
+            if (!ShouldOverwriteTag(context.Config, tag) && HasTag(context.File, ".mp4", tag, context.Config, context.PlatformId))
             {
                 return;
             }
@@ -6819,42 +6809,46 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             switch (tag)
             {
                 case SupportedTag.Title:
-                    file.Tag.Title = values.FirstOrDefault() ?? "";
+                    context.File.Tag.Title = values.FirstOrDefault() ?? "";
                     break;
                 case SupportedTag.Artist:
-                    file.Tag.Performers = values.ToArray();
+                    context.File.Tag.Performers = values.ToArray();
                     break;
                 case SupportedTag.AlbumArtist:
-                    file.Tag.AlbumArtists = values.ToArray();
+                    context.File.Tag.AlbumArtists = values.ToArray();
                     break;
                 case SupportedTag.Album:
-                    file.Tag.Album = values.FirstOrDefault() ?? "";
+                    context.File.Tag.Album = values.FirstOrDefault() ?? "";
                     break;
                 case SupportedTag.Genre:
-                    file.Tag.Genres = SanitizeGenres(values, genreAliasMap, genreBlockList, splitCompositeGenres).ToArray();
+                    context.File.Tag.Genres = SanitizeGenres(
+                        values,
+                        context.GenreAliasMap,
+                        context.GenreBlockList,
+                        context.SplitCompositeGenres).ToArray();
                     break;
                 case SupportedTag.BPM:
                     if (int.TryParse(values.FirstOrDefault(), out var bpm))
                     {
-                        file.Tag.BeatsPerMinute = (uint)bpm;
+                        context.File.Tag.BeatsPerMinute = (uint)bpm;
                     }
                     break;
                 case SupportedTag.TrackNumber:
                     if (int.TryParse(values.FirstOrDefault(), out var track))
                     {
-                        file.Tag.Track = (uint)track;
+                        context.File.Tag.Track = (uint)track;
                     }
                     break;
                 case SupportedTag.TrackTotal:
                     if (int.TryParse(values.FirstOrDefault(), out var total))
                     {
-                        file.Tag.TrackCount = (uint)total;
+                        context.File.Tag.TrackCount = (uint)total;
                     }
                     break;
                 case SupportedTag.DiscNumber:
                     if (int.TryParse(values.FirstOrDefault(), out var disc))
                     {
-                        file.Tag.Disc = (uint)disc;
+                        context.File.Tag.Disc = (uint)disc;
                     }
                     break;
             }

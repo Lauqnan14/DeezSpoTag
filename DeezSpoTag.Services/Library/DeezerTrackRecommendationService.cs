@@ -40,6 +40,7 @@ public sealed class DeezerTrackRecommendationService
         public HashSet<string> SeenRecommendationIds { get; }
         public Dictionary<string, int> ArtistCounts { get; }
         public Dictionary<string, int> AlbumCounts { get; }
+        public int FailedSeedLoads { get; set; }
     }
 
     public DeezerTrackRecommendationService(
@@ -137,21 +138,18 @@ public sealed class DeezerTrackRecommendationService
         for (var seedIndex = 0; seedIndex < maxSeedsToProbe; seedIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (seedIndex > 0 && probeTimer.Elapsed >= DailyBuildSeedProbeBudget)
+            if (ShouldStopSeedProbe(seedIndex, probeTimer.Elapsed, accumulator, cappedLimit))
             {
                 break;
             }
 
-            if (accumulator.DestinationTracks.Count >= cappedLimit && accumulator.OverflowTracks.Count >= cappedLimit)
-            {
-                break;
-            }
-
-            var seedId = orderedSeeds[seedIndex];
-            IReadOnlyList<RecommendationTrackDto> mixTracks;
             try
             {
-                mixTracks = await LoadTrackMixAsync(seedId, cancellationToken);
+                var mixTracks = await LoadTrackMixAsync(orderedSeeds[seedIndex], cancellationToken);
+                AddUniqueRecommendationTracks(
+                    mixTracks,
+                    normalizedLibraryIds,
+                    accumulator);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -159,29 +157,42 @@ public sealed class DeezerTrackRecommendationService
             }
             catch (Exception)
             {
-                continue;
-            }
-
-            AddUniqueRecommendationTracks(
-                mixTracks,
-                normalizedLibraryIds,
-                accumulator);
-        }
-
-        if (accumulator.DestinationTracks.Count < cappedLimit && accumulator.OverflowTracks.Count > 0)
-        {
-            foreach (var overflowTrack in accumulator.OverflowTracks)
-            {
-                if (accumulator.DestinationTracks.Count >= cappedLimit)
-                {
-                    break;
-                }
-
-                accumulator.DestinationTracks.Add(overflowTrack with { TrackPosition = accumulator.DestinationTracks.Count + 1 });
+                accumulator.FailedSeedLoads++;
             }
         }
 
+        AppendOverflowRecommendationTracks(accumulator, cappedLimit);
         return accumulator.DestinationTracks;
+    }
+
+    private static bool ShouldStopSeedProbe(
+        int seedIndex,
+        TimeSpan elapsed,
+        RecommendationAccumulator accumulator,
+        int cappedLimit)
+    {
+        return (seedIndex > 0 && elapsed >= DailyBuildSeedProbeBudget)
+            || (accumulator.DestinationTracks.Count >= cappedLimit && accumulator.OverflowTracks.Count >= cappedLimit);
+    }
+
+    private static void AppendOverflowRecommendationTracks(
+        RecommendationAccumulator accumulator,
+        int cappedLimit)
+    {
+        if (accumulator.DestinationTracks.Count >= cappedLimit || accumulator.OverflowTracks.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var overflowTrack in accumulator.OverflowTracks)
+        {
+            if (accumulator.DestinationTracks.Count >= cappedLimit)
+            {
+                return;
+            }
+
+            accumulator.DestinationTracks.Add(overflowTrack with { TrackPosition = accumulator.DestinationTracks.Count + 1 });
+        }
     }
 
     private static void AddUniqueRecommendationTracks(

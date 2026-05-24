@@ -280,7 +280,7 @@ public sealed class FfmpegConversionService
         {
             File.Delete(outputPath);
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // best effort cleanup
         }

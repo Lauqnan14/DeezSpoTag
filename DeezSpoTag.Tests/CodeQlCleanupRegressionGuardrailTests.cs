@@ -103,7 +103,7 @@ public sealed class CodeQlCleanupRegressionGuardrailTests
             RegexOptions.CultureInvariant,
             RegexTimeout);
         var catches = EnumerateProductionSources()
-            .Sum(path => broadCatchPattern.Matches(File.ReadAllText(path)).Count);
+            .Sum(path => broadCatchPattern.Count(File.ReadAllText(path)));
 
         Assert.True(
             catches <= MaxProductionBroadExceptionCatches,

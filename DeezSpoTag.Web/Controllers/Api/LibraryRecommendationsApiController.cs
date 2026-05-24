@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -15,6 +16,7 @@ public class LibraryRecommendationsApiController : ControllerBase
     private readonly LibraryRecommendationService _recommendationService;
 
     public sealed record RecommendationRejectRequest(
+        [property: JsonRequired]
         long LibraryId,
         long? FolderId,
         string? StationId,
@@ -22,7 +24,7 @@ public class LibraryRecommendationsApiController : ControllerBase
         string? Isrc,
         string? Title,
         string? Artist,
-        int Limit = 50);
+        int? Limit = 50);
 
     public LibraryRecommendationsApiController(LibraryRecommendationService recommendationService)
     {
@@ -141,7 +143,7 @@ public class LibraryRecommendationsApiController : ControllerBase
                 request.Isrc,
                 request.Title,
                 request.Artist),
-            Math.Clamp(request.Limit, 1, 50),
+            Math.Clamp(request.Limit ?? 50, 1, 50),
             cancellationToken);
 
         return detail is null ? NotFound() : Ok(detail);

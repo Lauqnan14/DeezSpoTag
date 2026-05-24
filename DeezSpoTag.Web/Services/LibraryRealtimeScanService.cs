@@ -675,6 +675,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         catch (Exception)
         {
             // A partial baseline is still enough to suppress most attach-time noise.
+            return baselineFiles;
         }
 
         return baselineFiles;

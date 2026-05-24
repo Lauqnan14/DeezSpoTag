@@ -480,7 +480,7 @@ public sealed class AppleExternalToolRunner
             {
                 children = Directory.EnumerateDirectories(home).ToArray();
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 yield break;
             }

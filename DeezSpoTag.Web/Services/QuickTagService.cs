@@ -57,11 +57,6 @@ public sealed class QuickTagService
     private const string RatingTag = "RATING";
     private const string ITunesIsrcTag = "iTunes:ISRC";
     private const string AppleDashMean = "com.apple.iTunes";
-    private static readonly HashSet<string> BlockedGenres = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "other",
-        "others"
-    };
     private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mp3", FlacExtension, ".m4a", ".mp4", ".m4b", ".wav", ".aif", AiffExtension, ".ogg", OpusExtension

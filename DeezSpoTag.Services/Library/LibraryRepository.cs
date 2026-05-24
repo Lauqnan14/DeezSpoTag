@@ -152,6 +152,8 @@ public sealed class LibraryRepository
     private const string LibraryIdField = "libraryId";
     private const string DurationMsField = "durationMs";
     private const string TrackCountField = "trackCount";
+    private const string FolderIdParameter = "folderId";
+    private const string ArtistParameter = "artist";
     private const string ArtistSearchParameter = "artistSearch";
     private const string TrackIdsJsonParameter = "trackIdsJson";
     private const string EntityIdParameter = "entityId";
@@ -641,7 +643,7 @@ SELECT COUNT(DISTINCT CASE WHEN media_mode = 'music' THEN artist_id END) AS arti
 FROM folder_tracks;";
 
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -886,7 +888,7 @@ WHERE folder_id = @folderId;";
 
         await using (var command = new SqliteCommand(sql, connection, transaction))
         {
-            command.Parameters.AddWithValue("folderId", folderId);
+            command.Parameters.AddWithValue(FolderIdParameter, folderId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -987,7 +989,7 @@ SELECT id, path
 FROM audio_file
 WHERE @folderId IS NULL OR folder_id = @folderId;";
         await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
-        selectCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        selectCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
         var missingIds = new List<long>();
 
@@ -1010,7 +1012,7 @@ WHERE @folderId IS NULL OR folder_id = @folderId;";
     {
         const string sql = "SELECT root_path FROM folder WHERE id = @folderId LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection, transaction);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is string rootPath && !string.IsNullOrWhiteSpace(rootPath) ? rootPath : null;
     }
@@ -1066,7 +1068,7 @@ JOIN audio_file_delete_target target
   OR af.path = target.path
 WHERE af.folder_id = @folderId;";
         await using var command = new SqliteCommand(sql, connection, transaction);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null || result == DBNull.Value ? 0 : Convert.ToInt32(result);
     }
@@ -1089,7 +1091,7 @@ WHERE audio_file_id IN (
 );";
         await using (var deleteTrackLocalCommand = new SqliteCommand(deleteTrackLocalSql, connection, transaction))
         {
-            deleteTrackLocalCommand.Parameters.AddWithValue("folderId", folderId);
+            deleteTrackLocalCommand.Parameters.AddWithValue(FolderIdParameter, folderId);
             await deleteTrackLocalCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -1103,7 +1105,7 @@ WHERE folder_id = @folderId
          OR audio_file.path = target.path
   );";
         await using var deleteAudioCommand = new SqliteCommand(deleteAudioSql, connection, transaction);
-        deleteAudioCommand.Parameters.AddWithValue("folderId", folderId);
+        deleteAudioCommand.Parameters.AddWithValue(FolderIdParameter, folderId);
         await deleteAudioCommand.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1141,7 +1143,7 @@ LEFT JOIN track t ON t.id = tl.track_id
 LEFT JOIN album al ON al.id = t.album_id
 WHERE af.folder_id = @folderId;";
         await using var command = new SqliteCommand(sql, connection, transaction);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -1315,7 +1317,7 @@ WHERE id = 1;";
         command.Parameters.AddWithValue("enabled", settings.Enabled);
         command.Parameters.AddWithValue("intervalMinutes", Math.Clamp(settings.IntervalMinutes, 15, 10080));
         command.Parameters.AddWithValue("scope", normalizedScope);
-        command.Parameters.AddWithValue("folderId", (object?)settings.FolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)settings.FolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("queueAtmos", settings.QueueAtmosAlternatives);
         command.Parameters.AddWithValue("cooldownMinutes", Math.Clamp(settings.CooldownMinutes, 0, 43200));
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -1382,7 +1384,7 @@ SELECT last_insert_rowid();";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("trigger", string.IsNullOrWhiteSpace(trigger) ? "manual" : trigger.Trim().ToLowerInvariant());
         command.Parameters.AddWithValue("scope", NormalizeQualityScannerScope(scope));
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("queueAtmosAlternatives", queueAtmosAlternatives);
         command.Parameters.AddWithValue("startedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
         var result = await command.ExecuteScalarAsync(cancellationToken);
@@ -1707,7 +1709,7 @@ WHERE f.library_id = @libraryId
   AND (@folderId IS NULL OR f.id = @folderId);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var ids = new List<long>();
         while (await reader.ReadAsync(cancellationToken))
@@ -1752,7 +1754,7 @@ WHERE deezer_source_id IS NOT NULL;";
 
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var sourceIds = new List<string>();
         while (await reader.ReadAsync(cancellationToken))
@@ -1913,7 +1915,7 @@ JOIN album al ON al.id = t.album_id
 JOIN artist ar ON ar.id = al.artist_id
 WHERE af.folder_id = @folderId;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         var states = new Dictionary<string, LocalScanFileState>(StringComparer.OrdinalIgnoreCase);
@@ -2038,7 +2040,7 @@ FROM (
 LEFT JOIN track_shazam_cache c ON c.track_id = lt.track_id;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         var map = new Dictionary<long, ShazamTrackCacheDto>();
@@ -2105,7 +2107,7 @@ ORDER BY COALESCE(c.scanned_at_utc, '0001-01-01T00:00:00.0000000+00:00') ASC,
 
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("staleBeforeUtc", staleBeforeUtc.ToString("O"));
         if (limit.HasValue && limit.Value > 0)
         {
@@ -2165,7 +2167,7 @@ ON CONFLICT(track_id) DO UPDATE SET
         command.Parameters.AddWithValue(TrackIdField, input.TrackId);
         command.Parameters.AddWithValue("shazamTrackId", (object?)input.ShazamTrackId ?? DBNull.Value);
         command.Parameters.AddWithValue(TitleField, (object?)input.Title ?? DBNull.Value);
-        command.Parameters.AddWithValue("artist", (object?)input.Artist ?? DBNull.Value);
+        command.Parameters.AddWithValue(ArtistParameter, (object?)input.Artist ?? DBNull.Value);
         command.Parameters.AddWithValue("isrc", (object?)input.Isrc ?? DBNull.Value);
         command.Parameters.AddWithValue("status", string.IsNullOrWhiteSpace(input.Status) ? "pending" : input.Status.Trim().ToLowerInvariant());
         command.Parameters.AddWithValue("relatedTracksJson", (object?)relatedTracksJson ?? DBNull.Value);
@@ -2295,7 +2297,7 @@ WHERE af.folder_id = @folderId
   AND af.relative_path = @relative
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("folderId", folderRoot.Id);
+        command.Parameters.AddWithValue(FolderIdParameter, folderRoot.Id);
         command.Parameters.AddWithValue("relative", relative);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         if (result is null || result == DBNull.Value)
@@ -4685,7 +4687,7 @@ WHERE id = @id;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = "SELECT id, folder_id, alias_name FROM folder_alias WHERE folder_id = @folderId ORDER BY alias_name;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var aliases = new List<FolderAliasDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -4704,7 +4706,7 @@ INSERT INTO folder_alias (folder_id, alias_name)
 VALUES (@folderId, @aliasName)
 RETURNING id;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         command.Parameters.AddWithValue("aliasName", aliasName);
         var insertedId = await command.ExecuteScalarAsync(cancellationToken);
         return new FolderAliasDto(Convert.ToInt64(insertedId), folderId, aliasName);
@@ -4797,7 +4799,7 @@ FROM (
       AND (@searchPattern IS NULL OR a.name LIKE @searchPattern COLLATE NOCASE)
 );";
         await using var countCommand = new SqliteCommand(countSql, connection);
-        countCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        countCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         countCommand.Parameters.AddWithValue("searchPattern", (object?)searchPattern ?? DBNull.Value);
         var totalCountObj = await countCommand.ExecuteScalarAsync(cancellationToken);
         var totalCount = totalCountObj is null || totalCountObj is DBNull
@@ -4828,7 +4830,7 @@ ORDER BY
     CASE WHEN @sortDesc = 1 THEN a.name END DESC
 LIMIT @limit OFFSET @offset;";
         await using var command = new SqliteCommand(pageSql, connection);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("searchPattern", (object?)searchPattern ?? DBNull.Value);
         command.Parameters.AddWithValue("sortDesc", sortKey == "name-desc" ? 1 : 0);
         command.Parameters.AddWithValue("limit", safePageSize);
@@ -4988,7 +4990,7 @@ GROUP BY al.id, al.artist_id, al.title, al.preferred_cover_path
 ORDER BY al.title;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistId", artistId);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var albums = new List<AlbumDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -6059,12 +6061,12 @@ ON CONFLICT(station_id, track_source_id) DO UPDATE SET
     rejected_at_utc = excluded.rejected_at_utc;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, input.LibraryId);
-        command.Parameters.AddWithValue("folderId", (object?)input.FolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)input.FolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("stationId", input.StationId.Trim());
         command.Parameters.AddWithValue("trackSourceId", normalizedTrackSourceId);
         command.Parameters.AddWithValue("isrc", string.IsNullOrWhiteSpace(input.Isrc) ? DBNull.Value : input.Isrc.Trim());
         command.Parameters.AddWithValue("title", string.IsNullOrWhiteSpace(input.Title) ? DBNull.Value : input.Title.Trim());
-        command.Parameters.AddWithValue("artist", string.IsNullOrWhiteSpace(input.Artist) ? DBNull.Value : input.Artist.Trim());
+        command.Parameters.AddWithValue(ArtistParameter, string.IsNullOrWhiteSpace(input.Artist) ? DBNull.Value : input.Artist.Trim());
         command.Parameters.AddWithValue("rejectedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -6089,7 +6091,7 @@ WHERE library_id = @libraryId
   AND (@folderId IS NULL OR folder_id = @folderId OR folder_id IS NULL);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("stationId", stationId.Trim());
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -6325,7 +6327,7 @@ ORDER BY id
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("track", (object?)normalizedTrack ?? DBNull.Value);
-        command.Parameters.AddWithValue("artist", (object?)normalizedArtist ?? DBNull.Value);
+        command.Parameters.AddWithValue(ArtistParameter, (object?)normalizedArtist ?? DBNull.Value);
         command.Parameters.AddWithValue("album", (object?)normalizedAlbum ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -7665,7 +7667,7 @@ ORDER BY br.artist_name, br.track_title;";
 
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("scope", scope ?? string.Empty);
-        command.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("minFormatRank", (object?)normalizedMinFormatRank ?? DBNull.Value);
         command.Parameters.AddWithValue("minBitDepth", (object?)normalizedMinBitDepth ?? DBNull.Value);
         command.Parameters.AddWithValue("minSampleRateHz", (object?)normalizedMinSampleRateHz ?? DBNull.Value);
@@ -8020,13 +8022,13 @@ LIMIT 100;";
         await using var isrcCommand = new SqliteCommand(isrcSql, connection);
         isrcCommand.Parameters.AddWithValue("isrc", string.Empty);
         isrcCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
-        isrcCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        isrcCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
 
         await using var trackCommand = new SqliteCommand(trackSql, connection);
         trackCommand.Parameters.AddWithValue(ArtistSearchParameter, string.Empty);
         trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
         trackCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
-        trackCommand.Parameters.AddWithValue("folderId", (object?)folderId ?? DBNull.Value);
+        trackCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
 
         var results = new bool[inputs.Count];
 
@@ -8191,7 +8193,7 @@ SELECT f.root_path, af.relative_path, af.path
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, source);
         command.Parameters.AddWithValue(SourceIdField, sourceId);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
     }
@@ -8352,7 +8354,7 @@ SELECT f.root_path, af.relative_path, af.path
         command.Parameters.AddWithValue("albumSourceId", albumSourceId);
         command.Parameters.AddWithValue("trackTitle", trackTitle);
         command.Parameters.AddWithValue("artistSourceId", string.IsNullOrWhiteSpace(artistSourceId) ? (object)DBNull.Value : artistSourceId);
-        command.Parameters.AddWithValue("folderId", folderId.HasValue ? folderId.Value : (object)DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId.HasValue ? folderId.Value : (object)DBNull.Value);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
     }
@@ -9007,7 +9009,7 @@ SET folder_id = NULL
 WHERE folder_id = @folderId;";
         await using (var command = new SqliteCommand(clearScanJobSql, connection, transaction))
         {
-            command.Parameters.AddWithValue("folderId", folderId);
+            command.Parameters.AddWithValue(FolderIdParameter, folderId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -9026,7 +9028,7 @@ WHERE destination_folder_id = @folderId
    OR atmos_destination_folder_id = @folderId;";
         await using (var command = new SqliteCommand(clearPlaylistWatchPreferencesSql, connection, transaction))
         {
-            command.Parameters.AddWithValue("folderId", folderId);
+            command.Parameters.AddWithValue(FolderIdParameter, folderId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -9038,7 +9040,7 @@ WHERE destination_folder_id = @folderId
    OR atmos_destination_folder_id = @folderId;";
         await using (var command = new SqliteCommand(clearArtistWatchlistSql, connection, transaction))
         {
-            command.Parameters.AddWithValue("folderId", folderId);
+            command.Parameters.AddWithValue(FolderIdParameter, folderId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -9049,7 +9051,7 @@ SET folder_id = NULL,
 WHERE folder_id = @folderId;";
         await using (var command = new SqliteCommand(clearQualityScanAutomationSql, connection, transaction))
         {
-            command.Parameters.AddWithValue("folderId", folderId);
+            command.Parameters.AddWithValue(FolderIdParameter, folderId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -9060,7 +9062,7 @@ SET folder_id = NULL,
 WHERE folder_id = @folderId;";
         await using (var command = new SqliteCommand(clearQualityScanRunSql, connection, transaction))
         {
-            command.Parameters.AddWithValue("folderId", folderId);
+            command.Parameters.AddWithValue(FolderIdParameter, folderId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -9070,7 +9072,7 @@ SET destination_folder_id = NULL
 WHERE destination_folder_id = @folderId;";
         await using (var command = new SqliteCommand(clearQualityScanActionSql, connection, transaction))
         {
-            command.Parameters.AddWithValue("folderId", folderId);
+            command.Parameters.AddWithValue(FolderIdParameter, folderId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -9563,7 +9565,7 @@ SET path = EXCLUDED.path,
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("path", input.FilePath);
         command.Parameters.AddWithValue("relativePath", input.RelativePath);
-        command.Parameters.AddWithValue("folderId", input.FolderId);
+        command.Parameters.AddWithValue(FolderIdParameter, input.FolderId);
         command.Parameters.AddWithValue("size", size);
         command.Parameters.AddWithValue("mtime", mtime);
         command.Parameters.AddWithValue("duration", (object?)input.DurationMs ?? DBNull.Value);
@@ -10099,7 +10101,7 @@ VALUES (@albumId, @folderId)
 ON CONFLICT DO NOTHING;";
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("albumId", albumId);
-        command.Parameters.AddWithValue("folderId", folderId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

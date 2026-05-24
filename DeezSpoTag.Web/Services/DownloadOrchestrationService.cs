@@ -82,6 +82,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
+        if (reason == EnhancementPauseReason.PendingPipeline
+            && IsAutomationInterruptibleEnhancementTrigger(job.Trigger))
+        {
+            return true;
+        }
+
         return IsInterruptibleEnhancementTrigger(job.Trigger);
     }
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
@@ -127,6 +133,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     };
     private static readonly TimeSpan StagingGateLogThrottle = TimeSpan.FromMinutes(1);
     private const string WarningLogLevel = "warning";
+    private const string ErrorLogLevel = "error";
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
     private const string FolderContentAtmos = "atmos";
@@ -698,7 +705,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 await MarkPostDownloadFinalizationFailedAsync(group, cancellationToken);
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                     DateTimeOffset.UtcNow,
-                    "error",
+                    ErrorLogLevel,
                     $"Automation: post-download finalization failed for destination folder {group.DestinationFolderId} (moved={summary.MovedCount}, skipped={summary.SkippedCount}, failed={summary.FailedCount}, error={summary.Error ?? "none"})."));
                 return false;
             }
@@ -711,7 +718,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 await MarkPostDownloadFinalizationFailedAsync(group, cancellationToken);
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                     DateTimeOffset.UtcNow,
-                    "error",
+                    ErrorLogLevel,
                     $"Automation: post-download finalization failed for destination folder {group.DestinationFolderId} (no files were moved or finalized)."));
                 return false;
             }
@@ -733,7 +740,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _logger.LogWarning(ex, "Post-download finalization failed for destination folder {DestinationFolderId}.", group.DestinationFolderId);
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
-                "error",
+                ErrorLogLevel,
                 $"Automation: post-download finalization failed for destination folder {group.DestinationFolderId} ({ex.Message})."));
             return false;
         }
@@ -801,29 +808,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         return new PipelineEnrichmentResult(status, SafeToContinue: false, SafeToPersist: false);
-    }
-
-    private static bool HasCandidateStagingAudioFiles(string rootPath)
-    {
-        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            return Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories)
-                .Select(Path.GetExtension)
-                .Any(extension => !string.IsNullOrWhiteSpace(extension) && StagingAudioExtensions.Contains(extension));
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
     }
 
     private async Task<Dictionary<long, List<string>>> GetRecentMovedAudioFilesByDestinationAsync(
@@ -1359,7 +1343,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _logger.LogWarning(ex, "Automation enhancement failed for target {RootPath}.", target.RootPath);
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
-                "error",
+                ErrorLogLevel,
                 $"Automation: enhancement failed for {target.RootPath} ({ex.Message})."));
             return new EnhancementTargetRunResult(true, false);
         }
@@ -1803,7 +1787,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _logger.LogWarning(ex, "Automation Plex scan failed.");
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
-                "error",
+                ErrorLogLevel,
                 $"Automation: Plex scan failed ({ex.Message})."));
         }
     }
@@ -1926,7 +1910,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return ClearStageTags(configJson, clearEnrichment: true, clearEnhancement: false);
     }
 
-    private static string ApplyTargetFiles(string configJson, IReadOnlyCollection<string> targetFiles)
+    private static string ApplyTargetFiles(string configJson, List<string> targetFiles)
     {
         if (string.IsNullOrWhiteSpace(configJson) || targetFiles.Count == 0)
         {
@@ -2092,7 +2076,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     }
 
     private void LogCompletedDownloadEligibilityDiagnostics(
-        IReadOnlyList<DownloadQueueItem> completedItems,
+        List<DownloadQueueItem> completedItems,
         IReadOnlyDictionary<long, FolderDto>? foldersById)
     {
         if (completedItems.Count == 0)

@@ -669,6 +669,8 @@ public sealed class ShazamRecognitionService
                 catch (Exception)
                 {
                     // best effort
+                    error = "Timed out while bootstrapping Shazam runtime dependencies.";
+                    return false;
                 }
 
                 error = "Timed out while bootstrapping Shazam runtime dependencies.";
@@ -762,6 +764,8 @@ public sealed class ShazamRecognitionService
                 catch (Exception)
                 {
                     // best effort
+                    error = $"Command '{fileName} {arguments}' timed out.";
+                    return false;
                 }
 
                 error = $"Command '{fileName} {arguments}' timed out.";

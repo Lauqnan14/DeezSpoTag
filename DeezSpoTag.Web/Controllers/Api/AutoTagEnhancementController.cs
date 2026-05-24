@@ -742,9 +742,16 @@ public class AutoTagEnhancementController : ControllerBase
         }
         catch (Exception ex)
         {
-            RegisterOrganizerFailure(context.JobId, context.Execution, context.FolderLabel, ex);
+            RecordOrganizerFailure(context.JobId, context.Execution, context.FolderLabel, ex);
         }
     }
+
+    private static void RecordOrganizerFailure(
+        string? jobId,
+        FolderUniformityExecutionState execution,
+        string folderLabel,
+        Exception exception)
+        => RegisterOrganizerFailure(jobId, execution, folderLabel, exception);
 
     private static void RegisterOrganizerSkip(
         string? jobId,

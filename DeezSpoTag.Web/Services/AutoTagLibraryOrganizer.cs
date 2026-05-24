@@ -2433,7 +2433,7 @@ public class AutoTagLibraryOrganizer
                 IOFile.Delete(path);
             }
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Best-effort cleanup.
         }

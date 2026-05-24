@@ -117,12 +117,6 @@ public class AudioTagger
         "dec3"u8.ToArray(),
         "dac3"u8.ToArray()
     ];
-    private static readonly HashSet<string> BlockedGenres = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "other",
-        "others"
-    };
-
     private static readonly Regex LrcLineRegex = new(
         @"^\s*\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$",
         RegexOptions.Compiled,
@@ -217,11 +211,15 @@ public class AudioTagger
     public async Task TagTrackAsync(string extension, string writePath, DeezSpoTag.Core.Models.Track track, TagSettings tags)
     {
         var finalPathExtension = Path.GetExtension(writePath);
-        var normalizedExtension = !string.IsNullOrWhiteSpace(finalPathExtension)
-            ? finalPathExtension.Trim().ToLowerInvariant()
-            : string.IsNullOrWhiteSpace(extension)
-                ? string.Empty
-                : extension.Trim().ToLowerInvariant();
+        var normalizedExtension = string.Empty;
+        if (!string.IsNullOrWhiteSpace(finalPathExtension))
+        {
+            normalizedExtension = finalPathExtension.Trim().ToLowerInvariant();
+        }
+        else if (!string.IsNullOrWhiteSpace(extension))
+        {
+            normalizedExtension = extension.Trim().ToLowerInvariant();
+        }
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
