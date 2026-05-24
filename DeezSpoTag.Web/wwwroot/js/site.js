@@ -2007,6 +2007,27 @@ globalThis.DeezSpoTag = {
         }
     },
 
+    normalizeNotificationActionHref(action) {
+        const href = action?.href;
+        if (!href || String(action?.label || '').trim().toLowerCase() !== 'view') {
+            return href;
+        }
+
+        try {
+            const url = new URL(href, globalThis.location.href);
+            if (url.origin === globalThis.location.origin
+                && url.pathname.replace(/\/+$/, '') === '/Activities'
+                && !url.searchParams.has('tab')) {
+                url.searchParams.set('tab', 'downloads-content');
+                return url.toString();
+            }
+        } catch {
+            return href;
+        }
+
+        return href;
+    },
+
     // Show notification
     showNotification(message, type = 'info', options = {}) {
         const alertClass = {
@@ -2032,7 +2053,7 @@ globalThis.DeezSpoTag = {
         notificationElement.appendChild(messageSpan);
 
         const action = options?.action;
-        const actionHref = this.sanitizeActionHref(action?.href);
+        const actionHref = this.sanitizeActionHref(this.normalizeNotificationActionHref(action));
         if (action?.label && actionHref) {
             const actionLink = document.createElement('a');
             actionLink.className = 'btn btn-sm btn-light ms-2';
