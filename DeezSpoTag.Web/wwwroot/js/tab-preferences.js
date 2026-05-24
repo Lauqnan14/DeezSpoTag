@@ -57,6 +57,35 @@
         }) || null;
     }
 
+    function normalizeRequestedTarget(value) {
+        const requested = String(value || "").trim();
+        if (!requested) {
+            return "";
+        }
+
+        return requested.startsWith("#") ? requested : `#${requested}`;
+    }
+
+    function getRequestedTargetSelector() {
+        try {
+            const fromQuery = new URLSearchParams(globalThis.location.search || "").get("tab");
+            const targetFromQuery = normalizeRequestedTarget(fromQuery);
+            if (targetFromQuery) {
+                return targetFromQuery;
+            }
+
+            return normalizeRequestedTarget(String(globalThis.location.hash || "").replace(/^#/, ""));
+        } catch (error) {
+            logDebug("read requested tab", error);
+            return "";
+        }
+    }
+
+    function hasExplicitRequestedTab(tabList) {
+        const requestedTarget = getRequestedTargetSelector();
+        return Boolean(requestedTarget && getRestorableTrigger(tabList, requestedTarget));
+    }
+
     function rememberTab(trigger) {
         const tabList = getTabList(trigger);
         const storageKey = getStorageKey(tabList);
@@ -81,7 +110,7 @@
 
     function restoreTabList(tabList) {
         const storageKey = getStorageKey(tabList);
-        if (!storageKey || isOptedOut(tabList) || !isRememberEnabled()) {
+        if (!storageKey || isOptedOut(tabList) || hasExplicitRequestedTab(tabList) || !isRememberEnabled()) {
             return;
         }
 

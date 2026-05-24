@@ -16,6 +16,7 @@ test-results/
 coverage-report/
 coverage*.xml
 reports/
+codeql-results/
 DeezSpoTag.Web/Tools/venv/
 .jscpd-report/
 .jscpd*/
@@ -54,6 +55,7 @@ DeezSpoTag Diagnostic/
 **/venv/
 **/.audit-venv/
 Tools/AppleMusicWrapper/runtime/app/rootfs/
+Tools/AppleMusicWrapper/source/build/
 Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
 Tools/AppleMusicWrapper/runtime/app/.backup-ref-swap/
 DeezSpoTag.Web/Tools/models/

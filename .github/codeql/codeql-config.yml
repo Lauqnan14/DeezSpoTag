@@ -1,0 +1,7 @@
+name: DeezSpoTag CodeQL
+
+paths-ignore:
+  - "**/bin/**"
+  - "**/obj/**"
+  - "codeql-results/**"
+  - "Tools/AppleMusicWrapper/source/build/**"

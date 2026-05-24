@@ -7217,10 +7217,8 @@ function bindActivitiesTabSwitchRefresh() {
         }
 
         const targetSelector = requested.startsWith('#') ? requested : `#${requested}`;
-        const escapedTargetSelector = globalThis.CSS && typeof globalThis.CSS.escape === 'function'
-            ? globalThis.CSS.escape(targetSelector)
-            : targetSelector.replace(/["\\]/g, '\\$&');
-        const trigger = activitiesTabs?.querySelector(`[data-bs-target="${escapedTargetSelector}"]`);
+        const trigger = Array.from(activitiesTabs?.querySelectorAll('[data-bs-toggle="tab"]') || [])
+            .find(tab => tab?.dataset?.bsTarget === targetSelector);
         if (!trigger) {
             return false;
         }
