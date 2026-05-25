@@ -33,6 +33,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const int MinVibeAnalyzerTimeoutSeconds = 10;
     private const int MaxVibeAnalyzerTimeoutSeconds = 600;
     private const int DefaultVibeAnalyzerBatchTimeoutSeconds = 300;
+    private static readonly TimeSpan CompletedStandardEnhancedRetryDelay = TimeSpan.FromMinutes(30);
     private const int MinVibeAnalyzerBatchTimeoutSeconds = 60;
     private const int MaxVibeAnalyzerBatchTimeoutSeconds = 3600;
     private const int MinVibeAnalyzerWorkers = 1;
@@ -236,7 +237,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     private async Task<int> AnalyzeBatchAsync(int batchSize, bool stopWhenDisabled, CancellationToken cancellationToken)
     {
-        var tracks = await _repository.GetTracksForAnalysisAsync(batchSize, cancellationToken);
+        var includeCompletedStandard = IsEnhancedAnalysisAvailableForRetry();
+        var tracks = await _repository.GetTracksForAnalysisAsync(
+            batchSize,
+            cancellationToken,
+            includeCompletedStandard,
+            includeCompletedStandard ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay) : null);
         if (tracks.Count == 0)
         {
             return 0;
@@ -309,6 +315,17 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
 
         return processedTracks;
+    }
+
+    private bool IsEnhancedAnalysisAvailableForRetry()
+    {
+        var capability = GetOrProbeMlCapability();
+        if (!capability.Available)
+        {
+            LogMlUnavailable(capability.Reason ?? "Unknown reason.");
+        }
+
+        return capability.Available;
     }
 
     private async Task<bool> ShouldStopForDisabledAnalysisAsync(CancellationToken cancellationToken)
@@ -398,6 +415,19 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             {
                 analysisOutput = batchPrediction.Output;
                 predictionFailure = batchPrediction.FailureReason;
+                if (analysisOutput is null)
+                {
+                    var singleTrackOutput = TryPredictAnalysisOutput(track.FilePath, out var singleTrackFailure);
+                    if (singleTrackOutput is not null)
+                    {
+                        analysisOutput = singleTrackOutput;
+                        predictionFailure = null;
+                    }
+                    else
+                    {
+                        predictionFailure = CombinePredictionFailures(predictionFailure, singleTrackFailure);
+                    }
+                }
             }
             else
             {
@@ -405,10 +435,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
 
             if (analysisOutput is null
-                && !string.IsNullOrWhiteSpace(predictionFailure)
-                && _logger.IsEnabled(LogLevel.Debug))
+                && !string.IsNullOrWhiteSpace(predictionFailure))
             {
-                _logger.LogDebug("Vibe analyzer fallback to standard for {FilePath}: {Reason}", track.FilePath, predictionFailure);
+                _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", track.FilePath, predictionFailure);
             }
 
             return CreateCompletedAnalysisResult(track, metrics, analysisOutput);
@@ -417,6 +446,22 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             return CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, ex.Message);
         }
+    }
+
+    private static string? CombinePredictionFailures(string? batchFailure, string? singleTrackFailure)
+    {
+        if (string.IsNullOrWhiteSpace(batchFailure))
+        {
+            return singleTrackFailure;
+        }
+
+        if (string.IsNullOrWhiteSpace(singleTrackFailure)
+            || string.Equals(batchFailure, singleTrackFailure, StringComparison.OrdinalIgnoreCase))
+        {
+            return batchFailure;
+        }
+
+        return $"{batchFailure}; single-track retry failed: {singleTrackFailure}";
     }
 
     private Dictionary<long, BatchPrediction> TryPredictAnalysisOutputBatch(
@@ -774,7 +819,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             keyScale = moodScores.Happy >= moodScores.Sad ? "major" : "minor";
         }
 
-        var moodTags = BuildMoodTags(moodScores);
+        var moodTags = NormalizeMoodTags(analysisOutput?.MoodTags);
+        if (moodTags.Count == 0)
+        {
+            moodTags = BuildMoodTags(moodScores);
+        }
         var analysisMode = isEnhanced ? EnhancedAnalysisMode : StandardAnalysisMode;
         var analysisVersion = isEnhanced ? EnhancedAnalysisVersion : StandardAnalysisVersion;
         var valence = moodScores is null ? (double?)null : CalculateValence(moodScores);
@@ -900,6 +949,20 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         AddMoodTag(tags, "acoustic", moodScores.Acoustic);
         AddMoodTag(tags, "electronic", moodScores.Electronic);
         return tags;
+    }
+
+    private static IReadOnlyList<string> NormalizeMoodTags(IReadOnlyList<string>? moodTags)
+    {
+        if (moodTags is null || moodTags.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        return moodTags
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(tag => tag.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static void AddMoodTag(List<string> tags, string mood, double? score)
@@ -1872,6 +1935,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         double? Instrumentalness,
         double? Speechiness,
         IReadOnlyList<string>? Genres,
+        IReadOnlyList<string>? MoodTags,
         double? Happy,
         double? Sad,
         double? Relaxed,

@@ -928,6 +928,48 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetTracksForAnalysis_CanRetryCompletedStandardAnalysis_WhenRequested()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Song One", "dz-song-1", "sp-song-1", "am-song-1"));
+        var trackId = seeded.TrackIdsByTitle["Song One"];
+        var analyzedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(
+            trackId,
+            seeded.LibraryId,
+            analyzedAtUtc,
+            ["happy"],
+            analysisMode: "standard"));
+
+        var defaultCandidates = await _repository.GetTracksForAnalysisAsync(10);
+        Assert.DoesNotContain(defaultCandidates, item => item.TrackId == trackId);
+
+        var retryCandidates = await _repository.GetTracksForAnalysisAsync(
+            10,
+            includeCompletedStandard: true);
+        Assert.Contains(retryCandidates, item => item.TrackId == trackId);
+
+        var throttledRetryCandidates = await _repository.GetTracksForAnalysisAsync(
+            10,
+            includeCompletedStandard: true,
+            completedStandardRetryBeforeUtc: DateTimeOffset.UtcNow.AddMinutes(-30));
+        Assert.DoesNotContain(throttledRetryCandidates, item => item.TrackId == trackId);
+
+        await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(
+            trackId,
+            seeded.LibraryId,
+            analyzedAtUtc.AddMinutes(1),
+            ["happy"],
+            analysisMode: "enhanced"));
+
+        var enhancedCandidates = await _repository.GetTracksForAnalysisAsync(
+            10,
+            includeCompletedStandard: true);
+        Assert.DoesNotContain(enhancedCandidates, item => item.TrackId == trackId);
+    }
+
+    [Fact]
     public async Task TrackAnalysis_And_MixCache_Workflow_RoundTrip_Works()
     {
         var seeded = await SeedLibraryAsync(
@@ -1184,7 +1226,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         long trackId,
         long libraryId,
         DateTimeOffset analyzedAtUtc,
-        IReadOnlyList<string> moodTags)
+        IReadOnlyList<string> moodTags,
+        string analysisMode = "signal")
     {
         return new TrackAnalysisResultDto(
             TrackId: trackId,
@@ -1197,7 +1240,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             Bpm: 120.0,
             AnalyzedAtUtc: analyzedAtUtc,
             Error: null,
-            AnalysisMode: "signal",
+            AnalysisMode: analysisMode,
             AnalysisVersion: "v1",
             MoodTags: moodTags,
             MoodHappy: 0.8,

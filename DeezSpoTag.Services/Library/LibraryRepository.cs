@@ -3314,7 +3314,11 @@ ORDER BY sort_group, sort_utc DESC;";
         return mapping;
     }
 
-    public async Task<IReadOnlyList<TrackAnalysisInputDto>> GetTracksForAnalysisAsync(int limit, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<TrackAnalysisInputDto>> GetTracksForAnalysisAsync(
+        int limit,
+        CancellationToken cancellationToken = default,
+        bool includeCompletedStandard = false,
+        DateTimeOffset? completedStandardRetryBeforeUtc = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
@@ -3330,11 +3334,28 @@ JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 LEFT JOIN track_analysis ta ON ta.track_id = t.id
 WHERE f.enabled = 1
-  AND (ta.status IS NULL OR ta.status IN ('pending', 'failed', 'error'))
+  AND (
+      ta.status IS NULL
+      OR ta.status IN ('pending', 'failed', 'error')
+      OR (
+          @includeCompletedStandard = 1
+          AND ta.status IN ('complete', 'completed')
+          AND lower(coalesce(ta.analysis_mode, '')) = 'standard'
+          AND (
+              @completedStandardRetryBeforeUtc IS NULL
+              OR ta.analyzed_at_utc IS NULL
+              OR ta.analyzed_at_utc <= @completedStandardRetryBeforeUtc
+          )
+      )
+  )
 ORDER BY t.id, af.quality_rank DESC NULLS LAST, af.size DESC, af.id DESC
 LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", limit);
+        command.Parameters.AddWithValue("includeCompletedStandard", includeCompletedStandard ? 1 : 0);
+        command.Parameters.AddWithValue(
+            "completedStandardRetryBeforeUtc",
+            completedStandardRetryBeforeUtc?.ToString("O") ?? (object)DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var results = new List<TrackAnalysisInputDto>();
         var seenTrackIds = new HashSet<long>();

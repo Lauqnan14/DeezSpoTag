@@ -702,6 +702,7 @@ def build_payload(result: Dict[str, Any]) -> Dict[str, Any]:
         "Instrumentalness": result.get("instrumentalness"),
         "Speechiness": result.get("speechiness"),
         "Genres": result.get("essentiaGenres", []),
+        "MoodTags": result.get("moodTags", []),
         "Happy": result.get("moodHappy"),
         "Sad": result.get("moodSad"),
         "Relaxed": result.get("moodRelaxed"),
