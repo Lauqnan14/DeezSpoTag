@@ -8523,13 +8523,16 @@ function openFolderModal(folder = null) {
 
 function resolveFolderDestinationFlags(folder) {
     const desiredQuality = String(folder.desiredQuality || '27');
+    const storedContentMode = getFolderStoredContentMode(folder);
     const normalizedPath = normalizePath(folder.rootPath || '');
     const currentVideoPath = normalizePath(libraryState.videoDownloadLocation || '');
     const currentPodcastPath = normalizePath(libraryState.podcastDownloadLocation || '');
     const isAtmosDestination = folder.id === libraryState.atmosDestinationFolderId;
-    const isVideoDestination = normalizedPath.length > 0
+    const isVideoDestination = storedContentMode === 'video'
+        || normalizedPath.length > 0
         && normalizedPath === currentVideoPath;
-    const isPodcastDestination = normalizedPath.length > 0
+    const isPodcastDestination = storedContentMode === 'podcast'
+        || normalizedPath.length > 0
         && normalizedPath === currentPodcastPath;
 
     return { desiredQuality, isAtmosDestination, isVideoDestination, isPodcastDestination };
@@ -9148,6 +9151,11 @@ function getCurrentFolderDestinationState(folder) {
     };
 }
 
+function getFolderStoredContentMode(folder) {
+    const mode = resolveFolderContentMode(folder);
+    return mode === 'video' || mode === 'podcast' ? mode : 'music';
+}
+
 function buildDestinationClearUpdate(destinationState) {
     const clearDestinations = {};
     if (destinationState.isCurrentAtmosDestination) {
@@ -9420,6 +9428,11 @@ function bindFolderEnhanceAction(enhanceButton, wrapper, folder) {
     if (!enhanceButton) {
         return;
     }
+    if (getFolderStoredContentMode(folder) !== 'music') {
+        enhanceButton.disabled = true;
+        enhanceButton.title = 'Podcasts and videos do not use AutoTag enhancement profiles.';
+        return;
+    }
     enhanceButton.addEventListener('click', async () => {
         const profileSelectRef = wrapper.querySelector('[data-folder-profile]');
         const selectedProfile = profileSelectRef ? profileSelectRef.value : '';
@@ -9473,7 +9486,8 @@ function computeFolderRowViewModel(folder, context) {
         .join('');
     const destinationFlags = context.getFolderDestinationFlags(folder);
     const { isVideoDestination, isPodcastDestination } = destinationFlags;
-    const requiresProfileForAutoTag = !isVideoDestination && !isPodcastDestination;
+    const storedContentMode = getFolderStoredContentMode(folder);
+    const requiresProfileForAutoTag = storedContentMode === 'music';
     const showProfileSelector = requiresProfileForAutoTag;
     const hasAssignedProfile = currentProfile.trim().length > 0;
     const canEnableAutoTag = !requiresProfileForAutoTag || hasAssignedProfile;
@@ -9531,6 +9545,7 @@ function computeFolderRowViewModel(folder, context) {
         currentAutoTagEnabled,
         currentCombinedEnabled,
         combinedToggleTitle,
+        supportsAutoTagEnhancement: requiresProfileForAutoTag,
         selectedQualityValue,
         formatSummary,
         bitrateSummary,
@@ -9593,7 +9608,7 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
                     ${viewModel.profileColumnMarkup}
                 </span>
                 <span>
-                    <select class="folder-duration-select" data-folder-duration ${viewModel.currentLibraryEnabled && viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
+                    <select class="folder-duration-select" data-folder-duration ${viewModel.supportsAutoTagEnhancement && viewModel.currentLibraryEnabled && viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
                         ${viewModel.scheduleOptions}
                     </select>
                 </span>
@@ -9605,7 +9620,7 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
                     </label>
                 </span>
                 <span class="actions">
-                    <button class="action-btn action-btn-sm folder-action" data-enhance title="Run enhancement now" ${viewModel.currentLibraryEnabled && viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
+                    <button class="action-btn action-btn-sm folder-action" data-enhance title="${viewModel.supportsAutoTagEnhancement ? 'Run enhancement now' : 'Podcasts and videos do not use AutoTag enhancement profiles.'}" ${viewModel.supportsAutoTagEnhancement && viewModel.currentLibraryEnabled && viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
                         <i class="fas fa-magic" aria-hidden="true"></i>
                         <span class="visually-hidden">Enhance</span>
                     </button>
@@ -9754,11 +9769,14 @@ function renderFolders() {
         { value: '180d', label: '6 months' }
     ];
     const getFolderDestinationFlags = (folder) => {
+        const storedContentMode = getFolderStoredContentMode(folder);
         const normalizedPath = normalizePath(folder?.rootPath);
         const isAtmosDestination = folder?.id === libraryState.atmosDestinationFolderId;
-        const isVideoDestination = normalizedPath.length > 0
+        const isVideoDestination = storedContentMode === 'video'
+            || normalizedPath.length > 0
             && normalizedPath === normalizePath(libraryState.videoDownloadLocation || '');
-        const isPodcastDestination = normalizedPath.length > 0
+        const isPodcastDestination = storedContentMode === 'podcast'
+            || normalizedPath.length > 0
             && normalizedPath === normalizePath(libraryState.podcastDownloadLocation || '');
         return { isAtmosDestination, isVideoDestination, isPodcastDestination };
     };
