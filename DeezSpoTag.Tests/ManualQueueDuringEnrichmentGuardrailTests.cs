@@ -107,6 +107,54 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.Contains("EvaluateDownloadGateAsync(cancellationToken)", orchestrationSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnrichmentRuns_AreNotPausedForIncomingDownloads()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.DoesNotContain("TryPauseEnrichment", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveEnrichmentPauseDecisionAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Automation: enrichment pause requested for incoming download", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Automation enrichment job", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("StopJobAsync(enrichmentJobId", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("TryPauseEnhancementForIncomingDownloadAsync", orchestrationSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PostDownloadPipeline_DoesNotAbortWhenQueueItemsAppearDuringEnrichment()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var runPipelineStart = orchestrationSource.IndexOf(
+            "private async Task RunPipelineAsync",
+            StringComparison.Ordinal);
+        var resumeEnhancementStart = orchestrationSource.IndexOf(
+            "private async Task<bool> ResumePausedEnhancementAsync",
+            StringComparison.Ordinal);
+        var runPipelineSource = orchestrationSource[runPipelineStart..resumeEnhancementStart];
+
+        Assert.Contains("_postDownloadPipelineInProgress = true;", runPipelineSource, StringComparison.Ordinal);
+        Assert.Contains("_postDownloadPipelineInProgress = false;", runPipelineSource, StringComparison.Ordinal);
+        Assert.True(
+            runPipelineSource.IndexOf("_postDownloadPipelineInProgress = true;", StringComparison.Ordinal)
+            < runPipelineSource.IndexOf("PreparePipelineRunContextAsync", StringComparison.Ordinal));
+        Assert.Contains("RunPipelineEnrichmentAsync", runPipelineSource, StringComparison.Ordinal);
+        Assert.Contains("RunPostDownloadFinalizationAsync", runPipelineSource, StringComparison.Ordinal);
+        Assert.Contains("RunPostAutoTagStagesAsync", runPipelineSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnsurePipelineStillIdleAsync", runPipelineSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasActiveDownloadsAsync", runPipelineSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExecutionGate_BlocksDownloadExecutionUntilEnrichmentFinalizationFinishes()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("_postDownloadPipelineInProgress", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("Downloads waiting for post-enrichment finalization to finish.", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("Downloads waiting for enrichment to finish.", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Downloads paused while enrichment is running.", orchestrationSource, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] pathParts)
         => File.ReadAllText(Path.Join([ResolveRepoRoot(), .. pathParts]));
 

@@ -176,6 +176,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private DateTimeOffset _lastPipelineCompletedAt = DateTimeOffset.UtcNow;
     private bool _pipelineRequested;
     private bool _taggingInProgress;
+    private volatile bool _postDownloadPipelineInProgress;
     private volatile bool _enhancementStageRunning;
     private volatile bool _enhancementPauseRequested;
     private volatile bool _enhancementResumeAwaitingPipelineCompletion;
@@ -282,6 +283,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         bool allowManualQueueDuringEnrichment,
         CancellationToken cancellationToken)
     {
+        if (_postDownloadPipelineInProgress)
+        {
+            return allowManualQueueDuringEnrichment
+                ? AllowDownloads()
+                : DenyDownloads("Downloads waiting for post-enrichment finalization to finish.");
+        }
+
         if (!TaggingInProgress)
         {
             return AllowDownloads();
@@ -291,19 +299,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             return allowManualQueueDuringEnrichment
                 ? AllowDownloads()
-                : DenyDownloads("Downloads paused while enrichment is running.");
+                : DenyDownloads("Downloads waiting for enrichment to finish.");
         }
 
         var enhancementDecision = await TryResolveEnhancementGateDecisionAsync(cancellationToken);
         if (enhancementDecision != null)
         {
             return enhancementDecision;
-        }
-
-        var enrichmentPauseDecision = await TryResolveEnrichmentPauseDecisionAsync();
-        if (enrichmentPauseDecision != null)
-        {
-            return enrichmentPauseDecision;
         }
 
         var runningJobDecision = TryResolveRunningJobGateDecision(allowManualQueueDuringEnrichment);
@@ -337,19 +339,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             : null;
     }
 
-    private async Task<DownloadGateDecision?> TryResolveEnrichmentPauseDecisionAsync()
-    {
-        if (!_autoTagService.TryGetRunningEnrichmentJobId(out var runningEnrichmentJobId))
-        {
-            return null;
-        }
-
-        var paused = await TryPauseEnrichmentForIncomingDownloadAsync(runningEnrichmentJobId);
-        return paused || !TaggingInProgress
-            ? AllowDownloads()
-            : null;
-    }
-
     private DownloadGateDecision? TryResolveRunningJobGateDecision(bool allowManualQueueDuringEnrichment)
     {
         if (!_autoTagService.TryGetAnyRunningJobId(out var runningJobId))
@@ -368,7 +357,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             return allowManualQueueDuringEnrichment
                 ? AllowDownloads()
-                : DenyDownloads("Downloads paused while enrichment is running.");
+                : DenyDownloads("Downloads waiting for enrichment to finish.");
         }
 
         return AllowDownloads();
@@ -490,39 +479,36 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task RunPipelineAsync(CancellationToken cancellationToken)
     {
-        var context = await PreparePipelineRunContextAsync(cancellationToken);
-        if (context is null)
+        _postDownloadPipelineInProgress = true;
+        try
         {
-            return;
+            var context = await PreparePipelineRunContextAsync(cancellationToken);
+            if (context is null)
+            {
+                return;
+            }
+
+            foreach (var group in context.Groups)
+            {
+                var enrichmentResult = await RunPipelineEnrichmentAsync(context, group, cancellationToken);
+
+                var finalizationCompleted = await RunPostDownloadFinalizationAsync(
+                    context,
+                    group,
+                    enrichmentResult,
+                    cancellationToken);
+
+                await RunPostAutoTagStagesAsync(group, cancellationToken);
+
+                if (finalizationCompleted)
+                {
+                    await PersistPipelineCompletionMarkersAsync(context, group, cancellationToken);
+                }
+            }
         }
-
-        foreach (var group in context.Groups)
+        finally
         {
-            var enrichmentResult = await RunPipelineEnrichmentAsync(context, group, cancellationToken);
-
-            if (!await EnsurePipelineStillIdleAsync(cancellationToken))
-            {
-                _pipelineRequested = true;
-                return;
-            }
-
-            var finalizationCompleted = await RunPostDownloadFinalizationAsync(
-                context,
-                group,
-                enrichmentResult,
-                cancellationToken);
-
-            if (!await EnsurePipelineStillIdleAsync(cancellationToken))
-            {
-                _pipelineRequested = true;
-                return;
-            }
-
-            await RunPostAutoTagStagesAsync(group, cancellationToken);
-            if (finalizationCompleted)
-            {
-                await PersistPipelineCompletionMarkersAsync(context, group, cancellationToken);
-            }
+            _postDownloadPipelineInProgress = false;
         }
     }
 
@@ -927,18 +913,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         var extension = Path.GetExtension(normalizedPath);
         return !string.IsNullOrWhiteSpace(extension) && StagingAudioExtensions.Contains(extension);
-    }
-
-    private async Task<bool> EnsurePipelineStillIdleAsync(CancellationToken cancellationToken)
-    {
-        if (!await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
-        {
-            return true;
-        }
-
-        _logger.LogInformation("Automation halted: downloads started during AutoTag.");
-        _pipelineRequested = true;
-        return false;
     }
 
     private bool ShouldDeferEnhancementForDownloadStagingAudio(CancellationToken cancellationToken)
@@ -1725,47 +1699,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             || path.EndsWith(Path.AltDirectorySeparatorChar)
             ? path
             : path + Path.DirectorySeparatorChar;
-    }
-
-    private async Task<bool> TryPauseEnrichmentForIncomingDownloadAsync(string? enrichmentJobId)
-    {
-        if (string.IsNullOrWhiteSpace(enrichmentJobId))
-        {
-            return false;
-        }
-
-        try
-        {
-            _pipelineRequested = true;
-            _queueIdleSince = null;
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                "Automation: enrichment pause requested for incoming download."));
-
-            var stopped = await _autoTagService.StopJobAsync(enrichmentJobId, "automation");
-            if (stopped)
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Automation enrichment job {JobId} pause requested for incoming download.", enrichmentJobId);
-                }
-            }
-            else
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Automation enrichment job {JobId} could not be paused (already stopped).", enrichmentJobId);
-                }
-            }
-
-            return true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to request enrichment pause for incoming download.");
-            return false;
-        }
     }
 
     private async Task TriggerPlexScanAsync(CancellationToken cancellationToken)
