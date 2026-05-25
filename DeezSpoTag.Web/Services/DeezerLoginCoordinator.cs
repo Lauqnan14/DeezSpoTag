@@ -48,7 +48,7 @@ public sealed class DeezerLoginCoordinator
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Deezer login coordination failed.");
             return DeezerLoginCoordinatorResult.Failed("exception");

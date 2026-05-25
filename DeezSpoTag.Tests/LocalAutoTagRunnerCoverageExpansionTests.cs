@@ -17,6 +17,10 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         typeof(LocalAutoTagRunner).GetNestedType("AutoTagRunnerConfig", BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.AutoTagRunnerConfig not found.");
 
+    private static readonly Type LyricsRequestFlagsType =
+        typeof(LocalAutoTagRunner).GetNestedType("LyricsRequestFlags", BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("LocalAutoTagRunner.LyricsRequestFlags not found.");
+
     private static MethodInfo RunnerMethod(string name)
     {
         return typeof(LocalAutoTagRunner).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)
@@ -43,6 +47,28 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         AutoTagRunnerConfigType.GetProperty("IncludeSubfolders")!.SetValue(config, includeSubfolders);
         AutoTagRunnerConfigType.GetProperty("Platforms")!.SetValue(config, platforms ?? new List<string>());
         return config;
+    }
+
+    private static (bool WantsSynced, bool WantsUnsynced, bool WantsTtml) ApplyLyricsPreferenceGate(
+        DeezSpoTagSettings settings,
+        bool wantsSynced,
+        bool wantsUnsynced,
+        bool wantsTtml)
+    {
+        var flags = Activator.CreateInstance(
+            LyricsRequestFlagsType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [wantsSynced, wantsUnsynced, wantsTtml],
+            culture: null)
+            ?? throw new InvalidOperationException("Failed to instantiate LyricsRequestFlags.");
+        var result = RunnerMethod("ApplyLyricsPreferenceGate").Invoke(null, [settings, flags])
+            ?? throw new InvalidOperationException("ApplyLyricsPreferenceGate returned null.");
+
+        return (
+            (bool)LyricsRequestFlagsType.GetProperty("WantsSynced")!.GetValue(result)!,
+            (bool)LyricsRequestFlagsType.GetProperty("WantsUnsynced")!.GetValue(result)!,
+            (bool)LyricsRequestFlagsType.GetProperty("WantsTtml")!.GetValue(result)!);
     }
 
     [Fact]
@@ -89,12 +115,11 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
             }
         };
 
-        var args = new object?[] { settings, true, true, true };
-        RunnerMethod("ApplyLyricsPreferenceGate").Invoke(null, args);
+        var result = ApplyLyricsPreferenceGate(settings, true, true, true);
 
-        Assert.False((bool)args[1]!);
-        Assert.False((bool)args[2]!);
-        Assert.False((bool)args[3]!);
+        Assert.False(result.WantsSynced);
+        Assert.False(result.WantsUnsynced);
+        Assert.False(result.WantsTtml);
     }
 
     [Fact]
@@ -111,12 +136,11 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
             }
         };
 
-        var args = new object?[] { settings, true, true, true };
-        RunnerMethod("ApplyLyricsPreferenceGate").Invoke(null, args);
+        var result = ApplyLyricsPreferenceGate(settings, true, true, true);
 
-        Assert.False((bool)args[1]!);
-        Assert.False((bool)args[2]!);
-        Assert.False((bool)args[3]!);
+        Assert.False(result.WantsSynced);
+        Assert.False(result.WantsUnsynced);
+        Assert.False(result.WantsTtml);
     }
 
     [Fact]
@@ -130,12 +154,11 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
             LrcFormat = "lrc"
         };
 
-        var args = new object?[] { settings, true, true, true };
-        RunnerMethod("ApplyLyricsPreferenceGate").Invoke(null, args);
+        var result = ApplyLyricsPreferenceGate(settings, true, true, true);
 
-        Assert.True((bool)args[1]!);  // synced
-        Assert.False((bool)args[2]!); // unsynced not in type selection
-        Assert.False((bool)args[3]!); // ttml disabled by lrc format
+        Assert.True(result.WantsSynced);
+        Assert.False(result.WantsUnsynced);
+        Assert.False(result.WantsTtml);
     }
 
     [Fact]

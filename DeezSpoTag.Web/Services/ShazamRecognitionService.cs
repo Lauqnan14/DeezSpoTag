@@ -304,7 +304,7 @@ public sealed class ShazamRecognitionService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -531,7 +531,7 @@ public sealed class ShazamRecognitionService
             error = null;
             return true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -667,7 +667,7 @@ public sealed class ShazamRecognitionService
                 {
                     process.Kill(entireProcessTree: true);
                 }
-                catch (Exception)
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
                 {
                     // best effort
                     error = "Timed out while bootstrapping Shazam runtime dependencies.";
@@ -693,7 +693,7 @@ public sealed class ShazamRecognitionService
             error = null;
             return true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -762,7 +762,7 @@ public sealed class ShazamRecognitionService
                 {
                     process.Kill(entireProcessTree: true);
                 }
-                catch (Exception)
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
                 {
                     // best effort
                     error = $"Command '{fileName} {arguments}' timed out.";
@@ -784,7 +784,7 @@ public sealed class ShazamRecognitionService
                 : stderr;
             return false;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -833,7 +833,7 @@ public sealed class ShazamRecognitionService
                 Recognition = result
             };
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogDebug(ex, "Failed to parse Shazam ported recognizer output.");
             return new PortedRecognizerExecution
@@ -995,7 +995,7 @@ public sealed class ShazamRecognitionService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -1063,7 +1063,7 @@ public sealed class ShazamRecognitionService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -1199,7 +1199,7 @@ public sealed class ShazamRecognitionService
                 context.DurationMs = (long)Math.Round(tagFile.Properties.Duration.TotalMilliseconds);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best-effort only.
         }

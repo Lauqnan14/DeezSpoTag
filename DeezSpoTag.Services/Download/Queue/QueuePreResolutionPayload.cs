@@ -36,7 +36,7 @@ public static class QueuePreResolutionPayload
         {
             return JsonNode.Parse(payloadJson) as JsonObject ?? new JsonObject();
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return new JsonObject();
         }

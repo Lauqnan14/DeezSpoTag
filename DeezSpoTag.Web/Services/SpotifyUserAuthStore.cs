@@ -348,7 +348,7 @@ public sealed class SpotifyUserAuthStore
             var info = new FileInfo(path);
             return info.Exists && info.Length > 0;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

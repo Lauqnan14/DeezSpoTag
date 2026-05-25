@@ -1399,7 +1399,7 @@ public sealed class SpotifyArtistService
                 CancellationToken.None);
             AddActivity("info", $"[spotify] librespot fallback cached lazily: {artistName}.");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -1443,7 +1443,7 @@ public sealed class SpotifyArtistService
                 CancellationToken.None);
             AddActivity("info", $"[spotify] top-track ISRCs cached lazily: {artistName}.");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -1822,7 +1822,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -1915,7 +1915,7 @@ public sealed class SpotifyArtistService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -1965,7 +1965,7 @@ public sealed class SpotifyArtistService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -2117,7 +2117,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2163,7 +2163,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2682,7 +2682,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2764,7 +2764,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2792,7 +2792,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2889,7 +2889,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogDebug(ex, "Failed resolving Spotify artist ids from Shazam metadata query.");
             return Array.Empty<string>();
@@ -3086,7 +3086,7 @@ public sealed class SpotifyArtistService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {

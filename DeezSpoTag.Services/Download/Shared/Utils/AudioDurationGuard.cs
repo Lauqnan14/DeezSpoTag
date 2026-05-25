@@ -40,7 +40,7 @@ public static class AudioDurationGuard
             durationSeconds = file.Properties.Duration.TotalSeconds;
             return durationSeconds > 0;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

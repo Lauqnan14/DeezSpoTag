@@ -240,7 +240,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,

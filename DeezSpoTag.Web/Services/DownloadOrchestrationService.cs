@@ -951,7 +951,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             LogStagingEnhancementScanBypass(ex, $"download staging scan failed ({ex.Message}); scheduled enhancement will continue");
             return false;

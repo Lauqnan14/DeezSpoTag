@@ -127,7 +127,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     await AnalyzeBatchAsync(settings.BatchSize, stopWhenDisabled: true, stoppingToken);
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 _logger.LogWarning(ex, "Track analysis pass failed.");
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -220,7 +220,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 {
                     await _moodBucketService.AssignTrackToMoodsAsync(track.TrackId, cancellationToken);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
                 {
                     _logger.LogWarning(ex, "Mood bucket assignment failed for track {TrackId}", track.TrackId);
                 }
@@ -351,7 +351,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             await _moodBucketService.AssignTrackToMoodsAsync(trackId, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Mood bucket assignment failed for track {TrackId}", trackId);
         }
@@ -413,7 +413,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             return CreateCompletedAnalysisResult(track, metrics, analysisOutput);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, ex.Message);
         }
@@ -474,7 +474,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             return BuildBatchPredictionMap(tracks, parsed.Results);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Vibe analysis ML batch failed.");
             return CreateBatchFailureMap(tracks, ex.Message);
@@ -488,7 +488,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     File.Delete(batchTempFilePath);
                 }
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 // Best effort temporary file cleanup.
             }
@@ -1004,7 +1004,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             return parsed;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Vibe analysis ML failed for {FilePath}", filePath);
             failureReason = ex.Message;
@@ -1181,7 +1181,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 _logger.LogInformation("Vibe analysis models provisioned in {Directory}. Downloaded {Count} files.", modelsDir, downloaded);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Failed to provision vibe analysis models at {Directory}", modelsDir);
         }
@@ -1209,7 +1209,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             File.Move(tempPath, destinationPath, true);
             return true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Model download failed for {Url}", url);
             try
@@ -1219,7 +1219,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     File.Delete(tempPath);
                 }
             }
-            catch
+            catch (Exception cleanupException) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(cleanupException))
             {
                 // Best effort cleanup.
             }
@@ -1284,7 +1284,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 }
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Failed to provision Essentia python runtime.");
         }
@@ -1340,7 +1340,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             error = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
             return false;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             error = ex.Message;
             return false;
@@ -1439,7 +1439,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             var stderr = process.StandardError.ReadToEnd();
             return ParseProbeResult(process.ExitCode, stdout, stderr);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return new MlCapability(false, $"Essentia probe failed: {ex.Message}");
         }
@@ -1702,7 +1702,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
             return true;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
@@ -1717,7 +1717,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort: the process may have already exited or cannot be signaled.
         }
@@ -2028,7 +2028,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
             return true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             errorMessage = ex.Message;
             return false;
@@ -2088,7 +2088,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             samples = trimmed;
             return true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             errorMessage = ex.Message;
             return false;
@@ -2134,7 +2134,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             return reader;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             errorMessage = ex.Message;
             return null;

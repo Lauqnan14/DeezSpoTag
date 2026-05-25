@@ -1231,7 +1231,7 @@ public partial class AutoTagService
         {
             throw;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
@@ -6588,7 +6588,7 @@ public partial class AutoTagService
             var path = GetRunLogPath(jobId);
             return File.Exists(path) ? File.ReadLines(path, Encoding.UTF8).Count() : fallback;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return fallback;
         }
@@ -6607,7 +6607,7 @@ public partial class AutoTagService
             var (entries, _) = ParseStatusHistoryEntries(path);
             return entries.Count;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return fallback;
         }
@@ -6745,7 +6745,7 @@ public partial class AutoTagService
             {
                 throw;
             }
-            catch (Exception)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 RecordMalformedHistoryEntry(ref skippedMalformed);
             }
@@ -6773,7 +6773,7 @@ public partial class AutoTagService
                 var normalized = Path.GetFullPath(root);
                 roots.Add(normalized);
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 // Ignore invalid paths.
             }
@@ -6934,7 +6934,7 @@ public partial class AutoTagService
 
             return false;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

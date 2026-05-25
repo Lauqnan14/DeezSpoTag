@@ -45,7 +45,7 @@ public sealed class ShazamResolveApiController : ControllerBase
                     });
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 _logger.LogDebug(ex, "Shazam Deezer ISRC resolve failed.");
             }

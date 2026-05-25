@@ -1440,28 +1440,26 @@ LIMIT 1;";
         AddFinalDestinationPaths(finalDestinationsJson, paths);
         AddPayloadPaths(payloadJson, paths);
 
-        var hasTimeSynced = false;
-        var hasSynced = false;
-        var hasUnsynced = false;
-        ApplyPayloadLyricsStatus(payloadJson, ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+        var lyricsStatus = default(LyricsStatusFlags);
+        ApplyPayloadLyricsStatus(payloadJson, ref lyricsStatus);
 
         foreach (var path in paths)
         {
-            TryMarkLyricsStatus(path, ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+            TryMarkLyricsStatus(path, ref lyricsStatus);
         }
 
         var statuses = new List<string>(capacity: 3);
-        if (hasTimeSynced)
+        if (lyricsStatus.HasTimeSynced)
         {
             statuses.Add("time-synced");
         }
 
-        if (hasSynced)
+        if (lyricsStatus.HasSynced)
         {
             statuses.Add("synced");
         }
 
-        if (hasUnsynced)
+        if (lyricsStatus.HasUnsynced)
         {
             statuses.Add("unsynced");
         }
@@ -1476,9 +1474,7 @@ LIMIT 1;";
 
     private static void TryMarkLyricsStatus(
         string? path,
-        ref bool hasTimeSynced,
-        ref bool hasSynced,
-        ref bool hasUnsynced)
+        ref LyricsStatusFlags status)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -1492,15 +1488,15 @@ LIMIT 1;";
             {
                 case ".ttml":
                 case ".TTML":
-                    hasTimeSynced = true;
+                    status.HasTimeSynced = true;
                     break;
                 case ".lrc":
                 case ".LRC":
-                    hasSynced = true;
+                    status.HasSynced = true;
                     break;
                 case ".txt":
                 case ".TXT":
-                    hasUnsynced = true;
+                    status.HasUnsynced = true;
                     break;
             }
         }
@@ -1512,9 +1508,7 @@ LIMIT 1;";
 
     private static void ApplyPayloadLyricsStatus(
         string? payloadJson,
-        ref bool hasTimeSynced,
-        ref bool hasSynced,
-        ref bool hasUnsynced)
+        ref LyricsStatusFlags status)
     {
         if (string.IsNullOrWhiteSpace(payloadJson))
         {
@@ -1529,9 +1523,9 @@ LIMIT 1;";
                 return;
             }
 
-            ApplyPayloadLyricsStatusProperty(document.RootElement, "LyricsStatus", ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
-            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyricsStatus", ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
-            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyrics_status", ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+            ApplyPayloadLyricsStatusProperty(document.RootElement, "LyricsStatus", ref status);
+            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyricsStatus", ref status);
+            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyrics_status", ref status);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1542,9 +1536,7 @@ LIMIT 1;";
     private static void ApplyPayloadLyricsStatusProperty(
         JsonElement root,
         string propertyName,
-        ref bool hasTimeSynced,
-        ref bool hasSynced,
-        ref bool hasUnsynced)
+        ref LyricsStatusFlags status)
     {
         if (!root.TryGetProperty(propertyName, out var value))
         {
@@ -1557,7 +1549,7 @@ LIMIT 1;";
             {
                 if (token.ValueKind == JsonValueKind.String)
                 {
-                    MarkLyricsStatusToken(token.GetString(), ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+                    MarkLyricsStatusToken(token.GetString(), ref status);
                 }
             }
 
@@ -1566,15 +1558,13 @@ LIMIT 1;";
 
         if (value.ValueKind == JsonValueKind.String)
         {
-            MarkLyricsStatusToken(value.GetString(), ref hasTimeSynced, ref hasSynced, ref hasUnsynced);
+            MarkLyricsStatusToken(value.GetString(), ref status);
         }
     }
 
     private static void MarkLyricsStatusToken(
         string? rawToken,
-        ref bool hasTimeSynced,
-        ref bool hasSynced,
-        ref bool hasUnsynced)
+        ref LyricsStatusFlags status)
     {
         if (string.IsNullOrWhiteSpace(rawToken))
         {
@@ -1588,18 +1578,27 @@ LIMIT 1;";
                 case "time-synced":
                 case "timesynced":
                 case "ttml":
-                    hasTimeSynced = true;
+                    status.HasTimeSynced = true;
                     break;
                 case "synced":
                 case "lrc":
-                    hasSynced = true;
+                    status.HasSynced = true;
                     break;
                 case "unsynced":
                 case "txt":
-                    hasUnsynced = true;
+                    status.HasUnsynced = true;
                     break;
             }
         }
+    }
+
+    private struct LyricsStatusFlags
+    {
+        public bool HasTimeSynced { get; set; }
+
+        public bool HasSynced { get; set; }
+
+        public bool HasUnsynced { get; set; }
     }
 
     private static void AddFinalDestinationPaths(string? finalDestinationsJson, ISet<string> target)

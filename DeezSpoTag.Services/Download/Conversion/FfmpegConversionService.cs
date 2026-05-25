@@ -263,7 +263,7 @@ public sealed class FfmpegConversionService
         {
             return new FileInfo(outputPath).Length > 0;
         }
-        catch (Exception)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

@@ -974,9 +974,7 @@ public sealed class TidalDownloadService
 
     private static (XmlNode? Template, string? MimeType) SelectBestAudioSegmentTemplate(XmlDocument doc)
     {
-        XmlNode? selectedTemplate = null;
-        var selectedBandwidth = int.MinValue;
-        string? selectedMime = null;
+        var selection = new DashTemplateSelection(null, int.MinValue, null);
         var adaptationSets = doc.SelectNodes("//*[local-name()='AdaptationSet']");
         if (adaptationSets == null)
         {
@@ -985,21 +983,15 @@ public sealed class TidalDownloadService
 
         foreach (XmlNode adaptationSet in adaptationSets)
         {
-            TrySelectAudioTemplateFromAdaptationSet(
-                adaptationSet,
-                ref selectedTemplate,
-                ref selectedBandwidth,
-                ref selectedMime);
+            selection = TrySelectAudioTemplateFromAdaptationSet(adaptationSet, selection);
         }
 
-        return (selectedTemplate, selectedMime);
+        return (selection.Template, selection.MimeType);
     }
 
-    private static void TrySelectAudioTemplateFromAdaptationSet(
+    private static DashTemplateSelection TrySelectAudioTemplateFromAdaptationSet(
         XmlNode adaptationSet,
-        ref XmlNode? selectedTemplate,
-        ref int selectedBandwidth,
-        ref string? selectedMime)
+        DashTemplateSelection selection)
     {
         var adaptationMime = adaptationSet.Attributes?["mimeType"]?.Value ?? string.Empty;
         var adaptationContentType = adaptationSet.Attributes?["contentType"]?.Value ?? string.Empty;
@@ -1011,44 +1003,38 @@ public sealed class TidalDownloadService
         {
             foreach (XmlNode representation in representations)
             {
-                TrySelectAudioRepresentationTemplate(
+                selection = TrySelectAudioRepresentationTemplate(
                     representation,
                     adaptationMime,
                     adaptationLooksAudio,
-                    ref selectedTemplate,
-                    ref selectedBandwidth,
-                    ref selectedMime);
+                    selection);
             }
         }
 
-        if (selectedTemplate != null || !adaptationLooksAudio)
+        if (selection.Template != null || !adaptationLooksAudio)
         {
-            return;
+            return selection;
         }
 
         var adaptationTemplate = adaptationSet.SelectSingleNode("./*[local-name()='SegmentTemplate']");
         if (adaptationTemplate == null)
         {
-            return;
+            return selection;
         }
 
-        selectedTemplate = adaptationTemplate;
-        selectedBandwidth = 0;
-        selectedMime = adaptationMime;
+        return new DashTemplateSelection(adaptationTemplate, 0, adaptationMime);
     }
 
-    private static void TrySelectAudioRepresentationTemplate(
+    private static DashTemplateSelection TrySelectAudioRepresentationTemplate(
         XmlNode representation,
         string adaptationMime,
         bool adaptationLooksAudio,
-        ref XmlNode? selectedTemplate,
-        ref int selectedBandwidth,
-        ref string? selectedMime)
+        DashTemplateSelection selection)
     {
         var templateNode = representation.SelectSingleNode("./*[local-name()='SegmentTemplate']");
         if (templateNode == null)
         {
-            return;
+            return selection;
         }
 
         var representationMime = representation.Attributes?["mimeType"]?.Value;
@@ -1063,19 +1049,19 @@ public sealed class TidalDownloadService
                 && representationCodecs.Contains("flac", StringComparison.OrdinalIgnoreCase));
         if (!representationLooksAudio)
         {
-            return;
+            return selection;
         }
 
         var bandwidth = ParseIntAttribute(representation.Attributes?["bandwidth"]?.Value, 0);
-        if (selectedTemplate != null && bandwidth <= selectedBandwidth)
+        if (selection.Template != null && bandwidth <= selection.Bandwidth)
         {
-            return;
+            return selection;
         }
 
-        selectedTemplate = templateNode;
-        selectedBandwidth = bandwidth;
-        selectedMime = mimeCandidate;
+        return new DashTemplateSelection(templateNode, bandwidth, mimeCandidate);
     }
+
+    private readonly record struct DashTemplateSelection(XmlNode? Template, int Bandwidth, string? MimeType);
 
     private static (string InitUrl, string MediaTemplate, int StartNumber, int SegmentCount, string MimeType) BuildDashTemplateMetadata(
         XmlNode selectedTemplate,
@@ -1226,7 +1212,7 @@ public sealed class TidalDownloadService
             var allowedDelta = Math.Max(5d, expectedDurationSeconds * 0.12d);
             return Math.Abs(actualDurationSeconds - expectedDurationSeconds) <= allowedDelta;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

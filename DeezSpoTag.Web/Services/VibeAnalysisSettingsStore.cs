@@ -58,7 +58,7 @@ public sealed class VibeAnalysisSettingsStore
                 ?? VibeAnalysisSettingsDto.Defaults();
             return _cached;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Failed to load vibe analysis settings from {Path}.", _settingsPath);
             _cached ??= VibeAnalysisSettingsDto.Defaults();
@@ -79,7 +79,7 @@ public sealed class VibeAnalysisSettingsStore
             var json = JsonSerializer.Serialize(settings, _jsonOptions);
             await File.WriteAllTextAsync(_settingsPath, json);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Failed to save vibe analysis settings to {Path}. Using in-memory settings for this runtime.", _settingsPath);
         }

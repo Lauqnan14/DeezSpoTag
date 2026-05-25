@@ -101,7 +101,7 @@ public partial class AutoTagService
                 : "interrupted";
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             result.Status = AutoTagLiterals.FailedStatus;
             result.Message = ex.Message;

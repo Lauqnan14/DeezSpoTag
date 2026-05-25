@@ -622,7 +622,7 @@ public class LibraryAnalysisApiController : ControllerBase
         {
             // Expected on early client disconnect.
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -632,7 +632,10 @@ public class LibraryAnalysisApiController : ControllerBase
         finally
         {
             try { process.StandardInput.Close(); }
-            catch { /* Process may already be dead */ }
+            catch (Exception closeException) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(closeException))
+            {
+                /* Process may already be dead */
+            }
         }
     }
 
@@ -659,7 +662,7 @@ public class LibraryAnalysisApiController : ControllerBase
                     stderr.Trim());
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort diagnostics only.
         }
@@ -696,7 +699,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 .ToLowerInvariant();
             return normalized;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return value.Replace('\\', '/').Trim().ToLowerInvariant();
         }
@@ -757,7 +760,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 roots.Add(fullPath);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Ignore invalid root paths.
         }
@@ -846,7 +849,7 @@ public class LibraryAnalysisApiController : ControllerBase
             TryKill(process);
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             TryKill(process);
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -877,9 +880,7 @@ public class LibraryAnalysisApiController : ControllerBase
         var buffer = new byte[64 * 1024];
         var leftover = new byte[4];
         var leftoverCount = 0;
-        long sampleCount = 0;
-        var peak = 0.0;
-        var sumSquares = 0.0;
+        var stats = default(PcmAggregationAccumulator);
 
         while (true)
         {
@@ -898,7 +899,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 index += toCopy;
                 if (leftoverCount == 4)
                 {
-                    ConsumeSample(leftover, 0, ref peak, ref sumSquares, ref sampleCount);
+                    ConsumeSample(leftover, 0, ref stats);
                     leftoverCount = 0;
                 }
             }
@@ -907,7 +908,7 @@ public class LibraryAnalysisApiController : ControllerBase
             var end = index + alignedBytes;
             for (var i = index; i < end; i += 4)
             {
-                ConsumeSample(buffer, i, ref peak, ref sumSquares, ref sampleCount);
+                ConsumeSample(buffer, i, ref stats);
             }
 
             var remaining = bytesRead - end;
@@ -918,7 +919,7 @@ public class LibraryAnalysisApiController : ControllerBase
             }
         }
 
-        return new PcmAggregation(peak, sumSquares, sampleCount);
+        return new PcmAggregation(stats.Peak, stats.SumSquares, stats.SampleCount);
     }
 
     private static PcmStatsResult BuildPcmStatsResult(PcmAggregation stats)
@@ -938,7 +939,7 @@ public class LibraryAnalysisApiController : ControllerBase
         return new PcmStatsResult(peakDb, rmsDb, dynamicRangeDb, stats.SampleCount, null);
     }
 
-    private static void ConsumeSample(byte[] buffer, int offset, ref double peak, ref double sumSquares, ref long sampleCount)
+    private static void ConsumeSample(byte[] buffer, int offset, ref PcmAggregationAccumulator stats)
     {
         var sample = BitConverter.ToSingle(buffer, offset);
         if (float.IsNaN(sample) || float.IsInfinity(sample))
@@ -947,12 +948,13 @@ public class LibraryAnalysisApiController : ControllerBase
         }
 
         var abs = Math.Abs(sample);
-        if (abs > peak)
+        if (abs > stats.Peak)
         {
-            peak = abs;
+            stats.Peak = abs;
         }
-        sumSquares += sample * sample;
-        sampleCount++;
+
+        stats.SumSquares += sample * sample;
+        stats.SampleCount++;
     }
 
     private static void TryKill(Process process)
@@ -964,7 +966,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort only.
         }
@@ -1011,7 +1013,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 state.DurationSeconds = properties.Duration.TotalSeconds;
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -1094,7 +1096,7 @@ public class LibraryAnalysisApiController : ControllerBase
             TryKill(process);
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             TryKill(process);
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -1200,7 +1202,7 @@ public class LibraryAnalysisApiController : ControllerBase
                 }
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Ignore file access errors
         }
@@ -1312,6 +1314,15 @@ public class LibraryAnalysisApiController : ControllerBase
         double Peak,
         double SumSquares,
         long SampleCount);
+
+    private struct PcmAggregationAccumulator
+    {
+        public double Peak { get; set; }
+
+        public double SumSquares { get; set; }
+
+        public long SampleCount { get; set; }
+    }
 
     private sealed record FfprobeAudioInfo(
         int? SampleRateHz,

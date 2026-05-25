@@ -1098,7 +1098,7 @@ public class DecryptionStreamProcessor
         {
             return Encoding.ASCII.GetString(chunk, 4, 4) == "ftyp";
         }
-        catch (Exception)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

@@ -46,7 +46,7 @@ public static class AppleDashBoxReflectionHelper
                 }
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return new List<string>();
         }
@@ -80,7 +80,7 @@ public static class AppleDashBoxReflectionHelper
             return TryInvokeDashBoxSetter(tag, "SetDashBoxes", name, normalizedValues)
                    || TryInvokeDashBoxSetter(tag, "SetDashBox", name, normalizedValues);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
@@ -148,7 +148,7 @@ public static class AppleDashBoxReflectionHelper
                 }
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // best effort only
         }

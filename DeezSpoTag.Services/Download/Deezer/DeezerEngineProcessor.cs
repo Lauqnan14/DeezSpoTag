@@ -1623,7 +1623,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
                     File.Delete(outputPath);
                 }
             }
-            catch
+            catch (Exception cleanupException) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(cleanupException))
             {
                 // Best-effort cleanup before fallback to single-stream mode.
             }

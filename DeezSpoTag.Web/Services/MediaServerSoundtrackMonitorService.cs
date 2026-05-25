@@ -55,7 +55,7 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
         {
             _logger.LogWarning(ex, "Soundtrack monitor run timed out.");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Soundtrack monitor run failed.");
         }

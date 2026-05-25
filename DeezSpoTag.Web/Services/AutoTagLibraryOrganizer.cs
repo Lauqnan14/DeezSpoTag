@@ -706,7 +706,7 @@ public class AutoTagLibraryOrganizer
             log?.Invoke($"organizer normalized extension for container mismatch: {fullPath} (.flac -> .m4a)");
             return ".m4a";
         }
-        catch (Exception)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return currentExtension;
         }

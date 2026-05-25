@@ -307,7 +307,7 @@ public class AutoTagJobsController : ControllerBase
             {
                 value = tagNode?.GetValue<string>();
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 continue;
             }

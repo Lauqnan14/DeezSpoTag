@@ -276,7 +276,7 @@ public class DuplicateCleanerService
                 errorMessage: null));
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             stopwatch.Stop();
             var finishedUtc = DateTimeOffset.UtcNow;
@@ -547,7 +547,7 @@ public class DuplicateCleanerService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {

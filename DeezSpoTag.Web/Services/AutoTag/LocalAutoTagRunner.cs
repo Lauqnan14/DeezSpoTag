@@ -1785,27 +1785,28 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings)
     {
-        var wantsSynced = HasAnyTags(config, SyncedLyricsTag);
-        var wantsUnsynced = HasAnyTags(config, UnsyncedLyricsTag);
-        var wantsTtml = HasAnyTags(config, TtmlLyricsTag);
-        ApplyLyricsPreferenceGate(settings, ref wantsSynced, ref wantsUnsynced, ref wantsTtml);
+        var requestFlags = ApplyLyricsPreferenceGate(
+            settings,
+            new LyricsRequestFlags(
+                HasAnyTags(config, SyncedLyricsTag),
+                HasAnyTags(config, UnsyncedLyricsTag),
+                HasAnyTags(config, TtmlLyricsTag)));
 
         var sidecarState = GetLyricsSidecarState(filePath);
         if (sidecarState.HasLrc)
         {
-            wantsSynced = false;
-            wantsUnsynced = false;
+            requestFlags = requestFlags with { WantsSynced = false, WantsUnsynced = false };
         }
 
         if (sidecarState.HasTtml)
         {
-            wantsTtml = false;
+            requestFlags = requestFlags with { WantsTtml = false };
         }
 
         return new LyricsPopulationRequest(
-            wantsSynced,
-            wantsUnsynced,
-            wantsTtml,
+            requestFlags.WantsSynced,
+            requestFlags.WantsUnsynced,
+            requestFlags.WantsTtml,
             track.Other.TryGetValue(SyncedLyricsTag, out var existingSynced) && existingSynced.Count > 0,
             (track.Other.TryGetValue(UnsyncedLyricsTag, out var existingUnsynced) && existingUnsynced.Count > 0)
                 || (track.Other.TryGetValue(LyricsTag, out var existingLyrics) && existingLyrics.Count > 0),
@@ -1924,20 +1925,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return lookupTrack;
     }
 
-    private static void ApplyLyricsPreferenceGate(
+    private static LyricsRequestFlags ApplyLyricsPreferenceGate(
         DeezSpoTagSettings settings,
-        ref bool wantsSynced,
-        ref bool wantsUnsynced,
-        ref bool wantsTtml)
+        LyricsRequestFlags requestFlags)
     {
         var allowsSyncedByToggle = settings.SyncedLyrics;
         var allowsUnsyncedByToggle = settings.SaveLyrics;
         if (!allowsSyncedByToggle && !allowsUnsyncedByToggle)
         {
-            wantsSynced = false;
-            wantsUnsynced = false;
-            wantsTtml = false;
-            return;
+            return requestFlags with { WantsSynced = false, WantsUnsynced = false, WantsTtml = false };
         }
 
         var selectedTypes = ParseLyricsTypeSelection(settings.LrcType);
@@ -1945,18 +1941,26 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var allowsUnsyncedTypes = selectedTypes.Contains(UnsyncedLyricsType);
         var normalizedFormat = NormalizeLyricsFormat(settings.LrcFormat);
 
-        wantsSynced &= allowsSyncedByToggle && allowsSyncedTypes;
-        wantsUnsynced &= allowsUnsyncedByToggle && allowsUnsyncedTypes;
-        wantsTtml &= allowsSyncedByToggle && allowsSyncedTypes && (normalizedFormat == "both" || normalizedFormat == "ttml");
+        return requestFlags with
+        {
+            WantsSynced = requestFlags.WantsSynced && allowsSyncedByToggle && allowsSyncedTypes,
+            WantsUnsynced = requestFlags.WantsUnsynced && allowsUnsyncedByToggle && allowsUnsyncedTypes,
+            WantsTtml = requestFlags.WantsTtml
+                && allowsSyncedByToggle
+                && allowsSyncedTypes
+                && (normalizedFormat == "both" || normalizedFormat == "ttml")
+        };
     }
 
     private static bool ShouldRequestAnyLyrics(AutoTagRunnerConfig config, DeezSpoTagSettings settings)
     {
-        var wantsSynced = HasAnyTags(config, SyncedLyricsTag);
-        var wantsUnsynced = HasAnyTags(config, UnsyncedLyricsTag);
-        var wantsTtml = HasAnyTags(config, TtmlLyricsTag);
-        ApplyLyricsPreferenceGate(settings, ref wantsSynced, ref wantsUnsynced, ref wantsTtml);
-        return wantsSynced || wantsUnsynced || wantsTtml;
+        var requestFlags = ApplyLyricsPreferenceGate(
+            settings,
+            new LyricsRequestFlags(
+                HasAnyTags(config, SyncedLyricsTag),
+                HasAnyTags(config, UnsyncedLyricsTag),
+                HasAnyTags(config, TtmlLyricsTag)));
+        return requestFlags.WantsSynced || requestFlags.WantsUnsynced || requestFlags.WantsTtml;
     }
 
     private static HashSet<string> ParseLyricsTypeSelection(string? raw)
@@ -6540,7 +6544,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             return NormalizeLyricsLines(IOFile.ReadAllLines(existingLrcPath), requireTimestamp: true);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return Array.Empty<string>();
         }
@@ -6578,7 +6582,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             return ConvertTtmlToLrcLines(IOFile.ReadAllText(existingTtmlPath));
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return Array.Empty<string>();
         }
@@ -6603,7 +6607,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 lrcFromTtml.Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
                 requireTimestamp: true);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return Array.Empty<string>();
         }
@@ -6628,7 +6632,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     return BuildTtmlFromLrcLines(existingLrcLines);
                 }
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 // Ignore malformed sidecar and continue.
             }
@@ -7129,7 +7133,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return new List<string>();
         }
@@ -8070,6 +8074,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return !WantsTtml || HasTtml;
         }
     }
+
+    private readonly record struct LyricsRequestFlags(
+        bool WantsSynced,
+        bool WantsUnsynced,
+        bool WantsTtml);
 
     private static string SanitizeLogValue(string? value)
     {

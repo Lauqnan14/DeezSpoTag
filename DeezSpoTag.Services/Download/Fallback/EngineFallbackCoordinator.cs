@@ -683,7 +683,7 @@ public sealed class EngineFallbackCoordinator
                 mediaUserToken);
             return TryExtractAppleIdFromCatalog(doc.RootElement);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return null;
         }
@@ -712,7 +712,7 @@ public sealed class EngineFallbackCoordinator
                     return id;
                 }
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 // Ignore and continue with other terms.
             }

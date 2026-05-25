@@ -99,7 +99,7 @@ public sealed class DeferredHostedService<TService> : IHostedService
         {
             // Normal shutdown while deferred service is starting.
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogError(ex, "Deferred hosted service {ServiceName} failed to start.", typeof(TService).FullName);
         }

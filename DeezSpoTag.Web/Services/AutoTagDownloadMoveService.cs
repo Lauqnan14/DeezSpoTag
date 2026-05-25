@@ -1686,7 +1686,7 @@ public sealed class AutoTagDownloadMoveService
 
             return true;
         }
-        catch (Exception)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

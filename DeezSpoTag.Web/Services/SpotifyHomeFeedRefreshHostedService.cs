@@ -62,7 +62,7 @@ public sealed class SpotifyHomeFeedRefreshHostedService : BackgroundService
             {
                 return;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 _logger.LogWarning(ex, "Spotify home feed background refresh failed.");
                 delay = TimeSpan.FromMinutes(15);

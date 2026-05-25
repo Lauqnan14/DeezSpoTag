@@ -295,7 +295,7 @@ public sealed class SpotifyCentralMetadataService
                 CancellationToken.None);
             AddActivity("info", $"[spotify-central] librespot album fallback cached lazily: {albumId}.");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {

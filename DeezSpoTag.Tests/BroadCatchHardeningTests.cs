@@ -91,7 +91,9 @@ public sealed class BroadCatchHardeningTests
 
         Assert.Contains("LogStagingEnhancementScanBypass", source);
         Assert.Matches(
-            new Regex(@"catch\s*\(Exception ex\)\s*\{\s*LogStagingEnhancementScanBypass\(ex,.*?\);\s*return false;", RegexOptions.Singleline),
+            new Regex(
+                @"catch\s*\(Exception ex\)\s*when\s*\(DeezSpoTag\.Core\.Diagnostics\.ExpectedExceptionPolicy\.IsRecoverable\(ex\)\)\s*\{\s*LogStagingEnhancementScanBypass\(ex,.*?\);\s*return false;",
+                RegexOptions.Singleline),
             source);
     }
 

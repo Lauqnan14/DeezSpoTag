@@ -782,11 +782,7 @@ public sealed class PlaylistWatchService
             return virtualSnapshot;
         }
 
-        string? snapshotId = null;
-        string? name = null;
-        string? description = null;
-        string? imageUrl = null;
-        int? totalTracks = null;
+        var metadata = default(SpotifyPlaylistPageMetadata);
         var pageSize = Math.Min(100, maxCandidates);
         var offset = 0;
         var isComplete = true;
@@ -805,7 +801,7 @@ public sealed class PlaylistWatchService
                 break;
             }
 
-            ApplySpotifyPlaylistPageMetadata(page, ref snapshotId, ref name, ref description, ref imageUrl, ref totalTracks);
+            metadata = ApplySpotifyPlaylistPageMetadata(page, metadata);
 
             if (page.Tracks.Count == 0)
             {
@@ -826,7 +822,7 @@ public sealed class PlaylistWatchService
             }
         }
 
-        if (totalTracks.HasValue && candidates.Count < totalTracks.Value)
+        if (metadata.TotalTracks.HasValue && candidates.Count < metadata.TotalTracks.Value)
         {
             isComplete = false;
         }
@@ -834,11 +830,11 @@ public sealed class PlaylistWatchService
         return BuildLivePlaylistSnapshot(
             candidates,
             new LivePlaylistSnapshotMetadata(
-                SnapshotId: snapshotId,
-                Name: name,
-                Description: description,
-                ImageUrl: imageUrl,
-                TrackCount: totalTracks,
+                SnapshotId: metadata.SnapshotId,
+                Name: metadata.Name,
+                Description: metadata.Description,
+                ImageUrl: metadata.ImageUrl,
+                TrackCount: metadata.TotalTracks,
                 IsComplete: isComplete,
                 CanClearImageUrl: true));
     }
@@ -865,20 +861,24 @@ public sealed class PlaylistWatchService
         return null;
     }
 
-    private static void ApplySpotifyPlaylistPageMetadata(
+    private static SpotifyPlaylistPageMetadata ApplySpotifyPlaylistPageMetadata(
         SpotifyPlaylistPage page,
-        ref string? snapshotId,
-        ref string? name,
-        ref string? description,
-        ref string? imageUrl,
-        ref int? totalTracks)
+        SpotifyPlaylistPageMetadata metadata)
     {
-        snapshotId ??= page.SnapshotId;
-        name ??= page.Name;
-        description ??= page.Description;
-        imageUrl ??= page.ImageUrl;
-        totalTracks ??= page.TotalTracks;
+        return new SpotifyPlaylistPageMetadata(
+            metadata.SnapshotId ?? page.SnapshotId,
+            metadata.Name ?? page.Name,
+            metadata.Description ?? page.Description,
+            metadata.ImageUrl ?? page.ImageUrl,
+            metadata.TotalTracks ?? page.TotalTracks);
     }
+
+    private readonly record struct SpotifyPlaylistPageMetadata(
+        string? SnapshotId,
+        string? Name,
+        string? Description,
+        string? ImageUrl,
+        int? TotalTracks);
 
     private static bool AddSpotifyPlaylistPageCandidates(
         SpotifyPlaylistPage page,
@@ -2972,7 +2972,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,

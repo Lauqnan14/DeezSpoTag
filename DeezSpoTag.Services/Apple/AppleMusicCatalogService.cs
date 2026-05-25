@@ -751,7 +751,7 @@ public sealed class AppleMusicCatalogService
 
             return DateTimeOffset.FromUnixTimeSeconds(expUnix).Subtract(TimeSpan.FromMinutes(5));
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return null;
         }
@@ -919,7 +919,7 @@ public sealed class AppleMusicCatalogService
 
             return true;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
@@ -949,7 +949,7 @@ public sealed class AppleMusicCatalogService
             payloadJson = Encoding.UTF8.GetString(bytes);
             return !string.IsNullOrWhiteSpace(payloadJson);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

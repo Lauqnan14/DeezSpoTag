@@ -39,7 +39,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
             {
                 break;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 _logger.LogWarning(ex, "Queue pre-resolution pass failed.");
             }

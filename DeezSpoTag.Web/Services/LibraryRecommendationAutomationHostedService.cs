@@ -77,7 +77,7 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
         {
             _logger.LogWarning(ex, "Library recommendation refresh timed out ({Reason}).", reason);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Library recommendation refresh failed ({Reason}).", reason);
         }

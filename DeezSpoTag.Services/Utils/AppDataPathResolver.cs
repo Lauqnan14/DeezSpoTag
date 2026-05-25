@@ -110,7 +110,7 @@ public static class AppDataPathResolver
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? targetPath);
             CopyDirectoryRecursive(sourcePath, targetPath);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort migration; fallback selection continues if migration fails.
         }

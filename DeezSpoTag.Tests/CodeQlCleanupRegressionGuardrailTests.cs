@@ -11,7 +11,7 @@ namespace DeezSpoTag.Tests;
 public sealed class CodeQlCleanupRegressionGuardrailTests
 {
     private const int MaxProductionPathCombineCalls = 96;
-    private const int MaxProductionBroadExceptionCatches = 1267;
+    private const int MaxProductionUnfilteredBroadExceptionCatches = 0;
     private const int MaxUnobservedBroadExceptionCatches = 9;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
@@ -96,18 +96,18 @@ public sealed class CodeQlCleanupRegressionGuardrailTests
     }
 
     [Fact]
-    public void ProductionSource_BroadExceptionCatches_MustNotIncreaseDuringCodeQlCleanup()
+    public void ProductionSource_UnfilteredBroadExceptionCatches_AreNotAllowed()
     {
         var broadCatchPattern = new Regex(
-            @"catch\s*\(\s*Exception(?:\s+\w+)?\s*\)",
+            @"catch\s*\(\s*Exception(?:\s+\w+)?\s*\)(?!\s*when\s*\()",
             RegexOptions.CultureInvariant,
             RegexTimeout);
         var catches = EnumerateProductionSources()
             .Sum(path => broadCatchPattern.Count(File.ReadAllText(path)));
 
         Assert.True(
-            catches <= MaxProductionBroadExceptionCatches,
-            $"Broad Exception catches increased from the cleanup benchmark of {MaxProductionBroadExceptionCatches} to {catches}.");
+            catches <= MaxProductionUnfilteredBroadExceptionCatches,
+            $"Unfiltered broad Exception catches must stay eliminated. Found {catches}.");
     }
 
     [Fact]

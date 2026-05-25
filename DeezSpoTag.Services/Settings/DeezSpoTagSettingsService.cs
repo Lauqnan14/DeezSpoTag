@@ -355,7 +355,7 @@ public class DeezSpoTagSettingsService : ISettingsService
             return JsonSerializer.Deserialize<AppleMusicAuthSnapshot>(json, SettingsDeserializeOptions)
                    ?? AppleMusicAuthSnapshot.Empty;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return AppleMusicAuthSnapshot.Empty;
         }
@@ -379,7 +379,7 @@ public class DeezSpoTagSettingsService : ISettingsService
             {
                 authObject = JsonNode.Parse(File.ReadAllText(authPath)) as JsonObject ?? new JsonObject();
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 authObject = new JsonObject();
             }
@@ -1222,7 +1222,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         {
             Directory.CreateDirectory(fallbackPath);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Avoid crashing startup; caller will keep a deterministic in-container location.
         }
@@ -1243,7 +1243,7 @@ public class DeezSpoTagSettingsService : ISettingsService
             Directory.CreateDirectory(validatedPath);
             return IsDirectoryWritable(validatedPath);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
@@ -1270,7 +1270,7 @@ public class DeezSpoTagSettingsService : ISettingsService
             File.Delete(probePath);
             return true;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Writable checks are best-effort; callers interpret false as "path cannot be used".
             return false;
@@ -1288,7 +1288,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         {
             return Path.GetFullPath(path.Trim());
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return path.Trim();
         }
@@ -1366,7 +1366,7 @@ public class DeezSpoTagSettingsService : ISettingsService
             {
                 normalized = Path.GetFullPath(mountPoint);
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 normalized = mountPoint;
             }

@@ -930,7 +930,7 @@ namespace DeezSpoTag.Web.Controllers
                     return dataElement.GetArrayLength();
                 }
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 // Ignore malformed payloads and treat track count as unknown.
             }

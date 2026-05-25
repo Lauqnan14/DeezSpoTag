@@ -2164,7 +2164,7 @@ public sealed class LocalLibraryScanner
             {
                 content = System.IO.File.ReadAllText(path);
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 continue;
             }

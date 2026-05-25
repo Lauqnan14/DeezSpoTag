@@ -292,7 +292,7 @@ public class DeezSpoTagSettingsValidator
         {
             throw;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return 0;
         }

@@ -355,7 +355,7 @@ public sealed class LibraryScanRunner
                 await RunChangedFilesBatchAsync(batch, skipSpotifyFetch, cancellationToken);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             lock (_changedFileScanLock)
             {
@@ -1080,7 +1080,7 @@ public sealed class LibraryScanRunner
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 _logger.LogWarning(ex, "Live scan ingest failed for {FolderDisplayName}.", folder.DisplayName);
                 AddWarnLog($"Live scan ingest failed for {folder.DisplayName}: {ex.Message}");

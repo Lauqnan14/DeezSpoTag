@@ -577,7 +577,7 @@ public sealed class LibraryRecommendationService
         {
             enriched = await EnrichRecommendationMetadataAsync(visibleTracks, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -876,7 +876,7 @@ public sealed class LibraryRecommendationService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             RecordDailyPoolBuildFailure(scope, dayLocal, [BackgroundGenerationFailedReason]);
             _logger.LogWarning(
@@ -987,7 +987,7 @@ public sealed class LibraryRecommendationService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -1335,7 +1335,7 @@ public sealed class LibraryRecommendationService
                     reasonCodes.Add("deezer_empty");
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 reasonCodes.Add("deezer_failed");
                 _logger.LogWarning(
@@ -1362,7 +1362,7 @@ public sealed class LibraryRecommendationService
                 reasonCodes.Add(IsShazamRecommendationAvailable() ? "shazam_empty" : "shazam_unavailable");
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             reasonCodes.Add("shazam_failed");
             _logger.LogWarning(
@@ -1470,7 +1470,7 @@ public sealed class LibraryRecommendationService
 
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -1522,7 +1522,7 @@ public sealed class LibraryRecommendationService
                 scope.ScopeKey);
             return PersistDailyPoolResult.Failed(PersistTimedOutReason);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -1758,7 +1758,7 @@ public sealed class LibraryRecommendationService
                 }
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Background Shazam library scan failed for scope {ScopeKey}.", scope.ScopeKey);
         }
@@ -1889,7 +1889,7 @@ public sealed class LibraryRecommendationService
                 cancellationToken);
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             var reason = BuildPersistedFailureReason("Shazam recognition failed", ex);
             _logger.LogWarning(ex, "Shazam recognition failed for library track {TrackId}.", trackId);
@@ -2001,7 +2001,7 @@ public sealed class LibraryRecommendationService
                 cancellationToken);
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(
                 ex,
@@ -2173,7 +2173,7 @@ public sealed class LibraryRecommendationService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2622,7 +2622,7 @@ public sealed class LibraryRecommendationService
             {
                 unescaped = Uri.UnescapeDataString(decoded);
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 break;
             }
@@ -2914,7 +2914,7 @@ public sealed class LibraryRecommendationService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2942,7 +2942,7 @@ public sealed class LibraryRecommendationService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -2975,7 +2975,7 @@ public sealed class LibraryRecommendationService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -3427,7 +3427,7 @@ public sealed class LibraryRecommendationService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -3486,7 +3486,7 @@ public sealed class LibraryRecommendationService
             }
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {

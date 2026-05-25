@@ -738,7 +738,7 @@ public class LibraryFoldersApiController : ControllerBase
         {
             return Directory.GetDirectories(path);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return Array.Empty<string>();
         }
@@ -769,7 +769,7 @@ public class LibraryFoldersApiController : ControllerBase
 
             return candidate;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return null;
         }
@@ -790,7 +790,7 @@ public class LibraryFoldersApiController : ControllerBase
 
             return Directory.GetParent(path)?.FullName;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return null;
         }

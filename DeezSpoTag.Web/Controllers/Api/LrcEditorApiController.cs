@@ -573,7 +573,7 @@ public sealed class LrcEditorApiController : ControllerBase
         {
             relativePath = DecodePathSegment(relativeToken);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return null;
         }

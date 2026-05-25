@@ -1508,7 +1508,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             {
                 File.Delete(path);
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 // Best effort cleanup only.
             }
@@ -1524,7 +1524,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
                 File.Delete(path);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort cleanup only.
         }

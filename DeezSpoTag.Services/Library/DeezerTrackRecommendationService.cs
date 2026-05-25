@@ -159,7 +159,7 @@ public sealed class DeezerTrackRecommendationService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 accumulator.FailedSeedLoads++;
                 if (_logger.IsEnabled(LogLevel.Debug))

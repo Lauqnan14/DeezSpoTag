@@ -6890,7 +6890,7 @@ ON CONFLICT(artist_id, source) DO UPDATE SET
                 {
                     await transaction.RollbackAsync(cancellationToken);
                 }
-                catch
+                catch (Exception rollbackException) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(rollbackException))
                 {
                     // best effort only
                 }
@@ -9102,7 +9102,7 @@ WHERE routing_rules_json IS NOT NULL
                 {
                     rules = JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(routingRulesJson);
                 }
-                catch
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
                 {
                     continue;
                 }

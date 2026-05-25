@@ -518,7 +518,7 @@ internal static class DeezerCandidateMatchHelper
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return null;
         }

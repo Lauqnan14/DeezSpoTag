@@ -55,7 +55,7 @@ public sealed class DownloadIntentApiController : ControllerBase
                 message = "Download request was canceled."
             });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogError(ex, "Download intent enqueue failed.");
             return StatusCode(StatusCodes.Status500InternalServerError, new

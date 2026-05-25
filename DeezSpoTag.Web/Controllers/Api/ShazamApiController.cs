@@ -98,7 +98,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam mic recognition failed.");
             return StatusCode(StatusCodes.Status500InternalServerError, new
@@ -200,7 +200,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
             return StatusCode(StatusCodes.Status502BadGateway, new
@@ -279,7 +279,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             var settings = _settingsService.LoadSettings();
             return Math.Clamp(settings.ShazamCaptureDurationSeconds, 3, 20);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Failed to resolve Shazam capture duration from settings. Falling back to default.");
             return 11;
@@ -613,7 +613,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam search lookup failed for query '{Query}'.", query);
             return Array.Empty<ShazamTrackCard>();
@@ -630,7 +630,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam track enrichment lookup failed for trackId {TrackId}.", trackId);
             return null;
@@ -647,7 +647,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
             return Array.Empty<ShazamTrackCard>();
@@ -683,7 +683,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 System.IO.File.Delete(path);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // ignore temp cleanup errors
         }

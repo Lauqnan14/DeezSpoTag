@@ -244,7 +244,7 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
                 $"Spotify artist fetch canceled for {item.ArtistName}; retry scheduled."));
             ScheduleRetry(item, "request canceled or timed out");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Spotify artist fetch failed for {ArtistName}", item.ArtistName);
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(

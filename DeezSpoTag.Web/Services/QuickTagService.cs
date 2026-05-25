@@ -1723,7 +1723,7 @@ public sealed class QuickTagService
                 MergeTagValues(tags, key, new[] { rawValue }, separators.Mp4);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // TagLib can read some malformed MP4 files that ATL cannot. Keep the
             // native TagLib snapshot instead of failing the AutoTag diff capture.

@@ -530,7 +530,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             var first = Convert.FromBase64String(Encoding.UTF8.GetString(second));
             return Encoding.UTF8.GetString(first);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return token;
         }

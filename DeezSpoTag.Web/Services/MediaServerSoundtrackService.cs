@@ -747,7 +747,7 @@ public sealed partial class MediaServerSoundtrackService
                 {
                     throw;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
                 {
                     _logger.LogWarning(ex, "Soundtrack sync failed for {ServerType}/{LibraryId}.", target.ServerType, target.LibraryId);
                 }
@@ -838,7 +838,7 @@ public sealed partial class MediaServerSoundtrackService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -1255,7 +1255,7 @@ public sealed partial class MediaServerSoundtrackService
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {

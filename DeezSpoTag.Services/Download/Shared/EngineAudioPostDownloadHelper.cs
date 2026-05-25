@@ -1985,7 +1985,7 @@ public static partial class EngineAudioPostDownloadHelper
             using var file = TagLib.File.Create(outputPath);
             return file.Tag.Pictures?.Any(pic => pic?.Data != null && pic.Data.Count > 0) == true;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

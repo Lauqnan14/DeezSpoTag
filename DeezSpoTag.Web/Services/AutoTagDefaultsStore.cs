@@ -188,7 +188,7 @@ public sealed class AutoTagDefaultsStore
         {
             return JsonNode.Parse(json) is JsonObject root && root["libraryProfiles"] is not null;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

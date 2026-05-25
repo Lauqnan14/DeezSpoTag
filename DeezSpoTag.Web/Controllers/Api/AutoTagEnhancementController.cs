@@ -273,7 +273,7 @@ public class AutoTagEnhancementController : ControllerBase
                 state.FinishedAtUtc = DateTimeOffset.UtcNow;
             });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             UpdateFolderUniformityState(runState.JobId, state =>
             {
@@ -583,7 +583,7 @@ public class AutoTagEnhancementController : ControllerBase
                 IOFile.Delete(probeFile);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort probe cleanup.
         }
@@ -595,7 +595,7 @@ public class AutoTagEnhancementController : ControllerBase
                 Directory.Delete(probeDirectory, recursive: true);
             }
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Best effort probe cleanup.
         }
@@ -740,7 +740,7 @@ public class AutoTagEnhancementController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             RecordOrganizerFailure(context.JobId, context.Execution, context.FolderLabel, ex);
         }
@@ -1021,7 +1021,7 @@ public class AutoTagEnhancementController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             var errorMessage = $"[dedupe] {ex.Message}";
             var logMessage = $"[dedupe] failed: {ex.Message}";

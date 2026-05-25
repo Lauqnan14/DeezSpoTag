@@ -236,7 +236,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                 _watchers[folderId] = replacement;
                 return null;
             }
-            catch
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 replacement.Dispose();
                 throw;
@@ -388,7 +388,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             watcher.EnableRaisingEvents = true;
             return watchedFolder;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             watcher.Dispose();
             throw;
@@ -672,7 +672,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // A partial baseline is still enough to suppress most attach-time noise.
             return baselineFiles;
@@ -726,7 +726,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }

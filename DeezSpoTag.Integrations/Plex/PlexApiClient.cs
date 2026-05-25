@@ -969,7 +969,7 @@ public class PlexApiClient
             {
                 return XDocument.Parse(content);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {

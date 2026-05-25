@@ -484,7 +484,7 @@ public sealed class SpotifyMetadataService
             return TryBuildSnapshotFromStructuredState(decoded, artistId)
                 ?? BuildSnapshotFromDecodedText(decoded, artistId);
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return BuildSnapshotFromDecodedText(DecodeInitialStateBlob(encoded), artistId);
         }

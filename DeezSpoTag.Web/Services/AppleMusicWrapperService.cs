@@ -1831,7 +1831,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
         {
             throw;
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
@@ -2887,14 +2887,9 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
             return "Wrapper reachable, but the Apple developer token is missing. Login not completed.";
         }
 
-        if (context.HasDevToken && !context.HasMusicToken)
-        {
-            return "Wrapper reachable, but Apple Music did not return a music token. The Apple ID may not have an active Apple Music subscription.";
-        }
-
         if (!context.HasMusicToken)
         {
-            return "Wrapper reachable, but auth tokens are missing. Login not completed.";
+            return "Wrapper reachable, but Apple Music did not return a music token. The Apple ID may not have an active Apple Music subscription.";
         }
 
         return "Wrapper reachable. Login required.";
@@ -2986,7 +2981,7 @@ public sealed class AppleMusicWrapperService : IHostedService, IDisposable, IApp
                 failureReason = BuildExternalAccountInfoFailureReason(ex);
                 return false;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 failureReason = BuildExternalAccountInfoFailureReason(ex);
                 return false;
