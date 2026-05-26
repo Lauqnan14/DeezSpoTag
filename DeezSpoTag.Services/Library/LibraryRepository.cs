@@ -3348,7 +3348,20 @@ WHERE f.enabled = 1
           )
       )
   )
-ORDER BY t.id, af.quality_rank DESC NULLS LAST, af.size DESC, af.id DESC
+ORDER BY t.id,
+         CASE
+             WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
+                  OR lower(coalesce(af.codec, '')) LIKE '%dolby digital plus%'
+                  OR lower(coalesce(af.audio_variant, '')) LIKE '%atmos%'
+             THEN 2
+             WHEN lower(coalesce(af.codec, '')) LIKE '%opus%'
+                  OR lower(coalesce(af.extension, '')) = '.opus'
+             THEN 1
+             ELSE 0
+         END,
+         af.quality_rank DESC NULLS LAST,
+         af.size DESC,
+         af.id DESC
 LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", limit);
@@ -3395,7 +3408,20 @@ JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE t.id = @trackId
-ORDER BY f.enabled DESC, af.quality_rank DESC NULLS LAST, af.size DESC, af.id DESC
+ORDER BY f.enabled DESC,
+         CASE
+             WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
+                  OR lower(coalesce(af.codec, '')) LIKE '%dolby digital plus%'
+                  OR lower(coalesce(af.audio_variant, '')) LIKE '%atmos%'
+             THEN 2
+             WHEN lower(coalesce(af.codec, '')) LIKE '%opus%'
+                  OR lower(coalesce(af.extension, '')) = '.opus'
+             THEN 1
+             ELSE 0
+         END,
+         af.quality_rank DESC NULLS LAST,
+         af.size DESC,
+         af.id DESC
 LIMIT 1;";
         return await QuerySingleTrackAsync(sql, trackId, ReadTrackAnalysisInputAsync, cancellationToken);
     }

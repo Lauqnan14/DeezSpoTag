@@ -29,7 +29,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const string VibeAnalyzerScriptFileName = "vibe_analyzer.py";
     private const string DefaultVibeModelsRelativePath = "analysis/models";
     private const string DefaultVibeVenvRelativePath = "analysis/vibe/.venv";
-    private const int DefaultVibeAnalyzerTimeoutSeconds = 60;
+    private const int DefaultVibeAnalyzerTimeoutSeconds = 180;
     private const int MinVibeAnalyzerTimeoutSeconds = 10;
     private const int MaxVibeAnalyzerTimeoutSeconds = 600;
     private const int DefaultVibeAnalyzerBatchTimeoutSeconds = 300;
@@ -125,7 +125,19 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 var settings = await _settingsStore.LoadAsync();
                 if (settings.Enabled)
                 {
-                    await AnalyzeBatchAsync(settings.BatchSize, stopWhenDisabled: true, stoppingToken);
+                    await _analysisLock.WaitAsync(stoppingToken);
+                    try
+                    {
+                        settings = await _settingsStore.LoadAsync();
+                        if (settings.Enabled)
+                        {
+                            await AnalyzeBatchAsync(settings.BatchSize, stopWhenDisabled: true, stoppingToken);
+                        }
+                    }
+                    finally
+                    {
+                        _analysisLock.Release();
+                    }
                 }
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -506,9 +518,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             if (TryReadAnalyzerFailure(execution.Output, out var analyzerFailure))
             {
-                SetMlCapabilityUnavailable(analyzerFailure);
-                LogMlUnavailable(analyzerFailure);
-                return CreateBatchFailureMap(tracks, analyzerFailure);
+                if (IsMlCapabilityFailure(analyzerFailure.ErrorCode))
+                {
+                    SetMlCapabilityUnavailable(analyzerFailure.Reason);
+                    LogMlUnavailable(analyzerFailure.Reason);
+                }
+
+                return CreateBatchFailureMap(tracks, analyzerFailure.Reason);
             }
 
             var parsed = JsonSerializer.Deserialize<BatchAnalysisResponse>(execution.Output, CaseInsensitiveJsonOptions);
@@ -1052,9 +1068,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             if (TryReadAnalyzerFailure(output, out var analyzerFailure))
             {
-                SetMlCapabilityUnavailable(analyzerFailure);
-                LogMlUnavailable(analyzerFailure);
-                failureReason = analyzerFailure;
+                if (IsMlCapabilityFailure(analyzerFailure.ErrorCode))
+                {
+                    SetMlCapabilityUnavailable(analyzerFailure.Reason);
+                    LogMlUnavailable(analyzerFailure.Reason);
+                }
+
+                failureReason = analyzerFailure.Reason;
                 return null;
             }
 
@@ -1733,9 +1753,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private static bool TryReadAnalyzerFailure(string output, out string reason)
+    private static bool TryReadAnalyzerFailure(string output, out AnalyzerFailure failure)
     {
-        reason = string.Empty;
+        failure = default;
         if (string.IsNullOrWhiteSpace(output))
         {
             return false;
@@ -1751,6 +1771,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             var errorCode = document.RootElement.TryGetProperty("errorCode", out var errorCodeProp) ? errorCodeProp.GetString() : null;
             var message = document.RootElement.TryGetProperty("message", out var messageProp) ? messageProp.GetString() : null;
+            string reason;
             if (string.IsNullOrWhiteSpace(message))
             {
                 reason = errorCode ?? "Vibe analyzer reported failure.";
@@ -1763,12 +1784,28 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             {
                 reason = $"{errorCode}: {message}";
             }
+
+            failure = new AnalyzerFailure(errorCode, reason);
             return true;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
+    }
+
+    private static bool IsMlCapabilityFailure(string? errorCode)
+    {
+        if (string.IsNullOrWhiteSpace(errorCode))
+        {
+            return false;
+        }
+
+        return errorCode.Trim().ToUpperInvariant() is
+            "ESSENTIA_MISSING_REQUIRED" or
+            "VIBE_MODELS_MISSING" or
+            "VIBE_ENHANCED_UNAVAILABLE" or
+            "VIBE_ANALYZER_NOT_INITIALIZED";
     }
 
     private static void TryTerminate(Process process)
@@ -1778,6 +1815,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
             }
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -2003,6 +2041,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         string Output,
         string ErrorOutput,
         string FailureReason);
+
+    private readonly record struct AnalyzerFailure(string? ErrorCode, string Reason);
 
     private sealed record MlCapability(bool Available, string? Reason);
 
