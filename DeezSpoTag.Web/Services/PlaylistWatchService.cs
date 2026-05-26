@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Apple;
@@ -64,7 +63,6 @@ public sealed class PlaylistWatchService
     private const string SpotifyTrendingSongsSectionUri = "spotify:section:0JQ5DB5E8N831KzFzsBBQ2";
     private const int MaxPlaylistCandidateFetchCount = 1000;
     private static readonly string[] JsonStringObjectPropertyNames = ["standard", "short", "text"];
-    private static readonly TimeSpan PlaylistMediaSyncCooldown = TimeSpan.FromMinutes(2);
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly SpotifyPathfinderMetadataClient _spotifyPathfinderMetadataClient;
@@ -79,9 +77,9 @@ public sealed class PlaylistWatchService
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
     private readonly PlaylistSyncService _playlistSyncService;
+    private readonly PlaylistVisualService _playlistVisualService;
     private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly ILogger<PlaylistWatchService> _logger;
-    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastPlaylistMediaSyncUtc = new(StringComparer.OrdinalIgnoreCase);
 
     public sealed class ArtistWatchQueueOptions
     {
@@ -127,6 +125,7 @@ public sealed class PlaylistWatchService
         DeezSpoTagSettingsService settingsService,
         IServiceProvider serviceProvider,
         PlaylistSyncService playlistSyncService,
+        PlaylistVisualService playlistVisualService,
         ActivitiesRealtimeService activitiesRealtime,
         ILogger<PlaylistWatchService> logger)
     {
@@ -144,6 +143,7 @@ public sealed class PlaylistWatchService
         _settingsService = settingsService;
         _serviceProvider = serviceProvider;
         _playlistSyncService = playlistSyncService;
+        _playlistVisualService = playlistVisualService;
         _activitiesRealtime = activitiesRealtime;
         _logger = logger;
     }
@@ -262,6 +262,19 @@ public sealed class PlaylistWatchService
         var existingCandidateCache = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken);
         var sourceChanged = HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson);
         var currentPlaylist = BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount);
+        var managedImageUrl = _playlistVisualService == null
+            ? currentPlaylist.ImageUrl
+            : await _playlistVisualService.ResolveManagedVisualUrlAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                currentPlaylist.ImageUrl,
+                preference?.ReuseSavedArtwork == true,
+                cancellationToken);
+        if (!string.Equals(managedImageUrl, currentPlaylist.ImageUrl, StringComparison.Ordinal))
+        {
+            currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
+        }
         await TouchPlaylistWatchStateAsync(source, sourceId, liveTrackCount, liveSnapshot.SnapshotId, cancellationToken);
         await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
             source,
@@ -310,7 +323,6 @@ public sealed class PlaylistWatchService
                 cancellationToken);
         }
 
-        await PreQueuePlaylistSyncAsync(currentPlaylist, preference, candidates, cancellationToken);
         var selection = await SelectMissingPlaylistTracksAsync(source, sourceId, candidates, cancellationToken);
         await _libraryRepository.AddPlaylistWatchTracksAsync(
             source,
@@ -348,7 +360,7 @@ public sealed class PlaylistWatchService
         }
 
         PlaylistSyncResult? syncResult = null;
-        if (forceMediaServerSync || sourceChanged || queueResult.QueuedCount > 0 || queueResult.CompletedCount > 0)
+        if (forceMediaServerSync)
         {
             syncResult = await _playlistSyncService.SyncPlaylistAsync(
                 currentPlaylist,
@@ -366,7 +378,23 @@ public sealed class PlaylistWatchService
         }
         else
         {
-            await TrySyncPlaylistToMediaServerAsync(currentPlaylist, preference, false, candidates: candidates, cancellationToken);
+            var finalizationService = _serviceProvider.GetService<WatchlistFinalizationService>();
+            if (finalizationService != null)
+            {
+                var repairNotifications = await finalizationService.RepairPlaylistAsync(
+                    currentPlaylist,
+                    cancellationToken);
+                if (repairNotifications > 0)
+                {
+                    await AddPlaylistWatchHistoryStageAsync(
+                        source,
+                        sourceId,
+                        currentPlaylist.Name,
+                        repairNotifications,
+                        "media_sync_repair_queued",
+                        cancellationToken);
+                }
+            }
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -481,20 +509,6 @@ public sealed class PlaylistWatchService
         }
 
         return new PlaylistTrackSelection(missingTracks, ignoredCount, localCount);
-    }
-
-    private async Task PreQueuePlaylistSyncAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        await TrySyncPlaylistToMediaServerAsync(
-            playlist,
-            preference,
-            forceMediaServerSync: true,
-            candidates: candidates,
-            cancellationToken);
     }
 
     private async Task<bool> TryHandleKnownPlaylistTrackAsync(
@@ -1408,76 +1422,6 @@ public sealed class PlaylistWatchService
     {
         var preferences = await _libraryRepository.GetPlaylistWatchPreferencesAsync(cancellationToken);
         return PlaylistTrackBlockRuleHelper.BuildGlobalRules(preferences);
-    }
-
-    private async Task TrySyncPlaylistToMediaServerAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        bool forceMediaServerSync,
-        IReadOnlyList<PlaylistTrackCandidate>? candidates,
-        CancellationToken cancellationToken)
-    {
-        var source = NormalizeWatchSource(playlist.Source);
-        var sourceId = (playlist.SourceId ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
-        {
-            return;
-        }
-
-        var serviceToken = string.IsNullOrWhiteSpace(preference?.Service)
-            ? "auto"
-            : preference.Service.Trim().ToLowerInvariant();
-        if (string.Equals(serviceToken, "none", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Playlist media-server sync disabled for {Source}:{SourceId} by preference.",
-                    source,
-                    sourceId);
-            }
-            return;
-        }
-        var syncKey = $"{source}:{sourceId}:{serviceToken}";
-        if (!forceMediaServerSync
-            && _lastPlaylistMediaSyncUtc.TryGetValue(syncKey, out var lastSyncedUtc)
-            && (DateTimeOffset.UtcNow - lastSyncedUtc) < PlaylistMediaSyncCooldown)
-        {
-            return;
-        }
-
-        candidates ??= await GetPlaylistTrackCandidatesAsync(source, sourceId, cancellationToken);
-        var result = await _playlistSyncService.SyncPlaylistAsync(
-            playlist,
-            preference,
-            candidates,
-            force: forceMediaServerSync,
-            cancellationToken);
-
-        if (!result.Success)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Playlist media-server sync skipped for {Source}:{SourceId}: {Message}",
-                    source,
-                    sourceId,
-                    result.Message);
-            }
-            return;
-        }
-
-        _lastPlaylistMediaSyncUtc[syncKey] = DateTimeOffset.UtcNow;
-
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Playlist media-server sync completed for {Source}:{SourceId}. TargetPlaylistId={PlaylistId}, SyncedTracks={SyncedTracks}",
-                source,
-                sourceId,
-                result.PlaylistId ?? string.Empty,
-                result.SyncedTracks);
-        }
     }
 
     private async Task<SmartTracklistWatchData?> GetSmartTracklistWatchDataAsync(

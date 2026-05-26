@@ -1394,6 +1394,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagDefaultsStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.UserPreferencesStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagLibraryOrganizer>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistFinalizationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagDownloadMoveService>();
     }
 
@@ -1551,7 +1552,7 @@ public partial class Program
         AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>(
             services,
             StartupWorkerCategory.Deferred,
-            "Watchlist post-download sync after HTTP readiness.");
+            "Watchlist playlist sync after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService.Dependencies>(sp =>

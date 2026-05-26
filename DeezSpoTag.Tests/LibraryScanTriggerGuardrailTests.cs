@@ -165,25 +165,37 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.Contains("ChangedFilePaths", source, StringComparison.Ordinal);
         Assert.Contains("await scanner.RunChangedFilesAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("Missing changed paths are a notifier bug", methodBody, StringComparison.Ordinal);
-        Assert.Contains("Watchlist post-download library scan skipped because no changed file paths were provided", methodBody, StringComparison.Ordinal);
+        Assert.Contains("Missing final paths are a notifier bug", methodBody, StringComparison.Ordinal);
+        Assert.Contains("Watchlist playlist library scan skipped because no final file paths were provided", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void PlaylistWatch_DoesNotRunPreQueueLibraryFolderScans()
+    public void PlaylistWatch_DoesNotRunPreQueueMediaServerSync()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
-        var methodBody = ExtractMethodBody(source, "private async Task PreQueuePlaylistSyncAsync");
 
-        Assert.Contains("PreQueuePlaylistSyncAsync(currentPlaylist, preference, candidates, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PreQueuePlaylistSyncAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RunPreQueueLibraryScanAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunChangedFilesAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFoldersAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFilesAsync", source, StringComparison.Ordinal);
         Assert.Contains("selection.MissingTracks", source, StringComparison.Ordinal);
         Assert.Contains("missing_tracks_queued", source, StringComparison.Ordinal);
         Assert.DoesNotContain("candidates.Select(candidate => new PlaylistWatchTrackInsert(candidate.TrackSourceId, candidate.Isrc))", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistSync_ResolvesEveryUnmappedPlexTrackInMainResolver()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncService.cs");
+        var methodBody = ExtractMethodBody(source, "private async Task<SyncMatchSummary> ResolvePlexRatingKeysAsync");
+
+        Assert.DoesNotContain("PlexSequentialSearchFallbackLimit", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Skipped sequential Plex search", source, StringComparison.Ordinal);
+        Assert.Contains("foreach (var index in unresolvedSearchIndexes)", methodBody, StringComparison.Ordinal);
+        Assert.Contains("ResolvePlexRatingKeyAsync", methodBody, StringComparison.Ordinal);
+        Assert.Contains("UpsertPlexTrackMetadataAsync", methodBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -206,17 +218,18 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void WatchlistPostDownloadNotifier_CarriesCompletedFilePaths()
+    public void WatchlistPlaylistNotifier_CarriesFinalizedFilePaths()
     {
         var interfaceSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "IWatchlistPostDownloadSyncNotifier.cs");
-        var appSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagApp.cs");
-        var helperSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+        var moveSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagDownloadMoveService.cs");
+        var finalizationSource = ReadSource("DeezSpoTag.Web", "Services", "WatchlistFinalizationService.cs");
 
-        Assert.Contains("IReadOnlyList<string>? changedFilePaths", interfaceSource, StringComparison.Ordinal);
-        Assert.Contains("ResolveChangedFilePaths(documentPayload: payloadJson)", appSource, StringComparison.Ordinal);
-        Assert.Contains("CollectFinalDestinationPaths", appSource, StringComparison.Ordinal);
-        Assert.Contains("ResolveChangedFilePaths(payload)", helperSource, StringComparison.Ordinal);
-        Assert.Contains("payload.FinalDestinations.Values", helperSource, StringComparison.Ordinal);
+        Assert.Contains("NotifyFinalizedAsync", interfaceSource, StringComparison.Ordinal);
+        Assert.Contains("IReadOnlyList<string>? finalFilePaths", interfaceSource, StringComparison.Ordinal);
+        Assert.Contains("NotifyQueueItemFinalizedAsync", moveSource, StringComparison.Ordinal);
+        Assert.Contains("await _notifier.NotifyFinalizedAsync", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("RepairPlaylistAsync", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("transitions.Values", moveSource, StringComparison.Ordinal);
     }
 
     [Fact]

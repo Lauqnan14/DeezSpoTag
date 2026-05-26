@@ -156,6 +156,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly PlexApiClient _plexApiClient;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
+    private readonly WatchlistFinalizationService _watchlistFinalizationService;
     private readonly LibraryConfigStore _configStore;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly IConfiguration _configuration;
@@ -201,6 +202,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _plexApiClient = serviceProvider.GetRequiredService<PlexApiClient>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
+        _watchlistFinalizationService = serviceProvider.GetRequiredService<WatchlistFinalizationService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _workCoordinator = serviceProvider.GetRequiredService<BackgroundWorkCoordinator>();
         _configuration = serviceProvider.GetRequiredService<IConfiguration>();
@@ -759,6 +761,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         foreach (var queueUuid in group.PendingQueueUuids)
         {
             await _queueRepository.MarkMoveNotRequiredAsync(queueUuid, cancellationToken);
+        }
+
+        foreach (var item in group.PendingItems)
+        {
+            await _watchlistFinalizationService.NotifyQueueItemFinalizedAsync(
+                item,
+                item.PayloadJson,
+                finalFilePaths: null,
+                cancellationToken);
         }
     }
 

@@ -69,7 +69,7 @@ public sealed class PlaylistVisualService
             using var response = await client.GetAsync(remoteUrl, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return existingUrl ?? remoteUrl;
+                return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
             }
 
             var visualDir = GetVisualDirectory(source, sourceId);
@@ -78,7 +78,7 @@ public sealed class PlaylistVisualService
             var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
             if (bytes.Length == 0)
             {
-                return existingUrl ?? remoteUrl;
+                return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
             }
 
             var extension = ResolveImageExtension(response.Content.Headers.ContentType?.MediaType, remoteUrl);
@@ -100,7 +100,7 @@ public sealed class PlaylistVisualService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to materialize playlist visual for {Source}:{SourceId}", source, sourceId);
-            return existingUrl ?? remoteUrl;
+            return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
         }
     }
 
@@ -143,7 +143,7 @@ public sealed class PlaylistVisualService
             return Array.Empty<StoredPlaylistVisual>();
         }
 
-        var activeFileName = ReadActiveFileName(visualDir);
+        var activeFileName = ResolveActiveFileName(visualDir);
         return EnumerateVisualFiles(visualDir)
             .OrderByDescending(path => string.Equals(Path.GetFileName(path), activeFileName, StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(path => File.GetLastWriteTimeUtc(path))
@@ -153,6 +153,17 @@ public sealed class PlaylistVisualService
                 string.Equals(Path.GetFileName(path), activeFileName, StringComparison.OrdinalIgnoreCase),
                 BuildVisualVariantUrl(source, sourceId, Path.GetFileName(path), File.GetLastWriteTimeUtc(path))))
             .ToList();
+    }
+
+    public bool IsManagedVisualUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Contains("/api/library/playlists/", StringComparison.OrdinalIgnoreCase)
+            && value.Contains("/visual", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IEnumerable<string> EnumerateVisualFiles(string visualDir)
@@ -238,6 +249,34 @@ public sealed class PlaylistVisualService
 
         var value = (File.ReadAllText(markerPath) ?? string.Empty).Trim();
         return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static string? ResolveActiveFileName(string visualDir)
+    {
+        var activeFileName = ReadActiveFileName(visualDir);
+        if (!string.IsNullOrWhiteSpace(activeFileName)
+            && File.Exists(Path.Join(visualDir, activeFileName)))
+        {
+            return activeFileName;
+        }
+
+        var latest = EnumerateVisualFiles(visualDir)
+            .OrderByDescending(path => File.GetLastWriteTimeUtc(path))
+            .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(latest) ? null : Path.GetFileName(latest);
+    }
+
+    private static string? ResolveUnmaterializedVisualUrl(
+        string remoteUrl,
+        bool reuseSavedArtwork,
+        string? existingUrl)
+    {
+        if (reuseSavedArtwork && !string.IsNullOrWhiteSpace(existingUrl))
+        {
+            return existingUrl;
+        }
+
+        return remoteUrl;
     }
 
     private static string? TryBuildExistingVisualUrl(string source, string sourceId, StoredPlaylistVisual? existing)

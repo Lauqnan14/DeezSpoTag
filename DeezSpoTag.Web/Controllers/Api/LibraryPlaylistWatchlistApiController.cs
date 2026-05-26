@@ -22,19 +22,22 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     private readonly PlaylistWatchService _playlistWatchService;
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly PlaylistVisualService _playlistVisualService;
+    private readonly WatchlistFinalizationService? _watchlistFinalizationService;
 
     public LibraryPlaylistWatchlistApiController(
         LibraryRepository repository,
         LibraryConfigStore configStore,
         PlaylistWatchService playlistWatchService,
         PlaylistSyncService playlistSyncService,
-        PlaylistVisualService playlistVisualService)
+        PlaylistVisualService playlistVisualService,
+        WatchlistFinalizationService? watchlistFinalizationService = null)
     {
         _repository = repository;
         _configStore = configStore;
         _playlistWatchService = playlistWatchService;
         _playlistSyncService = playlistSyncService;
         _playlistVisualService = playlistVisualService;
+        _watchlistFinalizationService = watchlistFinalizationService;
     }
 
     [HttpGet]
@@ -138,7 +141,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             await _playlistWatchService.ReconcilePlaylistAsync(
                 added,
                 CancellationToken.None,
-                forceMediaServerSync: true);
+                forceMediaServerSync: false);
         }
 
         return Ok(added);
@@ -287,7 +290,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             await _playlistWatchService.CheckPlaylistWatchItemAsync(
                 item,
                 cancellationToken,
-                forceMediaServerSync: true);
+                forceMediaServerSync: false);
         }
 
         return Ok(new { triggered = items.Count });
@@ -310,7 +313,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         await _playlistWatchService.CheckPlaylistWatchItemAsync(
             item,
             cancellationToken,
-            forceMediaServerSync: true);
+            forceMediaServerSync: false);
         return Ok(new { triggered = 1 });
     }
 
@@ -328,13 +331,19 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound("Playlist watchlist entry not found.");
         }
 
+        var repairNotifications = _watchlistFinalizationService == null
+            ? 0
+            : await _watchlistFinalizationService.RepairPlaylistAsync(
+                item,
+                cancellationToken);
         var reconciliation = await _playlistWatchService.ReconcilePlaylistAsync(
             item,
             CancellationToken.None,
-            forceMediaServerSync: true);
+            forceMediaServerSync: false);
         var result = reconciliation.SyncResult;
         return Ok(new
         {
+            RepairNotifications = repairNotifications,
             reconciliation.Success,
             reconciliation.Message,
             reconciliation.SourceTracks,
@@ -475,8 +484,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         await _playlistWatchService.CheckPlaylistWatchItemAsync(
             item,
             cancellationToken,
-            forceMediaServerSync: true);
-        return Ok(new { refreshed = true });
+            forceMediaServerSync: false);
+        var refreshedItem = await FindWatchlistItemAsync(source, sourceId, cancellationToken) ?? item;
+        var artworkSync = await SyncArtworkForWatchlistItemAsync(refreshedItem, cancellationToken);
+        return Ok(new { refreshed = true, artworkSync });
     }
 
     [HttpGet("{source}/{sourceId}/visual")]
@@ -546,7 +557,12 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 cancellationToken);
         }
 
-        return Ok(new { updated = true, imageUrl = activeVisual?.Url });
+        var item = await FindWatchlistItemAsync(normalizedSource, sourceId, cancellationToken);
+        var artworkSync = item != null && activeVisual != null
+            ? await SyncArtworkForWatchlistItemAsync(item with { ImageUrl = activeVisual.Url }, cancellationToken)
+            : null;
+
+        return Ok(new { updated = true, imageUrl = activeVisual?.Url, artworkSync });
     }
 
     [HttpGet("{source}/{sourceId}/routing-rules")]
@@ -696,6 +712,20 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return items.FirstOrDefault(entry =>
             string.Equals(entry.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
             && string.Equals(entry.SourceId, sourceId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<PlaylistSyncResult?> SyncArtworkForWatchlistItemAsync(
+        PlaylistWatchlistDto item,
+        CancellationToken cancellationToken)
+    {
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync(
+            NormalizePlaylistSource(item.Source),
+            item.SourceId,
+            cancellationToken);
+        return await _playlistSyncService.SyncPlaylistArtworkOnlyAsync(
+            item,
+            preference,
+            cancellationToken);
     }
 
     private async Task UpsertWatchPreferenceRulesAsync(

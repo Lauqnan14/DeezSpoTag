@@ -38,12 +38,12 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         _logger = logger;
     }
 
-    public ValueTask NotifyCompletedAsync(
+    public ValueTask NotifyFinalizedAsync(
         string source,
         string playlistId,
         string trackId,
         long? destinationFolderId,
-        IReadOnlyList<string>? changedFilePaths = null,
+        IReadOnlyList<string>? finalFilePaths = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(source)
@@ -58,7 +58,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             playlistId.Trim(),
             trackId.Trim(),
             destinationFolderId,
-            NormalizeChangedFilePaths(changedFilePaths),
+            NormalizeChangedFilePaths(finalFilePaths),
             FollowUpPass: 0);
         return _queue.Writer.WriteAsync(request, cancellationToken);
     }
@@ -81,7 +81,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(
-                    "Watchlist post-download sync already running for {Source}:{PlaylistId}; queued one follow-up pass.",
+                    "Watchlist playlist sync already running for {Source}:{PlaylistId}; queued one follow-up pass.",
                     request.Source,
                     request.PlaylistId);
             }
@@ -102,7 +102,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             }
 
             _logger.LogWarning(
-                "Watchlist post-download sync exhausted retries for {Source}:{PlaylistId} after completed track {TrackId}.",
+                "Watchlist playlist sync exhausted retries for {Source}:{PlaylistId} after finalized track {TrackId}.",
                 request.Source,
                 request.PlaylistId,
                 request.TrackId);
@@ -114,7 +114,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             {
                 _logger.LogDebug(
                     ex,
-                    "Watchlist post-download sync canceled for {Source}:{PlaylistId}.",
+                    "Watchlist playlist sync canceled for {Source}:{PlaylistId}.",
                     request.Source,
                     request.PlaylistId);
             }
@@ -138,7 +138,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         if (request.FollowUpPass >= MaxFollowUpPasses)
         {
             _logger.LogWarning(
-                "Watchlist post-download sync stopped after {FollowUpPasses} follow-up passes for {Source}:{PlaylistId} after completed track {TrackId}.",
+                "Watchlist playlist sync stopped after {FollowUpPasses} follow-up passes for {Source}:{PlaylistId} after finalized track {TrackId}.",
                 request.FollowUpPass,
                 request.Source,
                 request.PlaylistId,
@@ -150,7 +150,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Watchlist post-download sync scheduled follow-up pass {FollowUpPass}/{MaxFollowUpPasses} for {Source}:{PlaylistId} after completed track {TrackId}.",
+                "Watchlist playlist sync scheduled follow-up pass {FollowUpPass}/{MaxFollowUpPasses} for {Source}:{PlaylistId} after finalized track {TrackId}.",
                 followUp.FollowUpPass,
                 MaxFollowUpPasses,
                 followUp.Source,
@@ -172,7 +172,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         {
             _logger.LogWarning(
                 ex,
-                "Watchlist post-download sync failed to schedule follow-up for {Source}:{PlaylistId} after completed track {TrackId}.",
+                "Watchlist playlist sync failed to schedule follow-up for {Source}:{PlaylistId} after finalized track {TrackId}.",
                 followUp.Source,
                 followUp.PlaylistId,
                 followUp.TrackId);
@@ -219,6 +219,11 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken);
             if (!readiness.Ready)
             {
+                await AddPlaylistSyncHistoryAsync(
+                    repository,
+                    playlist,
+                    readiness.Terminal ? "media_sync_blocked" : "media_sync_waiting",
+                    cancellationToken);
                 return HandleNotReady(request, attempt, readiness);
             }
 
@@ -229,10 +234,20 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
             if (reconciliation.SyncResult?.Success == true)
             {
+                await AddPlaylistSyncHistoryAsync(
+                    repository,
+                    playlist,
+                    "media_sync_completed",
+                    cancellationToken);
                 LogSyncCompleted(request, attempt, reconciliation.SyncResult.SyncedTracks);
                 return true;
             }
 
+            await AddPlaylistSyncHistoryAsync(
+                repository,
+                playlist,
+                "media_sync_failed",
+                cancellationToken);
             LogSyncNotReady(request, attempt, reconciliation.SyncResult?.Message ?? reconciliation.Message);
             return false;
         }
@@ -244,7 +259,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         {
             _logger.LogWarning(
                 ex,
-                "Watchlist post-download sync attempt {Attempt} failed for {Source}:{PlaylistId} after completed track {TrackId}.",
+                "Watchlist playlist sync attempt {Attempt} failed for {Source}:{PlaylistId} after finalized track {TrackId}.",
                 attempt,
                 request.Source,
                 request.PlaylistId,
@@ -253,10 +268,29 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
     }
 
+    private static async Task AddPlaylistSyncHistoryAsync(
+        LibraryRepository repository,
+        PlaylistWatchlistDto playlist,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        await repository.AddWatchlistHistoryAsync(
+            new WatchlistHistoryInsert(
+                playlist.Source,
+                "playlist",
+                playlist.SourceId,
+                playlist.Name,
+                "playlist",
+                playlist.TrackCount ?? 0,
+                status,
+                null),
+            cancellationToken);
+    }
+
     private void LogPlaylistMissing(SyncRequest request)
     {
         _logger.LogWarning(
-            "Watchlist post-download sync skipped because playlist no longer exists: {Source}:{PlaylistId}.",
+            "Watchlist playlist sync skipped because playlist no longer exists: {Source}:{PlaylistId}.",
             request.Source,
             request.PlaylistId);
     }
@@ -273,7 +307,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Watchlist post-download sync recovered destination folder {DestinationFolderId} from playlist preference for {Source}:{PlaylistId}.",
+                "Watchlist playlist sync resolved destination folder {DestinationFolderId} from playlist preference for {Source}:{PlaylistId}.",
                 destinationFolderId,
                 request.Source,
                 request.PlaylistId);
@@ -290,7 +324,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         if (readiness.Terminal)
         {
             _logger.LogWarning(
-                "Watchlist post-download sync stopped for {Source}:{PlaylistId} after completed track {TrackId}: {Message}",
+                "Watchlist playlist sync stopped for {Source}:{PlaylistId} after finalized track {TrackId}: {Message}",
                 request.Source,
                 request.PlaylistId,
                 request.TrackId,
@@ -301,7 +335,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Watchlist post-download sync waiting for readiness for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
+                "Watchlist playlist sync waiting for readiness for {Source}:{PlaylistId} after finalized track {TrackId} (attempt {Attempt}): {Message}",
                 request.Source,
                 request.PlaylistId,
                 request.TrackId,
@@ -320,7 +354,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
 
         _logger.LogInformation(
-            "Watchlist post-download sync completed for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
+            "Watchlist playlist sync completed for {Source}:{PlaylistId} after finalized track {TrackId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
             request.Source,
             request.PlaylistId,
             request.TrackId,
@@ -336,7 +370,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
 
         _logger.LogInformation(
-            "Watchlist post-download sync not ready for {Source}:{PlaylistId} after completed track {TrackId} (attempt {Attempt}): {Message}",
+            "Watchlist playlist sync not ready for {Source}:{PlaylistId} after finalized track {TrackId} (attempt {Attempt}): {Message}",
             request.Source,
             request.PlaylistId,
             request.TrackId,
@@ -383,13 +417,12 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             return;
         }
 
-        // Missing changed paths are a notifier bug. Do not fall back to a folder scan,
-        // because that recreates repeated library scans when nothing changed.
+        // Missing final paths are a notifier bug. The sync must be driven by real destination files.
         var configStore = services.GetService<LibraryConfigStore>();
         configStore?.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "warning",
-            $"Watchlist post-download library scan skipped because no changed file paths were provided for {request.Source}:{request.PlaylistId}:{request.TrackId} (destinationFolderId={request.DestinationFolderId})."));
+            $"Watchlist playlist library scan skipped because no final file paths were provided for {request.Source}:{request.PlaylistId}:{request.TrackId} (destinationFolderId={request.DestinationFolderId})."));
     }
 
     private static List<string> NormalizeChangedFilePaths(IReadOnlyList<string>? changedFilePaths)

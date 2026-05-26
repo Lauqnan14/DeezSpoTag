@@ -542,6 +542,12 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal(2, trackIdsBySpotify.Count);
         Assert.Equal(seeded.TrackIdsByTitle["Song One"], trackIdsBySpotify["sp-song-1"]);
 
+        var trackIdsByMixedCaseSpotify = await _repository.GetTrackIdsBySourceIdsAsync(
+            "SPOTIFY",
+            new[] { "SP-SONG-1" });
+        Assert.Single(trackIdsByMixedCaseSpotify);
+        Assert.Equal(seeded.TrackIdsByTitle["Song One"], trackIdsByMixedCaseSpotify["SP-SONG-1"]);
+
         var albumFromTrackSource = await _repository.GetLocalAlbumIdByTrackSourceIdAsync("spotify", "sp-song-1");
         Assert.Equal(seeded.AlbumId, albumFromTrackSource);
 

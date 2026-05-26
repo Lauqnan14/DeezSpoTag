@@ -3112,9 +3112,9 @@ WHERE track_id IN (
 SELECT source_id,
        track_id
 FROM track_source
-WHERE source = @source
-  AND source_id IN (
-      SELECT value
+WHERE lower(source) = lower(@source)
+  AND lower(source_id) IN (
+      SELECT lower(value)
       FROM json_each(@sourceIdsJson)
   );";
         await using var command = new SqliteCommand(sql, connection);

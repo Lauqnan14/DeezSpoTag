@@ -40,7 +40,6 @@ public sealed class PlaylistSyncService
     private const string SyncModeMirror = "mirror";
     private const string SyncModeAppend = "append";
     private const int DurationToleranceMs = 2000;
-    private const int PlexSequentialSearchFallbackLimit = 25;
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly PlexApiClient _plexApiClient;
@@ -386,6 +385,35 @@ public sealed class PlaylistSyncService
         };
     }
 
+    public async Task<PlaylistSyncResult> SyncPlaylistArtworkOnlyAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
+        {
+            return PlaylistSyncResult.Failed("Playlist not available.");
+        }
+
+        if (!ShouldSyncPlaylistArtwork(preference))
+        {
+            return new PlaylistSyncResult(true, "Playlist artwork sync disabled.");
+        }
+
+        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
+        if (string.IsNullOrWhiteSpace(service))
+        {
+            return PlaylistSyncResult.Failed("No target server selected.");
+        }
+
+        return service switch
+        {
+            PlexService => await SyncPlexPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
+            JellyfinService => await SyncJellyfinPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
+            _ => PlaylistSyncResult.Failed("Unsupported playlist sync target.")
+        };
+    }
+
     public async Task<PlaylistTrackSyncReadiness> CheckTrackReadyForAutomaticSyncAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
@@ -453,12 +481,14 @@ public sealed class PlaylistSyncService
         }
 
         var checkedLocalTracks = 0;
+        var missingLocalTracks = 0;
         foreach (var candidate in candidates.Where(candidate => eligibleIds.Contains(candidate.TrackSourceId)))
         {
             var track = ToSyncTrackSummary(candidate);
             var localTrackId = await ResolveLocalTrackIdAsync(playlist.Source, track, cancellationToken);
             if (!localTrackId.HasValue)
             {
+                missingLocalTracks++;
                 continue;
             }
 
@@ -478,7 +508,15 @@ public sealed class PlaylistSyncService
                 "No eligible playlist tracks are visible in the DeezSpoTag library yet.");
         }
 
-        return new PlaylistTrackSyncReadiness(true, false, "All locally available playlist tracks are visible in the target server.");
+        if (missingLocalTracks > 0)
+        {
+            return new PlaylistTrackSyncReadiness(
+                false,
+                false,
+                $"{missingLocalTracks} eligible playlist track(s) are not visible in the DeezSpoTag library yet.");
+        }
+
+        return new PlaylistTrackSyncReadiness(true, false, "All eligible playlist tracks are visible in the target server.");
     }
 
     private async Task<PlaylistTrackSyncReadiness> CheckTargetTrackReadyAsync(
@@ -839,6 +877,103 @@ public sealed class PlaylistSyncService
         return (true, null, itemIds.Count);
     }
 
+    private async Task<PlaylistSyncResult> SyncPlexPlaylistArtworkOnlyAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        var (plex, configurationError) = await TryLoadConfiguredPlexAsync();
+        if (configurationError != null)
+        {
+            return configurationError;
+        }
+
+        if (plex == null)
+        {
+            return PlaylistSyncResult.Failed("Plex is not configured.");
+        }
+
+        var playlistName = ResolvePlaylistName(playlist);
+        var playlists = await _plexApiClient.GetPlaylistsAsync(plex.Url, plex.Token, cancellationToken);
+        var targetPlaylist = playlists.FirstOrDefault(item =>
+            !string.IsNullOrWhiteSpace(item.Id)
+            && string.Equals(item.Title, playlistName, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(targetPlaylist?.Id))
+        {
+            return PlaylistSyncResult.Failed("Target Plex playlist was not found.");
+        }
+
+        await SyncPlexPlaylistArtworkAsync(
+            plex,
+            playlist,
+            preference,
+            targetPlaylist.Id,
+            cancellationToken);
+
+        return new PlaylistSyncResult(true, "Playlist artwork synced.", targetPlaylist.Id);
+    }
+
+    private async Task<PlaylistSyncResult> SyncJellyfinPlaylistArtworkOnlyAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        var (jellyfin, configurationError) = await TryLoadConfiguredJellyfinAsync();
+        if (configurationError != null)
+        {
+            return configurationError;
+        }
+
+        if (jellyfin == null)
+        {
+            return PlaylistSyncResult.Failed("Jellyfin is not configured.");
+        }
+
+        var playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+            jellyfin.Url,
+            jellyfin.ApiKey,
+            jellyfin.UserId,
+            ResolvePlaylistName(playlist),
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return PlaylistSyncResult.Failed("Target Jellyfin playlist was not found.");
+        }
+
+        await SyncJellyfinPlaylistArtworkAsync(
+            jellyfin,
+            playlist,
+            preference,
+            playlistId,
+            cancellationToken);
+
+        return new PlaylistSyncResult(true, "Playlist artwork synced.", playlistId);
+    }
+
+    private PlaylistVisualService.StoredPlaylistVisual? ResolveStoredVisualForArtworkSync(
+        PlaylistWatchlistDto playlist,
+        string? managedImageUrl,
+        bool reuseSavedArtwork)
+    {
+        var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
+        if (visual == null || !File.Exists(visual.FilePath))
+        {
+            return null;
+        }
+
+        if (reuseSavedArtwork || _playlistVisualService.IsManagedVisualUrl(managedImageUrl))
+        {
+            return visual;
+        }
+
+        return null;
+    }
+
+    private static bool ShouldSyncPlaylistArtwork(PlaylistWatchPreferenceDto? preference)
+    {
+        return preference?.UpdateArtwork != false || preference?.ReuseSavedArtwork == true;
+    }
+
     private async Task SyncPlexPlaylistArtworkAsync(
         PlexConnection plex,
         PlaylistWatchlistDto playlist,
@@ -846,34 +981,41 @@ public sealed class PlaylistSyncService
         string playlistId,
         CancellationToken cancellationToken)
     {
-        if (preference?.UpdateArtwork == false)
+        if (!ShouldSyncPlaylistArtwork(preference))
         {
             return;
         }
 
-        if (preference?.ReuseSavedArtwork == true)
+        var managedImageUrl = await _playlistVisualService.ResolveManagedVisualUrlAsync(
+            playlist.Source,
+            playlist.SourceId,
+            playlist.Name,
+            playlist.ImageUrl,
+            preference?.ReuseSavedArtwork == true,
+            cancellationToken);
+        var visual = ResolveStoredVisualForArtworkSync(
+            playlist,
+            managedImageUrl,
+            preference?.ReuseSavedArtwork == true);
+        if (visual != null && File.Exists(visual.FilePath))
         {
-            var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
-            if (visual != null && File.Exists(visual.FilePath))
-            {
-                await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
-                    plex.Url,
-                    plex.Token,
-                    playlistId,
-                    visual.FilePath,
-                    visual.ContentType,
-                    cancellationToken);
-                return;
-            }
+            await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
+                plex.Url,
+                plex.Token,
+                playlistId,
+                visual.FilePath,
+                visual.ContentType,
+                cancellationToken);
+            return;
         }
 
-        if (IsAbsoluteHttpUrl(playlist.ImageUrl))
+        if (IsAbsoluteHttpUrl(managedImageUrl))
         {
             await _plexApiClient.UpdatePlaylistPosterFromUrlAsync(
                 plex.Url,
                 plex.Token,
                 playlistId,
-                playlist.ImageUrl!,
+                managedImageUrl!,
                 cancellationToken);
             return;
         }
@@ -888,43 +1030,50 @@ public sealed class PlaylistSyncService
         string playlistId,
         CancellationToken cancellationToken)
     {
-        if (preference?.UpdateArtwork == false)
+        if (!ShouldSyncPlaylistArtwork(preference))
         {
             return;
         }
 
-        if (preference?.ReuseSavedArtwork == true)
+        var managedImageUrl = await _playlistVisualService.ResolveManagedVisualUrlAsync(
+            playlist.Source,
+            playlist.SourceId,
+            playlist.Name,
+            playlist.ImageUrl,
+            preference?.ReuseSavedArtwork == true,
+            cancellationToken);
+        var visual = ResolveStoredVisualForArtworkSync(
+            playlist,
+            managedImageUrl,
+            preference?.ReuseSavedArtwork == true);
+        if (visual != null && File.Exists(visual.FilePath))
         {
-            var visual = _playlistVisualService.GetStoredVisual(playlist.Source, playlist.SourceId);
-            if (visual != null && File.Exists(visual.FilePath))
+            var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                playlistId,
+                visual.FilePath,
+                visual.ContentType,
+                cancellationToken);
+            if (!updated)
             {
-                var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
-                    jellyfin.Url,
-                    jellyfin.ApiKey,
-                    playlistId,
-                    visual.FilePath,
-                    visual.ContentType,
-                    cancellationToken);
-                if (!updated)
-                {
-                    _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.", playlist.Source, playlist.SourceId, visual.FilePath);
-                }
-
-                return;
+                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.", playlist.Source, playlist.SourceId, visual.FilePath);
             }
+
+            return;
         }
 
-        if (IsAbsoluteHttpUrl(playlist.ImageUrl))
+        if (IsAbsoluteHttpUrl(managedImageUrl))
         {
             var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 playlistId,
-                playlist.ImageUrl!,
+                managedImageUrl!,
                 cancellationToken);
             if (!updated)
             {
-                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from URL {ImageUrl}.", playlist.Source, playlist.SourceId, playlist.ImageUrl);
+                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from URL {ImageUrl}.", playlist.Source, playlist.SourceId, managedImageUrl);
             }
 
             return;
@@ -1349,24 +1498,31 @@ public sealed class PlaylistSyncService
             unresolvedSearchIndexes.Add(i);
         }
 
-        if (unresolvedSearchIndexes.Count <= PlexSequentialSearchFallbackLimit)
+        var metadataUpdates = new List<PlexTrackMetadataUpsertDto>();
+        foreach (var index in unresolvedSearchIndexes)
         {
-            foreach (var index in unresolvedSearchIndexes)
+            var track = tracks[index];
+            var resolved = await ResolvePlexRatingKeyAsync(plex, track, searchCache, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(resolved))
             {
-                var track = tracks[index];
-                var resolved = await ResolvePlexRatingKeyAsync(plex, track, searchCache, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(resolved))
+                ratingKeysByIndex[index] = resolved;
+                searchMatches++;
+                var trackId = orderedTrackIds[index];
+                if (trackId > 0)
                 {
-                    ratingKeysByIndex[index] = resolved;
-                    searchMatches++;
+                    metadataUpdates.Add(new PlexTrackMetadataUpsertDto(
+                        trackId,
+                        resolved,
+                        DateTimeOffset.UtcNow));
                 }
             }
         }
-        else if (_logger.IsEnabled(LogLevel.Information))
+
+        if (metadataUpdates.Count > 0)
         {
-            _logger.LogInformation(
-                "Skipped sequential Plex search fallback for {MissingCount} unresolved tracks. Populate track_plex_metadata by refreshing Plex library mapping.",
-                unresolvedSearchIndexes.Count);
+            await _libraryRepository.UpsertPlexTrackMetadataAsync(
+                metadataUpdates,
+                cancellationToken);
         }
 
         var ratingKeys = ratingKeysByIndex
@@ -1596,7 +1752,7 @@ public sealed class PlaylistSyncService
         var durationBucket = track.DurationMs.HasValue && track.DurationMs.Value > 0
             ? (track.DurationMs.Value / DurationToleranceMs).ToString(CultureInfo.InvariantCulture)
             : string.Empty;
-        var fallbackId = string.IsNullOrWhiteSpace(track.SourceTrackId)
+        var sourceTrackKey = string.IsNullOrWhiteSpace(track.SourceTrackId)
             ? string.Empty
             : Normalize(track.SourceTrackId);
         return string.Join(
@@ -1606,7 +1762,7 @@ public sealed class PlaylistSyncService
             Normalize(track.Album),
             year,
             durationBucket,
-            fallbackId);
+            sourceTrackKey);
     }
 
     private static string ResolveMergedPlaylistName(string? requestedName)

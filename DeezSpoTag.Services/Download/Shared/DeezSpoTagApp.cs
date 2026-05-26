@@ -560,7 +560,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return;
         }
 
-        if (!TryReadWatchlistIds(payloadJson, out var source, out var playlistId, out var trackId, out var destinationFolderId))
+        if (!TryReadWatchlistIds(payloadJson, out var source, out var playlistId, out var trackId, out _))
         {
             return;
         }
@@ -582,30 +582,15 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         var queueUuid = ResolveQueueUuid(payloadJson);
         if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
         {
-            var changedFilePaths = ResolveChangedFilePaths(documentPayload: payloadJson);
-            var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
-            if (notifier != null)
-            {
-                var notification = new SharedWatchDownloadNotification(
-                    libraryRepository,
-                    notifier,
-                    queueUuid,
-                    source,
-                    playlistId,
-                    trackId,
-                    destinationFolderId,
-                    changedFilePaths);
-                await notifier.NotifyCompletedAsync(
-                    source,
-                    playlistId,
-                    trackId,
-                    destinationFolderId,
-                    changedFilePaths,
-                    cancellationToken);
-                await NotifySharedWatchDownloadClaimsAsync(
-                    notification,
-                    cancellationToken);
-            }
+            var notification = new SharedWatchDownloadNotification(
+                libraryRepository,
+                queueUuid,
+                source,
+                playlistId,
+                trackId);
+            await NotifySharedWatchDownloadClaimsAsync(
+                notification,
+                cancellationToken);
 
             await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 queueUuid,
@@ -656,13 +641,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 claim.SourceId,
                 claim.TrackSourceId,
                 CompletedStatus,
-                cancellationToken);
-            await notification.Notifier.NotifyCompletedAsync(
-                claim.Source,
-                claim.SourceId,
-                claim.TrackSourceId,
-                claim.DestinationFolderId ?? notification.DestinationFolderId,
-                notification.ChangedFilePaths,
                 cancellationToken);
         }
     }
@@ -732,94 +710,10 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     private sealed record SharedWatchDownloadNotification(
         LibraryRepository LibraryRepository,
-        IWatchlistPostDownloadSyncNotifier Notifier,
         string QueueUuid,
         string Source,
         string PlaylistId,
-        string TrackId,
-        long? DestinationFolderId,
-        IReadOnlyList<string> ChangedFilePaths);
-
-    private static IReadOnlyList<string> ResolveChangedFilePaths(string documentPayload)
-    {
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(documentPayload))
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(documentPayload);
-            var root = document.RootElement;
-            CollectFinalDestinationPaths(root, paths);
-            CollectStringPath(root, paths, "filePath");
-            CollectStringPath(root, paths, "FilePath");
-            CollectFileArrayPaths(root, paths);
-        }
-        catch (JsonException)
-        {
-            return Array.Empty<string>();
-        }
-
-        return paths.ToList();
-    }
-
-    private static void CollectFinalDestinationPaths(JsonElement root, HashSet<string> paths)
-    {
-        if (!TryGetPropertyIgnoreCase(root, "finalDestinations", out var finalDestinations)
-            || finalDestinations.ValueKind != JsonValueKind.Object)
-        {
-            return;
-        }
-
-        foreach (var value in finalDestinations.EnumerateObject().Select(static property => property.Value))
-        {
-            if (value.ValueKind == JsonValueKind.String)
-            {
-                AddPath(paths, value.GetString());
-            }
-        }
-    }
-
-    private static void CollectFileArrayPaths(JsonElement root, HashSet<string> paths)
-    {
-        if (!TryGetPropertyIgnoreCase(root, "files", out var files)
-            || files.ValueKind != JsonValueKind.Array)
-        {
-            return;
-        }
-
-        foreach (var file in files.EnumerateArray())
-        {
-            if (file.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            CollectStringPath(file, paths, "path");
-            CollectStringPath(file, paths, "filePath");
-            CollectStringPath(file, paths, "FilePath");
-            CollectStringPath(file, paths, "outputPath");
-        }
-    }
-
-    private static void CollectStringPath(JsonElement element, HashSet<string> paths, string propertyName)
-    {
-        if (TryGetPropertyIgnoreCase(element, propertyName, out var property)
-            && property.ValueKind == JsonValueKind.String)
-        {
-            AddPath(paths, property.GetString());
-        }
-    }
-
-    private static void AddPath(HashSet<string> paths, string? path)
-    {
-        if (!string.IsNullOrWhiteSpace(path))
-        {
-            paths.Add(path);
-        }
-    }
+        string TrackId);
 
     private static bool TryReadWatchlistIds(
         string payloadJson,

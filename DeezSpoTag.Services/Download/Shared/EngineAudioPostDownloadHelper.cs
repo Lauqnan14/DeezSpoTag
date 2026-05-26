@@ -2032,25 +2032,11 @@ public static partial class EngineAudioPostDownloadHelper
         var resolvedQueueUuid = ResolveQueueUuid(queueUuid, payload);
         if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
         {
-            var changedFilePaths = ResolveChangedFilePaths(payload);
-            var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
-            if (notifier != null)
-            {
-                await notifier.NotifyCompletedAsync(
-                    payload.WatchlistSource,
-                    payload.WatchlistPlaylistId,
-                    payload.WatchlistTrackId,
-                    payload.DestinationFolderId,
-                    changedFilePaths,
-                    cancellationToken);
-                await NotifySharedWatchDownloadClaimsAsync(
-                    libraryRepository,
-                    notifier,
-                    resolvedQueueUuid,
-                    payload,
-                    changedFilePaths,
-                    cancellationToken);
-            }
+            await NotifySharedWatchDownloadClaimsAsync(
+                libraryRepository,
+                resolvedQueueUuid,
+                payload,
+                cancellationToken);
 
             await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 resolvedQueueUuid,
@@ -2074,10 +2060,8 @@ public static partial class EngineAudioPostDownloadHelper
 
     private static async Task NotifySharedWatchDownloadClaimsAsync(
         LibraryRepository libraryRepository,
-        IWatchlistPostDownloadSyncNotifier notifier,
         string queueUuid,
         EngineQueueItemBase payload,
-        IReadOnlyList<string> changedFilePaths,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(queueUuid))
@@ -2101,13 +2085,6 @@ public static partial class EngineAudioPostDownloadHelper
                 claim.SourceId,
                 claim.TrackSourceId,
                 CompletedStatus,
-                cancellationToken);
-            await notifier.NotifyCompletedAsync(
-                claim.Source,
-                claim.SourceId,
-                claim.TrackSourceId,
-                claim.DestinationFolderId ?? payload.DestinationFolderId,
-                changedFilePaths,
                 cancellationToken);
         }
     }
@@ -2163,22 +2140,6 @@ public static partial class EngineAudioPostDownloadHelper
         return !string.IsNullOrWhiteSpace(queueUuid)
             ? queueUuid.Trim()
             : payload.Id ?? string.Empty;
-    }
-
-    private static List<string> ResolveChangedFilePaths(EngineQueueItemBase payload)
-    {
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in payload.FinalDestinations.Values.Where(static path => !string.IsNullOrWhiteSpace(path)))
-        {
-            paths.Add(path);
-        }
-
-        if (!string.IsNullOrWhiteSpace(payload.FilePath))
-        {
-            paths.Add(payload.FilePath);
-        }
-
-        return paths.ToList();
     }
 
     public static async Task<TPayload?> InitializeQueueItemAsync<TPayload>(

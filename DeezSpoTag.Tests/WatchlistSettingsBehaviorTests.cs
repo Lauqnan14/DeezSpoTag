@@ -200,7 +200,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
         Assert.Contains("HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson)", source, StringComparison.Ordinal);
-        Assert.Contains("forceMediaServerSync || sourceChanged || queueResult.QueuedCount > 0 || queueResult.CompletedCount > 0", source, StringComparison.Ordinal);
+        Assert.Contains("if (forceMediaServerSync)", source, StringComparison.Ordinal);
+        Assert.Contains("RepairPlaylistAsync", source, StringComparison.Ordinal);
         Assert.Contains("ShouldKeepSharedQueueClaimPending(result)", source, StringComparison.Ordinal);
         Assert.Contains("UpsertPlaylistWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
         Assert.Contains("duplicate_shared_track_linked", source, StringComparison.Ordinal);
@@ -217,10 +218,19 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var repoRoot = ResolveRepoRoot();
         var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
         var postDownloadSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
+        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryPlaylistWatchlistApiController.cs"));
+        var visualSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistVisualService.cs"));
 
         Assert.Contains("preference?.ReuseSavedArtwork == true", syncSource, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistPosterFromUrlAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("UpdateItemPrimaryImageFromUrlAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("SyncPlaylistArtworkOnlyAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("SyncPlaylistArtworkOnlyAsync", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveStoredVisualForArtworkSync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("_playlistVisualService.IsManagedVisualUrl(managedImageUrl)", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl)", visualSource, StringComparison.Ordinal);
+        Assert.Contains("return remoteUrl;", visualSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveActiveFileName", visualSource, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("RunChangedFilesAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);

@@ -186,6 +186,7 @@ public sealed class AutoTagDownloadMoveService
     private readonly LibraryRepository _libraryRepository;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly QuickTagService _quickTagService;
+    private readonly WatchlistFinalizationService _watchlistFinalizationService;
     private readonly ILogger<AutoTagDownloadMoveService> _logger;
 
     public AutoTagDownloadMoveService(
@@ -194,6 +195,7 @@ public sealed class AutoTagDownloadMoveService
         LibraryRepository libraryRepository,
         IServiceScopeFactory scopeFactory,
         QuickTagService quickTagService,
+        WatchlistFinalizationService watchlistFinalizationService,
         ILogger<AutoTagDownloadMoveService> logger)
     {
         _queueRepository = queueRepository;
@@ -201,6 +203,7 @@ public sealed class AutoTagDownloadMoveService
         _libraryRepository = libraryRepository;
         _scopeFactory = scopeFactory;
         _quickTagService = quickTagService;
+        _watchlistFinalizationService = watchlistFinalizationService;
         _logger = logger;
     }
 
@@ -3146,6 +3149,11 @@ public sealed class AutoTagDownloadMoveService
                 payloadJson,
                 cancellationToken);
             await _queueRepository.MarkMoveSucceededAsync(item.QueueUuid, cancellationToken);
+            await _watchlistFinalizationService.NotifyQueueItemFinalizedAsync(
+                item,
+                payloadJson,
+                transitions.Values,
+                cancellationToken);
         }
     }
 
