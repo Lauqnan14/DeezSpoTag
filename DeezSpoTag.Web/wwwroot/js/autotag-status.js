@@ -332,9 +332,7 @@
 
     function updateLiveMetadata(job) {
         const logLines = normalizeLogLines(job?.logs);
-        const logCount = typeof job?.logCount === "number" ? job.logCount : logLines.length;
         setText("autotag-runtime", formatDuration(job?.startedAt, job?.finishedAt));
-        setText("autotag-log-count", String(logCount));
         setText("autotag-exit-code", job?.exitCode ?? "--");
         setText("autotag-platform", job?.currentPlatform || "--");
         setText("autotag-last-track", toFileName(job?.lastStatus?.status?.path));
@@ -381,7 +379,6 @@
 
         updateStatus(summary.id, summary.status || "waiting");
         setText("autotag-runtime", formatDuration(summary.startedAt, summary.finishedAt));
-        setText("autotag-log-count", String(summary.logCount ?? logs.length ?? 0));
         setText("autotag-exit-code", summary.exitCode ?? "--");
         setText("autotag-platform", lastPlatform);
         setText("autotag-last-track", toFileName(lastStatus.path));

@@ -10,7 +10,6 @@
     var autoTagMetadataCards = new (string Label, string Id, string Value)[]
     {
         ("Runtime", "autotag-runtime", "00:00"),
-        ("Log Lines", "autotag-log-count", "0"),
         ("Exit Code", "autotag-exit-code", "--"),
         ("Platform", "autotag-platform", "--"),
         ("Last Track", "autotag-last-track", "--"),
@@ -1241,9 +1240,27 @@
 
 .autotag-metadata {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 16px;
     margin-bottom: 16px;
+}
+
+@@media (max-width: 1200px) {
+    .autotag-metadata {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@@media (max-width: 768px) {
+    .autotag-metadata {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@@media (max-width: 480px) {
+    .autotag-metadata {
+        grid-template-columns: 1fr;
+    }
 }
 
 .autotag-progress {
