@@ -154,6 +154,7 @@ public sealed class CoverMaintenanceApiController : ControllerBase
 
 public sealed class CoverMaintenanceRunRequest
 {
+    public bool? Enabled { get; set; }
     public long? FolderId { get; set; }
     public IReadOnlyCollection<long>? FolderIds { get; set; }
     public string? RootPath { get; set; }

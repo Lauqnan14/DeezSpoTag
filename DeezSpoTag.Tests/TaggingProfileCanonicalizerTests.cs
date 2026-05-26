@@ -173,6 +173,30 @@ public sealed class TaggingProfileCanonicalizerTests
     }
 
     [Fact]
+    public void SyncTagArraysFromConfig_PreservesExplicitlyEmptyEnhancementTags()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["gapFillTags"] = JsonSerializer.SerializeToElement(Array.Empty<string>())
+                }
+            }
+        };
+
+        profile.TagConfig.Title = TagSource.DownloadSource;
+        profile.TagConfig.ReleaseDate = TagSource.AutoTagPlatform;
+
+        var changed = TaggingProfileCanonicalizer.SyncTagArraysFromConfig(profile);
+
+        Assert.True(changed);
+        Assert.Empty(ReadStringArray(profile.AutoTag.Data["gapFillTags"]));
+    }
+
+    [Fact]
     public void Canonicalize_RemovesLegacyTemplateKeys()
     {
         var profile = new TaggingProfile

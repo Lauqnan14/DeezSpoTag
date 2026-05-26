@@ -34,10 +34,10 @@ public partial class AutoTagService
         AutoTagJob job,
         string rootPath,
         string configPath,
-        bool includesEnhancementStage,
+        bool includesEnhancementWorkflows,
         CancellationToken cancellationToken)
     {
-        if (!includesEnhancementStage
+        if (!includesEnhancementWorkflows
             || !ShouldRunEnhancementForIntent(job.RunIntent)
             || !string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
             || !IsEnhancementWorkflowTrigger(job.Trigger))
@@ -68,6 +68,32 @@ public partial class AutoTagService
             "quality-checks",
             token => RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enhancementLyricsSettings, enabledFolders, token),
             cancellationToken);
+    }
+
+    private bool ShouldRunIntegratedEnhancementWorkflows(AutoTagJob job, string configPath)
+    {
+        if (!ShouldRunEnhancementForIntent(job.RunIntent) || !IsEnhancementWorkflowTrigger(job.Trigger))
+        {
+            return false;
+        }
+
+        var root = LoadConfigRoot(configPath);
+        if (root == null || root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
+        {
+            return false;
+        }
+
+        return IsFolderUniformityWorkflowEnabled(enhancementRoot)
+            || IsCoverMaintenanceWorkflowEnabled(enhancementRoot)
+            || IsQualityChecksWorkflowEnabled(enhancementRoot);
+    }
+
+    private static bool HasConfiguredEnhancementWorkflows(JsonObject root)
+    {
+        return root[AutoTagLiterals.EnhancementStage] is JsonObject enhancementRoot
+            && (IsFolderUniformityWorkflowEnabled(enhancementRoot)
+                || IsCoverMaintenanceWorkflowEnabled(enhancementRoot)
+                || IsQualityChecksWorkflowEnabled(enhancementRoot));
     }
 
     private async Task RunEnhancementWorkflowAsync(
@@ -162,7 +188,7 @@ public partial class AutoTagService
     private static bool TryGetFolderUniformityConfig(JsonObject enhancementRoot, out JsonObject? folderUniformity)
     {
         if (enhancementRoot["folderUniformity"] is not JsonObject config
-            || ReadBool(config, "enforceFolderStructure") != true)
+            || !IsFolderUniformityWorkflowEnabled(enhancementRoot))
         {
             folderUniformity = null;
             return false;
@@ -170,6 +196,13 @@ public partial class AutoTagService
 
         folderUniformity = config;
         return true;
+    }
+
+    private static bool IsFolderUniformityWorkflowEnabled(JsonObject enhancementRoot)
+    {
+        return enhancementRoot["folderUniformity"] is JsonObject config
+            && ReadBool(config, "enabled") == true
+            && (ReadBool(config, "enforceFolderStructure") != false || ReadBool(config, "runDedupe") != false);
     }
 
     private static List<string> ResolveFolderUniformityRootPaths(
@@ -313,7 +346,8 @@ public partial class AutoTagService
         IReadOnlyList<FolderDto> enabledFolders,
         CancellationToken cancellationToken)
     {
-        if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance)
+        if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance
+            || ReadBool(coverMaintenance, "enabled") != true)
         {
             return EnhancementWorkflowOutcome.Skipped("cover maintenance is not configured.");
         }
@@ -367,7 +401,8 @@ public partial class AutoTagService
         IReadOnlyList<FolderDto> enabledFolders,
         CancellationToken cancellationToken)
     {
-        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks)
+        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
+            || ReadBool(qualityChecks, "enabled") != true)
         {
             return EnhancementWorkflowOutcome.Skipped("quality checks are not configured.");
         }
@@ -421,6 +456,30 @@ public partial class AutoTagService
             RunQualityUpgradeStage: runQualityUpgradeStage,
             RunQualityScanner: runQualityScanner,
             TechnicalProfiles: technicalProfiles);
+    }
+
+    private static bool IsCoverMaintenanceWorkflowEnabled(JsonObject enhancementRoot)
+    {
+        if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance
+            || ReadBool(coverMaintenance, "enabled") != true)
+        {
+            return false;
+        }
+
+        return ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") == true
+            || ReadBool(coverMaintenance, "syncExternalCovers") == true
+            || ReadBool(coverMaintenance, "queueAnimatedArtwork") == true;
+    }
+
+    private static bool IsQualityChecksWorkflowEnabled(JsonObject enhancementRoot)
+    {
+        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
+            || ReadBool(qualityChecks, "enabled") != true)
+        {
+            return false;
+        }
+
+        return BuildQualityCheckOptions(qualityChecks).ShouldRunAnyWorkflow;
     }
 
     private async Task StartQualityScannerIfRequestedAsync(

@@ -2082,8 +2082,9 @@ public partial class AutoTagService
             string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase));
         var includesEnhancementStage = stages.Any(stage =>
             string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase));
+        var includesEnhancementWorkflows = ShouldRunIntegratedEnhancementWorkflows(job, configPath);
         RegisterStageRuntimeConfigPaths(runtimeConfigPaths, stages);
-        if (TryMarkNoStagesConfigured(job, stages))
+        if (TryMarkNoStagesConfigured(job, stages, includesEnhancementWorkflows))
         {
             return;
         }
@@ -2100,6 +2101,7 @@ public partial class AutoTagService
                     ConfigPath = configPath,
                     IncludesEnrichmentStage = includesEnrichmentStage,
                     IncludesEnhancementStage = includesEnhancementStage,
+                    IncludesEnhancementWorkflows = includesEnhancementWorkflows,
                     FileOutcomes = fileOutcomes,
                     EarlyAutoMove = execution.EarlyAutoMove
                 },
@@ -2184,10 +2186,19 @@ public partial class AutoTagService
         }
     }
 
-    private bool TryMarkNoStagesConfigured(AutoTagJob job, IReadOnlyCollection<AutoTagStageConfig> stages)
+    private bool TryMarkNoStagesConfigured(
+        AutoTagJob job,
+        IReadOnlyCollection<AutoTagStageConfig> stages,
+        bool includesEnhancementWorkflows)
     {
         if (stages.Count > 0)
         {
+            return false;
+        }
+
+        if (includesEnhancementWorkflows)
+        {
+            AppendLog(job, "gap-fill tagging skipped: no runnable gap-fill tagging stage was configured");
             return false;
         }
 
@@ -2402,13 +2413,13 @@ public partial class AutoTagService
         }
         else
         {
-            AppendLog(job, "generic organizer skipped (requires enhancement folderUniformity.enforceFolderStructure=true)");
+            AppendLog(job, "generic organizer skipped (enhancement workflows own folder uniformity)");
         }
         await RunIntegratedEnhancementWorkflowsAsync(
             job,
             path,
             context.ConfigPath,
-            context.IncludesEnhancementStage,
+            context.IncludesEnhancementWorkflows,
             cancellationToken);
         await RunManualEnrichmentArtworkMaintenanceAsync(
             job,
@@ -2436,6 +2447,7 @@ public partial class AutoTagService
         public required string ConfigPath { get; init; }
         public required bool IncludesEnrichmentStage { get; init; }
         public required bool IncludesEnhancementStage { get; init; }
+        public required bool IncludesEnhancementWorkflows { get; init; }
         public required Dictionary<string, FileTagOutcome> FileOutcomes { get; init; }
         public AutoMoveExecutionResult? EarlyAutoMove { get; init; }
     }
@@ -2491,18 +2503,9 @@ public partial class AutoTagService
 
     private bool ShouldRunGenericOrganizer(AutoTagJob job, string configPath)
     {
-        if (!IsEnhancementRunIntent(job.RunIntent))
-        {
-            return false;
-        }
-
-        var root = LoadConfigRoot(configPath);
-        if (root == null || root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
-        {
-            return false;
-        }
-
-        return TryGetFolderUniformityConfig(enhancementRoot, out _);
+        _ = job;
+        _ = configPath;
+        return false;
     }
 
     private async Task HandleRunJobFailureAsync(
@@ -2529,7 +2532,7 @@ public partial class AutoTagService
         }
         else
         {
-            AppendLog(job, "generic organizer skipped (requires enhancement folderUniformity.enforceFolderStructure=true)");
+            AppendLog(job, "generic organizer skipped (enhancement workflows own folder uniformity)");
         }
         if (autoMove.Completed)
         {
@@ -2596,10 +2599,17 @@ public partial class AutoTagService
         }
         else
         {
-            var reason = shouldRunEnhancement
-                ? enhancementSkipReason
-                : $"disabled for run intent '{runIntent}'";
-            AppendLog(job, $"enhancement skipped: {reason}");
+            if (shouldRunEnhancement && HasConfiguredEnhancementWorkflows(root))
+            {
+                AppendLog(job, $"gap-fill tagging skipped: {enhancementSkipReason}");
+            }
+            else
+            {
+                var reason = shouldRunEnhancement
+                    ? enhancementSkipReason
+                    : $"disabled for run intent '{runIntent}'";
+                AppendLog(job, $"enhancement skipped: {reason}");
+            }
         }
 
         return stages;

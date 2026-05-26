@@ -924,6 +924,27 @@
                 </div>
             </div>
 
+            <div class="download-section enhancement-settings-panel folder-settings-panel mb-4">
+                <section class="playlist-settings-section">
+                    <div class="playlist-settings-section-title">Enhancement Run Workflows</div>
+                    <div class="download-grid download-grid-3 enhancement-checkbox-grid">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="enableFolderUniformityWorkflow" />
+                            <label for="enableFolderUniformityWorkflow">Folder Uniformity</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="enableQualityChecksWorkflow" />
+                            <label for="enableQualityChecksWorkflow">Quality Checks</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="enableCoverMaintenanceWorkflow" />
+                            <label for="enableCoverMaintenanceWorkflow">Library Cover Maintenance</label>
+                        </div>
+                    </div>
+                    <span class="helper">Choose which maintenance workflows run automatically when an enhancement run starts.</span>
+                </section>
+            </div>
+
             <!-- Gap Filling -->
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
@@ -950,22 +971,22 @@
                         <section class="playlist-settings-section">
                             <div class="playlist-settings-section-title">Reorganization Rules</div>
                             <div class="download-grid download-grid-3 enhancement-checkbox-grid">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="enforceFolderStructure" checked />
-                                <label for="enforceFolderStructure">Enforce folder structure on all library files</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="moveMisplacedFiles" checked />
-                                <label for="moveMisplacedFiles">Move misplaced files to correct location</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="mergeIntoExistingDestinationFolders" checked />
-                                <label for="mergeIntoExistingDestinationFolders">Merge into existing destination folders</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="renameFilesToTemplate" checked />
-                                <label for="renameFilesToTemplate">Apply file template during folder uniformity</label>
-                            </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="enforceFolderStructure" checked />
+                                    <label for="enforceFolderStructure">Enforce folder structure on all library files</label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="moveMisplacedFiles" checked />
+                                    <label for="moveMisplacedFiles">Move misplaced files to correct location</label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="mergeIntoExistingDestinationFolders" checked />
+                                    <label for="mergeIntoExistingDestinationFolders">Merge into existing destination folders</label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="renameFilesToTemplate" checked />
+                                    <label for="renameFilesToTemplate">Apply file template during folder uniformity</label>
+                                </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="removeEmptyFolders" checked />
                                 <label for="removeEmptyFolders">Remove empty folders after reorganization</label>
@@ -1103,19 +1124,19 @@
                         <section class="playlist-settings-section">
                             <div class="playlist-settings-section-title">Checks to Run</div>
                             <div class="download-grid download-grid-3 enhancement-checkbox-grid">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="flagDuplicates" />
-                                <label for="flagDuplicates">
-                                    Flag duplicate tracks
-                                    <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
-                                        <i class="fas fa-info-circle"></i>
-                                    </span>
-                                </label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="qualityChecksUseShazamForDedupe" />
-                                <label for="qualityChecksUseShazamForDedupe">Use Shazam-assisted dedupe</label>
-                            </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="flagDuplicates" />
+                                    <label for="flagDuplicates">
+                                        Flag duplicate tracks
+                                        <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
+                                            <i class="fas fa-info-circle"></i>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="qualityChecksUseShazamForDedupe" />
+                                    <label for="qualityChecksUseShazamForDedupe">Use Shazam-assisted dedupe</label>
+                                </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="flagMissingTags" />
                                 <label for="flagMissingTags">Run missing metadata scan</label>
@@ -1237,18 +1258,18 @@
                         <section class="playlist-settings-section">
                             <div class="playlist-settings-section-title">Maintenance Actions</div>
                             <div class="download-grid download-grid-3 enhancement-checkbox-grid">
-                            <div class="checkbox-group align-self-end">
-                                <input type="checkbox" id="replaceMissingCovers" />
-                                <label for="replaceMissingCovers">Replace missing embedded covers</label>
-                            </div>
-                            <div class="checkbox-group align-self-end">
-                                <input type="checkbox" id="syncExternalCovers" />
-                                <label for="syncExternalCovers">Sync external cover.jpg with embedded</label>
-                            </div>
-                            <div class="checkbox-group align-self-end">
-                                <input type="checkbox" id="queueAnimatedArtwork" />
-                                <label for="queueAnimatedArtwork">Queue animated artwork</label>
-                            </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="replaceMissingCovers" />
+                                    <label for="replaceMissingCovers">Replace missing embedded covers</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="syncExternalCovers" />
+                                    <label for="syncExternalCovers">Sync external cover.jpg with embedded</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="queueAnimatedArtwork" />
+                                    <label for="queueAnimatedArtwork">Queue animated artwork</label>
+                                </div>
                             </div>
                         </section>
                         <span class="helper" id="coverMaintenanceStatus">Choose folder scope, then run cover maintenance.</span>

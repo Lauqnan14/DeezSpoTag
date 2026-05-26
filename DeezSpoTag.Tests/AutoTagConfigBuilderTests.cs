@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -88,6 +89,33 @@ public sealed class AutoTagConfigBuilderTests
         Assert.Equal(ExpectedReleaseDateOnlyTags, ReadStringArray(root.GetProperty("tags")));
         Assert.Equal(ExpectedPreservedEnhancementTags, ReadStringArray(root.GetProperty("gapFillTags")));
         Assert.Equal("spotify", root.GetProperty("downloadTagSource").GetString());
+    }
+
+    [Fact]
+    public void BuildConfigJson_PreservesExplicitlyEmptyEnhancementTags()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>
+                {
+                    ["gapFillTags"] = JsonSerializer.SerializeToElement(Array.Empty<string>())
+                }
+            }
+        };
+
+        profile.TagConfig.Title = TagSource.DownloadSource;
+        profile.TagConfig.ReleaseDate = TagSource.AutoTagPlatform;
+
+        var builder = new AutoTagConfigBuilder();
+        var json = builder.BuildConfigJson(profile);
+
+        Assert.False(string.IsNullOrWhiteSpace(json));
+
+        using var document = JsonDocument.Parse(json!);
+        Assert.Empty(ReadStringArray(document.RootElement.GetProperty("gapFillTags")));
     }
 
     [Fact]

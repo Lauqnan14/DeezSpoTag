@@ -1427,7 +1427,9 @@ public class AutoTagEnhancementController : ControllerBase
             _folderScopeDependencies.LibraryConfigStore,
             cancellationToken);
         var enabledFolders = folders
-            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Where(folder => folder.Enabled
+                && !string.IsNullOrWhiteSpace(folder.RootPath)
+                && LibraryFolderPathSafety.IsMusicFolder(folder))
             .ToList();
         var folderIdsFromQuery = AutoTagFolderScopeHelper.ParseFolderIdsQuery(folderIds);
         var selectedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(folderIdsFromQuery, enabledFolders);
@@ -1486,7 +1488,9 @@ public class AutoTagEnhancementController : ControllerBase
             _folderScopeDependencies.LibraryConfigStore,
             cancellationToken);
         var enabledFolders = folders
-            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
+            .Where(folder => folder.Enabled
+                && !string.IsNullOrWhiteSpace(folder.RootPath)
+                && LibraryFolderPathSafety.IsMusicFolder(folder))
             .ToList();
         var scopedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, enabledFolders);
         if (scopedFolderIds.Count == 0)

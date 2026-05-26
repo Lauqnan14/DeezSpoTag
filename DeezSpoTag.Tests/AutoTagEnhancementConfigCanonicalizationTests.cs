@@ -209,6 +209,34 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.DoesNotContain("|| technicalProfiles.Count > 0;", controllerSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnhancementRunWorkflows_AreExplicitlyOptedInAndDecoupledFromGapFillTags()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var scriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
+        var orchestrationSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
+        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagEnhancementController.cs"));
+
+        Assert.Contains("enableFolderUniformityWorkflow", viewSource, StringComparison.Ordinal);
+        Assert.Contains("enableQualityChecksWorkflow", viewSource, StringComparison.Ordinal);
+        Assert.Contains("enableCoverMaintenanceWorkflow", viewSource, StringComparison.Ordinal);
+        Assert.Contains("folderUniformity.enabled = getChecked(\"enableFolderUniformityWorkflow\"", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("coverMaintenance.enabled = getChecked(\"enableCoverMaintenanceWorkflow\"", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("qualityChecks.enabled = getChecked(\"enableQualityChecksWorkflow\"", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("TryMarkNoStagesConfigured(job, stages, includesEnhancementWorkflows)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("gap-fill tagging skipped", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("ReadBool(config, \"enabled\") == true", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ReadBool(coverMaintenance, \"enabled\") != true", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ReadBool(qualityChecks, \"enabled\") != true", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("enhancementCount > 0 || HasConfiguredEnhancementWorkflows(root)", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("profile has no gap-fill tags or enhancement workflows", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("LibraryFolderPathSafety.IsMusicFolder(folder)", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("enhancement workflows own folder uniformity", serviceSource, StringComparison.Ordinal);
+    }
+
     private static long[] ReadLongArray(JsonElement element)
     {
         return element

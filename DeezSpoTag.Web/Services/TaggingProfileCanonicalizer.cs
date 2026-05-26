@@ -164,8 +164,8 @@ public static class TaggingProfileCanonicalizer
         var enrichmentTags = BuildTagListFromConfig(profile.TagConfig, includeAutoTagSource: true);
         changed |= WriteTagArray(data, ResolveTagArrayKey(data, DownloadTagsKey), downloadTags);
         changed |= WriteAutoTagArray(data, ResolveTagArrayKey(data, EnrichmentTagsKey), enrichmentTags);
-        TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
-        changed |= WriteAutoTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
+        var hasEnhancementTags = TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
+        changed |= WriteAutoTagArray(data, enhancementKey, hasEnhancementTags ? enhancementTags : enrichmentTags);
         return changed;
     }
 
@@ -184,11 +184,11 @@ public static class TaggingProfileCanonicalizer
         var enrichmentKey = ResolveTagArrayKey(data, EnrichmentTagsKey);
         var downloadTags = BuildTagListFromConfig(config, includeDownloadSource: true);
         var enrichmentTags = BuildTagListFromConfig(config, includeAutoTagSource: true);
-        TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
+        var hasEnhancementTags = TryReadTagArray(data, EnhancementTagsKey, out var enhancementTags, out var enhancementKey);
 
         WriteTagArray(data, downloadKey, downloadTags);
         WriteAutoTagArray(data, enrichmentKey, enrichmentTags);
-        WriteAutoTagArray(data, enhancementKey, enhancementTags.Count > 0 ? enhancementTags : enrichmentTags);
+        WriteAutoTagArray(data, enhancementKey, hasEnhancementTags ? enhancementTags : enrichmentTags);
 
         return data;
     }

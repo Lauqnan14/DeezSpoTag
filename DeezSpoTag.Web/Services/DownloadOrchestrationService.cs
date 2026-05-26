@@ -1331,7 +1331,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                     DateTimeOffset.UtcNow,
                     "info",
-                    $"Automation: enhancement skipped for {target.RootPath} (profile has no enhancement tags)."));
+                    $"Automation: enhancement skipped for {target.RootPath} (profile has no gap-fill tags or enhancement workflows)."));
                 return new EnhancementTargetRunResult(true, false);
             }
 
@@ -1859,7 +1859,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
             var enrichmentCount = ReadArrayCount(root, "tags");
             var enhancementCount = ReadArrayCount(root, "gapFillTags");
-            return new AutoTagStages(enrichmentCount > 0, enhancementCount > 0);
+            return new AutoTagStages(enrichmentCount > 0, enhancementCount > 0 || HasConfiguredEnhancementWorkflows(root));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1959,6 +1959,61 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static int ReadArrayCount(JsonObject root, string key)
     {
         return root[key] is JsonArray array ? array.Count : 0;
+    }
+
+    private static bool HasConfiguredEnhancementWorkflows(JsonObject root)
+    {
+        return root[AutoTagLiterals.EnhancementStage] is JsonObject enhancementRoot
+            && (IsFolderUniformityWorkflowEnabled(enhancementRoot)
+                || IsCoverMaintenanceWorkflowEnabled(enhancementRoot)
+                || IsQualityChecksWorkflowEnabled(enhancementRoot));
+    }
+
+    private static bool IsFolderUniformityWorkflowEnabled(JsonObject enhancementRoot)
+    {
+        return enhancementRoot["folderUniformity"] is JsonObject config
+            && ReadBool(config, "enabled") == true
+            && (ReadBool(config, "enforceFolderStructure") != false || ReadBool(config, "runDedupe") != false);
+    }
+
+    private static bool IsCoverMaintenanceWorkflowEnabled(JsonObject enhancementRoot)
+    {
+        if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance
+            || ReadBool(coverMaintenance, "enabled") != true)
+        {
+            return false;
+        }
+
+        return ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") == true
+            || ReadBool(coverMaintenance, "syncExternalCovers") == true
+            || ReadBool(coverMaintenance, "queueAnimatedArtwork") == true;
+    }
+
+    private static bool IsQualityChecksWorkflowEnabled(JsonObject enhancementRoot)
+    {
+        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
+            || ReadBool(qualityChecks, "enabled") != true)
+        {
+            return false;
+        }
+
+        return ReadBool(qualityChecks, "flagDuplicates") == true
+            || ReadBool(qualityChecks, "flagMissingTags") == true
+            || ReadBool(qualityChecks, "flagMismatchedMetadata") == true
+            || ReadBool(qualityChecks, "queueAtmosAlternatives") == true
+            || ReadBool(qualityChecks, "queueLyricsRefresh") == true
+            || (ReadBool(qualityChecks, "queueTechnicalProfileUpgrades") == true
+                && ReadArrayCount(qualityChecks, "technicalProfiles") > 0);
+    }
+
+    private static bool? ReadBool(JsonObject obj, string key)
+    {
+        if (obj[key] is not JsonValue value)
+        {
+            return null;
+        }
+
+        return value.TryGetValue<bool>(out var boolValue) ? boolValue : null;
     }
 
     private async Task<AutomationProfileContext> BuildAutomationProfileContextAsync(CancellationToken cancellationToken)

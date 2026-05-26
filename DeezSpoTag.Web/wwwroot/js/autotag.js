@@ -53,6 +53,7 @@
         custom: {},
         enhancement: {
             folderUniformity: {
+                enabled: false,
                 folderIds: [],
                 enforceFolderStructure: true,
                 moveMisplacedFiles: true,
@@ -77,6 +78,7 @@
                 includeSubfolders: true
             },
             coverMaintenance: {
+                enabled: false,
                 folderIds: [],
                 minResolution: 500,
                 replaceMissingEmbeddedCovers: false,
@@ -85,6 +87,7 @@
                 workerCount: 8
             },
             qualityChecks: {
+                enabled: false,
                 folderIds: [],
                 scope: "all",
                 technicalProfiles: [],
@@ -1971,6 +1974,7 @@
         }
 
         const folderUniformity = enhancement.folderUniformity;
+        const folderUniformityHasEnabledFlag = Object.prototype.hasOwnProperty.call(folderUniformity, "enabled");
         folderUniformity.folderIds = parseFolderIdList(folderUniformity.folderIds);
         delete folderUniformity.folderId;
         folderUniformity.enforceFolderStructure = folderUniformity.enforceFolderStructure !== false;
@@ -1992,6 +1996,9 @@
         folderUniformity.runDedupe = folderUniformity.runDedupe !== false;
         folderUniformity.useShazamForDedupe = folderUniformity.useShazamForDedupe === true;
         folderUniformity.includeSubfolders = folderUniformity.includeSubfolders !== false;
+        folderUniformity.enabled = folderUniformityHasEnabledFlag
+            ? folderUniformity.enabled === true
+            : folderUniformity.enforceFolderStructure || folderUniformity.runDedupe;
         folderUniformity.duplicatesFolderName = String(
             folderUniformity.duplicatesFolderName || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName
         ).trim() || DEFAULT_CONFIG.enhancement.folderUniformity.duplicatesFolderName;
@@ -2010,6 +2017,7 @@
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = enhancement.coverMaintenance;
+        const coverMaintenanceHasEnabledFlag = Object.prototype.hasOwnProperty.call(coverMaintenance, "enabled");
         coverMaintenance.folderIds = parseFolderIdList(coverMaintenance.folderIds);
         delete coverMaintenance.folderId;
         coverMaintenance.minResolution = Number.parseInt(String(coverMaintenance.minResolution ?? 500), 10);
@@ -2020,6 +2028,11 @@
         coverMaintenance.replaceMissingEmbeddedCovers = coverMaintenance.replaceMissingEmbeddedCovers === true;
         coverMaintenance.syncExternalCovers = coverMaintenance.syncExternalCovers === true;
         coverMaintenance.queueAnimatedArtwork = coverMaintenance.queueAnimatedArtwork === true;
+        coverMaintenance.enabled = coverMaintenanceHasEnabledFlag
+            ? coverMaintenance.enabled === true
+            : coverMaintenance.replaceMissingEmbeddedCovers
+                || coverMaintenance.syncExternalCovers
+                || coverMaintenance.queueAnimatedArtwork;
         coverMaintenance.workerCount = Number.parseInt(String(coverMaintenance.workerCount ?? 8), 10);
         if (!Number.isFinite(coverMaintenance.workerCount)) {
             coverMaintenance.workerCount = 8;
@@ -2027,6 +2040,7 @@
         coverMaintenance.workerCount = Math.max(1, Math.min(32, coverMaintenance.workerCount));
 
         const qualityChecks = enhancement.qualityChecks;
+        const qualityChecksHasEnabledFlag = Object.prototype.hasOwnProperty.call(qualityChecks, "enabled");
         qualityChecks.folderIds = parseFolderIdList(qualityChecks.folderIds);
         delete qualityChecks.folderId;
         qualityChecks.scope = String(qualityChecks.scope || "all").toLowerCase() === "watchlist" ? "watchlist" : "all";
@@ -2037,6 +2051,14 @@
         qualityChecks.flagDuplicates = qualityChecks.flagDuplicates === true;
         qualityChecks.flagMissingTags = qualityChecks.flagMissingTags === true;
         qualityChecks.flagMismatchedMetadata = qualityChecks.flagMismatchedMetadata === true;
+        qualityChecks.enabled = qualityChecksHasEnabledFlag
+            ? qualityChecks.enabled === true
+            : qualityChecks.flagDuplicates
+                || qualityChecks.flagMissingTags
+                || qualityChecks.flagMismatchedMetadata
+                || qualityChecks.queueAtmosAlternatives
+                || qualityChecks.queueLyricsRefresh
+                || qualityChecks.queueTechnicalProfileUpgrades;
         qualityChecks.useDuplicatesFolder = qualityChecks.useDuplicatesFolder !== false;
         qualityChecks.useShazamForDedupe = qualityChecks.useShazamForDedupe === true;
         qualityChecks.duplicatesFolderName = String(
@@ -2768,6 +2790,7 @@
         );
         setChecked("autotag-move-failed", state.config.moveFailed);
         setValue("autotag-move-failed-path", state.config.moveFailedPath || "");
+        setChecked("enableFolderUniformityWorkflow", state.config.enhancement.folderUniformity.enabled);
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
         setChecked("moveMisplacedFiles", state.config.enhancement.folderUniformity.moveMisplacedFiles);
         setChecked("mergeIntoExistingDestinationFolders", state.config.enhancement.folderUniformity.mergeIntoExistingDestinationFolders);
@@ -2788,11 +2811,13 @@
         setChecked("folderUniformityUseShazamForDedupe", state.config.enhancement.folderUniformity.useShazamForDedupe);
         setValue("folderUniformityDuplicatesFolderName", state.config.enhancement.folderUniformity.duplicatesFolderName || "%duplicates%");
         updateFolderUniformityFolderSummary(state.config.enhancement.folderUniformity.folderIds ?? []);
+        setChecked("enableCoverMaintenanceWorkflow", state.config.enhancement.coverMaintenance.enabled);
         setChecked("replaceMissingCovers", state.config.enhancement.coverMaintenance.replaceMissingEmbeddedCovers);
         setChecked("syncExternalCovers", state.config.enhancement.coverMaintenance.syncExternalCovers);
         setChecked("queueAnimatedArtwork", state.config.enhancement.coverMaintenance.queueAnimatedArtwork);
         updateCoverMaintenanceFolderSummary(state.config.enhancement.coverMaintenance.folderIds ?? []);
         setValue("coverWorkerCount", state.config.enhancement.coverMaintenance.workerCount ?? 8);
+        setChecked("enableQualityChecksWorkflow", state.config.enhancement.qualityChecks.enabled);
         setChecked("flagDuplicates", state.config.enhancement.qualityChecks.flagDuplicates);
         setChecked("flagMissingTags", state.config.enhancement.qualityChecks.flagMissingTags);
         setChecked("flagMismatchedMetadata", state.config.enhancement.qualityChecks.flagMismatchedMetadata);
@@ -3737,6 +3762,7 @@
         state.config.moveFailedPath = getValue("autotag-move-failed-path", state.config.moveFailedPath || "").trim() || null;
         delete state.config.organizer;
         const folderUniformity = state.config.enhancement.folderUniformity;
+        folderUniformity.enabled = getChecked("enableFolderUniformityWorkflow", folderUniformity.enabled);
         folderUniformity.folderIds = parseFolderIdList(getValue("enhancementFolderUniformityFolder", (folderUniformity.folderIds ?? []).join(",")));
         folderUniformity.enforceFolderStructure = getChecked("enforceFolderStructure", folderUniformity.enforceFolderStructure);
         folderUniformity.moveMisplacedFiles = getChecked("moveMisplacedFiles", folderUniformity.moveMisplacedFiles);
@@ -3765,6 +3791,7 @@
 
     function readCoverAndQualityEnhancementConfig(getChecked, getValue) {
         const coverMaintenance = state.config.enhancement.coverMaintenance;
+        coverMaintenance.enabled = getChecked("enableCoverMaintenanceWorkflow", coverMaintenance.enabled);
         coverMaintenance.folderIds = parseFolderIdList(getValue("enhancementCoverFolder", (coverMaintenance.folderIds ?? []).join(",")));
         coverMaintenance.minResolution = Math.max(100, Math.min(2000, Number.parseInt(String(coverMaintenance.minResolution ?? 500), 10) || 500));
         coverMaintenance.replaceMissingEmbeddedCovers = getChecked("replaceMissingCovers", coverMaintenance.replaceMissingEmbeddedCovers);
@@ -3777,6 +3804,7 @@
         coverMaintenance.workerCount = Math.max(1, Math.min(32, coverMaintenance.workerCount));
 
         const qualityChecks = state.config.enhancement.qualityChecks;
+        qualityChecks.enabled = getChecked("enableQualityChecksWorkflow", qualityChecks.enabled);
         qualityChecks.folderIds = parseFolderIdList(getValue("enhancementQualityFolder", (qualityChecks.folderIds ?? []).join(",")));
         qualityChecks.queueAtmosAlternatives = getChecked("enhancementQueueAtmosAlternatives", qualityChecks.queueAtmosAlternatives);
         qualityChecks.queueLyricsRefresh = getChecked("enhancementQueueLyricsRefresh", qualityChecks.queueLyricsRefresh);
@@ -4333,6 +4361,7 @@
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    enabled: true,
                     folderIds: parseFolderIdList(options.folderIds),
                     enforceFolderStructure: options.enforceFolderStructure,
                     moveMisplacedFiles: options.moveMisplacedFiles,
@@ -4415,6 +4444,7 @@
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    enabled: true,
                     folderIds: parseFolderIdList(checks.folderIds),
                     scope: checks.scope,
                     flagDuplicates: checks.flagDuplicates,
@@ -4496,6 +4526,7 @@
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    enabled: true,
                     folderIds: parseFolderIdList(options.folderIds),
                     includeSubfolders: config.includeSubfolders !== false,
                     workerCount: options.workerCount,
