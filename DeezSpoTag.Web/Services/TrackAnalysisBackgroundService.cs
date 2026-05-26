@@ -1665,6 +1665,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     private static void ConfigurePythonEnvironment(ProcessStartInfo startInfo)
     {
+        if (!string.IsNullOrWhiteSpace(FfmpegExecutablePath))
+        {
+            startInfo.Environment["DEEZSPOTAG_FFMPEG_PATH"] = FfmpegExecutablePath;
+        }
+
         var sitePackagesPath = ResolveVenvSitePackagesPath();
         if (string.IsNullOrWhiteSpace(sitePackagesPath))
         {

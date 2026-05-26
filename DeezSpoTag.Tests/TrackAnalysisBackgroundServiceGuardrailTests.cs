@@ -44,6 +44,21 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTests
         Assert.Contains("af.quality_rank DESC NULLS LAST", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void VibeAnalyzer_UsesFfmpegDecodeFallbackForEssentiaUnsupportedCodecs()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var analyzer = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Tools", "vibe_analyzer.py"));
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
+
+        Assert.Contains("DEEZSPOTAG_FFMPEG_PATH", analyzer, StringComparison.Ordinal);
+        Assert.Contains("tempfile.NamedTemporaryFile", analyzer, StringComparison.Ordinal);
+        Assert.Contains("subprocess.run", analyzer, StringComparison.Ordinal);
+        Assert.Contains("\"-map\"", analyzer, StringComparison.Ordinal);
+        Assert.Contains("\"0:a:0\"", analyzer, StringComparison.Ordinal);
+        Assert.Contains("startInfo.Environment[\"DEEZSPOTAG_FFMPEG_PATH\"] = FfmpegExecutablePath;", service, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

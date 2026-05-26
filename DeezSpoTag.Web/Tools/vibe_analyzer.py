@@ -12,7 +12,10 @@ while preserving DeezSpoTag's CLI contract:
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
 from typing import Any, Dict, List, Optional, Tuple
@@ -128,6 +131,16 @@ REQUIRED_ENHANCED_MODELS = [
     "mood_relaxed-msd-musicnn-1.pb",
     "mood_aggressive-msd-musicnn-1.pb",
 ]
+
+FFMPEG_ENV_NAMES = ("DEEZSPOTAG_FFMPEG_PATH", "FFMPEG_PATH")
+
+
+def resolve_ffmpeg_path() -> Optional[str]:
+    for env_name in FFMPEG_ENV_NAMES:
+        configured = os.environ.get(env_name)
+        if configured and os.path.isfile(configured):
+            return configured
+    return shutil.which("ffmpeg")
 
 
 class AudioAnalyzer:
@@ -305,6 +318,73 @@ class AudioAnalyzer:
         except Exception:
             return None
 
+    def _transcode_to_temp_wav(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
+        ffmpeg_path = resolve_ffmpeg_path()
+        if not ffmpeg_path:
+            return (None, "ffmpeg is not available for audio decode fallback")
+
+        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
+
+        command = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            file_path,
+            "-map",
+            "0:a:0",
+            "-ac",
+            "1",
+            "-ar",
+            "44100",
+            "-vn",
+            "-f",
+            "wav",
+            temp_path,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+            if completed.returncode != 0 or not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+                message = (completed.stderr or "ffmpeg could not decode audio").strip()
+                return (None, message)
+            return (temp_path, None)
+        except subprocess.TimeoutExpired:
+            return (None, "ffmpeg decode fallback timed out")
+        except Exception as exc:
+            return (None, str(exc))
+
+    def load_audio_pair(self, file_path: str) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
+        audio_44k = self.load_audio(file_path, 44100)
+        audio_16k = self.load_audio(file_path, 16000)
+        if audio_44k is not None and audio_16k is not None:
+            return (audio_44k, audio_16k, None)
+
+        temp_path, error = self._transcode_to_temp_wav(file_path)
+        if temp_path is None:
+            return (None, None, error or "Unable to decode audio")
+
+        try:
+            audio_44k = self.load_audio(temp_path, 44100)
+            audio_16k = self.load_audio(temp_path, 16000)
+            if audio_44k is None or audio_16k is None:
+                return (None, None, "Unable to decode transcoded audio")
+            return (audio_44k, audio_16k, None)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
     @staticmethod
     def _default_analysis_result() -> Dict[str, Any]:
         return {
@@ -383,10 +463,9 @@ class AudioAnalyzer:
             result["_error"] = "Essentia library not installed"
             return result
 
-        audio_44k = self.load_audio(file_path, 44100)
-        audio_16k = self.load_audio(file_path, 16000)
+        audio_44k, audio_16k, decode_error = self.load_audio_pair(file_path)
         if audio_44k is None or audio_16k is None:
-            result["_error"] = "Unable to decode audio"
+            result["_error"] = decode_error or "Unable to decode audio"
             return result
 
         try:
