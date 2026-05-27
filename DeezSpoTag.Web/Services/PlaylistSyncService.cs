@@ -1057,7 +1057,11 @@ public sealed class PlaylistSyncService
                 cancellationToken);
             if (!updated)
             {
-                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.", playlist.Source, playlist.SourceId, visual.FilePath);
+                _logger.LogWarning(
+                    "Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.",
+                    SafeLog(playlist.Source),
+                    SafeLog(playlist.SourceId),
+                    SafeLog(visual.FilePath));
             }
 
             return;
@@ -1073,7 +1077,11 @@ public sealed class PlaylistSyncService
                 cancellationToken);
             if (!updated)
             {
-                _logger.LogWarning("Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from URL {ImageUrl}.", playlist.Source, playlist.SourceId, managedImageUrl);
+                _logger.LogWarning(
+                    "Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from URL {ImageUrl}.",
+                    SafeLog(playlist.Source),
+                    SafeLog(playlist.SourceId),
+                    SafeLog(managedImageUrl));
             }
 
             return;
@@ -1091,10 +1099,15 @@ public sealed class PlaylistSyncService
 
         _logger.LogWarning(
             "Skipped {Target} playlist artwork sync for {Source}:{SourceId} because image URL is relative and no stored visual file was found: {ImageUrl}",
-            target,
-            playlist.Source,
-            playlist.SourceId,
-            playlist.ImageUrl);
+            SafeLog(target),
+            SafeLog(playlist.Source),
+            SafeLog(playlist.SourceId),
+            SafeLog(playlist.ImageUrl));
+    }
+
+    private static string SafeLog(string? value)
+    {
+        return DeezSpoTag.Core.Security.LogSanitizer.OneLine(value);
     }
 
     private static bool IsAbsoluteHttpUrl(string? value)
