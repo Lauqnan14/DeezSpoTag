@@ -302,7 +302,7 @@ async function loadPlaylistBlockedRules() {
     }
     try {
         const [itemsRaw, blocklistRaw, playlistPrefs] = await Promise.all([
-            fetchJson('/api/library/playlists').catch(() => []),
+            fetchJson('/api/library/playlists?refreshFromSource=true').catch(() => []),
             fetchJson('/api/library/blocklist').catch(() => []),
             hydratePlaylistPreferences().catch(() => ({}))
         ]);
@@ -1076,7 +1076,7 @@ async function loadPlaylistWatchlist() {
                 libraryState.folders = [];
             }
         }
-        const items = await fetchJson('/api/library/playlists');
+        const items = await fetchJson('/api/library/playlists?refreshFromSource=true');
         if (!Array.isArray(items) || items.length === 0) {
             container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
             container.dataset.loadState = 'ready';

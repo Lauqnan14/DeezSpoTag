@@ -201,7 +201,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
         Assert.Contains("HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson)", source, StringComparison.Ordinal);
         Assert.Contains("if (forceMediaServerSync)", source, StringComparison.Ordinal);
-        Assert.Contains("RepairPlaylistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("SyncPlaylistWhenReadyAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("CheckPlaylistReadyForAutomaticSyncAsync", source, StringComparison.Ordinal);
+        Assert.Contains("BuildMediaSyncNotReadyStatus", source, StringComparison.Ordinal);
+        Assert.Contains("media_sync_not_ready_", source, StringComparison.Ordinal);
         Assert.Contains("ShouldKeepSharedQueueClaimPending(result)", source, StringComparison.Ordinal);
         Assert.Contains("UpsertPlaylistWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
         Assert.Contains("duplicate_shared_track_linked", source, StringComparison.Ordinal);

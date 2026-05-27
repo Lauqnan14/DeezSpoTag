@@ -15,17 +15,20 @@ public class AutoPlaylistsApiController : ControllerBase
     private readonly PlexApiClient _plexApiClient;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ILogger<AutoPlaylistsApiController>? _logger;
 
     public AutoPlaylistsApiController(
         PlatformAuthService authService,
         PlexApiClient plexApiClient,
         DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        ILogger<AutoPlaylistsApiController>? logger = null)
     {
         _authService = authService;
         _plexApiClient = plexApiClient;
         _libraryRepository = libraryRepository;
         _httpClientFactory = httpClientFactory;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -138,17 +141,37 @@ public class AutoPlaylistsApiController : ControllerBase
         }
 
         var client = _httpClientFactory.CreateClient();
-        using var response = await client.GetAsync(proxyContext.TargetUrl, cancellationToken);
-        return await ImageProxyResponseHelper.CreateImageResultAsync(
-            this,
-            response,
-            cache =>
+        try
+        {
+            using var response = await client.GetAsync(proxyContext.TargetUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
             {
-                cache.NoStore = true;
-                cache.NoCache = true;
-                cache.MustRevalidate = true;
-            },
-            cancellationToken);
+                _logger?.LogWarning(
+                    "Plex playlist image proxy returned {StatusCode} for path {Path}.",
+                    (int)response.StatusCode,
+                    path);
+            }
+
+            return await ImageProxyResponseHelper.CreateImageResultAsync(
+                this,
+                response,
+                cache =>
+                {
+                    cache.NoStore = true;
+                    cache.NoCache = true;
+                    cache.MustRevalidate = true;
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger?.LogWarning(ex, "Plex playlist image proxy failed for path {Path}.", path);
+            return StatusCode(StatusCodes.Status502BadGateway);
+        }
     }
 
     [HttpGet("stream")]

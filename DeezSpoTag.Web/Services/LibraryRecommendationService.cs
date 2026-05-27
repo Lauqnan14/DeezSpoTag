@@ -493,17 +493,14 @@ public sealed class LibraryRecommendationService
                 continue;
             }
 
-            stations.Add(new RecommendationStationDto(
-                stationId,
-                $"Recommendations - {folder.DisplayName}",
-                BuildDailyRecommendationDescription(folder.DisplayName, nowLocal.DayOfWeek),
-                RecommendationSourceId,
-                folder.DisplayName,
-                0,
+            var missingDetail = await CreateMissingDailyPoolResponseAsync(
+                scope,
                 imageUrl,
-                "missing",
-                ["daily_pool_missing"],
-                "Recommendations have not been generated for this station today."));
+                dayLocal,
+                allRecommendationFolders,
+                artworkAssignments,
+                cancellationToken);
+            stations.Add(missingDetail.Station);
         }
 
         return stations;

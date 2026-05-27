@@ -378,23 +378,11 @@ public sealed class PlaylistWatchService
         }
         else
         {
-            var finalizationService = _serviceProvider.GetService<WatchlistFinalizationService>();
-            if (finalizationService != null)
-            {
-                var repairNotifications = await finalizationService.RepairPlaylistAsync(
-                    currentPlaylist,
-                    cancellationToken);
-                if (repairNotifications > 0)
-                {
-                    await AddPlaylistWatchHistoryStageAsync(
-                        source,
-                        sourceId,
-                        currentPlaylist.Name,
-                        repairNotifications,
-                        "media_sync_repair_queued",
-                        cancellationToken);
-                }
-            }
+            syncResult = await SyncPlaylistWhenReadyAsync(
+                currentPlaylist,
+                preference,
+                candidates,
+                cancellationToken);
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -423,6 +411,178 @@ public sealed class PlaylistWatchService
             queueResult.CompletedCount,
             queueResult.FailedCount,
             syncResult);
+    }
+
+    private async Task<PlaylistSyncResult?> SyncPlaylistWhenReadyAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (_playlistSyncService == null)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                playlist.Source,
+                playlist.SourceId,
+                playlist.Name,
+                candidates.Count,
+                "media_sync_not_ready_sync_service_unavailable",
+                cancellationToken);
+            return null;
+        }
+
+        var readiness = await _playlistSyncService.CheckPlaylistReadyForAutomaticSyncAsync(
+            playlist,
+            preference,
+            candidates,
+            cancellationToken);
+        if (!readiness.Ready)
+        {
+            var status = BuildMediaSyncNotReadyStatus(readiness.Message);
+            await AddPlaylistWatchHistoryStageAsync(
+                playlist.Source,
+                playlist.SourceId,
+                playlist.Name,
+                candidates.Count,
+                status,
+                cancellationToken);
+            if (_logger.IsEnabled(readiness.Terminal ? LogLevel.Warning : LogLevel.Information))
+            {
+                _logger.Log(
+                    readiness.Terminal ? LogLevel.Warning : LogLevel.Information,
+                    "Watchlist media sync not ready for {Source}:{SourceId}: {Reason}",
+                    playlist.Source,
+                    playlist.SourceId,
+                    readiness.Message);
+            }
+
+            return null;
+        }
+
+        var syncResult = await _playlistSyncService.SyncPlaylistAsync(
+            playlist,
+            preference,
+            candidates,
+            force: false,
+            cancellationToken);
+        await AddPlaylistWatchHistoryStageAsync(
+            playlist.Source,
+            playlist.SourceId,
+            playlist.Name,
+            syncResult.SyncedTracks,
+            syncResult.Success ? "media_sync_completed" : "media_sync_failed",
+            cancellationToken);
+        return syncResult;
+    }
+
+    private static string BuildMediaSyncNotReadyStatus(string? reason)
+    {
+        var normalized = NormalizeStatusToken(reason);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? "media_sync_not_ready"
+            : $"media_sync_not_ready_{normalized}";
+    }
+
+    private static string NormalizeStatusToken(string? value)
+    {
+        var normalized = new string((value ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant()
+            .Select(static ch => char.IsLetterOrDigit(ch) ? ch : '_')
+            .ToArray());
+        while (normalized.Contains("__", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("__", "_", StringComparison.Ordinal);
+        }
+
+        normalized = normalized.Trim('_');
+        return normalized.Length <= 80 ? normalized : normalized[..80].TrimEnd('_');
+    }
+
+    public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
+        PlaylistWatchlistDto playlist,
+        CancellationToken cancellationToken)
+    {
+        if (playlist == null)
+        {
+            throw new ArgumentNullException(nameof(playlist));
+        }
+
+        var source = NormalizeWatchSource(playlist.Source);
+        var sourceId = (playlist.SourceId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            throw new InvalidOperationException("Playlist source is not available.");
+        }
+
+        var liveSnapshot = await FetchLivePlaylistSnapshotAsync(
+            source,
+            sourceId,
+            MaxPlaylistCandidateFetchCount,
+            cancellationToken);
+        if (!HasUsableMetadataRefresh(playlist, liveSnapshot))
+        {
+            throw new InvalidOperationException($"Playlist source refresh returned no usable data for {source}:{sourceId}.");
+        }
+
+        var liveTrackCount = liveSnapshot.TrackCount ?? liveSnapshot.Candidates.Count;
+        var currentPlaylist = BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount);
+        var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
+        var managedImageUrl = _playlistVisualService == null
+            ? currentPlaylist.ImageUrl
+            : await _playlistVisualService.ResolveManagedVisualUrlAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                currentPlaylist.ImageUrl,
+                preference?.ReuseSavedArtwork == true,
+                cancellationToken);
+        if (!string.Equals(managedImageUrl, currentPlaylist.ImageUrl, StringComparison.Ordinal))
+        {
+            currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
+        }
+
+        await TouchPlaylistWatchStateAsync(source, sourceId, liveTrackCount, liveSnapshot.SnapshotId, cancellationToken);
+        await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
+            source,
+            sourceId,
+            new PlaylistWatchlistMetadataInput(
+                currentPlaylist.Name,
+                currentPlaylist.ImageUrl,
+                currentPlaylist.Description,
+                liveTrackCount,
+                liveSnapshot.CanClearImageUrl),
+            cancellationToken);
+
+        if (liveSnapshot.Candidates.Count > 0)
+        {
+            await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
+                source,
+                sourceId,
+                liveSnapshot.SnapshotId,
+                JsonSerializer.Serialize(liveSnapshot.Candidates),
+                cancellationToken);
+        }
+
+        return currentPlaylist;
+    }
+
+    private static bool HasUsableMetadataRefresh(PlaylistWatchlistDto playlist, LivePlaylistSnapshot liveSnapshot)
+    {
+        if (liveSnapshot.Candidates.Count > 0)
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(liveSnapshot.Name)
+            || !string.IsNullOrWhiteSpace(liveSnapshot.Description)
+            || !string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl)
+            || !string.IsNullOrWhiteSpace(liveSnapshot.SnapshotId))
+        {
+            return true;
+        }
+
+        return playlist.TrackCount.GetValueOrDefault() == 0;
     }
 
     private static PlaylistWatchlistDto BuildCurrentPlaylistDto(

@@ -3,6 +3,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class LibraryRecommendationAutomationHostedService : BackgroundService
 {
     private static readonly TimeSpan InitialWarmupDelay = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan PeriodicCatchupInterval = TimeSpan.FromHours(1);
 
     private readonly LibraryRecommendationService _recommendationService;
     private readonly IConfiguration _configuration;
@@ -41,7 +42,10 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var delay = GetDelayUntilNextLocalMidnight(DateTimeOffset.Now);
+            var delayUntilMidnight = GetDelayUntilNextLocalMidnight(DateTimeOffset.Now);
+            var delay = delayUntilMidnight < PeriodicCatchupInterval
+                ? delayUntilMidnight
+                : PeriodicCatchupInterval;
             try
             {
                 await Task.Delay(delay, stoppingToken);
@@ -51,7 +55,10 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
                 break;
             }
 
-            await RefreshDailyRecommendationsAsync("midnight", stoppingToken);
+            var reason = delay == delayUntilMidnight
+                ? "midnight"
+                : "periodic-catchup";
+            await RefreshDailyRecommendationsAsync(reason, stoppingToken);
         }
     }
 

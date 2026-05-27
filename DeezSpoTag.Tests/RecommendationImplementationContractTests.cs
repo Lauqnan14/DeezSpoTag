@@ -31,7 +31,7 @@ public sealed class RecommendationImplementationContractTests
     }
 
     [Fact]
-    public void StationsEndpoint_DoesNotUseRecommendationGenerationPath()
+    public void StationsEndpoint_QueuesMissingDailyPools()
     {
         var source = ReadRecommendationServiceSource();
         var method = ExtractBetween(
@@ -41,7 +41,8 @@ public sealed class RecommendationImplementationContractTests
 
         Assert.DoesNotContain("GetRecommendationsAsync(", method, StringComparison.Ordinal);
         Assert.Contains("GetDailyPoolAsync(", method, StringComparison.Ordinal);
-        Assert.Contains("\"daily_pool_missing\"", method, StringComparison.Ordinal);
+        Assert.Contains("CreateMissingDailyPoolResponseAsync(", method, StringComparison.Ordinal);
+        Assert.Contains("stations.Add(missingDetail.Station)", method, StringComparison.Ordinal);
     }
 
     [Fact]

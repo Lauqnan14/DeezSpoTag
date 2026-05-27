@@ -2,7 +2,6 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using System;
 using Microsoft.AspNetCore.Authorization;
@@ -41,7 +40,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetAll(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetAll(CancellationToken cancellationToken, [FromQuery] bool refreshFromSource = false)
     {
         if (!_repository.IsConfigured)
         {
@@ -49,28 +48,31 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        var hydrated = items
-            .Select(item =>
-            {
-                var visual = _playlistVisualService.GetStoredVisual(item.Source, item.SourceId);
-                if (visual is null || string.IsNullOrWhiteSpace(visual.Url))
-                {
-                    if (IsLocalPlaylistVisualUrl(item.ImageUrl))
-                    {
-                        return item with { ImageUrl = null };
-                    }
-
-                    return item;
-                }
-
-                return item with
-                {
-                    ImageUrl = visual.Url
-                };
-            })
-            .ToList();
+        var hydrated = new List<PlaylistWatchlistDto>(items.Count);
+        foreach (var item in items)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var refreshedItem = refreshFromSource
+                ? await _playlistWatchService.RefreshPlaylistMetadataOnlyAsync(item, cancellationToken)
+                : item;
+            var hydratedItem = HydratePlaylistVisual(refreshedItem);
+            hydrated.Add(hydratedItem);
+        }
 
         return Ok(hydrated);
+    }
+
+    private PlaylistWatchlistDto HydratePlaylistVisual(PlaylistWatchlistDto item)
+    {
+        var visual = _playlistVisualService.GetStoredVisual(item.Source, item.SourceId);
+        if (visual is null || string.IsNullOrWhiteSpace(visual.Url))
+        {
+            return IsLocalPlaylistVisualUrl(item.ImageUrl)
+                ? item with { ImageUrl = null }
+                : item;
+        }
+
+        return item with { ImageUrl = visual.Url };
     }
 
     private static bool IsLocalPlaylistVisualUrl(string? value)
