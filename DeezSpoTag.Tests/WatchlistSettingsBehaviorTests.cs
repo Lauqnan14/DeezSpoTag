@@ -176,6 +176,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("routingRules", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("data-artist-engine", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("data-artist-routing-rules", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("fetchJson('/api/library/playlists')", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/library/playlists?refreshFromSource=true", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("PreferredEngine", artistWatchSource, StringComparison.Ordinal);
         Assert.Contains("RoutingRules", artistWatchSource, StringComparison.Ordinal);
         Assert.Contains("preferred_engine", repoSource, StringComparison.Ordinal);
@@ -198,6 +200,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("FetchPlaylistPageAsync(", source, StringComparison.Ordinal);
         Assert.Contains("Math.Min(100, maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);
+        Assert.Contains("GetBoomplayPlaylistWatchDataAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GetPlaylistAsync(playlistId, includeTracks: false, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPlaylistAsync(playlistId, includeTracks: true, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
         Assert.Contains("HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson)", source, StringComparison.Ordinal);
         Assert.Contains("if (forceMediaServerSync)", source, StringComparison.Ordinal);

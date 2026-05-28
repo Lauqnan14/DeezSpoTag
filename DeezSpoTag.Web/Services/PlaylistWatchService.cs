@@ -148,38 +148,6 @@ public sealed class PlaylistWatchService
         _logger = logger;
     }
 
-    public async Task CheckWatchlistAsync(CancellationToken cancellationToken)
-    {
-        if (!_libraryRepository.IsConfigured)
-        {
-            _logger.LogDebug("Playlist watchlist skipped - library DB not configured.");
-            return;
-        }
-
-        var playlists = await _libraryRepository.GetPlaylistWatchlistAsync(cancellationToken);
-        if (playlists.Count == 0)
-        {
-            return;
-        }
-
-        foreach (var playlist in playlists)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                await CheckPlaylistAsync(playlist, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Playlist watch failed for {Source}:{SourceId}", playlist.Source, playlist.SourceId);
-            }
-        }
-    }
-
     public Task CheckPlaylistWatchItemAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
@@ -1819,8 +1787,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         }
 
         BoomplayPlaylistMetadata? playlist = string.Equals(playlistId, "trending-songs", StringComparison.OrdinalIgnoreCase)
-            ? await _boomplayMetadataService.GetTrendingSongsAsync(includeTracks: true, cancellationToken)
-            : await _boomplayMetadataService.GetPlaylistAsync(playlistId, includeTracks: true, cancellationToken);
+            ? await _boomplayMetadataService.GetTrendingSongsAsync(includeTracks: false, cancellationToken)
+            : await _boomplayMetadataService.GetPlaylistAsync(playlistId, includeTracks: false, cancellationToken);
 
         if (playlist == null)
         {

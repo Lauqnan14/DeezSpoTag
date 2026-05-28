@@ -22,6 +22,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
+    private readonly PlaylistWatchHostedService? _playlistWatchHostedService;
 
     public LibraryPlaylistWatchlistApiController(
         LibraryRepository repository,
@@ -29,7 +30,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         PlaylistWatchService playlistWatchService,
         PlaylistSyncService playlistSyncService,
         PlaylistVisualService playlistVisualService,
-        WatchlistFinalizationService? watchlistFinalizationService = null)
+        WatchlistFinalizationService? watchlistFinalizationService = null,
+        PlaylistWatchHostedService? playlistWatchHostedService = null)
     {
         _repository = repository;
         _configStore = configStore;
@@ -37,6 +39,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         _playlistSyncService = playlistSyncService;
         _playlistVisualService = playlistVisualService;
         _watchlistFinalizationService = watchlistFinalizationService;
+        _playlistWatchHostedService = playlistWatchHostedService;
     }
 
     [HttpGet]
@@ -47,15 +50,17 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
+        if (refreshFromSource)
+        {
+            return BadRequest("Monitored playlist listing is cache-only. Use trigger-check to schedule a rate-limited refresh.");
+        }
+
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var hydrated = new List<PlaylistWatchlistDto>(items.Count);
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var refreshedItem = refreshFromSource
-                ? await _playlistWatchService.RefreshPlaylistMetadataOnlyAsync(item, cancellationToken)
-                : item;
-            var hydratedItem = HydratePlaylistVisual(refreshedItem);
+            var hydratedItem = HydratePlaylistVisual(item);
             hydrated.Add(hydratedItem);
         }
 
@@ -286,16 +291,14 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        foreach (var item in items)
+        var queued = false;
+        if (_playlistWatchHostedService != null)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await _playlistWatchService.CheckPlaylistWatchItemAsync(
-                item,
-                cancellationToken,
-                forceMediaServerSync: false);
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+            queued = true;
         }
 
-        return Ok(new { triggered = items.Count });
+        return Ok(new { queued, pending = items.Count });
     }
 
     [HttpPost("trigger-check/{source}/{sourceId}")]

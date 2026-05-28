@@ -93,6 +93,9 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         return TimeSpan.FromSeconds(seconds);
     }
 
+    public Task TriggerRunOnceAsync(CancellationToken cancellationToken = default)
+        => RunOnceAsync(cancellationToken);
+
     private async Task RunOnceAsync(CancellationToken stoppingToken)
     {
         if (!await _runLock.WaitAsync(0, stoppingToken))

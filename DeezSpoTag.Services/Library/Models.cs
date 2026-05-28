@@ -498,7 +498,9 @@ public sealed record PlaylistWatchlistDto(
     string? ImageUrl,
     string? Description,
     int? TrackCount,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? LastCheckedUtc = null,
+    string? SnapshotId = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,

@@ -224,6 +224,52 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetAll_RejectsBulkSourceRefreshAndKeepsListCacheOnly()
+    {
+        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-cache-only", new PlaylistWatchlistMetadataInput("Cache Only", null, null, null));
+
+        var apiController = new LibraryPlaylistWatchlistApiController(
+            _repository,
+            _configStore,
+            _provider.GetRequiredService<PlaylistWatchService>(),
+            playlistSyncService: null!,
+            _playlistVisualService);
+
+        var rejected = await apiController.GetAll(CancellationToken.None, refreshFromSource: true);
+        var badRequest = Assert.IsType<BadRequestObjectResult>(rejected);
+        Assert.Contains("cache-only", Assert.IsType<string>(badRequest.Value), StringComparison.OrdinalIgnoreCase);
+
+        var cached = await apiController.GetAll(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(cached);
+        var items = Assert.IsAssignableFrom<IReadOnlyList<PlaylistWatchlistDto>>(ok.Value);
+        Assert.Single(items);
+        Assert.Equal("Cache Only", items[0].Name);
+    }
+
+    [Fact]
+    public async Task TriggerAll_SchedulesRateLimitedRunWithoutInlinePlaylistRefresh()
+    {
+        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-trigger-scheduled", new PlaylistWatchlistMetadataInput("Scheduled", null, null, null));
+
+        var apiController = new LibraryPlaylistWatchlistApiController(
+            _repository,
+            _configStore,
+            _provider.GetRequiredService<PlaylistWatchService>(),
+            playlistSyncService: null!,
+            _playlistVisualService);
+
+        var result = await apiController.TriggerAll(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var queued = ok.Value?.GetType().GetProperty("queued")?.GetValue(ok.Value);
+        var pending = ok.Value?.GetType().GetProperty("pending")?.GetValue(ok.Value);
+        Assert.Equal(false, queued);
+        Assert.Equal(1, pending);
+
+        var state = await _repository.GetPlaylistWatchStateAsync("spotify", "pl-trigger-scheduled", CancellationToken.None);
+        Assert.Null(state?.LastCheckedUtc);
+    }
+
+    [Fact]
     public async Task RunOnce_UsesPersistedLastChecked_ToRespectIntervalAfterRestart()
     {
         var settings = _settingsService.LoadSettings();

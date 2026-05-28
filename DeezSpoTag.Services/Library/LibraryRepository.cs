@@ -5610,21 +5610,27 @@ WHERE artist_id = @artistId
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT id,
-       source,
-       source_id,
+       pw.source,
+       pw.source_id,
        name,
        image_url,
        description,
-       track_count,
-       created_at
-FROM playlist_watchlist
-ORDER BY created_at DESC;";
+       pw.track_count,
+       created_at,
+       pws.last_checked_utc,
+       pws.snapshot_id
+FROM playlist_watchlist pw
+LEFT JOIN playlist_watch_state pws
+    ON pws.source = pw.source
+   AND pws.source_id = pw.source_id
+ORDER BY pw.created_at DESC;";
         await using var command = new SqliteCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var items = new List<PlaylistWatchlistDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
             var created = await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7));
+            var lastChecked = await reader.IsDBNullAsync(8, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(8));
             items.Add(new PlaylistWatchlistDto(
                 reader.GetInt64(0),
                 reader.GetString(1),
@@ -5633,7 +5639,9 @@ ORDER BY created_at DESC;";
                 await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
                 await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
                 await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
-                created));
+                created,
+                lastChecked,
+                await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9)));
         }
 
         return items;
