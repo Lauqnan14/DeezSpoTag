@@ -149,7 +149,7 @@ public class AutoPlaylistsApiController : ControllerBase
                 _logger?.LogWarning(
                     "Plex playlist image proxy returned {StatusCode} for path {Path}.",
                     (int)response.StatusCode,
-                    path);
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             }
 
             return await ImageProxyResponseHelper.CreateImageResultAsync(
@@ -169,7 +169,7 @@ public class AutoPlaylistsApiController : ControllerBase
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
-            _logger?.LogWarning(ex, "Plex playlist image proxy failed for path {Path}.", path);
+            _logger?.LogWarning(ex, "Plex playlist image proxy failed for path {Path}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(path));
             return StatusCode(StatusCodes.Status502BadGateway);
         }
     }
