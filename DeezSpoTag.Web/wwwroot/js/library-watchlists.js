@@ -2094,13 +2094,39 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         rulesList.appendChild(buildRuleRow(null));
         refreshRoutingRuleState();
     });
+    const applyGlobalBtn = document.createElement('button');
+    applyGlobalBtn.className = 'btn btn-secondary action-btn btn-sm routing-rules-apply-global-btn';
+    applyGlobalBtn.type = 'button';
+    applyGlobalBtn.textContent = 'Apply globally';
+    applyGlobalBtn.addEventListener('click', async () => {
+        const rules = collectPlaylistRoutingRules(rulesList);
+        try {
+            applyGlobalBtn.disabled = true;
+            const result = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/routing-rules/apply-globally`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(rules)
+            });
+            const updated = Number(result?.playlistsUpdated || 0);
+            showToast(`Applied globally to ${updated} monitored playlist${updated === 1 ? '' : 's'}.`);
+        } catch (error) {
+            showToast(`Apply globally failed: ${error.message}`, true);
+        } finally {
+            applyGlobalBtn.disabled = false;
+        }
+    });
+
+    const rulesActions = document.createElement('div');
+    rulesActions.className = 'routing-rules-actions';
+    rulesActions.appendChild(addRuleBtn);
+    rulesActions.appendChild(applyGlobalBtn);
 
     rulesSection.appendChild(rulesHeader);
     rulesSection.appendChild(rulesHint);
     rulesSection.appendChild(rulesColumns);
     rulesSection.appendChild(rulesList);
     rulesSection.appendChild(rulesEmpty);
-    rulesSection.appendChild(addRuleBtn);
+    rulesSection.appendChild(rulesActions);
     refreshRoutingRuleState();
     panel.appendChild(rulesSection);
 

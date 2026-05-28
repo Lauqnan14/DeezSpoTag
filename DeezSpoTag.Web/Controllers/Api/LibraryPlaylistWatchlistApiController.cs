@@ -603,6 +603,39 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(new { saved = normalizedRules?.Count ?? 0 });
     }
 
+    [HttpPost("{source}/{sourceId}/routing-rules/apply-globally")]
+    public async Task<IActionResult> ApplyRoutingRulesGlobally(string source, string sourceId, [FromBody] List<PlaylistTrackRoutingRule> rules, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var normalizedRules = NormalizeRoutingRules(rules);
+        var validFolderIds = await GetValidFolderIdsAsync(cancellationToken);
+        if (normalizedRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
+        {
+            return BadRequest("Routing destination folder was not found or is disabled.");
+        }
+
+        var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        foreach (var item in watchlist)
+        {
+            await UpsertWatchPreferenceRulesAsync(
+                item.Source,
+                item.SourceId,
+                normalizedRules,
+                ignoreRules: null,
+                cancellationToken);
+        }
+
+        return Ok(new
+        {
+            appliedRules = normalizedRules?.Count ?? 0,
+            playlistsUpdated = watchlist.Count
+        });
+    }
+
     [HttpGet("{source}/{sourceId}/ignore-rules")]
     public async Task<IActionResult> GetIgnoreRules(string source, string sourceId, CancellationToken cancellationToken)
     {

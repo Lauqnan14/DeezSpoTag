@@ -174,6 +174,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("globalSettings.watchArtistLatestReleasesOnly", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("preferredEngine", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("routingRules", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("Apply globally", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("/routing-rules/apply-globally", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("data-artist-engine", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("data-artist-routing-rules", watchlistScriptSource, StringComparison.Ordinal);
         Assert.Contains("fetchJson('/api/library/playlists')", watchlistScriptSource, StringComparison.Ordinal);
@@ -262,6 +264,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("NormalizeSyncMode", source, StringComparison.Ordinal);
         Assert.Contains("NormalizeRoutingRules", source, StringComparison.Ordinal);
         Assert.Contains("NormalizeBlockRules", source, StringComparison.Ordinal);
+        Assert.Contains("ApplyRoutingRulesGlobally", source, StringComparison.Ordinal);
+        Assert.Contains("routing-rules/apply-globally", source, StringComparison.Ordinal);
         Assert.Contains("Routing destination folder was not found or is disabled.", source, StringComparison.Ordinal);
     }
 

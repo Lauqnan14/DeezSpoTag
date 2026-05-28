@@ -1096,6 +1096,13 @@
     align-self: flex-start;
 }
 
+.routing-rules-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 .watchlist-playlist-settings {
     gap: 14px;
 }
