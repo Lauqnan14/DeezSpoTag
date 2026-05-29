@@ -250,12 +250,13 @@ public sealed class AppleMusicCatalogService
         string id,
         string storefront,
         string language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool includeTracks = true)
     {
         var url =
             $"{BuildCatalogApiBaseUrl()}/v1/catalog/{Uri.EscapeDataString(storefront)}/playlists/{Uri.EscapeDataString(id)}" +
-            $"?include=tracks&extend=editorialVideo&l={Uri.EscapeDataString(language)}";
-        var cacheKey = $"apple:playlist:{storefront}:{id}";
+            $"{(includeTracks ? "?include=tracks&" : "?")}extend=editorialVideo&l={Uri.EscapeDataString(language)}";
+        var cacheKey = $"apple:playlist:{storefront}:{id}:tracks:{(includeTracks ? "1" : "0")}";
         return await GetCachedJsonAsync(cacheKey, TimeSpan.FromMinutes(15), () => SendWithTokenRetryRawAsync(HttpMethod.Get, url, cancellationToken));
     }
 

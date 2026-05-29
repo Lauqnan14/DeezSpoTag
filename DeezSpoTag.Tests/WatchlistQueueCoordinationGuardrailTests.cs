@@ -38,7 +38,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
 
-        Assert.Contains("unfinishedWatchlistCount > 0 && capacity.ActiveCount > 0", watchSource, StringComparison.Ordinal);
+        Assert.Contains("unfinishedWatchlistCount > 0 && activeWatchlistCount > 0", watchSource, StringComparison.Ordinal);
         Assert.Contains("Continuing queue flow to avoid stale watch deadlock", watchSource, StringComparison.Ordinal);
     }
 

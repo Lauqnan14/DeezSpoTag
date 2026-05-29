@@ -130,7 +130,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 return;
             }
 
-            if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) >= TimeSpan.FromMinutes(30))
+            if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) >= TimeSpan.FromSeconds(1))
             {
                 var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(stoppingToken);
                 _lastDestinationRepairUtc = DateTimeOffset.UtcNow;
