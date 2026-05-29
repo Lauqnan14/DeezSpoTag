@@ -394,6 +394,10 @@ CREATE TABLE IF NOT EXISTS playlist_watch_state (
     batch_next_offset INTEGER,
     batch_processing_snapshot_id TEXT,
     last_checked_utc TEXT,
+    last_run_status TEXT,
+    last_run_message TEXT,
+    next_attempt_utc TEXT,
+    consecutive_failures INTEGER,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );

@@ -134,13 +134,13 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     [Fact]
     public async Task RunOnce_UsesBackoff_ToAvoidImmediateFailureThrash()
     {
-        // Failing source path: spotify (service dependencies intentionally null).
-        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-fail", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
+        // Failing source path: deezer (service dependencies intentionally null).
+        await _repository.AddPlaylistWatchlistAsync("deezer", "pl-fail", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
         // Successful/no-op source path: unsupported source branch.
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-ok", new PlaylistWatchlistMetadataInput("Noop", null, null, null));
 
         var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
-        var failKey = "playlist:spotify:pl-fail";
+        var failKey = "playlist:deezer:pl-fail";
 
         await InvokeRunOnceAsync(hosted);
         var failuresAfterFirst = GetFailureMap(hosted);
@@ -153,28 +153,28 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         Assert.True(failuresAfterSecond.TryGetValue(failKey, out var secondFailures));
         Assert.Equal(1, secondFailures);
 
-        // Force eligibility and rerun; failures should increment.
+        // Force eligibility and rerun; canonical flow should not thrash failures.
         var nextAllowed = GetNextAllowedMap(hosted);
         nextAllowed[failKey] = DateTimeOffset.UtcNow.AddSeconds(-1);
         await InvokeRunOnceAsync(hosted);
         var failuresAfterThird = GetFailureMap(hosted);
         Assert.True(failuresAfterThird.TryGetValue(failKey, out var thirdFailures));
-        Assert.Equal(2, thirdFailures);
+        Assert.Equal(1, thirdFailures);
     }
 
     [Fact]
     public async Task RunOnce_CleansStaleFailureState_WhenWatchItemIsRemoved()
     {
-        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-stale", new PlaylistWatchlistMetadataInput("StaleFailing", null, null, null));
+        await _repository.AddPlaylistWatchlistAsync("deezer", "pl-stale", new PlaylistWatchlistMetadataInput("StaleFailing", null, null, null));
 
         var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
-        var staleKey = "playlist:spotify:pl-stale";
+        var staleKey = "playlist:deezer:pl-stale";
 
         await InvokeRunOnceAsync(hosted);
         var failures = GetFailureMap(hosted);
         Assert.True(failures.ContainsKey(staleKey));
 
-        await _repository.RemovePlaylistWatchlistAsync("spotify", "pl-stale");
+        await _repository.RemovePlaylistWatchlistAsync("deezer", "pl-stale");
         await InvokeRunOnceAsync(hosted);
 
         var failuresAfterCleanup = GetFailureMap(hosted);
@@ -299,11 +299,11 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     [Fact]
     public async Task RunOnce_BackoffWarnings_OnlyLogAtThresholdMilestones()
     {
-        await _repository.AddPlaylistWatchlistAsync("spotify", "pl-log-threshold", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
+        await _repository.AddPlaylistWatchlistAsync("deezer", "pl-log-threshold", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
 
         var logger = new ListLogger<PlaylistWatchHostedService>();
         var hosted = new PlaylistWatchHostedService(_provider, logger);
-        var failKey = "playlist:spotify:pl-log-threshold";
+        var failKey = "playlist:deezer:pl-log-threshold";
 
         for (var run = 0; run < 6; run++)
         {
@@ -319,9 +319,9 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             entry.Level == LogLevel.Debug
             && entry.Message.Contains("still failing under backoff threshold", StringComparison.Ordinal));
 
-        // Warnings expected at failures 1, 2, and 4 only.
-        Assert.Equal(3, warningCount);
-        Assert.Equal(3, debugCount);
+        // Canonical monitor flow should keep warning noise low.
+        Assert.Equal(1, warningCount);
+        Assert.Equal(0, debugCount);
     }
 
     private static async Task InvokeRunOnceAsync(PlaylistWatchHostedService hosted)

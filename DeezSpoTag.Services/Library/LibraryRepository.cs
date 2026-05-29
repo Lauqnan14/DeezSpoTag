@@ -120,7 +120,11 @@ public sealed class LibraryRepository
         int? TrackCount,
         int? BatchNextOffset,
         string? BatchProcessingSnapshotId,
-        DateTimeOffset? LastCheckedUtc);
+        DateTimeOffset? LastCheckedUtc,
+        string? LastRunStatus = null,
+        string? LastRunMessage = null,
+        DateTimeOffset? NextAttemptUtc = null,
+        int? ConsecutiveFailures = null);
 
     public sealed record ArtistWatchPreferenceUpdateInput(
         long ArtistId,
@@ -5618,7 +5622,11 @@ SELECT id,
        pw.track_count,
        created_at,
        pws.last_checked_utc,
-       pws.snapshot_id
+       pws.snapshot_id,
+       pws.last_run_status,
+       pws.last_run_message,
+       pws.next_attempt_utc,
+       pws.consecutive_failures
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
@@ -5641,7 +5649,11 @@ ORDER BY pw.created_at DESC;";
                 await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
                 created,
                 lastChecked,
-                await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9)));
+                await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9),
+                await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10),
+                await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11),
+                await reader.IsDBNullAsync(12, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(12)),
+                await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetInt32(13)));
         }
 
         return items;
@@ -5904,7 +5916,11 @@ SELECT source,
        batch_next_offset,
        batch_processing_snapshot_id,
        last_checked_utc,
-       updated_at
+       updated_at,
+       last_run_status,
+       last_run_message,
+       next_attempt_utc,
+       consecutive_failures
 FROM playlist_watch_state
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
@@ -5927,14 +5943,18 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO playlist_watch_state (source, source_id, snapshot_id, track_count, batch_next_offset, batch_processing_snapshot_id, last_checked_utc)
-VALUES (@source, @sourceId, @snapshotId, @trackCount, @batchNextOffset, @batchProcessingSnapshotId, @lastCheckedUtc)
+INSERT INTO playlist_watch_state (source, source_id, snapshot_id, track_count, batch_next_offset, batch_processing_snapshot_id, last_checked_utc, last_run_status, last_run_message, next_attempt_utc, consecutive_failures)
+VALUES (@source, @sourceId, @snapshotId, @trackCount, @batchNextOffset, @batchProcessingSnapshotId, @lastCheckedUtc, @lastRunStatus, @lastRunMessage, @nextAttemptUtc, @consecutiveFailures)
 ON CONFLICT(source, source_id) DO UPDATE SET
     snapshot_id = excluded.snapshot_id,
     track_count = excluded.track_count,
     batch_next_offset = excluded.batch_next_offset,
     batch_processing_snapshot_id = excluded.batch_processing_snapshot_id,
     last_checked_utc = excluded.last_checked_utc,
+    last_run_status = excluded.last_run_status,
+    last_run_message = excluded.last_run_message,
+    next_attempt_utc = excluded.next_attempt_utc,
+    consecutive_failures = excluded.consecutive_failures,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
@@ -5944,6 +5964,10 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("batchNextOffset", (object?)input.BatchNextOffset ?? DBNull.Value);
         command.Parameters.AddWithValue("batchProcessingSnapshotId", (object?)input.BatchProcessingSnapshotId ?? DBNull.Value);
         command.Parameters.AddWithValue("lastCheckedUtc", input.LastCheckedUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("lastRunStatus", (object?)input.LastRunStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue("lastRunMessage", (object?)input.LastRunMessage ?? DBNull.Value);
+        command.Parameters.AddWithValue("nextAttemptUtc", input.NextAttemptUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("consecutiveFailures", (object?)input.ConsecutiveFailures ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -6011,7 +6035,11 @@ LIMIT 1;";
             batchOffset,
             batchSnapshot,
             lastChecked,
-            updated);
+            updated,
+            await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
+            await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9),
+            await reader.IsDBNullAsync(10, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(10)),
+            await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetInt32(11));
     }
 
     private static async Task<PlaylistTrackCandidateCacheDto> ReadPlaylistTrackCandidateCacheAsync(

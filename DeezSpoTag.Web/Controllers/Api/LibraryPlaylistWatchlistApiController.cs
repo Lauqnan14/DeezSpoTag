@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using System;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Net.Http.Headers;
+using System.Text.Json;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -697,6 +698,60 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var normalizedSource = NormalizePlaylistSource(source);
         var ignored = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(normalizedSource, sourceId, cancellationToken);
         return Ok(ignored);
+    }
+
+    [HttpGet("{source}/{sourceId}/ignore-details")]
+    public async Task<IActionResult> GetIgnoreListDetails(string source, string sourceId, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var normalizedSource = NormalizePlaylistSource(source);
+        var ignored = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(normalizedSource, sourceId, cancellationToken);
+        if (ignored.Count == 0)
+        {
+            return Ok(Array.Empty<object>());
+        }
+
+        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, sourceId, cancellationToken);
+        var candidates = new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(cache?.CandidatesJson))
+        {
+            try
+            {
+                var cached = JsonSerializer.Deserialize<List<PlaylistWatchService.PlaylistTrackCandidate>>(cache.CandidatesJson);
+                if (cached is { Count: > 0 })
+                {
+                    foreach (var candidate in cached)
+                    {
+                        if (!string.IsNullOrWhiteSpace(candidate.TrackSourceId))
+                        {
+                            candidates[candidate.TrackSourceId] = candidate;
+                        }
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore malformed cache and return id-only rows.
+            }
+        }
+
+        var rows = ignored.Select(trackSourceId =>
+        {
+            candidates.TryGetValue(trackSourceId, out var candidate);
+            return new
+            {
+                trackSourceId,
+                title = string.IsNullOrWhiteSpace(candidate?.Title) ? trackSourceId : candidate.Title,
+                artist = candidate?.Artist ?? string.Empty,
+                album = candidate?.Album ?? string.Empty,
+                isrc = candidate?.Isrc ?? string.Empty
+            };
+        }).ToList();
+        return Ok(rows);
     }
 
     [HttpPost("{source}/{sourceId}/ignore")]

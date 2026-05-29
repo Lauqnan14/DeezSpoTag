@@ -500,7 +500,11 @@ public sealed record PlaylistWatchlistDto(
     int? TrackCount,
     DateTimeOffset CreatedAt,
     DateTimeOffset? LastCheckedUtc = null,
-    string? SnapshotId = null);
+    string? SnapshotId = null,
+    string? LastRunStatus = null,
+    string? LastRunMessage = null,
+    DateTimeOffset? NextAttemptUtc = null,
+    int? ConsecutiveFailures = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,
@@ -546,7 +550,11 @@ public sealed record PlaylistWatchStateDto(
     int? BatchNextOffset,
     string? BatchProcessingSnapshotId,
     DateTimeOffset? LastCheckedUtc,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? LastRunStatus = null,
+    string? LastRunMessage = null,
+    DateTimeOffset? NextAttemptUtc = null,
+    int? ConsecutiveFailures = null);
 
 public sealed record PlaylistTrackCandidateCacheDto(
     string Source,

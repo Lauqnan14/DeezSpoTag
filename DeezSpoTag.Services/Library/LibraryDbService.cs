@@ -230,6 +230,10 @@ public sealed class LibraryDbService
 
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "batch_next_offset", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "batch_processing_snapshot_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "last_run_status", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "last_run_message", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "next_attempt_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "consecutive_failures", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "description", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "preferred_engine", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "download_variant_mode", TextType, cancellationToken);

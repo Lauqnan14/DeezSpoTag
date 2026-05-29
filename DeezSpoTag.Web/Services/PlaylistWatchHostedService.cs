@@ -172,9 +172,25 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             switch (eligibility)
             {
                 case WatchItemEligibility.Backoff:
+                    await PersistPlaylistSchedulerStateAsync(
+                        item,
+                        serviceProvider,
+                        "backoff",
+                        "Waiting for backoff window before retry.",
+                        _nextAllowedRun.TryGetValue(item.Key, out var nextAllowedUtc) ? nextAllowedUtc : null,
+                        _consecutiveFailures.TryGetValue(item.Key, out var backoffFailures) ? backoffFailures : null,
+                        stoppingToken);
                     metrics.SkippedByBackoff++;
                     continue;
                 case WatchItemEligibility.DelayWindow:
+                    await PersistPlaylistSchedulerStateAsync(
+                        item,
+                        serviceProvider,
+                        "pending",
+                        "Waiting for next scheduled interval.",
+                        null,
+                        _consecutiveFailures.TryGetValue(item.Key, out var pendingFailures) ? pendingFailures : 0,
+                        stoppingToken);
                     metrics.SkippedByDelayWindow++;
                     continue;
             }
@@ -252,7 +268,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
         catch (OperationCanceledException ex) when (!stoppingToken.IsCancellationRequested)
         {
-            return RecordItemFailure(item, settings, startedUtc, stopwatch, ex);
+            return await RecordItemFailureAsync(item, settings, serviceProvider, startedUtc, stopwatch, ex, stoppingToken);
         }
         catch (OperationCanceledException)
         {
@@ -260,7 +276,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return RecordItemFailure(item, settings, startedUtc, stopwatch, ex);
+            return await RecordItemFailureAsync(item, settings, serviceProvider, startedUtc, stopwatch, ex, stoppingToken);
         }
         finally
         {
@@ -268,12 +284,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
     }
 
-    private WatchItemRunOutcome RecordItemFailure(
+    private async Task<WatchItemRunOutcome> RecordItemFailureAsync(
         WatchItem item,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        IServiceProvider serviceProvider,
         DateTimeOffset startedUtc,
         Stopwatch stopwatch,
-        Exception ex)
+        Exception ex,
+        CancellationToken cancellationToken)
     {
         var failures = _consecutiveFailures.AddOrUpdate(item.Key, 1, static (_, current) => Math.Min(current + 1, 12));
         var baseDelaySeconds = item.Kind == ArtistKind
@@ -284,6 +302,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             baseDelaySeconds * (int)Math.Pow(2, Math.Min(failures - 1, 6)));
         var nextRunUtc = startedUtc.AddSeconds(backoffSeconds);
         _nextAllowedRun[item.Key] = nextRunUtc;
+        await PersistPlaylistSchedulerStateAsync(item, serviceProvider, "backoff", ex.Message, nextRunUtc, failures, cancellationToken);
         if (ShouldEmitBackoffWarning(failures))
         {
             _logger.LogWarning(
@@ -313,6 +332,52 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             }
         }
         return WatchItemRunOutcome.Failure;
+    }
+
+    private static async Task PersistPlaylistSchedulerStateAsync(
+        WatchItem item,
+        IServiceProvider serviceProvider,
+        string status,
+        string? message,
+        DateTimeOffset? nextAttemptUtc,
+        int? consecutiveFailures,
+        CancellationToken cancellationToken)
+    {
+        if (item.Kind != PlaylistKind || item.Playlist is null)
+        {
+            return;
+        }
+
+        var repository = serviceProvider.GetService<LibraryRepository>();
+        if (repository == null || !repository.IsConfigured)
+        {
+            return;
+        }
+
+        var state = await repository.GetPlaylistWatchStateAsync(item.Playlist.Source, item.Playlist.SourceId, cancellationToken);
+        if (state != null
+            && string.Equals(state.LastRunStatus, status, StringComparison.Ordinal)
+            && string.Equals(state.LastRunMessage, message, StringComparison.Ordinal)
+            && state.ConsecutiveFailures == consecutiveFailures
+            && Nullable.Equals(state.NextAttemptUtc, nextAttemptUtc))
+        {
+            return;
+        }
+
+        await repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                item.Playlist.Source,
+                item.Playlist.SourceId,
+                state?.SnapshotId ?? item.Playlist.SnapshotId,
+                state?.TrackCount ?? item.Playlist.TrackCount,
+                state?.BatchNextOffset,
+                state?.BatchProcessingSnapshotId,
+                state?.LastCheckedUtc,
+                status,
+                message,
+                nextAttemptUtc,
+                consecutiveFailures),
+            cancellationToken);
     }
 
     private static List<WatchItem> BuildWatchItems(

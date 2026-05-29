@@ -218,6 +218,16 @@ public sealed class PlaylistWatchService
         {
             return new PlaylistReconciliationResult(false, "Playlist source is not available.", 0, 0, 0, 0, 0, 0, null);
         }
+        await TouchPlaylistWatchStateAsync(
+            source,
+            sourceId,
+            playlist.TrackCount ?? 0,
+            playlist.SnapshotId,
+            "fetching",
+            "Fetching source snapshot.",
+            nextAttemptUtc: null,
+            consecutiveFailures: 0,
+            cancellationToken);
 
         var maxCandidates = MaxPlaylistCandidateFetchCount;
         var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
@@ -243,7 +253,16 @@ public sealed class PlaylistWatchService
         {
             currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
         }
-        await TouchPlaylistWatchStateAsync(source, sourceId, liveTrackCount, liveSnapshot.SnapshotId, cancellationToken);
+        await TouchPlaylistWatchStateAsync(
+            source,
+            sourceId,
+            liveTrackCount,
+            liveSnapshot.SnapshotId,
+            "reconciling",
+            "Reconciling source snapshot.",
+            nextAttemptUtc: null,
+            consecutiveFailures: 0,
+            cancellationToken);
         await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
             source,
             sourceId,
@@ -273,7 +292,17 @@ public sealed class PlaylistWatchService
         }
         if (candidates.Count == 0)
         {
-            return new PlaylistReconciliationResult(false, "No playlist tracks were available to reconcile.", 0, 0, 0, 0, 0, 0, null);
+            await TouchPlaylistWatchStateAsync(
+                source,
+                sourceId,
+                liveTrackCount,
+                liveSnapshot.SnapshotId,
+                "completed",
+                "No playlist tracks were available to reconcile.",
+                nextAttemptUtc: null,
+                consecutiveFailures: null,
+                cancellationToken);
+            return new PlaylistReconciliationResult(true, "No playlist tracks were available to reconcile.", 0, 0, 0, 0, 0, 0, null);
         }
 
         await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
@@ -315,6 +344,18 @@ public sealed class PlaylistWatchService
                 WatchlistOrigin = PlaylistWatchOrigin
             }),
             cancellationToken);
+        await TouchPlaylistWatchStateAsync(
+            source,
+            sourceId,
+            liveTrackCount,
+            liveSnapshot.SnapshotId,
+            "queued",
+            queueResult.QueuedCount > 0
+                ? $"Queued {queueResult.QueuedCount} track(s)."
+                : "No tracks queued.",
+            nextAttemptUtc: null,
+            consecutiveFailures: 0,
+            cancellationToken);
         await AddPlaylistWatchHistoryAsync(source, sourceId, currentPlaylist.Name, queueResult, cancellationToken);
         if (queueResult.QueuedCount > 0)
         {
@@ -328,8 +369,28 @@ public sealed class PlaylistWatchService
         }
 
         PlaylistSyncResult? syncResult = null;
-        if (forceMediaServerSync)
+        if (_playlistSyncService == null)
         {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                candidates.Count,
+                "media_sync_skipped_sync_service_unavailable",
+                cancellationToken);
+        }
+        else if (forceMediaServerSync)
+        {
+            await TouchPlaylistWatchStateAsync(
+                source,
+                sourceId,
+                liveTrackCount,
+                liveSnapshot.SnapshotId,
+                "syncing",
+                "Syncing monitored playlist.",
+                nextAttemptUtc: null,
+                consecutiveFailures: 0,
+                cancellationToken);
             syncResult = await _playlistSyncService.SyncPlaylistAsync(
                 currentPlaylist,
                 preference,
@@ -346,10 +407,28 @@ public sealed class PlaylistWatchService
         }
         else
         {
-            syncResult = await SyncPlaylistWhenReadyAsync(
+            await TouchPlaylistWatchStateAsync(
+                source,
+                sourceId,
+                liveTrackCount,
+                liveSnapshot.SnapshotId,
+                "syncing",
+                "Syncing monitored playlist.",
+                nextAttemptUtc: null,
+                consecutiveFailures: 0,
+                cancellationToken);
+            syncResult = await _playlistSyncService.SyncPlaylistAsync(
                 currentPlaylist,
                 preference,
                 candidates,
+                force: false,
+                cancellationToken);
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                syncResult.SyncedTracks,
+                syncResult.Success ? "media_sync_completed" : "media_sync_failed",
                 cancellationToken);
         }
 
@@ -369,6 +448,20 @@ public sealed class PlaylistWatchService
         }
 
         var success = !queueResult.Deferred && queueResult.FailedCount == 0;
+        if (syncResult is { Success: false })
+        {
+            success = false;
+        }
+        await TouchPlaylistWatchStateAsync(
+            source,
+            sourceId,
+            liveTrackCount,
+            liveSnapshot.SnapshotId,
+            success ? "completed" : "failed",
+            ResolveReconciliationMessage(queueResult, success),
+            nextAttemptUtc: null,
+            consecutiveFailures: null,
+            cancellationToken);
         return new PlaylistReconciliationResult(
             success,
             ResolveReconciliationMessage(queueResult, success),
@@ -379,92 +472,6 @@ public sealed class PlaylistWatchService
             queueResult.CompletedCount,
             queueResult.FailedCount,
             syncResult);
-    }
-
-    private async Task<PlaylistSyncResult?> SyncPlaylistWhenReadyAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (_playlistSyncService == null)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                playlist.Source,
-                playlist.SourceId,
-                playlist.Name,
-                candidates.Count,
-                "media_sync_not_ready_sync_service_unavailable",
-                cancellationToken);
-            return null;
-        }
-
-        var readiness = await _playlistSyncService.CheckPlaylistReadyForAutomaticSyncAsync(
-            playlist,
-            preference,
-            candidates,
-            cancellationToken);
-        if (!readiness.Ready)
-        {
-            var status = BuildMediaSyncNotReadyStatus(readiness.Message);
-            await AddPlaylistWatchHistoryStageAsync(
-                playlist.Source,
-                playlist.SourceId,
-                playlist.Name,
-                candidates.Count,
-                status,
-                cancellationToken);
-            if (_logger.IsEnabled(readiness.Terminal ? LogLevel.Warning : LogLevel.Information))
-            {
-                _logger.Log(
-                    readiness.Terminal ? LogLevel.Warning : LogLevel.Information,
-                    "Watchlist media sync not ready for {Source}:{SourceId}: {Reason}",
-                    playlist.Source,
-                    playlist.SourceId,
-                    readiness.Message);
-            }
-
-            return null;
-        }
-
-        var syncResult = await _playlistSyncService.SyncPlaylistAsync(
-            playlist,
-            preference,
-            candidates,
-            force: false,
-            cancellationToken);
-        await AddPlaylistWatchHistoryStageAsync(
-            playlist.Source,
-            playlist.SourceId,
-            playlist.Name,
-            syncResult.SyncedTracks,
-            syncResult.Success ? "media_sync_completed" : "media_sync_failed",
-            cancellationToken);
-        return syncResult;
-    }
-
-    private static string BuildMediaSyncNotReadyStatus(string? reason)
-    {
-        var normalized = NormalizeStatusToken(reason);
-        return string.IsNullOrWhiteSpace(normalized)
-            ? "media_sync_not_ready"
-            : $"media_sync_not_ready_{normalized}";
-    }
-
-    private static string NormalizeStatusToken(string? value)
-    {
-        var normalized = new string((value ?? string.Empty)
-            .Trim()
-            .ToLowerInvariant()
-            .Select(static ch => char.IsLetterOrDigit(ch) ? ch : '_')
-            .ToArray());
-        while (normalized.Contains("__", StringComparison.Ordinal))
-        {
-            normalized = normalized.Replace("__", "_", StringComparison.Ordinal);
-        }
-
-        normalized = normalized.Trim('_');
-        return normalized.Length <= 80 ? normalized : normalized[..80].TrimEnd('_');
     }
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
@@ -510,7 +517,16 @@ public sealed class PlaylistWatchService
             currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
         }
 
-        await TouchPlaylistWatchStateAsync(source, sourceId, liveTrackCount, liveSnapshot.SnapshotId, cancellationToken);
+        await TouchPlaylistWatchStateAsync(
+            source,
+            sourceId,
+            liveTrackCount,
+            liveSnapshot.SnapshotId,
+            "metadata_refreshed",
+            "Metadata refreshed from source.",
+            nextAttemptUtc: null,
+            consecutiveFailures: 0,
+            cancellationToken);
         await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
             source,
             sourceId,
@@ -751,6 +767,10 @@ public sealed class PlaylistWatchService
         string sourceId,
         int trackCount,
         string? snapshotId,
+        string? lastRunStatus,
+        string? lastRunMessage,
+        DateTimeOffset? nextAttemptUtc,
+        int? consecutiveFailures,
         CancellationToken cancellationToken)
     {
         var state = await _libraryRepository.GetPlaylistWatchStateAsync(source, sourceId, cancellationToken);
@@ -762,7 +782,11 @@ public sealed class PlaylistWatchService
                 trackCount,
                 state?.BatchNextOffset,
                 state?.BatchProcessingSnapshotId,
-                DateTimeOffset.UtcNow),
+                DateTimeOffset.UtcNow,
+                lastRunStatus,
+                lastRunMessage,
+                nextAttemptUtc,
+                consecutiveFailures ?? state?.ConsecutiveFailures),
             cancellationToken);
     }
 
@@ -1540,10 +1564,33 @@ public sealed class PlaylistWatchService
         CancellationToken cancellationToken,
         bool forceMediaServerSync = false)
     {
-        await ReconcilePlaylistAsync(
-            playlist,
-            cancellationToken,
-            forceMediaServerSync);
+        try
+        {
+            await ReconcilePlaylistAsync(
+                playlist,
+                cancellationToken,
+                forceMediaServerSync);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var source = NormalizeWatchSource(playlist.Source);
+            var sourceId = (playlist.SourceId ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(sourceId))
+            {
+                await TouchPlaylistWatchStateAsync(
+                    source,
+                    sourceId,
+                    playlist.TrackCount ?? 0,
+                    playlist.SnapshotId,
+                    "failed",
+                    ex.Message,
+                    nextAttemptUtc: null,
+                    consecutiveFailures: null,
+                    cancellationToken);
+            }
+
+            throw;
+        }
     }
 
     private async Task<IReadOnlyList<PlaylistTrackBlockRule>> GetGlobalPlaylistBlockRulesAsync(CancellationToken cancellationToken)

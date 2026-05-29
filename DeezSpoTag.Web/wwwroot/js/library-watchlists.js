@@ -311,40 +311,27 @@ async function loadPlaylistBlockedRules() {
         const trackRows = [];
         if (items.length > 0) {
             const blockedTrackResults = await Promise.all(items.map(async item => {
-                const [ignoredRaw, candidatesRaw] = await Promise.all([
-                    fetchJson(`/api/library/playlists/${encodeURIComponent(item.source)}/${encodeURIComponent(item.sourceId)}/ignore`).catch(() => []),
-                    fetchJson(`/api/library/playlists/${encodeURIComponent(item.source)}/${encodeURIComponent(item.sourceId)}/tracks`).catch(() => [])
-                ]);
-
-                const ignoredTrackIds = Array.isArray(ignoredRaw)
-                    ? ignoredRaw
-                        .map(trackSourceId => String(trackSourceId || '').trim())
-                        .filter(Boolean)
-                    : [];
-
-                const candidateMap = new Map();
-                if (Array.isArray(candidatesRaw)) {
-                    candidatesRaw.forEach(candidate => {
-                        const trackSourceId = String(candidate?.trackSourceId || '').trim();
-                        if (trackSourceId) {
-                            candidateMap.set(trackSourceId, candidate);
+                const ignoredRaw = await fetchJson(`/api/library/playlists/${encodeURIComponent(item.source)}/${encodeURIComponent(item.sourceId)}/ignore-details`).catch(() => []);
+                const ignoredRows = Array.isArray(ignoredRaw) ? ignoredRaw : [];
+                return ignoredRows
+                    .map(entry => {
+                        const trackSourceId = String(entry?.trackSourceId || '').trim();
+                        if (!trackSourceId) {
+                            return null;
                         }
-                    });
-                }
 
-                return ignoredTrackIds.map(trackSourceId => {
-                    const candidate = candidateMap.get(trackSourceId);
-                    return {
-                        source: item.source,
-                        sourceId: item.sourceId,
-                        playlistName: item.name || 'Playlist',
-                        trackSourceId,
-                        title: String(candidate?.title || trackSourceId).trim(),
-                        artist: String(candidate?.artist || '').trim(),
-                        album: String(candidate?.album || '').trim(),
-                        isrc: String(candidate?.isrc || '').trim()
-                    };
-                });
+                        return {
+                            source: item.source,
+                            sourceId: item.sourceId,
+                            playlistName: item.name || 'Playlist',
+                            trackSourceId,
+                            title: String(entry?.title || trackSourceId).trim(),
+                            artist: String(entry?.artist || '').trim(),
+                            album: String(entry?.album || '').trim(),
+                            isrc: String(entry?.isrc || '').trim()
+                        };
+                    })
+                    .filter(Boolean);
             }));
 
             blockedTrackResults.forEach(rows => {
@@ -1100,6 +1087,23 @@ async function loadPlaylistWatchlist() {
             const trackCount = item.trackCount === null || item.trackCount === undefined
                 ? ''
                 : `${item.trackCount} tracks`;
+            const runStatus = String(item.lastRunStatus || '').trim();
+            const runMessage = String(item.lastRunMessage || '').trim();
+            const consecutiveFailures = Number(item.consecutiveFailures || 0);
+            const nextAttempt = item.nextAttemptUtc
+                ? formatRelativeTime(item.nextAttemptUtc)
+                : '';
+            const statusLabel = runStatus
+                ? runStatus.replaceAll('_', ' ')
+                : 'never checked yet';
+            const statusParts = [statusLabel];
+            if (consecutiveFailures > 0) {
+                statusParts.push(`failures ${consecutiveFailures}`);
+            }
+            if (nextAttempt) {
+                statusParts.push(`next ${nextAttempt}`);
+            }
+            const statusMeta = statusParts.join(' • ');
             return `<div class="watchlist-playlist-card-v2">
                 <button class="watchlist-card-art" type="button"
                     data-playlist-open="${escapeHtml(item.sourceId)}"
@@ -1122,6 +1126,8 @@ async function loadPlaylistWatchlist() {
                 <div class="watchlist-card-strip">
                     <div class="watchlist-card-name">${escapeHtml(item.name)}</div>
                     ${trackCount ? `<div class="watchlist-card-meta">${escapeHtml(trackCount)}</div>` : ''}
+                    <div class="watchlist-card-meta">${escapeHtml(statusMeta)}</div>
+                    ${runMessage ? `<div class="watchlist-card-meta">${escapeHtml(runMessage)}</div>` : ''}
                 </div>
             </div>`;
         }).join('');
