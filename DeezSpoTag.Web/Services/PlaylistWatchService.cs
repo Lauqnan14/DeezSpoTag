@@ -2830,6 +2830,19 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return default;
         }
 
+        var watchSettings = _settingsService.LoadSettings();
+        if (!watchSettings.WatchEnabled)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "{Source} watch queue skipped because watchlist is disabled.",
+                    options.SourceLabel);
+            }
+
+            return new QueueWatchResult(0, 0, 0, Deferred: true);
+        }
+
         using var scope = _serviceProvider.CreateScope();
         var intentService = scope.ServiceProvider.GetRequiredService<DownloadIntentService>();
         var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();

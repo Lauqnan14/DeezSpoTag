@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Threading.Channels;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -29,13 +30,16 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     private readonly ConcurrentDictionary<string, SyncRequest> _pendingAfterCurrentRun = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _executionGate = new(initialCount: 2, maxCount: 2);
     private readonly IServiceProvider _serviceProvider;
+    private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<WatchlistPostDownloadSyncService> _logger;
 
     public WatchlistPostDownloadSyncService(
         IServiceProvider serviceProvider,
+        DeezSpoTagSettingsService settingsService,
         ILogger<WatchlistPostDownloadSyncService> logger)
     {
         _serviceProvider = serviceProvider;
+        _settingsService = settingsService;
         _logger = logger;
     }
 
@@ -47,6 +51,11 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         IReadOnlyList<string>? finalFilePaths = null,
         CancellationToken cancellationToken = default)
     {
+        if (!IsWatchlistEnabled())
+        {
+            return ValueTask.CompletedTask;
+        }
+
         if (string.IsNullOrWhiteSpace(source)
             || string.IsNullOrWhiteSpace(playlistId)
             || string.IsNullOrWhiteSpace(trackId))
@@ -68,8 +77,19 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     {
         await foreach (var request in _queue.Reader.ReadAllAsync(stoppingToken))
         {
+            if (!IsWatchlistEnabled())
+            {
+                continue;
+            }
+
             _ = RunQueuedRequestAsync(request, stoppingToken);
         }
+    }
+
+    private bool IsWatchlistEnabled()
+    {
+        var settings = _settingsService.LoadSettings();
+        return settings.WatchEnabled;
     }
 
     private async Task RunQueuedRequestAsync(SyncRequest request, CancellationToken stoppingToken)
