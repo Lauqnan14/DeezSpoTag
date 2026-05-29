@@ -51,7 +51,7 @@ async function loadWatchlist() {
     try {
         if (!Array.isArray(libraryState.folders) || !libraryState.folders.length) {
             try {
-                const folders = await fetchJson('/api/library/folders');
+                const folders = await fetchJson('/api/library/folders?downloadOnly=true');
                 libraryState.folders = Array.isArray(folders)
                     ? folders.map(normalizeFolderConversionState)
                     : [];
@@ -1055,7 +1055,7 @@ async function loadPlaylistWatchlist() {
     try {
         if (!Array.isArray(libraryState.folders) || !libraryState.folders.length) {
             try {
-                const folders = await fetchJson('/api/library/folders');
+                const folders = await fetchJson('/api/library/folders?downloadOnly=true');
                 libraryState.folders = Array.isArray(folders)
                     ? folders.map(normalizeFolderConversionState)
                     : [];
@@ -1516,7 +1516,7 @@ async function openPlaylistMergePanel(items) {
 async function ensurePlaylistSettingsFoldersLoaded() {
     if (!Array.isArray(libraryState.folders) || libraryState.folders.length === 0) {
         try {
-            const folders = await fetchJson('/api/library/folders');
+            const folders = await fetchJson('/api/library/folders?downloadOnly=true');
             libraryState.folders = Array.isArray(folders)
                 ? folders.map(normalizeFolderConversionState)
                 : [];

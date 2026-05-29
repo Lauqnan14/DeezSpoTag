@@ -300,11 +300,7 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var folders = await _repository.GetFoldersAsync(cancellationToken);
-        var validFolderIds = folders
-            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
-            .Select(folder => folder.Id)
-            .ToHashSet();
+        var validFolderIds = await _repository.GetWatchlistEligibleDestinationFolderIdsAsync(cancellationToken);
 
         if (request.DestinationFolderId is long folderId && !validFolderIds.Contains(folderId))
         {

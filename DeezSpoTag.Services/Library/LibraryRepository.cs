@@ -1601,6 +1601,112 @@ INSERT INTO quality_scan_action_log (
         return folders;
     }
 
+    public async Task<HashSet<long>> GetWatchlistEligibleDestinationFolderIdsAsync(CancellationToken cancellationToken = default)
+    {
+        var folders = await GetFoldersAsync(cancellationToken);
+        return folders
+            .Where(IsWatchlistEligibleDestinationFolder)
+            .Select(folder => folder.Id)
+            .ToHashSet();
+    }
+
+    public async Task<(int PlaylistPreferencesUpdated, int ArtistPreferencesUpdated)> RepairWatchlistDestinationEligibilityAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var validFolderIds = await GetWatchlistEligibleDestinationFolderIdsAsync(cancellationToken);
+        var playlistUpdated = 0;
+        var artistUpdated = 0;
+
+        var playlistPreferences = await GetPlaylistWatchPreferencesAsync(cancellationToken);
+        foreach (var preference in playlistPreferences)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var destinationFolderId = preference.DestinationFolderId is long folderId && !validFolderIds.Contains(folderId)
+                ? null
+                : preference.DestinationFolderId;
+            var atmosDestinationFolderId = preference.AtmosDestinationFolderId is long atmosFolderId && !validFolderIds.Contains(atmosFolderId)
+                ? null
+                : preference.AtmosDestinationFolderId;
+            var routingRules = preference.RoutingRules?
+                .Where(rule => validFolderIds.Contains(rule.DestinationFolderId))
+                .ToList();
+            if (routingRules is { Count: 0 })
+            {
+                routingRules = null;
+            }
+
+            if (destinationFolderId == preference.DestinationFolderId
+                && atmosDestinationFolderId == preference.AtmosDestinationFolderId
+                && !HaveRoutingRulesChanged(preference.RoutingRules, routingRules))
+            {
+                continue;
+            }
+
+            await UpsertPlaylistWatchPreferenceAsync(
+                new PlaylistWatchPreferenceUpsertInput(
+                    preference.Source,
+                    preference.SourceId,
+                    destinationFolderId,
+                    preference.Service,
+                    preference.PreferredEngine,
+                    preference.DownloadVariantMode,
+                    preference.SyncMode,
+                    preference.UpdateArtwork,
+                    preference.ReuseSavedArtwork,
+                    routingRules,
+                    preference.IgnoreRules,
+                    atmosDestinationFolderId),
+                resetWatchState: false,
+                cancellationToken);
+            playlistUpdated++;
+        }
+
+        var watchlist = await GetWatchlistAsync(cancellationToken);
+        foreach (var item in watchlist)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var destinationFolderId = item.DestinationFolderId is long folderId && !validFolderIds.Contains(folderId)
+                ? null
+                : item.DestinationFolderId;
+            var atmosDestinationFolderId = item.AtmosDestinationFolderId is long atmosFolderId && !validFolderIds.Contains(atmosFolderId)
+                ? null
+                : item.AtmosDestinationFolderId;
+            var routingRules = item.RoutingRules?
+                .Where(rule => validFolderIds.Contains(rule.DestinationFolderId))
+                .ToList();
+            if (routingRules is { Count: 0 })
+            {
+                routingRules = null;
+            }
+
+            if (destinationFolderId == item.DestinationFolderId
+                && atmosDestinationFolderId == item.AtmosDestinationFolderId
+                && !HaveRoutingRulesChanged(item.RoutingRules, routingRules))
+            {
+                continue;
+            }
+
+            await UpdateWatchlistPreferencesAsync(
+                new ArtistWatchPreferenceUpdateInput(
+                    item.ArtistId,
+                    destinationFolderId,
+                    item.WatchedAlbumGroups,
+                    item.TopSongsEnabled,
+                    item.LatestReleasesOnly,
+                    item.PreferredEngine,
+                    routingRules,
+                    atmosDestinationFolderId,
+                    item.DownloadVariantMode,
+                    item.TopSongsSyncMode,
+                    item.DownloadDiscographyEnabled,
+                    item.IgnoreRules),
+                cancellationToken);
+            artistUpdated++;
+        }
+
+        return (playlistUpdated, artistUpdated);
+    }
+
     private static async Task<FolderDto> ReadFolderDtoAsync(SqliteDataReader reader, CancellationToken cancellationToken)
     {
         var desiredQuality = await ReadFolderDesiredQualityAsync(reader, cancellationToken);
@@ -5851,6 +5957,12 @@ LIMIT 1;";
     public async Task<PlaylistWatchPreferenceDto?> UpsertPlaylistWatchPreferenceAsync(
         PlaylistWatchPreferenceUpsertInput input,
         CancellationToken cancellationToken = default)
+        => await UpsertPlaylistWatchPreferenceAsync(input, resetWatchState: true, cancellationToken);
+
+    private async Task<PlaylistWatchPreferenceDto?> UpsertPlaylistWatchPreferenceAsync(
+        PlaylistWatchPreferenceUpsertInput input,
+        bool resetWatchState,
+        CancellationToken cancellationToken)
     {
         if (!TryNormalizePlaylistWatchKey(input.Source, input.SourceId, out var normalizedSource, out var normalizedSourceId))
         {
@@ -5890,11 +6002,12 @@ LIMIT 1;";
         command.Parameters.AddWithValue("ignoreRulesJson", (object?)ignoreRulesJson ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
 
-        const string resetStateSql = @"
+        if (resetWatchState)
+        {
+            const string resetStateSql = @"
 DELETE FROM playlist_watch_state
 WHERE source = @source AND source_id = @sourceId;";
-        await using (var resetStateCommand = new SqliteCommand(resetStateSql, connection))
-        {
+            await using var resetStateCommand = new SqliteCommand(resetStateSql, connection);
             resetStateCommand.Parameters.AddWithValue(SourceField, normalizedSource);
             resetStateCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             await resetStateCommand.ExecuteNonQueryAsync(cancellationToken);
@@ -9228,6 +9341,73 @@ WHERE source = @source
 
     private static string BuildAlbumKey(string artistName, string albumTitle)
         => $"{artistName}|{albumTitle}";
+
+    private static bool IsWatchlistEligibleDestinationFolder(FolderDto folder)
+    {
+        if (!folder.Enabled || string.IsNullOrWhiteSpace(folder.RootPath))
+        {
+            return false;
+        }
+
+        var contentType = ResolveFolderContentType(folder.DesiredQuality);
+        if (contentType is "video" or "podcast")
+        {
+            return true;
+        }
+
+        return folder.AutoTagEnabled && !string.IsNullOrWhiteSpace(folder.AutoTagProfileId);
+    }
+
+    private static string ResolveFolderContentType(string? desiredQuality)
+    {
+        var normalized = (desiredQuality ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return "music";
+        }
+
+        if (normalized.Contains("atmos", StringComparison.Ordinal))
+        {
+            return "atmos";
+        }
+
+        if (normalized.Contains("video", StringComparison.Ordinal))
+        {
+            return "video";
+        }
+
+        if (normalized.Contains("podcast", StringComparison.Ordinal))
+        {
+            return "podcast";
+        }
+
+        return "music";
+    }
+
+    private static bool HaveRoutingRulesChanged(
+        IReadOnlyList<PlaylistTrackRoutingRule>? current,
+        IReadOnlyList<PlaylistTrackRoutingRule>? updated)
+    {
+        if (current == null || current.Count == 0)
+        {
+            return updated != null && updated.Count > 0;
+        }
+
+        if (updated == null || updated.Count != current.Count)
+        {
+            return true;
+        }
+
+        for (var i = 0; i < current.Count; i++)
+        {
+            if (!Equals(current[i], updated[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static string NormalizeRoot(string rootPath)
     {

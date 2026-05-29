@@ -1634,40 +1634,74 @@ public class PlexApiClient
         PlaylistUpsertOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (ratingKeys.Count == 0)
+        if (ratingKeys.Count == 0
+            || string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(token)
+            || string.IsNullOrWhiteSpace(machineIdentifier)
+            || string.IsNullOrWhiteSpace(playlistName))
+        {
+            return null;
+        }
+
+        var normalizedServerUrl = serverUrl.Trim();
+        var normalizedToken = token.Trim();
+        var normalizedMachineIdentifier = machineIdentifier.Trim();
+        var normalizedPlaylistName = playlistName.Trim();
+        var normalizedRatingKeys = ratingKeys
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalizedRatingKeys.Count == 0)
         {
             return null;
         }
 
         var existingTitlePrefix = options?.ExistingTitlePrefix;
         var appendMissingOnly = options?.AppendMissingOnly ?? false;
-        var existing = await GetPlaylistsAsync(serverUrl, token, cancellationToken);
-        var playlistId = FindMatchingPlaylistId(existing, playlistName, existingTitlePrefix);
+        var existing = await GetPlaylistsAsync(normalizedServerUrl, normalizedToken, cancellationToken);
+        var playlistId = FindMatchingPlaylistId(existing, normalizedPlaylistName, existingTitlePrefix);
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             return await CreatePlaylistAsync(
-                serverUrl,
-                token,
-                machineIdentifier,
-                playlistName,
-                ratingKeys,
+                normalizedServerUrl,
+                normalizedToken,
+                normalizedMachineIdentifier,
+                normalizedPlaylistName,
+                normalizedRatingKeys,
+                cancellationToken);
+        }
+
+        var existingPlaylist = await GetPlaylistAsync(normalizedServerUrl, normalizedToken, playlistId, cancellationToken);
+        if (existingPlaylist == null)
+        {
+            _logger.LogWarning(
+                "Plex playlist upsert preflight failed for {PlaylistId}; playlist inaccessible. Recreating playlist {PlaylistName}.",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPlaylistName));
+            return await CreatePlaylistAsync(
+                normalizedServerUrl,
+                normalizedToken,
+                normalizedMachineIdentifier,
+                normalizedPlaylistName,
+                normalizedRatingKeys,
                 cancellationToken);
         }
 
         if (appendMissingOnly)
         {
-            var existingItems = await GetPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+            var existingItems = await GetPlaylistItemsAsync(normalizedServerUrl, normalizedToken, playlistId, cancellationToken);
             var existingRatingKeys = existingItems
                 .Select(item => item.Id)
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var pending = ratingKeys
+            var pending = normalizedRatingKeys
                 .Where(value => !string.IsNullOrWhiteSpace(value) && !existingRatingKeys.Contains(value))
                 .ToList();
             if (pending.Count > 0)
             {
-                var added = await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, pending, cancellationToken);
+                var added = await AddPlaylistItemsAsync(normalizedServerUrl, normalizedToken, normalizedMachineIdentifier, playlistId, pending, cancellationToken);
                 if (!added)
                 {
                     return null;
@@ -1676,13 +1710,13 @@ public class PlexApiClient
         }
         else
         {
-            var cleared = await ClearPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+            var cleared = await ClearPlaylistItemsAsync(normalizedServerUrl, normalizedToken, playlistId, cancellationToken);
             if (!cleared)
             {
                 return null;
             }
 
-            var added = await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, ratingKeys, cancellationToken);
+            var added = await AddPlaylistItemsAsync(normalizedServerUrl, normalizedToken, normalizedMachineIdentifier, playlistId, normalizedRatingKeys, cancellationToken);
             if (!added)
             {
                 return null;
@@ -1913,7 +1947,19 @@ public class PlexApiClient
             return true;
         }
 
-        _logger.LogWarning("Plex request failed for {Operation} {EntityId}: {StatusCode}", operation, entityId, response.StatusCode);
+        var normalizedFailure = response.StatusCode switch
+        {
+            System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden => "auth_denied",
+            System.Net.HttpStatusCode.NotFound => "playlist_not_found",
+            System.Net.HttpStatusCode.Conflict => "playlist_integrity_conflict",
+            _ => "request_failed"
+        };
+        _logger.LogWarning(
+            "Plex request failed for {Operation} {EntityId}: {StatusCode} ({FailureType})",
+            operation,
+            entityId,
+            response.StatusCode,
+            normalizedFailure);
         return false;
     }
 

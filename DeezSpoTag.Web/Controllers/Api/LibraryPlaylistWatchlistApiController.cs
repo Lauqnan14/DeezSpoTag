@@ -862,11 +862,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
     private async Task<HashSet<long>> GetValidFolderIdsAsync(CancellationToken cancellationToken)
     {
-        var folders = await _repository.GetFoldersAsync(cancellationToken);
-        return folders
-            .Where(folder => folder.Enabled && !string.IsNullOrWhiteSpace(folder.RootPath))
-            .Select(folder => folder.Id)
-            .ToHashSet();
+        return await _repository.GetWatchlistEligibleDestinationFolderIdsAsync(cancellationToken);
     }
 
     private static string? ValidatePlaylistPreferenceRequest(

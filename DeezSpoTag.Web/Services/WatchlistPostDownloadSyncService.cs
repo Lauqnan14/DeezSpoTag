@@ -9,12 +9,12 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 {
     private static readonly TimeSpan[] RetryDelays =
     [
-        TimeSpan.FromSeconds(5),
         TimeSpan.FromSeconds(15),
         TimeSpan.FromSeconds(30),
         TimeSpan.FromMinutes(1),
         TimeSpan.FromMinutes(2),
-        TimeSpan.FromMinutes(5)
+        TimeSpan.FromMinutes(5),
+        TimeSpan.FromMinutes(10)
     ];
     private static readonly TimeSpan FollowUpDelay = TimeSpan.FromMinutes(10);
     private const int MaxFollowUpPasses = 12;
@@ -27,6 +27,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         });
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _playlistLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SyncRequest> _pendingAfterCurrentRun = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _executionGate = new(initialCount: 2, maxCount: 2);
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<WatchlistPostDownloadSyncService> _logger;
 
@@ -67,7 +68,33 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     {
         await foreach (var request in _queue.Reader.ReadAllAsync(stoppingToken))
         {
-            _ = ProcessWithRetriesAsync(request, stoppingToken);
+            _ = RunQueuedRequestAsync(request, stoppingToken);
+        }
+    }
+
+    private async Task RunQueuedRequestAsync(SyncRequest request, CancellationToken stoppingToken)
+    {
+        await _executionGate.WaitAsync(stoppingToken);
+        try
+        {
+            await ProcessWithRetriesAsync(request, stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Service shutdown.
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Watchlist playlist sync worker failed for {Source}:{PlaylistId} after finalized track {TrackId}.",
+                request.Source,
+                request.PlaylistId,
+                request.TrackId);
+        }
+        finally
+        {
+            _executionGate.Release();
         }
     }
 

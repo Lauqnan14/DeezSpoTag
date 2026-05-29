@@ -65,8 +65,13 @@ public sealed class PlaylistVisualService
     {
         try
         {
+            if (!TryNormalizeRemoteImageUri(remoteUrl, out var normalizedRemoteUri))
+            {
+                return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
+            }
+
             var client = _httpClientFactory.CreateClient();
-            using var response = await client.GetAsync(remoteUrl, cancellationToken);
+            using var response = await client.GetAsync(normalizedRemoteUri, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
@@ -81,7 +86,7 @@ public sealed class PlaylistVisualService
                 return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
             }
 
-            var extension = ResolveImageExtension(response.Content.Headers.ContentType?.MediaType, remoteUrl);
+            var extension = ResolveImageExtension(response.Content.Headers.ContentType?.MediaType, normalizedRemoteUri);
             var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var fileName = $"cover-{hash}{extension}";
             var targetPath = Path.Join(visualDir, fileName);
@@ -343,4 +348,28 @@ public sealed class PlaylistVisualService
     }
 
     public sealed record StoredPlaylistVisual(string FilePath, string ContentType, bool IsActive = false, string? Url = null);
+
+    private static bool TryNormalizeRemoteImageUri(string value, out string normalizedUri)
+    {
+        normalizedUri = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        normalizedUri = uri.AbsoluteUri;
+        return true;
+    }
 }

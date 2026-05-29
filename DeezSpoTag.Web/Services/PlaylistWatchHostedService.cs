@@ -23,6 +23,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRun = new();
     private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _nextAllowedRun = new();
+    private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
     private int _roundRobinIndex;
 
     public PlaylistWatchHostedService(
@@ -41,14 +42,22 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         IServiceProvider serviceProvider,
         IConfiguration configuration,
         ILogger<PlaylistWatchHostedService> logger)
-        : this(serviceProvider, new BackgroundWorkCoordinator(), configuration, logger)
+        : this(
+            serviceProvider,
+            new BackgroundWorkCoordinator(),
+            configuration,
+            logger)
     {
     }
 
     public PlaylistWatchHostedService(
         IServiceProvider serviceProvider,
         ILogger<PlaylistWatchHostedService> logger)
-        : this(serviceProvider, new ConfigurationBuilder().Build(), logger)
+        : this(
+            serviceProvider,
+            new BackgroundWorkCoordinator(),
+            new ConfigurationBuilder().Build(),
+            logger)
     {
     }
 
@@ -119,6 +128,19 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             {
                 _logger.LogDebug("Watchlist skipped - library DB not configured.");
                 return;
+            }
+
+            if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) >= TimeSpan.FromMinutes(30))
+            {
+                var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(stoppingToken);
+                _lastDestinationRepairUtc = DateTimeOffset.UtcNow;
+                if (repairResult.PlaylistPreferencesUpdated > 0 || repairResult.ArtistPreferencesUpdated > 0)
+                {
+                    _logger.LogInformation(
+                        "Watchlist destination integrity repair applied: playlistPreferencesUpdated={PlaylistUpdated}, artistPreferencesUpdated={ArtistUpdated}",
+                        repairResult.PlaylistPreferencesUpdated,
+                        repairResult.ArtistPreferencesUpdated);
+                }
             }
 
             var playlists = await repository.GetPlaylistWatchlistAsync(stoppingToken);
