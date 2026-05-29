@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Library;
@@ -963,6 +964,7 @@ public sealed class PlaylistWatchService
         var pageSize = Math.Min(100, maxCandidates);
         var offset = 0;
         var isComplete = true;
+        var safeSourceId = LogSanitizer.OneLine(sourceId, maxLength: 128);
 
         while (candidates.Count < maxCandidates)
         {
@@ -981,7 +983,7 @@ public sealed class PlaylistWatchService
                 {
                     _logger.LogWarning(
                         "Spotify playlist page fetch timed out for playlist {PlaylistId} at offset {Offset}; returning partial snapshot.",
-                        sourceId,
+                        safeSourceId,
                         offset);
                 }
                 isComplete = false;
@@ -994,7 +996,7 @@ public sealed class PlaylistWatchService
                     _logger.LogWarning(
                         ex,
                         "Spotify playlist page fetch failed for playlist {PlaylistId} at offset {Offset}; returning partial snapshot.",
-                        sourceId,
+                        safeSourceId,
                         offset);
                 }
                 isComplete = false;
