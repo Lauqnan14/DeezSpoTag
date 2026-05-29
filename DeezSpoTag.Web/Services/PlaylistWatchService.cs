@@ -447,17 +447,18 @@ public sealed class PlaylistWatchService
                 queueResult.Deferred);
         }
 
-        var success = !queueResult.Deferred && queueResult.FailedCount == 0;
+        var success = queueResult.FailedCount == 0;
         if (syncResult is { Success: false })
         {
             success = false;
         }
+        var runStatus = ResolvePlaylistRunStatus(queueResult, success);
         await TouchPlaylistWatchStateAsync(
             source,
             sourceId,
             liveTrackCount,
             liveSnapshot.SnapshotId,
-            success ? "completed" : "failed",
+            runStatus,
             ResolveReconciliationMessage(queueResult, success),
             nextAttemptUtc: null,
             consecutiveFailures: null,
@@ -762,6 +763,16 @@ public sealed class PlaylistWatchService
         return "completed";
     }
 
+    private static string ResolvePlaylistRunStatus(QueueWatchResult queueResult, bool success)
+    {
+        if (queueResult.Deferred)
+        {
+            return "pending";
+        }
+
+        return success ? "completed" : "failed";
+    }
+
     private async Task TouchPlaylistWatchStateAsync(
         string source,
         string sourceId,
@@ -955,11 +966,40 @@ public sealed class PlaylistWatchService
 
         while (candidates.Count < maxCandidates)
         {
-            var page = await _spotifyMetadataService.FetchPlaylistPageAsync(
-                sourceId,
-                offset,
-                pageSize,
-                cancellationToken);
+            SpotifyPlaylistPage? page;
+            try
+            {
+                page = await _spotifyMetadataService.FetchPlaylistPageAsync(
+                    sourceId,
+                    offset,
+                    pageSize,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                if (_logger.IsEnabled(LogLevel.Warning))
+                {
+                    _logger.LogWarning(
+                        "Spotify playlist page fetch timed out for playlist {PlaylistId} at offset {Offset}; returning partial snapshot.",
+                        sourceId,
+                        offset);
+                }
+                isComplete = false;
+                break;
+            }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                if (_logger.IsEnabled(LogLevel.Warning))
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Spotify playlist page fetch failed for playlist {PlaylistId} at offset {Offset}; returning partial snapshot.",
+                        sourceId,
+                        offset);
+                }
+                isComplete = false;
+                break;
+            }
 
             if (page == null)
             {

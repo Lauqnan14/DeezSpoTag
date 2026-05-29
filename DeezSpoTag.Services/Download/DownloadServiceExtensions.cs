@@ -28,7 +28,7 @@ public static class DownloadServiceExtensions
 {
     private const string DesktopChromeUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36";
     private static readonly TimeSpan LongDownloadTimeout = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan ResolveProxyTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan ResolveProxyTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>
     /// Register all download engine services
