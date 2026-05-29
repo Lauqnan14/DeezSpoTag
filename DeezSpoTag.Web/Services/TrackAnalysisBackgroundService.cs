@@ -22,6 +22,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const string VibeAnalyzerWorkersEnvironmentVariable = "VIBE_ANALYZER_WORKERS";
     private const string VibeAnalyzerUseBatchEnvironmentVariable = "VIBE_ANALYZER_USE_BATCH";
     private const string VibeEssentiaPackageEnvironmentVariable = "VIBE_ANALYZER_ESSENTIA_TF_PACKAGE";
+    private const string VibeAnalyzerForceCpuEnvironmentVariable = "VIBE_ANALYZER_FORCE_CPU";
     private const string DefaultEssentiaPackage = "essentia-tensorflow==2.1b6.dev1389";
     private const string Python3Executable = "python3";
     private const string ToolsDirectoryName = "Tools";
@@ -1124,6 +1125,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     private static int ResolveAnalyzerWorkers()
     {
+        if (IsCpuOnlyMlRuntimeEnabled())
+        {
+            return 1;
+        }
+
         var cpuCount = Environment.ProcessorCount > 0 ? Environment.ProcessorCount : 4;
         var autoWorkers = Math.Clamp(Math.Max(2, cpuCount / 2), MinVibeAnalyzerWorkers, MaxVibeAnalyzerWorkers);
         var configuredWorkers = Environment.GetEnvironmentVariable(VibeAnalyzerWorkersEnvironmentVariable);
@@ -1670,6 +1676,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             startInfo.Environment["DEEZSPOTAG_FFMPEG_PATH"] = FfmpegExecutablePath;
         }
 
+        // Force CPU TensorFlow/Essentia execution by default for stability on
+        // hosts without CUDA runtime libraries (common on NAS/CPU-only Linux).
+        if (IsCpuOnlyMlRuntimeEnabled())
+        {
+            startInfo.Environment["CUDA_VISIBLE_DEVICES"] = "-1";
+            startInfo.Environment["TF_CPP_MIN_LOG_LEVEL"] = "2";
+            startInfo.Environment["TF_USE_CUDA"] = "0";
+        }
+
         var sitePackagesPath = ResolveVenvSitePackagesPath();
         if (string.IsNullOrWhiteSpace(sitePackagesPath))
         {
@@ -1688,6 +1703,20 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
 
         startInfo.Environment["PYTHONPATH"] = sitePackagesPath;
+    }
+
+    private static bool IsCpuOnlyMlRuntimeEnabled()
+    {
+        var configured = Environment.GetEnvironmentVariable(VibeAnalyzerForceCpuEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return true;
+        }
+
+        return configured.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || configured.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || configured.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || configured.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ResolveVenvSitePackagesPath()

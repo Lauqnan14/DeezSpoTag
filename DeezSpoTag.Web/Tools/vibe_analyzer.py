@@ -20,6 +20,14 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
+# Default to CPU-only TensorFlow/Essentia execution unless explicitly disabled.
+# This avoids repeated CUDA probe failures on CPU-only hosts and reduces native
+# runtime instability from GPU initialization attempts.
+if os.environ.get("VIBE_ANALYZER_FORCE_CPU", "1").strip().lower() in {"1", "true", "yes", "on"}:
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+    os.environ.setdefault("TF_USE_CUDA", "0")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 try:
     multiprocessing.set_start_method("spawn", force=True)
 except RuntimeError:
