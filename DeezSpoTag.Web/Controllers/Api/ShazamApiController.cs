@@ -137,7 +137,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         await CopyUploadedAudioAsync(audioFile, tempPath, cancellationToken);
 
         var captureDurationSeconds = ResolveCaptureDurationSeconds();
-        var signatureWindowSeconds = ResolveMicSignatureWindowSeconds(captureDurationSeconds);
+        var signatureWindowSeconds = ResolveMicSignatureWindowSeconds(captureDurationSeconds, captureAttempt);
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
@@ -286,10 +286,16 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         }
     }
 
-    private static int ResolveMicSignatureWindowSeconds(int captureDurationSeconds)
+    private static int ResolveMicSignatureWindowSeconds(int captureDurationSeconds, string captureAttempt)
     {
-        // Match the reference Shazam usage where recognize() commonly runs with a 5s search segment.
-        return Math.Clamp(Math.Min(captureDurationSeconds, 5), 3, 5);
+        // Keep quick probes short to reduce load, but use a longer window for final live recognition.
+        if (string.Equals(captureAttempt, QuickCaptureAttempt, StringComparison.OrdinalIgnoreCase))
+        {
+            return Math.Clamp(Math.Min(captureDurationSeconds, 5), 3, 5);
+        }
+
+        // Align final capture with robust reference behavior (~10s segment) for better live recognition hit rate.
+        return Math.Clamp(Math.Min(captureDurationSeconds, 10), 6, 12);
     }
 
     private IActionResult? ValidateRecognizeMicRequest(IFormFile? audio)
