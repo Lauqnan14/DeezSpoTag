@@ -381,6 +381,36 @@
         return output;
     };
 
+    const fetchShazamTrack = async (id) => {
+        const trackIdValue = normalizeText(id);
+        if (!trackIdValue) {
+            return null;
+        }
+
+        const payload = await fetchJsonOptional(`/api/shazam/track/${encodeURIComponent(trackIdValue)}`);
+        return payload?.available && payload?.track ? payload.track : null;
+    };
+
+    const fetchShazamRelated = async (id) => {
+        const trackIdValue = normalizeText(id);
+        if (!trackIdValue) {
+            return [];
+        }
+
+        const payload = await fetchJsonOptional(`/api/shazam/related/${encodeURIComponent(trackIdValue)}?limit=20&offset=0`);
+        return Array.isArray(payload?.tracks) ? payload.tracks : [];
+    };
+
+    const fetchShazamSearch = async (searchQuery) => {
+        const queryValue = normalizeText(searchQuery);
+        if (!queryValue) {
+            return [];
+        }
+
+        const payload = await fetchJsonOptional(`/api/shazam/search?query=${encodeURIComponent(queryValue)}&limit=20&offset=0`);
+        return Array.isArray(payload?.tracks) ? payload.tracks : [];
+    };
+
     async function load() {
         if (!trackId && !requestId && !query && !title && !artist) {
             setStatus('No Shazam context was provided. Trigger search from the logo to populate this page.');
@@ -409,6 +439,43 @@
             }
 
             effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
+
+            const needsRehydrate =
+                (!match || !match.artworkUrl)
+                || similar.length === 0
+                || searched.length === 0;
+
+            if (needsRehydrate) {
+                const fallbackQuery = normalizeText(query || [title, artist].filter(Boolean).join(' ') || [match?.title, match?.artist].filter(Boolean).join(' '));
+                const [rehydratedTrack, rehydratedRelated, rehydratedSearch] = await Promise.all([
+                    (!match || !match.artworkUrl) ? fetchShazamTrack(effectiveTrackId) : Promise.resolve(null),
+                    similar.length === 0 ? fetchShazamRelated(effectiveTrackId) : Promise.resolve([]),
+                    searched.length === 0 ? fetchShazamSearch(fallbackQuery) : Promise.resolve([])
+                ]);
+
+                if (!match && rehydratedTrack) {
+                    match = rehydratedTrack;
+                } else if (match && rehydratedTrack) {
+                    match = {
+                        ...match,
+                        artworkUrl: match.artworkUrl || rehydratedTrack.artworkUrl,
+                        album: match.album || rehydratedTrack.album,
+                        genre: match.genre || rehydratedTrack.genre,
+                        label: match.label || rehydratedTrack.label,
+                        releaseDate: match.releaseDate || rehydratedTrack.releaseDate
+                    };
+                }
+
+                if (similar.length === 0 && rehydratedRelated.length > 0) {
+                    similar = rehydratedRelated;
+                }
+
+                if (searched.length === 0 && rehydratedSearch.length > 0) {
+                    searched = rehydratedSearch;
+                }
+
+                effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
+            }
 
             if (!match && title) {
                 match = {
