@@ -260,6 +260,43 @@ public sealed class AppleMusicCatalogService
         return await GetCachedJsonAsync(cacheKey, TimeSpan.FromMinutes(15), () => SendWithTokenRetryRawAsync(HttpMethod.Get, url, cancellationToken));
     }
 
+    public async Task<JsonDocument> GetPlaylistTracksAsync(
+        string id,
+        string storefront,
+        string language,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        var normalizedLimit = Math.Clamp(limit, 1, 100);
+        var normalizedOffset = Math.Max(offset, 0);
+        var url =
+            $"{BuildCatalogApiBaseUrl()}/v1/catalog/{Uri.EscapeDataString(storefront)}/playlists/{Uri.EscapeDataString(id)}/tracks" +
+            $"?l={Uri.EscapeDataString(language)}&limit={normalizedLimit}&offset={normalizedOffset}";
+        var cacheKey = $"apple:playlist:tracks:{storefront}:{id}:{normalizedLimit}:{normalizedOffset}:{language}";
+        return await GetCachedJsonAsync(
+            cacheKey,
+            TimeSpan.FromMinutes(5),
+            () => SendWithTokenRetryRawAsync(HttpMethod.Get, url, cancellationToken));
+    }
+
+    public async Task<JsonDocument> GetPlaylistTracksPageAsync(
+        string pageUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(pageUrl))
+        {
+            throw new ArgumentException("Playlist page URL is required.", nameof(pageUrl));
+        }
+
+        var normalizedUrl = ToAbsoluteAppleUrl(pageUrl.Trim());
+        var cacheKey = $"apple:playlist:page:{normalizedUrl}";
+        return await GetCachedJsonAsync(
+            cacheKey,
+            TimeSpan.FromMinutes(5),
+            () => SendWithTokenRetryRawAsync(HttpMethod.Get, normalizedUrl, cancellationToken));
+    }
+
     public async Task<JsonDocument> GetArtistAlbumsAsync(
         string id,
         string storefront,

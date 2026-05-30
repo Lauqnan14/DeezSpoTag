@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Linq;
+using System.Text.RegularExpressions;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
@@ -31,6 +32,9 @@ public sealed class AppleTracklistApiController : ControllerBase
     private const string AttributesField = "attributes";
     private const string ArtistNameField = "artistName";
     private const string AudioTraitsField = "audioTraits";
+    private static readonly Regex AppleStorefrontRegex = new(
+        @"music\.apple\.com/(?<storefront>[a-z]{2}(?:-[a-z]{2})?)/",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private readonly AppleMusicCatalogService _catalog;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<AppleTracklistApiController> _logger;
@@ -63,7 +67,8 @@ public sealed class AppleTracklistApiController : ControllerBase
 
         try
         {
-            var storefront = await ResolveStorefrontAsync(cancellationToken);
+            var storefront = ResolveStorefrontFromAppleUrl(appleUrl)
+                ?? await ResolveStorefrontAsync(cancellationToken);
             if (type == AlbumType)
             {
                 var payload = await GetAlbumTracklist(resolvedId, storefront, cancellationToken);
@@ -89,6 +94,24 @@ public sealed class AppleTracklistApiController : ControllerBase
             _logger.LogWarning(ex, "Apple tracklist fetch failed for Id (Type)");
             return StatusCode(500, new { error = ex.Message });
         }
+    }
+
+    private static string? ResolveStorefrontFromAppleUrl(string? appleUrl)
+    {
+        if (string.IsNullOrWhiteSpace(appleUrl))
+        {
+            return null;
+        }
+
+        var trimmed = appleUrl.Trim();
+        var match = AppleStorefrontRegex.Match(trimmed);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var storefront = match.Groups["storefront"].Value.Trim();
+        return string.IsNullOrWhiteSpace(storefront) ? null : storefront.ToLowerInvariant();
     }
 
     private static string ResolveAppleId(string id, string? appleUrl)
@@ -158,7 +181,7 @@ public sealed class AppleTracklistApiController : ControllerBase
 
     private async Task<object> GetPlaylistTracklist(string id, string storefront, CancellationToken cancellationToken)
     {
-        using var doc = await _catalog.GetPlaylistAsync(id, storefront, language: DefaultLanguage, cancellationToken);
+        using var doc = await _catalog.GetPlaylistAsync(id, storefront, language: DefaultLanguage, cancellationToken, includeTracks: false);
         var root = doc.RootElement;
         if (!root.TryGetProperty(DataField, out var dataArr) || dataArr.ValueKind != JsonValueKind.Array || dataArr.GetArrayLength() == 0)
         {
@@ -167,8 +190,7 @@ public sealed class AppleTracklistApiController : ControllerBase
 
         var playlist = dataArr[0];
         var attrs = playlist.GetProperty(AttributesField);
-        var rel = playlist.GetProperty(RelationshipsField);
-        var tracks = BuildRelationshipTracks(rel);
+        var tracks = await BuildPlaylistTracksByFeedAsync(id, storefront, cancellationToken);
 
         var cover = AppleCatalogJsonHelper.ResolveArtwork(attrs);
         var title = attrs.TryGetProperty(NameField, out var nameEl) ? nameEl.GetString() ?? "" : "";
@@ -178,7 +200,84 @@ public sealed class AppleTracklistApiController : ControllerBase
         return BuildTracklistResponse(title, curator, cover, trackCount, string.Empty, tracks);
     }
 
+    private async Task<List<object>> BuildPlaylistTracksByFeedAsync(string playlistId, string storefront, CancellationToken cancellationToken)
+    {
+        const int pageSize = 100;
+        var tracks = new List<object>();
+        var offset = 0;
+        var pageSafety = 0;
+        var hasNextPage = true;
+
+        while (hasNextPage && pageSafety < 500)
+        {
+            pageSafety++;
+            using var pageDoc = await _catalog.GetPlaylistTracksAsync(
+                playlistId,
+                storefront,
+                DefaultLanguage,
+                pageSize,
+                offset,
+                cancellationToken);
+
+            var root = pageDoc.RootElement;
+            if (!root.TryGetProperty(DataField, out var dataArr) || dataArr.ValueKind != JsonValueKind.Array)
+            {
+                break;
+            }
+
+            var pageTracks = BuildTrackObjectsFromDataArray(dataArr, tracks.Count + 1);
+            tracks.AddRange(pageTracks);
+
+            var fetchedCount = dataArr.GetArrayLength();
+            if (fetchedCount < pageSize)
+            {
+                break;
+            }
+
+            hasNextPage = !string.IsNullOrWhiteSpace(ReadRootNextUrl(root));
+            offset += fetchedCount;
+        }
+
+        return tracks;
+    }
+
+    private async Task<List<object>> BuildPlaylistRelationshipTracksAsync(JsonElement relationships, CancellationToken cancellationToken)
+    {
+        var tracks = BuildRelationshipTracks(relationships, startPosition: 1);
+        var next = ReadTracksNextUrl(relationships);
+        var nextPosition = tracks.Count + 1;
+        var pageSafety = 0;
+
+        while (!string.IsNullOrWhiteSpace(next) && pageSafety < 500)
+        {
+            pageSafety++;
+            using var pageDoc = await _catalog.GetPlaylistTracksPageAsync(next, cancellationToken);
+            var root = pageDoc.RootElement;
+            if (!root.TryGetProperty(DataField, out var dataArr)
+                || dataArr.ValueKind != JsonValueKind.Array
+                || dataArr.GetArrayLength() == 0)
+            {
+                break;
+            }
+
+            var pageTracks = BuildTrackObjectsFromDataArray(dataArr, nextPosition);
+            if (pageTracks.Count == 0)
+            {
+                break;
+            }
+
+            tracks.AddRange(pageTracks);
+            nextPosition += pageTracks.Count;
+            next = ReadRootNextUrl(root);
+        }
+
+        return tracks;
+    }
+
     private static List<object> BuildRelationshipTracks(JsonElement relationships)
+        => BuildRelationshipTracks(relationships, startPosition: 1);
+
+    private static List<object> BuildRelationshipTracks(JsonElement relationships, int startPosition)
     {
         var tracks = new List<object>();
         if (!relationships.TryGetProperty(TracksField, out var tracksRel)
@@ -189,6 +288,7 @@ public sealed class AppleTracklistApiController : ControllerBase
             return tracks;
         }
 
+        var position = Math.Max(startPosition, 1);
         foreach (var track in tracksData.EnumerateArray())
         {
             if (!track.TryGetProperty(AttributesField, out var trackAttributes)
@@ -200,13 +300,67 @@ public sealed class AppleTracklistApiController : ControllerBase
             var title = trackAttributes.TryGetProperty(NameField, out var titleElement) ? titleElement.GetString() ?? "" : "";
             var artistName = trackAttributes.TryGetProperty(ArtistNameField, out var artistElement) ? artistElement.GetString() ?? "" : "";
             var albumName = trackAttributes.TryGetProperty(AlbumNameField, out var albumElement) ? albumElement.GetString() ?? "" : "";
-            tracks.Add(BuildTrackEntry(track, trackAttributes, title, artistName, albumName));
+            tracks.Add(BuildTrackEntry(track, trackAttributes, title, artistName, albumName, position));
+            position++;
         }
 
         return tracks;
     }
 
-    private static object BuildTrackEntry(JsonElement track, JsonElement attributes, string title, string artistName, string albumName)
+    private static List<object> BuildTrackObjectsFromDataArray(JsonElement dataArray, int startPosition)
+    {
+        var tracks = new List<object>();
+        if (dataArray.ValueKind != JsonValueKind.Array)
+        {
+            return tracks;
+        }
+
+        var position = Math.Max(startPosition, 1);
+        foreach (var track in dataArray.EnumerateArray())
+        {
+            if (!track.TryGetProperty(AttributesField, out var trackAttributes)
+                || trackAttributes.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var title = trackAttributes.TryGetProperty(NameField, out var titleElement) ? titleElement.GetString() ?? "" : "";
+            var artistName = trackAttributes.TryGetProperty(ArtistNameField, out var artistElement) ? artistElement.GetString() ?? "" : "";
+            var albumName = trackAttributes.TryGetProperty(AlbumNameField, out var albumElement) ? albumElement.GetString() ?? "" : "";
+            tracks.Add(BuildTrackEntry(track, trackAttributes, title, artistName, albumName, position));
+            position++;
+        }
+
+        return tracks;
+    }
+
+    private static string ReadTracksNextUrl(JsonElement relationships)
+    {
+        if (!relationships.TryGetProperty(TracksField, out var tracksRel)
+            || tracksRel.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        if (!tracksRel.TryGetProperty("next", out var nextElement) || nextElement.ValueKind != JsonValueKind.String)
+        {
+            return string.Empty;
+        }
+
+        return nextElement.GetString() ?? string.Empty;
+    }
+
+    private static string ReadRootNextUrl(JsonElement root)
+    {
+        if (!root.TryGetProperty("next", out var nextElement) || nextElement.ValueKind != JsonValueKind.String)
+        {
+            return string.Empty;
+        }
+
+        return nextElement.GetString() ?? string.Empty;
+    }
+
+    private static object BuildTrackEntry(JsonElement track, JsonElement attributes, string title, string artistName, string albumName, int trackPosition = 0)
     {
         var durationMs = attributes.TryGetProperty("durationInMillis", out var d) ? d.GetInt32() : 0;
         return new
@@ -231,7 +385,8 @@ public sealed class AppleTracklistApiController : ControllerBase
             audioTraits = ReadAudioTraits(attributes),
             hasAppleDigitalMaster = AppleCatalogJsonHelper.HasAppleDigitalMaster(attributes),
             bitDepth = ResolveBitDepth(attributes),
-            sampleRate = ResolveSampleRate(attributes)
+            sampleRate = ResolveSampleRate(attributes),
+            track_position = trackPosition > 0 ? trackPosition : 0
         };
     }
 
