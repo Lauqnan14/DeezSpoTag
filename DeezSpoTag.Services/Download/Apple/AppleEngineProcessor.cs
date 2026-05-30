@@ -1814,6 +1814,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 payload.Title,
                 payload.Artist,
                 payload.Album,
+                payload.CollectionType,
                 payload.DeezerId,
                 payload.Cover,
                 payload.Isrc,

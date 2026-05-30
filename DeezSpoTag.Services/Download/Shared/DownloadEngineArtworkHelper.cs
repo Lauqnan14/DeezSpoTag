@@ -26,6 +26,7 @@ public static class DownloadEngineArtworkHelper
         string? Title,
         string? Artist,
         string? Album,
+        string? CollectionType,
         string? DeezerId,
         string? PayloadCover,
         string? Isrc,
@@ -80,6 +81,7 @@ public static class DownloadEngineArtworkHelper
     {
         var fallbackOrder = ArtworkFallbackHelper.ResolveOrder(request.Settings);
         var coverUrls = new List<string>();
+        var rejectCompilationAlbumCandidate = ShouldRejectCompilationArtworkForRequest(request);
 
         foreach (var fallback in fallbackOrder)
         {
@@ -107,7 +109,8 @@ public static class DownloadEngineArtworkHelper
                         request.Settings.LocalArtworkSize,
                         NullLogger.Instance,
                         cancellationToken,
-                        request.Album);
+                        request.Album,
+                        rejectCompilationAlbumCandidate);
                     break;
 
                 case "spotify":
@@ -118,6 +121,7 @@ public static class DownloadEngineArtworkHelper
                         request.Artist,
                         request.Album,
                         request.Isrc,
+                        rejectCompilationAlbumCandidate,
                         cancellationToken);
                     break;
             }
@@ -146,6 +150,21 @@ public static class DownloadEngineArtworkHelper
         }
 
         return coverUrls;
+    }
+
+    private static bool ShouldRejectCompilationArtworkForRequest(StandardAudioCoverResolveRequest request)
+    {
+        if (string.Equals(request.CollectionType, "playlist", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (ArtworkFallbackHelper.IsCompilationLikeAlbumTitle(request.Album))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     public static async Task TagAudioWithResolvedCoverAsync(

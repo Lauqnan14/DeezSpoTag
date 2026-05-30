@@ -10,7 +10,9 @@ using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Tidal;
+using DeezSpoTag.Integrations.Qobuz;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -20,7 +22,11 @@ public sealed class ProviderIntegrationSurfaceTests
     [Fact]
     public void QobuzBuildProviders_IncludesSpotByeProvider()
     {
-        var service = new QobuzDownloadService(NullLogger<QobuzDownloadService>.Instance, trackResolver: null!);
+        var service = new QobuzDownloadService(
+            NullLogger<QobuzDownloadService>.Instance,
+            trackResolver: null!,
+            resolveProxyClient: null!,
+            Options.Create(new QobuzApiConfig()));
         var method = typeof(QobuzDownloadService).GetMethod("BuildProviders", BindingFlags.NonPublic | BindingFlags.Instance);
 
         Assert.NotNull(method);

@@ -8,7 +8,7 @@ namespace DeezSpoTag.Web.Services;
 [ExcludeFromCodeCoverage]
 public sealed class DownloadQueuePreResolutionService : BackgroundService
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IServiceScopeFactory _scopeFactory;

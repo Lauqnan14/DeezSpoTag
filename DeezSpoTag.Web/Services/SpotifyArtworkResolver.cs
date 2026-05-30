@@ -22,15 +22,27 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
         _logger = logger;
     }
 
-    public async Task<string?> ResolveAlbumCoverUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken, string? requestedAlbumTitle = null)
+    public async Task<string?> ResolveAlbumCoverUrlAsync(
+        string? spotifyTrackId,
+        CancellationToken cancellationToken,
+        string? requestedAlbumTitle = null,
+        bool rejectCompilationAlbumCandidate = false)
     {
-        var artwork = await ResolveArtworkAsync(spotifyTrackId, requestedAlbumTitle, cancellationToken);
+        var artwork = await ResolveArtworkAsync(
+            spotifyTrackId,
+            requestedAlbumTitle,
+            rejectCompilationAlbumCandidate,
+            cancellationToken);
         return artwork?.AlbumCoverUrl;
     }
 
     public async Task<string?> ResolveArtistImageUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken)
     {
-        var artwork = await ResolveArtworkAsync(spotifyTrackId, null, cancellationToken);
+        var artwork = await ResolveArtworkAsync(
+            spotifyTrackId,
+            requestedAlbumTitle: null,
+            rejectCompilationAlbumCandidate: false,
+            cancellationToken);
         return artwork?.ArtistImageUrl;
     }
 
@@ -57,16 +69,21 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
         return imageUrl;
     }
 
-    private async Task<SpotifyTrackArtwork?> ResolveArtworkAsync(string? spotifyTrackId, string? requestedAlbumTitle, CancellationToken cancellationToken)
+    private async Task<SpotifyTrackArtwork?> ResolveArtworkAsync(
+        string? spotifyTrackId,
+        string? requestedAlbumTitle,
+        bool rejectCompilationAlbumCandidate,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(spotifyTrackId))
         {
             return null;
         }
 
+        var strictSuffix = rejectCompilationAlbumCandidate ? "|strict-non-compilation" : string.Empty;
         var cacheKey = string.IsNullOrWhiteSpace(requestedAlbumTitle)
-            ? spotifyTrackId
-            : $"{spotifyTrackId}|{requestedAlbumTitle.Trim()}";
+            ? $"{spotifyTrackId}{strictSuffix}"
+            : $"{spotifyTrackId}|{requestedAlbumTitle.Trim()}{strictSuffix}";
 
         if (Cache.TryGetValue(cacheKey, out var cached) &&
             DateTimeOffset.UtcNow - cached.Stamp < CacheTtl)
@@ -74,7 +91,11 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
             return cached.Artwork;
         }
 
-        var artwork = await _metadataService.FetchTrackArtworkAsync(spotifyTrackId, cancellationToken, requestedAlbumTitle);
+        var artwork = await _metadataService.FetchTrackArtworkAsync(
+            spotifyTrackId,
+            cancellationToken,
+            requestedAlbumTitle,
+            rejectCompilationAlbumCandidate);
         if (artwork == null)
         {
             return null;

@@ -1499,7 +1499,11 @@ public sealed class SpotifyMetadataService
         PlaylistMetadataCache[playlistId] = (DateTimeOffset.UtcNow, metadata);
     }
 
-    public async Task<SpotifyTrackArtwork?> FetchTrackArtworkAsync(string trackId, CancellationToken cancellationToken, string? requestedAlbumTitle = null)
+    public async Task<SpotifyTrackArtwork?> FetchTrackArtworkAsync(
+        string trackId,
+        CancellationToken cancellationToken,
+        string? requestedAlbumTitle = null,
+        bool rejectCompilationAlbumCandidate = false)
     {
         if (string.IsNullOrWhiteSpace(trackId))
         {
@@ -1515,6 +1519,10 @@ public sealed class SpotifyMetadataService
 
         var track = metadata.TrackList[0];
         if (DeezSpoTag.Services.Download.Utils.ArtworkFallbackHelper.ShouldRejectAlbumArtworkCandidate(
+                requestedAlbumTitle,
+                track.Album)
+            || DeezSpoTag.Services.Download.Utils.ArtworkFallbackHelper.ShouldRejectCompilationArtworkCandidateForMode(
+                rejectCompilationAlbumCandidate,
                 requestedAlbumTitle,
                 track.Album))
         {

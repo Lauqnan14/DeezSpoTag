@@ -74,6 +74,25 @@ public static class ArtworkFallbackHelper
             && IsCompilationLikeAlbumTitle(candidateAlbumTitle);
     }
 
+    public static bool ShouldRejectCompilationArtworkCandidateForMode(
+        bool rejectCompilationAlbumCandidate,
+        string? requestedAlbumTitle,
+        string? candidateAlbumTitle)
+    {
+        if (!rejectCompilationAlbumCandidate)
+        {
+            return false;
+        }
+
+        // Allow compilation artwork only when the requested target is itself compilation-like.
+        if (IsCompilationLikeAlbumTitle(requestedAlbumTitle))
+        {
+            return false;
+        }
+
+        return IsCompilationLikeAlbumTitle(candidateAlbumTitle);
+    }
+
     public static bool ShouldRejectAlbumArtworkCandidate(string? requestedAlbumTitle, string? candidateAlbumTitle)
     {
         if (string.IsNullOrWhiteSpace(requestedAlbumTitle) || string.IsNullOrWhiteSpace(candidateAlbumTitle))
@@ -320,6 +339,7 @@ public static class ArtworkFallbackHelper
         string? artist,
         string? album,
         string? isrc,
+        bool rejectCompilationAlbumCandidate,
         CancellationToken cancellationToken)
     {
         if (spotifyIdResolver == null || spotifyArtworkResolver == null)
@@ -345,7 +365,11 @@ public static class ArtworkFallbackHelper
             return null;
         }
 
-        return await spotifyArtworkResolver.ResolveAlbumCoverUrlAsync(spotifyId, cancellationToken, album);
+        return await spotifyArtworkResolver.ResolveAlbumCoverUrlAsync(
+            spotifyId,
+            cancellationToken,
+            album,
+            rejectCompilationAlbumCandidate);
     }
 
     public static async Task<string?> TryResolveDeezerCoverAsync(
@@ -354,7 +378,8 @@ public static class ArtworkFallbackHelper
         int size,
         ILogger logger,
         CancellationToken cancellationToken,
-        string? requestedAlbumTitle = null)
+        string? requestedAlbumTitle = null,
+        bool rejectCompilationAlbumCandidate = false)
     {
         _ = cancellationToken;
         if (deezerClient == null)
@@ -372,6 +397,10 @@ public static class ArtworkFallbackHelper
         {
             var apiTrack = await deezerClient.GetTrackAsync(normalizedTrackId);
             if (ShouldRejectAlbumArtworkCandidate(requestedAlbumTitle, apiTrack.Album?.Title)
+                || ShouldRejectCompilationArtworkCandidateForMode(
+                    rejectCompilationAlbumCandidate,
+                    requestedAlbumTitle,
+                    apiTrack.Album?.Title)
                 || (!string.IsNullOrWhiteSpace(requestedAlbumTitle)
                     && !IsCompilationLikeAlbumTitle(requestedAlbumTitle)
                     && IsCompilationLikeApiAlbum(apiTrack.Album)))
@@ -643,7 +672,7 @@ public static class ArtworkFallbackHelper
         return new string(chars);
     }
 
-    private static bool IsCompilationLikeAlbumTitle(string? value)
+    public static bool IsCompilationLikeAlbumTitle(string? value)
     {
         var normalized = NormalizeDescriptorToken(value);
         if (string.IsNullOrWhiteSpace(normalized))

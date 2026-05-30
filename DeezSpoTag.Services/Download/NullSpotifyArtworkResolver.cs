@@ -2,7 +2,11 @@ namespace DeezSpoTag.Services.Download;
 
 public sealed class NullSpotifyArtworkResolver : ISpotifyArtworkResolver
 {
-    public Task<string?> ResolveAlbumCoverUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken, string? requestedAlbumTitle = null)
+    public Task<string?> ResolveAlbumCoverUrlAsync(
+        string? spotifyTrackId,
+        CancellationToken cancellationToken,
+        string? requestedAlbumTitle = null,
+        bool rejectCompilationAlbumCandidate = false)
         => Task.FromResult<string?>(null);
 
     public Task<string?> ResolveArtistImageUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken)
