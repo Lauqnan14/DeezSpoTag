@@ -53,7 +53,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private static readonly string[] MusicDlProviderEndpoints =
     [
         "https://api.zarz.moe/v1/dl/qbz",
-        "https://dl.musicdl.me/dl/qbz"
+        "https://dl.musicdl.me/dl/qbz",
+        "https://qobuz.spotbye.qzz.io/dl/qbz"
     ];
     private const string MusicDlUserAgent = "QobuzDL/1.0";
     private static readonly Uri JumoReferrerUri = new UriBuilder(Uri.UriSchemeHttps, "jumo-dl.pages.dev").Uri;
@@ -754,7 +755,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 MarkProviderCoolingDown(provider.Name);
             }
 
-            _logger.LogWarning(ex, "Qobuz provider {Provider} canceled/timed out for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
+            _logger.LogWarning(
+                ex,
+                "Qobuz provider {Provider} canceled/timed out for track {TrackId} quality {Quality}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.Name),
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -764,7 +770,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 MarkProviderCoolingDown(provider.Name);
             }
 
-            _logger.LogWarning(ex, "Qobuz provider {Provider} failed for track {TrackId} quality {Quality}", provider.Name, trackId, qualityCode);
+            _logger.LogWarning(
+                ex,
+                "Qobuz provider {Provider} failed for track {TrackId} quality {Quality}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.Name),
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
             return null;
         }
     }
@@ -1037,10 +1048,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             new ProviderCandidate("qobuz-official", ct => TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, ct)),
             new ProviderCandidate("qobuz.squid.wtf/us", ct => TryGetSquidStreamUrlAsync(squidBase, trackId, qualityCode, "US", ct)),
             new ProviderCandidate("qobuz.squid.wtf/fr", ct => TryGetSquidStreamUrlAsync(squidBase, trackId, qualityCode, "FR", ct)),
-            new ProviderCandidate("musicdl/zarz", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[0], trackId, qualityCode, ct)),
-            new ProviderCandidate("musicdl/dl.musicdl.me", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[1], trackId, qualityCode, ct)),
-            new ProviderCandidate("monochrome/trypt", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(MonochromeQobuzProviderBases[0], trackId, qualityCode, ct)),
-            new ProviderCandidate("monochrome/kenny", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(MonochromeQobuzProviderBases[1], trackId, qualityCode, ct))
+            new ProviderCandidate("qobuz.spotbye.qzz.io", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[2], trackId, qualityCode, ct)),
+            new ProviderCandidate("api.zarz.moe/dl/qbz", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[0], trackId, qualityCode, ct)),
+            new ProviderCandidate("dl.musicdl.me", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[1], trackId, qualityCode, ct)),
+            new ProviderCandidate("monochrome-qobuz:trypt-hifi-dl-456461932686.us-west1.run.app", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(MonochromeQobuzProviderBases[0], trackId, qualityCode, ct)),
+            new ProviderCandidate("monochrome-qobuz:qobuz.kennyy.com.br", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(MonochromeQobuzProviderBases[1], trackId, qualityCode, ct))
         ];
     }
 

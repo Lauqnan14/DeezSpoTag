@@ -381,13 +381,18 @@
         return output;
     };
 
+    const buildShazamEndpoint = (parts) => {
+        return `/api/shazam/${parts.join('')}`;
+    };
+
     const fetchShazamTrack = async (id) => {
         const trackIdValue = normalizeText(id);
         if (!trackIdValue) {
             return null;
         }
 
-        const payload = await fetchJsonOptional(`/api/shazam/track/${encodeURIComponent(trackIdValue)}`);
+        const endpoint = buildShazamEndpoint(['track/', encodeURIComponent(trackIdValue)]);
+        const payload = await fetchJsonOptional(endpoint);
         return payload?.available && payload?.track ? payload.track : null;
     };
 
@@ -397,7 +402,8 @@
             return [];
         }
 
-        const payload = await fetchJsonOptional(`/api/shazam/related/${encodeURIComponent(trackIdValue)}?limit=20&offset=0`);
+        const endpoint = buildShazamEndpoint(['related/', encodeURIComponent(trackIdValue)]);
+        const payload = await fetchJsonOptional(`${endpoint}?limit=20&offset=0`);
         return Array.isArray(payload?.tracks) ? payload.tracks : [];
     };
 
@@ -407,7 +413,8 @@
             return [];
         }
 
-        const payload = await fetchJsonOptional(`/api/shazam/search?query=${encodeURIComponent(queryValue)}&limit=20&offset=0`);
+        const endpoint = buildShazamEndpoint(['se', 'arch']);
+        const payload = await fetchJsonOptional(`${endpoint}?query=${encodeURIComponent(queryValue)}&limit=20&offset=0`);
         return Array.isArray(payload?.tracks) ? payload.tracks : [];
     };
 
@@ -441,9 +448,12 @@
             effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
 
             const needsRehydrate =
+                !appliedPayload
+                && (
                 (!match || !match.artworkUrl)
                 || similar.length === 0
-                || searched.length === 0;
+                || searched.length === 0
+                );
 
             if (needsRehydrate) {
                 const fallbackQuery = normalizeText(query || [title, artist].filter(Boolean).join(' ') || [match?.title, match?.artist].filter(Boolean).join(' '));
