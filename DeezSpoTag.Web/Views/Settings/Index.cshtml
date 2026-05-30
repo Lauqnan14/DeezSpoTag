@@ -1070,9 +1070,12 @@
                     <div class="form-group">
                         <label for="videoAppleAudioType">Apple MV audio type</label>
                         <select id="videoAppleAudioType">
-                            <option value="atmos">Atmos</option>
-                            <option value="ac3">AC3</option>
-                            <option value="aac">AAC</option>
+                            <option value="atmos-prefer">Atmos (Prefer)</option>
+                            <option value="atmos-strict">Atmos (Strict)</option>
+                            <option value="ac3-prefer">AC3 (Prefer)</option>
+                            <option value="ac3-strict">AC3 (Strict)</option>
+                            <option value="aac-prefer">AAC (Prefer)</option>
+                            <option value="aac-strict">AAC (Strict)</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -1091,6 +1094,7 @@
                         <select id="videoAppleCodecPreference">
                             <option value="prefer-hevc">Prefer H.265 (HEVC)</option>
                             <option value="prefer-avc">Prefer H.264 (AVC)</option>
+                            <option value="strict-hevc">Strict H.265 (HEVC only)</option>
                             <option value="auto">Auto</option>
                         </select>
                     </div>
@@ -1582,15 +1586,22 @@ async function initLibraryFolderDestinationDropdowns() {
     }
 
     try {
-        const response = await fetch('/api/library/folders');
-        if (!response.ok) {
+        const [allFoldersResponse, videoFoldersResponse] = await Promise.all([
+            fetch('/api/library/folders'),
+            fetch('/api/library/folders?downloadOnly=true&contentType=video')
+        ]);
+        if (!allFoldersResponse.ok) {
             return;
         }
 
-        const folders = await response.json();
+        const folders = await allFoldersResponse.json();
         if (!Array.isArray(folders)) {
             return;
         }
+        const videoFolders = videoFoldersResponse.ok
+            ? await videoFoldersResponse.json()
+            : [];
+        const validVideoFolders = Array.isArray(videoFolders) ? videoFolders : [];
 
         const sorted = folders
             .filter(folder => folder && folder.id != null && folder.displayName)
@@ -1639,13 +1650,15 @@ async function initLibraryFolderDestinationDropdowns() {
         if (videoSelect) {
             const videoOptions = [
                 '<option value="">(required: select video destination folder)</option>',
-                ...sorted
-                    .filter(folder => folder.enabled !== false && folder.rootPath)
+                ...validVideoFolders
+                    .filter(folder => folder && folder.id != null && folder.displayName && folder.enabled !== false && folder.rootPath)
+                    .slice()
+                    .sort((a, b) => String(a.displayName).localeCompare(String(b.displayName), undefined, { sensitivity: 'base' }))
                     .map(folder => `<option value="${escapeHtml(String(folder.rootPath))}">${escapeHtml(String(folder.displayName))}</option>`)
             ];
 
             const hasCurrent = currentVideo
-                && sorted.some(folder =>
+                && validVideoFolders.some(folder =>
                     folder.enabled !== false
                     && String(folder.rootPath || '').trim().toLowerCase() === currentVideo.toLowerCase());
             if (currentVideo && !hasCurrent) {
@@ -3305,9 +3318,9 @@ function loadSettings(settings) {
     const video = settings.video || {};
     setFieldValue('videoDownloadLocation', video.videoDownloadLocation || '');
     setFieldValue('videoContainer', video.container || 'mp4');
-    setFieldValue('videoAppleAudioType', video.appleMusicVideoAudioType || 'atmos');
+    setFieldValue('videoAppleAudioType', normalizeAppleVideoAudioType(video.appleMusicVideoAudioType || 'atmos-prefer'));
     setFieldValue('videoAppleMaxResolution', video.appleMusicVideoMaxResolution ?? 2160);
-    setFieldValue('videoAppleCodecPreference', video.appleMusicVideoCodecPreference || 'prefer-hevc');
+    setFieldValue('videoAppleCodecPreference', normalizeAppleVideoCodecPreference(video.appleMusicVideoCodecPreference || 'prefer-hevc'));
     setFieldValue('videoArtistFolderTemplate', video.artistFolderTemplate || '%artist%');
     setFieldValue('videoTitleTemplate', video.titleTemplate || '%title%');
     initLibraryFolderDestinationDropdowns();
@@ -3416,6 +3429,64 @@ function setMaxBitrateValue(bitrateValue) {
     }
 
     setFieldValue('maxBitrate', mappedValue);
+}
+
+function normalizeAppleVideoCodecPreference(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) {
+        return 'prefer-hevc';
+    }
+
+    if (normalized === 'hevc,avc') {
+        return 'prefer-hevc';
+    }
+
+    if (normalized === 'avc,hevc') {
+        return 'prefer-avc';
+    }
+
+    if (normalized === 'hevc-only' || normalized === 'h265-only') {
+        return 'strict-hevc';
+    }
+
+    if (normalized === 'strict-hevc'
+        || normalized === 'prefer-hevc'
+        || normalized === 'prefer-avc'
+        || normalized === 'auto') {
+        return normalized;
+    }
+
+    return 'prefer-hevc';
+}
+
+function normalizeAppleVideoAudioType(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) {
+        return 'atmos-prefer';
+    }
+
+    if (normalized === 'atmos') {
+        return 'atmos-prefer';
+    }
+
+    if (normalized === 'ac3') {
+        return 'ac3-prefer';
+    }
+
+    if (normalized === 'aac' || normalized === 'stereo') {
+        return 'aac-prefer';
+    }
+
+    if (normalized === 'atmos-prefer'
+        || normalized === 'atmos-strict'
+        || normalized === 'ac3-prefer'
+        || normalized === 'ac3-strict'
+        || normalized === 'aac-prefer'
+        || normalized === 'aac-strict') {
+        return normalized;
+    }
+
+    return 'atmos-prefer';
 }
 
 function triggerDependentFields() {
@@ -3598,9 +3669,9 @@ function collectFormData() {
         video: {
             videoDownloadLocation: getValue('videoDownloadLocation', baseVideo.videoDownloadLocation || ''),
             container: getValue('videoContainer', 'mp4'),
-            appleMusicVideoAudioType: getValue('videoAppleAudioType', 'atmos'),
+            appleMusicVideoAudioType: normalizeAppleVideoAudioType(getValue('videoAppleAudioType', 'atmos-prefer')),
             appleMusicVideoMaxResolution: getOptionalNumber('videoAppleMaxResolution') ?? baseVideo.appleMusicVideoMaxResolution ?? 2160,
-            appleMusicVideoCodecPreference: getValue('videoAppleCodecPreference', baseVideo.appleMusicVideoCodecPreference || 'prefer-hevc'),
+            appleMusicVideoCodecPreference: normalizeAppleVideoCodecPreference(getValue('videoAppleCodecPreference', baseVideo.appleMusicVideoCodecPreference || 'prefer-hevc')),
             artistFolderTemplate: getValue('videoArtistFolderTemplate', baseVideo.artistFolderTemplate || '%artist%'),
             titleTemplate: getValue('videoTitleTemplate', baseVideo.titleTemplate || '%title%')
         },
