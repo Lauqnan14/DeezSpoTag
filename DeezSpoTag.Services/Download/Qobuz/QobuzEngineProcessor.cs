@@ -183,7 +183,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 outputPath);
         }
 
-        await SyncResolvedQualityAsync(next.QueueUuid, payload, request.Quality, itemToken);
+        var completionQuality = ResolveCompletionQuality(payload, request.Quality);
+        await SyncResolvedQualityAsync(next.QueueUuid, payload, completionQuality, itemToken);
 
         await CompleteDownloadAsync(next.QueueUuid, payload, outputPath, itemToken);
     }
@@ -219,6 +220,21 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             qobuzResolvedQuality = payload.QobuzResolvedQuality,
             qobuzActualQuality = payload.QobuzActualQuality
         });
+    }
+
+    private static string ResolveCompletionQuality(QobuzQueueItem payload, string? requestedQuality)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.QobuzActualQuality))
+        {
+            return payload.QobuzActualQuality.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.QobuzResolvedQuality))
+        {
+            return payload.QobuzResolvedQuality.Trim();
+        }
+
+        return requestedQuality?.Trim() ?? string.Empty;
     }
 
     private async Task<QobuzQueueItem?> DeserializeAndStartAsync(

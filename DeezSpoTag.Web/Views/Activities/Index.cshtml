@@ -5097,6 +5097,11 @@ function readQueueItemText(item, candidates) {
 function resolveQueueRawQuality(item, engineHint) {
     const normalizedEngine = normalizeEngine(engineHint || resolveQueueDisplayEngine(item) || item?.engine || item?.Engine || '');
     if (normalizedEngine === 'qobuz') {
+        const actualQobuzQuality = readQueueItemText(item, ['qobuzActualQuality', 'QobuzActualQuality']);
+        if (actualQobuzQuality) {
+            return actualQobuzQuality;
+        }
+
         const resolvedQobuzQuality = readQueueItemText(item, ['qobuzResolvedQuality', 'QobuzResolvedQuality']);
         if (resolvedQobuzQuality) {
             return resolvedQobuzQuality;
