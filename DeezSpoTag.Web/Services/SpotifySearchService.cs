@@ -61,11 +61,6 @@ public sealed class SpotifySearchService
 
     public async Task<SpotifySearchTypeResponse?> SearchByTypeAsync(string query, string type, int limit, int offset, CancellationToken cancellationToken)
     {
-        if (string.Equals(type, "playlist", StringComparison.OrdinalIgnoreCase))
-        {
-            return new SpotifySearchTypeResponse("playlist", new List<SpotifySearchItem>(), 0);
-        }
-
         var pathfinder = await SearchByTypeViaPathfinderAsync(query, type, limit, offset, cancellationToken);
         if (pathfinder != null)
         {
@@ -81,11 +76,13 @@ public sealed class SpotifySearchService
         try
         {
             var resolvedLimit = Math.Clamp(limit <= 0 ? 20 : limit, 1, 50);
-            var trackTask = _pathfinderMetadataClient.SearchTracksAsync(query, resolvedLimit, cancellationToken);
-            var artistTask = SearchArtistsViaPathfinderAsync(query, resolvedLimit, 0, cancellationToken);
-            await Task.WhenAll(trackTask, artistTask);
+            var trackTask = SafeSearchTracksViaPathfinderAsync(query, resolvedLimit, cancellationToken);
+            var artistTask = SafeSearchArtistsViaPathfinderAsync(query, resolvedLimit, cancellationToken);
+            var playlistTask = SafeSearchPlaylistsViaPathfinderAsync(query, resolvedLimit, cancellationToken);
+            await Task.WhenAll(trackTask, artistTask, playlistTask);
             var pathfinderTracks = await trackTask;
             var artistResponse = await artistTask;
+            var playlistCandidates = await playlistTask;
 
             var tracks = pathfinderTracks
                 .Take(resolvedLimit)
@@ -96,16 +93,20 @@ public sealed class SpotifySearchService
                 .ToList()
                 ?? new List<SpotifySearchItem>();
             var albums = BuildPathfinderAlbumItems(pathfinderTracks, resolvedLimit);
+            var playlists = playlistCandidates
+                .Take(resolvedLimit)
+                .Select(MapPathfinderPlaylist)
+                .ToList();
 
             var totals = new Dictionary<string, int>
             {
                 ["tracks"] = tracks.Count,
                 ["albums"] = albums.Count,
                 ["artists"] = artists.Count,
-                ["playlists"] = 0
+                ["playlists"] = playlists.Count
             };
 
-            return new SpotifySearchResponse(tracks, albums, artists, new List<SpotifySearchItem>(), totals);
+            return new SpotifySearchResponse(tracks, albums, artists, playlists, totals);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -160,6 +161,16 @@ public sealed class SpotifySearchService
                             .ToList();
                         return new SpotifySearchTypeResponse("album", items, albums.Count);
                     }
+                case "playlist":
+                    {
+                        var playlists = await _pathfinderMetadataClient.SearchPlaylistsAsync(query, requested, cancellationToken);
+                        var items = playlists
+                            .Skip(resolvedOffset)
+                            .Take(resolvedLimit)
+                            .Select(MapPathfinderPlaylist)
+                            .ToList();
+                        return new SpotifySearchTypeResponse("playlist", items, playlists.Count);
+                    }
                 default:
                     return new SpotifySearchTypeResponse(normalizedType, new List<SpotifySearchItem>(), 0);
             }
@@ -195,6 +206,54 @@ public sealed class SpotifySearchService
             .Select(MapPathfinderArtist)
             .ToList();
         return new SpotifySearchTypeResponse("artist", items, valid.Count);
+    }
+
+    private async Task<List<SpotifyTrackSummary>> SafeSearchTracksViaPathfinderAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _pathfinderMetadataClient.SearchTracksAsync(query, limit, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify Pathfinder track search failed.");
+            return new List<SpotifyTrackSummary>();
+        }
+    }
+
+    private async Task<SpotifySearchTypeResponse?> SafeSearchArtistsViaPathfinderAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await SearchArtistsViaPathfinderAsync(query, limit, 0, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify Pathfinder artist search failed.");
+            return null;
+        }
+    }
+
+    private async Task<List<SpotifyPathfinderMetadataClient.SpotifyPlaylistSearchCandidate>> SafeSearchPlaylistsViaPathfinderAsync(
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _pathfinderMetadataClient.SearchPlaylistsAsync(query, limit, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify Pathfinder playlist search failed.");
+            return new List<SpotifyPathfinderMetadataClient.SpotifyPlaylistSearchCandidate>();
+        }
     }
 
     private static bool LooksLikeSpotifyArtistId(string? value)
@@ -243,6 +302,21 @@ public sealed class SpotifySearchService
             RewriteSpotifyImageUrl(artist.ImageUrl),
             null,
             null);
+    }
+
+    private static SpotifySearchItem MapPathfinderPlaylist(SpotifyPathfinderMetadataClient.SpotifyPlaylistSearchCandidate playlist)
+    {
+        return new SpotifySearchItem(
+            playlist.Id,
+            playlist.Name,
+            "playlist",
+            $"https://open.spotify.com/playlist/{playlist.Id}",
+            RewriteSpotifyImageUrl(playlist.ImageUrl),
+            playlist.OwnerName,
+            null,
+            playlist.OwnerName,
+            playlist.Followers,
+            playlist.TrackCount);
     }
 
     private static List<SpotifySearchItem> BuildPathfinderAlbumItems(IReadOnlyList<SpotifyTrackSummary> tracks, int limit)
@@ -716,4 +790,7 @@ public sealed record SpotifySearchItem(
     string SourceUrl,
     string? ImageUrl,
     string? Subtitle,
-    int? DurationMs);
+    int? DurationMs,
+    string? Owner = null,
+    int? Followers = null,
+    int? TrackCount = null);

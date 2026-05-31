@@ -55,6 +55,9 @@ internal static class SearchApiControllerCommon
             albums = result.Albums,
             artists = result.Artists,
             playlists = result.Playlists,
+            videos = result.Videos,
+            stations = result.Stations,
+            hasMoreVideos = result.HasMoreVideos,
             totals = result.Totals ?? new Dictionary<string, int>()
         };
     }

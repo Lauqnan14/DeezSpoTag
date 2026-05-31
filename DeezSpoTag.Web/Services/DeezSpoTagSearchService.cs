@@ -121,7 +121,7 @@ public sealed class DeezSpoTagSearchService
             Tracks: result.Tracks.Select(MapSpotifyItem).ToList<object>(),
             Albums: result.Albums.Select(MapSpotifyItem).ToList<object>(),
             Artists: result.Artists.Select(MapSpotifyItem).ToList<object>(),
-            Playlists: new List<object>(),
+            Playlists: result.Playlists.Select(MapSpotifyItem).ToList<object>(),
             Videos: Array.Empty<object>(),
             Stations: Array.Empty<object>(),
             HasMoreVideos: false,
@@ -135,15 +135,6 @@ public sealed class DeezSpoTagSearchService
         int offset,
         CancellationToken cancellationToken)
     {
-        if (string.Equals(type, PlaylistType, StringComparison.OrdinalIgnoreCase))
-        {
-            return new DeezSpoTagSearchTypeResponse(
-                Source: SpotifySource,
-                Type: PlaylistType,
-                Items: new List<object>(),
-                Total: 0);
-        }
-
         var result = await _spotifySearch.SearchByTypeAsync(query, type, Math.Clamp(limit, 1, 50), Math.Max(0, offset), cancellationToken);
         if (result == null)
         {
@@ -160,7 +151,10 @@ public sealed class DeezSpoTagSearchService
     private static object MapSpotifyItem(SpotifySearchItem item)
     {
         var (artist, album) = ParseSpotifySubtitle(item);
-        var followers = ParseSpotifyFollowers(item);
+        var isPlaylist = string.Equals(item.Type, PlaylistType, StringComparison.OrdinalIgnoreCase);
+        var followers = isPlaylist ? item.Followers : ParseSpotifyFollowers(item);
+        var owner = isPlaylist ? (item.Owner ?? artist) : string.Empty;
+        var trackCount = isPlaylist ? item.TrackCount : null;
 
         return new
         {
@@ -173,7 +167,9 @@ public sealed class DeezSpoTagSearchService
             album,
             image = item.ImageUrl ?? string.Empty,
             followers,
-            owner = item.Type == PlaylistType ? artist : string.Empty,
+            owner,
+            nb_tracks = trackCount,
+            trackCount,
             release_date = string.Empty,
             durationMs = item.DurationMs
         };

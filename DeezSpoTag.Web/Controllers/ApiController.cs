@@ -6,6 +6,7 @@ using System.Text;
 using System.Linq;
 using System.Net;
 using System.Globalization;
+using System.IO.Compression;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
@@ -13,6 +14,7 @@ using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Core.Models.Deezer;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using DeezSpoTag.Services.Apple;
@@ -101,6 +103,7 @@ namespace DeezSpoTag.Web.Controllers
             "your library"
         };
         private readonly ILogger<ApiController> _logger;
+        private readonly DeezerClient _deezerClient;
         private readonly DeezerGatewayService _deezerGatewayService;
         private readonly DeezSpoTagSettingsService _settingsService;
         private readonly ILoginStorageService _loginStorage;
@@ -141,6 +144,7 @@ namespace DeezSpoTag.Web.Controllers
         public sealed class ApiControllerDependencies
         {
             public required ILogger<ApiController> Logger { get; init; }
+            public required DeezerClient DeezerClient { get; init; }
             public required DeezerGatewayService DeezerGatewayService { get; init; }
             public required DeezSpoTagSettingsService SettingsService { get; init; }
             public required ILoginStorageService LoginStorage { get; init; }
@@ -155,6 +159,7 @@ namespace DeezSpoTag.Web.Controllers
         public ApiController(ApiControllerDependencies dependencies)
         {
             _logger = dependencies.Logger;
+            _deezerClient = dependencies.DeezerClient;
             _deezerGatewayService = dependencies.DeezerGatewayService;
             _settingsService = dependencies.SettingsService;
             _loginStorage = dependencies.LoginStorage;
@@ -232,7 +237,7 @@ namespace DeezSpoTag.Web.Controllers
                         offlineResults.Albums,
                         offlineResults.Artists,
                         offlineResults.Playlists,
-                        "offline"));
+                        source: "offline"));
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -243,19 +248,369 @@ namespace DeezSpoTag.Web.Controllers
 
             try
             {
-                var gwResponse = await _deezerGatewayService.SearchAsync(term.Trim(), 0, 128, suggest: false, artistSuggest: false, topTracks: false);
-                var tracks = await MapGwSectionAsync(gwResponse.Track, MapGwTrackAsync, cancellationToken);
-                var albums = await MapGwSectionAsync(gwResponse.Album, MapGwAlbumAsync, cancellationToken);
-                var artists = await MapGwSectionAsync(gwResponse.Artist, MapGwArtistAsync, cancellationToken);
-                var playlists = MapGwSection(gwResponse.Playlist, MapGwPlaylist);
+                var normalizedTerm = term.Trim();
 
-                return Ok(BuildUnifiedSearchResponse(tracks, albums, artists, playlists, "gw"));
+                List<object> gwTracks = new();
+                List<object> gwAlbums = new();
+                List<object> gwArtists = new();
+                List<object> gwPlaylists = new();
+                var gwAvailable = false;
+                try
+                {
+                    var gwResponse = await _deezerGatewayService.SearchAsync(normalizedTerm, 0, 128, suggest: false, artistSuggest: false, topTracks: false);
+                    gwTracks = await MapGwSectionAsync(gwResponse.Track, MapGwTrackAsync, cancellationToken);
+                    gwAlbums = await MapGwSectionAsync(gwResponse.Album, MapGwAlbumAsync, cancellationToken);
+                    gwArtists = await MapGwSectionAsync(gwResponse.Artist, MapGwArtistAsync, cancellationToken);
+                    gwPlaylists = MapGwSection(gwResponse.Playlist, MapGwPlaylist);
+                    gwAvailable = true;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "GW search failed for term {Term}; falling back to Deezer API augmentation path.", LogSanitizer.OneLine(normalizedTerm));
+                }
+
+                DeezerHybridSearchResult apiResults = DeezerHybridSearchResult.Empty;
+                var apiAvailable = false;
+                try
+                {
+                    apiResults = await SearchViaDeezerApiAsync(normalizedTerm, cancellationToken);
+                    apiAvailable = apiResults.HasAny;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Deezer API search augmentation failed for term {Term}.", LogSanitizer.OneLine(normalizedTerm));
+                }
+
+                if (!gwAvailable && !apiAvailable)
+                {
+                    return Ok(BuildUnifiedSearchResponse(source: "gw+api", error: "Search failed."));
+                }
+
+                var tracks = MergeUnifiedSearchItems(gwTracks, apiResults.Tracks);
+                var albums = MergeUnifiedSearchItems(gwAlbums, apiResults.Albums);
+                var artists = MergeUnifiedSearchItems(gwArtists, apiResults.Artists);
+                var playlists = MergeUnifiedSearchItems(gwPlaylists, apiResults.Playlists);
+                if (ShouldRunDeezerTrackRecovery(normalizedTerm, tracks))
+                {
+                    var recoveredTracks = await RecoverDeezerTracksAsync(normalizedTerm, cancellationToken);
+                    tracks = MergeUnifiedSearchItems(tracks, recoveredTracks);
+                    _logger.LogInformation(
+                        "Unified Deezer search recovery executed for '{Term}': recovered={Recovered}, merged_tracks={MergedTracks}",
+                        LogSanitizer.OneLine(normalizedTerm),
+                        recoveredTracks.Count,
+                        tracks.Count);
+                }
+
+                _logger.LogInformation(
+                    "Unified Deezer search counts for '{Term}': gw(track/album/artist/playlist)={GwTrack}/{GwAlbum}/{GwArtist}/{GwPlaylist}, api(track/album/artist/playlist)={ApiTrack}/{ApiAlbum}/{ApiArtist}/{ApiPlaylist}, merged(track/album/artist/playlist)={Track}/{Album}/{Artist}/{Playlist}",
+                    LogSanitizer.OneLine(normalizedTerm),
+                    gwTracks.Count,
+                    gwAlbums.Count,
+                    gwArtists.Count,
+                    gwPlaylists.Count,
+                    apiResults.Tracks.Count,
+                    apiResults.Albums.Count,
+                    apiResults.Artists.Count,
+                    apiResults.Playlists.Count,
+                    tracks.Count,
+                    albums.Count,
+                    artists.Count,
+                    playlists.Count);
+
+                var source = gwAvailable && apiAvailable ? "gw+api" : (gwAvailable ? "gw" : "api");
+                return Ok(BuildUnifiedSearchResponse(tracks, albums, artists, playlists, source: source));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "GW search failed for term {Term}", LogSanitizer.OneLine(term));
                 return Ok(BuildUnifiedSearchResponse(source: "gw", error: "Search failed."));
             }
+        }
+
+        private readonly record struct DeezerHybridSearchResult(
+            List<object> Tracks,
+            List<object> Albums,
+            List<object> Artists,
+            List<object> Playlists)
+        {
+            public bool HasAny => Tracks.Count > 0 || Albums.Count > 0 || Artists.Count > 0 || Playlists.Count > 0;
+            public static DeezerHybridSearchResult Empty => new(new List<object>(), new List<object>(), new List<object>(), new List<object>());
+        }
+
+        private async Task<DeezerHybridSearchResult> SearchViaDeezerApiAsync(string term, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var options = new ApiOptions { Limit = 128, Index = 0 };
+            var tracksRaw = await FetchDeezerApiSectionWithPublicFallbackAsync(
+                () => _deezerClient.Api.SearchTrackAsync(term, options),
+                "track",
+                term,
+                cancellationToken);
+            var albumsRaw = await FetchDeezerApiSectionWithPublicFallbackAsync(
+                () => _deezerClient.Api.SearchAlbumAsync(term, options),
+                "album",
+                term,
+                cancellationToken);
+            var artistsRaw = await FetchDeezerApiSectionWithPublicFallbackAsync(
+                () => _deezerClient.Api.SearchArtistAsync(term, options),
+                "artist",
+                term,
+                cancellationToken);
+            var playlistsRaw = await FetchDeezerApiSectionWithPublicFallbackAsync(
+                () => _deezerClient.Api.SearchPlaylistAsync(term, options),
+                "playlist",
+                term,
+                cancellationToken);
+
+            var tracks = await MapDeezerApiSectionAsync(tracksRaw, MapDeezerApiTrackAsync, cancellationToken);
+            var albums = await MapDeezerApiSectionAsync(albumsRaw, MapDeezerApiAlbumAsync, cancellationToken);
+            var artists = await MapDeezerApiSectionAsync(artistsRaw, MapDeezerApiArtistAsync, cancellationToken);
+            var playlists = await MapDeezerApiSectionAsync(playlistsRaw, MapDeezerApiPlaylistAsync, cancellationToken);
+            return new DeezerHybridSearchResult(tracks, albums, artists, playlists);
+        }
+
+        private async Task<object[]?> FetchDeezerApiSectionWithPublicFallbackAsync(
+            Func<Task<DeezerSearchResult>> sdkSearch,
+            string type,
+            string term,
+            CancellationToken cancellationToken)
+        {
+            object[]? sdkData = null;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var sdkResult = await sdkSearch();
+                sdkData = sdkResult.Data;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Deezer SDK search failed for type {Type}; trying public API.", LogSanitizer.OneLine(type));
+            }
+
+            if (sdkData is { Length: > 0 })
+            {
+                return sdkData;
+            }
+
+            var publicData = await FetchPublicDeezerSearchDataAsync(type, term, cancellationToken);
+            if (publicData.Count == 0)
+            {
+                return sdkData;
+            }
+
+            return publicData.Cast<object>().ToArray();
+        }
+
+        private async Task<List<JsonElement>> FetchPublicDeezerSearchDataAsync(
+            string type,
+            string term,
+            CancellationToken cancellationToken)
+        {
+            var endpoint = string.IsNullOrWhiteSpace(type) ? "search" : $"search/{type.Trim().ToLowerInvariant()}";
+            var uri = $"https://api.deezer.com/{endpoint}?q={Uri.EscapeDataString(term)}&limit=128&index=0";
+            var client = _httpClientFactory.CreateClient("DeezerClient");
+            using var response = await client.GetAsync(uri, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new List<JsonElement>();
+            }
+
+            try
+            {
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var doc = await ParseJsonDocumentWithGzipFallbackAsync(stream, cancellationToken);
+                if (doc is null)
+                {
+                    return new List<JsonElement>();
+                }
+
+                if (!doc.RootElement.TryGetProperty(DataField, out var dataElement)
+                    || dataElement.ValueKind != JsonValueKind.Array)
+                {
+                    return new List<JsonElement>();
+                }
+
+                return dataElement
+                    .EnumerateArray()
+                    .Select(item => item.Clone())
+                    .ToList();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Public Deezer search payload parse failed for type {Type} and term {Term}", LogSanitizer.OneLine(type), LogSanitizer.OneLine(term));
+                return new List<JsonElement>();
+            }
+        }
+
+        private static async Task<JsonDocument?> ParseJsonDocumentWithGzipFallbackAsync(Stream responseStream, CancellationToken cancellationToken)
+        {
+            await using var buffer = new MemoryStream();
+            await responseStream.CopyToAsync(buffer, cancellationToken);
+            var payload = buffer.ToArray();
+            if (payload.Length == 0)
+            {
+                return null;
+            }
+
+            if (payload.Length >= 2 && payload[0] == 0x1F && payload[1] == 0x8B)
+            {
+                using var zipped = new MemoryStream(payload);
+                using var gzip = new GZipStream(zipped, CompressionMode.Decompress);
+                using var inflated = new MemoryStream();
+                await gzip.CopyToAsync(inflated, cancellationToken);
+                inflated.Position = 0;
+                return await JsonDocument.ParseAsync(inflated, cancellationToken: cancellationToken);
+            }
+
+            using var plain = new MemoryStream(payload);
+            return await JsonDocument.ParseAsync(plain, cancellationToken: cancellationToken);
+        }
+
+        private async Task<List<object>> RecoverDeezerTracksAsync(string term, CancellationToken cancellationToken)
+        {
+            var recovered = new List<object>();
+            foreach (var query in BuildDeezerTrackRecoveryQueries(term))
+            {
+                var publicData = await FetchPublicDeezerSearchDataAsync("track", query, cancellationToken);
+                if (publicData.Count == 0)
+                {
+                    continue;
+                }
+
+                var mapped = await MapDeezerApiSectionAsync(publicData.Cast<object>().ToArray(), MapDeezerApiTrackAsync, cancellationToken);
+                recovered = MergeUnifiedSearchItems(recovered, mapped);
+                if (recovered.Count > 0)
+                {
+                    break;
+                }
+            }
+
+            return recovered;
+        }
+
+        private static IReadOnlyList<string> BuildDeezerTrackRecoveryQueries(string term)
+        {
+            var normalized = (term ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return Array.Empty<string>();
+            }
+
+            var queries = new List<string> { normalized };
+            var split = normalized.Split(" - ", 2, StringSplitOptions.TrimEntries);
+            if (split.Length == 2
+                && !string.IsNullOrWhiteSpace(split[0])
+                && !string.IsNullOrWhiteSpace(split[1]))
+            {
+                var artist = split[0].Trim();
+                var title = split[1].Trim();
+                queries.Add($"artist:\"{artist}\" track:\"{title}\"");
+                queries.Add($"{title} {artist}");
+            }
+
+            return queries
+                .Where(q => !string.IsNullOrWhiteSpace(q))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool ShouldRunDeezerTrackRecovery(string term, IReadOnlyCollection<object> mergedTracks)
+        {
+            if (mergedTracks.Count == 0)
+            {
+                return true;
+            }
+
+            var normalizedTerm = NormalizeRecoveryText(term);
+            if (string.IsNullOrWhiteSpace(normalizedTerm))
+            {
+                return false;
+            }
+
+            // Queries with punctuation-heavy artist/title separators are the most frequent mismatch cases.
+            if (normalizedTerm.Contains('\'') || normalizedTerm.Contains('’') || normalizedTerm.Contains('-'))
+            {
+                return true;
+            }
+
+            var terms = normalizedTerm
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(static token => token.Length >= 3)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            if (terms.Length == 0)
+            {
+                return false;
+            }
+
+            foreach (var track in mergedTracks.Take(12))
+            {
+                var name = ReadAnonymousStringProperty(track, "name");
+                var artist = ReadAnonymousStringProperty(track, "artist");
+                var candidate = NormalizeRecoveryText($"{name} {artist}");
+                if (string.IsNullOrWhiteSpace(candidate))
+                {
+                    continue;
+                }
+
+                var matched = 0;
+                foreach (var token in terms)
+                {
+                    if (candidate.Contains(token, StringComparison.Ordinal))
+                    {
+                        matched++;
+                    }
+                }
+
+                if (matched >= Math.Min(3, terms.Length))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static string ReadAnonymousStringProperty(object instance, string propertyName)
+        {
+            if (instance is null || string.IsNullOrWhiteSpace(propertyName))
+            {
+                return string.Empty;
+            }
+
+            if (instance is JsonElement element)
+            {
+                return GetScalarString(element, propertyName) ?? string.Empty;
+            }
+
+            var property = instance.GetType().GetProperty(propertyName, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+            var value = property?.GetValue(instance);
+            return value?.ToString() ?? string.Empty;
+        }
+
+        private static string NormalizeRecoveryText(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            Span<char> buffer = stackalloc char[value.Length];
+            var index = 0;
+            foreach (var ch in value)
+            {
+                if (char.IsLetterOrDigit(ch) || char.IsWhiteSpace(ch) || ch is '\'' or '’' or '-')
+                {
+                    buffer[index++] = char.ToLowerInvariant(ch);
+                }
+                else
+                {
+                    buffer[index++] = ' ';
+                }
+            }
+
+            return new string(buffer[..index]).Trim();
         }
 
         [HttpGet("search/suggestions")]
@@ -284,6 +639,7 @@ namespace DeezSpoTag.Web.Controllers
             IEnumerable<object>? albums = null,
             IEnumerable<object>? artists = null,
             IEnumerable<object>? playlists = null,
+            IEnumerable<object>? stations = null,
             string source = "gw",
             string error = "")
         {
@@ -293,6 +649,7 @@ namespace DeezSpoTag.Web.Controllers
                 albums = albums ?? Array.Empty<object>(),
                 artists = artists ?? Array.Empty<object>(),
                 playlists = playlists ?? Array.Empty<object>(),
+                stations = stations ?? Array.Empty<object>(),
                 source,
                 error
             };
@@ -2907,6 +3264,32 @@ namespace DeezSpoTag.Web.Controllers
             return results.ToList();
         }
 
+        private static async Task<List<object>> MapDeezerApiSectionAsync(
+            object[]? data,
+            Func<JsonElement, CancellationToken, Task<object>> mapper,
+            CancellationToken cancellationToken)
+        {
+            if (data == null || data.Length == 0)
+            {
+                return new List<object>();
+            }
+
+            var tasks = new List<Task<object>>(data.Length);
+            tasks.AddRange(data.Select(entry =>
+            {
+                var json = entry switch
+                {
+                    JToken token => token.ToString(Formatting.None),
+                    JsonElement element => element.GetRawText(),
+                    _ => JsonSerializer.Serialize(entry)
+                };
+                return MapGwSectionEntryAsync(json, mapper, cancellationToken);
+            }));
+
+            var results = await Task.WhenAll(tasks);
+            return results.ToList();
+        }
+
         private async Task<object> MapGwTrackAsync(JsonElement item, CancellationToken cancellationToken)
         {
             var artistName = GetString(item, ArtNameUpperField);
@@ -2940,6 +3323,42 @@ namespace DeezSpoTag.Web.Controllers
                 deezerId = GetString(item, SngIdUpperField) ?? GetString(item, "id"),
                 name = GetString(item, "SNG_TITLE") ?? GetString(item, TitleField),
                 artist = artistName ?? GetString(item, ArtistType),
+                album = albumTitle,
+                image,
+                url = GetString(item, "link")
+            };
+        }
+
+        private async Task<object> MapDeezerApiTrackAsync(JsonElement item, CancellationToken cancellationToken)
+        {
+            var artist = GetNestedString(item, "artist", NameField) ?? GetString(item, ArtistType);
+            var albumTitle = GetNestedString(item, AlbumType, TitleField) ?? GetString(item, AlbumType);
+            var albumMd5 = GetNestedString(item, AlbumType, "md5_image");
+            var cover = GetNestedString(item, AlbumType, "cover_xl")
+                        ?? GetNestedString(item, AlbumType, "cover_big")
+                        ?? GetNestedString(item, AlbumType, "cover_medium")
+                        ?? GetNestedString(item, AlbumType, "cover_small");
+            var image = cover;
+            if (string.IsNullOrWhiteSpace(image))
+            {
+                image = await ResolveArtworkUrlAsync(
+                    new ArtworkLookupRequest(
+                        albumTitle,
+                        artist,
+                        albumTitle,
+                        albumMd5,
+                        CoverImageType,
+                        false,
+                        AllowApple: false),
+                    cancellationToken);
+            }
+
+            return new
+            {
+                type = TrackType,
+                deezerId = GetScalarString(item, "id"),
+                name = GetString(item, TitleField),
+                artist,
                 album = albumTitle,
                 image,
                 url = GetString(item, "link")
@@ -2983,6 +3402,41 @@ namespace DeezSpoTag.Web.Controllers
             };
         }
 
+        private async Task<object> MapDeezerApiAlbumAsync(JsonElement item, CancellationToken cancellationToken)
+        {
+            var albumTitle = GetString(item, TitleField);
+            var artistName = GetNestedString(item, ArtistType, NameField) ?? GetString(item, ArtistType);
+            var albumMd5 = GetString(item, "md5_image");
+            var image = GetString(item, "cover_xl")
+                        ?? GetString(item, "cover_big")
+                        ?? GetString(item, "cover_medium")
+                        ?? GetString(item, "cover_small");
+            if (string.IsNullOrWhiteSpace(image))
+            {
+                image = await ResolveArtworkUrlAsync(
+                    new ArtworkLookupRequest(
+                        albumTitle,
+                        artistName,
+                        albumTitle,
+                        albumMd5,
+                        CoverImageType,
+                        false,
+                        AllowApple: false),
+                    cancellationToken);
+            }
+
+            return new
+            {
+                type = AlbumType,
+                deezerId = GetScalarString(item, "id"),
+                name = albumTitle,
+                artist = artistName,
+                release_date = GetString(item, ReleaseDateField),
+                image,
+                url = GetString(item, "link")
+            };
+        }
+
         private async Task<object> MapGwArtistAsync(JsonElement item, CancellationToken cancellationToken)
         {
             var artistName = GetString(item, ArtNameUpperField) ?? GetString(item, "name");
@@ -3004,6 +3458,38 @@ namespace DeezSpoTag.Web.Controllers
                 deezerId = GetString(item, ArtIdUpperField) ?? GetString(item, "id"),
                 name = artistName,
                 followers = GetLong(item, NbFanUpperField),
+                image,
+                url = GetString(item, "link")
+            };
+        }
+
+        private async Task<object> MapDeezerApiArtistAsync(JsonElement item, CancellationToken cancellationToken)
+        {
+            var artistName = GetString(item, NameField);
+            var image = GetString(item, "picture_xl")
+                        ?? GetString(item, "picture_big")
+                        ?? GetString(item, "picture_medium")
+                        ?? GetString(item, "picture_small");
+            if (string.IsNullOrWhiteSpace(image))
+            {
+                image = await ResolveArtworkUrlAsync(
+                    new ArtworkLookupRequest(
+                        null,
+                        artistName,
+                        null,
+                        GetString(item, "picture"),
+                        ArtistType,
+                        true,
+                        AllowApple: false),
+                    cancellationToken);
+            }
+
+            return new
+            {
+                type = ArtistType,
+                deezerId = GetScalarString(item, "id"),
+                name = artistName,
+                followers = GetLong(item, "nb_fan"),
                 image,
                 url = GetString(item, "link")
             };
@@ -3066,6 +3552,91 @@ namespace DeezSpoTag.Web.Controllers
                 image = BuildDeezerImage(PlaylistType, playlistPicture),
                 url = GetString(item, "link")
             };
+        }
+
+        private async Task<object> MapDeezerApiPlaylistAsync(JsonElement item, CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            var owner = GetNestedString(item, "creator", NameField) ?? GetString(item, "creator");
+            var fans = GetLong(item, "fans");
+            return new
+            {
+                type = PlaylistType,
+                deezerId = GetScalarString(item, "id"),
+                name = GetString(item, TitleField),
+                owner,
+                description = GetString(item, "description"),
+                nb_tracks = GetLong(item, NbTracksField),
+                duration = GetLong(item, DurationField),
+                @public = GetBool(item, "public"),
+                collaborative = GetBool(item, "collaborative"),
+                fans,
+                followers = fans,
+                image = GetString(item, "picture_xl")
+                        ?? GetString(item, "picture_big")
+                        ?? GetString(item, "picture_medium")
+                        ?? GetString(item, "picture_small"),
+                url = GetString(item, "link")
+            };
+        }
+
+        private static List<object> MergeUnifiedSearchItems(IReadOnlyCollection<object> primary, IReadOnlyCollection<object> secondary)
+        {
+            var merged = new List<object>(primary.Count + secondary.Count);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddRange(primary);
+            AddRange(secondary);
+            return merged;
+
+            void AddRange(IEnumerable<object> items)
+            {
+                foreach (var item in items)
+                {
+                    var key = BuildUnifiedSearchItemKey(item);
+                    if (!string.IsNullOrWhiteSpace(key) && !seen.Add(key))
+                    {
+                        continue;
+                    }
+
+                    merged.Add(item);
+                }
+            }
+        }
+
+        private static string BuildUnifiedSearchItemKey(object item)
+        {
+            JsonElement element;
+            switch (item)
+            {
+                case JsonElement jsonElement:
+                    element = jsonElement;
+                    break;
+                case JToken token:
+                    using (var tokenDoc = JsonDocument.Parse(token.ToString(Formatting.None)))
+                    {
+                        element = tokenDoc.RootElement.Clone();
+                    }
+                    break;
+                default:
+                    using (var serializedDoc = JsonDocument.Parse(JsonSerializer.Serialize(item)))
+                    {
+                        element = serializedDoc.RootElement.Clone();
+                    }
+                    break;
+            }
+
+            var type = GetString(element, TypeField) ?? string.Empty;
+            var id = GetScalarString(element, "deezerId")
+                     ?? GetScalarString(element, "id")
+                     ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(type) && !string.IsNullOrWhiteSpace(id))
+            {
+                return $"{type}:{id}";
+            }
+
+            var name = GetString(element, NameField) ?? string.Empty;
+            var artist = GetString(element, ArtistType) ?? GetString(element, "owner") ?? string.Empty;
+            return $"{type}:{name}:{artist}".Trim().ToLowerInvariant();
         }
 
         private async Task<string?> ResolveArtworkUrlAsync(ArtworkLookupRequest request, CancellationToken cancellationToken)
@@ -3312,6 +3883,22 @@ namespace DeezSpoTag.Web.Controllers
             return element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
                 : null;
+        }
+
+        private static string? GetScalarString(JsonElement element, string name)
+        {
+            if (element.ValueKind != JsonValueKind.Object
+                || !element.TryGetProperty(name, out var value))
+            {
+                return null;
+            }
+
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.ToString(),
+                _ => null
+            };
         }
 
         private static long? GetLong(JsonElement element, string name)

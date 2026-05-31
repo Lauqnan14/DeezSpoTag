@@ -24,7 +24,7 @@ public sealed class SpotifyDesktopSearchService
             Tracks = result.Tracks.Select(MapTrack).ToList(),
             Albums = result.Albums.Select(MapAlbum).ToList(),
             Artists = result.Artists.Select(MapArtist).ToList(),
-            Playlists = new List<SpotifyDesktopPlaylist>()
+            Playlists = result.Playlists.Select(MapPlaylist).ToList()
         };
     }
 
@@ -70,6 +70,21 @@ public sealed class SpotifyDesktopSearchService
             Type = item.Type,
             Images = BuildImages(item.ImageUrl),
             SourceUrl = item.SourceUrl
+        };
+    }
+
+    private static SpotifyDesktopPlaylist MapPlaylist(SpotifySearchItem item)
+    {
+        var (ownerDisplayName, _) = SplitSubtitle(item.Subtitle);
+        return new SpotifyDesktopPlaylist
+        {
+            Id = item.Id,
+            Name = item.Name,
+            Type = item.Type,
+            Images = BuildImages(item.ImageUrl),
+            SourceUrl = item.SourceUrl,
+            OwnerDisplayName = string.IsNullOrWhiteSpace(item.Owner) ? ownerDisplayName : item.Owner,
+            TracksTotal = item.TrackCount
         };
     }
 

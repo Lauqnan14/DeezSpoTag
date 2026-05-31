@@ -565,7 +565,6 @@
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="deezer">Albums</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="deezer">Artists</a>
             <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="deezer">Playlists</a>
-            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="station" data-source="deezer">Stations</a>
             }
         </div>
 
@@ -662,8 +661,8 @@
 
 @section Scripts {
 <script>
-let currentSearchTerm = '@ViewData["SearchTerm"]';
-let currentSearchType = '@ViewData["SearchType"]';
+let currentSearchTerm = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchTerm"]?.ToString() ?? string.Empty));
+let currentSearchType = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchType"]?.ToString() ?? "track"));
 let currentSearchSource = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SearchSource"]?.ToString() ?? "spotify"));
 let activeSearchRequestId = 0;
 let appleVideoOffset = 0;
@@ -1183,8 +1182,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             currentSearchSource = this.dataset.source;
             updateActiveSource(currentSearchSource);
-            if (currentSearchSource !== 'manual'
-                && (cachedSearchTerms[currentSearchSource] !== currentSearchTerm || !cachedResults?.[currentSearchSource])) {
+            if (shouldRefetchSourceResults(currentSearchSource, currentSearchTerm)) {
                 performSearch(currentSearchTerm, currentSearchType);
             }
             const url = new URL(window.location);
@@ -1269,6 +1267,47 @@ function ensureCachedResults() {
     return cachedResults;
 }
 
+function hasAnySourceItems(sourceData, source) {
+    if (!sourceData || typeof sourceData !== 'object') {
+        return false;
+    }
+
+    const count = (items) => Array.isArray(items) ? items.length : 0;
+    if (count(sourceData.tracks) > 0) return true;
+    if (count(sourceData.albums) > 0) return true;
+    if (count(sourceData.artists) > 0) return true;
+    if (count(sourceData.playlists) > 0) return true;
+
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    if (normalizedSource === 'apple' && count(sourceData.videos) > 0) {
+        return true;
+    }
+
+    return false;
+}
+
+function shouldRefetchSourceResults(source, term) {
+    if (!term || source === 'manual') {
+        return false;
+    }
+
+    const sourceData = cachedResults?.[source];
+    if (!sourceData) {
+        return true;
+    }
+
+    if (cachedSearchTerms[source] !== term) {
+        return true;
+    }
+
+    if (Boolean(sourceData.error)) {
+        return true;
+    }
+
+    // Do not keep reusing a previously empty payload for the same query/source.
+    return !hasAnySourceItems(sourceData, source);
+}
+
 async function fetchSourceResults(source, term, type) {
     const normalizedSource = (source || '').toLowerCase();
     const normalizedType = (type || '').toLowerCase();
@@ -1303,7 +1342,7 @@ async function fetchSourceResults(source, term, type) {
         if (spotifyData?.available === false) {
             return {
                 ...createEmptySourceResults('spotify'),
-                error: 'Spotify search unavailable.'
+                error: spotifyData?.error || 'Spotify search unavailable.'
             };
         }
         return {
@@ -1317,6 +1356,13 @@ async function fetchSourceResults(source, term, type) {
         throw new Error(`Deezer search failed: HTTP ${deezerResponse.status}`);
     }
     const deezerData = await deezerResponse.json();
+    if (deezerData?.error) {
+        return {
+            ...createEmptySourceResults(normalizedSource),
+            ...deezerData,
+            error: deezerData.error
+        };
+    }
     return {
         ...createEmptySourceResults(normalizedSource),
         ...deezerData
@@ -1375,7 +1421,11 @@ async function performSearch(term, type) {
 
         ensureCachedResults();
         cachedResults[source] = sourceData;
-        cachedSearchTerms[source] = term;
+        if (sourceData?.error) {
+            delete cachedSearchTerms[source];
+        } else {
+            cachedSearchTerms[source] = term;
+        }
         const mappedItems = getResultsForType(normalizedType, source);
         
         // Update search count
@@ -2263,18 +2313,26 @@ function escapeJsString(value) {
 }
 
 function normalizeTypeForSource(source, type) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const normalizedType = String(type || '').trim().toLowerCase();
+
     if (soundtrackSearchMode) {
-        const normalized = String(type || '').trim().toLowerCase();
-        if (soundtrackSearchTypes.has(normalized)) {
-            return normalized;
+        if (soundtrackSearchTypes.has(normalizedType)) {
+            return normalizedType;
         }
         return 'all';
     }
 
-    if (source !== 'apple' && (type === 'atmos' || type === 'video')) {
+    // Deezer search path does not return station entities; force tracks for deterministic results.
+    if (normalizedSource === 'deezer' && normalizedType === 'station') {
         return 'track';
     }
-    return type;
+
+    if (normalizedSource !== 'apple' && (normalizedType === 'atmos' || normalizedType === 'video')) {
+        return 'track';
+    }
+
+    return normalizedType || 'track';
 }
 
 function normalizeLibraryResults(data) {

@@ -1516,6 +1516,7 @@ public partial class Program
             new DeezSpoTag.Web.Controllers.ApiController.ApiControllerDependencies
             {
                 Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Controllers.ApiController>>(),
+                DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 LoginStorage = sp.GetRequiredService<DeezSpoTag.Services.Authentication.ILoginStorageService>(),

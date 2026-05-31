@@ -34,6 +34,14 @@ public sealed class SpotifyPathfinderMetadataClient
 
     public sealed record SpotifyArtistSearchCandidate(string Id, string Name, string? ImageUrl);
 
+    public sealed record SpotifyPlaylistSearchCandidate(
+        string Id,
+        string Name,
+        string? ImageUrl,
+        string? OwnerName,
+        int? Followers,
+        int? TrackCount);
+
     private sealed record ParsedSpotifyUrl(string Type, string Id);
 
     private sealed record WebPlayerConfig(string? ClientVersion, string? ClientId);
@@ -131,6 +139,8 @@ public sealed class SpotifyPathfinderMetadataClient
     private const string SpotifyArtistUriPrefix = "spotify:artist:";
 
     private const string SpotifyTrackUriPrefix = "spotify:track:";
+
+    private const string SpotifyPlaylistUriPrefix = "spotify:playlist:";
 
     private const string WebPlayerUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -2321,6 +2331,48 @@ public sealed class SpotifyPathfinderMetadataClient
         return new List<SpotifyArtistSearchCandidate>();
     }
 
+    public async Task<List<SpotifyPlaylistSearchCandidate>> SearchPlaylistsAsync(string query, int limit, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return new List<SpotifyPlaylistSearchCandidate>();
+        }
+        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        if (context is null)
+        {
+            return new List<SpotifyPlaylistSearchCandidate>();
+        }
+        string trimmedQuery = query.Trim();
+        int resolvedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 50);
+        PersistedQueryOverride persisted = GetPersistedQuery(SearchSuggestionsOperationName, 1, SearchSuggestionsHashFallback);
+        IReadOnlyList<Dictionary<string, object?>> variableCandidates = BuildSearchSuggestionVariableCandidates(trimmedQuery, resolvedLimit, context, persisted.VariablesJson);
+        foreach (var payload in variableCandidates.Select((Dictionary<string, object?> variables) => new
+        {
+            operationName = SearchSuggestionsOperationName,
+            variables = variables,
+            extensions = new
+            {
+                persistedQuery = new
+                {
+                    version = persisted.Version,
+                    sha256Hash = persisted.Sha256Hash
+                }
+            }
+        }))
+        {
+            using JsonDocument? doc = await QueryAsync(context, payload, cancellationToken);
+            if (doc is not null)
+            {
+                List<SpotifyPlaylistSearchCandidate> playlists = ParseSearchSuggestionPlaylists(doc.RootElement, resolvedLimit);
+                if (playlists.Count > 0)
+                {
+                    return playlists;
+                }
+            }
+        }
+        return new List<SpotifyPlaylistSearchCandidate>();
+    }
+
     private async Task<List<SpotifyArtistSearchCandidate>> EnrichSearchSuggestionArtistsAsync(
         PathfinderAuthContext context,
         List<SpotifyArtistSearchCandidate> artists,
@@ -3645,6 +3697,211 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         string? text2 = TryGetString(element, ProfileKey, "name");
         return text2 != null && text2.Length > 0;
+    }
+
+    private static List<SpotifyPlaylistSearchCandidate> ParseSearchSuggestionPlaylists(JsonElement root, int limit)
+    {
+        int max = Math.Max(limit, 1);
+        List<SpotifyPlaylistSearchCandidate> playlists = new List<SpotifyPlaylistSearchCandidate>();
+        Dictionary<string, int> indexById = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        CollectSearchSuggestionPlaylists(root, playlists, indexById, max);
+        return playlists;
+    }
+
+    private static void CollectSearchSuggestionPlaylists(
+        JsonElement element,
+        List<SpotifyPlaylistSearchCandidate> playlists,
+        Dictionary<string, int> indexById,
+        int limit)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            TryUpsertSearchSuggestionPlaylist(element, playlists, indexById, limit);
+            EnumerateObjectChildren(element, child => CollectSearchSuggestionPlaylists(child, playlists, indexById, limit));
+            return;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (JsonElement item in element.EnumerateArray())
+        {
+            CollectSearchSuggestionPlaylists(item, playlists, indexById, limit);
+        }
+    }
+
+    private static void TryUpsertSearchSuggestionPlaylist(
+        JsonElement element,
+        List<SpotifyPlaylistSearchCandidate> playlists,
+        Dictionary<string, int> indexById,
+        int limit)
+    {
+        if (!TryParseSearchSuggestionPlaylist(element, out SpotifyPlaylistSearchCandidate? candidate) || candidate is null)
+        {
+            return;
+        }
+
+        if (indexById.TryGetValue(candidate.Id, out int existingIndex))
+        {
+            SpotifyPlaylistSearchCandidate current = playlists[existingIndex];
+            if (ShouldPreferPlaylistCandidate(current, candidate))
+            {
+                playlists[existingIndex] = candidate;
+            }
+            return;
+        }
+
+        if (playlists.Count >= limit)
+        {
+            return;
+        }
+
+        indexById[candidate.Id] = playlists.Count;
+        playlists.Add(candidate);
+    }
+
+    private static bool ShouldPreferPlaylistCandidate(SpotifyPlaylistSearchCandidate current, SpotifyPlaylistSearchCandidate next)
+    {
+        if (string.IsNullOrWhiteSpace(current.ImageUrl) && !string.IsNullOrWhiteSpace(next.ImageUrl))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(current.OwnerName) && !string.IsNullOrWhiteSpace(next.OwnerName))
+        {
+            return true;
+        }
+
+        if (!current.Followers.HasValue && next.Followers.HasValue)
+        {
+            return true;
+        }
+
+        if (!current.TrackCount.HasValue && next.TrackCount.HasValue)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryParseSearchSuggestionPlaylist(JsonElement element, out SpotifyPlaylistSearchCandidate? candidate)
+    {
+        SpotifyPlaylistSearchCandidate? bestCandidate = null;
+        bool hasCandidate = false;
+        if (TryGetNested(element, out var value, "playlistUnion"))
+        {
+            MergeCandidate(value);
+        }
+        if (TryGetNested(element, out var value2, PlaylistType))
+        {
+            MergeCandidate(value2);
+        }
+        if (TryGetNested(element, out var value3, DataKey, "playlistUnion"))
+        {
+            MergeCandidate(value3);
+        }
+        if (TryGetNested(element, out var value4, DataKey, PlaylistType))
+        {
+            MergeCandidate(value4);
+        }
+        if (TryGetNested(element, out var value5, ItemV2Key, DataKey))
+        {
+            MergeCandidate(value5);
+        }
+        MergeCandidate(element);
+        candidate = bestCandidate;
+        return hasCandidate;
+
+        void MergeCandidate(JsonElement source)
+        {
+            if (TryParsePlaylistCandidateElement(source, out SpotifyPlaylistSearchCandidate? parsed)
+                && parsed is not null
+                && (!hasCandidate || (bestCandidate is not null && ShouldPreferPlaylistCandidate(bestCandidate, parsed))))
+            {
+                bestCandidate = parsed;
+                hasCandidate = true;
+            }
+        }
+    }
+
+    private static bool TryParsePlaylistCandidateElement(JsonElement element, out SpotifyPlaylistSearchCandidate? candidate)
+    {
+        candidate = null;
+        if (!IsLikelyPlaylistElement(element))
+        {
+            return false;
+        }
+
+        string? idValue = TryGetString(element, "id") ?? ExtractIdFromUri(TryGetString(element, "uri"));
+        if (!LooksLikeSpotifyEntityId(idValue))
+        {
+            return false;
+        }
+
+        string? name = TryGetString(element, ProfileKey, "name")
+            ?? TryGetString(element, "name")
+            ?? TryGetString(element, "title");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        string id = idValue!;
+        string? imageUrl = ExtractPlaylistImageUrl(element) ?? ExtractCoverOrDirectImageUrl(element, ImagesKey);
+        string? ownerName = TryGetOwnerName(element)
+            ?? TryGetString(element, "owner", "name")
+            ?? TryGetString(element, "ownerV2", DataKey, "name");
+        int? followers = TryGetInt(element, FollowersKey, TotalCountKey)
+            ?? TryGetInt(element, StatsKey, FollowersKey)
+            ?? TryGetInt(element, FollowersKey);
+        int? trackCount = TryGetInt(element, ContentKey, TotalCountKey)
+            ?? TryGetInt(element, TracksV2Key, TotalCountKey)
+            ?? TryGetInt(element, TracksKey, TotalCountKey)
+            ?? TryGetInt(element, TracksKey, CountKey);
+
+        candidate = new SpotifyPlaylistSearchCandidate(
+            id,
+            name.Trim(),
+            imageUrl,
+            string.IsNullOrWhiteSpace(ownerName) ? null : ownerName.Trim(),
+            followers,
+            trackCount);
+        return true;
+    }
+
+    private static bool IsLikelyPlaylistElement(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        string? uri = TryGetString(element, "uri");
+        if (!string.IsNullOrWhiteSpace(uri) && uri.StartsWith(SpotifyPlaylistUriPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string? typeName = TryGetString(element, "__typename");
+        if (string.Equals(typeName, "Playlist", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(typeName, "PlaylistResponseWrapper", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(typeName, "PlaylistV2", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string? name = TryGetString(element, "name") ?? TryGetString(element, ProfileKey, "name");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        return TryGetNested(element, out _, ContentKey, TotalCountKey)
+            || TryGetNested(element, out _, FollowersKey)
+            || TryGetNested(element, out _, "ownerV2", DataKey);
     }
 
     private static bool LooksLikeSpotifyUri(string value)
