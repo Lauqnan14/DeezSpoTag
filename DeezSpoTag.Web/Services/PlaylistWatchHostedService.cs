@@ -123,38 +123,51 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 return;
             }
 
-            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-            if (!repository.IsConfigured)
-            {
-                _logger.LogDebug("Watchlist skipped - library DB not configured.");
-                return;
-            }
+            var runQueueBudget = scope.ServiceProvider.GetService<WatchlistRunQueueBudgetService>();
+            var runQueueBudgetToken = runQueueBudget?.BeginRun(Math.Max(1, settings.WatchMaxTracksPerPlaylistCheck)) ?? 0;
 
-            if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) >= TimeSpan.FromSeconds(1))
+            try
             {
-                var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(stoppingToken);
-                _lastDestinationRepairUtc = DateTimeOffset.UtcNow;
-                if (repairResult.PlaylistPreferencesUpdated > 0 || repairResult.ArtistPreferencesUpdated > 0)
+                var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+                if (!repository.IsConfigured)
                 {
-                    _logger.LogInformation(
-                        "Watchlist destination integrity repair applied: playlistPreferencesUpdated={PlaylistUpdated}, artistPreferencesUpdated={ArtistUpdated}",
-                        repairResult.PlaylistPreferencesUpdated,
-                        repairResult.ArtistPreferencesUpdated);
+                    _logger.LogDebug("Watchlist skipped - library DB not configured.");
+                    return;
+                }
+
+                if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) >= TimeSpan.FromSeconds(1))
+                {
+                    var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(stoppingToken);
+                    _lastDestinationRepairUtc = DateTimeOffset.UtcNow;
+                    if (repairResult.PlaylistPreferencesUpdated > 0 || repairResult.ArtistPreferencesUpdated > 0)
+                    {
+                        _logger.LogInformation(
+                            "Watchlist destination integrity repair applied: playlistPreferencesUpdated={PlaylistUpdated}, artistPreferencesUpdated={ArtistUpdated}",
+                            repairResult.PlaylistPreferencesUpdated,
+                            repairResult.ArtistPreferencesUpdated);
+                    }
+                }
+
+                var playlists = await repository.GetPlaylistWatchlistAsync(stoppingToken);
+                var artists = await repository.GetWatchlistAsync(stoppingToken);
+                var items = BuildWatchItems(playlists, artists);
+                if (items.Count == 0)
+                {
+                    CleanupStaleState(Array.Empty<WatchItem>());
+                    return;
+                }
+
+                CleanupStaleState(items);
+                await SeedPersistedLastRunsAsync(items, repository, stoppingToken);
+                await ProcessWatchItemsAsync(items, settings, scope.ServiceProvider, stoppingToken);
+            }
+            finally
+            {
+                if (runQueueBudget != null && runQueueBudgetToken != 0)
+                {
+                    runQueueBudget.EndRun(runQueueBudgetToken);
                 }
             }
-
-            var playlists = await repository.GetPlaylistWatchlistAsync(stoppingToken);
-            var artists = await repository.GetWatchlistAsync(stoppingToken);
-            var items = BuildWatchItems(playlists, artists);
-            if (items.Count == 0)
-            {
-                CleanupStaleState(Array.Empty<WatchItem>());
-                return;
-            }
-
-            CleanupStaleState(items);
-            await SeedPersistedLastRunsAsync(items, repository, stoppingToken);
-            await ProcessWatchItemsAsync(items, settings, scope.ServiceProvider, stoppingToken);
         }
         catch (OperationCanceledException)
         {

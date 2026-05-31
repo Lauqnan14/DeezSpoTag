@@ -85,6 +85,7 @@ public sealed class PlaylistWatchService
     private readonly IServiceProvider _serviceProvider;
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly PlaylistVisualService _playlistVisualService;
+    private readonly WatchlistRunQueueBudgetService _watchlistRunQueueBudget;
     private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly ILogger<PlaylistWatchService> _logger;
 
@@ -133,6 +134,7 @@ public sealed class PlaylistWatchService
         IServiceProvider serviceProvider,
         PlaylistSyncService playlistSyncService,
         PlaylistVisualService playlistVisualService,
+        WatchlistRunQueueBudgetService? watchlistRunQueueBudget,
         ActivitiesRealtimeService activitiesRealtime,
         ILogger<PlaylistWatchService> logger)
     {
@@ -151,6 +153,7 @@ public sealed class PlaylistWatchService
         _serviceProvider = serviceProvider;
         _playlistSyncService = playlistSyncService;
         _playlistVisualService = playlistVisualService;
+        _watchlistRunQueueBudget = watchlistRunQueueBudget ?? new WatchlistRunQueueBudgetService();
         _activitiesRealtime = activitiesRealtime;
         _logger = logger;
     }
@@ -2863,11 +2866,22 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (queuedCount >= capacity.Value.Remaining)
+            var capacityRemaining = capacity.Value.Remaining - queuedCount;
+            if (capacityRemaining <= 0)
             {
                 LogWatchQueueCapacityFilled(options, queuedCount, capacity.Value);
                 break;
             }
+
+            var runBudgetRemaining = _watchlistRunQueueBudget.GetRemaining();
+            if (runBudgetRemaining <= 0)
+            {
+                LogWatchRunQueueBudgetFilled(options, queuedCount);
+                deferred = true;
+                break;
+            }
+
+            var effectiveRemainingCapacity = Math.Min(capacityRemaining, runBudgetRemaining);
 
             var intent = track.Intent;
             if (await HandleBlockedWatchIntentAsync(intent, track, options, cancellationToken))
@@ -2914,9 +2928,26 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 result,
                 track,
                 intent,
-                remainingCapacity: capacity.Value.Remaining - queuedCount,
+                remainingCapacity: effectiveRemainingCapacity,
                 cancellationToken);
             queuedCount += trackResult.QueuedCount;
+            if (trackResult.QueuedCount > 0)
+            {
+                var consumed = _watchlistRunQueueBudget.Consume(trackResult.QueuedCount);
+                if (consumed < trackResult.QueuedCount)
+                {
+                    deferred = true;
+                    if (_logger.IsEnabled(LogLevel.Warning))
+                    {
+                        _logger.LogWarning(
+                            "{Source} watch queue budget over-consumed by {OverConsumed} track(s). queued={Queued} consumed={Consumed}",
+                            options.SourceLabel,
+                            trackResult.QueuedCount - consumed,
+                            trackResult.QueuedCount,
+                            consumed);
+                    }
+                }
+            }
             if (trackResult.Completed)
             {
                 completedCount++;
@@ -2995,6 +3026,19 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             queuedCount,
             capacity.ActiveCount,
             capacity.Limit);
+    }
+
+    private void LogWatchRunQueueBudgetFilled(QueueWatchOptions options, int queuedCount)
+    {
+        if (!_logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "{Source} watch queue reached per-run budget. queuedThisRun={QueuedThisRun}",
+            options.SourceLabel,
+            queuedCount);
     }
 
     private void LogDownloadGateDeferred(string sourceLabel, string? message)

@@ -89,6 +89,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             serviceProvider: null!,
             playlistSyncService: null!,
             playlistVisualService: null!,
+            watchlistRunQueueBudget: null,
             activitiesRealtime: null!,
             logger: NullLogger<PlaylistWatchService>.Instance);
 

@@ -1540,6 +1540,7 @@ public partial class Program
                 HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Web.Services.ITidalAccessTokenProvider>()
             });
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunQueueBudgetService>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
