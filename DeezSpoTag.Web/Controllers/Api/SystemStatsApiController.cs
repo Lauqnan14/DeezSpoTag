@@ -14,17 +14,20 @@ public sealed class SystemStatsApiController : ControllerBase
     private readonly SystemStatsService _systemStatsService;
     private readonly QualityScannerService _qualityScannerService;
     private readonly DuplicateCleanerService _duplicateCleanerService;
+    private readonly DownloadOrchestrationService _downloadOrchestrationService;
 
     public SystemStatsApiController(
         DownloadQueueRepository queueRepository,
         SystemStatsService systemStatsService,
         QualityScannerService qualityScannerService,
-        DuplicateCleanerService duplicateCleanerService)
+        DuplicateCleanerService duplicateCleanerService,
+        DownloadOrchestrationService downloadOrchestrationService)
     {
         _queueRepository = queueRepository;
         _systemStatsService = systemStatsService;
         _qualityScannerService = qualityScannerService;
         _duplicateCleanerService = duplicateCleanerService;
+        _downloadOrchestrationService = downloadOrchestrationService;
     }
 
     [HttpGet("details")]
@@ -40,6 +43,7 @@ public sealed class SystemStatsApiController : ControllerBase
 
         var qualityState = _qualityScannerService.GetState();
         var duplicateSummary = _duplicateCleanerService.GetLastRunSummary();
+        var orchestration = _downloadOrchestrationService.GetStatusSnapshot();
 
         return Ok(new
         {
@@ -50,6 +54,16 @@ public sealed class SystemStatsApiController : ControllerBase
             activeSyncs = 0,
             uptime = _systemStatsService.GetUptime(),
             memory = SystemStatsService.GetMemoryUsage(),
+            orchestration = new
+            {
+                phase = orchestration.Phase.ToString(),
+                phaseEnteredUtc = orchestration.PhaseEnteredUtc,
+                queueIdleSinceUtc = orchestration.QueueIdleSinceUtc,
+                countdownUntilUtc = orchestration.CountdownUntilUtc,
+                pipelineRequested = orchestration.PipelineRequested,
+                retrySweepPending = orchestration.RetrySweepPending,
+                taggingInProgress = orchestration.TaggingInProgress
+            },
             enhancement = new
             {
                 qualityScanner = new

@@ -11,14 +11,17 @@ namespace DeezSpoTag.Services.Download.Queue;
 
 public sealed class DownloadRetryScheduler
 {
+    private sealed record PendingRetryRequest(string QueueUuid, string Engine, int Attempt, string Reason, DateTimeOffset RequestedAtUtc);
+
     private readonly ConcurrentDictionary<string, int> _attempts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PendingRetryRequest> _pendingRetries = new(StringComparer.Ordinal);
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IActivityLogWriter _activityLog;
     private readonly IDeezSpoTagListener _listener;
     private readonly ILogger<DownloadRetryScheduler> _logger;
     private readonly DownloadCancellationRegistry _cancellationRegistry;
-    private readonly Func<bool>? _isAutoTagRunning;
+    private readonly Action? _onRetryQueued;
 
     public DownloadRetryScheduler(
         DownloadQueueRepository queueRepository,
@@ -27,7 +30,8 @@ public sealed class DownloadRetryScheduler
         IDeezSpoTagListener listener,
         ILogger<DownloadRetryScheduler> logger,
         DownloadCancellationRegistry cancellationRegistry,
-        Func<bool>? isAutoTagRunning = null)
+        Func<bool>? isAutoTagRunning = null,
+        Action? onRetryQueued = null)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
@@ -35,8 +39,11 @@ public sealed class DownloadRetryScheduler
         _listener = listener;
         _logger = logger;
         _cancellationRegistry = cancellationRegistry;
-        _isAutoTagRunning = isAutoTagRunning;
+        _onRetryQueued = onRetryQueued;
+        _ = isAutoTagRunning;
     }
+
+    public bool HasPendingRetries => !_pendingRetries.IsEmpty;
 
     public void ScheduleRetry(string queueUuid, string engine, string reason)
     {
@@ -45,76 +52,75 @@ public sealed class DownloadRetryScheduler
             return;
         }
 
-        if (!TryCreateRetrySchedule(queueUuid, engine, reason, out var attempt, out var delaySeconds))
+        if (!TryCreateRetrySchedule(queueUuid, engine, reason, out var pending))
         {
             return;
         }
 
-        _ = ExecuteScheduledRetryAsync(queueUuid, engine, attempt, delaySeconds);
+        _pendingRetries[queueUuid] = pending;
+        _onRetryQueued?.Invoke();
     }
 
-    private bool TryCreateRetrySchedule(string queueUuid, string engine, string reason, out int attempt, out int delaySeconds)
+    public async Task<bool> RunRetrySweepAsync(CancellationToken cancellationToken = default)
     {
-        var settings = _settingsService.LoadSettings();
-        attempt = _attempts.AddOrUpdate(queueUuid, 1, (_, current) => current + 1);
-        var maxRetries = settings.MaxRetries;
-        if (maxRetries <= 0 || attempt > maxRetries)
+        if (_pendingRetries.IsEmpty)
         {
-            _activityLog.Warn($"Auto-retry stopped (engine={engine} attempt={attempt} max={maxRetries}): {queueUuid} {reason}");
-            _attempts.TryRemove(queueUuid, out _);
-            delaySeconds = 0;
             return false;
         }
 
-        delaySeconds = Math.Max(0, settings.RetryDelaySeconds + (settings.RetryDelayIncrease * (attempt - 1)));
-        _activityLog.Warn($"Auto-retry scheduled (engine={engine} attempt={attempt} delay={delaySeconds}s): {queueUuid} {reason}");
-        return true;
-    }
-
-    private async Task ExecuteScheduledRetryAsync(string queueUuid, string engine, int attempt, int delaySeconds)
-    {
-        try
+        var requeuedAny = false;
+        var retryRequests = _pendingRetries.Values
+            .OrderBy(request => request.RequestedAtUtc)
+            .ThenBy(request => request.QueueUuid, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        foreach (var request in retryRequests)
         {
-            if (delaySeconds > 0)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_pendingRetries.ContainsKey(request.QueueUuid))
             {
-                await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+                continue;
             }
 
-            await WaitForAutoTagIdleAsync();
-            if (WasRetryUserCanceled(queueUuid))
+            if (WasRetryUserCanceled(request.QueueUuid))
             {
-                return;
+                _pendingRetries.TryRemove(request.QueueUuid, out _);
+                _attempts.TryRemove(request.QueueUuid, out _);
+                continue;
             }
 
-            var item = await _queueRepository.GetByUuidAsync(queueUuid);
-            if (item == null || !IsRetryableStatus(item.Status))
+            var item = await _queueRepository.GetByUuidAsync(request.QueueUuid, cancellationToken);
+            if (item == null)
             {
-                return;
+                _pendingRetries.TryRemove(request.QueueUuid, out _);
+                _attempts.TryRemove(request.QueueUuid, out _);
+                continue;
             }
 
-            if (WasRetryUserCanceled(queueUuid))
+            if (!IsRetryableStatus(item.Status))
             {
-                return;
+                if (ShouldClearRetryState(item.Status))
+                {
+                    _attempts.TryRemove(request.QueueUuid, out _);
+                }
+
+                _pendingRetries.TryRemove(request.QueueUuid, out _);
+                continue;
             }
 
             await ResetFallbackStateAsync(item);
-            await _queueRepository.RequeueAsync(queueUuid);
-            _activityLog.Info($"Auto-retry queued (engine={engine} attempt={attempt}): {queueUuid}");
-            NotifyRetryQueued(queueUuid);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Failed to auto-retry {QueueUuid}", queueUuid);
-            _activityLog.Error($"Auto-retry failed (engine={engine}): {queueUuid} {ex.Message}");
-        }
-    }
+            var requeued = await _queueRepository.RequeueAsync(request.QueueUuid, cancellationToken: cancellationToken);
+            _pendingRetries.TryRemove(request.QueueUuid, out _);
+            if (!requeued)
+            {
+                continue;
+            }
 
-    private async Task WaitForAutoTagIdleAsync()
-    {
-        while (_isAutoTagRunning?.Invoke() == true)
-        {
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            _activityLog.Info($"Auto-retry queued (engine={request.Engine} attempt={request.Attempt}): {request.QueueUuid}");
+            NotifyRetryQueued(request.QueueUuid);
+            requeuedAny = true;
         }
+
+        return requeuedAny;
     }
 
     private bool WasRetryUserCanceled(string queueUuid)
@@ -130,6 +136,12 @@ public sealed class DownloadRetryScheduler
 
     private static bool IsRetryableStatus(string? status)
         => (status ?? string.Empty) is "failed" or "cancelled" or "canceled";
+
+    private static bool ShouldClearRetryState(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is "completed" or "complete" or "canceled" or "cancelled";
+    }
 
     private void NotifyRetryQueued(string queueUuid)
     {
@@ -152,6 +164,30 @@ public sealed class DownloadRetryScheduler
         }
 
         _attempts.TryRemove(queueUuid, out _);
+        _pendingRetries.TryRemove(queueUuid, out _);
+    }
+
+    private bool TryCreateRetrySchedule(string queueUuid, string engine, string reason, out PendingRetryRequest pending)
+    {
+        var settings = _settingsService.LoadSettings();
+        var attempt = _attempts.AddOrUpdate(queueUuid, 1, (_, current) => current + 1);
+        var maxRetries = Math.Clamp(settings.MaxRetries, 0, 1);
+        if (maxRetries <= 0 || attempt > maxRetries)
+        {
+            _activityLog.Warn($"Auto-retry stopped (engine={engine} attempt={attempt} maxAutoSweepRetries={maxRetries}): {queueUuid} {reason}");
+            _attempts.TryRemove(queueUuid, out _);
+            pending = default!;
+            return false;
+        }
+
+        pending = new PendingRetryRequest(
+            queueUuid,
+            string.IsNullOrWhiteSpace(engine) ? "unknown" : engine,
+            attempt,
+            reason,
+            DateTimeOffset.UtcNow);
+        _activityLog.Warn($"Auto-retry scheduled for queue-drain sweep (engine={engine} attempt={attempt}): {queueUuid} {reason}");
+        return true;
     }
 
     private async Task ResetFallbackStateAsync(DownloadQueueItem item)

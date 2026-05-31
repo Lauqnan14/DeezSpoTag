@@ -155,6 +155,31 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.DoesNotContain("Downloads paused while enrichment is running.", orchestrationSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Orchestration_UsesEventFirstWakeWithWatchdog()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("_watchdogInterval = TimeSpan.FromSeconds(1)", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("WaitForWakeAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_pollInterval = TimeSpan.FromSeconds(10)", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.Delay(_pollInterval", orchestrationSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Orchestration_DefersEnrichmentCountdownWhileRetriesArePending()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var retrySchedulerSource = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadRetryScheduler.cs");
+
+        Assert.Contains("_retryScheduler.HasPendingRetries", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("RunRetrySweepAsync", retrySchedulerSource, StringComparison.Ordinal);
+        Assert.Contains("_pendingRetries", retrySchedulerSource, StringComparison.Ordinal);
+        Assert.Contains("Auto-retry scheduled for queue-drain sweep", retrySchedulerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExecuteScheduledRetryAsync", retrySchedulerSource, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] pathParts)
         => File.ReadAllText(Path.Join([ResolveRepoRoot(), .. pathParts]));
 

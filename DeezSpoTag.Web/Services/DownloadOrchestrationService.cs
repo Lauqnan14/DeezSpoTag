@@ -50,6 +50,22 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         string? FallbackJobId,
         EnhancementPauseReason Reason,
         string ConfigLogMessage);
+    public enum OrchestrationPhase
+    {
+        Idle,
+        Downloading,
+        RetrySweep,
+        EnrichmentCountdown,
+        Enriching
+    }
+    public sealed record OrchestrationStatusSnapshot(
+        OrchestrationPhase Phase,
+        DateTimeOffset PhaseEnteredUtc,
+        DateTimeOffset? QueueIdleSinceUtc,
+        DateTimeOffset? CountdownUntilUtc,
+        bool PipelineRequested,
+        bool RetrySweepPending,
+        bool TaggingInProgress);
 
     private enum EnhancementPauseReason
     {
@@ -154,6 +170,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly LibraryScanRunner _scanRunner;
     private readonly PlatformAuthService _platformAuthService;
     private readonly PlexApiClient _plexApiClient;
+    private readonly DownloadRetryScheduler _retryScheduler;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
     private readonly WatchlistFinalizationService _watchlistFinalizationService;
@@ -165,17 +182,21 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly string _processedCompletionPath;
     private readonly SemaphoreSlim _pipelineLock = new(1, 1);
     private readonly SemaphoreSlim _enhancementPauseLock = new(1, 1);
-    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(10);
+    private readonly SemaphoreSlim _wakeSignal = new(0, 1);
+    private readonly TimeSpan _watchdogInterval = TimeSpan.FromSeconds(1);
     private readonly TimeSpan _downloadIdleDelay = TimeSpan.FromSeconds(15);
     private readonly object _enhancementResumeLock = new();
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _processedCompletionByQueueItem = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _processedCompletionStateLock = new();
+    private readonly object _phaseLock = new();
     private volatile bool _processedCompletionStateLoaded;
+    private int _wakeSignalPending;
 
     private DateTimeOffset? _queueIdleSince;
     private DateTimeOffset _lastPipelineCompletedAt = DateTimeOffset.UtcNow;
     private bool _pipelineRequested;
+    private bool _wasQueueActive;
     private bool _taggingInProgress;
     private volatile bool _postDownloadPipelineInProgress;
     private volatile bool _enhancementStageRunning;
@@ -184,6 +205,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private string? _activeEnhancementJobId;
     private DateTimeOffset? _lastStagingGateLogAt;
     private string? _lastStagingGateLogReason;
+    private OrchestrationPhase _phase = OrchestrationPhase.Idle;
+    private DateTimeOffset _phaseEnteredUtc = DateTimeOffset.UtcNow;
+    private DateTimeOffset? _countdownUntilUtc;
 
     public DownloadOrchestrationService(
         IServiceProvider serviceProvider,
@@ -200,6 +224,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _scanRunner = serviceProvider.GetRequiredService<LibraryScanRunner>();
         _platformAuthService = serviceProvider.GetRequiredService<PlatformAuthService>();
         _plexApiClient = serviceProvider.GetRequiredService<PlexApiClient>();
+        _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
         _watchlistFinalizationService = serviceProvider.GetRequiredService<WatchlistFinalizationService>();
@@ -216,9 +241,45 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         Directory.CreateDirectory(autoTagDataDir);
         _enhancementSchedulePath = Path.Join(autoTagDataDir, "enhancement-schedule-state.json");
         _processedCompletionPath = Path.Join(autoTagDataDir, "processed-completions.json");
+        DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
     }
 
     public bool TaggingInProgress => _taggingInProgress || _autoTagService.HasRunningJobs();
+
+    public OrchestrationStatusSnapshot GetStatusSnapshot()
+    {
+        lock (_phaseLock)
+        {
+            return new OrchestrationStatusSnapshot(
+                _phase,
+                _phaseEnteredUtc,
+                _queueIdleSince,
+                _countdownUntilUtc,
+                _pipelineRequested,
+                _retryScheduler.HasPendingRetries,
+                TaggingInProgress);
+        }
+    }
+
+    private void SetPhase(OrchestrationPhase nextPhase, DateTimeOffset? countdownUntilUtc = null)
+    {
+        lock (_phaseLock)
+        {
+            if (_phase != nextPhase)
+            {
+                _phase = nextPhase;
+                _phaseEnteredUtc = DateTimeOffset.UtcNow;
+            }
+
+            _countdownUntilUtc = countdownUntilUtc;
+        }
+    }
+
+    public override void Dispose()
+    {
+        DownloadQueueRepository.QueueStateChanged -= OnQueueStateChanged;
+        base.Dispose();
+    }
 
     private void QueueEnhancementResumeFolder(string folderId)
     {
@@ -368,9 +429,77 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     public void MarkDownloadQueued()
     {
         _queueIdleSince = null;
+        SetPhase(OrchestrationPhase.Downloading);
+        SignalWake(resetIdleCountdown: true);
         if (HasPendingEnhancementResumeFolders())
         {
             _enhancementResumeAwaitingPipelineCompletion = true;
+        }
+    }
+
+    public void MarkRetryQueued()
+    {
+        _queueIdleSince = null;
+        SetPhase(OrchestrationPhase.Downloading);
+        SignalWake(resetIdleCountdown: true);
+    }
+
+    private void OnQueueStateChanged(DownloadQueueRepository.QueueStateChangedEvent stateChanged)
+    {
+        if (string.IsNullOrWhiteSpace(stateChanged.Status))
+        {
+            return;
+        }
+
+        var normalizedStatus = stateChanged.Status.Trim().ToLowerInvariant();
+        if (normalizedStatus is "queued" or "inqueue" or "running" or "retrying" or "downloading")
+        {
+            _queueIdleSince = null;
+            SignalWake(resetIdleCountdown: true);
+            return;
+        }
+
+        if (normalizedStatus is "completed" or "complete" or "failed" or "canceled" or "cancelled")
+        {
+            SignalWake();
+        }
+    }
+
+    private void SignalWake(bool resetIdleCountdown = false)
+    {
+        if (resetIdleCountdown)
+        {
+            _queueIdleSince = null;
+        }
+
+        if (Interlocked.Exchange(ref _wakeSignalPending, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            _wakeSignal.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            Interlocked.Exchange(ref _wakeSignalPending, 0);
+        }
+    }
+
+    private async Task WaitForWakeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _wakeSignal.WaitAsync(_watchdogInterval, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _wakeSignalPending, 0);
         }
     }
 
@@ -382,6 +511,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+        SetPhase(OrchestrationPhase.Idle);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -396,7 +526,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
             try
             {
-                await Task.Delay(_pollInterval, stoppingToken);
+                await WaitForWakeAsync(stoppingToken);
             }
             catch (TaskCanceledException)
             {
@@ -407,27 +537,29 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task TickAsync(CancellationToken cancellationToken)
     {
+        var now = DateTimeOffset.UtcNow;
         var hasActiveDownloads = await _queueRepository.HasActiveDownloadsAsync(cancellationToken);
         if (hasActiveDownloads)
         {
+            _wasQueueActive = true;
             _queueIdleSince = null;
+            SetPhase(OrchestrationPhase.Downloading);
             return;
         }
 
-        _queueIdleSince ??= DateTimeOffset.UtcNow;
-        var idleDuration = DateTimeOffset.UtcNow - _queueIdleSince.Value;
+        var queueBecameIdle = _wasQueueActive;
+        _wasQueueActive = false;
+
         var hasPendingPostDownloadEnrichment = await HasPendingPostDownloadEnrichmentAsync(cancellationToken);
         if (hasPendingPostDownloadEnrichment)
         {
             _pipelineRequested = true;
         }
 
-        if (!_pipelineRequested)
+        if (_retryScheduler.HasPendingRetries)
         {
-            if (idleDuration < _downloadIdleDelay)
-            {
-                return;
-            }
+            _queueIdleSince = null;
+            SetPhase(OrchestrationPhase.RetrySweep);
 
             if (_autoTagService.HasRunningJobs())
             {
@@ -441,17 +573,68 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
             try
             {
-                await RunScheduledEnhancementIfDueAsync(cancellationToken);
+                var requeued = await _retryScheduler.RunRetrySweepAsync(cancellationToken);
+                if (requeued)
+                {
+                    _queueIdleSince = null;
+                    SetPhase(OrchestrationPhase.Downloading);
+                    return;
+                }
+
+                _queueIdleSince = DateTimeOffset.UtcNow;
             }
             finally
             {
                 _pipelineLock.Release();
             }
+
             return;
         }
 
+        if (queueBecameIdle)
+        {
+            _queueIdleSince = now;
+        }
+        else
+        {
+            _queueIdleSince ??= now;
+        }
+
+        var idleDuration = DateTimeOffset.UtcNow - _queueIdleSince.Value;
         if (idleDuration < _downloadIdleDelay)
         {
+            SetPhase(OrchestrationPhase.EnrichmentCountdown, _queueIdleSince.Value + _downloadIdleDelay);
+            return;
+        }
+
+        if (!_pipelineRequested)
+        {
+            if (_autoTagService.HasRunningJobs())
+            {
+                return;
+            }
+
+            if (!await _pipelineLock.WaitAsync(0, cancellationToken))
+            {
+                return;
+            }
+
+            try
+            {
+                await RunScheduledEnhancementIfDueAsync(cancellationToken);
+                if (_pipelineRequested)
+                {
+                    SetPhase(OrchestrationPhase.EnrichmentCountdown, _queueIdleSince.HasValue ? _queueIdleSince.Value + _downloadIdleDelay : null);
+                }
+                else
+                {
+                    SetPhase(OrchestrationPhase.Idle);
+                }
+            }
+            finally
+            {
+                _pipelineLock.Release();
+            }
             return;
         }
 
@@ -471,7 +654,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         try
         {
+            SetPhase(OrchestrationPhase.Enriching);
             await RunPipelineAsync(cancellationToken);
+            SetPhase(OrchestrationPhase.Idle);
         }
         finally
         {
@@ -993,12 +1178,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Automation: enhancement deferred by staging gate ({Reason}).", reason);
+            _logger.LogInformation("Automation: staging gate observed ({Reason}).", reason);
         }
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             now,
             "info",
-            $"Automation: enhancement deferred by staging gate ({reason})."));
+            $"Automation: staging gate observed ({reason})."));
     }
 
     private void LogStagingEnhancementScanBypass(Exception exception, string reason)

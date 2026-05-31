@@ -11,6 +11,9 @@ namespace DeezSpoTag.Services.Download.Queue;
 
 public sealed class DownloadQueueRepository
 {
+    public sealed record QueueStateChangedEvent(string QueueUuid, string Status);
+    public static event Action<QueueStateChangedEvent>? QueueStateChanged;
+
     private static readonly SemaphoreSlim DequeueGate = new(1, 1);
     private const string DownloadTaskTable = "download_task";
     private const string FilesPropertyLower = "files";
@@ -74,7 +77,13 @@ END;";
         await using var command = new SqliteCommand(sql, connection);
         BindCommonParameters(command, item with { QueueOrder = queueOrder });
         var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is null or DBNull ? null : Convert.ToInt64(result);
+        var id = result is null or DBNull ? (long?)null : Convert.ToInt64(result);
+        if (id.HasValue)
+        {
+            PublishQueueStateChanged(item.QueueUuid, "queued");
+        }
+
+        return id;
     }
 
     public async Task<bool> RequeueAsync(string queueUuid, CancellationToken cancellationToken = default)
@@ -106,6 +115,11 @@ WHERE queue_uuid = @queueUuid;";
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("queueOrder", queueOrder);
         var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (affected > 0)
+        {
+            PublishQueueStateChanged(queueUuid, "queued");
+        }
+
         return affected > 0;
     }
 
@@ -417,6 +431,7 @@ WHERE queue_uuid = @queueUuid;";
         if (updated > 0)
         {
             await TryCleanupStagingForTerminalStatusAsync(connection, queueUuid, status, cancellationToken);
+            PublishQueueStateChanged(queueUuid, status);
         }
     }
 
@@ -485,6 +500,7 @@ SET status = 'paused',
     updated_at = CURRENT_TIMESTAMP
 WHERE status = 'queued';";
         await ExecuteNonQueryAsync(connection, sql, cancellationToken);
+        PublishQueueStateChanged(string.Empty, "paused");
     }
 
     public async Task ResumePausedAsync(CancellationToken cancellationToken = default)
@@ -497,6 +513,25 @@ SET status = 'queued',
     updated_at = CURRENT_TIMESTAMP
 WHERE status = 'paused';";
         await ExecuteNonQueryAsync(connection, sql, cancellationToken);
+        PublishQueueStateChanged(string.Empty, "queued");
+    }
+
+    private static void PublishQueueStateChanged(string queueUuid, string status)
+    {
+        var handler = QueueStateChanged;
+        if (handler == null || string.IsNullOrWhiteSpace(status))
+        {
+            return;
+        }
+
+        try
+        {
+            handler(new QueueStateChangedEvent(queueUuid ?? string.Empty, status));
+        }
+        catch
+        {
+            // Queue state notifications are best-effort and must never impact queue persistence.
+        }
     }
 
     public async Task<bool> TryClaimStaleRunningAsync(
