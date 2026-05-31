@@ -17,6 +17,9 @@ coverage-report/
 coverage*.xml
 reports/
 codeql-results/
+ARCHITECTURE.md
+SECURITY_CODEQL_EXPORT.md
+SECURITY_CODEQL_REMEDIATION_PLAN.md
 DeezSpoTag.Web/Tools/venv/
 .jscpd-report/
 .jscpd*/
