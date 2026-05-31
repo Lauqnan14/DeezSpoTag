@@ -1080,27 +1080,12 @@ async function loadPlaylistWatchlist() {
         const activeSourceId = runtime?.scheduler?.activeSourceId
             ? String(runtime.scheduler.activeSourceId).trim()
             : '';
-        const zeroQueueStreak = Number(runtime?.scheduler?.zeroQueueStreak || 0);
         const openCircuits = runtime?.circuits?.filter(circuit => circuit?.isOpen) ?? [];
         const circuitBySource = new Map(
             openCircuits
                 .map(circuit => [String(circuit.source || '').trim().toLowerCase(), circuit])
                 .filter(entry => Boolean(entry[0]))
         );
-        const runtimeBannerParts = [];
-        if (activeSource && activeSourceId) {
-            runtimeBannerParts.push(`Active playlist: ${activeSource}:${activeSourceId}`);
-        }
-        if (zeroQueueStreak > 0) {
-            runtimeBannerParts.push(`zero-queue streak ${zeroQueueStreak}`);
-        }
-        if (openCircuits.length > 0) {
-            runtimeBannerParts.push(`open circuits ${openCircuits.length}`);
-        }
-        const runtimeBannerHtml = runtimeBannerParts.length > 0
-            ? `<div class="watchlist-card-meta" style="margin:0 0 12px 0;">${escapeHtml(runtimeBannerParts.join(' • '))}</div>`
-            : '';
-
         if (mergeButton) {
             mergeButton.disabled = items.length < 2;
             mergeButton.onclick = async () => {
@@ -1110,7 +1095,7 @@ async function loadPlaylistWatchlist() {
 
         const playlistPrefsPromise = hydratePlaylistPreferences();
 
-        container.innerHTML = runtimeBannerHtml + items.map((item) => {
+        container.innerHTML = items.map((item) => {
             const imageUrl = toSafeHttpUrl(item.imageUrl || '');
             const artContent = imageUrl
                 ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`
