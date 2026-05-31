@@ -16,7 +16,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
 
         Assert.Contains("settings.WatchMaxTracksPerPlaylistCheck", source, StringComparison.Ordinal);
         Assert.Contains("GetActiveDownloadCountAsync", source, StringComparison.Ordinal);
-        Assert.Contains("queuedCount >= capacity.Value.Remaining", source, StringComparison.Ordinal);
+        Assert.Contains("capacityRemaining <= 0", source, StringComparison.Ordinal);
         Assert.Contains("active downloads already meet the watchlist cap", source, StringComparison.Ordinal);
     }
 
@@ -49,7 +49,18 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
 
         Assert.Contains("var deferred = false;", watchSource, StringComparison.Ordinal);
         Assert.Contains("deferred = true;", watchSource, StringComparison.Ordinal);
-        Assert.Contains("new QueueWatchResult(queuedCount, completedCount, failedCount, Deferred: deferred)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("new QueueWatchResult(", watchSource, StringComparison.Ordinal);
+        Assert.Contains("Deferred: deferred", watchSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatchQueue_UsesResolutionAttemptBudgetSeparateFromQueueBudget()
+    {
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+
+        Assert.Contains("watchSettings.WatchMaxTracksPerPlaylistCheck", watchSource, StringComparison.Ordinal);
+        Assert.Contains("attemptedCount >= maxResolutionAttempts", watchSource, StringComparison.Ordinal);
+        Assert.Contains("watch queue reached resolution-attempt budget", watchSource, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

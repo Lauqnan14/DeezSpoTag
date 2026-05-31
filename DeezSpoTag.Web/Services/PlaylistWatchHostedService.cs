@@ -14,6 +14,10 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 {
     private const string ArtistKind = "artist";
     private const string PlaylistKind = "playlist";
+    private const string PlaylistWatchType = "playlist";
+    private const int SourceCircuitFailureThreshold = 2;
+    private const int SourceCircuitCooldownSeconds = 300;
+    private const int MaxConsecutiveZeroQueuePlaylistsPerRun = 1;
     private readonly IServiceProvider _serviceProvider;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly IConfiguration _configuration;
@@ -25,6 +29,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private readonly ConcurrentDictionary<string, DateTimeOffset> _nextAllowedRun = new();
     private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
     private int _roundRobinIndex;
+    private int _artistRoundRobinIndex;
 
     public PlaylistWatchHostedService(
         IServiceProvider serviceProvider,
@@ -124,7 +129,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             }
 
             var runQueueBudget = scope.ServiceProvider.GetService<WatchlistRunQueueBudgetService>();
-            var runQueueBudgetToken = runQueueBudget?.BeginRun(Math.Max(1, settings.WatchMaxTracksPerPlaylistCheck)) ?? 0;
+            var runQueueBudgetToken = runQueueBudget?.BeginRun(Math.Max(1, settings.WatchMaxItemsPerRun)) ?? 0;
 
             try
             {
@@ -150,7 +155,11 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
                 var playlists = await repository.GetPlaylistWatchlistAsync(stoppingToken);
                 var artists = await repository.GetWatchlistAsync(stoppingToken);
-                var items = BuildWatchItems(playlists, artists);
+                var playlistItems = BuildPlaylistWatchItems(playlists);
+                var artistItems = BuildArtistWatchItems(artists);
+                var items = new List<WatchItem>(playlistItems.Count + artistItems.Count);
+                items.AddRange(playlistItems);
+                items.AddRange(artistItems);
                 if (items.Count == 0)
                 {
                     CleanupStaleState(Array.Empty<WatchItem>());
@@ -159,7 +168,22 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
                 CleanupStaleState(items);
                 await SeedPersistedLastRunsAsync(items, repository, stoppingToken);
-                await ProcessWatchItemsAsync(items, settings, scope.ServiceProvider, stoppingToken);
+                var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
+                    playlistItems,
+                    settings,
+                    repository,
+                    scope.ServiceProvider,
+                    runQueueBudget,
+                    stoppingToken);
+                if (!playlistRunResult.AbortedRun)
+                {
+                    await ProcessArtistWatchItemsAsync(
+                        artistItems,
+                        settings,
+                        scope.ServiceProvider,
+                        runQueueBudget,
+                        stoppingToken);
+                }
             }
             finally
             {
@@ -183,94 +207,301 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
     }
 
-    private async Task ProcessWatchItemsAsync(
-        IReadOnlyList<WatchItem> items,
+    private async Task<PlaylistRunResult> ProcessPlaylistWatchItemsAsync(
+        IReadOnlyList<WatchItem> playlistItems,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        LibraryRepository repository,
         IServiceProvider serviceProvider,
+        WatchlistRunQueueBudgetService? runQueueBudget,
         CancellationToken stoppingToken)
     {
         var runStartedUtc = DateTimeOffset.UtcNow;
-        var maxItemsPerRun = Math.Clamp(settings.WatchMaxItemsPerRun, 1, items.Count);
-        var startIndex = _roundRobinIndex % items.Count;
-        var processed = 0;
-        var lastVisitedIndex = -1;
-        var metrics = new WatchRunMetrics(items.Count, maxItemsPerRun, startIndex);
+        if (playlistItems.Count == 0)
+        {
+            return new PlaylistRunResult(AbortedRun: false);
+        }
 
-        for (var offset = 0; offset < items.Count && processed < maxItemsPerRun; offset++)
+        var schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
+        var activeItem = ResolveActivePlaylistItem(playlistItems, schedulerState);
+        if (activeItem == null)
+        {
+            activeItem = ResolveNextPlaylistItem(playlistItems);
+            if (activeItem == null)
+            {
+                return new PlaylistRunResult(AbortedRun: false);
+            }
+
+            await SaveSchedulerStateAsync(
+                repository,
+                activeItem.Source,
+                activeItem.Playlist?.SourceId,
+                activeStartedUtc: DateTimeOffset.UtcNow,
+                lastProgressUtc: schedulerState?.LastProgressUtc,
+                zeroQueueStreak: 0,
+                stoppingToken);
+        }
+
+        var failFastAbort = false;
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var processed = 0;
+        var succeeded = 0;
+        var failed = 0;
+        var skippedByBackoff = 0;
+        var skippedByDelayWindow = 0;
+        var skippedByLockBusy = 0;
+        var resolutionAttempts = 0;
+        var maxResolutionAttemptsPerRun = Math.Max(1, settings.WatchMaxTracksPerPlaylistCheck);
+
+        while (activeItem != null)
         {
             stoppingToken.ThrowIfCancellationRequested();
+            if (resolutionAttempts >= maxResolutionAttemptsPerRun)
+            {
+                failFastAbort = true;
+                break;
+            }
+            if (!visited.Add(activeItem.Key))
+            {
+                break;
+            }
 
-            var index = (startIndex + offset) % items.Count;
-            lastVisitedIndex = index;
-            var item = items[index];
-            var eligibility = GetEligibility(item, settings);
+            var sourceCircuit = await repository.GetWatchlistSourceCircuitStateAsync(
+                PlaylistWatchType,
+                activeItem.Source,
+                stoppingToken);
+            if (IsCircuitOpen(sourceCircuit))
+            {
+                var openUntilUtc = sourceCircuit?.OpenUntilUtc;
+                await PersistPlaylistSchedulerStateAsync(
+                    activeItem,
+                    serviceProvider,
+                    "circuit_open",
+                    string.IsNullOrWhiteSpace(sourceCircuit?.Reason) ? "Source circuit breaker open." : sourceCircuit!.Reason,
+                    openUntilUtc,
+                    _consecutiveFailures.TryGetValue(activeItem.Key, out var circuitFailures) ? circuitFailures : 0,
+                    stoppingToken);
+                failFastAbort = true;
+                break;
+            }
+
+            var eligibility = GetEligibility(activeItem, settings);
             switch (eligibility)
             {
                 case WatchItemEligibility.Backoff:
                     await PersistPlaylistSchedulerStateAsync(
-                        item,
+                        activeItem,
                         serviceProvider,
                         "backoff",
                         "Waiting for backoff window before retry.",
-                        _nextAllowedRun.TryGetValue(item.Key, out var nextAllowedUtc) ? nextAllowedUtc : null,
-                        _consecutiveFailures.TryGetValue(item.Key, out var backoffFailures) ? backoffFailures : null,
+                        _nextAllowedRun.TryGetValue(activeItem.Key, out var nextAllowedUtc) ? nextAllowedUtc : null,
+                        _consecutiveFailures.TryGetValue(activeItem.Key, out var backoffFailures) ? backoffFailures : null,
                         stoppingToken);
-                    metrics.SkippedByBackoff++;
-                    continue;
+                    skippedByBackoff++;
+                    failFastAbort = true;
+                    break;
                 case WatchItemEligibility.DelayWindow:
                     await PersistPlaylistSchedulerStateAsync(
-                        item,
+                        activeItem,
                         serviceProvider,
                         "pending",
                         "Waiting for next scheduled interval.",
                         null,
-                        _consecutiveFailures.TryGetValue(item.Key, out var pendingFailures) ? pendingFailures : 0,
+                        _consecutiveFailures.TryGetValue(activeItem.Key, out var pendingFailures) ? pendingFailures : 0,
                         stoppingToken);
-                    metrics.SkippedByDelayWindow++;
-                    continue;
+                    skippedByDelayWindow++;
+                    failFastAbort = true;
+                    break;
             }
 
-            var outcome = await TryProcessItemAsync(item, settings, serviceProvider, stoppingToken);
-            switch (outcome)
+            if (failFastAbort)
             {
-                case WatchItemRunOutcome.Success:
-                    processed++;
-                    metrics.Processed++;
-                    metrics.Succeeded++;
-                    break;
-                case WatchItemRunOutcome.Failure:
-                    processed++;
-                    metrics.Processed++;
-                    metrics.Failed++;
-                    break;
-                case WatchItemRunOutcome.LockBusy:
-                    metrics.SkippedByLockBusy++;
-                    break;
+                break;
             }
-        }
 
-        _roundRobinIndex = lastVisitedIndex >= 0
-            ? (lastVisitedIndex + 1) % items.Count
-            : (startIndex + 1) % items.Count;
+            var execution = await TryProcessItemAsync(activeItem, settings, serviceProvider, stoppingToken);
+            if (execution.Outcome == WatchItemRunOutcome.LockBusy)
+            {
+                skippedByLockBusy++;
+                failFastAbort = true;
+                break;
+            }
+
+            processed++;
+            if (execution.Outcome == WatchItemRunOutcome.Success)
+            {
+                succeeded++;
+            }
+            else
+            {
+                failed++;
+            }
+
+            var summary = await repository.GetPlaylistWatchTrackStatusSummaryAsync(
+                activeItem.Source,
+                activeItem.Playlist?.SourceId ?? string.Empty,
+                stoppingToken);
+            var remainingBudget = runQueueBudget?.GetRemaining() ?? int.MaxValue;
+            var playlistResult = execution.PlaylistResult;
+            resolutionAttempts += Math.Max(1, playlistResult?.AttemptedTracks ?? 0);
+            var queuedThisAttempt = playlistResult?.QueuedTracks ?? 0;
+            var systemicFailure = playlistResult is { QueuedTracks: 0, SystemicFailures: > 0 };
+            if (systemicFailure)
+            {
+                await OpenSourceCircuitAsync(
+                    repository,
+                    activeItem.Source,
+                    playlistResult?.FailureFingerprint,
+                    playlistResult?.FailureMessage,
+                    stoppingToken);
+                failFastAbort = true;
+                break;
+            }
+
+            if (execution.Outcome == WatchItemRunOutcome.Failure && execution.SystemicFailure)
+            {
+                await OpenSourceCircuitAsync(
+                    repository,
+                    activeItem.Source,
+                    fingerprint: "hosted_service_exception",
+                    reason: execution.FailureMessage,
+                    stoppingToken);
+                failFastAbort = true;
+                break;
+            }
+
+            if (queuedThisAttempt <= 0 || playlistResult?.Deferred == true)
+            {
+                schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
+                var zeroQueueStreak = (schedulerState?.ZeroQueueStreak ?? 0) + 1;
+                await SaveSchedulerStateAsync(
+                    repository,
+                    activeItem.Source,
+                    activeItem.Playlist?.SourceId,
+                    schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
+                    schedulerState?.LastProgressUtc,
+                    zeroQueueStreak,
+                    stoppingToken);
+                if (zeroQueueStreak >= MaxConsecutiveZeroQueuePlaylistsPerRun)
+                {
+                    failFastAbort = true;
+                    break;
+                }
+            }
+
+            await SaveSchedulerStateAsync(
+                repository,
+                activeItem.Source,
+                activeItem.Playlist?.SourceId,
+                schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                zeroQueueStreak: 0,
+                stoppingToken);
+            await repository.UpsertWatchlistSourceCircuitStateAsync(
+                new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+                    PlaylistWatchType,
+                    activeItem.Source,
+                    IsOpen: false,
+                    OpenUntilUtc: null,
+                    Reason: null,
+                    Fingerprint: null,
+                    FailureCount: 0),
+                stoppingToken);
+
+            if (remainingBudget <= 0 || summary.UnresolvedCount > 0)
+            {
+                break;
+            }
+
+            activeItem = ResolveNextPlaylistItem(playlistItems);
+            if (activeItem == null)
+            {
+                await SaveSchedulerStateAsync(
+                    repository,
+                    activeSource: null,
+                    activeSourceId: null,
+                    activeStartedUtc: null,
+                    lastProgressUtc: DateTimeOffset.UtcNow,
+                    zeroQueueStreak: 0,
+                    stoppingToken);
+                break;
+            }
+
+            await SaveSchedulerStateAsync(
+                repository,
+                activeItem.Source,
+                activeItem.Playlist?.SourceId,
+                activeStartedUtc: DateTimeOffset.UtcNow,
+                lastProgressUtc: DateTimeOffset.UtcNow,
+                zeroQueueStreak: 0,
+                stoppingToken);
+        }
 
         var elapsedMs = (DateTimeOffset.UtcNow - runStartedUtc).TotalMilliseconds;
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Watchlist run summary: total={TotalItems}, cap={RunCap}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
-                metrics.TotalItems,
-                metrics.MaxItemsPerRun,
-                metrics.Processed,
-                metrics.Succeeded,
-                metrics.Failed,
-                metrics.SkippedByBackoff,
-                metrics.SkippedByDelayWindow,
-                metrics.SkippedByLockBusy,
+                "Watchlist playlist run summary: total={TotalItems}, processed={Processed}, ok={Succeeded}, failed={Failed}, attempts={Attempts}/{AttemptLimit}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, abort={Aborted}, elapsedMs={ElapsedMs:0}",
+                playlistItems.Count,
+                processed,
+                succeeded,
+                failed,
+                resolutionAttempts,
+                maxResolutionAttemptsPerRun,
+                skippedByBackoff,
+                skippedByDelayWindow,
+                skippedByLockBusy,
+                failFastAbort,
                 elapsedMs);
+        }
+
+        return new PlaylistRunResult(failFastAbort);
+    }
+
+    private async Task ProcessArtistWatchItemsAsync(
+        IReadOnlyList<WatchItem> artistItems,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        IServiceProvider serviceProvider,
+        WatchlistRunQueueBudgetService? runQueueBudget,
+        CancellationToken stoppingToken)
+    {
+        if (artistItems.Count == 0)
+        {
+            return;
+        }
+
+        var startIndex = _artistRoundRobinIndex % artistItems.Count;
+        var visited = 0;
+        var lastVisitedIndex = -1;
+        while (visited < artistItems.Count)
+        {
+            stoppingToken.ThrowIfCancellationRequested();
+            if ((runQueueBudget?.GetRemaining() ?? int.MaxValue) <= 0)
+            {
+                break;
+            }
+
+            var index = (startIndex + visited) % artistItems.Count;
+            visited++;
+            lastVisitedIndex = index;
+            var item = artistItems[index];
+            var eligibility = GetEligibility(item, settings);
+            if (eligibility != WatchItemEligibility.Eligible)
+            {
+                continue;
+            }
+
+            _ = await TryProcessItemAsync(item, settings, serviceProvider, stoppingToken);
+        }
+
+        if (artistItems.Count > 0)
+        {
+            _artistRoundRobinIndex = lastVisitedIndex >= 0
+                ? (lastVisitedIndex + 1) % artistItems.Count
+                : (startIndex + 1) % artistItems.Count;
         }
     }
 
-    private async Task<WatchItemRunOutcome> TryProcessItemAsync(
+    private async Task<WatchItemExecutionOutcome> TryProcessItemAsync(
         WatchItem item,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
@@ -279,14 +510,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         var itemLock = _itemLocks.GetOrAdd(item.Key, _ => new SemaphoreSlim(1, 1));
         if (!await itemLock.WaitAsync(0, stoppingToken))
         {
-            return WatchItemRunOutcome.LockBusy;
+            return new WatchItemExecutionOutcome(WatchItemRunOutcome.LockBusy, null, false, null);
         }
 
         var startedUtc = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            await RunItemAsync(item, serviceProvider, stoppingToken);
+            var playlistResult = await RunItemAsync(item, serviceProvider, stoppingToken);
             _lastRun[item.Key] = DateTimeOffset.UtcNow;
             _consecutiveFailures.TryRemove(item.Key, out _);
             _nextAllowedRun.TryRemove(item.Key, out _);
@@ -299,7 +530,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     item.Source,
                     stopwatch.Elapsed.TotalMilliseconds);
             }
-            return WatchItemRunOutcome.Success;
+            return new WatchItemExecutionOutcome(WatchItemRunOutcome.Success, playlistResult, false, null);
         }
         catch (OperationCanceledException ex) when (!stoppingToken.IsCancellationRequested)
         {
@@ -319,7 +550,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
     }
 
-    private async Task<WatchItemRunOutcome> RecordItemFailureAsync(
+    private async Task<WatchItemExecutionOutcome> RecordItemFailureAsync(
         WatchItem item,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
@@ -366,7 +597,11 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     stopwatch.Elapsed.TotalMilliseconds);
             }
         }
-        return WatchItemRunOutcome.Failure;
+        return new WatchItemExecutionOutcome(
+            WatchItemRunOutcome.Failure,
+            null,
+            IsLikelySystemicFailure(ex.Message),
+            ex.Message);
     }
 
     private static async Task PersistPlaylistSchedulerStateAsync(
@@ -415,11 +650,9 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             cancellationToken);
     }
 
-    private static List<WatchItem> BuildWatchItems(
-        IReadOnlyList<PlaylistWatchlistDto> playlists,
-        IReadOnlyList<WatchlistArtistDto> artists)
+    private static List<WatchItem> BuildPlaylistWatchItems(IReadOnlyList<PlaylistWatchlistDto> playlists)
     {
-        var items = new List<WatchItem>(playlists.Count + artists.Count);
+        var items = new List<WatchItem>(playlists.Count);
         foreach (var playlist in playlists)
         {
             if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
@@ -430,6 +663,12 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             items.Add(new WatchItem(PlaylistKind, key, NormalizeSource(playlist.Source), playlist, null));
         }
 
+        return items;
+    }
+
+    private static List<WatchItem> BuildArtistWatchItems(IReadOnlyList<WatchlistArtistDto> artists)
+    {
+        var items = new List<WatchItem>(artists.Count);
         foreach (var artist in artists)
         {
             var key = $"artist:{artist.ArtistId}";
@@ -480,6 +719,141 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             item.Playlist.SourceId,
             cancellationToken);
         return state?.LastCheckedUtc;
+    }
+
+    private WatchItem? ResolveActivePlaylistItem(
+        IReadOnlyList<WatchItem> playlistItems,
+        WatchlistSchedulerStateDto? state)
+    {
+        if (playlistItems.Count == 0)
+        {
+            return null;
+        }
+
+        if (state == null
+            || string.IsNullOrWhiteSpace(state.ActiveSource)
+            || string.IsNullOrWhiteSpace(state.ActiveSourceId))
+        {
+            return ResolveNextPlaylistItem(playlistItems);
+        }
+
+        return playlistItems.FirstOrDefault(item =>
+            item.Kind == PlaylistKind
+            && string.Equals(item.Source, NormalizeSource(state.ActiveSource), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(item.Playlist?.SourceId, state.ActiveSourceId, StringComparison.OrdinalIgnoreCase))
+            ?? ResolveNextPlaylistItem(playlistItems);
+    }
+
+    private WatchItem? ResolveNextPlaylistItem(IReadOnlyList<WatchItem> playlistItems)
+    {
+        if (playlistItems.Count == 0)
+        {
+            return null;
+        }
+
+        var startIndex = _roundRobinIndex % playlistItems.Count;
+        for (var offset = 0; offset < playlistItems.Count; offset++)
+        {
+            var index = (startIndex + offset) % playlistItems.Count;
+            var candidate = playlistItems[index];
+            if (candidate.Kind != PlaylistKind || candidate.Playlist == null)
+            {
+                continue;
+            }
+
+            _roundRobinIndex = (index + 1) % playlistItems.Count;
+            return candidate;
+        }
+
+        return null;
+    }
+
+    private static async Task SaveSchedulerStateAsync(
+        LibraryRepository repository,
+        string? activeSource,
+        string? activeSourceId,
+        DateTimeOffset? activeStartedUtc,
+        DateTimeOffset? lastProgressUtc,
+        int zeroQueueStreak,
+        CancellationToken cancellationToken)
+    {
+        await repository.UpsertWatchlistSchedulerStateAsync(
+            new LibraryRepository.WatchlistSchedulerStateUpsertInput(
+                PlaylistWatchType,
+                activeSource,
+                activeSourceId,
+                activeStartedUtc,
+                lastProgressUtc,
+                zeroQueueStreak),
+            cancellationToken);
+    }
+
+    private static bool IsCircuitOpen(WatchlistSourceCircuitStateDto? circuitState)
+    {
+        if (circuitState is not { IsOpen: true })
+        {
+            return false;
+        }
+
+        if (!circuitState.OpenUntilUtc.HasValue)
+        {
+            return true;
+        }
+
+        return DateTimeOffset.UtcNow < circuitState.OpenUntilUtc.Value;
+    }
+
+    private static async Task OpenSourceCircuitAsync(
+        LibraryRepository repository,
+        string source,
+        string? fingerprint,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        var existing = await repository.GetWatchlistSourceCircuitStateAsync(PlaylistWatchType, source, cancellationToken);
+        var failureCount = Math.Max(0, existing?.FailureCount ?? 0) + 1;
+        var isOpen = failureCount >= SourceCircuitFailureThreshold;
+        var openUntilUtc = isOpen
+            ? DateTimeOffset.UtcNow.AddSeconds(SourceCircuitCooldownSeconds)
+            : existing?.OpenUntilUtc;
+
+        await repository.UpsertWatchlistSourceCircuitStateAsync(
+            new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+                PlaylistWatchType,
+                source,
+                isOpen,
+                openUntilUtc,
+                string.IsNullOrWhiteSpace(reason) ? "Systemic source failure." : reason,
+                fingerprint,
+                failureCount),
+            cancellationToken);
+    }
+
+    private static bool IsLikelySystemicFailure(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var normalized = message.Trim().ToLowerInvariant();
+        return normalized.Contains("captcha", StringComparison.Ordinal)
+               || normalized.Contains("forbidden", StringComparison.Ordinal)
+               || normalized.Contains("unauthorized", StringComparison.Ordinal)
+               || normalized.Contains("login required", StringComparison.Ordinal)
+               || normalized.Contains("http 401", StringComparison.Ordinal)
+               || normalized.Contains("http 403", StringComparison.Ordinal)
+               || normalized.Contains("http 429", StringComparison.Ordinal)
+               || normalized.Contains("rate limit", StringComparison.Ordinal)
+               || normalized.Contains("too many requests", StringComparison.Ordinal)
+               || normalized.Contains("timeout", StringComparison.Ordinal)
+               || normalized.Contains("timed out", StringComparison.Ordinal)
+               || normalized.Contains("service unavailable", StringComparison.Ordinal)
+               || normalized.Contains("gateway timeout", StringComparison.Ordinal)
+               || normalized.Contains("http 500", StringComparison.Ordinal)
+               || normalized.Contains("http 502", StringComparison.Ordinal)
+               || normalized.Contains("http 503", StringComparison.Ordinal)
+               || normalized.Contains("http 504", StringComparison.Ordinal);
     }
 
     private WatchItemEligibility GetEligibility(WatchItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
@@ -535,7 +909,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
     }
 
-    private static async Task RunItemAsync(
+    private static async Task<PlaylistWatchService.PlaylistReconciliationResult?> RunItemAsync(
         WatchItem item,
         IServiceProvider serviceProvider,
         CancellationToken stoppingToken)
@@ -543,8 +917,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         if (item.Kind == PlaylistKind && item.Playlist != null)
         {
             var watcher = serviceProvider.GetRequiredService<PlaylistWatchService>();
-            await watcher.CheckPlaylistWatchItemAsync(item.Playlist, stoppingToken);
-            return;
+            return await watcher.ReconcilePlaylistAsync(item.Playlist, stoppingToken);
         }
 
         if (item.Kind == ArtistKind && item.Artist != null)
@@ -552,6 +925,8 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             var watcher = serviceProvider.GetRequiredService<ArtistWatchService>();
             await watcher.CheckArtistWatchItemAsync(item.Artist, stoppingToken);
         }
+
+        return null;
     }
 
     private sealed record WatchItem(
@@ -560,26 +935,12 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         string Source,
         PlaylistWatchlistDto? Playlist,
         WatchlistArtistDto? Artist);
-
-    private sealed class WatchRunMetrics
-    {
-        public WatchRunMetrics(int totalItems, int maxItemsPerRun, int startIndex)
-        {
-            TotalItems = totalItems;
-            MaxItemsPerRun = maxItemsPerRun;
-            StartIndex = startIndex;
-        }
-
-        public int TotalItems { get; }
-        public int MaxItemsPerRun { get; }
-        public int StartIndex { get; }
-        public int Processed { get; set; }
-        public int Succeeded { get; set; }
-        public int Failed { get; set; }
-        public int SkippedByBackoff { get; set; }
-        public int SkippedByDelayWindow { get; set; }
-        public int SkippedByLockBusy { get; set; }
-    }
+    private sealed record PlaylistRunResult(bool AbortedRun);
+    private sealed record WatchItemExecutionOutcome(
+        WatchItemRunOutcome Outcome,
+        PlaylistWatchService.PlaylistReconciliationResult? PlaylistResult,
+        bool SystemicFailure,
+        string? FailureMessage);
 
     private enum WatchItemRunOutcome
     {

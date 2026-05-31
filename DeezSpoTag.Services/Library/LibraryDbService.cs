@@ -21,6 +21,8 @@ public sealed class LibraryDbService
     private const string PlaylistWatchPreferencesTable = "playlist_watch_preferences";
     private const string PlaylistWatchTrackTable = "playlist_watch_track";
     private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
+    private const string WatchlistSchedulerStateTable = "watchlist_scheduler_state";
+    private const string WatchlistSourceCircuitStateTable = "watchlist_source_circuit_state";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
     private const string RecommendationRejectionTable = "recommendation_rejection";
@@ -86,6 +88,8 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
             ,
             ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
+            ,
+            ["idx_watchlist_source_circuit_open"] = (WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", false)
             ,
             ["idx_recommendation_rejection_library"] = (RecommendationRejectionTable, "library_id, folder_id, station_id", false)
             ,
@@ -256,6 +260,28 @@ CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id, track_source_id, queue_uuid)
 );", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS watchlist_scheduler_state (
+    watch_type TEXT NOT NULL PRIMARY KEY,
+    active_source TEXT,
+    active_source_id TEXT,
+    active_started_utc TEXT,
+    last_progress_utc TEXT,
+    zero_queue_streak INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS watchlist_source_circuit_state (
+    watch_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    is_open INTEGER NOT NULL DEFAULT 0,
+    open_until_utc TEXT,
+    reason TEXT,
+    fingerprint TEXT,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (watch_type, source)
+);", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "destination_folder_id", BigIntType, cancellationToken);
@@ -322,6 +348,7 @@ CREATE TABLE IF NOT EXISTS song_link_cache (
         await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_source_status", PlaylistWatchTrackTable, "source, source_id, status", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_download_claim_queue", PlaylistWatchDownloadClaimTable, "queue_uuid, status", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_source_circuit_open", WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_history_source_created", WatchlistHistoryTable, "source, created_at", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS download_blocklist (

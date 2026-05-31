@@ -265,6 +265,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("NormalizeBlockRules", source, StringComparison.Ordinal);
         Assert.Contains("ApplyRoutingRulesGlobally", source, StringComparison.Ordinal);
         Assert.Contains("routing-rules/apply-globally", source, StringComparison.Ordinal);
+        Assert.Contains("SaveGlobalRoutingTemplateAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ApplyGlobalRoutingTemplateToPlaylistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GlobalRoutingTemplateSource", source, StringComparison.Ordinal);
+        Assert.Contains("GlobalRoutingTemplateSourceId", source, StringComparison.Ordinal);
         Assert.Contains("Routing destination folder was not found or is disabled.", source, StringComparison.Ordinal);
     }
 

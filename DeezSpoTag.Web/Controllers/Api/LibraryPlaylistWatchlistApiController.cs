@@ -17,6 +17,8 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public class LibraryPlaylistWatchlistApiController : ControllerBase
 {
     private const string ExplicitField = "explicit";
+    private const string GlobalRoutingTemplateSource = "global";
+    private const string GlobalRoutingTemplateSourceId = "__playlist_routing_rules_template__";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly PlaylistWatchService _playlistWatchService;
@@ -66,6 +68,62 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         return Ok(hydrated);
+    }
+
+    [HttpGet("watch-runtime")]
+    public async Task<IActionResult> GetWatchRuntime(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var scheduler = await _repository.GetWatchlistSchedulerStateAsync("playlist", cancellationToken);
+        var playlists = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        var sources = playlists
+            .Select(item => NormalizePlaylistSource(item.Source))
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(source => source, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var circuits = new List<object>(sources.Count);
+        foreach (var source in sources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var circuit = await _repository.GetWatchlistSourceCircuitStateAsync("playlist", source, cancellationToken);
+            if (circuit == null)
+            {
+                continue;
+            }
+
+            circuits.Add(new
+            {
+                source = circuit.Source,
+                isOpen = circuit.IsOpen,
+                openUntilUtc = circuit.OpenUntilUtc,
+                reason = circuit.Reason,
+                fingerprint = circuit.Fingerprint,
+                failureCount = circuit.FailureCount
+            });
+        }
+
+        return Ok(new
+        {
+            scheduler = scheduler == null
+                ? null
+                : new
+                {
+                    watchType = scheduler.WatchType,
+                    activeSource = scheduler.ActiveSource,
+                    activeSourceId = scheduler.ActiveSourceId,
+                    activeStartedUtc = scheduler.ActiveStartedUtc,
+                    lastProgressUtc = scheduler.LastProgressUtc,
+                    zeroQueueStreak = scheduler.ZeroQueueStreak
+                },
+            circuits,
+            utcNow = DateTimeOffset.UtcNow
+        });
     }
 
     private PlaylistWatchlistDto HydratePlaylistVisual(PlaylistWatchlistDto item)
@@ -138,6 +196,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         {
             return StatusCode(500, "Failed to add playlist watchlist entry.");
         }
+
+        await ApplyGlobalRoutingTemplateToPlaylistAsync(
+            normalizedSource,
+            request.SourceId,
+            cancellationToken);
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -619,6 +682,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return BadRequest("Routing destination folder was not found or is disabled.");
         }
 
+        await SaveGlobalRoutingTemplateAsync(normalizedRules, cancellationToken);
+
         var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         foreach (var item in watchlist)
         {
@@ -635,6 +700,61 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             appliedRules = normalizedRules?.Count ?? 0,
             playlistsUpdated = watchlist.Count
         });
+    }
+
+    private async Task SaveGlobalRoutingTemplateAsync(
+        IReadOnlyList<PlaylistTrackRoutingRule>? routingRules,
+        CancellationToken cancellationToken)
+    {
+        var existing = await _repository.GetPlaylistWatchPreferenceAsync(
+            GlobalRoutingTemplateSource,
+            GlobalRoutingTemplateSourceId,
+            cancellationToken);
+        var normalizedArtwork = NormalizeArtworkPreference(existing?.ReuseSavedArtwork ?? false);
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                GlobalRoutingTemplateSource,
+                GlobalRoutingTemplateSourceId,
+                DestinationFolderId: null,
+                Service: null,
+                PreferredEngine: null,
+                DownloadVariantMode: null,
+                SyncMode: null,
+                UpdateArtwork: normalizedArtwork.UpdateArtwork,
+                ReuseSavedArtwork: normalizedArtwork.ReuseSavedArtwork,
+                RoutingRules: routingRules,
+                IgnoreRules: existing?.IgnoreRules,
+                AtmosDestinationFolderId: null),
+            cancellationToken);
+    }
+
+    private async Task ApplyGlobalRoutingTemplateToPlaylistAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var template = await _repository.GetPlaylistWatchPreferenceAsync(
+            GlobalRoutingTemplateSource,
+            GlobalRoutingTemplateSourceId,
+            cancellationToken);
+        var templateRules = template?.RoutingRules;
+        if (templateRules == null || templateRules.Count == 0)
+        {
+            return;
+        }
+
+        var existing = await _repository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
+        if (existing?.RoutingRules is { Count: > 0 })
+        {
+            return;
+        }
+
+        await UpsertWatchPreferenceRulesAsync(
+            source,
+            sourceId,
+            templateRules,
+            ignoreRules: null,
+            cancellationToken);
     }
 
     [HttpGet("{source}/{sourceId}/ignore-rules")]

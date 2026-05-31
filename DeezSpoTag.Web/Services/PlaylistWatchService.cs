@@ -28,9 +28,18 @@ public sealed class PlaylistWatchService
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
 
     private readonly record struct AtmosQueueRequest(string SourceLabel, string TrackId, bool AfterPrimarySkip);
-    private readonly record struct QueueWatchResult(int QueuedCount, int CompletedCount, int FailedCount, bool Deferred);
+    private readonly record struct QueueWatchResult(
+        int QueuedCount,
+        int CompletedCount,
+        int FailedCount,
+        bool Deferred,
+        int AttemptedCount,
+        int SystemicFailureCount,
+        string? FirstSystemicFailureFingerprint,
+        string? FirstFailureMessage);
 
     private readonly record struct QueueWatchTrackResult(int QueuedCount, bool Completed, bool Failed);
+    private readonly record struct WatchFailureClassification(bool IsSystemic, string? Fingerprint, string? Message);
     private readonly record struct PlaylistTrackSelection(
         List<WatchIntentTrack> MissingTracks,
         int IgnoredCount,
@@ -210,7 +219,12 @@ public sealed class PlaylistWatchService
         int QueuedTracks,
         int CompletedTracks,
         int FailedTracks,
-        PlaylistSyncResult? SyncResult);
+        PlaylistSyncResult? SyncResult,
+        bool Deferred = false,
+        int AttemptedTracks = 0,
+        int SystemicFailures = 0,
+        string? FailureFingerprint = null,
+        string? FailureMessage = null);
 
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
@@ -568,7 +582,12 @@ public sealed class PlaylistWatchService
             queueResult.QueuedCount,
             queueResult.CompletedCount,
             queueResult.FailedCount,
-            syncResult);
+            syncResult,
+            Deferred: queueResult.Deferred,
+            AttemptedTracks: queueResult.AttemptedCount,
+            SystemicFailures: queueResult.SystemicFailureCount,
+            FailureFingerprint: queueResult.FirstSystemicFailureFingerprint,
+            FailureMessage: queueResult.FirstFailureMessage);
     }
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
@@ -2843,7 +2862,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     options.SourceLabel);
             }
 
-            return new QueueWatchResult(0, 0, 0, Deferred: true);
+            return new QueueWatchResult(0, 0, 0, Deferred: true, AttemptedCount: 0, SystemicFailureCount: 0, FirstSystemicFailureFingerprint: null, FirstFailureMessage: null);
         }
 
         using var scope = _serviceProvider.CreateScope();
@@ -2855,17 +2874,35 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var capacity = await TryResolveWatchQueueCapacityAsync(queueRepository, orchestrationService, options, cancellationToken);
         if (capacity is null)
         {
-            return new QueueWatchResult(0, 0, 0, Deferred: true);
+            return new QueueWatchResult(0, 0, 0, Deferred: true, AttemptedCount: 0, SystemicFailureCount: 0, FirstSystemicFailureFingerprint: null, FirstFailureMessage: null);
         }
 
         var queueContext = new QueuedWatchIntentContext(intentService, options, normalizedDownloadVariantMode);
         var queuedCount = 0;
         var completedCount = 0;
         var failedCount = 0;
+        var attemptedCount = 0;
+        var maxResolutionAttempts = Math.Max(1, watchSettings.WatchMaxTracksPerPlaylistCheck);
+        var systemicFailureCount = 0;
+        string? firstSystemicFailureFingerprint = null;
+        string? firstFailureMessage = null;
         var deferred = false;
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (attemptedCount >= maxResolutionAttempts)
+            {
+                deferred = true;
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "{Source} watch queue reached resolution-attempt budget. attempts={Attempts}, limit={Limit}",
+                        options.SourceLabel,
+                        attemptedCount,
+                        maxResolutionAttempts);
+                }
+                break;
+            }
             var capacityRemaining = capacity.Value.Remaining - queuedCount;
             if (capacityRemaining <= 0)
             {
@@ -2886,6 +2923,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             var intent = track.Intent;
             if (await HandleBlockedWatchIntentAsync(intent, track, options, cancellationToken))
             {
+                attemptedCount++;
                 completedCount++;
                 continue;
             }
@@ -2904,6 +2942,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 options.SourceLabel,
                 track.TrackId,
                 cancellationToken);
+            attemptedCount++;
             if (result is null)
             {
                 await TryMarkWatchTrackStatusAsync(
@@ -2913,6 +2952,10 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     "failed",
                     cancellationToken);
                 failedCount++;
+                if (string.IsNullOrWhiteSpace(firstFailureMessage))
+                {
+                    firstFailureMessage = "Primary enqueue failed without result.";
+                }
                 continue;
             }
 
@@ -2956,10 +2999,28 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             if (trackResult.Failed)
             {
                 failedCount++;
+                var failureClassification = ClassifyWatchFailure(result);
+                if (string.IsNullOrWhiteSpace(firstFailureMessage))
+                {
+                    firstFailureMessage = failureClassification.Message;
+                }
+                if (failureClassification.IsSystemic)
+                {
+                    systemicFailureCount++;
+                    firstSystemicFailureFingerprint ??= failureClassification.Fingerprint;
+                }
             }
         }
 
-        return new QueueWatchResult(queuedCount, completedCount, failedCount, Deferred: deferred);
+        return new QueueWatchResult(
+            queuedCount,
+            completedCount,
+            failedCount,
+            Deferred: deferred,
+            AttemptedCount: attemptedCount,
+            SystemicFailureCount: systemicFailureCount,
+            FirstSystemicFailureFingerprint: firstSystemicFailureFingerprint,
+            FirstFailureMessage: firstFailureMessage);
     }
 
     private async Task<WatchQueueCapacity?> TryResolveWatchQueueCapacityAsync(
@@ -3553,6 +3614,110 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         return result.SkipReasonCodes.Any(
             reasonCode => string.Equals(reasonCode?.Trim(), "blocklist_match", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static WatchFailureClassification ClassifyWatchFailure(DownloadIntentResult? result)
+    {
+        var message = result?.Message?.Trim();
+        var normalizedMessage = string.IsNullOrWhiteSpace(message)
+            ? string.Empty
+            : message.ToLowerInvariant();
+        var reasonCodes = result?.SkipReasonCodes ?? new List<string>();
+        var normalizedCodes = reasonCodes
+            .Where(static code => !string.IsNullOrWhiteSpace(code))
+            .Select(static code => code.Trim().ToLowerInvariant())
+            .ToList();
+
+        if (normalizedCodes.Contains("download_gate_paused"))
+        {
+            return new WatchFailureClassification(false, "download_gate_paused", message);
+        }
+
+        if (normalizedCodes.Contains("queue_duplicate")
+            || normalizedCodes.Contains("queue_insert_ignored")
+            || normalizedCodes.Contains("queue_upgrade_in_progress")
+            || normalizedCodes.Contains("library_duplicate")
+            || normalizedCodes.Contains("library_quality_not_higher")
+            || normalizedCodes.Contains("queue_recently_downloaded")
+            || normalizedCodes.Contains("queue_quality_not_higher")
+            || normalizedCodes.Contains("blocklist_match"))
+        {
+            return new WatchFailureClassification(false, normalizedCodes.FirstOrDefault(), message);
+        }
+
+        if (normalizedCodes.Contains("provider_timeout")
+            || normalizedCodes.Contains("provider_http_429")
+            || normalizedCodes.Contains("provider_http_5xx")
+            || normalizedCodes.Contains("provider_auth")
+            || normalizedCodes.Contains("provider_captcha"))
+        {
+            return new WatchFailureClassification(true, normalizedCodes.FirstOrDefault(), message);
+        }
+
+        if (normalizedMessage.Contains("captcha", StringComparison.Ordinal)
+            || normalizedMessage.Contains("http 403", StringComparison.Ordinal)
+            || normalizedMessage.Contains("http 401", StringComparison.Ordinal)
+            || normalizedMessage.Contains("forbidden", StringComparison.Ordinal)
+            || normalizedMessage.Contains("unauthorized", StringComparison.Ordinal)
+            || normalizedMessage.Contains("too many requests", StringComparison.Ordinal)
+            || normalizedMessage.Contains("429", StringComparison.Ordinal)
+            || normalizedMessage.Contains("rate limit", StringComparison.Ordinal)
+            || normalizedMessage.Contains("timed out", StringComparison.Ordinal)
+            || normalizedMessage.Contains("timeout", StringComparison.Ordinal)
+            || normalizedMessage.Contains("httpclient.timeout", StringComparison.Ordinal)
+            || normalizedMessage.Contains("service unavailable", StringComparison.Ordinal)
+            || normalizedMessage.Contains("gateway timeout", StringComparison.Ordinal)
+            || normalizedMessage.Contains("http 500", StringComparison.Ordinal)
+            || normalizedMessage.Contains("http 502", StringComparison.Ordinal)
+            || normalizedMessage.Contains("http 503", StringComparison.Ordinal)
+            || normalizedMessage.Contains("http 504", StringComparison.Ordinal)
+            || normalizedMessage.Contains("login required", StringComparison.Ordinal))
+        {
+            return new WatchFailureClassification(true, BuildSystemicFingerprint(normalizedMessage), message);
+        }
+
+        return new WatchFailureClassification(false, normalizedCodes.FirstOrDefault(), message);
+    }
+
+    private static string BuildSystemicFingerprint(string normalizedMessage)
+    {
+        if (normalizedMessage.Contains("captcha", StringComparison.Ordinal))
+        {
+            return "provider_captcha";
+        }
+        if (normalizedMessage.Contains("401", StringComparison.Ordinal)
+            || normalizedMessage.Contains("unauthorized", StringComparison.Ordinal)
+            || normalizedMessage.Contains("login required", StringComparison.Ordinal))
+        {
+            return "provider_auth_401";
+        }
+        if (normalizedMessage.Contains("403", StringComparison.Ordinal)
+            || normalizedMessage.Contains("forbidden", StringComparison.Ordinal))
+        {
+            return "provider_auth_403";
+        }
+        if (normalizedMessage.Contains("429", StringComparison.Ordinal)
+            || normalizedMessage.Contains("rate limit", StringComparison.Ordinal)
+            || normalizedMessage.Contains("too many requests", StringComparison.Ordinal))
+        {
+            return "provider_http_429";
+        }
+        if (normalizedMessage.Contains("500", StringComparison.Ordinal)
+            || normalizedMessage.Contains("502", StringComparison.Ordinal)
+            || normalizedMessage.Contains("503", StringComparison.Ordinal)
+            || normalizedMessage.Contains("504", StringComparison.Ordinal)
+            || normalizedMessage.Contains("service unavailable", StringComparison.Ordinal)
+            || normalizedMessage.Contains("gateway timeout", StringComparison.Ordinal))
+        {
+            return "provider_http_5xx";
+        }
+        if (normalizedMessage.Contains("timeout", StringComparison.Ordinal)
+            || normalizedMessage.Contains("timed out", StringComparison.Ordinal))
+        {
+            return "provider_timeout";
+        }
+
+        return "provider_systemic";
     }
 
     private static string BuildSpotifyTrackUrl(string trackId, string? sourceUrl)

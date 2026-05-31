@@ -126,6 +126,23 @@ public sealed class LibraryRepository
         DateTimeOffset? NextAttemptUtc = null,
         int? ConsecutiveFailures = null);
 
+    public sealed record WatchlistSchedulerStateUpsertInput(
+        string WatchType,
+        string? ActiveSource,
+        string? ActiveSourceId,
+        DateTimeOffset? ActiveStartedUtc,
+        DateTimeOffset? LastProgressUtc,
+        int ZeroQueueStreak);
+
+    public sealed record WatchlistSourceCircuitStateUpsertInput(
+        string WatchType,
+        string Source,
+        bool IsOpen,
+        DateTimeOffset? OpenUntilUtc,
+        string? Reason,
+        string? Fingerprint,
+        int FailureCount);
+
     public sealed record ArtistWatchPreferenceUpdateInput(
         long ArtistId,
         long? DestinationFolderId,
@@ -6081,6 +6098,226 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("lastRunMessage", (object?)input.LastRunMessage ?? DBNull.Value);
         command.Parameters.AddWithValue("nextAttemptUtc", input.NextAttemptUtc?.ToString("O") ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("consecutiveFailures", (object?)input.ConsecutiveFailures ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<PlaylistWatchTrackStatusSummaryDto> GetPlaylistWatchTrackStatusSummaryAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return new PlaylistWatchTrackStatusSummaryDto(0, 0, 0, 0, 0);
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT
+    SUM(CASE WHEN lower(status) = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+    SUM(CASE WHEN lower(status) = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+    SUM(CASE WHEN lower(status) = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+    SUM(CASE WHEN lower(status) IN ('inqueue', 'running', 'downloading', 'paused', 'retrying') THEN 1 ELSE 0 END) AS active_count,
+    SUM(CASE WHEN lower(status) NOT IN ('completed', 'failed') THEN 1 ELSE 0 END) AS unresolved_count
+FROM playlist_watch_track
+WHERE source = @source
+  AND source_id = @sourceId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new PlaylistWatchTrackStatusSummaryDto(0, 0, 0, 0, 0);
+        }
+
+        return new PlaylistWatchTrackStatusSummaryDto(
+            await reader.IsDBNullAsync(0, cancellationToken) ? 0 : reader.GetInt32(0),
+            await reader.IsDBNullAsync(1, cancellationToken) ? 0 : reader.GetInt32(1),
+            await reader.IsDBNullAsync(2, cancellationToken) ? 0 : reader.GetInt32(2),
+            await reader.IsDBNullAsync(3, cancellationToken) ? 0 : reader.GetInt32(3),
+            await reader.IsDBNullAsync(4, cancellationToken) ? 0 : reader.GetInt32(4));
+    }
+
+    public async Task<WatchlistSchedulerStateDto?> GetWatchlistSchedulerStateAsync(
+        string watchType,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(watchType))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT watch_type,
+       active_source,
+       active_source_id,
+       active_started_utc,
+       last_progress_utc,
+       zero_queue_streak,
+       updated_at
+FROM watchlist_scheduler_state
+WHERE watch_type = @watchType
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("watchType", watchType.Trim().ToLowerInvariant());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new WatchlistSchedulerStateDto(
+            reader.GetString(0),
+            await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1),
+            await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+            await reader.IsDBNullAsync(3, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(3)),
+            await reader.IsDBNullAsync(4, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(4)),
+            await reader.IsDBNullAsync(5, cancellationToken) ? 0 : reader.GetInt32(5),
+            await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6)));
+    }
+
+    public async Task UpsertWatchlistSchedulerStateAsync(
+        WatchlistSchedulerStateUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(input.WatchType))
+        {
+            return;
+        }
+
+        var normalizedWatchType = input.WatchType.Trim().ToLowerInvariant();
+        var activeSource = string.IsNullOrWhiteSpace(input.ActiveSource)
+            ? null
+            : input.ActiveSource.Trim().ToLowerInvariant();
+        var activeSourceId = string.IsNullOrWhiteSpace(input.ActiveSourceId)
+            ? null
+            : input.ActiveSourceId.Trim();
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO watchlist_scheduler_state (
+    watch_type,
+    active_source,
+    active_source_id,
+    active_started_utc,
+    last_progress_utc,
+    zero_queue_streak
+)
+VALUES (
+    @watchType,
+    @activeSource,
+    @activeSourceId,
+    @activeStartedUtc,
+    @lastProgressUtc,
+    @zeroQueueStreak
+)
+ON CONFLICT(watch_type) DO UPDATE SET
+    active_source = excluded.active_source,
+    active_source_id = excluded.active_source_id,
+    active_started_utc = excluded.active_started_utc,
+    last_progress_utc = excluded.last_progress_utc,
+    zero_queue_streak = excluded.zero_queue_streak,
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("watchType", normalizedWatchType);
+        command.Parameters.AddWithValue("activeSource", (object?)activeSource ?? DBNull.Value);
+        command.Parameters.AddWithValue("activeSourceId", (object?)activeSourceId ?? DBNull.Value);
+        command.Parameters.AddWithValue("activeStartedUtc", input.ActiveStartedUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("lastProgressUtc", input.LastProgressUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("zeroQueueStreak", Math.Max(0, input.ZeroQueueStreak));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<WatchlistSourceCircuitStateDto?> GetWatchlistSourceCircuitStateAsync(
+        string watchType,
+        string source,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(watchType) || string.IsNullOrWhiteSpace(source))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT watch_type,
+       source,
+       is_open,
+       open_until_utc,
+       reason,
+       fingerprint,
+       failure_count,
+       updated_at
+FROM watchlist_source_circuit_state
+WHERE watch_type = @watchType
+  AND source = @source
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("watchType", watchType.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue(SourceField, source.Trim().ToLowerInvariant());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new WatchlistSourceCircuitStateDto(
+            reader.GetString(0),
+            reader.GetString(1),
+            !await reader.IsDBNullAsync(2, cancellationToken) && reader.GetInt32(2) == 1,
+            await reader.IsDBNullAsync(3, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(3)),
+            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+            await reader.IsDBNullAsync(6, cancellationToken) ? 0 : reader.GetInt32(6),
+            await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7)));
+    }
+
+    public async Task UpsertWatchlistSourceCircuitStateAsync(
+        WatchlistSourceCircuitStateUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(input.WatchType) || string.IsNullOrWhiteSpace(input.Source))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO watchlist_source_circuit_state (
+    watch_type,
+    source,
+    is_open,
+    open_until_utc,
+    reason,
+    fingerprint,
+    failure_count
+)
+VALUES (
+    @watchType,
+    @source,
+    @isOpen,
+    @openUntilUtc,
+    @reason,
+    @fingerprint,
+    @failureCount
+)
+ON CONFLICT(watch_type, source) DO UPDATE SET
+    is_open = excluded.is_open,
+    open_until_utc = excluded.open_until_utc,
+    reason = excluded.reason,
+    fingerprint = excluded.fingerprint,
+    failure_count = excluded.failure_count,
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("watchType", input.WatchType.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue(SourceField, input.Source.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("isOpen", input.IsOpen ? 1 : 0);
+        command.Parameters.AddWithValue("openUntilUtc", input.OpenUntilUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("reason", (object?)input.Reason ?? DBNull.Value);
+        command.Parameters.AddWithValue("fingerprint", (object?)input.Fingerprint ?? DBNull.Value);
+        command.Parameters.AddWithValue("failureCount", Math.Max(0, input.FailureCount));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

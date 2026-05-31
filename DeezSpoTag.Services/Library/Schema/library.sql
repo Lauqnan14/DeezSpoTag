@@ -402,6 +402,28 @@ CREATE TABLE IF NOT EXISTS playlist_watch_state (
     PRIMARY KEY (source, source_id)
 );
 
+CREATE TABLE IF NOT EXISTS watchlist_scheduler_state (
+    watch_type TEXT NOT NULL PRIMARY KEY,
+    active_source TEXT,
+    active_source_id TEXT,
+    active_started_utc TEXT,
+    last_progress_utc TEXT,
+    zero_queue_streak INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS watchlist_source_circuit_state (
+    watch_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    is_open INTEGER NOT NULL DEFAULT 0,
+    open_until_utc TEXT,
+    reason TEXT,
+    fingerprint TEXT,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (watch_type, source)
+);
+
 CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,

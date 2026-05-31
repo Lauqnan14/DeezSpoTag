@@ -1063,12 +1063,44 @@ async function loadPlaylistWatchlist() {
                 libraryState.folders = [];
             }
         }
-        const items = await fetchJson('/api/library/playlists');
+        const [items, runtime] = await Promise.all([
+            fetchJson('/api/library/playlists'),
+            fetchJson('/api/library/playlists/watch-runtime').catch(() => null)
+        ]);
         if (!Array.isArray(items) || items.length === 0) {
             container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
             container.dataset.loadState = 'ready';
             return;
         }
+
+        const activeSource = runtime?.scheduler?.activeSource
+            ? String(runtime.scheduler.activeSource).trim().toLowerCase()
+            : '';
+        const activeSourceId = runtime?.scheduler?.activeSourceId
+            ? String(runtime.scheduler.activeSourceId).trim()
+            : '';
+        const zeroQueueStreak = Number(runtime?.scheduler?.zeroQueueStreak || 0);
+        const openCircuits = Array.isArray(runtime?.circuits)
+            ? runtime.circuits.filter(circuit => circuit && circuit.isOpen)
+            : [];
+        const circuitBySource = new Map(
+            openCircuits
+                .map(circuit => [String(circuit.source || '').trim().toLowerCase(), circuit])
+                .filter(entry => Boolean(entry[0]))
+        );
+        const runtimeBannerParts = [];
+        if (activeSource && activeSourceId) {
+            runtimeBannerParts.push(`Active playlist: ${activeSource}:${activeSourceId}`);
+        }
+        if (zeroQueueStreak > 0) {
+            runtimeBannerParts.push(`zero-queue streak ${zeroQueueStreak}`);
+        }
+        if (openCircuits.length > 0) {
+            runtimeBannerParts.push(`open circuits ${openCircuits.length}`);
+        }
+        const runtimeBannerHtml = runtimeBannerParts.length > 0
+            ? `<div class="watchlist-card-meta" style="margin:0 0 12px 0;">${escapeHtml(runtimeBannerParts.join(' • '))}</div>`
+            : '';
 
         if (mergeButton) {
             mergeButton.disabled = items.length < 2;
@@ -1079,7 +1111,7 @@ async function loadPlaylistWatchlist() {
 
         const playlistPrefsPromise = hydratePlaylistPreferences();
 
-        container.innerHTML = items.map((item) => {
+        container.innerHTML = runtimeBannerHtml + items.map((item) => {
             const imageUrl = toSafeHttpUrl(item.imageUrl || '');
             const artContent = imageUrl
                 ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`
@@ -1087,6 +1119,10 @@ async function loadPlaylistWatchlist() {
             const trackCount = item.trackCount === null || item.trackCount === undefined
                 ? ''
                 : `${item.trackCount} tracks`;
+            const source = String(item.source || '').trim().toLowerCase();
+            const sourceId = String(item.sourceId || '').trim();
+            const isActive = activeSource && activeSourceId && source === activeSource && sourceId === activeSourceId;
+            const circuit = circuitBySource.get(source);
             const runStatus = String(item.lastRunStatus || '').trim();
             const runMessage = String(item.lastRunMessage || '').trim();
             const consecutiveFailures = Number(item.consecutiveFailures || 0);
@@ -1097,6 +1133,12 @@ async function loadPlaylistWatchlist() {
                 ? runStatus.replaceAll('_', ' ')
                 : 'never checked yet';
             const statusParts = [statusLabel];
+            if (isActive) {
+                statusParts.push('active');
+            }
+            if (circuit && circuit.isOpen) {
+                statusParts.push('source circuit open');
+            }
             if (consecutiveFailures > 0) {
                 statusParts.push(`failures ${consecutiveFailures}`);
             }
@@ -1104,6 +1146,11 @@ async function loadPlaylistWatchlist() {
                 statusParts.push(`next ${nextAttempt}`);
             }
             const statusMeta = statusParts.join(' • ');
+            const circuitMeta = circuit && circuit.isOpen
+                ? [circuit.reason, circuit.openUntilUtc ? `until ${formatRelativeTime(circuit.openUntilUtc)}` : null]
+                    .filter(Boolean)
+                    .join(' • ')
+                : '';
             return `<div class="watchlist-playlist-card-v2">
                 <button class="watchlist-card-art" type="button"
                     data-playlist-open="${escapeHtml(item.sourceId)}"
@@ -1128,6 +1175,7 @@ async function loadPlaylistWatchlist() {
                     ${trackCount ? `<div class="watchlist-card-meta">${escapeHtml(trackCount)}</div>` : ''}
                     <div class="watchlist-card-meta">${escapeHtml(statusMeta)}</div>
                     ${runMessage ? `<div class="watchlist-card-meta">${escapeHtml(runMessage)}</div>` : ''}
+                    ${circuitMeta ? `<div class="watchlist-card-meta">${escapeHtml(circuitMeta)}</div>` : ''}
                 </div>
             </div>`;
         }).join('');

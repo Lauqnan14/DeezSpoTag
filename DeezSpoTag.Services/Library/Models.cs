@@ -556,6 +556,32 @@ public sealed record PlaylistWatchStateDto(
     DateTimeOffset? NextAttemptUtc = null,
     int? ConsecutiveFailures = null);
 
+public sealed record PlaylistWatchTrackStatusSummaryDto(
+    int QueuedCount,
+    int CompletedCount,
+    int FailedCount,
+    int ActiveCount,
+    int UnresolvedCount);
+
+public sealed record WatchlistSchedulerStateDto(
+    string WatchType,
+    string? ActiveSource,
+    string? ActiveSourceId,
+    DateTimeOffset? ActiveStartedUtc,
+    DateTimeOffset? LastProgressUtc,
+    int ZeroQueueStreak,
+    DateTimeOffset UpdatedAt);
+
+public sealed record WatchlistSourceCircuitStateDto(
+    string WatchType,
+    string Source,
+    bool IsOpen,
+    DateTimeOffset? OpenUntilUtc,
+    string? Reason,
+    string? Fingerprint,
+    int FailureCount,
+    DateTimeOffset UpdatedAt);
+
 public sealed record PlaylistTrackCandidateCacheDto(
     string Source,
     string SourceId,
