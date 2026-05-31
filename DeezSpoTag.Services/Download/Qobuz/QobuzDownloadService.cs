@@ -457,7 +457,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
