@@ -15,12 +15,14 @@ License-File: LICENSE
 Requires-Dist: mutagen==1.47.0
 Requires-Dist: pycryptodome==3.23.0
 Requires-Dist: requests==2.33.0
+Requires-Dist: urllib3==2.7.0
+Requires-Dist: zeroconf==0.149.16
 Requires-Dist: tqdm==4.67.1
 Requires-Dist: fastapi==0.135.2
 Requires-Dist: uvicorn[standard]==0.35.0
 Requires-Dist: librespot-spotizerr-phoenix @ file:../spotizerr-phoenix
 Requires-Dist: rapidfuzz==3.13.0
-Requires-Dist: spotipy==2.25.1
+Requires-Dist: spotipy==2.25.2
 Dynamic: author
 Dynamic: home-page
 Dynamic: license-file

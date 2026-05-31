@@ -17,6 +17,8 @@ dependencies = [
     "mutagen==1.47.0",
     "pycryptodome==3.23.0",
     "requests==2.33.0",
+    "urllib3==2.7.0",
+    "zeroconf==0.149.16",
     "tqdm==4.67.1",
     "fastapi==0.135.2",
     "uvicorn[standard]==0.35.0",
