@@ -705,6 +705,74 @@ function isRememberLastTabEnabled() {
     return stored === 'true';
 }
 
+function getSearchSourcePreferenceKey() {
+    return `tabs:last:${window.location.pathname}:searchSourceTabs`;
+}
+
+function mapSearchSourceToTarget(source) {
+    const normalized = String(source || '').trim().toLowerCase();
+    if (!searchSources.includes(normalized)) {
+        return '';
+    }
+
+    return `#search-source-${normalized}`;
+}
+
+function mapSearchTargetToSource(target) {
+    const normalized = String(target || '').trim().toLowerCase();
+    const prefix = '#search-source-';
+    if (!normalized.startsWith(prefix)) {
+        return '';
+    }
+
+    const source = normalized.substring(prefix.length);
+    return searchSources.includes(source) ? source : '';
+}
+
+function readRememberedSearchSource() {
+    if (!isRememberLastTabEnabled()) {
+        return '';
+    }
+
+    try {
+        const raw = localStorage.getItem(getSearchSourcePreferenceKey()) || '';
+        return mapSearchTargetToSource(raw);
+    } catch {
+        return '';
+    }
+}
+
+function persistRememberedSearchSource(source) {
+    const key = getSearchSourcePreferenceKey();
+    if (!key) {
+        return;
+    }
+
+    if (!isRememberLastTabEnabled()) {
+        try {
+            localStorage.removeItem(key);
+        } catch {
+        }
+        if (window.UserPrefs?.setTabSelection) {
+            window.UserPrefs.setTabSelection(key, '');
+        }
+        return;
+    }
+
+    const target = mapSearchSourceToTarget(source);
+    if (!target) {
+        return;
+    }
+
+    try {
+        localStorage.setItem(key, target);
+    } catch {
+    }
+    if (window.UserPrefs?.setTabSelection) {
+        window.UserPrefs.setTabSelection(key, target);
+    }
+}
+
 function getActiveSearchSourceFromTabUi() {
     const activeTab = document.querySelector('#searchSourceTabs .source-btn.active[data-source]');
     const activeSource = String(activeTab?.dataset?.source || '').trim().toLowerCase();
@@ -1050,9 +1118,14 @@ document.addEventListener('DOMContentLoaded', function() {
     if (searchSources.includes(sourceParam)) {
         currentSearchSource = sourceParam;
     } else if (isRememberLastTabEnabled()) {
-        const activeSourceFromUi = getActiveSearchSourceFromTabUi();
-        if (activeSourceFromUi) {
-            currentSearchSource = activeSourceFromUi;
+        const rememberedSource = readRememberedSearchSource();
+        if (rememberedSource) {
+            currentSearchSource = rememberedSource;
+        } else {
+            const activeSourceFromUi = getActiveSearchSourceFromTabUi();
+            if (activeSourceFromUi) {
+                currentSearchSource = activeSourceFromUi;
+            }
         }
     }
     if (!searchSources.includes((currentSearchSource || '').toLowerCase())) {
@@ -1182,6 +1255,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             currentSearchSource = this.dataset.source;
             updateActiveSource(currentSearchSource);
+            persistRememberedSearchSource(currentSearchSource);
             if (shouldRefetchSourceResults(currentSearchSource, currentSearchTerm)) {
                 performSearch(currentSearchTerm, currentSearchType);
             }

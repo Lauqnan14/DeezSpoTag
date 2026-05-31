@@ -45,6 +45,10 @@ const homeTrendingPreviewState = {
 };
 const homeDeezerPlaybackContextCache = new Map();
 const homeDeezerPlaybackContextRequests = new Map();
+const SEARCH_TAB_STORAGE_PREFIX = 'tabs:last:';
+const SEARCH_TABLIST_ID = 'searchSourceTabs';
+const SEARCH_SOURCE_TARGET_PREFIX = '#search-source-';
+const VALID_SEARCH_SOURCES = new Set(['spotify', 'deezer', 'apple']);
 const homeTrendingUnmappedCooldownUntil = new Map();
 let homeTrendingMatchWarmupTimer = 0;
 const HOME_TRENDING_UNMAPPED_RETRY_COOLDOWN_MS = 20000;
@@ -1358,9 +1362,14 @@ async function performUnifiedSearch() {
         console.log('Detected search term, redirecting to search results:', input);
         const searchParams = new URLSearchParams({
             term: input,
-            type: type,
-            source: 'spotify'
+            type: type
         });
+
+        const preferredSource = resolvePreferredSearchSourceForRedirect();
+        if (preferredSource) {
+            searchParams.set('source', preferredSource);
+        }
+
         globalThis.location.href = `/Search?${searchParams.toString()}`;
     } catch (error) {
         console.error('Search/Download error:', error);
@@ -1368,6 +1377,58 @@ async function performUnifiedSearch() {
     } finally {
         setUnifiedSearchButtonState(false);
     }
+}
+
+function isRememberTabsEnabled() {
+    try {
+        const stored = globalThis.localStorage?.getItem('tabs-preference-enabled');
+        return stored === null || stored === '' || stored === 'true';
+    } catch {
+        return true;
+    }
+}
+
+function buildSearchTabPreferenceKeys() {
+    const keys = [];
+    const currentPath = String(globalThis.location?.pathname || '').trim();
+    if (currentPath) {
+        keys.push(`${SEARCH_TAB_STORAGE_PREFIX}${currentPath}:searchSourceTabs`);
+    }
+
+    // Search page route is stable; include canonical fallback in case current path differs.
+    keys.push(`${SEARCH_TAB_STORAGE_PREFIX}/Search:${SEARCH_TABLIST_ID}`);
+    keys.push(`${SEARCH_TAB_STORAGE_PREFIX}/search:${SEARCH_TABLIST_ID}`);
+    return Array.from(new Set(keys));
+}
+
+function mapSearchTargetToSource(tabTarget) {
+    const normalized = String(tabTarget || '').trim().toLowerCase();
+    if (!normalized.startsWith(SEARCH_SOURCE_TARGET_PREFIX)) {
+        return '';
+    }
+
+    const source = normalized.slice(SEARCH_SOURCE_TARGET_PREFIX.length);
+    return VALID_SEARCH_SOURCES.has(source) ? source : '';
+}
+
+function resolvePreferredSearchSourceForRedirect() {
+    if (!isRememberTabsEnabled()) {
+        return 'spotify';
+    }
+
+    try {
+        const keys = buildSearchTabPreferenceKeys();
+        for (const key of keys) {
+            const tabTarget = globalThis.localStorage?.getItem(key) || '';
+            const source = mapSearchTargetToSource(tabTarget);
+            if (source) {
+                return source;
+            }
+        }
+    } catch {
+    }
+
+    return 'spotify';
 }
 
 // Load popular content

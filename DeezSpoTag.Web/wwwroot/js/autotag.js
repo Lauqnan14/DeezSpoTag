@@ -2964,6 +2964,79 @@
         return String(activeTab?.dataset?.bsTarget || "").trim() || null;
     }
 
+    function isRememberTabsPreferenceEnabled() {
+        try {
+            const stored = localStorage.getItem("tabs-preference-enabled");
+            return stored === null || stored === "" || stored === "true";
+        } catch {
+            return true;
+        }
+    }
+
+    function getAutoTagTabPreferenceKey() {
+        return `tabs:last:${globalThis.location.pathname}:autotagTabs`;
+    }
+
+    function normalizeRequestedTabSelector(value) {
+        const normalized = String(value || "").trim();
+        if (!normalized) {
+            return "";
+        }
+
+        return normalized.startsWith("#") ? normalized : `#${normalized}`;
+    }
+
+    function getRequestedTabSelector() {
+        try {
+            const fromQuery = new URLSearchParams(globalThis.location.search || "").get("tab");
+            const targetFromQuery = normalizeRequestedTabSelector(fromQuery);
+            if (targetFromQuery) {
+                return targetFromQuery;
+            }
+
+            return normalizeRequestedTabSelector(String(globalThis.location.hash || "").replace(/^#/, ""));
+        } catch {
+            return "";
+        }
+    }
+
+    function hasExplicitRequestedAutoTagTab() {
+        const requestedTarget = getRequestedTabSelector();
+        if (!requestedTarget) {
+            return false;
+        }
+
+        const requestedTab = findAutoTagTabByTarget(requestedTarget);
+        return requestedTab instanceof HTMLButtonElement && !requestedTab.disabled;
+    }
+
+    function restoreRememberedAutoTagTabSelection() {
+        if (!isRememberTabsPreferenceEnabled()) {
+            return false;
+        }
+        if (hasExplicitRequestedAutoTagTab()) {
+            return false;
+        }
+
+        const key = getAutoTagTabPreferenceKey();
+        if (!key) {
+            return false;
+        }
+
+        let storedTarget = "";
+        try {
+            storedTarget = String(localStorage.getItem(key) || "").trim();
+        } catch {
+            return false;
+        }
+
+        if (!storedTarget) {
+            return false;
+        }
+
+        return activateAutoTagTabByTarget(storedTarget);
+    }
+
     function keepAutoTagTabVisible(tab) {
         if (!(tab instanceof HTMLElement) || typeof tab.scrollIntoView !== "function") {
             return;
@@ -3076,7 +3149,10 @@
 
         if (state.lockedTabTarget && state.lockedTabTarget !== "#autotag-profiles-panel") {
             activateAutoTagTabByTarget(state.lockedTabTarget);
+            state.lockedTabTarget = null;
+            return;
         }
+        restoreRememberedAutoTagTabSelection();
         state.lockedTabTarget = null;
     }
 
