@@ -117,7 +117,8 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.DoesNotContain("Automation: enrichment pause requested for incoming download", orchestrationSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Automation enrichment job", orchestrationSource, StringComparison.Ordinal);
         Assert.DoesNotContain("StopJobAsync(enrichmentJobId", orchestrationSource, StringComparison.Ordinal);
-        Assert.Contains("TryPauseEnhancementForIncomingDownloadAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryPauseEnhancementForIncomingDownloadAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("TryPauseEnhancementForPendingPipelineAsync", orchestrationSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -125,7 +126,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     {
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
         var runPipelineStart = orchestrationSource.IndexOf(
-            "private async Task RunPipelineAsync",
+            "private async Task<bool> RunPipelineAsync",
             StringComparison.Ordinal);
         var resumeEnhancementStart = orchestrationSource.IndexOf(
             "private async Task<bool> ResumePausedEnhancementAsync",

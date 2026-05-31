@@ -60,8 +60,12 @@ public sealed class SystemStatsApiController : ControllerBase
                 phaseEnteredUtc = orchestration.PhaseEnteredUtc,
                 queueIdleSinceUtc = orchestration.QueueIdleSinceUtc,
                 countdownUntilUtc = orchestration.CountdownUntilUtc,
+                lastEnrichmentFinishedUtc = orchestration.LastEnrichmentFinishedUtc,
+                enhancementResumeNotBeforeUtc = orchestration.EnhancementResumeNotBeforeUtc,
                 pipelineRequested = orchestration.PipelineRequested,
                 retrySweepPending = orchestration.RetrySweepPending,
+                enhancementInterruptedByEnrichment = orchestration.EnhancementInterruptedByEnrichment,
+                activeDownloadCount = orchestration.ActiveDownloadCount,
                 taggingInProgress = orchestration.TaggingInProgress
             },
             enhancement = new

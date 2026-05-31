@@ -45,7 +45,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         IReadOnlyDictionary<string, DateTimeOffset> PendingCompletionMarkers);
     private sealed record PipelineEnrichmentResult(string Status, bool SafeToContinue, bool SafeToPersist);
     private sealed record EnhancementTargetPlan(List<EnhancementTarget> Targets, List<EnhancementTarget> DueTargets);
-    private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForDownload);
+    private sealed record EnhancementTargetRunResult(bool Attempted, bool PausedForEnrichment);
     private sealed record EnhancementPauseRequest(
         string? FallbackJobId,
         EnhancementPauseReason Reason,
@@ -56,20 +56,25 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         Downloading,
         RetrySweep,
         EnrichmentCountdown,
-        Enriching
+        Enriching,
+        EnhancementRunning,
+        EnhancementResumeCooldown
     }
     public sealed record OrchestrationStatusSnapshot(
         OrchestrationPhase Phase,
         DateTimeOffset PhaseEnteredUtc,
         DateTimeOffset? QueueIdleSinceUtc,
         DateTimeOffset? CountdownUntilUtc,
+        DateTimeOffset? LastEnrichmentFinishedUtc,
+        DateTimeOffset? EnhancementResumeNotBeforeUtc,
         bool PipelineRequested,
         bool RetrySweepPending,
+        bool EnhancementInterruptedByEnrichment,
+        int ActiveDownloadCount,
         bool TaggingInProgress);
 
     private enum EnhancementPauseReason
     {
-        IncomingDownload,
         PendingPipeline
     }
 
@@ -106,7 +111,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         return IsInterruptibleEnhancementTrigger(job.Trigger);
     }
-    private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForDownload, bool AbortedForDownload);
+    private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForEnrichment);
     public sealed record DownloadGateDecision(bool Allowed, string Message, bool EnhancementPaused);
     private sealed class EnhancementScheduleState
     {
@@ -116,6 +121,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private sealed class ProcessedCompletionState
     {
         public Dictionary<string, DateTimeOffset> ProcessedByQueueItem { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+    private sealed class OrchestrationRuntimeState
+    {
+        public bool EnhancementResumeAwaitingPipelineCompletion { get; set; }
+        public bool EnhancementInterruptedByEnrichment { get; set; }
+        public DateTimeOffset? LastEnrichmentFinishedUtc { get; set; }
+        public DateTimeOffset? EnhancementResumeNotBeforeUtc { get; set; }
     }
 
     private static readonly Regex ScheduleTokenRegex = new(
@@ -180,6 +192,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly ILogger<DownloadOrchestrationService> _logger;
     private readonly string _enhancementSchedulePath;
     private readonly string _processedCompletionPath;
+    private readonly string _orchestrationStatePath;
     private readonly SemaphoreSlim _pipelineLock = new(1, 1);
     private readonly SemaphoreSlim _enhancementPauseLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
@@ -202,9 +215,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private volatile bool _enhancementStageRunning;
     private volatile bool _enhancementPauseRequested;
     private volatile bool _enhancementResumeAwaitingPipelineCompletion;
+    private volatile bool _enhancementInterruptedByEnrichment;
     private string? _activeEnhancementJobId;
     private DateTimeOffset? _lastStagingGateLogAt;
     private string? _lastStagingGateLogReason;
+    private DateTimeOffset? _lastEnrichmentFinishedUtc;
+    private DateTimeOffset? _enhancementResumeNotBeforeUtc;
+    private int _lastKnownActiveDownloadCount;
     private OrchestrationPhase _phase = OrchestrationPhase.Idle;
     private DateTimeOffset _phaseEnteredUtc = DateTimeOffset.UtcNow;
     private DateTimeOffset? _countdownUntilUtc;
@@ -241,7 +258,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         Directory.CreateDirectory(autoTagDataDir);
         _enhancementSchedulePath = Path.Join(autoTagDataDir, "enhancement-schedule-state.json");
         _processedCompletionPath = Path.Join(autoTagDataDir, "processed-completions.json");
+        _orchestrationStatePath = Path.Join(autoTagDataDir, "download-orchestration-state.json");
         DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
+        LoadOrchestrationRuntimeState();
     }
 
     public bool TaggingInProgress => _taggingInProgress || _autoTagService.HasRunningJobs();
@@ -255,8 +274,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 _phaseEnteredUtc,
                 _queueIdleSince,
                 _countdownUntilUtc,
+                _lastEnrichmentFinishedUtc,
+                _enhancementResumeNotBeforeUtc,
                 _pipelineRequested,
                 _retryScheduler.HasPendingRetries,
+                _enhancementInterruptedByEnrichment,
+                _lastKnownActiveDownloadCount,
                 TaggingInProgress);
         }
     }
@@ -277,8 +300,63 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     public override void Dispose()
     {
+        SaveOrchestrationRuntimeState();
         DownloadQueueRepository.QueueStateChanged -= OnQueueStateChanged;
         base.Dispose();
+    }
+
+    private void LoadOrchestrationRuntimeState()
+    {
+        try
+        {
+            if (!File.Exists(_orchestrationStatePath))
+            {
+                return;
+            }
+
+            var json = File.ReadAllText(_orchestrationStatePath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            var state = JsonSerializer.Deserialize<OrchestrationRuntimeState>(json, ScheduleJsonOptions);
+            if (state == null)
+            {
+                return;
+            }
+
+            _enhancementResumeAwaitingPipelineCompletion = state.EnhancementResumeAwaitingPipelineCompletion;
+            _enhancementInterruptedByEnrichment = state.EnhancementInterruptedByEnrichment;
+            _lastEnrichmentFinishedUtc = state.LastEnrichmentFinishedUtc;
+            _enhancementResumeNotBeforeUtc = state.EnhancementResumeNotBeforeUtc;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            _logger.LogWarning(ex, "Failed to load download orchestration runtime state.");
+        }
+    }
+
+    private void SaveOrchestrationRuntimeState()
+    {
+        try
+        {
+            var state = new OrchestrationRuntimeState
+            {
+                EnhancementResumeAwaitingPipelineCompletion = _enhancementResumeAwaitingPipelineCompletion,
+                EnhancementInterruptedByEnrichment = _enhancementInterruptedByEnrichment,
+                LastEnrichmentFinishedUtc = _lastEnrichmentFinishedUtc,
+                EnhancementResumeNotBeforeUtc = _enhancementResumeNotBeforeUtc
+            };
+
+            var json = JsonSerializer.Serialize(state, ScheduleJsonOptions);
+            Directory.CreateDirectory(Path.GetDirectoryName(_orchestrationStatePath)!);
+            File.WriteAllText(_orchestrationStatePath, json);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Failed to save download orchestration runtime state.");
+        }
     }
 
     private void QueueEnhancementResumeFolder(string folderId)
@@ -346,16 +424,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         bool allowManualQueueDuringEnrichment,
         CancellationToken cancellationToken)
     {
+        _ = cancellationToken;
         if (_postDownloadPipelineInProgress)
         {
             return allowManualQueueDuringEnrichment
                 ? AllowDownloads()
                 : DenyDownloads("Downloads waiting for post-enrichment finalization to finish.");
-        }
-
-        if (!TaggingInProgress)
-        {
-            return AllowDownloads();
         }
 
         if (_autoTagService.TryGetRunningEnrichmentJobId(out _))
@@ -365,19 +439,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 : DenyDownloads("Downloads waiting for enrichment to finish.");
         }
 
-        var enhancementDecision = await TryResolveEnhancementGateDecisionAsync(cancellationToken);
-        if (enhancementDecision != null)
-        {
-            return enhancementDecision;
-        }
-
         var runningJobDecision = TryResolveRunningJobGateDecision(allowManualQueueDuringEnrichment);
         if (runningJobDecision != null)
         {
             return runningJobDecision;
         }
 
-        _logger.LogWarning("AutoTag reported running jobs but no active job id was found. Allowing download.");
         return AllowDownloads();
     }
 
@@ -386,21 +453,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private static DownloadGateDecision DenyDownloads(string message)
         => new(false, message, false);
-
-    private async Task<DownloadGateDecision?> TryResolveEnhancementGateDecisionAsync(CancellationToken cancellationToken)
-    {
-        string? runningEnhancementJobId = null;
-        var hasEnhancementStage = _enhancementStageRunning || _autoTagService.TryGetRunningEnhancementJobId(out runningEnhancementJobId);
-        if (!hasEnhancementStage)
-        {
-            return null;
-        }
-
-        var paused = await TryPauseEnhancementForIncomingDownloadAsync(runningEnhancementJobId, cancellationToken);
-        return paused || !TaggingInProgress
-            ? AllowDownloads(paused)
-            : null;
-    }
 
     private DownloadGateDecision? TryResolveRunningJobGateDecision(bool allowManualQueueDuringEnrichment)
     {
@@ -538,17 +590,28 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private async Task TickAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var hasActiveDownloads = await _queueRepository.HasActiveDownloadsAsync(cancellationToken);
+        var activeDownloadCount = await _queueRepository.GetActiveDownloadCountAsync(cancellationToken);
+        _lastKnownActiveDownloadCount = activeDownloadCount;
+        var hasActiveDownloads = activeDownloadCount > 0;
         if (hasActiveDownloads)
         {
             _wasQueueActive = true;
             _queueIdleSince = null;
             SetPhase(OrchestrationPhase.Downloading);
-            return;
         }
-
-        var queueBecameIdle = _wasQueueActive;
-        _wasQueueActive = false;
+        else
+        {
+            var queueBecameIdle = _wasQueueActive;
+            _wasQueueActive = false;
+            if (queueBecameIdle)
+            {
+                _queueIdleSince = now;
+            }
+            else
+            {
+                _queueIdleSince ??= now;
+            }
+        }
 
         var hasPendingPostDownloadEnrichment = await HasPendingPostDownloadEnrichmentAsync(cancellationToken);
         if (hasPendingPostDownloadEnrichment)
@@ -556,15 +619,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _pipelineRequested = true;
         }
 
-        if (_retryScheduler.HasPendingRetries)
+        if (_retryScheduler.HasPendingRetries && !hasActiveDownloads)
         {
             _queueIdleSince = null;
             SetPhase(OrchestrationPhase.RetrySweep);
-
-            if (_autoTagService.HasRunningJobs())
-            {
-                return;
-            }
 
             if (!await _pipelineLock.WaitAsync(0, cancellationToken))
             {
@@ -587,30 +645,29 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             {
                 _pipelineLock.Release();
             }
-
-            return;
         }
 
-        if (queueBecameIdle)
+        if (_pipelineRequested)
         {
-            _queueIdleSince = now;
-        }
-        else
-        {
-            _queueIdleSince ??= now;
-        }
+            if (hasActiveDownloads)
+            {
+                return;
+            }
 
-        var idleDuration = DateTimeOffset.UtcNow - _queueIdleSince.Value;
-        if (idleDuration < _downloadIdleDelay)
-        {
-            SetPhase(OrchestrationPhase.EnrichmentCountdown, _queueIdleSince.Value + _downloadIdleDelay);
-            return;
-        }
+            var idleSince = _queueIdleSince ?? now;
+            var idleDuration = DateTimeOffset.UtcNow - idleSince;
+            if (idleDuration < _downloadIdleDelay)
+            {
+                SetPhase(OrchestrationPhase.EnrichmentCountdown, idleSince + _downloadIdleDelay);
+                return;
+            }
 
-        if (!_pipelineRequested)
-        {
             if (_autoTagService.HasRunningJobs())
             {
+                if (hasPendingPostDownloadEnrichment)
+                {
+                    _ = await TryPauseEnhancementForPendingPipelineAsync(cancellationToken);
+                }
                 return;
             }
 
@@ -621,29 +678,31 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
             try
             {
-                await RunScheduledEnhancementIfDueAsync(cancellationToken);
-                if (_pipelineRequested)
+                SetPhase(OrchestrationPhase.Enriching);
+                var enrichmentCompleted = await RunPipelineAsync(cancellationToken);
+                if (enrichmentCompleted)
                 {
-                    SetPhase(OrchestrationPhase.EnrichmentCountdown, _queueIdleSince.HasValue ? _queueIdleSince.Value + _downloadIdleDelay : null);
+                    var finishedAt = DateTimeOffset.UtcNow;
+                    _lastEnrichmentFinishedUtc = finishedAt;
+                    if (_enhancementInterruptedByEnrichment)
+                    {
+                        _enhancementResumeNotBeforeUtc = finishedAt.AddHours(1);
+                        _enhancementResumeAwaitingPipelineCompletion = true;
+                    }
+
+                    SaveOrchestrationRuntimeState();
                 }
-                else
-                {
-                    SetPhase(OrchestrationPhase.Idle);
-                }
+                SetPhase(OrchestrationPhase.Idle);
             }
             finally
             {
                 _pipelineLock.Release();
             }
-            return;
         }
 
-        if (_autoTagService.HasRunningJobs())
+        if (_enhancementStageRunning || _autoTagService.TryGetRunningEnhancementJobId(out _))
         {
-            if (hasPendingPostDownloadEnrichment)
-            {
-                _ = await TryPauseEnhancementForPendingPipelineAsync(cancellationToken);
-            }
+            SetPhase(OrchestrationPhase.EnhancementRunning);
             return;
         }
 
@@ -654,9 +713,19 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         try
         {
-            SetPhase(OrchestrationPhase.Enriching);
-            await RunPipelineAsync(cancellationToken);
-            SetPhase(OrchestrationPhase.Idle);
+            await RunScheduledEnhancementIfDueAsync(cancellationToken);
+            if (_enhancementResumeAwaitingPipelineCompletion)
+            {
+                SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
+            }
+            else if (_enhancementStageRunning || _autoTagService.TryGetRunningEnhancementJobId(out _))
+            {
+                SetPhase(OrchestrationPhase.EnhancementRunning);
+            }
+            else if (!hasActiveDownloads)
+            {
+                SetPhase(OrchestrationPhase.Idle);
+            }
         }
         finally
         {
@@ -664,15 +733,16 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private async Task RunPipelineAsync(CancellationToken cancellationToken)
+    private async Task<bool> RunPipelineAsync(CancellationToken cancellationToken)
     {
         _postDownloadPipelineInProgress = true;
+        var allGroupsFinalized = true;
         try
         {
             var context = await PreparePipelineRunContextAsync(cancellationToken);
             if (context is null)
             {
-                return;
+                return false;
             }
 
             foreach (var group in context.Groups)
@@ -691,7 +761,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 {
                     await PersistPipelineCompletionMarkersAsync(context, group, cancellationToken);
                 }
+                else
+                {
+                    allGroupsFinalized = false;
+                }
             }
+
+            return allGroupsFinalized;
         }
         finally
         {
@@ -1294,11 +1370,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return;
         }
 
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
-        {
-            return;
-        }
-
         if (ShouldDeferEnhancementForDownloadStagingAudio(cancellationToken))
         {
             return;
@@ -1346,17 +1417,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             sourceLabel,
             cancellationToken);
 
-        if (executionResult.AbortedForDownload)
-        {
-            return false;
-        }
-
         if (executionResult.AttemptedTargets.Count > 0)
         {
             await UpdateEnhancementScheduleStateAsync(executionResult.AttemptedTargets, DateTimeOffset.UtcNow);
         }
 
-        return executionResult.PausedForDownload;
+        return executionResult.PausedForEnrichment;
     }
 
     private async Task<EnhancementTargetPlan?> BuildEnhancementTargetPlanAsync(
@@ -1448,22 +1514,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var attemptedTargets = new List<EnhancementTarget>();
         foreach (var target in dueTargets)
         {
-            if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
-            {
-                var remainingTargets = dueTargets
-                    .SkipWhile(candidate => !string.Equals(candidate.FolderId, target.FolderId, StringComparison.OrdinalIgnoreCase))
-                    .Select(candidate => candidate.FolderId)
-                    .ToList();
-                QueueEnhancementResumeFolders(remainingTargets);
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Automation halted: downloads started before enhancement target {RootPath}.", target.RootPath);
-                }
-                _pipelineRequested = true;
-                _queueIdleSince = null;
-                return new EnhancementExecutionResult(attemptedTargets, false, true);
-            }
-
             var runResult = await RunEnhancementTargetAsync(
                 target,
                 profileContext,
@@ -1474,13 +1524,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 attemptedTargets.Add(target);
             }
 
-            if (runResult.PausedForDownload)
+            if (runResult.PausedForEnrichment)
             {
-                return new EnhancementExecutionResult(attemptedTargets, true, false);
+                return new EnhancementExecutionResult(attemptedTargets, true);
             }
         }
 
-        return new EnhancementExecutionResult(attemptedTargets, false, false);
+        return new EnhancementExecutionResult(attemptedTargets, false);
     }
 
     private async Task<EnhancementTargetRunResult> RunEnhancementTargetAsync(
@@ -1569,12 +1619,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             && _enhancementPauseRequested)
         {
             QueueEnhancementResumeFolder(target.FolderId);
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Automation: enhancement paused for incoming downloads ({target.RootPath})."));
-            return new EnhancementTargetRunResult(false, true);
-        }
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: enhancement paused to prioritize pending post-download enrichment ({target.RootPath})."));
+                return new EnhancementTargetRunResult(false, true);
+            }
 
         var attempted = enhancementJob != null
             && !string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
@@ -1588,27 +1638,17 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _enhancementPauseRequested = false;
         _enhancementStageRunning = true;
         _activeEnhancementJobId = job?.Id;
+        SetPhase(OrchestrationPhase.EnhancementRunning);
     }
 
     private void MarkEnhancementStageFinished()
     {
         _enhancementStageRunning = false;
         _activeEnhancementJobId = null;
-    }
-
-    private async Task<bool> TryPauseEnhancementForIncomingDownloadAsync(string? fallbackEnhancementJobId, CancellationToken cancellationToken)
-    {
-        if (!_enhancementStageRunning && string.IsNullOrWhiteSpace(fallbackEnhancementJobId))
+        if (_enhancementResumeAwaitingPipelineCompletion)
         {
-            return false;
+            SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
         }
-
-        return await TryPauseEnhancementAsync(
-            new EnhancementPauseRequest(
-                fallbackEnhancementJobId,
-                EnhancementPauseReason.IncomingDownload,
-                "Automation: enhancement pause requested for incoming download."),
-            cancellationToken);
     }
 
     private async Task<bool> TryPauseEnhancementForPendingPipelineAsync(CancellationToken cancellationToken)
@@ -1673,10 +1713,16 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             var stopped = await _autoTagService.StopJobAsync(jobId, "automation");
             if (stopped)
             {
+                if (request.Reason == EnhancementPauseReason.PendingPipeline)
+                {
+                    _enhancementInterruptedByEnrichment = true;
+                    SaveOrchestrationRuntimeState();
+                }
+
                 await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    LogEnhancementPauseSuccess(request.Reason, jobId);
+                    LogEnhancementPauseSuccess(jobId);
                 }
                 return true;
             }
@@ -1685,14 +1731,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _enhancementResumeAwaitingPipelineCompletion = false;
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                LogEnhancementPauseAlreadyStopped(request.Reason, jobId);
+                LogEnhancementPauseAlreadyStopped(jobId);
             }
 
             return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            LogEnhancementPauseFailure(request.Reason, ex);
+            LogEnhancementPauseFailure(ex);
             return false;
         }
         finally
@@ -1701,16 +1747,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private void LogEnhancementPauseSuccess(EnhancementPauseReason reason, string jobId)
+    private void LogEnhancementPauseSuccess(string jobId)
     {
         if (!_logger.IsEnabled(LogLevel.Information))
         {
-            return;
-        }
-
-        if (reason == EnhancementPauseReason.IncomingDownload)
-        {
-            _logger.LogInformation("Automation enhancement job {JobId} pause requested for incoming download.", jobId);
             return;
         }
 
@@ -1719,16 +1759,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             jobId);
     }
 
-    private void LogEnhancementPauseAlreadyStopped(EnhancementPauseReason reason, string jobId)
+    private void LogEnhancementPauseAlreadyStopped(string jobId)
     {
         if (!_logger.IsEnabled(LogLevel.Information))
         {
-            return;
-        }
-
-        if (reason == EnhancementPauseReason.IncomingDownload)
-        {
-            _logger.LogInformation("Automation enhancement job {JobId} could not be paused (already stopped).", jobId);
             return;
         }
 
@@ -1737,14 +1771,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             jobId);
     }
 
-    private void LogEnhancementPauseFailure(EnhancementPauseReason reason, Exception exception)
+    private void LogEnhancementPauseFailure(Exception exception)
     {
-        if (reason == EnhancementPauseReason.IncomingDownload)
-        {
-            _logger.LogWarning(exception, "Failed to request enhancement pause for incoming download.");
-            return;
-        }
-
         _logger.LogWarning(exception, "Failed to pause enhancement for pending post-download enrichment.");
     }
 
@@ -1765,26 +1793,39 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
         {
+            SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
             return true;
         }
 
         if (_autoTagService.HasRunningJobs())
         {
+            SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
             return true;
         }
 
         if (await HasPendingPostDownloadEnrichmentAsync(cancellationToken))
         {
             _pipelineRequested = true;
+            SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
             return true;
         }
 
         if (_pipelineRequested)
         {
+            SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
+            return true;
+        }
+
+        if (_enhancementResumeNotBeforeUtc.HasValue && DateTimeOffset.UtcNow < _enhancementResumeNotBeforeUtc.Value)
+        {
+            SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
             return true;
         }
 
         _enhancementResumeAwaitingPipelineCompletion = false;
+        _enhancementInterruptedByEnrichment = false;
+        _enhancementResumeNotBeforeUtc = null;
+        SaveOrchestrationRuntimeState();
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
