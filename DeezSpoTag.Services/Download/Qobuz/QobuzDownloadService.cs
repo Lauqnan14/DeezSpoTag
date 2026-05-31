@@ -44,8 +44,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private static readonly TimeSpan ProviderTransientRetryDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan ProviderCooldown = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan PreferredProviderTtl = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan StreamProbeTimeout = TimeSpan.FromSeconds(3);
     private const int ProviderHttpMaxAttempts = 2;
     private const int DownloadUrlResolutionMaxAttempts = 2;
+    private const int StreamProbeReadLimitBytes = 64 * 1024;
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] ProviderUrlPropertyNames = ["url", "download_url", "link"];
     private static readonly string[] MonochromeQobuzProviderBases =
@@ -172,8 +174,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             throw new InvalidOperationException(DownloadUrlUnavailableMessage);
         }
-        request.Quality = downloadResolution.SelectedQuality;
-        await NotifySelectedQualityAsync(request, downloadResolution.SelectedQuality);
+        var effectiveSelectedQuality = await ResolveEffectiveSelectedQualityAsync(downloadResolution, cancellationToken);
+        request.Quality = effectiveSelectedQuality;
+        await NotifySelectedQualityAsync(request, effectiveSelectedQuality);
 
         var outputPath = expectedPath;
         await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
@@ -249,8 +252,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new InvalidOperationException(DownloadUrlUnavailableMessage);
         }
 
-        request.Quality = fallbackResolution.SelectedQuality;
-        await NotifySelectedQualityAsync(request, fallbackResolution.SelectedQuality);
+        var effectiveSelectedQuality = await ResolveEffectiveSelectedQualityAsync(fallbackResolution, cancellationToken);
+        request.Quality = effectiveSelectedQuality;
+        await NotifySelectedQualityAsync(request, effectiveSelectedQuality);
         await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
         {
             DownloadUrl = fallbackResolution.Url!,
@@ -309,8 +313,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             throw new InvalidOperationException(DownloadUrlUnavailableMessage);
         }
-        request.Quality = downloadResolution.SelectedQuality;
-        await NotifySelectedQualityAsync(request, downloadResolution.SelectedQuality);
+        var effectiveSelectedQuality = await ResolveEffectiveSelectedQualityAsync(downloadResolution, cancellationToken);
+        request.Quality = effectiveSelectedQuality;
+        await NotifySelectedQualityAsync(request, effectiveSelectedQuality);
 
         var outputPath = expectedPath;
         await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
@@ -362,6 +367,168 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             _logger.LogWarning(ex, "Qobuz selected-quality callback failed for quality {Quality}", selectedQuality);
         }
+    }
+
+    private async Task<string> ResolveEffectiveSelectedQualityAsync(
+        DownloadUrlResolution resolution,
+        CancellationToken cancellationToken)
+    {
+        var selected = NormalizeQobuzQualityCode(resolution.SelectedQuality);
+        if (!ShouldProbeStreamBitDepth(selected) || string.IsNullOrWhiteSpace(resolution.Url))
+        {
+            return selected;
+        }
+
+        var probed = await TryProbeStreamQualityCodeAsync(resolution.Url!, cancellationToken);
+        if (string.IsNullOrWhiteSpace(probed))
+        {
+            return selected;
+        }
+
+        var normalizedProbed = NormalizeQobuzQualityCode(probed);
+        if (!string.Equals(normalizedProbed, selected, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation(
+                "Qobuz stream probe adjusted selected quality from {Selected} to {Probed}",
+                selected,
+                normalizedProbed);
+        }
+
+        return normalizedProbed;
+    }
+
+    private static bool ShouldProbeStreamBitDepth(string qualityCode)
+        => string.Equals(qualityCode, "7", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(qualityCode, "27", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<string?> TryProbeStreamQualityCodeAsync(
+        string downloadUrl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            probeCts.CancelAfter(StreamProbeTimeout);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+            request.Headers.Range = new RangeHeaderValue(0, StreamProbeReadLimitBytes - 1);
+            using var response = await _downloadClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                probeCts.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(probeCts.Token);
+            var buffer = new byte[StreamProbeReadLimitBytes];
+            var totalRead = 0;
+            while (totalRead < buffer.Length)
+            {
+                var bytesRead = await stream.ReadAsync(
+                    buffer.AsMemory(totalRead, buffer.Length - totalRead),
+                    probeCts.Token);
+                if (bytesRead <= 0)
+                {
+                    break;
+                }
+
+                totalRead += bytesRead;
+                if (totalRead >= 42)
+                {
+                    break;
+                }
+            }
+
+            if (totalRead <= 0)
+            {
+                return null;
+            }
+
+            if (!TryExtractFlacStreamInfo(buffer.AsSpan(0, totalRead), out var bitsPerSample, out var sampleRate))
+            {
+                return null;
+            }
+
+            return MapQobuzQualityFromProbe(bitsPerSample, sampleRate);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz stream probe failed for quality inference.");
+            }
+
+            return null;
+        }
+    }
+
+    private static bool TryExtractFlacStreamInfo(
+        ReadOnlySpan<byte> payload,
+        out int bitsPerSample,
+        out int sampleRate)
+    {
+        bitsPerSample = 0;
+        sampleRate = 0;
+
+        var marker = "fLaC"u8;
+        var markerIndex = payload.IndexOf(marker);
+        if (markerIndex < 0)
+        {
+            return false;
+        }
+
+        var cursor = markerIndex + marker.Length;
+        while (cursor + 4 <= payload.Length)
+        {
+            var header = payload[cursor];
+            var blockType = header & 0x7F;
+            var blockLength =
+                (payload[cursor + 1] << 16)
+                | (payload[cursor + 2] << 8)
+                | payload[cursor + 3];
+            cursor += 4;
+
+            if (cursor + blockLength > payload.Length)
+            {
+                return false;
+            }
+
+            if (blockType == 0)
+            {
+                if (blockLength < 34)
+                {
+                    return false;
+                }
+
+                var streamInfo = payload.Slice(cursor, 34);
+                sampleRate =
+                    (streamInfo[10] << 12)
+                    | (streamInfo[11] << 4)
+                    | ((streamInfo[12] & 0xF0) >> 4);
+                bitsPerSample = (((streamInfo[12] & 0x01) << 4) | ((streamInfo[13] & 0xF0) >> 4)) + 1;
+                return sampleRate > 0 && bitsPerSample > 0;
+            }
+
+            cursor += blockLength;
+        }
+
+        return false;
+    }
+
+    private static string MapQobuzQualityFromProbe(int bitsPerSample, int sampleRate)
+    {
+        if (bitsPerSample >= 24)
+        {
+            return sampleRate >= 96000 ? "27" : "7";
+        }
+
+        return "6";
     }
 
     private static long? TryExtractTrackId(string trackUrl)
