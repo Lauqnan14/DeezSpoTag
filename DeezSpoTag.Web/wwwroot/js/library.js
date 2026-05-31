@@ -9485,7 +9485,6 @@ function computeFolderRowViewModel(folder, context) {
         .map((choice) => `<option value="${escapeHtml(choice.value)}" ${choice.value === currentSchedule ? 'selected' : ''}>${escapeHtml(choice.label)}</option>`)
         .join('');
     const destinationFlags = context.getFolderDestinationFlags(folder);
-    const { isVideoDestination, isPodcastDestination } = destinationFlags;
     const storedContentMode = getFolderStoredContentMode(folder);
     const requiresProfileForAutoTag = storedContentMode === 'music';
     const showProfileSelector = requiresProfileForAutoTag;

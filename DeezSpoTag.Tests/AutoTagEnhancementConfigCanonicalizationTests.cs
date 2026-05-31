@@ -228,9 +228,9 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("qualityChecks.enabled = getChecked(\"enableQualityChecksWorkflow\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("TryMarkNoStagesConfigured(job, stages, includesEnhancementWorkflows)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("gap-fill tagging skipped", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("ReadBool(config, \"enabled\") == true", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("ReadBool(coverMaintenance, \"enabled\") != true", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("ReadBool(qualityChecks, \"enabled\") != true", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ReadBool(config, EnabledField) == true", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ReadBool(coverMaintenance, EnabledField) != true", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ReadBool(qualityChecks, EnabledField) != true", workflowSource, StringComparison.Ordinal);
         Assert.Contains("enhancementCount > 0 || HasConfiguredEnhancementWorkflows(root)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("profile has no gap-fill tags or enhancement workflows", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("LibraryFolderPathSafety.IsMusicFolder(folder)", controllerSource, StringComparison.Ordinal);

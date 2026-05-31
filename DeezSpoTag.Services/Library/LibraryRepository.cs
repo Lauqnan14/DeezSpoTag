@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Data.Sqlite;
+using System.Diagnostics.CodeAnalysis;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -14,8 +15,14 @@ using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
 
+[SuppressMessage("Major Code Smell", "S1192", Justification = "SQL statements intentionally embed domain literals for stable query plans and readability.")]
 public sealed class LibraryRepository
 {
+    private const string FolderContentMusic = "music";
+    private const string FolderContentAtmos = "atmos";
+    private const string FolderContentVideo = "video";
+    private const string FolderContentPodcast = "podcast";
+
     private sealed record ExistingTrackRecord(
         long Id,
         int? DurationMs,
@@ -1627,6 +1634,7 @@ INSERT INTO quality_scan_action_log (
             .ToHashSet();
     }
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Destination integrity repair intentionally evaluates playlist and artist preference paths in a single transactional workflow.")]
     public async Task<(int PlaylistPreferencesUpdated, int ArtistPreferencesUpdated)> RepairWatchlistDestinationEligibilityAsync(
         CancellationToken cancellationToken = default)
     {
@@ -3443,9 +3451,9 @@ ORDER BY sort_group, sort_utc DESC;";
 
     public async Task<IReadOnlyList<TrackAnalysisInputDto>> GetTracksForAnalysisAsync(
         int limit,
-        CancellationToken cancellationToken = default,
         bool includeCompletedStandard = false,
-        DateTimeOffset? completedStandardRetryBeforeUtc = null)
+        DateTimeOffset? completedStandardRetryBeforeUtc = null,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
@@ -5732,6 +5740,7 @@ WHERE artist_id = @artistId
         await transaction.CommitAsync(cancellationToken);
     }
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist watchlist hydration keeps explicit null/date handling for schema compatibility.")]
     public async Task<IReadOnlyList<PlaylistWatchlistDto>> GetPlaylistWatchlistAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -9587,7 +9596,7 @@ WHERE source = @source
         }
 
         var contentType = ResolveFolderContentType(folder.DesiredQuality);
-        if (contentType is "video" or "podcast")
+        if (contentType is FolderContentVideo or FolderContentPodcast)
         {
             return true;
         }
@@ -9600,30 +9609,30 @@ WHERE source = @source
         var normalized = (desiredQuality ?? string.Empty).Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(normalized))
         {
-            return "music";
+            return FolderContentMusic;
         }
 
         if (normalized.Contains("atmos", StringComparison.Ordinal))
         {
-            return "atmos";
+            return FolderContentAtmos;
         }
 
-        if (normalized.Contains("video", StringComparison.Ordinal))
+        if (normalized.Contains(FolderContentVideo, StringComparison.Ordinal))
         {
-            return "video";
+            return FolderContentVideo;
         }
 
-        if (normalized.Contains("podcast", StringComparison.Ordinal))
+        if (normalized.Contains(FolderContentPodcast, StringComparison.Ordinal))
         {
-            return "podcast";
+            return FolderContentPodcast;
         }
 
-        return "music";
+        return FolderContentMusic;
     }
 
     private static bool HaveRoutingRulesChanged(
         IReadOnlyList<PlaylistTrackRoutingRule>? current,
-        IReadOnlyList<PlaylistTrackRoutingRule>? updated)
+        List<PlaylistTrackRoutingRule>? updated)
     {
         if (current == null || current.Count == 0)
         {
@@ -10627,8 +10636,8 @@ ON CONFLICT DO NOTHING;";
             "aac" => 2,
             "3" => 2,
             "1" => 1,
-            "video" => 0,
-            "podcast" => 0,
+            FolderContentVideo => 0,
+            FolderContentPodcast => 0,
             _ => int.TryParse(normalized, out var parsed)
                 ? parsed switch
                 {
@@ -10699,8 +10708,8 @@ ON CONFLICT DO NOTHING;";
     private static bool RequiresAutoTagProfile(string? desiredQuality)
     {
         var normalized = (desiredQuality ?? string.Empty).Trim();
-        return !string.Equals(normalized, "video", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(normalized, "podcast", StringComparison.OrdinalIgnoreCase);
+        return !string.Equals(normalized, FolderContentVideo, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(normalized, FolderContentPodcast, StringComparison.OrdinalIgnoreCase);
     }
 
     // --- Mood Bucket methods ---

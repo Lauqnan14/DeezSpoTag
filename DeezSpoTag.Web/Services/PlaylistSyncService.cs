@@ -40,6 +40,10 @@ public sealed class PlaylistSyncService
     private const string SyncModeMirror = "mirror";
     private const string SyncModeAppend = "append";
     private const int DurationToleranceMs = 2000;
+    private const string NoTargetServerSelectedMessage = "No target server selected.";
+    private const string UnsupportedPlaylistSyncTargetMessage = "Unsupported playlist sync target.";
+    private const string PlexNotConfiguredMessage = "Plex is not configured.";
+    private const string JellyfinNotConfiguredMessage = "Jellyfin is not configured.";
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly PlexApiClient _plexApiClient;
@@ -353,7 +357,7 @@ public sealed class PlaylistSyncService
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
         if (string.IsNullOrWhiteSpace(service))
         {
-            return PlaylistSyncResult.Failed("No target server selected.");
+            return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
         }
 
         if (force)
@@ -381,7 +385,7 @@ public sealed class PlaylistSyncService
         {
             PlexService => await SyncToPlexAsync(playlist, preference, tracks, cancellationToken),
             JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, cancellationToken),
-            _ => PlaylistSyncResult.Failed("Unsupported playlist sync target.")
+            _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
         };
     }
 
@@ -403,14 +407,14 @@ public sealed class PlaylistSyncService
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
         if (string.IsNullOrWhiteSpace(service))
         {
-            return PlaylistSyncResult.Failed("No target server selected.");
+            return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
         }
 
         return service switch
         {
             PlexService => await SyncPlexPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
             JellyfinService => await SyncJellyfinPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
-            _ => PlaylistSyncResult.Failed("Unsupported playlist sync target.")
+            _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
         };
     }
 
@@ -428,7 +432,7 @@ public sealed class PlaylistSyncService
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
         if (string.IsNullOrWhiteSpace(service))
         {
-            return new PlaylistTrackSyncReadiness(false, true, "No target server selected.");
+            return new PlaylistTrackSyncReadiness(false, true, NoTargetServerSelectedMessage);
         }
 
         if (string.Equals(service, "none", StringComparison.OrdinalIgnoreCase))
@@ -451,7 +455,7 @@ public sealed class PlaylistSyncService
         {
             PlexService => await CheckPlexTrackReadyAsync(localTrackId.Value, track, cancellationToken),
             JellyfinService => await CheckJellyfinTrackReadyAsync(localTrackId.Value, track, cancellationToken),
-            _ => new PlaylistTrackSyncReadiness(false, true, "Unsupported playlist sync target.", service, localTrackId)
+            _ => new PlaylistTrackSyncReadiness(false, true, UnsupportedPlaylistSyncTargetMessage, service, localTrackId)
         };
     }
 
@@ -528,7 +532,7 @@ public sealed class PlaylistSyncService
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
         if (string.IsNullOrWhiteSpace(service))
         {
-            return new PlaylistTrackSyncReadiness(false, true, "No target server selected.");
+            return new PlaylistTrackSyncReadiness(false, true, NoTargetServerSelectedMessage);
         }
 
         if (string.Equals(service, "none", StringComparison.OrdinalIgnoreCase))
@@ -540,7 +544,7 @@ public sealed class PlaylistSyncService
         {
             PlexService => await CheckPlexTrackReadyAsync(localTrackId, track, cancellationToken),
             JellyfinService => await CheckJellyfinTrackReadyAsync(localTrackId, track, cancellationToken),
-            _ => new PlaylistTrackSyncReadiness(false, true, "Unsupported playlist sync target.", service, localTrackId)
+            _ => new PlaylistTrackSyncReadiness(false, true, UnsupportedPlaylistSyncTargetMessage, service, localTrackId)
         };
     }
 
@@ -583,7 +587,7 @@ public sealed class PlaylistSyncService
 
         if (plex == null)
         {
-            return PlaylistSyncResult.Failed("Plex is not configured.");
+            return PlaylistSyncResult.Failed(PlexNotConfiguredMessage);
         }
 
         var playlistName = ResolvePlaylistName(playlist);
@@ -667,7 +671,7 @@ public sealed class PlaylistSyncService
 
         if (jellyfin == null)
         {
-            return PlaylistSyncResult.Failed("Jellyfin is not configured.");
+            return PlaylistSyncResult.Failed(JellyfinNotConfiguredMessage);
         }
 
         var playlistName = ResolvePlaylistName(playlist);
@@ -890,7 +894,7 @@ public sealed class PlaylistSyncService
 
         if (plex == null)
         {
-            return PlaylistSyncResult.Failed("Plex is not configured.");
+            return PlaylistSyncResult.Failed(PlexNotConfiguredMessage);
         }
 
         var playlistName = ResolvePlaylistName(playlist);
@@ -926,7 +930,7 @@ public sealed class PlaylistSyncService
 
         if (jellyfin == null)
         {
-            return PlaylistSyncResult.Failed("Jellyfin is not configured.");
+            return PlaylistSyncResult.Failed(JellyfinNotConfiguredMessage);
         }
 
         var playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
@@ -961,7 +965,7 @@ public sealed class PlaylistSyncService
             return null;
         }
 
-        if (reuseSavedArtwork || _playlistVisualService.IsManagedVisualUrl(managedImageUrl))
+        if (reuseSavedArtwork || PlaylistVisualService.IsManagedVisualUrl(managedImageUrl))
         {
             return visual;
         }
@@ -1310,7 +1314,7 @@ public sealed class PlaylistSyncService
         var plex = state.Plex;
         if (plex is null || string.IsNullOrWhiteSpace(plex.Url) || string.IsNullOrWhiteSpace(plex.Token))
         {
-            return (null, new PlaylistSyncResult(false, "Plex is not configured."));
+            return (null, new PlaylistSyncResult(false, PlexNotConfiguredMessage));
         }
 
         if (string.IsNullOrWhiteSpace(plex.MachineIdentifier))
@@ -1327,7 +1331,7 @@ public sealed class PlaylistSyncService
         var jellyfin = state.Jellyfin;
         if (jellyfin is null || string.IsNullOrWhiteSpace(jellyfin.Url) || string.IsNullOrWhiteSpace(jellyfin.ApiKey))
         {
-            return (null, new PlaylistSyncResult(false, "Jellyfin is not configured."));
+            return (null, new PlaylistSyncResult(false, JellyfinNotConfiguredMessage));
         }
 
         if (string.IsNullOrWhiteSpace(jellyfin.UserId))
@@ -1409,7 +1413,7 @@ public sealed class PlaylistSyncService
 
         if (plex == null)
         {
-            return new PlaylistTrackSyncReadiness(false, true, "Plex is not configured.", PlexService, localTrackId);
+            return new PlaylistTrackSyncReadiness(false, true, PlexNotConfiguredMessage, PlexService, localTrackId);
         }
 
         var mapped = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
@@ -1470,7 +1474,7 @@ public sealed class PlaylistSyncService
 
         if (jellyfin == null)
         {
-            return new PlaylistTrackSyncReadiness(false, true, "Jellyfin is not configured.", JellyfinService, localTrackId);
+            return new PlaylistTrackSyncReadiness(false, true, JellyfinNotConfiguredMessage, JellyfinService, localTrackId);
         }
 
         var itemId = await ResolveJellyfinItemIdAsync(

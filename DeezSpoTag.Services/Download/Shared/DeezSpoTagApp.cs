@@ -778,23 +778,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                && long.TryParse(property.GetString(), out value);
     }
 
-    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement property)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            var matchingProperty = element.EnumerateObject()
-                .FirstOrDefault(candidate => string.Equals(candidate.Name, propertyName, StringComparison.OrdinalIgnoreCase));
-            if (matchingProperty.Value.ValueKind != JsonValueKind.Undefined)
-            {
-                property = matchingProperty.Value;
-                return true;
-            }
-        }
-
-        property = default;
-        return false;
-    }
-
     private static bool TryReadWatchlistFromSourceIds(JsonElement root, out string source, out string playlistId, out string trackId)
     {
         source = "";

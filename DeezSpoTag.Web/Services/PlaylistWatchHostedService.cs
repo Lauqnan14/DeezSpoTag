@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Diagnostics.CodeAnalysis;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -110,6 +111,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     public Task TriggerRunOnceAsync(CancellationToken cancellationToken = default)
         => RunOnceAsync(cancellationToken);
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Watch cycle entrypoint intentionally centralizes lock, failure handling, and lifecycle semantics.")]
     private async Task RunOnceAsync(CancellationToken stoppingToken)
     {
         if (!await _runLock.WaitAsync(0, stoppingToken))
@@ -119,79 +121,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
         try
         {
-            using var scope = _serviceProvider.CreateScope();
-            var settingsService = scope.ServiceProvider.GetRequiredService<DeezSpoTagSettingsService>();
-            var settings = settingsService.LoadSettings();
-            if (!settings.WatchEnabled)
-            {
-                _logger.LogDebug("Watchlist disabled in settings.");
-                return;
-            }
-
-            var runQueueBudget = scope.ServiceProvider.GetService<WatchlistRunQueueBudgetService>();
-            var runQueueBudgetToken = runQueueBudget?.BeginRun(Math.Max(1, settings.WatchMaxItemsPerRun)) ?? 0;
-
-            try
-            {
-                var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-                if (!repository.IsConfigured)
-                {
-                    _logger.LogDebug("Watchlist skipped - library DB not configured.");
-                    return;
-                }
-
-                if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) >= TimeSpan.FromSeconds(1))
-                {
-                    var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(stoppingToken);
-                    _lastDestinationRepairUtc = DateTimeOffset.UtcNow;
-                    if (repairResult.PlaylistPreferencesUpdated > 0 || repairResult.ArtistPreferencesUpdated > 0)
-                    {
-                        _logger.LogInformation(
-                            "Watchlist destination integrity repair applied: playlistPreferencesUpdated={PlaylistUpdated}, artistPreferencesUpdated={ArtistUpdated}",
-                            repairResult.PlaylistPreferencesUpdated,
-                            repairResult.ArtistPreferencesUpdated);
-                    }
-                }
-
-                var playlists = await repository.GetPlaylistWatchlistAsync(stoppingToken);
-                var artists = await repository.GetWatchlistAsync(stoppingToken);
-                var playlistItems = BuildPlaylistWatchItems(playlists);
-                var artistItems = BuildArtistWatchItems(artists);
-                var items = new List<WatchItem>(playlistItems.Count + artistItems.Count);
-                items.AddRange(playlistItems);
-                items.AddRange(artistItems);
-                if (items.Count == 0)
-                {
-                    CleanupStaleState(Array.Empty<WatchItem>());
-                    return;
-                }
-
-                CleanupStaleState(items);
-                await SeedPersistedLastRunsAsync(items, repository, stoppingToken);
-                var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
-                    playlistItems,
-                    settings,
-                    repository,
-                    scope.ServiceProvider,
-                    runQueueBudget,
-                    stoppingToken);
-                if (!playlistRunResult.AbortedRun)
-                {
-                    await ProcessArtistWatchItemsAsync(
-                        artistItems,
-                        settings,
-                        scope.ServiceProvider,
-                        runQueueBudget,
-                        stoppingToken);
-                }
-            }
-            finally
-            {
-                if (runQueueBudget != null && runQueueBudgetToken != 0)
-                {
-                    runQueueBudget.EndRun(runQueueBudgetToken);
-                }
-            }
+            await RunOneWatchCycleAsync(stoppingToken);
         }
         catch (OperationCanceledException)
         {
@@ -207,6 +137,111 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
     }
 
+    private async Task RunOneWatchCycleAsync(CancellationToken stoppingToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var settingsService = scope.ServiceProvider.GetRequiredService<DeezSpoTagSettingsService>();
+        var settings = settingsService.LoadSettings();
+        if (!settings.WatchEnabled)
+        {
+            _logger.LogDebug("Watchlist disabled in settings.");
+            return;
+        }
+
+        var runQueueBudget = scope.ServiceProvider.GetService<WatchlistRunQueueBudgetService>();
+        var runQueueBudgetToken = runQueueBudget?.BeginRun(Math.Max(1, settings.WatchMaxItemsPerRun)) ?? 0;
+        try
+        {
+            await RunWatchCycleCoreAsync(scope.ServiceProvider, settings, runQueueBudget, stoppingToken);
+        }
+        finally
+        {
+            if (runQueueBudget != null && runQueueBudgetToken != 0)
+            {
+                runQueueBudget.EndRun(runQueueBudgetToken);
+            }
+        }
+    }
+
+    private async Task RunWatchCycleCoreAsync(
+        IServiceProvider serviceProvider,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        WatchlistRunQueueBudgetService? runQueueBudget,
+        CancellationToken stoppingToken)
+    {
+        var repository = serviceProvider.GetRequiredService<LibraryRepository>();
+        if (!repository.IsConfigured)
+        {
+            _logger.LogDebug("Watchlist skipped - library DB not configured.");
+            return;
+        }
+
+        await TryRepairWatchlistDestinationIntegrityAsync(repository, stoppingToken);
+        var playlistItems = BuildPlaylistWatchItems(await repository.GetPlaylistWatchlistAsync(stoppingToken));
+        var artistItems = BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken));
+        var allItems = BuildCombinedWatchItems(playlistItems, artistItems);
+        if (allItems.Count == 0)
+        {
+            CleanupStaleState(Array.Empty<WatchItem>());
+            return;
+        }
+
+        CleanupStaleState(allItems);
+        await SeedPersistedLastRunsAsync(allItems, repository, stoppingToken);
+        var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
+            playlistItems,
+            settings,
+            repository,
+            serviceProvider,
+            runQueueBudget,
+            stoppingToken);
+        if (playlistRunResult.AbortedRun)
+        {
+            return;
+        }
+
+        await ProcessArtistWatchItemsAsync(
+            artistItems,
+            settings,
+            serviceProvider,
+            runQueueBudget,
+            stoppingToken);
+    }
+
+    private async Task TryRepairWatchlistDestinationIntegrityAsync(
+        LibraryRepository repository,
+        CancellationToken stoppingToken)
+    {
+        if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+
+        var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(stoppingToken);
+        _lastDestinationRepairUtc = DateTimeOffset.UtcNow;
+        if ((repairResult.PlaylistPreferencesUpdated <= 0 && repairResult.ArtistPreferencesUpdated <= 0)
+            || !_logger.IsEnabled(LogLevel.Information))
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "Watchlist destination integrity repair applied: playlistPreferencesUpdated={PlaylistUpdated}, artistPreferencesUpdated={ArtistUpdated}",
+            repairResult.PlaylistPreferencesUpdated,
+            repairResult.ArtistPreferencesUpdated);
+    }
+
+    private static List<WatchItem> BuildCombinedWatchItems(
+        IReadOnlyList<WatchItem> playlistItems,
+        IReadOnlyList<WatchItem> artistItems)
+    {
+        var items = new List<WatchItem>(playlistItems.Count + artistItems.Count);
+        items.AddRange(playlistItems);
+        items.AddRange(artistItems);
+        return items;
+    }
+
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist watch scheduler loop preserves queue budget, backoff, and circuit-breaker behavior in one control flow.")]
     private async Task<PlaylistRunResult> ProcessPlaylistWatchItemsAsync(
         IReadOnlyList<WatchItem> playlistItems,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,

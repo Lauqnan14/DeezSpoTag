@@ -1541,6 +1541,14 @@ public partial class Program
                 HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Web.Services.ITidalAccessTokenProvider>()
             });
+        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchRuntimeServices>(sp =>
+            new DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchRuntimeServices
+            {
+                PlaylistSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncService>(),
+                PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
+                WatchlistRunQueueBudgetService = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunQueueBudgetService>(),
+                ActivitiesRealtimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>()
+            });
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunQueueBudgetService>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
@@ -1585,7 +1593,6 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener>(),
                 sp.GetRequiredService<ILogger<DeezSpoTag.Services.Download.Queue.DownloadRetryScheduler>>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadCancellationRegistry>(),
-                () => sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagService>().HasRunningJobs(),
                 () => sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadOrchestrationService>().MarkRetryQueued()));
         services.AddSingleton<DeezSpoTag.Web.Services.SystemStatsService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService, DeezSpoTag.Services.Download.Qobuz.QobuzDownloadService>();

@@ -23,6 +23,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     private static readonly string[] EssentiaGenreTags = ["soundtrack"];
     private static readonly string[] LastfmGenreTags = ["score"];
     private static readonly string[] SharedQueueUuids = ["queue-shared-1"];
+    private static readonly string[] UppercaseSpotifyTrackSourceIds = ["SP-SONG-1"];
 
     private sealed record SeededLibrary(
         long LibraryId,
@@ -544,7 +545,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
 
         var trackIdsByMixedCaseSpotify = await _repository.GetTrackIdsBySourceIdsAsync(
             "SPOTIFY",
-            new[] { "SP-SONG-1" });
+            UppercaseSpotifyTrackSourceIds);
         Assert.Single(trackIdsByMixedCaseSpotify);
         Assert.Equal(seeded.TrackIdsByTitle["Song One"], trackIdsByMixedCaseSpotify["SP-SONG-1"]);
 

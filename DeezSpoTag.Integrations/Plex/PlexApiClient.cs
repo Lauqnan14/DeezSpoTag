@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
 using System.Text;
@@ -1625,6 +1626,7 @@ public class PlexApiClient
         string? ExistingTitlePrefix = null,
         bool AppendMissingOnly = false);
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist upsert retains explicit validation and branch flow for append/replace safety.")]
     public async Task<string?> CreateOrUpdatePlaylistAsync(
         string serverUrl,
         string token,
@@ -1689,41 +1691,63 @@ public class PlexApiClient
                 cancellationToken);
         }
 
-        if (appendMissingOnly)
-        {
-            var existingItems = await GetPlaylistItemsAsync(normalizedServerUrl, normalizedToken, playlistId, cancellationToken);
-            var existingRatingKeys = existingItems
-                .Select(item => item.Id)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var pending = normalizedRatingKeys
-                .Where(value => !string.IsNullOrWhiteSpace(value) && !existingRatingKeys.Contains(value))
-                .ToList();
-            if (pending.Count > 0)
-            {
-                var added = await AddPlaylistItemsAsync(normalizedServerUrl, normalizedToken, normalizedMachineIdentifier, playlistId, pending, cancellationToken);
-                if (!added)
-                {
-                    return null;
-                }
-            }
-        }
-        else
-        {
-            var cleared = await ClearPlaylistItemsAsync(normalizedServerUrl, normalizedToken, playlistId, cancellationToken);
-            if (!cleared)
-            {
-                return null;
-            }
+        var updated = appendMissingOnly
+            ? await AppendMissingPlaylistItemsAsync(
+                normalizedServerUrl,
+                normalizedToken,
+                normalizedMachineIdentifier,
+                playlistId,
+                normalizedRatingKeys,
+                cancellationToken)
+            : await ReplacePlaylistItemsAsync(
+                normalizedServerUrl,
+                normalizedToken,
+                normalizedMachineIdentifier,
+                playlistId,
+                normalizedRatingKeys,
+                cancellationToken);
+        return updated ? playlistId : null;
+    }
 
-            var added = await AddPlaylistItemsAsync(normalizedServerUrl, normalizedToken, normalizedMachineIdentifier, playlistId, normalizedRatingKeys, cancellationToken);
-            if (!added)
-            {
-                return null;
-            }
+    private async Task<bool> AppendMissingPlaylistItemsAsync(
+        string serverUrl,
+        string token,
+        string machineIdentifier,
+        string playlistId,
+        IReadOnlyList<string> normalizedRatingKeys,
+        CancellationToken cancellationToken)
+    {
+        var existingItems = await GetPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+        var existingRatingKeys = existingItems
+            .Select(item => item.Id)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pending = normalizedRatingKeys
+            .Where(value => !string.IsNullOrWhiteSpace(value) && !existingRatingKeys.Contains(value))
+            .ToList();
+        if (pending.Count == 0)
+        {
+            return true;
         }
 
-        return playlistId;
+        return await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, pending, cancellationToken);
+    }
+
+    private async Task<bool> ReplacePlaylistItemsAsync(
+        string serverUrl,
+        string token,
+        string machineIdentifier,
+        string playlistId,
+        IReadOnlyList<string> normalizedRatingKeys,
+        CancellationToken cancellationToken)
+    {
+        var cleared = await ClearPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+        if (!cleared)
+        {
+            return false;
+        }
+
+        return await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, normalizedRatingKeys, cancellationToken);
     }
 
     private static string? FindMatchingPlaylistId(

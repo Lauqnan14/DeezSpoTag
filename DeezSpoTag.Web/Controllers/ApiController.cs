@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 using System.Security.Cryptography;
@@ -71,6 +72,15 @@ namespace DeezSpoTag.Web.Controllers
         private const string NbFanUpperField = "NB_FAN";
         private const string TargetField = "target";
         private const string PicturesField = "pictures";
+        private const string SearchFailedMessage = "Search failed.";
+        private const string Md5ImageField = "md5_image";
+        private const string PictureXlField = "picture_xl";
+        private const string PictureBigField = "picture_big";
+        private const string PictureMediumField = "picture_medium";
+        private const string CoverSmallField = "cover_small";
+        private const string CoverMediumField = "cover_medium";
+        private const string CoverBigField = "cover_big";
+        private const string CoverXlField = "cover_xl";
         private const string ApplicationJsonContentType = "application/json";
         private const string CrossDeviceClientIdHeader = "X-DeezSpoTag-ClientId";
         private const bool HomeCacheEnabled = true;
@@ -203,18 +213,19 @@ namespace DeezSpoTag.Web.Controllers
                     return Ok(BuildDeezerSearchResponse(section.Data, section.Total, type));
                 }
 
-                return Ok(BuildDeezerSearchResponse(Array.Empty<object>(), 0, type, "Search failed."));
+                return Ok(BuildDeezerSearchResponse(Array.Empty<object>(), 0, type, SearchFailedMessage));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 var safeTerm = LogSanitizer.OneLine(term);
                 var safeType = LogSanitizer.OneLine(type);
                 _logger.LogError(ex, "Error in Search for term: {Term}, type: {Type}", safeTerm, safeType);
-                return Ok(BuildDeezerSearchResponse(Array.Empty<object>(), 0, type, "Search failed."));
+                return Ok(BuildDeezerSearchResponse(Array.Empty<object>(), 0, type, SearchFailedMessage));
             }
         }
 
         [HttpGet("search")]
+        [SuppressMessage("Major Code Smell", "S3776", Justification = "Unified search keeps explicit online/offline fallback flow for reliability and traceability.")]
         public async Task<IActionResult> UnifiedSearch([FromQuery] string term, [FromQuery] bool offline = false, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(term))
@@ -224,107 +235,158 @@ namespace DeezSpoTag.Web.Controllers
 
             if (offline)
             {
-                try
-                {
-                    if (!await _libraryConfigStore.HasLocalLibraryDataAsync())
-                    {
-                        return Ok(BuildUnifiedSearchResponse(source: "offline", error: "Offline search is unavailable."));
-                    }
-
-                    var offlineResults = await SearchOfflineAsync(term.Trim(), cancellationToken);
-                    return Ok(BuildUnifiedSearchResponse(
-                        offlineResults.Tracks,
-                        offlineResults.Albums,
-                        offlineResults.Artists,
-                        offlineResults.Playlists,
-                        source: "offline"));
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, "Offline library search failed for term {Term}", LogSanitizer.OneLine(term));
-                    return Ok(BuildUnifiedSearchResponse(source: "offline", error: "Offline search failed."));
-                }
+                return await HandleOfflineUnifiedSearchAsync(term, cancellationToken);
             }
 
             try
             {
-                var normalizedTerm = term.Trim();
+                return await HandleOnlineUnifiedSearchAsync(term.Trim(), cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "GW search failed for term {Term}", LogSanitizer.OneLine(term));
+                return Ok(BuildUnifiedSearchResponse(source: "gw", error: SearchFailedMessage));
+            }
+        }
 
-                List<object> gwTracks = new();
-                List<object> gwAlbums = new();
-                List<object> gwArtists = new();
-                List<object> gwPlaylists = new();
-                var gwAvailable = false;
-                try
+        private async Task<IActionResult> HandleOfflineUnifiedSearchAsync(string term, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (!await _libraryConfigStore.HasLocalLibraryDataAsync())
                 {
-                    var gwResponse = await _deezerGatewayService.SearchAsync(normalizedTerm, 0, 128, suggest: false, artistSuggest: false, topTracks: false);
-                    gwTracks = await MapGwSectionAsync(gwResponse.Track, MapGwTrackAsync, cancellationToken);
-                    gwAlbums = await MapGwSectionAsync(gwResponse.Album, MapGwAlbumAsync, cancellationToken);
-                    gwArtists = await MapGwSectionAsync(gwResponse.Artist, MapGwArtistAsync, cancellationToken);
-                    gwPlaylists = MapGwSection(gwResponse.Playlist, MapGwPlaylist);
-                    gwAvailable = true;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, "GW search failed for term {Term}; falling back to Deezer API augmentation path.", LogSanitizer.OneLine(normalizedTerm));
+                    return Ok(BuildUnifiedSearchResponse(source: "offline", error: "Offline search is unavailable."));
                 }
 
-                DeezerHybridSearchResult apiResults = DeezerHybridSearchResult.Empty;
-                var apiAvailable = false;
-                try
-                {
-                    apiResults = await SearchViaDeezerApiAsync(normalizedTerm, cancellationToken);
-                    apiAvailable = apiResults.HasAny;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, "Deezer API search augmentation failed for term {Term}.", LogSanitizer.OneLine(normalizedTerm));
-                }
+                var offlineResults = await SearchOfflineAsync(term.Trim(), cancellationToken);
+                return Ok(BuildUnifiedSearchResponse(
+                    offlineResults.Tracks,
+                    offlineResults.Albums,
+                    offlineResults.Artists,
+                    offlineResults.Playlists,
+                    source: "offline"));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Offline library search failed for term {Term}", LogSanitizer.OneLine(term));
+                return Ok(BuildUnifiedSearchResponse(source: "offline", error: "Offline search failed."));
+            }
+        }
 
-                if (!gwAvailable && !apiAvailable)
-                {
-                    return Ok(BuildUnifiedSearchResponse(source: "gw+api", error: "Search failed."));
-                }
+        private async Task<IActionResult> HandleOnlineUnifiedSearchAsync(string normalizedTerm, CancellationToken cancellationToken)
+        {
+            var gatewaySearch = await TrySearchViaGatewayAsync(normalizedTerm, cancellationToken);
+            var apiSearch = await TrySearchViaApiAsync(normalizedTerm, cancellationToken);
+            if (!gatewaySearch.Available && !apiSearch.Available)
+            {
+                return Ok(BuildUnifiedSearchResponse(source: "gw+api", error: SearchFailedMessage));
+            }
 
-                var tracks = MergeUnifiedSearchItems(gwTracks, apiResults.Tracks);
-                var albums = MergeUnifiedSearchItems(gwAlbums, apiResults.Albums);
-                var artists = MergeUnifiedSearchItems(gwArtists, apiResults.Artists);
-                var playlists = MergeUnifiedSearchItems(gwPlaylists, apiResults.Playlists);
-                if (ShouldRunDeezerTrackRecovery(normalizedTerm, tracks))
+            var merged = await MergeUnifiedSearchResultsAsync(
+                normalizedTerm,
+                gatewaySearch,
+                apiSearch.Result,
+                cancellationToken);
+            LogUnifiedSearchCounts(normalizedTerm, gatewaySearch, apiSearch.Result, merged);
+            var source = ResolveUnifiedSearchSource(gatewaySearch.Available, apiSearch.Available);
+            return Ok(BuildUnifiedSearchResponse(
+                merged.Tracks,
+                merged.Albums,
+                merged.Artists,
+                merged.Playlists,
+                source: source));
+        }
+
+        private async Task<(List<object> Tracks, List<object> Albums, List<object> Artists, List<object> Playlists, bool Available)> TrySearchViaGatewayAsync(
+            string normalizedTerm,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var gwResponse = await _deezerGatewayService.SearchAsync(normalizedTerm, 0, 128, suggest: false, artistSuggest: false, topTracks: false);
+                return (
+                    await MapGwSectionAsync(gwResponse.Track, MapGwTrackAsync, cancellationToken),
+                    await MapGwSectionAsync(gwResponse.Album, MapGwAlbumAsync, cancellationToken),
+                    await MapGwSectionAsync(gwResponse.Artist, MapGwArtistAsync, cancellationToken),
+                    MapGwSection(gwResponse.Playlist, MapGwPlaylist),
+                    Available: true);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "GW search failed for term {Term}; falling back to Deezer API augmentation path.", LogSanitizer.OneLine(normalizedTerm));
+                return (new List<object>(), new List<object>(), new List<object>(), new List<object>(), Available: false);
+            }
+        }
+
+        private async Task<(DeezerHybridSearchResult Result, bool Available)> TrySearchViaApiAsync(
+            string normalizedTerm,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var apiResults = await SearchViaDeezerApiAsync(normalizedTerm, cancellationToken);
+                return (apiResults, apiResults.HasAny);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Deezer API search augmentation failed for term {Term}.", LogSanitizer.OneLine(normalizedTerm));
+                return (DeezerHybridSearchResult.Empty, Available: false);
+            }
+        }
+
+        private async Task<(List<object> Tracks, List<object> Albums, List<object> Artists, List<object> Playlists)> MergeUnifiedSearchResultsAsync(
+            string normalizedTerm,
+            (List<object> Tracks, List<object> Albums, List<object> Artists, List<object> Playlists, bool Available) gatewaySearch,
+            DeezerHybridSearchResult apiResults,
+            CancellationToken cancellationToken)
+        {
+            var tracks = MergeUnifiedSearchItems(gatewaySearch.Tracks, apiResults.Tracks);
+            var albums = MergeUnifiedSearchItems(gatewaySearch.Albums, apiResults.Albums);
+            var artists = MergeUnifiedSearchItems(gatewaySearch.Artists, apiResults.Artists);
+            var playlists = MergeUnifiedSearchItems(gatewaySearch.Playlists, apiResults.Playlists);
+            if (ShouldRunDeezerTrackRecovery(normalizedTerm, tracks))
+            {
+                var recoveredTracks = await RecoverDeezerTracksAsync(normalizedTerm, cancellationToken);
+                tracks = MergeUnifiedSearchItems(tracks, recoveredTracks);
+                if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    var recoveredTracks = await RecoverDeezerTracksAsync(normalizedTerm, cancellationToken);
-                    tracks = MergeUnifiedSearchItems(tracks, recoveredTracks);
                     _logger.LogInformation(
                         "Unified Deezer search recovery executed for '{Term}': recovered={Recovered}, merged_tracks={MergedTracks}",
                         LogSanitizer.OneLine(normalizedTerm),
                         recoveredTracks.Count,
                         tracks.Count);
                 }
-
-                _logger.LogInformation(
-                    "Unified Deezer search counts for '{Term}': gw(track/album/artist/playlist)={GwTrack}/{GwAlbum}/{GwArtist}/{GwPlaylist}, api(track/album/artist/playlist)={ApiTrack}/{ApiAlbum}/{ApiArtist}/{ApiPlaylist}, merged(track/album/artist/playlist)={Track}/{Album}/{Artist}/{Playlist}",
-                    LogSanitizer.OneLine(normalizedTerm),
-                    gwTracks.Count,
-                    gwAlbums.Count,
-                    gwArtists.Count,
-                    gwPlaylists.Count,
-                    apiResults.Tracks.Count,
-                    apiResults.Albums.Count,
-                    apiResults.Artists.Count,
-                    apiResults.Playlists.Count,
-                    tracks.Count,
-                    albums.Count,
-                    artists.Count,
-                    playlists.Count);
-
-                var source = gwAvailable && apiAvailable ? "gw+api" : (gwAvailable ? "gw" : "api");
-                return Ok(BuildUnifiedSearchResponse(tracks, albums, artists, playlists, source: source));
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+
+            return (tracks, albums, artists, playlists);
+        }
+
+        private void LogUnifiedSearchCounts(
+            string normalizedTerm,
+            (List<object> Tracks, List<object> Albums, List<object> Artists, List<object> Playlists, bool Available) gatewaySearch,
+            DeezerHybridSearchResult apiResults,
+            (List<object> Tracks, List<object> Albums, List<object> Artists, List<object> Playlists) mergedResults)
+        {
+            if (!_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogError(ex, "GW search failed for term {Term}", LogSanitizer.OneLine(term));
-                return Ok(BuildUnifiedSearchResponse(source: "gw", error: "Search failed."));
+                return;
             }
+
+            _logger.LogInformation(
+                "Unified Deezer search counts for '{Term}': gw(track/album/artist/playlist)={GwTrack}/{GwAlbum}/{GwArtist}/{GwPlaylist}, api(track/album/artist/playlist)={ApiTrack}/{ApiAlbum}/{ApiArtist}/{ApiPlaylist}, merged(track/album/artist/playlist)={Track}/{Album}/{Artist}/{Playlist}",
+                LogSanitizer.OneLine(normalizedTerm),
+                gatewaySearch.Tracks.Count,
+                gatewaySearch.Albums.Count,
+                gatewaySearch.Artists.Count,
+                gatewaySearch.Playlists.Count,
+                apiResults.Tracks.Count,
+                apiResults.Albums.Count,
+                apiResults.Artists.Count,
+                apiResults.Playlists.Count,
+                mergedResults.Tracks.Count,
+                mergedResults.Albums.Count,
+                mergedResults.Artists.Count,
+                mergedResults.Playlists.Count);
         }
 
         private readonly record struct DeezerHybridSearchResult(
@@ -353,12 +415,12 @@ namespace DeezSpoTag.Web.Controllers
                 cancellationToken);
             var artistsRaw = await FetchDeezerApiSectionWithPublicFallbackAsync(
                 () => _deezerClient.Api.SearchArtistAsync(term, options),
-                "artist",
+                ArtistType,
                 term,
                 cancellationToken);
             var playlistsRaw = await FetchDeezerApiSectionWithPublicFallbackAsync(
                 () => _deezerClient.Api.SearchPlaylistAsync(term, options),
-                "playlist",
+                PlaylistType,
                 term,
                 cancellationToken);
 
@@ -384,8 +446,11 @@ namespace DeezSpoTag.Web.Controllers
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Deezer SDK search failed for type {Type}; trying public API.", LogSanitizer.OneLine(type));
-            }
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug(ex, "Deezer SDK search failed for type {Type}; trying public API.", LogSanitizer.OneLine(type));
+                    }
+                }
 
             if (sdkData is { Length: > 0 })
             {
@@ -514,7 +579,7 @@ namespace DeezSpoTag.Web.Controllers
                 .ToList();
         }
 
-        private static bool ShouldRunDeezerTrackRecovery(string term, IReadOnlyCollection<object> mergedTracks)
+        private static bool ShouldRunDeezerTrackRecovery(string term, List<object> mergedTracks)
         {
             if (mergedTracks.Count == 0)
             {
@@ -547,21 +612,14 @@ namespace DeezSpoTag.Web.Controllers
             foreach (var track in mergedTracks.Take(12))
             {
                 var name = ReadAnonymousStringProperty(track, "name");
-                var artist = ReadAnonymousStringProperty(track, "artist");
+                var artist = ReadAnonymousStringProperty(track, ArtistType);
                 var candidate = NormalizeRecoveryText($"{name} {artist}");
                 if (string.IsNullOrWhiteSpace(candidate))
                 {
                     continue;
                 }
 
-                var matched = 0;
-                foreach (var token in terms)
-                {
-                    if (candidate.Contains(token, StringComparison.Ordinal))
-                    {
-                        matched++;
-                    }
-                }
+                var matched = terms.Count(token => candidate.Contains(token, StringComparison.Ordinal));
 
                 if (matched >= Math.Min(3, terms.Length))
                 {
@@ -632,6 +690,16 @@ namespace DeezSpoTag.Web.Controllers
                 type,
                 error
             };
+        }
+
+        private static string ResolveUnifiedSearchSource(bool gwAvailable, bool apiAvailable)
+        {
+            if (gwAvailable && apiAvailable)
+            {
+                return "gw+api";
+            }
+
+            return gwAvailable ? "gw" : "api";
         }
 
         private static object BuildUnifiedSearchResponse(
@@ -1418,8 +1486,8 @@ namespace DeezSpoTag.Web.Controllers
                     return null;
                 }
 
-                var pictureXl = BuildGatewayImageUrl("playlist", playlistPage.Data.PlaylistPicture, "1000x1000");
-                var pictureBig = BuildGatewayImageUrl("playlist", playlistPage.Data.PlaylistPicture, "500x500");
+                var pictureXl = BuildGatewayImageUrl(PlaylistType, playlistPage.Data.PlaylistPicture, "1000x1000");
+                var pictureBig = BuildGatewayImageUrl(PlaylistType, playlistPage.Data.PlaylistPicture, "500x500");
                 var ownerId = PickPlaylistOwnerValue(playlistPage.Data.OwnerId, playlistPage.Data.UserId);
                 var ownerName = PickPlaylistOwnerValue(playlistPage.Data.OwnerName, playlistPage.Data.UserName);
                 var ownerPicture = PickPlaylistOwnerValue(playlistPage.Data.OwnerPicture, playlistPage.Data.UserPicture);
@@ -1577,7 +1645,7 @@ namespace DeezSpoTag.Web.Controllers
                                       ?? track?[AlbumType]?.Value<string>(TitleField)
                                       ?? string.Empty;
                     var albumPicture = track?.Value<string>(AlbPictureUpperField)
-                                       ?? track?[AlbumType]?.Value<string>("md5_image")
+                                       ?? track?[AlbumType]?.Value<string>(Md5ImageField)
                                        ?? track?[AlbumType]?.Value<string>(CoverImageType);
                     var albumCover = string.IsNullOrWhiteSpace(albumPicture)
                         ? string.Empty
@@ -2564,9 +2632,9 @@ namespace DeezSpoTag.Web.Controllers
                 ["id"] = id,
                 [NameField] = name,
                 ["genres"] = genres,
-                ["picture_xl"] = artistArtwork ?? string.Empty,
-                ["picture_big"] = artistArtwork ?? string.Empty,
-                ["picture_medium"] = artistArtwork ?? string.Empty,
+                [PictureXlField] = artistArtwork ?? string.Empty,
+                [PictureBigField] = artistArtwork ?? string.Empty,
+                [PictureMediumField] = artistArtwork ?? string.Empty,
                 [ReleasesField] = releases
             };
         }
@@ -2677,7 +2745,7 @@ namespace DeezSpoTag.Web.Controllers
                 [RecordTypeField] = recordType,
                 ["link"] = releaseLink,
                 [CoverImageType] = cover,
-                ["cover_small"] = coverSmall,
+                [CoverSmallField] = coverSmall,
                 [SourceField] = releaseSource
             };
 
@@ -3178,10 +3246,10 @@ namespace DeezSpoTag.Web.Controllers
                 ["id"] = releaseId,
                 [TitleField] = release.TryGetProperty(TitleField, out var title) ? title.GetString() ?? string.Empty : string.Empty,
                 [CoverImageType] = release.TryGetProperty(CoverImageType, out var cover) ? cover.GetString() ?? string.Empty : string.Empty,
-                ["cover_small"] = release.TryGetProperty("cover_small", out var coverSmall) ? coverSmall.GetString() ?? string.Empty : string.Empty,
-                ["cover_medium"] = release.TryGetProperty("cover_medium", out var coverMedium) ? coverMedium.GetString() ?? string.Empty : string.Empty,
-                ["cover_big"] = release.TryGetProperty("cover_big", out var coverBig) ? coverBig.GetString() ?? string.Empty : string.Empty,
-                ["cover_xl"] = release.TryGetProperty("cover_xl", out var coverXl) ? coverXl.GetString() ?? string.Empty : string.Empty,
+                [CoverSmallField] = release.TryGetProperty(CoverSmallField, out var coverSmall) ? coverSmall.GetString() ?? string.Empty : string.Empty,
+                [CoverMediumField] = release.TryGetProperty(CoverMediumField, out var coverMedium) ? coverMedium.GetString() ?? string.Empty : string.Empty,
+                [CoverBigField] = release.TryGetProperty(CoverBigField, out var coverBig) ? coverBig.GetString() ?? string.Empty : string.Empty,
+                [CoverXlField] = release.TryGetProperty(CoverXlField, out var coverXl) ? coverXl.GetString() ?? string.Empty : string.Empty,
                 [ReleaseDateField] = release.TryGetProperty(ReleaseDateField, out var releaseDate) ? releaseDate.GetString() ?? string.Empty : string.Empty,
                 [NbTracksField] = release.TryGetProperty(NbTracksField, out var tracks) ? tracks.GetInt32() : 0,
                 ["link"] = release.TryGetProperty("link", out var link) ? link.GetString() ?? string.Empty : string.Empty,
@@ -3331,13 +3399,13 @@ namespace DeezSpoTag.Web.Controllers
 
         private async Task<object> MapDeezerApiTrackAsync(JsonElement item, CancellationToken cancellationToken)
         {
-            var artist = GetNestedString(item, "artist", NameField) ?? GetString(item, ArtistType);
+            var artist = GetNestedString(item, ArtistType, NameField) ?? GetString(item, ArtistType);
             var albumTitle = GetNestedString(item, AlbumType, TitleField) ?? GetString(item, AlbumType);
-            var albumMd5 = GetNestedString(item, AlbumType, "md5_image");
-            var cover = GetNestedString(item, AlbumType, "cover_xl")
-                        ?? GetNestedString(item, AlbumType, "cover_big")
-                        ?? GetNestedString(item, AlbumType, "cover_medium")
-                        ?? GetNestedString(item, AlbumType, "cover_small");
+            var albumMd5 = GetNestedString(item, AlbumType, Md5ImageField);
+            var cover = GetNestedString(item, AlbumType, CoverXlField)
+                        ?? GetNestedString(item, AlbumType, CoverBigField)
+                        ?? GetNestedString(item, AlbumType, CoverMediumField)
+                        ?? GetNestedString(item, AlbumType, CoverSmallField);
             var image = cover;
             if (string.IsNullOrWhiteSpace(image))
             {
@@ -3406,11 +3474,11 @@ namespace DeezSpoTag.Web.Controllers
         {
             var albumTitle = GetString(item, TitleField);
             var artistName = GetNestedString(item, ArtistType, NameField) ?? GetString(item, ArtistType);
-            var albumMd5 = GetString(item, "md5_image");
-            var image = GetString(item, "cover_xl")
-                        ?? GetString(item, "cover_big")
-                        ?? GetString(item, "cover_medium")
-                        ?? GetString(item, "cover_small");
+            var albumMd5 = GetString(item, Md5ImageField);
+            var image = GetString(item, CoverXlField)
+                        ?? GetString(item, CoverBigField)
+                        ?? GetString(item, CoverMediumField)
+                        ?? GetString(item, CoverSmallField);
             if (string.IsNullOrWhiteSpace(image))
             {
                 image = await ResolveArtworkUrlAsync(
@@ -3466,9 +3534,9 @@ namespace DeezSpoTag.Web.Controllers
         private async Task<object> MapDeezerApiArtistAsync(JsonElement item, CancellationToken cancellationToken)
         {
             var artistName = GetString(item, NameField);
-            var image = GetString(item, "picture_xl")
-                        ?? GetString(item, "picture_big")
-                        ?? GetString(item, "picture_medium")
+            var image = GetString(item, PictureXlField)
+                        ?? GetString(item, PictureBigField)
+                        ?? GetString(item, PictureMediumField)
                         ?? GetString(item, "picture_small");
             if (string.IsNullOrWhiteSpace(image))
             {
@@ -3572,15 +3640,15 @@ namespace DeezSpoTag.Web.Controllers
                 collaborative = GetBool(item, "collaborative"),
                 fans,
                 followers = fans,
-                image = GetString(item, "picture_xl")
-                        ?? GetString(item, "picture_big")
-                        ?? GetString(item, "picture_medium")
+                image = GetString(item, PictureXlField)
+                        ?? GetString(item, PictureBigField)
+                        ?? GetString(item, PictureMediumField)
                         ?? GetString(item, "picture_small"),
                 url = GetString(item, "link")
             };
         }
 
-        private static List<object> MergeUnifiedSearchItems(IReadOnlyCollection<object> primary, IReadOnlyCollection<object> secondary)
+        private static List<object> MergeUnifiedSearchItems(List<object> primary, List<object> secondary)
         {
             var merged = new List<object>(primary.Count + secondary.Count);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -4474,7 +4542,7 @@ namespace DeezSpoTag.Web.Controllers
 
             state.Md5Image ??= item.Value<string>(ArtPictureUpperField);
             state.PictureType ??= ArtistType;
-            state.ImageOverride = ExtractUrl(item, "picture_xl", "picture_big", "picture_medium", "picture");
+            state.ImageOverride = ExtractUrl(item, PictureXlField, PictureBigField, PictureMediumField, "picture");
         }
 
         private static void ApplyTrackHomeItemData(HomeItemMappingState state, JObject item)
@@ -4502,7 +4570,7 @@ namespace DeezSpoTag.Web.Controllers
                 ?? data?.Value<long?>(DurationField)
                 ?? state.Duration;
             state.Md5Image = data?.Value<string>(AlbPictureUpperField)
-                ?? data?[AlbumType]?.Value<string>("md5_image")
+                ?? data?[AlbumType]?.Value<string>(Md5ImageField)
                 ?? state.Md5Image;
             state.PictureType ??= CoverImageType;
 

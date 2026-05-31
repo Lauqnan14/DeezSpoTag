@@ -12,7 +12,7 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class BroadCatchHardeningTests
+public sealed partial class BroadCatchHardeningTests
 {
     [Fact]
     public void RecommendationUnavailableMessage_ExplainsPersistFailure()
@@ -91,11 +91,12 @@ public sealed class BroadCatchHardeningTests
 
         Assert.Contains("LogStagingEnhancementScanBypass", source);
         Assert.Matches(
-            new Regex(
-                @"catch\s*\(Exception ex\)\s*when\s*\(DeezSpoTag\.Core\.Diagnostics\.ExpectedExceptionPolicy\.IsRecoverable\(ex\)\)\s*\{\s*LogStagingEnhancementScanBypass\(ex,.*?\);\s*return false;",
-                RegexOptions.Singleline),
+            DownloadStagingGateScanFailureRegex(),
             source);
     }
+
+    [GeneratedRegex(@"catch\s*\(Exception ex\)\s*when\s*\(DeezSpoTag\.Core\.Diagnostics\.ExpectedExceptionPolicy\.IsRecoverable\(ex\)\)\s*\{\s*LogStagingEnhancementScanBypass\(ex,.*?\);\s*return false;", RegexOptions.Singleline)]
+    private static partial Regex DownloadStagingGateScanFailureRegex();
 
     private static string GetRepositoryRoot()
     {

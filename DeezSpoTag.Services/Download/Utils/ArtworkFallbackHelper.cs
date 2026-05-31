@@ -62,6 +62,13 @@ public static class ArtworkFallbackHelper
         string? Artist,
         string? Album);
 
+    public sealed record SpotifyCoverLookupRequest(
+        string? Title,
+        string? Artist,
+        string? Album,
+        string? Isrc,
+        bool RejectCompilationAlbumCandidate);
+
     public static string? ResolveAlbumConstraintForArtwork(string? albumTitle)
     {
         return IsCompilationLikeAlbumTitle(albumTitle) ? null : albumTitle;
@@ -335,11 +342,7 @@ public static class ArtworkFallbackHelper
     public static async Task<string?> TryResolveSpotifyCoverAsync(
         ISpotifyIdResolver? spotifyIdResolver,
         ISpotifyArtworkResolver? spotifyArtworkResolver,
-        string? title,
-        string? artist,
-        string? album,
-        string? isrc,
-        bool rejectCompilationAlbumCandidate,
+        SpotifyCoverLookupRequest request,
         CancellationToken cancellationToken)
     {
         if (spotifyIdResolver == null || spotifyArtworkResolver == null)
@@ -347,17 +350,19 @@ public static class ArtworkFallbackHelper
             return null;
         }
 
+        var title = request.Title;
+        var artist = request.Artist;
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
         {
             return null;
         }
 
-        album = ResolveAlbumConstraintForArtwork(album);
+        var album = ResolveAlbumConstraintForArtwork(request.Album);
         var spotifyId = await spotifyIdResolver.ResolveTrackIdAsync(
             title,
             artist,
             album,
-            isrc,
+            request.Isrc,
             cancellationToken);
 
         if (string.IsNullOrWhiteSpace(spotifyId))
@@ -369,7 +374,7 @@ public static class ArtworkFallbackHelper
             spotifyId,
             cancellationToken,
             album,
-            rejectCompilationAlbumCandidate);
+            request.RejectCompilationAlbumCandidate);
     }
 
     public static async Task<string?> TryResolveDeezerCoverAsync(

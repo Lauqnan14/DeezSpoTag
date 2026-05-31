@@ -32,9 +32,11 @@ public sealed class AppleTracklistApiController : ControllerBase
     private const string AttributesField = "attributes";
     private const string ArtistNameField = "artistName";
     private const string AudioTraitsField = "audioTraits";
+    private static readonly TimeSpan AppleStorefrontRegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex AppleStorefrontRegex = new(
         @"music\.apple\.com/(?<storefront>[a-z]{2}(?:-[a-z]{2})?)/",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        AppleStorefrontRegexTimeout);
     private readonly AppleMusicCatalogService _catalog;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<AppleTracklistApiController> _logger;
@@ -241,39 +243,6 @@ public sealed class AppleTracklistApiController : ControllerBase
         return tracks;
     }
 
-    private async Task<List<object>> BuildPlaylistRelationshipTracksAsync(JsonElement relationships, CancellationToken cancellationToken)
-    {
-        var tracks = BuildRelationshipTracks(relationships, startPosition: 1);
-        var next = ReadTracksNextUrl(relationships);
-        var nextPosition = tracks.Count + 1;
-        var pageSafety = 0;
-
-        while (!string.IsNullOrWhiteSpace(next) && pageSafety < 500)
-        {
-            pageSafety++;
-            using var pageDoc = await _catalog.GetPlaylistTracksPageAsync(next, cancellationToken);
-            var root = pageDoc.RootElement;
-            if (!root.TryGetProperty(DataField, out var dataArr)
-                || dataArr.ValueKind != JsonValueKind.Array
-                || dataArr.GetArrayLength() == 0)
-            {
-                break;
-            }
-
-            var pageTracks = BuildTrackObjectsFromDataArray(dataArr, nextPosition);
-            if (pageTracks.Count == 0)
-            {
-                break;
-            }
-
-            tracks.AddRange(pageTracks);
-            nextPosition += pageTracks.Count;
-            next = ReadRootNextUrl(root);
-        }
-
-        return tracks;
-    }
-
     private static List<object> BuildRelationshipTracks(JsonElement relationships)
         => BuildRelationshipTracks(relationships, startPosition: 1);
 
@@ -332,22 +301,6 @@ public sealed class AppleTracklistApiController : ControllerBase
         }
 
         return tracks;
-    }
-
-    private static string ReadTracksNextUrl(JsonElement relationships)
-    {
-        if (!relationships.TryGetProperty(TracksField, out var tracksRel)
-            || tracksRel.ValueKind != JsonValueKind.Object)
-        {
-            return string.Empty;
-        }
-
-        if (!tracksRel.TryGetProperty("next", out var nextElement) || nextElement.ValueKind != JsonValueKind.String)
-        {
-            return string.Empty;
-        }
-
-        return nextElement.GetString() ?? string.Empty;
     }
 
     private static string ReadRootNextUrl(JsonElement root)

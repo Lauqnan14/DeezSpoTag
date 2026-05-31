@@ -1974,7 +1974,7 @@
         }
 
         const folderUniformity = enhancement.folderUniformity;
-        const folderUniformityHasEnabledFlag = Object.prototype.hasOwnProperty.call(folderUniformity, "enabled");
+        const folderUniformityHasEnabledFlag = Object.hasOwn(folderUniformity, "enabled");
         folderUniformity.folderIds = parseFolderIdList(folderUniformity.folderIds);
         delete folderUniformity.folderId;
         folderUniformity.enforceFolderStructure = folderUniformity.enforceFolderStructure !== false;
@@ -2017,7 +2017,7 @@
         delete folderUniformity.preferredExtensions;
 
         const coverMaintenance = enhancement.coverMaintenance;
-        const coverMaintenanceHasEnabledFlag = Object.prototype.hasOwnProperty.call(coverMaintenance, "enabled");
+        const coverMaintenanceHasEnabledFlag = Object.hasOwn(coverMaintenance, "enabled");
         coverMaintenance.folderIds = parseFolderIdList(coverMaintenance.folderIds);
         delete coverMaintenance.folderId;
         coverMaintenance.minResolution = Number.parseInt(String(coverMaintenance.minResolution ?? 500), 10);
@@ -2040,7 +2040,7 @@
         coverMaintenance.workerCount = Math.max(1, Math.min(32, coverMaintenance.workerCount));
 
         const qualityChecks = enhancement.qualityChecks;
-        const qualityChecksHasEnabledFlag = Object.prototype.hasOwnProperty.call(qualityChecks, "enabled");
+        const qualityChecksHasEnabledFlag = Object.hasOwn(qualityChecks, "enabled");
         qualityChecks.folderIds = parseFolderIdList(qualityChecks.folderIds);
         delete qualityChecks.folderId;
         qualityChecks.scope = String(qualityChecks.scope || "all").toLowerCase() === "watchlist" ? "watchlist" : "all";

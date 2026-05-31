@@ -151,6 +151,8 @@ public sealed class SpotifyPathfinderMetadataClient
     private const string ProfileKey = "profile";
 
     private const string DataKey = "data";
+    private const string TypeNameKey = "__typename";
+    private const string OwnerV2Key = "ownerV2";
 
     private const string ItemsKey = "items";
 
@@ -3540,7 +3542,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return true;
         }
-        string? a = TryGetString(element, "__typename");
+        string? a = TryGetString(element, TypeNameKey);
         if (string.Equals(a, "Track", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "TrackResponseWrapper", StringComparison.OrdinalIgnoreCase))
         {
             return true;
@@ -3690,7 +3692,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return true;
         }
-        string? a = TryGetString(element, "__typename");
+        string? a = TryGetString(element, TypeNameKey);
         if (string.Equals(a, "Artist", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "ArtistResponseWrapper", StringComparison.OrdinalIgnoreCase))
         {
             return true;
@@ -3853,7 +3855,7 @@ public sealed class SpotifyPathfinderMetadataClient
         string? imageUrl = ExtractPlaylistImageUrl(element) ?? ExtractCoverOrDirectImageUrl(element, ImagesKey);
         string? ownerName = TryGetOwnerName(element)
             ?? TryGetString(element, "owner", "name")
-            ?? TryGetString(element, "ownerV2", DataKey, "name");
+            ?? TryGetString(element, OwnerV2Key, DataKey, "name");
         int? followers = TryGetInt(element, FollowersKey, TotalCountKey)
             ?? TryGetInt(element, StatsKey, FollowersKey)
             ?? TryGetInt(element, FollowersKey);
@@ -3885,7 +3887,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return true;
         }
 
-        string? typeName = TryGetString(element, "__typename");
+        string? typeName = TryGetString(element, TypeNameKey);
         if (string.Equals(typeName, "Playlist", StringComparison.OrdinalIgnoreCase)
             || string.Equals(typeName, "PlaylistResponseWrapper", StringComparison.OrdinalIgnoreCase)
             || string.Equals(typeName, "PlaylistV2", StringComparison.OrdinalIgnoreCase))
@@ -3901,7 +3903,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
         return TryGetNested(element, out _, ContentKey, TotalCountKey)
             || TryGetNested(element, out _, FollowersKey)
-            || TryGetNested(element, out _, "ownerV2", DataKey);
+            || TryGetNested(element, out _, OwnerV2Key, DataKey);
     }
 
     private static bool LooksLikeSpotifyUri(string value)
@@ -5835,7 +5837,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static IEnumerable<JsonElement> EnumerateOwnerAvatarSources(JsonElement playlistUnion)
     {
-        if (!TryGetNested(playlistUnion, out JsonElement ownerData, "ownerV2", DataKey))
+        if (!TryGetNested(playlistUnion, out JsonElement ownerData, OwnerV2Key, DataKey))
         {
             return Enumerable.Empty<JsonElement>();
         }
@@ -6437,7 +6439,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static string? TryGetOwnerName(JsonElement playlistUnion)
     {
-        if (!TryGetNested(playlistUnion, out var value, "ownerV2", DataKey))
+        if (!TryGetNested(playlistUnion, out var value, OwnerV2Key, DataKey))
         {
             return null;
         }
@@ -6562,7 +6564,7 @@ public sealed class SpotifyPathfinderMetadataClient
         string? artists = ExtractArtistsFromItems(release, ArtistsKey);
         string? imageUrl = ExtractCoverUrl(release, CoverArtKey);
         string? releaseDate = TryGetString(release, "date", IsoStringKey) ?? TryGetString(release, "date", "year") ?? TryGetString(release, ReleaseDateKey) ?? TryGetString(release, ReleaseDateSnakeKey);
-        string? releaseType = NormalizeReleaseType(TryGetString(release, "type") ?? TryGetString(release, "type", "name") ?? TryGetString(release, "type", "value") ?? TryGetString(release, "releaseType") ?? TryGetString(release, "albumType") ?? TryGetString(release, "album_type") ?? TryGetString(release, "albumGroup") ?? TryGetString(release, "album_group") ?? TryGetString(release, "__typename"));
+        string? releaseType = NormalizeReleaseType(TryGetString(release, "type") ?? TryGetString(release, "type", "name") ?? TryGetString(release, "type", "value") ?? TryGetString(release, "releaseType") ?? TryGetString(release, "albumType") ?? TryGetString(release, "album_type") ?? TryGetString(release, "albumGroup") ?? TryGetString(release, "album_group") ?? TryGetString(release, TypeNameKey));
         string albumGroup = MapReleaseTypeToAlbumGroup(releaseType);
         int? totalTracks = TryGetInt(release, TracksKey, TotalCountKey) ?? TryGetInt(release, TracksKey, CountKey) ?? TryGetInt(release, "trackCount") ?? TryGetInt(release, "totalTracks") ?? TryGetInt(release, "total_tracks");
         return new DiscographyRelease(text, name, artists, imageUrl, releaseDate, releaseType, albumGroup, totalTracks);

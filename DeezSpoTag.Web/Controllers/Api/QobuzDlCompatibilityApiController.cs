@@ -1,4 +1,3 @@
-using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,14 +10,11 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class QobuzDlCompatibilityApiController : ControllerBase
 {
     private readonly IQobuzMetadataService _qobuzMetadataService;
-    private readonly IQobuzDownloadService _qobuzDownloadService;
 
     public QobuzDlCompatibilityApiController(
-        IQobuzMetadataService qobuzMetadataService,
-        IQobuzDownloadService qobuzDownloadService)
+        IQobuzMetadataService qobuzMetadataService)
     {
         _qobuzMetadataService = qobuzMetadataService;
-        _qobuzDownloadService = qobuzDownloadService;
     }
 
     [HttpGet("get-music")]
@@ -72,34 +68,4 @@ public sealed class QobuzDlCompatibilityApiController : ControllerBase
         });
     }
 
-    [HttpGet("download-music")]
-    public async Task<IActionResult> DownloadMusic([FromQuery(Name = "track_id")] int trackId, [FromQuery] string? quality = null, CancellationToken cancellationToken = default)
-    {
-        if (trackId <= 0)
-        {
-            return BadRequest(new { success = false, error = "track_id must be greater than zero." });
-        }
-
-        try
-        {
-            var resolved = await _qobuzDownloadService.ResolveStreamUrlByTrackIdAsync(
-                trackId,
-                quality ?? "6",
-                allowQualityFallback: true,
-                cancellationToken);
-            return Ok(new
-            {
-                success = true,
-                data = new
-                {
-                    url = resolved.Url,
-                    quality = resolved.SelectedQuality
-                }
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return BadRequest(new { success = false, error = ex.Message });
-        }
-    }
 }

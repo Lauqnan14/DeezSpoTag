@@ -3,10 +3,10 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using IOFile = System.IO.File;
 using DeezSpoTag.Services.Metadata.Qobuz;
@@ -34,6 +34,9 @@ public readonly record struct QobuzResolvedStreamUrl(string Url, string Selected
 
 public sealed class QobuzDownloadService : IQobuzDownloadService
 {
+    private const string ApplicationJsonContentType = "application/json";
+    private const string DownloadUrlUnavailableMessage = "Qobuz download URL not available";
+    private const string FlacExtension = ".flac";
     private const string DefaultAppId = "712109809";
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
@@ -57,7 +60,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         "https://qobuz.spotbye.qzz.io/dl/qbz"
     ];
     private const string MusicDlUserAgent = "QobuzDL/1.0";
-    private static readonly Uri JumoReferrerUri = new UriBuilder(Uri.UriSchemeHttps, "jumo-dl.pages.dev").Uri;
     private static readonly (int Start, int End)[] ExtendedLatinRanges =
     {
         (0x0100, 0x024F),
@@ -103,7 +105,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Timeout = TimeSpan.FromSeconds(60)
         };
         _apiClient.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserUserAgent);
-        _apiClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _apiClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue(ApplicationJsonContentType));
         _downloadClient = new HttpClient
         {
             Timeout = TimeSpan.FromMinutes(5)
@@ -138,38 +140,18 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return payload?.Tracks?.Total > 0;
     }
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Download resolution path keeps explicit provider/metadata fallback ordering to preserve deterministic provider selection.")]
     public async Task<string> DownloadByIsrcAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(request.OutputDir);
 
-        var resolvedIsrc = request.Isrc;
-        if (string.IsNullOrWhiteSpace(resolvedIsrc))
+        var resolvedIsrc = await ResolveRequestIsrcAsync(request, cancellationToken);
+        if (TryResolveExistingDownloadPath(request, resolvedIsrc, out var existingDownloadPath))
         {
-            var expectedDurationSec = request.DurationSeconds > 0 ? request.DurationSeconds : 0;
-            var metadataTrack = await SearchByQueryAsync(
-                request.TrackName,
-                request.ArtistName,
-                expectedDurationSec,
-                requireStrongMatch: false,
-                cancellationToken);
-            if (metadataTrack == null)
-            {
-                throw new InvalidOperationException("Qobuz download requires an ISRC or metadata match.");
-            }
-            resolvedIsrc = metadataTrack.Isrc;
+            return existingDownloadPath;
         }
 
-        if (!string.IsNullOrWhiteSpace(resolvedIsrc)
-            && AudioFilePathHelper.TryFindExistingByIsrc(request.OutputDir, resolvedIsrc, out var existingPath, ".flac"))
-        {
-            return existingPath;
-        }
-
-        var expectedPath = BuildSanitizedOutputPath(request, ".flac");
-        if (TryResolveExpectedExisting(expectedPath, resolvedIsrc ?? string.Empty, out var resolvedPath))
-        {
-            return resolvedPath;
-        }
+        var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
         CleanUnverifiedExpectedOutput(expectedPath);
 
         var resolution = await _trackResolver.ResolveTrackAsync(
@@ -181,37 +163,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             cancellationToken);
         if (resolution == null)
         {
-            var fallbackTrackId = await ResolveFallbackTrackIdAsync(request, resolvedIsrc, cancellationToken);
-            if (!fallbackTrackId.HasValue || fallbackTrackId.Value <= 0)
-            {
-                throw new InvalidOperationException("Qobuz track not found for ISRC or metadata.");
-            }
-
-            var fallbackResolution = await GetDownloadUrlWithRetryAsync(
-                fallbackTrackId.Value,
-                request.Quality,
-                request.AllowQualityFallback,
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(fallbackResolution.Url))
-            {
-                throw new InvalidOperationException("Qobuz download URL not available");
-            }
-            request.Quality = fallbackResolution.SelectedQuality;
-            await NotifySelectedQualityAsync(request, fallbackResolution.SelectedQuality);
-            await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
-            {
-                DownloadUrl = fallbackResolution.Url!,
-                OutputPath = expectedPath,
-                Request = request
-            }, cancellationToken);
-            return expectedPath;
+            return await DownloadByFallbackTrackIdAsync(request, resolvedIsrc, expectedPath, cancellationToken);
         }
 
         var track = resolution.Track;
         var downloadResolution = await GetDownloadUrlWithRetryAsync(track.Id, request.Quality, request.AllowQualityFallback, cancellationToken);
         if (string.IsNullOrWhiteSpace(downloadResolution.Url))
         {
-            throw new InvalidOperationException("Qobuz download URL not available");
+            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
         }
         request.Quality = downloadResolution.SelectedQuality;
         await NotifySelectedQualityAsync(request, downloadResolution.SelectedQuality);
@@ -224,6 +183,82 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Request = request
         }, cancellationToken);
         return outputPath;
+    }
+
+    private async Task<string?> ResolveRequestIsrcAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(request.Isrc))
+        {
+            return request.Isrc;
+        }
+
+        var expectedDurationSec = request.DurationSeconds > 0 ? request.DurationSeconds : 0;
+        var metadataTrack = await SearchByQueryAsync(
+            request.TrackName,
+            request.ArtistName,
+            expectedDurationSec,
+            requireStrongMatch: false,
+            cancellationToken);
+        if (metadataTrack == null)
+        {
+            throw new InvalidOperationException("Qobuz download requires an ISRC or metadata match.");
+        }
+
+        return metadataTrack.Isrc;
+    }
+
+    private static bool TryResolveExistingDownloadPath(QobuzDownloadRequest request, string? resolvedIsrc, out string existingPath)
+    {
+        if (!string.IsNullOrWhiteSpace(resolvedIsrc)
+            && AudioFilePathHelper.TryFindExistingByIsrc(request.OutputDir, resolvedIsrc, out var existingByIsrc, FlacExtension))
+        {
+            existingPath = existingByIsrc;
+            return true;
+        }
+
+        var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
+        if (TryResolveExpectedExisting(expectedPath, resolvedIsrc ?? string.Empty, out var resolvedPath))
+        {
+            existingPath = resolvedPath;
+            return true;
+        }
+
+        existingPath = string.Empty;
+        return false;
+    }
+
+    private async Task<string> DownloadByFallbackTrackIdAsync(
+        QobuzDownloadRequest request,
+        string? resolvedIsrc,
+        string expectedPath,
+        CancellationToken cancellationToken)
+    {
+        var fallbackTrackId = await ResolveFallbackTrackIdAsync(request, resolvedIsrc, cancellationToken);
+        if (!fallbackTrackId.HasValue || fallbackTrackId.Value <= 0)
+        {
+            throw new InvalidOperationException("Qobuz track not found for ISRC or metadata.");
+        }
+
+        var fallbackResolution = await GetDownloadUrlWithRetryAsync(
+            fallbackTrackId.Value,
+            request.Quality,
+            request.AllowQualityFallback,
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(fallbackResolution.Url))
+        {
+            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
+        }
+
+        request.Quality = fallbackResolution.SelectedQuality;
+        await NotifySelectedQualityAsync(request, fallbackResolution.SelectedQuality);
+        await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
+        {
+            DownloadUrl = fallbackResolution.Url!,
+            OutputPath = expectedPath,
+            Request = request
+        }, cancellationToken);
+
+        return expectedPath;
     }
 
     public async Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
@@ -262,7 +297,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             }
         }
 
-        var expectedPath = BuildSanitizedOutputPath(request, ".flac");
+        var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
         if (TryResolveExpectedExisting(expectedPath, string.Empty, out var resolvedPath))
         {
             return resolvedPath;
@@ -272,7 +307,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var downloadResolution = await GetDownloadUrlWithRetryAsync(trackId.Value, request.Quality, request.AllowQualityFallback, cancellationToken);
         if (string.IsNullOrWhiteSpace(downloadResolution.Url))
         {
-            throw new InvalidOperationException("Qobuz download URL not available");
+            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
         }
         request.Quality = downloadResolution.SelectedQuality;
         await NotifySelectedQualityAsync(request, downloadResolution.SelectedQuality);
@@ -306,7 +341,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             cancellationToken);
         if (string.IsNullOrWhiteSpace(resolution.Url))
         {
-            throw new InvalidOperationException("Qobuz download URL not available");
+            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
         }
 
         return new QobuzResolvedStreamUrl(resolution.Url!, resolution.SelectedQuality);
@@ -673,7 +708,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             if (!string.IsNullOrWhiteSpace(resolved))
             {
                 MarkPreferredProvider(completedKey);
-                raceCts.Cancel();
+                await raceCts.CancelAsync();
                 return resolved;
             }
         }
@@ -780,143 +815,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
     }
 
-    private async Task<string?> TryGetJumoStreamUrlAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
-    {
-        var formatId = qualityCode switch
-        {
-            "27" => 27,
-            "7" => 7,
-            _ => 6
-        };
-
-        var url = $"https://jumo-dl.pages.dev/get?track_id={trackId}&format_id={formatId}&region=US";
-        using var response = await SendProviderRequestWithRetryAsync(
-            url,
-            JumoReferrerUri,
-            cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Jumo returned HTTP {(int)response.StatusCode}");
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            throw new InvalidOperationException("Jumo returned an empty response.");
-        }
-
-        if (TryExtractDirectUrlPayload(body, out var directUrl))
-        {
-            return directUrl;
-        }
-
-        if (LooksLikeHtml(body))
-        {
-            throw new InvalidOperationException("Jumo returned HTML instead of a stream payload.");
-        }
-
-        if (!TryExtractJumoUrl(body, out var resolved))
-        {
-            var decoded = DecodeJumoXor(body);
-            if (!TryExtractJumoUrl(decoded, out resolved))
-            {
-                throw new InvalidOperationException("Jumo response did not contain a usable stream URL.");
-            }
-        }
-
-        return resolved;
-    }
-
-    private static bool TryExtractJumoUrl(string body, out string? url)
-    {
-        url = null;
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("url", out var urlProp) && urlProp.ValueKind == JsonValueKind.String)
-            {
-                url = urlProp.GetString();
-                return !string.IsNullOrWhiteSpace(url);
-            }
-
-            if (root.TryGetProperty("data", out var dataProp)
-                && dataProp.ValueKind == JsonValueKind.Object
-                && dataProp.TryGetProperty("url", out var dataUrl)
-                && dataUrl.ValueKind == JsonValueKind.String)
-            {
-                url = dataUrl.GetString();
-                return !string.IsNullOrWhiteSpace(url);
-            }
-
-            if (root.TryGetProperty("link", out var linkProp) && linkProp.ValueKind == JsonValueKind.String)
-            {
-                url = linkProp.GetString();
-                return !string.IsNullOrWhiteSpace(url);
-            }
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-
-        return false;
-    }
-
-    private static string DecodeJumoXor(string input)
-    {
-        var runes = input.ToCharArray();
-        var output = new char[runes.Length];
-        for (var i = 0; i < runes.Length; i++)
-        {
-            var key = (char)((i * 17) % 128);
-            output[i] = (char)(runes[i] ^ 253 ^ key);
-        }
-
-        return new string(output);
-    }
-
-    private async Task<string?> TryGetStreamUrlAsync(string url, CancellationToken cancellationToken)
-    {
-        using var response = await SendProviderRequestWithRetryAsync(url, null, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Provider returned HTTP {(int)response.StatusCode}");
-        }
-
-        var body = await ReadProviderResponseBodyAsync(response, "Provider", cancellationToken);
-        if (TryExtractCommonProviderUrlPayload(body, "Provider", out var directUrl))
-        {
-            return directUrl;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("error", out var errorProp)
-                && errorProp.ValueKind == JsonValueKind.String)
-            {
-                throw new InvalidOperationException(errorProp.GetString() ?? "Provider returned an error.");
-            }
-
-            if (TryExtractProviderUrl(doc.RootElement, out var providerUrl))
-            {
-                return providerUrl;
-            }
-        }
-        catch (JsonException)
-        {
-            throw new InvalidOperationException("Provider response was not valid JSON.");
-        }
-
-        var payload = JsonSerializer.Deserialize<QobuzStreamResponse>(body, SerializerOptions);
-        if (!string.IsNullOrWhiteSpace(payload?.Url))
-        {
-            return payload.Url;
-        }
-
-        throw new InvalidOperationException("Provider response did not contain a usable stream URL.");
-    }
 
     private async Task<HttpResponseMessage> SendProviderRequestWithRetryAsync(
         string url,
@@ -983,7 +881,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     {
         using var providerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         providerCts.CancelAfter(ProviderRequestTimeout);
-        if (!request.Headers.UserAgent.Any())
+        if (request.Headers.UserAgent.Count == 0)
         {
             request.Headers.TryAddWithoutValidation("User-Agent", BrowserUserAgent);
         }
@@ -1074,7 +972,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var apiBase = string.IsNullOrWhiteSpace(_qobuzConfig.ApiBase)
             ? "https://www.qobuz.com/api.json/0.2/"
             : _qobuzConfig.ApiBase.Trim();
-        if (!apiBase.EndsWith("/", StringComparison.Ordinal))
+        if (!apiBase.EndsWith('/'))
         {
             apiBase += "/";
         }
@@ -1143,7 +1041,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         string? resolvedIsrc,
         CancellationToken cancellationToken)
     {
-        var fromProxy = await TryResolveTrackIdViaResolveProxyAsync(request, resolvedIsrc, cancellationToken);
+        var fromProxy = await TryResolveTrackIdViaResolveProxyAsync(request, cancellationToken);
         if (fromProxy.HasValue && fromProxy.Value > 0)
         {
             return fromProxy;
@@ -1154,7 +1052,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private async Task<long?> TryResolveTrackIdViaResolveProxyAsync(
         QobuzDownloadRequest request,
-        string? resolvedIsrc,
         CancellationToken cancellationToken)
     {
         if (_resolveProxyClient == null)
@@ -1207,7 +1104,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             ? BrowserUserAgent
             : _qobuzConfig.SquidUserAgent.Trim();
         request.Headers.TryAddWithoutValidation("User-Agent", squidUserAgent);
-        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("Accept", ApplicationJsonContentType);
 
         var clearance = _qobuzConfig.SquidCfClearance?.Trim();
         if (!string.IsNullOrWhiteSpace(clearance))
@@ -1231,74 +1128,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
     private sealed record ProviderCandidate(string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
-
-    private async Task<string?> TryGetMonochromeQobuzStreamUrlByIsrcAsync(
-        string isrc,
-        string qualityCode,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(isrc))
-        {
-            return null;
-        }
-
-        var normalizedQuality = NormalizeQobuzQualityCode(qualityCode);
-        foreach (var providerBase in MonochromeQobuzProviderBases.OrderBy(_ => Random.Shared.Next()))
-        {
-            var normalizedBase = providerBase.TrimEnd('/');
-            var providerName = $"monochrome-qobuz:{new Uri(normalizedBase).Host}";
-            if (IsProviderCoolingDown(providerName))
-            {
-                continue;
-            }
-
-            try
-            {
-                var trackId = await TryGetMonochromeQobuzTrackIdByIsrcAsync(normalizedBase, isrc, cancellationToken);
-                if (trackId == null || trackId <= 0)
-                {
-                    continue;
-                }
-
-                return await TryGetMonochromeQobuzStreamUrlByTrackIdAsync(
-                    normalizedBase,
-                    trackId.Value,
-                    normalizedQuality,
-                    cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (ShouldApplyProviderCooldown(ex))
-                {
-                    MarkProviderCoolingDown(providerName);
-                }
-
-                _logger.LogWarning(ex, "Monochrome Qobuz provider {Provider} failed for ISRC {Isrc}", providerName, isrc);
-            }
-        }
-
-        return null;
-    }
-
-    private async Task<long?> TryGetMonochromeQobuzTrackIdByIsrcAsync(
-        string providerBase,
-        string isrc,
-        CancellationToken cancellationToken)
-    {
-        var url = $"{providerBase}/api/get-music?q={Uri.EscapeDataString(isrc)}&offset=0";
-        using var response = await SendProviderRequestWithRetryAsync(url, null, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Monochrome Qobuz search returned HTTP {(int)response.StatusCode}");
-        }
-
-        var body = await ReadProviderResponseBodyAsync(response, "Monochrome Qobuz search", cancellationToken);
-        return TryExtractMonochromeQobuzTrackId(body, isrc, out var trackId) ? trackId : null;
-    }
 
     private async Task<string?> TryGetMonochromeQobuzStreamUrlByTrackIdAsync(
         string providerBase,
@@ -1341,123 +1170,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         throw new InvalidOperationException("Monochrome Qobuz download response did not contain a usable stream URL.");
     }
 
-    private static bool TryExtractMonochromeQobuzTrackId(string body, string isrc, out long trackId)
-    {
-        trackId = 0;
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            var tracks = TryGetNestedProperty(doc.RootElement, ["data", "tracks", "items"], out var nestedTracks)
-                ? nestedTracks
-                : FindProperty(doc.RootElement, "items");
-            if (tracks.ValueKind != JsonValueKind.Array)
-            {
-                return false;
-            }
-
-            JsonElement? fallback = null;
-            foreach (var track in tracks.EnumerateArray())
-            {
-                if (fallback == null)
-                {
-                    fallback = track;
-                }
-
-                var candidateIsrc = TryReadStringProperty(track, "isrc");
-                if (string.Equals(candidateIsrc, isrc, StringComparison.OrdinalIgnoreCase)
-                    && TryReadLongProperty(track, "id", out trackId))
-                {
-                    return trackId > 0;
-                }
-            }
-
-            return fallback.HasValue
-                && TryReadLongProperty(fallback.Value, "id", out trackId)
-                && trackId > 0;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    private static bool TryGetNestedProperty(
-        JsonElement element,
-        IReadOnlyList<string> path,
-        out JsonElement value)
-    {
-        value = element;
-        foreach (var propertyName in path)
-        {
-            if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(propertyName, out value))
-            {
-                value = default;
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static JsonElement FindProperty(JsonElement element, string propertyName)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            if (element.TryGetProperty(propertyName, out var property))
-            {
-                return property;
-            }
-
-            foreach (var child in element.EnumerateObject())
-            {
-                var found = FindProperty(child.Value, propertyName);
-                if (found.ValueKind != JsonValueKind.Undefined)
-                {
-                    return found;
-                }
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var child in element.EnumerateArray())
-            {
-                var found = FindProperty(child, propertyName);
-                if (found.ValueKind != JsonValueKind.Undefined)
-                {
-                    return found;
-                }
-            }
-        }
-
-        return default;
-    }
-
-    private static string TryReadStringProperty(JsonElement element, string propertyName)
-    {
-        return element.ValueKind == JsonValueKind.Object
-            && element.TryGetProperty(propertyName, out var property)
-            && property.ValueKind == JsonValueKind.String
-            ? property.GetString() ?? string.Empty
-            : string.Empty;
-    }
-
-    private static bool TryReadLongProperty(JsonElement element, string propertyName, out long value)
-    {
-        value = 0;
-        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var property))
-        {
-            return false;
-        }
-
-        if (property.ValueKind == JsonValueKind.Number)
-        {
-            return property.TryGetInt64(out value);
-        }
-
-        return property.ValueKind == JsonValueKind.String
-            && long.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
-    }
-
     private async Task<string?> TryGetMusicDlStreamUrlAsync(
         string endpoint,
         long trackId,
@@ -1479,10 +1191,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                     Content = new StringContent(
                         JsonSerializer.Serialize(payload, SerializerOptions),
                         Encoding.UTF8,
-                        "application/json")
+                        ApplicationJsonContentType)
                 };
                 request.Headers.TryAddWithoutValidation("User-Agent", MusicDlUserAgent);
-                request.Headers.TryAddWithoutValidation("Accept", "application/json");
+                request.Headers.TryAddWithoutValidation("Accept", ApplicationJsonContentType);
                 return request;
             },
             cancellationToken);
@@ -2180,9 +1892,4 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         public QobuzArtist? Artist { get; set; }
     }
 
-    private sealed class QobuzStreamResponse
-    {
-        [JsonPropertyName("url")]
-        public string? Url { get; set; }
-    }
 }

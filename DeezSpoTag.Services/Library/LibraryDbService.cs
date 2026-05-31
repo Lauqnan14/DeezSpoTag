@@ -21,7 +21,6 @@ public sealed class LibraryDbService
     private const string PlaylistWatchPreferencesTable = "playlist_watch_preferences";
     private const string PlaylistWatchTrackTable = "playlist_watch_track";
     private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
-    private const string WatchlistSchedulerStateTable = "watchlist_scheduler_state";
     private const string WatchlistSourceCircuitStateTable = "watchlist_source_circuit_state";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";

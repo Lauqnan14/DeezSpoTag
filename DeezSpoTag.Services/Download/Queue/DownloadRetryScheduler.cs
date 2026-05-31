@@ -30,7 +30,6 @@ public sealed class DownloadRetryScheduler
         IDeezSpoTagListener listener,
         ILogger<DownloadRetryScheduler> logger,
         DownloadCancellationRegistry cancellationRegistry,
-        Func<bool>? isAutoTagRunning = null,
         Action? onRetryQueued = null)
     {
         _queueRepository = queueRepository;
@@ -40,7 +39,6 @@ public sealed class DownloadRetryScheduler
         _logger = logger;
         _cancellationRegistry = cancellationRegistry;
         _onRetryQueued = onRetryQueued;
-        _ = isAutoTagRunning;
     }
 
     public bool HasPendingRetries => !_pendingRetries.IsEmpty;

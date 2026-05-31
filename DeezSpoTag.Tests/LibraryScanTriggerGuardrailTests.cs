@@ -67,7 +67,7 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void DownloadOrchestration_DoesNotTriggerRecentDownloadEnhancementFromCompletedDownloads()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
-        var pipelineStart = source.IndexOf("private async Task RunPipelineAsync", StringComparison.Ordinal);
+        var pipelineStart = source.IndexOf("private async Task<bool> RunPipelineAsync", StringComparison.Ordinal);
         Assert.True(pipelineStart >= 0);
         var pipelineEnd = source.IndexOf("private async Task<bool> ResumePausedEnhancementAsync", pipelineStart, StringComparison.Ordinal);
         Assert.True(pipelineEnd > pipelineStart);

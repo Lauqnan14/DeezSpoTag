@@ -236,7 +236,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("SyncPlaylistArtworkOnlyAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkOnlyAsync", controllerSource, StringComparison.Ordinal);
         Assert.Contains("ResolveStoredVisualForArtworkSync", syncSource, StringComparison.Ordinal);
-        Assert.Contains("_playlistVisualService.IsManagedVisualUrl(managedImageUrl)", syncSource, StringComparison.Ordinal);
+        Assert.Contains("PlaylistVisualService.IsManagedVisualUrl(managedImageUrl)", syncSource, StringComparison.Ordinal);
         Assert.Contains("ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl)", visualSource, StringComparison.Ordinal);
         Assert.Contains("return remoteUrl;", visualSource, StringComparison.Ordinal);
         Assert.Contains("ResolveActiveFileName", visualSource, StringComparison.Ordinal);

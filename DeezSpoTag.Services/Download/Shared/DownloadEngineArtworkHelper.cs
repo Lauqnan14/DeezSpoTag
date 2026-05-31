@@ -117,11 +117,12 @@ public static class DownloadEngineArtworkHelper
                     coverUrl = await ArtworkFallbackHelper.TryResolveSpotifyCoverAsync(
                         request.SpotifyIdResolver,
                         request.SpotifyArtworkResolver,
-                        request.Title,
-                        request.Artist,
-                        request.Album,
-                        request.Isrc,
-                        rejectCompilationAlbumCandidate,
+                        new ArtworkFallbackHelper.SpotifyCoverLookupRequest(
+                            request.Title,
+                            request.Artist,
+                            request.Album,
+                            request.Isrc,
+                            rejectCompilationAlbumCandidate),
                         cancellationToken);
                     break;
             }

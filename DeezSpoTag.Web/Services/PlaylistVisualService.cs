@@ -160,7 +160,7 @@ public sealed class PlaylistVisualService
             .ToList();
     }
 
-    public bool IsManagedVisualUrl(string? value)
+    public static bool IsManagedVisualUrl(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {

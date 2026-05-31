@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Services;
 
 public partial class AutoTagService
 {
+    private const string EnabledField = "enabled";
     private readonly record struct EnhancementWorkflowOutcome(string Status, string Message)
     {
         public static EnhancementWorkflowOutcome Completed(string message) => new(AutoTagLiterals.CompletedStatus, message);
@@ -201,7 +202,7 @@ public partial class AutoTagService
     private static bool IsFolderUniformityWorkflowEnabled(JsonObject enhancementRoot)
     {
         return enhancementRoot["folderUniformity"] is JsonObject config
-            && ReadBool(config, "enabled") == true
+            && ReadBool(config, EnabledField) == true
             && (ReadBool(config, "enforceFolderStructure") != false || ReadBool(config, "runDedupe") != false);
     }
 
@@ -347,7 +348,7 @@ public partial class AutoTagService
         CancellationToken cancellationToken)
     {
         if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance
-            || ReadBool(coverMaintenance, "enabled") != true)
+            || ReadBool(coverMaintenance, EnabledField) != true)
         {
             return EnhancementWorkflowOutcome.Skipped("cover maintenance is not configured.");
         }
@@ -402,7 +403,7 @@ public partial class AutoTagService
         CancellationToken cancellationToken)
     {
         if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
-            || ReadBool(qualityChecks, "enabled") != true)
+            || ReadBool(qualityChecks, EnabledField) != true)
         {
             return EnhancementWorkflowOutcome.Skipped("quality checks are not configured.");
         }
@@ -461,7 +462,7 @@ public partial class AutoTagService
     private static bool IsCoverMaintenanceWorkflowEnabled(JsonObject enhancementRoot)
     {
         if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance
-            || ReadBool(coverMaintenance, "enabled") != true)
+            || ReadBool(coverMaintenance, EnabledField) != true)
         {
             return false;
         }
@@ -474,7 +475,7 @@ public partial class AutoTagService
     private static bool IsQualityChecksWorkflowEnabled(JsonObject enhancementRoot)
     {
         if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
-            || ReadBool(qualityChecks, "enabled") != true)
+            || ReadBool(qualityChecks, EnabledField) != true)
         {
             return false;
         }

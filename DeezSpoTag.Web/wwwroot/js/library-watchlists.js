@@ -1042,6 +1042,7 @@ async function openSharedPlaylistArtworkPickerViaShared(source, sourceId, playli
     return picker(source, sourceId, playlistName, options);
 }
 
+// NOSONAR - preserves end-to-end watchlist rendering/binding flow in one place to avoid UI wiring regressions.
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
     if (!container) return;
@@ -1080,9 +1081,7 @@ async function loadPlaylistWatchlist() {
             ? String(runtime.scheduler.activeSourceId).trim()
             : '';
         const zeroQueueStreak = Number(runtime?.scheduler?.zeroQueueStreak || 0);
-        const openCircuits = Array.isArray(runtime?.circuits)
-            ? runtime.circuits.filter(circuit => circuit && circuit.isOpen)
-            : [];
+        const openCircuits = runtime?.circuits?.filter(circuit => circuit?.isOpen) ?? [];
         const circuitBySource = new Map(
             openCircuits
                 .map(circuit => [String(circuit.source || '').trim().toLowerCase(), circuit])
@@ -1136,7 +1135,7 @@ async function loadPlaylistWatchlist() {
             if (isActive) {
                 statusParts.push('active');
             }
-            if (circuit && circuit.isOpen) {
+            if (circuit?.isOpen) {
                 statusParts.push('source circuit open');
             }
             if (consecutiveFailures > 0) {
@@ -1146,7 +1145,7 @@ async function loadPlaylistWatchlist() {
                 statusParts.push(`next ${nextAttempt}`);
             }
             const statusMeta = statusParts.join(' • ');
-            const circuitMeta = circuit && circuit.isOpen
+            const circuitMeta = circuit?.isOpen
                 ? [circuit.reason, circuit.openUntilUtc ? `until ${formatRelativeTime(circuit.openUntilUtc)}` : null]
                     .filter(Boolean)
                     .join(' • ')

@@ -85,12 +85,15 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 HttpClientFactory = new StubHttpClientFactory(),
                 TidalAccessTokenProvider = new StubTidalAccessTokenProvider()
             },
+            new PlaylistWatchService.PlaylistWatchRuntimeServices
+            {
+                PlaylistSyncService = null!,
+                PlaylistVisualService = null!,
+                WatchlistRunQueueBudgetService = null,
+                ActivitiesRealtimeService = null!
+            },
             _settingsService,
             serviceProvider: null!,
-            playlistSyncService: null!,
-            playlistVisualService: null!,
-            watchlistRunQueueBudget: null,
-            activitiesRealtime: null!,
             logger: NullLogger<PlaylistWatchService>.Instance);
 
         var artistWatchService = new ArtistWatchService(
@@ -340,7 +343,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         var ok = Assert.IsType<OkObjectResult>(result);
         var queued = ok.Value?.GetType().GetProperty("queued")?.GetValue(ok.Value);
         var pending = ok.Value?.GetType().GetProperty("pending")?.GetValue(ok.Value);
-        Assert.Equal(false, queued);
+        var queuedFlag = Assert.IsType<bool>(queued);
+        Assert.False(queuedFlag);
         Assert.Equal(1, pending);
 
         var state = await _repository.GetPlaylistWatchStateAsync("spotify", "pl-trigger-scheduled", CancellationToken.None);

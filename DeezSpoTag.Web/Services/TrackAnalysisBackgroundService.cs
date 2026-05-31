@@ -253,9 +253,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         var includeCompletedStandard = IsEnhancedAnalysisAvailableForRetry();
         var tracks = await _repository.GetTracksForAnalysisAsync(
             batchSize,
-            cancellationToken,
-            includeCompletedStandard,
-            includeCompletedStandard ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay) : null);
+            includeCompletedStandard: includeCompletedStandard,
+            completedStandardRetryBeforeUtc: includeCompletedStandard ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay) : null,
+            cancellationToken: cancellationToken);
         if (tracks.Count == 0)
         {
             return 0;
@@ -837,7 +837,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
 
         var moodTags = NormalizeMoodTags(analysisOutput?.MoodTags);
-        if (moodTags.Count == 0)
+        if (moodTags.Length == 0)
         {
             moodTags = BuildMoodTags(moodScores);
         }
@@ -950,7 +950,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             null);
     }
 
-    private static IReadOnlyList<string> BuildMoodTags(MoodScores? moodScores)
+    private static string[] BuildMoodTags(MoodScores? moodScores)
     {
         if (moodScores is null)
         {
@@ -965,10 +965,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         AddMoodTag(tags, "party", moodScores.Party);
         AddMoodTag(tags, "acoustic", moodScores.Acoustic);
         AddMoodTag(tags, "electronic", moodScores.Electronic);
-        return tags;
+        return tags.ToArray();
     }
 
-    private static IReadOnlyList<string> NormalizeMoodTags(IReadOnlyList<string>? moodTags)
+    private static string[] NormalizeMoodTags(IReadOnlyList<string>? moodTags)
     {
         if (moodTags is null || moodTags.Count == 0)
         {

@@ -1396,8 +1396,10 @@ function buildSearchTabPreferenceKeys() {
     }
 
     // Search page route is stable; include canonical fallback in case current path differs.
-    keys.push(`${SEARCH_TAB_STORAGE_PREFIX}/Search:${SEARCH_TABLIST_ID}`);
-    keys.push(`${SEARCH_TAB_STORAGE_PREFIX}/search:${SEARCH_TABLIST_ID}`);
+    keys.push(
+        `${SEARCH_TAB_STORAGE_PREFIX}/Search:${SEARCH_TABLIST_ID}`,
+        `${SEARCH_TAB_STORAGE_PREFIX}/search:${SEARCH_TABLIST_ID}`
+    );
     return Array.from(new Set(keys));
 }
 

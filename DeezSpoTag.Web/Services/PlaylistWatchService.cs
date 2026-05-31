@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using DeezSpoTag.Core.Security;
@@ -19,6 +20,7 @@ using GwTrack = DeezSpoTag.Core.Models.Deezer.GwTrack;
 
 namespace DeezSpoTag.Web.Services;
 
+[SuppressMessage("Major Code Smell", "S1192", Justification = "Watch state/status literals are shared with persisted runtime values and external diagnostics.")]
 public sealed class PlaylistWatchService
 {
     private const int MaxMetadataMatchCandidatesPerRun = 20;
@@ -64,6 +66,8 @@ public sealed class PlaylistWatchService
     private const string TidalSource = "tidal";
     private const string PlaylistWatchType = "playlist";
     private const string QueuedStatus = "queued";
+    private const string CompletedStatus = "completed";
+    private const string FailedStatus = "failed";
     private const string ArtistWatchOrigin = "artist";
     private const string PlaylistWatchOrigin = "playlist";
     private const string AlbumField = "album";
@@ -136,15 +140,20 @@ public sealed class PlaylistWatchService
         public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
     }
 
+    public sealed class PlaylistWatchRuntimeServices
+    {
+        public required PlaylistSyncService PlaylistSyncService { get; init; }
+        public required PlaylistVisualService PlaylistVisualService { get; init; }
+        public required WatchlistRunQueueBudgetService? WatchlistRunQueueBudgetService { get; init; }
+        public required ActivitiesRealtimeService ActivitiesRealtimeService { get; init; }
+    }
+
     public PlaylistWatchService(
         LibraryRepository libraryRepository,
         PlaylistWatchPlatformServices platformServices,
+        PlaylistWatchRuntimeServices runtimeServices,
         DeezSpoTagSettingsService settingsService,
         IServiceProvider serviceProvider,
-        PlaylistSyncService playlistSyncService,
-        PlaylistVisualService playlistVisualService,
-        WatchlistRunQueueBudgetService? watchlistRunQueueBudget,
-        ActivitiesRealtimeService activitiesRealtime,
         ILogger<PlaylistWatchService> logger)
     {
         _libraryRepository = libraryRepository;
@@ -160,10 +169,10 @@ public sealed class PlaylistWatchService
         _tidalAccessTokenProvider = platformServices.TidalAccessTokenProvider;
         _settingsService = settingsService;
         _serviceProvider = serviceProvider;
-        _playlistSyncService = playlistSyncService;
-        _playlistVisualService = playlistVisualService;
-        _watchlistRunQueueBudget = watchlistRunQueueBudget ?? new WatchlistRunQueueBudgetService();
-        _activitiesRealtime = activitiesRealtime;
+        _playlistSyncService = runtimeServices.PlaylistSyncService;
+        _playlistVisualService = runtimeServices.PlaylistVisualService;
+        _watchlistRunQueueBudget = runtimeServices.WatchlistRunQueueBudgetService ?? new WatchlistRunQueueBudgetService();
+        _activitiesRealtime = runtimeServices.ActivitiesRealtimeService;
         _logger = logger;
     }
 
@@ -226,6 +235,7 @@ public sealed class PlaylistWatchService
         string? FailureFingerprint = null,
         string? FailureMessage = null);
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
@@ -594,10 +604,7 @@ public sealed class PlaylistWatchService
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken)
     {
-        if (playlist == null)
-        {
-            throw new ArgumentNullException(nameof(playlist));
-        }
+        ArgumentNullException.ThrowIfNull(playlist);
 
         var source = NormalizeWatchSource(playlist.Source);
         var sourceId = (playlist.SourceId ?? string.Empty).Trim();
@@ -872,7 +879,7 @@ public sealed class PlaylistWatchService
 
         if (queueResult.FailedCount > 0)
         {
-            return "failed";
+            return FailedStatus;
         }
 
         if (queueResult.QueuedCount > 0)
@@ -880,7 +887,7 @@ public sealed class PlaylistWatchService
             return QueuedStatus;
         }
 
-        return "completed";
+        return CompletedStatus;
     }
 
     private static string ResolvePlaylistRunStatus(QueueWatchResult queueResult, bool success)
@@ -890,9 +897,10 @@ public sealed class PlaylistWatchService
             return "pending";
         }
 
-        return success ? "completed" : "failed";
+        return success ? CompletedStatus : FailedStatus;
     }
 
+    [SuppressMessage("Major Code Smell", "S107", Justification = "State touch requires explicit persisted fields to avoid accidental partial updates.")]
     private async Task TouchPlaylistWatchStateAsync(
         string source,
         string sourceId,
@@ -1067,7 +1075,7 @@ public sealed class PlaylistWatchService
             CanClearImageUrl: true);
     }
 
-    private async Task<LivePlaylistSnapshotMetadata> GetSmartTracklistSnapshotHeadAsync(
+    private static Task<LivePlaylistSnapshotMetadata> GetSmartTracklistSnapshotHeadAsync(
         string sourceId,
         CancellationToken cancellationToken)
     {
@@ -1075,7 +1083,7 @@ public sealed class PlaylistWatchService
         _ = cancellationToken;
         // Strict correctness: no trustworthy native snapshot token exposed.
         // Force candidate expansion path every run for this provider.
-        return new LivePlaylistSnapshotMetadata();
+        return Task.FromResult(new LivePlaylistSnapshotMetadata());
     }
 
     private async Task<LivePlaylistSnapshotMetadata> GetAppleSnapshotHeadAsync(
@@ -1239,6 +1247,7 @@ public sealed class PlaylistWatchService
                || string.Equals(source, BoomplaySource, StringComparison.OrdinalIgnoreCase);
     }
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Pagination and partial-failure handling are intentionally explicit for deterministic snapshot behavior.")]
     private async Task<LivePlaylistSnapshot> GetSpotifyPlaylistSnapshotAsync(
         string sourceId,
         int maxCandidates,
@@ -1275,11 +1284,12 @@ public sealed class PlaylistWatchService
                     pageSize,
                     cancellationToken);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
                 if (_logger.IsEnabled(LogLevel.Warning))
                 {
                     _logger.LogWarning(
+                        ex,
                         "Spotify playlist page fetch timed out for playlist {PlaylistId} at offset {Offset}; returning partial snapshot.",
                         safeSourceId,
                         offset);
@@ -1922,7 +1932,7 @@ public sealed class PlaylistWatchService
                     sourceId,
                     playlist.TrackCount ?? 0,
                     playlist.SnapshotId,
-                    "failed",
+                    FailedStatus,
                     ex.Message,
                     nextAttemptUtc: null,
                     consecutiveFailures: null,
@@ -2841,6 +2851,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         };
     }
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Queue orchestration keeps guardrails and accounting in one flow to preserve strict enqueue semantics.")]
     private async Task<QueueWatchResult> QueueWatchIntentTracksAsync(
         IReadOnlyCollection<WatchIntentTrack> tracks,
         long? destinationFolderId,
@@ -2949,7 +2960,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     options.WatchlistSource,
                     options.WatchlistPlaylistId,
                     track.TrackId,
-                    "failed",
+                    FailedStatus,
                     cancellationToken);
                 failedCount++;
                 if (string.IsNullOrWhiteSpace(firstFailureMessage))
@@ -3224,7 +3235,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             context.Options.WatchlistSource,
             context.Options.WatchlistPlaylistId,
             track.TrackId,
-            "failed",
+            FailedStatus,
             cancellationToken);
         return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: true);
     }

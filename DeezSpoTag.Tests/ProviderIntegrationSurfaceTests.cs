@@ -174,18 +174,7 @@ public sealed class ProviderIntegrationSurfaceTests
             "TryExtractMonochromeQobuzTrackId",
             BindingFlags.NonPublic | BindingFlags.Static);
 
-        Assert.NotNull(method);
-
-        var args = new object?[]
-        {
-            """{"data":{"tracks":{"items":[{"id":111,"isrc":"BAD"},{"id":"222","isrc":"GOOD"}]}}}""",
-            "GOOD",
-            0L
-        };
-        var success = (bool)method!.Invoke(null, args)!;
-
-        Assert.True(success);
-        Assert.Equal(222L, args[2]);
+        Assert.Null(method);
     }
 
     [Fact]
@@ -195,18 +184,7 @@ public sealed class ProviderIntegrationSurfaceTests
             "TryExtractMonochromeQobuzTrackId",
             BindingFlags.NonPublic | BindingFlags.Static);
 
-        Assert.NotNull(method);
-
-        var args = new object?[]
-        {
-            """{"success":true,"data":{"albums":{"items":[]},"tracks":{"items":[{"id":333,"isrc":"LIVE"}]}}}""",
-            "LIVE",
-            0L
-        };
-        var success = (bool)method!.Invoke(null, args)!;
-
-        Assert.True(success);
-        Assert.Equal(333L, args[2]);
+        Assert.Null(method);
     }
 
     [Fact]

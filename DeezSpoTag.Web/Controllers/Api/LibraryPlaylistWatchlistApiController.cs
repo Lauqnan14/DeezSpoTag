@@ -836,28 +836,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, sourceId, cancellationToken);
-        var candidates = new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(cache?.CandidatesJson))
-        {
-            try
-            {
-                var cached = JsonSerializer.Deserialize<List<PlaylistWatchService.PlaylistTrackCandidate>>(cache.CandidatesJson);
-                if (cached is { Count: > 0 })
-                {
-                    foreach (var candidate in cached)
-                    {
-                        if (!string.IsNullOrWhiteSpace(candidate.TrackSourceId))
-                        {
-                            candidates[candidate.TrackSourceId] = candidate;
-                        }
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                // Ignore malformed cache and return id-only rows.
-            }
-        }
+        var candidates = TryBuildCachedCandidateLookup(cache?.CandidatesJson);
 
         var rows = ignored.Select(trackSourceId =>
         {
@@ -872,6 +851,31 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             };
         }).ToList();
         return Ok(rows);
+    }
+
+    private static Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate> TryBuildCachedCandidateLookup(string? candidatesJson)
+    {
+        if (string.IsNullOrWhiteSpace(candidatesJson))
+        {
+            return new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            var cached = JsonSerializer.Deserialize<List<PlaylistWatchService.PlaylistTrackCandidate>>(candidatesJson);
+            if (cached is not { Count: > 0 })
+            {
+                return new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            return cached
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.TrackSourceId))
+                .ToDictionary(candidate => candidate.TrackSourceId, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     [HttpPost("{source}/{sourceId}/ignore")]

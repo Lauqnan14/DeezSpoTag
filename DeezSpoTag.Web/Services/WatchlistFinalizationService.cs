@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
@@ -311,13 +312,12 @@ public sealed class WatchlistFinalizationService
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
-            foreach (var property in element.EnumerateObject())
+            var property = element.EnumerateObject()
+                .FirstOrDefault(entry => string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (property.Value.ValueKind != JsonValueKind.Undefined)
             {
-                if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
-                {
-                    value = property.Value;
-                    return true;
-                }
+                value = property.Value;
+                return true;
             }
         }
 

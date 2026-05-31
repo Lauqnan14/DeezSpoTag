@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -2501,7 +2502,7 @@ public partial class AutoTagService
         return await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
     }
 
-    private bool ShouldRunGenericOrganizer(AutoTagJob job, string configPath)
+    private static bool ShouldRunGenericOrganizer(AutoTagJob job, string configPath)
     {
         _ = job;
         _ = configPath;
@@ -2546,6 +2547,7 @@ public partial class AutoTagService
         NotifyCompleted(job);
     }
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Stage planning intentionally evaluates enrichment and enhancement branches explicitly for deterministic run semantics.")]
     private async Task<List<AutoTagStageConfig>> BuildStageConfigsAsync(AutoTagJob job, string configPath)
     {
         var root = LoadConfigRoot(configPath);

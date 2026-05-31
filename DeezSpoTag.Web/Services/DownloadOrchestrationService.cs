@@ -6,6 +6,7 @@ using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Plex;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -545,10 +546,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             await _wakeSignal.WaitAsync(_watchdogInterval, cancellationToken);
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
         finally
         {
             Interlocked.Exchange(ref _wakeSignalPending, 0);
@@ -587,31 +584,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
+    [SuppressMessage("Major Code Smell", "S3776", Justification = "Orchestration tick coordinates retries, enrichment gates, and enhancement scheduling in a single state-machine pass.")]
     private async Task TickAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         var activeDownloadCount = await _queueRepository.GetActiveDownloadCountAsync(cancellationToken);
         _lastKnownActiveDownloadCount = activeDownloadCount;
         var hasActiveDownloads = activeDownloadCount > 0;
-        if (hasActiveDownloads)
-        {
-            _wasQueueActive = true;
-            _queueIdleSince = null;
-            SetPhase(OrchestrationPhase.Downloading);
-        }
-        else
-        {
-            var queueBecameIdle = _wasQueueActive;
-            _wasQueueActive = false;
-            if (queueBecameIdle)
-            {
-                _queueIdleSince = now;
-            }
-            else
-            {
-                _queueIdleSince ??= now;
-            }
-        }
+        UpdateQueueActivityState(now, hasActiveDownloads);
 
         var hasPendingPostDownloadEnrichment = await HasPendingPostDownloadEnrichmentAsync(cancellationToken);
         if (hasPendingPostDownloadEnrichment)
@@ -619,85 +599,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _pipelineRequested = true;
         }
 
-        if (_retryScheduler.HasPendingRetries && !hasActiveDownloads)
+        if (await TryRunRetrySweepAsync(hasActiveDownloads, cancellationToken))
         {
-            _queueIdleSince = null;
-            SetPhase(OrchestrationPhase.RetrySweep);
-
-            if (!await _pipelineLock.WaitAsync(0, cancellationToken))
-            {
-                return;
-            }
-
-            try
-            {
-                var requeued = await _retryScheduler.RunRetrySweepAsync(cancellationToken);
-                if (requeued)
-                {
-                    _queueIdleSince = null;
-                    SetPhase(OrchestrationPhase.Downloading);
-                    return;
-                }
-
-                _queueIdleSince = DateTimeOffset.UtcNow;
-            }
-            finally
-            {
-                _pipelineLock.Release();
-            }
+            return;
         }
 
-        if (_pipelineRequested)
+        if (await TryRunEnrichmentPipelineAsync(now, hasActiveDownloads, hasPendingPostDownloadEnrichment, cancellationToken))
         {
-            if (hasActiveDownloads)
-            {
-                return;
-            }
-
-            var idleSince = _queueIdleSince ?? now;
-            var idleDuration = DateTimeOffset.UtcNow - idleSince;
-            if (idleDuration < _downloadIdleDelay)
-            {
-                SetPhase(OrchestrationPhase.EnrichmentCountdown, idleSince + _downloadIdleDelay);
-                return;
-            }
-
-            if (_autoTagService.HasRunningJobs())
-            {
-                if (hasPendingPostDownloadEnrichment)
-                {
-                    _ = await TryPauseEnhancementForPendingPipelineAsync(cancellationToken);
-                }
-                return;
-            }
-
-            if (!await _pipelineLock.WaitAsync(0, cancellationToken))
-            {
-                return;
-            }
-
-            try
-            {
-                SetPhase(OrchestrationPhase.Enriching);
-                var enrichmentCompleted = await RunPipelineAsync(cancellationToken);
-                if (enrichmentCompleted)
-                {
-                    var finishedAt = DateTimeOffset.UtcNow;
-                    _lastEnrichmentFinishedUtc = finishedAt;
-                    if (_enhancementInterruptedByEnrichment)
-                    {
-                        _enhancementResumeNotBeforeUtc = finishedAt.AddHours(1);
-                        _enhancementResumeAwaitingPipelineCompletion = true;
-                    }
-
-                    SaveOrchestrationRuntimeState();
-                }
-                SetPhase(OrchestrationPhase.Idle);
-            }
-            finally
-            {
-                _pipelineLock.Release();
-            }
+            return;
         }
 
         if (_enhancementStageRunning || _autoTagService.TryGetRunningEnhancementJobId(out _))
@@ -731,6 +640,130 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             _pipelineLock.Release();
         }
+    }
+
+    private void UpdateQueueActivityState(DateTimeOffset now, bool hasActiveDownloads)
+    {
+        if (hasActiveDownloads)
+        {
+            _wasQueueActive = true;
+            _queueIdleSince = null;
+            SetPhase(OrchestrationPhase.Downloading);
+            return;
+        }
+
+        var queueBecameIdle = _wasQueueActive;
+        _wasQueueActive = false;
+        if (queueBecameIdle)
+        {
+            _queueIdleSince = now;
+            return;
+        }
+
+        _queueIdleSince ??= now;
+    }
+
+    private async Task<bool> TryRunRetrySweepAsync(bool hasActiveDownloads, CancellationToken cancellationToken)
+    {
+        if (!_retryScheduler.HasPendingRetries || hasActiveDownloads)
+        {
+            return false;
+        }
+
+        _queueIdleSince = null;
+        SetPhase(OrchestrationPhase.RetrySweep);
+        if (!await _pipelineLock.WaitAsync(0, cancellationToken))
+        {
+            return true;
+        }
+
+        try
+        {
+            var requeued = await _retryScheduler.RunRetrySweepAsync(cancellationToken);
+            if (requeued)
+            {
+                _queueIdleSince = null;
+                SetPhase(OrchestrationPhase.Downloading);
+                return true;
+            }
+
+            _queueIdleSince = DateTimeOffset.UtcNow;
+            return false;
+        }
+        finally
+        {
+            _pipelineLock.Release();
+        }
+    }
+
+    private async Task<bool> TryRunEnrichmentPipelineAsync(
+        DateTimeOffset now,
+        bool hasActiveDownloads,
+        bool hasPendingPostDownloadEnrichment,
+        CancellationToken cancellationToken)
+    {
+        if (!_pipelineRequested)
+        {
+            return false;
+        }
+
+        if (hasActiveDownloads)
+        {
+            return true;
+        }
+
+        var idleSince = _queueIdleSince ?? now;
+        if ((DateTimeOffset.UtcNow - idleSince) < _downloadIdleDelay)
+        {
+            SetPhase(OrchestrationPhase.EnrichmentCountdown, idleSince + _downloadIdleDelay);
+            return true;
+        }
+
+        if (_autoTagService.HasRunningJobs())
+        {
+            if (hasPendingPostDownloadEnrichment)
+            {
+                _ = await TryPauseEnhancementForPendingPipelineAsync(cancellationToken);
+            }
+
+            return true;
+        }
+
+        if (!await _pipelineLock.WaitAsync(0, cancellationToken))
+        {
+            return true;
+        }
+
+        try
+        {
+            SetPhase(OrchestrationPhase.Enriching);
+            await FinalizePipelineRunAsync(cancellationToken);
+            SetPhase(OrchestrationPhase.Idle);
+            return true;
+        }
+        finally
+        {
+            _pipelineLock.Release();
+        }
+    }
+
+    private async Task FinalizePipelineRunAsync(CancellationToken cancellationToken)
+    {
+        var enrichmentCompleted = await RunPipelineAsync(cancellationToken);
+        if (!enrichmentCompleted)
+        {
+            return;
+        }
+
+        var finishedAt = DateTimeOffset.UtcNow;
+        _lastEnrichmentFinishedUtc = finishedAt;
+        if (_enhancementInterruptedByEnrichment)
+        {
+            _enhancementResumeNotBeforeUtc = finishedAt.AddHours(1);
+            _enhancementResumeAwaitingPipelineCompletion = true;
+        }
+
+        SaveOrchestrationRuntimeState();
     }
 
     private async Task<bool> RunPipelineAsync(CancellationToken cancellationToken)

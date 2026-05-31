@@ -3461,11 +3461,16 @@ public sealed class DownloadIntentService
     private static string? BootstrapIntentDeezerIdentity(DownloadIntent intent, string sourceUrl, bool isPodcastIntent, ref string normalizedSourceUrl)
     {
         var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
-        intent.DeezerId = !string.IsNullOrWhiteSpace(normalizedExistingDeezerId)
-            ? normalizedExistingDeezerId
-            : isPodcastIntent
+        if (!string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
+        {
+            intent.DeezerId = normalizedExistingDeezerId;
+        }
+        else
+        {
+            intent.DeezerId = isPodcastIntent
                 ? TryExtractDeezerEpisodeId(sourceUrl) ?? string.Empty
                 : TryExtractDeezerTrackId(sourceUrl) ?? string.Empty;
+        }
 
         var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
         if (string.IsNullOrWhiteSpace(normalizedSourceUrl) && !string.IsNullOrWhiteSpace(normalizedDeezerId))
