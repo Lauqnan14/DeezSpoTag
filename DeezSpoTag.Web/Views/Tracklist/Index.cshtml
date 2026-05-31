@@ -1406,6 +1406,20 @@ let externalBatchMatchSessionId = 0;
 const externalMatchInitialBatchSize = 24;
 let monitorStatusRequestSeq = 0;
 let monitorMutationInFlight = false;
+
+function getDeezerTracklistUrl() {
+    const normalizedType = String(tracklistType || '').trim().toLowerCase();
+    if (normalizedType === 'track') {
+        return `https://www.deezer.com/track/${tracklistId}`;
+    }
+    if (normalizedType === 'album') {
+        return `https://www.deezer.com/album/${tracklistId}`;
+    }
+    if (normalizedType === 'smarttracklist') {
+        return `https://www.deezer.com/smarttracklist/${tracklistId}`;
+    }
+    return `https://www.deezer.com/playlist/${tracklistId}`;
+}
 const externalMatchBackgroundBatchSize = 96;
 const externalMatchMaxConcurrent = 4;
 const externalMatchLowConcurrencyCap = 2;
@@ -6545,12 +6559,7 @@ async function downloadAll() {
     }
 
     if (window.DeezSpoTagDownload) {
-        const url = tracklistType === 'album'
-            ? `https://www.deezer.com/album/${tracklistId}`
-            : (tracklistType === 'smarttracklist'
-                ? `https://www.deezer.com/smarttracklist/${tracklistId}`
-                : `https://www.deezer.com/playlist/${tracklistId}`);
-        window.DeezSpoTagDownload.addToQueue(url);
+        window.DeezSpoTagDownload.addToQueue(getDeezerTracklistUrl());
         return;
     }
 
