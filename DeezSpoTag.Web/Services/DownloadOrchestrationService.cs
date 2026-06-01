@@ -595,10 +595,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private async Task TickAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var activeDownloadCount = await _queueRepository.GetActiveDownloadCountAsync(cancellationToken);
-        _lastKnownActiveDownloadCount = activeDownloadCount;
-        var hasActiveDownloads = activeDownloadCount > 0;
-        UpdateQueueActivityState(now, hasActiveDownloads);
+        var runnableDownloadCount = await _queueRepository.GetRunnableDownloadCountAsync(cancellationToken);
+        _lastKnownActiveDownloadCount = runnableDownloadCount;
+        var hasRunnableDownloads = runnableDownloadCount > 0;
+        UpdateQueueActivityState(now, hasRunnableDownloads);
 
         var hasPendingPostDownloadEnrichment = await HasPendingPostDownloadEnrichmentAsync(cancellationToken);
         if (hasPendingPostDownloadEnrichment)
@@ -606,12 +606,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _pipelineRequested = true;
         }
 
-        if (await TryRunRetrySweepAsync(hasActiveDownloads, cancellationToken))
+        if (await TryRunRetrySweepAsync(hasRunnableDownloads, cancellationToken))
         {
             return;
         }
 
-        if (await TryRunEnrichmentPipelineAsync(now, hasActiveDownloads, hasPendingPostDownloadEnrichment, cancellationToken))
+        if (await TryRunEnrichmentPipelineAsync(now, hasRunnableDownloads, hasPendingPostDownloadEnrichment, cancellationToken))
         {
             return;
         }
@@ -638,7 +638,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             {
                 SetPhase(OrchestrationPhase.EnhancementRunning);
             }
-            else if (!hasActiveDownloads)
+            else if (!hasRunnableDownloads)
             {
                 SetPhase(OrchestrationPhase.Idle);
             }
@@ -649,9 +649,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private void UpdateQueueActivityState(DateTimeOffset now, bool hasActiveDownloads)
+    private void UpdateQueueActivityState(DateTimeOffset now, bool hasRunnableDownloads)
     {
-        if (hasActiveDownloads)
+        if (hasRunnableDownloads)
         {
             _wasQueueActive = true;
             _queueIdleSince = null;
@@ -670,9 +670,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _queueIdleSince ??= now;
     }
 
-    private async Task<bool> TryRunRetrySweepAsync(bool hasActiveDownloads, CancellationToken cancellationToken)
+    private async Task<bool> TryRunRetrySweepAsync(bool hasRunnableDownloads, CancellationToken cancellationToken)
     {
-        if (!_retryScheduler.HasPendingRetries || hasActiveDownloads)
+        if (!_retryScheduler.HasPendingRetries || hasRunnableDownloads)
         {
             return false;
         }
@@ -705,7 +705,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task<bool> TryRunEnrichmentPipelineAsync(
         DateTimeOffset now,
-        bool hasActiveDownloads,
+        bool hasRunnableDownloads,
         bool hasPendingPostDownloadEnrichment,
         CancellationToken cancellationToken)
     {
@@ -714,8 +714,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
-        if (hasActiveDownloads)
+        if (hasRunnableDownloads)
         {
+            // Downloads win arbitration whenever runnable queue work exists.
+            SetPhase(OrchestrationPhase.Downloading);
             return true;
         }
 
@@ -869,7 +871,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _pipelineRequested = false;
         _enhancementPauseRequested = false;
 
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        if (await _queueRepository.HasRunnableDownloadsAsync(cancellationToken))
         {
             _logger.LogInformation("Orchestration skipped: downloads became active again.");
             return null;
@@ -1899,7 +1901,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
-        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        if (await _queueRepository.HasRunnableDownloadsAsync(cancellationToken))
         {
             SetPhase(OrchestrationPhase.EnhancementResumeCooldown, _enhancementResumeNotBeforeUtc);
             return true;

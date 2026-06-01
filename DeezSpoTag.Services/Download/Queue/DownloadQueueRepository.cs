@@ -353,6 +353,19 @@ WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused',
         return result is null or DBNull ? 0 : Convert.ToInt32(result);
     }
 
+    public async Task<int> GetRunnableDownloadCountAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT COUNT(*)
+FROM download_task
+WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying');";
+        await using var command = new SqliteCommand(sql, connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? 0 : Convert.ToInt32(result);
+    }
+
     public async Task<bool> HasActiveDownloadsAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -361,6 +374,20 @@ WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused',
 SELECT 1
 FROM download_task
 WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null && result is not DBNull;
+    }
+
+    public async Task<bool> HasRunnableDownloadsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT 1
+FROM download_task
+WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying')
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);

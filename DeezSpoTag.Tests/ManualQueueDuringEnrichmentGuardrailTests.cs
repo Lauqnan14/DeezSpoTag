@@ -179,6 +179,22 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.DoesNotContain("ExecuteScheduledRetryAsync", retrySchedulerSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Orchestration_UsesRunnableDownloadArbitrationForEnrichmentGates()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var queueSource = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
+
+        Assert.Contains("GetRunnableDownloadCountAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("HasRunnableDownloadsAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("if (hasRunnableDownloads)", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("SetPhase(OrchestrationPhase.Downloading);", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying');",
+            queueSource,
+            StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] pathParts)
         => File.ReadAllText(Path.Join([ResolveRepoRoot(), .. pathParts]));
 
