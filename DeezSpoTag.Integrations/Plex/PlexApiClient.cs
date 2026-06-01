@@ -1993,7 +1993,7 @@ public class PlexApiClient
         _logger.LogWarning(
             "Plex request failed for {Operation} {EntityId}: {StatusCode} ({FailureType})",
             operation,
-            entityId,
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(entityId),
             response.StatusCode,
             normalizedFailure);
         return false;
