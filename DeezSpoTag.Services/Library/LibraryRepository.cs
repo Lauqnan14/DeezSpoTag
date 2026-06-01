@@ -6125,9 +6125,9 @@ ON CONFLICT(source, source_id) DO UPDATE SET
 SELECT
     SUM(CASE WHEN lower(status) = 'queued' THEN 1 ELSE 0 END) AS queued_count,
     SUM(CASE WHEN lower(status) = 'completed' THEN 1 ELSE 0 END) AS completed_count,
-    SUM(CASE WHEN lower(status) = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+    SUM(CASE WHEN lower(status) IN ('failed', 'canceled', 'cancelled') THEN 1 ELSE 0 END) AS failed_count,
     SUM(CASE WHEN lower(status) IN ('inqueue', 'running', 'downloading', 'paused', 'retrying') THEN 1 ELSE 0 END) AS active_count,
-    SUM(CASE WHEN lower(status) NOT IN ('completed', 'failed') THEN 1 ELSE 0 END) AS unresolved_count
+    SUM(CASE WHEN lower(status) NOT IN ('completed', 'failed', 'canceled', 'cancelled') THEN 1 ELSE 0 END) AS unresolved_count
 FROM playlist_watch_track
 WHERE source = @source
   AND source_id = @sourceId;";

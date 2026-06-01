@@ -1,5 +1,6 @@
 using System.Linq;
 using System.Text.Json;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
@@ -18,17 +19,23 @@ public sealed class WatchlistFinalizationService
 
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
+    private readonly PlaylistWatchService _playlistWatchService;
+    private readonly PlaylistWatchHostedService _playlistWatchHostedService;
     private readonly IWatchlistPostDownloadSyncNotifier _notifier;
     private readonly ILogger<WatchlistFinalizationService> _logger;
 
     public WatchlistFinalizationService(
         DownloadQueueRepository queueRepository,
         LibraryRepository libraryRepository,
+        PlaylistWatchService playlistWatchService,
+        PlaylistWatchHostedService playlistWatchHostedService,
         IWatchlistPostDownloadSyncNotifier notifier,
         ILogger<WatchlistFinalizationService> logger)
     {
         _queueRepository = queueRepository;
         _libraryRepository = libraryRepository;
+        _playlistWatchService = playlistWatchService;
+        _playlistWatchHostedService = playlistWatchHostedService;
         _notifier = notifier;
         _logger = logger;
     }
@@ -62,6 +69,11 @@ public sealed class WatchlistFinalizationService
         }
 
         var notifications = await ResolveNotificationsAsync(item, payloadJson, cancellationToken);
+        if (notifications.Count > 0)
+        {
+            await MarkWatchTracksCompletedAsync(notifications, cancellationToken);
+        }
+
         var sent = 0;
         foreach (var notification in notifications)
         {
@@ -73,6 +85,11 @@ public sealed class WatchlistFinalizationService
                 normalizedFinalPaths,
                 cancellationToken);
             sent++;
+        }
+
+        if (sent > 0)
+        {
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
         }
 
         return sent;
@@ -143,6 +160,9 @@ public sealed class WatchlistFinalizationService
                 claim.DestinationFolderId ?? item.DestinationFolderId));
         }
 
+        var inferred = await ResolveCrossPlaylistMatchesAsync(item, payloadJson, cancellationToken);
+        notifications.AddRange(inferred);
+
         return notifications
             .Where(static notification =>
                 !string.IsNullOrWhiteSpace(notification.Source)
@@ -155,9 +175,275 @@ public sealed class WatchlistFinalizationService
             .ToList();
     }
 
+    private async Task<List<WatchlistFinalizedNotification>> ResolveCrossPlaylistMatchesAsync(
+        DownloadQueueItem item,
+        string? payloadJson,
+        CancellationToken cancellationToken)
+    {
+        var identity = BuildFinalizedTrackIdentity(item, payloadJson);
+        if (!identity.HasAnyIdentity)
+        {
+            return new List<WatchlistFinalizedNotification>();
+        }
+
+        var playlists = await _libraryRepository.GetPlaylistWatchlistAsync(cancellationToken);
+        if (playlists.Count == 0)
+        {
+            return new List<WatchlistFinalizedNotification>();
+        }
+
+        var results = new List<WatchlistFinalizedNotification>();
+        foreach (var playlist in playlists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(playlist.Source)
+                || string.IsNullOrWhiteSpace(playlist.SourceId))
+            {
+                continue;
+            }
+
+            IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> candidates;
+            try
+            {
+                candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
+                    playlist.Source,
+                    playlist.SourceId,
+                    cancellationToken);
+            }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "Watchlist finalization candidate refresh failed for {Source}:{PlaylistId}.",
+                        playlist.Source,
+                        playlist.SourceId);
+                }
+                continue;
+            }
+
+            if (candidates.Count == 0)
+            {
+                continue;
+            }
+
+            var destinationFolderId = item.DestinationFolderId;
+            var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+                playlist.Source,
+                playlist.SourceId,
+                cancellationToken);
+            destinationFolderId ??= preference?.DestinationFolderId;
+
+            var normalizedSource = NormalizeSource(playlist.Source);
+            foreach (var candidate in candidates)
+            {
+                if (!IsIdentityMatch(normalizedSource, candidate, identity))
+                {
+                    continue;
+                }
+
+                results.Add(new WatchlistFinalizedNotification(
+                    normalizedSource,
+                    playlist.SourceId,
+                    candidate.TrackSourceId,
+                    destinationFolderId));
+            }
+        }
+
+        return results;
+    }
+
+    private async Task MarkWatchTracksCompletedAsync(
+        IReadOnlyCollection<WatchlistFinalizedNotification> notifications,
+        CancellationToken cancellationToken)
+    {
+        foreach (var notification in notifications)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+                notification.Source,
+                notification.PlaylistId,
+                notification.TrackId,
+                "completed",
+                cancellationToken);
+        }
+    }
+
     private static bool IsCompletedStatus(string? status)
         => string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, "complete", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsIdentityMatch(
+        string normalizedPlaylistSource,
+        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        FinalizedTrackIdentity identity)
+    {
+        var sourceTrackId = identity.GetTrackIdForSource(normalizedPlaylistSource);
+        if (!string.IsNullOrWhiteSpace(sourceTrackId)
+            && string.Equals(candidate.TrackSourceId, sourceTrackId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(identity.Isrc)
+            && !string.IsNullOrWhiteSpace(candidate.Isrc)
+            && string.Equals(candidate.Isrc.Trim(), identity.Isrc, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(identity.Title)
+            || string.IsNullOrWhiteSpace(identity.Artist)
+            || string.IsNullOrWhiteSpace(candidate.Title)
+            || string.IsNullOrWhiteSpace(candidate.Artist))
+        {
+            return false;
+        }
+
+        if (!TrackTitleMatcher.TitlesMatch(identity.Title, candidate.Title)
+            || !TrackTitleMatcher.ArtistsMatch(identity.Artist, candidate.Artist))
+        {
+            return false;
+        }
+
+        if (identity.DurationMs.HasValue
+            && candidate.DurationMs.HasValue
+            && Math.Abs(identity.DurationMs.Value - candidate.DurationMs.Value) > 3000)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static FinalizedTrackIdentity BuildFinalizedTrackIdentity(DownloadQueueItem item, string? payloadJson)
+    {
+        string? sourceIdsSpotify = null;
+        string? sourceIdsDeezer = null;
+        string? sourceIdsApple = null;
+        string? sourceIdsBoomplay = null;
+        string? sourceIdsQobuz = null;
+        string? sourceIdsTidal = null;
+        string? payloadIsrc = null;
+        string? payloadTitle = null;
+        string? payloadArtist = null;
+        int? payloadDurationMs = null;
+
+        if (!string.IsNullOrWhiteSpace(payloadJson))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(payloadJson);
+                var root = document.RootElement;
+                if (TryReadSourceIdsElement(root, out var sourceIds))
+                {
+                    sourceIdsSpotify = ReadSourceIdAlias(sourceIds, "spotify", "spotify_id", "spotifyTrackId");
+                    sourceIdsDeezer = ReadSourceIdAlias(sourceIds, "deezer", "deezer_id", "deezerTrackId");
+                    sourceIdsApple = ReadSourceIdAlias(sourceIds, "apple", "apple_id", "appleTrackId", "itunes");
+                    sourceIdsBoomplay = ReadSourceIdAlias(sourceIds, "boomplay", "boomplay_id");
+                    sourceIdsQobuz = ReadSourceIdAlias(sourceIds, "qobuz", "qobuz_id");
+                    sourceIdsTidal = ReadSourceIdAlias(sourceIds, "tidal", "tidal_id");
+                }
+
+                payloadIsrc = ReadStringAlias(root, "isrc", "ISRC");
+                payloadTitle = ReadStringAlias(root, "title", "Title", "trackTitle");
+                payloadArtist = ReadStringAlias(root, "artist", "Artist", "artistName");
+                payloadDurationMs = ReadIntAlias(root, "durationMs", "DurationMs", "duration");
+            }
+            catch (JsonException)
+            {
+                // Ignore malformed payload and continue with queue row metadata.
+            }
+        }
+
+        return new FinalizedTrackIdentity(
+            NormalizeId(item.SpotifyTrackId) ?? NormalizeId(sourceIdsSpotify),
+            NormalizeId(item.DeezerTrackId) ?? NormalizeId(sourceIdsDeezer),
+            NormalizeId(item.AppleTrackId) ?? NormalizeId(sourceIdsApple),
+            NormalizeId(sourceIdsBoomplay),
+            NormalizeId(sourceIdsQobuz),
+            NormalizeId(sourceIdsTidal),
+            NormalizeIsrc(item.Isrc) ?? NormalizeIsrc(payloadIsrc),
+            NormalizeText(item.TrackTitle) ?? NormalizeText(payloadTitle),
+            NormalizeText(item.ArtistName) ?? NormalizeText(payloadArtist),
+            item.DurationMs ?? payloadDurationMs);
+    }
+
+    private static string? ReadSourceIdAlias(JsonElement sourceIds, params string[] aliases)
+        => ReadStringAlias(sourceIds, aliases);
+
+    private static string? ReadStringAlias(JsonElement source, params string[] aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            if (!TryGetPropertyIgnoreCase(source, alias, out var value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.String)
+            {
+                var text = value.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text.Trim();
+                }
+            }
+            else if (value.ValueKind == JsonValueKind.Number)
+            {
+                return value.GetRawText().Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static int? ReadIntAlias(JsonElement source, params string[] aliases)
+    {
+        foreach (var alias in aliases)
+        {
+            if (!TryGetPropertyIgnoreCase(source, alias, out var value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var parsedNumber))
+            {
+                return parsedNumber;
+            }
+
+            if (value.ValueKind == JsonValueKind.String
+                && int.TryParse(value.GetString(), out var parsedString))
+            {
+                return parsedString;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeSource(string source)
+    {
+        var normalized = source.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "smarttracks" => "smarttracklist",
+            "recommendation" => "recommendations",
+            "itunes" => "apple",
+            "applemusic" => "apple",
+            _ => normalized
+        };
+    }
+
+    private static string? NormalizeText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? NormalizeId(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? NormalizeIsrc(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
 
     private static List<string> NormalizeFinalFilePaths(IEnumerable<string>? finalFilePaths)
     {
@@ -330,4 +616,39 @@ public sealed class WatchlistFinalizationService
         string PlaylistId,
         string TrackId,
         long? DestinationFolderId);
+
+    private sealed record FinalizedTrackIdentity(
+        string? SpotifyTrackId,
+        string? DeezerTrackId,
+        string? AppleTrackId,
+        string? BoomplayTrackId,
+        string? QobuzTrackId,
+        string? TidalTrackId,
+        string? Isrc,
+        string? Title,
+        string? Artist,
+        int? DurationMs)
+    {
+        public bool HasAnyIdentity
+            => !string.IsNullOrWhiteSpace(SpotifyTrackId)
+               || !string.IsNullOrWhiteSpace(DeezerTrackId)
+               || !string.IsNullOrWhiteSpace(AppleTrackId)
+               || !string.IsNullOrWhiteSpace(BoomplayTrackId)
+               || !string.IsNullOrWhiteSpace(QobuzTrackId)
+               || !string.IsNullOrWhiteSpace(TidalTrackId)
+               || !string.IsNullOrWhiteSpace(Isrc)
+               || (!string.IsNullOrWhiteSpace(Title) && !string.IsNullOrWhiteSpace(Artist));
+
+        public string? GetTrackIdForSource(string normalizedSource)
+            => normalizedSource switch
+            {
+                "spotify" => SpotifyTrackId,
+                "deezer" => DeezerTrackId,
+                "apple" => AppleTrackId,
+                "boomplay" => BoomplayTrackId,
+                "qobuz" => QobuzTrackId,
+                "tidal" => TidalTrackId,
+                _ => null
+            };
+    }
 }

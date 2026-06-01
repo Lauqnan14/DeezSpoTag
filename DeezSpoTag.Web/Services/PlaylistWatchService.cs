@@ -226,6 +226,7 @@ public sealed class PlaylistWatchService
         bool Success,
         string Message,
         int SourceTracks,
+        int MissingTracks,
         int IgnoredTracks,
         int LocalTracks,
         int QueuedTracks,
@@ -246,14 +247,14 @@ public sealed class PlaylistWatchService
     {
         if (playlist == null)
         {
-            return new PlaylistReconciliationResult(false, "Playlist not available.", 0, 0, 0, 0, 0, 0, null);
+            return new PlaylistReconciliationResult(false, "Playlist not available.", 0, 0, 0, 0, 0, 0, 0, null);
         }
 
         var source = NormalizeWatchSource(playlist.Source);
         var sourceId = (playlist.SourceId ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
         {
-            return new PlaylistReconciliationResult(false, "Playlist source is not available.", 0, 0, 0, 0, 0, 0, null);
+            return new PlaylistReconciliationResult(false, "Playlist source is not available.", 0, 0, 0, 0, 0, 0, 0, null);
         }
         await TouchPlaylistWatchStateAsync(
             source,
@@ -413,7 +414,7 @@ public sealed class PlaylistWatchService
                 nextAttemptUtc: null,
                 consecutiveFailures: null,
                 cancellationToken);
-            return new PlaylistReconciliationResult(true, "No playlist tracks were available to reconcile.", 0, 0, 0, 0, 0, 0, null);
+            return new PlaylistReconciliationResult(true, "No playlist tracks were available to reconcile.", 0, 0, 0, 0, 0, 0, 0, null);
         }
 
         await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
@@ -600,6 +601,7 @@ public sealed class PlaylistWatchService
             success,
             ResolveReconciliationMessage(queueResult, success),
             liveTrackCount,
+            selection.MissingTracks.Count,
             selection.IgnoredCount,
             selection.LocalCount,
             queueResult.QueuedCount,
