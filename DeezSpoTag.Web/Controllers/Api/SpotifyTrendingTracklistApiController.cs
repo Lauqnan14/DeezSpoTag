@@ -50,6 +50,7 @@ public class SpotifyTrendingTracklistApiController : ControllerBase
         {
             return Ok(new { available = false });
         }
+        summaries = await HydrateMissingDurationsAsync(summaries, cancellationToken);
 
         var settings = _settingsService.LoadSettings();
         var strictSpotifyDeezerMode = settings.StrictSpotifyDeezerMode;
@@ -99,5 +100,49 @@ public class SpotifyTrendingTracklistApiController : ControllerBase
     {
         return string.Equals(value, "pathfinder", StringComparison.OrdinalIgnoreCase)
             || string.Equals(value, "spotiflac", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<List<SpotifyTrackSummary>> HydrateMissingDurationsAsync(
+        IReadOnlyList<SpotifyTrackSummary> summaries,
+        CancellationToken cancellationToken)
+    {
+        var missingDurationIds = summaries
+            .Where(track => track.DurationMs.GetValueOrDefault() <= 0 && !string.IsNullOrWhiteSpace(track.Id))
+            .Select(track => track.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (missingDurationIds.Count == 0)
+        {
+            return summaries.ToList();
+        }
+
+        var hydrated = await _pathfinderMetadataClient.FetchTrackSummariesByIdsAsync(missingDurationIds, cancellationToken);
+        if (hydrated.Count == 0)
+        {
+            return summaries.ToList();
+        }
+
+        var hydratedDurationById = hydrated
+            .Where(track => !string.IsNullOrWhiteSpace(track.Id) && track.DurationMs.GetValueOrDefault() > 0)
+            .GroupBy(track => track.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().DurationMs!.Value, StringComparer.OrdinalIgnoreCase);
+        if (hydratedDurationById.Count == 0)
+        {
+            return summaries.ToList();
+        }
+
+        return summaries
+            .Select(track =>
+            {
+                if (track.DurationMs.GetValueOrDefault() > 0
+                    || string.IsNullOrWhiteSpace(track.Id)
+                    || !hydratedDurationById.TryGetValue(track.Id, out var hydratedDurationMs))
+                {
+                    return track;
+                }
+
+                return track with { DurationMs = hydratedDurationMs };
+            })
+            .ToList();
     }
 }
