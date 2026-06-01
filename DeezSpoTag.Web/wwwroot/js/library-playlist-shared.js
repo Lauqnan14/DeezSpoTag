@@ -101,6 +101,12 @@
         <button class="dropdown-item" type="button" ${actionAttribute}="refresh-artwork"${withData}>
             <i class="fa-solid fa-image"></i><span>Refresh artwork</span>
         </button>
+        <button class="dropdown-item" type="button" ${actionAttribute}="reset-runtime"${withData}>
+            <i class="fa-solid fa-power-off"></i><span>Reset runtime</span>
+        </button>
+        <button class="dropdown-item" type="button" ${actionAttribute}="reset-skip"${withData}>
+            <i class="fa-solid fa-forward-step"></i><span>Reset and skip</span>
+        </button>
         <button class="dropdown-item danger" type="button" ${actionAttribute}="remove"${withData}>
             <i class="fa-solid fa-xmark"></i><span>Unmonitor</span>
         </button>

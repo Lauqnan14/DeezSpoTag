@@ -110,6 +110,39 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     public Task TriggerRunOnceAsync(CancellationToken cancellationToken = default)
         => RunOnceAsync(cancellationToken);
 
+    public void ResetPlaylistRuntimeState(string source, string sourceId)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        var normalizedSource = NormalizeSource(source);
+        var normalizedSourceId = sourceId.Trim();
+        var key = $"playlist:{normalizedSource}:{normalizedSourceId}";
+        _consecutiveFailures.TryRemove(key, out _);
+        _nextAllowedRun.TryRemove(key, out _);
+        _lastRun.TryRemove(key, out _);
+    }
+
+    public void ResetPlaylistRuntimeStateForAll(IReadOnlyCollection<PlaylistWatchlistDto> playlists)
+    {
+        if (playlists == null || playlists.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var playlist in playlists)
+        {
+            if (playlist == null)
+            {
+                continue;
+            }
+
+            ResetPlaylistRuntimeState(playlist.Source, playlist.SourceId);
+        }
+    }
+
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Watch cycle entrypoint intentionally centralizes lock, failure handling, and lifecycle semantics.")]
     private async Task RunOnceAsync(CancellationToken stoppingToken)
     {

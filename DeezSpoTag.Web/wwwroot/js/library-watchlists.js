@@ -43,6 +43,23 @@ function normalizeWatchlistHistoryEntries(historyRaw) {
     return [];
 }
 
+async function confirmWithAppUi(message, options = {}) {
+    if (typeof globalThis.DeezSpoTag?.ui?.showModal !== 'function') {
+        showToast('Confirmation modal is unavailable right now.', true);
+        return false;
+    }
+
+    const result = await globalThis.DeezSpoTag.ui.showModal({
+        title: options.title || 'Confirm',
+        message,
+        buttons: [
+            { label: options.cancelText || 'Cancel', value: false },
+            { label: options.okText || 'OK', value: true, primary: true }
+        ]
+    });
+    return result?.value === true;
+}
+
 async function loadWatchlist() {
     const container = document.getElementById('watchlistContainer');
     if (!container) {
@@ -1049,9 +1066,14 @@ async function loadPlaylistWatchlist() {
     container.dataset.loadState = 'loading';
     container.innerHTML = '<div class="watchlist-empty-state">Loading monitored playlists...</div>';
     const mergeButton = document.getElementById('mergePlaylistWatchlistBtn');
+    const resetRuntimeButton = document.getElementById('resetPlaylistWatchlistRuntimeBtn');
     if (mergeButton) {
         mergeButton.disabled = true;
         mergeButton.onclick = null;
+    }
+    if (resetRuntimeButton) {
+        resetRuntimeButton.disabled = true;
+        resetRuntimeButton.onclick = null;
     }
     try {
         if (!Array.isArray(libraryState.folders) || !libraryState.folders.length) {
@@ -1090,6 +1112,32 @@ async function loadPlaylistWatchlist() {
             mergeButton.disabled = items.length < 2;
             mergeButton.onclick = async () => {
                 await openPlaylistMergePanel(items);
+            };
+        }
+        if (resetRuntimeButton) {
+            resetRuntimeButton.disabled = items.length === 0;
+            resetRuntimeButton.onclick = async (event) => {
+                event?.preventDefault?.();
+                event?.stopPropagation?.();
+                try {
+                    const confirmed = await confirmWithAppUi(
+                        'Reset watchlist runtime state for all monitored playlists and trigger a fresh run?',
+                        { title: 'Reset Watchlist Runtime', okText: 'Reset Runtime' });
+                    if (!confirmed) {
+                        return;
+                    }
+                    resetRuntimeButton.disabled = true;
+                    try {
+                        const result = await fetchJson('/api/library/playlists/reset-runtime', { method: 'POST' });
+                        showToast(`Watchlist runtime reset (${result?.playlistsReset || 0} playlists).`);
+                        await loadPlaylistWatchlist();
+                    } catch (error) {
+                        showToast(`Runtime reset failed: ${error.message}`, true);
+                        resetRuntimeButton.disabled = false;
+                    }
+                } catch (error) {
+                    showToast(`Failed to open confirmation dialog: ${error?.message || 'Unknown error'}`, true);
+                }
             };
         }
 
@@ -1249,6 +1297,68 @@ async function loadPlaylistWatchlist() {
                     showToast(result?.message || 'Playlist sync scheduled.');
                 } catch (error) {
                     showToast(`Playlist sync failed: ${error.message}`, true);
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-playlist-action="reset-runtime"]').forEach(button => {
+            button.addEventListener('click', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const source = button.dataset.playlistSource;
+                const sourceId = button.dataset.playlistId;
+                if (!source || !sourceId) return;
+                try {
+                    const confirmed = await confirmWithAppUi(
+                        'Reset runtime state for this playlist and trigger a fresh attempt?',
+                        { title: 'Reset Playlist Runtime', okText: 'Reset Runtime' });
+                    if (!confirmed) {
+                        return;
+                    }
+                    button.disabled = true;
+                    try {
+                        await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/reset-runtime`, { method: 'POST' });
+                        showToast('Playlist runtime reset.');
+                        await loadPlaylistWatchlist();
+                    } catch (error) {
+                        showToast(`Playlist runtime reset failed: ${error.message}`, true);
+                        button.disabled = false;
+                    }
+                } catch (error) {
+                    showToast(`Failed to open confirmation dialog: ${error?.message || 'Unknown error'}`, true);
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-playlist-action="reset-skip"]').forEach(button => {
+            button.addEventListener('click', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const source = button.dataset.playlistSource;
+                const sourceId = button.dataset.playlistId;
+                if (!source || !sourceId) return;
+                try {
+                    const confirmed = await confirmWithAppUi(
+                        'Reset this playlist and move scheduler focus to the next playlist?',
+                        { title: 'Reset and Skip', okText: 'Reset and Skip' });
+                    if (!confirmed) {
+                        return;
+                    }
+                    button.disabled = true;
+                    try {
+                        const result = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/reset-and-skip`, { method: 'POST' });
+                        if (result?.skipped && result?.nextSource && result?.nextSourceId) {
+                            showToast(`Reset done. Active moved to ${result.nextSource}:${result.nextSourceId}.`);
+                        } else {
+                            showToast('Playlist reset done.');
+                        }
+                        await loadPlaylistWatchlist();
+                    } catch (error) {
+                        showToast(`Reset and skip failed: ${error.message}`, true);
+                        button.disabled = false;
+                    }
+                } catch (error) {
+                    showToast(`Failed to open confirmation dialog: ${error?.message || 'Unknown error'}`, true);
                 }
             });
         });

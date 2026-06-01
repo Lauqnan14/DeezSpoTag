@@ -387,6 +387,175 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(new { triggered = 1 });
     }
 
+    [HttpPost("reset-runtime")]
+    public async Task<IActionResult> ResetRuntime(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        var playlistsReset = 0;
+        var circuitsReset = 0;
+
+        foreach (var item in watchlist)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
+            playlistsReset++;
+        }
+
+        var distinctSources = watchlist
+            .Select(item => NormalizePlaylistSource(item.Source))
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var source in distinctSources)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await ResetSourceCircuitAsync(source, cancellationToken);
+            circuitsReset++;
+        }
+
+        await _repository.UpsertWatchlistSchedulerStateAsync(
+            new LibraryRepository.WatchlistSchedulerStateUpsertInput(
+                WatchType: "playlist",
+                ActiveSource: null,
+                ActiveSourceId: null,
+                ActiveStartedUtc: null,
+                LastProgressUtc: DateTimeOffset.UtcNow,
+                ZeroQueueStreak: 0),
+            cancellationToken);
+
+        _playlistWatchHostedService?.ResetPlaylistRuntimeStateForAll(watchlist);
+        if (_playlistWatchHostedService != null)
+        {
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+        }
+
+        return Ok(new
+        {
+            reset = true,
+            playlistsReset,
+            circuitsReset,
+            triggered = _playlistWatchHostedService != null
+        });
+    }
+
+    [HttpPost("{source}/{sourceId}/reset-runtime")]
+    public async Task<IActionResult> ResetPlaylistRuntime(string source, string sourceId, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var item = await FindWatchlistItemAsync(source, sourceId, cancellationToken);
+        if (item == null)
+        {
+            return NotFound("Playlist watchlist entry not found.");
+        }
+
+        await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
+        await ResetSourceCircuitAsync(item.Source, cancellationToken);
+        _playlistWatchHostedService?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
+
+        if (_playlistWatchHostedService != null)
+        {
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+        }
+
+        return Ok(new
+        {
+            reset = true,
+            source = item.Source,
+            sourceId = item.SourceId,
+            triggered = _playlistWatchHostedService != null
+        });
+    }
+
+    [HttpPost("{source}/{sourceId}/reset-and-skip")]
+    public async Task<IActionResult> ResetPlaylistAndSkip(string source, string sourceId, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var item = await FindWatchlistItemAsync(source, sourceId, cancellationToken);
+        if (item == null)
+        {
+            return NotFound("Playlist watchlist entry not found.");
+        }
+
+        var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        if (watchlist.Count == 0)
+        {
+            return Ok(new { reset = true, skipped = false, reason = "No monitored playlists." });
+        }
+
+        await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
+        await ResetSourceCircuitAsync(item.Source, cancellationToken);
+        _playlistWatchHostedService?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
+
+        var normalizedSource = NormalizePlaylistSource(item.Source);
+        var currentIndex = -1;
+        for (var index = 0; index < watchlist.Count; index++)
+        {
+            var entry = watchlist[index];
+            if (string.Equals(entry.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(entry.SourceId, item.SourceId, StringComparison.OrdinalIgnoreCase))
+            {
+                currentIndex = index;
+                break;
+            }
+        }
+
+        PlaylistWatchlistDto? next = null;
+        if (currentIndex >= 0 && watchlist.Count > 1)
+        {
+            next = watchlist[(currentIndex + 1) % watchlist.Count];
+            if (string.Equals(next.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(next.SourceId, item.SourceId, StringComparison.OrdinalIgnoreCase))
+            {
+                next = null;
+            }
+        }
+
+        if (next != null)
+        {
+            await SetPlaylistWatchSchedulerFocusAsync(next.Source, next.SourceId, cancellationToken);
+        }
+        else
+        {
+            await _repository.UpsertWatchlistSchedulerStateAsync(
+                new LibraryRepository.WatchlistSchedulerStateUpsertInput(
+                    WatchType: "playlist",
+                    ActiveSource: null,
+                    ActiveSourceId: null,
+                    ActiveStartedUtc: null,
+                    LastProgressUtc: DateTimeOffset.UtcNow,
+                    ZeroQueueStreak: 0),
+                cancellationToken);
+        }
+
+        if (_playlistWatchHostedService != null)
+        {
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+        }
+
+        return Ok(new
+        {
+            reset = true,
+            skipped = next != null,
+            nextSource = next?.Source,
+            nextSourceId = next?.SourceId,
+            triggered = _playlistWatchHostedService != null
+        });
+    }
+
     [HttpPost("{source}/{sourceId}/sync")]
     public async Task<IActionResult> Sync(string source, string sourceId, CancellationToken cancellationToken)
     {
@@ -972,6 +1141,44 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 routingRules ?? existing?.RoutingRules,
                 ignoreRules ?? existing?.IgnoreRules,
                 existing?.AtmosDestinationFolderId),
+            cancellationToken);
+    }
+
+    private async Task ResetPlaylistPersistentStateAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSource = NormalizePlaylistSource(source);
+        var state = await _repository.GetPlaylistWatchStateAsync(normalizedSource, sourceId, cancellationToken);
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                normalizedSource,
+                sourceId,
+                state?.SnapshotId,
+                state?.TrackCount,
+                state?.BatchNextOffset,
+                state?.BatchProcessingSnapshotId,
+                state?.LastCheckedUtc,
+                LastRunStatus: "pending",
+                LastRunMessage: "Manual runtime reset.",
+                NextAttemptUtc: null,
+                ConsecutiveFailures: 0),
+            cancellationToken);
+    }
+
+    private async Task ResetSourceCircuitAsync(string source, CancellationToken cancellationToken)
+    {
+        var normalizedSource = NormalizePlaylistSource(source);
+        await _repository.UpsertWatchlistSourceCircuitStateAsync(
+            new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+                WatchType: "playlist",
+                Source: normalizedSource,
+                IsOpen: false,
+                OpenUntilUtc: null,
+                Reason: null,
+                Fingerprint: null,
+                FailureCount: 0),
             cancellationToken);
     }
 
