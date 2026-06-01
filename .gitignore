@@ -99,3 +99,8 @@ done_all
 
 # Local runtime settings with personal tokens
 DeezSpoTag.Workers/Data/deezspotag/config.json
+
+# Local scan/temp work directories
+.tmp-pip-audit-venv/
+codeql-db-csharp-fresh/
+codeql-db-csharp/

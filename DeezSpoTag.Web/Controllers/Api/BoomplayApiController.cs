@@ -12,6 +12,8 @@ using System.Text.RegularExpressions;
 using System.Text.Json;
 using Newtonsoft.Json.Linq;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Caching.Memory;
+using System.Collections.Concurrent;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -23,6 +25,12 @@ public sealed class BoomplayApiController : ControllerBase
     private const string PlaylistType = "playlist";
     private const string TrendingType = "trending";
     private const string PlaylistIdRequiredMessage = "Playlist id is required.";
+    private const string DeezerResolutionCacheKeyPrefix = "boomplay:deezer:resolved:";
+    private const string DeezerResolutionMissCacheKeyPrefix = "boomplay:deezer:miss:";
+    private static readonly TimeSpan DeezerResolutionCacheTtl = TimeSpan.FromHours(12);
+    private static readonly TimeSpan DeezerResolutionMissCacheTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan DeezerValidationTrackCacheTtl = TimeSpan.FromHours(6);
+    private static readonly TimeSpan DeezerTrackResolveTimeBudget = TimeSpan.FromSeconds(10);
     private static readonly Uri BoomplayReferrerUri = new("https://www.boomplay.com");
     private static readonly string[] DerivativeMarkers =
     {
@@ -61,6 +69,7 @@ public sealed class BoomplayApiController : ControllerBase
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly DeezerClient _deezerClient;
     private readonly SongLinkResolver _songLinkResolver;
+    private readonly IMemoryCache _memoryCache;
     private readonly ILogger<BoomplayApiController> _logger;
 
     private sealed record DeezerResolvedMetadata(
@@ -76,12 +85,14 @@ public sealed class BoomplayApiController : ControllerBase
         IHttpClientFactory httpClientFactory,
         DeezerClient deezerClient,
         SongLinkResolver songLinkResolver,
+        IMemoryCache memoryCache,
         ILogger<BoomplayApiController> logger)
     {
         _boomplayMetadataService = boomplayMetadataService;
         _httpClientFactory = httpClientFactory;
         _deezerClient = deezerClient;
         _songLinkResolver = songLinkResolver;
+        _memoryCache = memoryCache;
         _logger = logger;
     }
 
@@ -354,26 +365,56 @@ public sealed class BoomplayApiController : ControllerBase
                 .Take(limit)
                 .ToList();
 
-            var fetchedTracks = pageIds.Count == 0
-                ? Array.Empty<BoomplayTrackMetadata>()
-                : (await _boomplayMetadataService.GetSongsAsync(pageIds, cancellationToken)).ToArray();
-            var tracksById = fetchedTracks
-                .Where(static track => !string.IsNullOrWhiteSpace(track.Id))
-                .GroupBy(static track => track.Id, StringComparer.Ordinal)
-                .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
-            var tracks = pageIds
-                .Select(id =>
+            var hintTracks = pageIds
+                .Select(pageId =>
                 {
-                    playlist.TrackHints.TryGetValue(id, out var hint);
-                    if (tracksById.TryGetValue(id, out var track))
-                    {
-                        return ApplyPlaylistHint(track, hint);
-                    }
-
-                    return BuildFallbackTrack(id, hint);
+                    playlist.TrackHints.TryGetValue(pageId, out var hint);
+                    return BuildFallbackTrack(pageId, hint);
                 })
                 .ToArray();
-            var missingCount = pageIds.Count(pageId => !tracksById.ContainsKey(pageId));
+
+            var hasUsableHints = pageIds.Count > 0
+                && pageIds.All(pageId =>
+                    playlist.TrackHints.TryGetValue(pageId, out var hint)
+                    && hint != null
+                    && !IsBlankOrPlaceholder(hint.Title)
+                    && !IsBlankOrPlaceholder(hint.Artist));
+            var cachedHintResolutions = resolveDeezer
+                ? hintTracks.Count(track => TryGetCachedDeezerResolution(track, out _))
+                : 0;
+            var fastHintEligible = hasUsableHints
+                && (!resolveDeezer || cachedHintResolutions >= Math.Max(1, (int)Math.Ceiling(pageIds.Count * 0.60d)));
+
+            var tracks = Array.Empty<BoomplayTrackMetadata>();
+            var missingCount = 0;
+            if (fastHintEligible)
+            {
+                tracks = hintTracks;
+            }
+            else
+            {
+                var fetchedTracks = pageIds.Count == 0
+                    ? Array.Empty<BoomplayTrackMetadata>()
+                    : (await _boomplayMetadataService.GetSongsAsync(pageIds, cancellationToken)).ToArray();
+                var tracksById = fetchedTracks
+                    .Where(static track => !string.IsNullOrWhiteSpace(track.Id))
+                    .GroupBy(static track => track.Id, StringComparer.Ordinal)
+                    .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
+                tracks = pageIds
+                    .Select(id =>
+                    {
+                        playlist.TrackHints.TryGetValue(id, out var hint);
+                        if (tracksById.TryGetValue(id, out var track))
+                        {
+                            return ApplyPlaylistHint(track, hint);
+                        }
+
+                        return BuildFallbackTrack(id, hint);
+                    })
+                    .ToArray();
+                missingCount = pageIds.Count(pageId => !tracksById.ContainsKey(pageId));
+            }
+
             if (missingCount > 0)
             {
                 _logger.LogWarning("Boomplay staged tracks missing metadata for MissingCount/PageCount tracks for Type:Id at offset Offset");
@@ -564,7 +605,8 @@ public sealed class BoomplayApiController : ControllerBase
 
         try
         {
-            return await ResolveDeezerMetadataForTrackAsync(track, cancellationToken);
+            var validationTrackCache = new ConcurrentDictionary<string, ApiTrack?>(StringComparer.Ordinal);
+            return await ResolveDeezerMetadataForTrackAsync(track, validationTrackCache, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -845,27 +887,70 @@ public sealed class BoomplayApiController : ControllerBase
             return new Dictionary<string, DeezerResolvedMetadata>(StringComparer.Ordinal);
         }
 
+        var validationTrackCache = new ConcurrentDictionary<string, ApiTrack?>(StringComparer.Ordinal);
         var resolved = new System.Collections.Concurrent.ConcurrentDictionary<string, DeezerResolvedMetadata>(StringComparer.Ordinal);
+        var unresolved = new List<BoomplayTrackMetadata>(tracks.Length);
+        foreach (var track in tracks)
+        {
+            if (TryGetCachedDeezerResolution(track, out var cached))
+            {
+                resolved[track.Id] = cached;
+                continue;
+            }
+
+            if (HasRecentResolutionMiss(track))
+            {
+                continue;
+            }
+
+            unresolved.Add(track);
+        }
+
+        if (unresolved.Count == 0)
+        {
+            return resolved.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);
+        }
+
+        var maxParallel = Math.Clamp(Environment.ProcessorCount / 2, 3, 8);
         await Parallel.ForEachAsync(
-            tracks,
+            unresolved,
             new ParallelOptions
             {
-                MaxDegreeOfParallelism = 2,
+                MaxDegreeOfParallelism = maxParallel,
                 CancellationToken = cancellationToken
             },
             async (track, token) =>
             {
-                var metadata = await ResolveDeezerMetadataForTrackAsync(track, token);
+                DeezerResolvedMetadata? metadata = null;
+                try
+                {
+                    using var perTrackBudgetCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    perTrackBudgetCts.CancelAfter(DeezerTrackResolveTimeBudget);
+                    metadata = await ResolveDeezerMetadataForTrackAsync(track, validationTrackCache, perTrackBudgetCts.Token);
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    // Per-track timeout budget elapsed; treat as unresolved and continue.
+                }
+
                 if (metadata != null)
                 {
                     resolved[track.Id] = metadata;
+                    CacheDeezerResolution(track, metadata);
+                }
+                else
+                {
+                    CacheDeezerResolutionMiss(track);
                 }
             });
 
         return resolved.ToDictionary(kvp => kvp.Key, kvp => kvp.Value, StringComparer.Ordinal);
     }
 
-    private async Task<DeezerResolvedMetadata?> ResolveDeezerMetadataForTrackAsync(BoomplayTrackMetadata track, CancellationToken cancellationToken)
+    private async Task<DeezerResolvedMetadata?> ResolveDeezerMetadataForTrackAsync(
+        BoomplayTrackMetadata track,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
+        CancellationToken cancellationToken)
     {
         if (track == null || string.IsNullOrWhiteSpace(track.Id))
         {
@@ -876,10 +961,10 @@ public sealed class BoomplayApiController : ControllerBase
 
         try
         {
-            var deezerId = await ResolveDeezerIdFromCoreMetadataAsync(track, summary, cancellationToken);
+            var deezerId = await ResolveDeezerIdFromCoreMetadataAsync(track, summary, validationTrackCache, cancellationToken);
             if (string.IsNullOrWhiteSpace(deezerId))
             {
-                deezerId = await ResolveDeezerIdFromSongLinkAsync(summary, cancellationToken);
+                deezerId = await ResolveDeezerIdFromSongLinkAsync(summary, validationTrackCache, cancellationToken);
             }
 
             if (string.IsNullOrWhiteSpace(deezerId))
@@ -887,7 +972,7 @@ public sealed class BoomplayApiController : ControllerBase
                 return null;
             }
 
-            return await HydrateDeezerMetadataAsync(deezerId, track, cancellationToken);
+            return await HydrateDeezerMetadataAsync(deezerId, track, validationTrackCache, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -924,6 +1009,7 @@ public sealed class BoomplayApiController : ControllerBase
     private async Task<string?> ResolveDeezerIdFromCoreMetadataAsync(
         BoomplayTrackMetadata track,
         SpotifyTrackSummary summary,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         if (!HasCoreMetadata(track))
@@ -938,6 +1024,7 @@ public sealed class BoomplayApiController : ControllerBase
             strictMode,
             bypassNegativeCanonicalCache: false,
             sourceIsrc,
+            validationTrackCache,
             cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolved))
         {
@@ -951,6 +1038,7 @@ public sealed class BoomplayApiController : ControllerBase
                 strictMode: false,
                 bypassNegativeCanonicalCache: true,
                 sourceIsrc,
+                validationTrackCache,
                 cancellationToken);
             if (!string.IsNullOrWhiteSpace(resolved))
             {
@@ -958,7 +1046,7 @@ public sealed class BoomplayApiController : ControllerBase
             }
         }
 
-        resolved = await ResolveDeezerIdViaDirectMetadataAsync(summary, sourceIsrc, cancellationToken);
+        resolved = await ResolveDeezerIdViaDirectMetadataAsync(summary, sourceIsrc, validationTrackCache, cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolved))
         {
             return resolved;
@@ -970,6 +1058,7 @@ public sealed class BoomplayApiController : ControllerBase
             summary.Album,
             sourceIsrc,
             summary.DurationMs,
+            validationTrackCache,
             cancellationToken);
     }
 
@@ -978,6 +1067,7 @@ public sealed class BoomplayApiController : ControllerBase
         bool strictMode,
         bool bypassNegativeCanonicalCache,
         string? sourceIsrc,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         var resolved = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
@@ -1000,12 +1090,14 @@ public sealed class BoomplayApiController : ControllerBase
             summary.Album,
             sourceIsrc,
             summary.DurationMs,
+            validationTrackCache,
             cancellationToken);
     }
 
     private async Task<string?> ResolveDeezerIdViaDirectMetadataAsync(
         SpotifyTrackSummary summary,
         string? sourceIsrc,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         var artist = summary.Artists ?? string.Empty;
@@ -1025,6 +1117,7 @@ public sealed class BoomplayApiController : ControllerBase
             album,
             sourceIsrc,
             durationMs,
+            validationTrackCache,
             cancellationToken);
         if (!string.IsNullOrWhiteSpace(validatedId))
         {
@@ -1039,6 +1132,7 @@ public sealed class BoomplayApiController : ControllerBase
             album,
             sourceIsrc,
             durationMs,
+            validationTrackCache,
             cancellationToken);
         if (!string.IsNullOrWhiteSpace(validatedId))
         {
@@ -1059,11 +1153,13 @@ public sealed class BoomplayApiController : ControllerBase
             album,
             sourceIsrc,
             durationMs,
+            validationTrackCache,
             cancellationToken);
     }
 
     private async Task<string?> ResolveDeezerIdFromSongLinkAsync(
         SpotifyTrackSummary summary,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         var songLink = await _songLinkResolver.ResolveByUrlAsync(summary.SourceUrl, cancellationToken);
@@ -1079,6 +1175,7 @@ public sealed class BoomplayApiController : ControllerBase
             summary.Album,
             summary.Isrc,
             summary.DurationMs,
+            validationTrackCache,
             cancellationToken);
     }
 
@@ -1097,6 +1194,7 @@ public sealed class BoomplayApiController : ControllerBase
         string? sourceAlbum,
         string? sourceIsrc,
         int? sourceDurationMs,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(deezerId) || deezerId == "0")
@@ -1111,6 +1209,7 @@ public sealed class BoomplayApiController : ControllerBase
             sourceAlbum,
             sourceIsrc,
             sourceDurationMs,
+            validationTrackCache,
             cancellationToken);
 
         return plausible ? deezerId : null;
@@ -1119,6 +1218,7 @@ public sealed class BoomplayApiController : ControllerBase
     private async Task<DeezerResolvedMetadata> HydrateDeezerMetadataAsync(
         string deezerId,
         BoomplayTrackMetadata fallback,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         var title = WebUtility.HtmlDecode(fallback.Title ?? string.Empty).Trim();
@@ -1126,6 +1226,26 @@ public sealed class BoomplayApiController : ControllerBase
         var album = WebUtility.HtmlDecode(fallback.Album ?? string.Empty).Trim();
         var coverMedium = WebUtility.HtmlDecode(fallback.CoverUrl ?? string.Empty).Trim();
         int? durationSeconds = fallback.DurationMs > 0 ? (int)Math.Round(fallback.DurationMs / 1000d) : null;
+
+        if (TryGetValidationTrackFromCache(deezerId, validationTrackCache, out var cachedTrack) && cachedTrack != null)
+        {
+            title = FirstNonEmpty(cachedTrack.Title ?? string.Empty, title);
+            artist = FirstNonEmpty(cachedTrack.Artist?.Name ?? string.Empty, artist);
+            album = FirstNonEmpty(cachedTrack.Album?.Title ?? string.Empty, album);
+            coverMedium = FirstNonEmpty(cachedTrack.Album?.CoverMedium ?? string.Empty, coverMedium);
+            if (cachedTrack.Duration > 0)
+            {
+                durationSeconds = cachedTrack.Duration;
+            }
+
+            return new DeezerResolvedMetadata(
+                DeezerId: deezerId,
+                Title: title,
+                Artist: artist,
+                Album: album,
+                CoverMedium: coverMedium,
+                DurationSeconds: durationSeconds);
+        }
 
         try
         {
@@ -1172,6 +1292,7 @@ public sealed class BoomplayApiController : ControllerBase
         string? sourceAlbum,
         string? sourceIsrc,
         int? sourceDurationMs,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         var source = new DeezerCandidateSource(
@@ -1184,7 +1305,7 @@ public sealed class BoomplayApiController : ControllerBase
             deezerId,
             source,
             new DeezerCandidateValidationHandlers(
-                TryGetValidationCandidateAsync,
+                (candidateId, token) => TryGetValidationCandidateAsync(candidateId, validationTrackCache, token),
                 SourceAllowsDerivative,
                 IsDerivativeCandidate,
                 IsDerivativeArtistName),
@@ -1203,6 +1324,7 @@ public sealed class BoomplayApiController : ControllerBase
         string? sourceAlbum,
         string? sourceIsrc,
         int? sourceDurationMs,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         var source = new DeezerCandidateSource(
@@ -1222,9 +1344,10 @@ public sealed class BoomplayApiController : ControllerBase
                     source.SourceAlbum,
                     source.SourceIsrc,
                     source.SourceDurationMs,
+                    validationTrackCache,
                     token),
-                (candidateId, album, token) => GetAlbumMatchScoreAsync(candidateId, album, token),
-                TryGetValidationCandidateAsync,
+                (candidateId, album, token) => GetAlbumMatchScoreAsync(candidateId, album, validationTrackCache, token),
+                (candidateId, token) => TryGetValidationCandidateAsync(candidateId, validationTrackCache, token),
                 SourceAllowsDerivative,
                 IsDerivativeArtistName),
             _logger,
@@ -1238,26 +1361,142 @@ public sealed class BoomplayApiController : ControllerBase
     private Task<double> GetAlbumMatchScoreAsync(
         string deezerId,
         string? sourceAlbum,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
         return DeezerCandidateMatchHelper.GetAlbumMatchScoreAsync(
             deezerId,
             sourceAlbum,
-            TryGetValidationCandidateAsync,
+            (candidateId, token) => TryGetValidationCandidateAsync(candidateId, validationTrackCache, token),
             cancellationToken);
     }
 
-    private Task<(bool fetched, ApiTrack? track)> TryGetValidationCandidateAsync(
+    private async Task<(bool fetched, ApiTrack? track)> TryGetValidationCandidateAsync(
         string deezerId,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
-        return DeezerCandidateMatchHelper.TryGetValidationCandidateAsync(
+        if (TryGetValidationTrackFromCache(deezerId, validationTrackCache, out var cachedTrack))
+        {
+            return (true, cachedTrack);
+        }
+
+        var resolved = await DeezerCandidateMatchHelper.TryGetValidationCandidateAsync(
             _deezerClient,
             _logger,
             deezerId,
             "Failed to load Deezer candidate {DeezerId} for Boomplay validation",
             cancellationToken);
+
+        if (resolved.fetched)
+        {
+            if (resolved.track == null)
+            {
+                validationTrackCache.TryAdd(deezerId, null);
+            }
+            else
+            {
+                validationTrackCache[deezerId] = resolved.track;
+                _memoryCache.Set(
+                    BuildValidationTrackCacheKey(deezerId),
+                    resolved.track,
+                    DeezerValidationTrackCacheTtl);
+            }
+        }
+
+        return resolved;
     }
+
+    private bool TryGetCachedDeezerResolution(BoomplayTrackMetadata track, out DeezerResolvedMetadata resolved)
+    {
+        resolved = null!;
+        if (string.IsNullOrWhiteSpace(track.Id))
+        {
+            return false;
+        }
+
+        if (!_memoryCache.TryGetValue(BuildDeezerResolutionCacheKey(track.Id), out DeezerResolvedMetadata? cached)
+            || cached == null)
+        {
+            return false;
+        }
+
+        resolved = cached;
+        return true;
+    }
+
+    private void CacheDeezerResolution(BoomplayTrackMetadata track, DeezerResolvedMetadata metadata)
+    {
+        if (string.IsNullOrWhiteSpace(track.Id))
+        {
+            return;
+        }
+
+        _memoryCache.Set(
+            BuildDeezerResolutionCacheKey(track.Id),
+            metadata,
+            DeezerResolutionCacheTtl);
+    }
+
+    private bool HasRecentResolutionMiss(BoomplayTrackMetadata track)
+    {
+        if (string.IsNullOrWhiteSpace(track.Id))
+        {
+            return false;
+        }
+
+        return _memoryCache.TryGetValue(BuildDeezerResolutionMissCacheKey(track.Id), out bool missed) && missed;
+    }
+
+    private void CacheDeezerResolutionMiss(BoomplayTrackMetadata track)
+    {
+        if (string.IsNullOrWhiteSpace(track.Id))
+        {
+            return;
+        }
+
+        _memoryCache.Set(
+            BuildDeezerResolutionMissCacheKey(track.Id),
+            true,
+            DeezerResolutionMissCacheTtl);
+    }
+
+    private bool TryGetValidationTrackFromCache(
+        string deezerId,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
+        out ApiTrack? track)
+    {
+        track = null;
+        if (string.IsNullOrWhiteSpace(deezerId))
+        {
+            return false;
+        }
+
+        if (validationTrackCache.TryGetValue(deezerId, out var inRequestTrack))
+        {
+            track = inRequestTrack;
+            return true;
+        }
+
+        if (_memoryCache.TryGetValue(BuildValidationTrackCacheKey(deezerId), out ApiTrack? sharedTrack))
+        {
+            validationTrackCache[deezerId] = sharedTrack;
+            track = sharedTrack;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string BuildDeezerResolutionCacheKey(string boomplayTrackId)
+        => $"{DeezerResolutionCacheKeyPrefix}{boomplayTrackId.Trim()}";
+
+    private static string BuildDeezerResolutionMissCacheKey(string boomplayTrackId)
+        => $"{DeezerResolutionMissCacheKeyPrefix}{boomplayTrackId.Trim()}";
+
+    private static string BuildValidationTrackCacheKey(string deezerId)
+        => $"boomplay:deezer:track:{deezerId.Trim()}";
+
 
     private static string NormalizeGuardToken(string? value)
         => ResolveDeezerApiController.NormalizeGuardToken(value);
