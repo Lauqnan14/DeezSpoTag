@@ -452,14 +452,14 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             context.ResolvedIsrc,
             context.SourceSelection,
             context.ProgressReporter);
-        if (!string.IsNullOrWhiteSpace(context.ResolvedIsrc))
-        {
-            return await _qobuzDownloader.DownloadByIsrcAsync(requestPayload, context.CancellationToken);
-        }
-
         if (context.SourceSelection.HasTrackUrl || !string.IsNullOrWhiteSpace(context.Payload.SourceUrl))
         {
             return await _qobuzDownloader.DownloadByUrlAsync(requestPayload, context.CancellationToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(context.ResolvedIsrc))
+        {
+            return await _qobuzDownloader.DownloadByIsrcAsync(requestPayload, context.CancellationToken);
         }
 
         throw new InvalidOperationException("Qobuz download requires a valid source URL or ISRC.");
