@@ -410,6 +410,39 @@ public class JellyfinApiClient
         return items.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item.Id))?.Id;
     }
 
+    public async Task<List<JellyfinMediaItem>> GetPlaylistsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId))
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append("?Recursive=true");
+        query.Append("&IncludeItemTypes=Playlist");
+        query.Append("&SortBy=SortName");
+        query.Append("&SortOrder=Ascending");
+        query.Append("&Limit=500");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinMediaItem>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        return payload?.Items ?? new List<JellyfinMediaItem>();
+    }
+
     public async Task<string?> CreatePlaylistAsync(
         string serverUrl,
         string apiKey,

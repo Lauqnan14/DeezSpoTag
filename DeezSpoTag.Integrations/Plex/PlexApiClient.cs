@@ -1624,7 +1624,8 @@ public class PlexApiClient
 
     public sealed record PlaylistUpsertOptions(
         string? ExistingTitlePrefix = null,
-        bool AppendMissingOnly = false);
+        bool AppendMissingOnly = false,
+        string? ExistingPlaylistId = null);
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist upsert retains explicit validation and branch flow for append/replace safety.")]
     public async Task<string?> CreateOrUpdatePlaylistAsync(
@@ -1661,8 +1662,19 @@ public class PlexApiClient
 
         var existingTitlePrefix = options?.ExistingTitlePrefix;
         var appendMissingOnly = options?.AppendMissingOnly ?? false;
-        var existing = await GetPlaylistsAsync(normalizedServerUrl, normalizedToken, cancellationToken);
-        var playlistId = FindMatchingPlaylistId(existing, normalizedPlaylistName, existingTitlePrefix);
+        var forcedPlaylistId = string.IsNullOrWhiteSpace(options?.ExistingPlaylistId)
+            ? null
+            : options!.ExistingPlaylistId!.Trim();
+        string? playlistId;
+        if (!string.IsNullOrWhiteSpace(forcedPlaylistId))
+        {
+            playlistId = forcedPlaylistId;
+        }
+        else
+        {
+            var existing = await GetPlaylistsAsync(normalizedServerUrl, normalizedToken, cancellationToken);
+            playlistId = FindMatchingPlaylistId(existing, normalizedPlaylistName, existingTitlePrefix);
+        }
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {

@@ -611,7 +611,30 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string? Description,
         string? SyncMode,
         bool? SyncToPlex,
-        bool? SyncToJellyfin);
+        bool? SyncToJellyfin,
+        string? ExistingPlexPlaylistId,
+        string? ExistingJellyfinPlaylistId);
+
+    [HttpGet("merge-target-playlists")]
+    public async Task<IActionResult> GetMergeTargetPlaylists([FromQuery] string? target, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var normalizedTarget = string.IsNullOrWhiteSpace(target)
+            ? string.Empty
+            : target.Trim().ToLowerInvariant();
+        if (!string.Equals(normalizedTarget, "plex", StringComparison.Ordinal)
+            && !string.Equals(normalizedTarget, "jellyfin", StringComparison.Ordinal))
+        {
+            return BadRequest("target must be 'plex' or 'jellyfin'.");
+        }
+
+        var playlists = await _playlistSyncService.GetTargetPlaylistsAsync(normalizedTarget, cancellationToken);
+        return Ok(playlists);
+    }
 
     [HttpPost("merge-sync")]
     public async Task<IActionResult> MergeSync([FromBody] PlaylistMergeRequest request, CancellationToken cancellationToken)
@@ -696,7 +719,9 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 sourceUserName,
                 request.SyncMode,
                 syncToPlex,
-                syncToJellyfin),
+                syncToJellyfin,
+                request.ExistingPlexPlaylistId,
+                request.ExistingJellyfinPlaylistId),
             cancellationToken);
 
         if (!result.Success)

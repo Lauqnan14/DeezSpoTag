@@ -1497,27 +1497,34 @@ async function openPlaylistMergePanel(items) {
     }
 
     const panel = document.createElement('div');
-    panel.className = 'playlist-settings-panel';
+    panel.className = 'playlist-settings-panel watchlist-playlist-settings';
 
     const sourceSection = document.createElement('div');
     sourceSection.className = 'playlist-settings-section';
     sourceSection.innerHTML = '<div class="playlist-settings-section-title">Playlists to merge</div>';
     const sourceList = document.createElement('div');
-    sourceList.className = 'routing-rules-list';
+    sourceList.className = 'routing-rules-list merge-source-list';
     items.forEach((item, index) => {
         const row = document.createElement('label');
-        row.className = 'routing-rule-row';
+        row.className = 'merge-source-row';
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.className = 'form-check-input';
         checkbox.dataset.mergeSource = item.source || '';
         checkbox.dataset.mergeSourceId = item.sourceId || '';
         checkbox.checked = index < 2;
-        const sourceLabel = document.createElement('div');
-        sourceLabel.className = 'playlist-settings-section-label';
-        sourceLabel.textContent = `${item.name || 'Playlist'} · ${String(item.source || '').toUpperCase()}`;
+        const sourceLabelWrap = document.createElement('div');
+        sourceLabelWrap.className = 'merge-source-label-wrap';
+        const sourceName = document.createElement('div');
+        sourceName.className = 'merge-source-name';
+        sourceName.textContent = item.name || 'Playlist';
+        const sourceMeta = document.createElement('div');
+        sourceMeta.className = 'merge-source-meta';
+        sourceMeta.textContent = String(item.source || '').toUpperCase();
+        sourceLabelWrap.appendChild(sourceName);
+        sourceLabelWrap.appendChild(sourceMeta);
         row.appendChild(checkbox);
-        row.appendChild(sourceLabel);
+        row.appendChild(sourceLabelWrap);
         sourceList.appendChild(row);
     });
     sourceSection.appendChild(sourceList);
@@ -1552,33 +1559,64 @@ async function openPlaylistMergePanel(items) {
     targetSection.className = 'playlist-settings-section';
     targetSection.innerHTML = '<div class="playlist-settings-section-title">Sync targets</div>';
     const targetList = document.createElement('div');
-    targetList.className = 'routing-rules-list';
+    targetList.className = 'routing-rules-list merge-target-list';
     const plexRow = document.createElement('label');
-    plexRow.className = 'routing-rule-row';
+    plexRow.className = 'merge-target-row';
     const plexCheck = document.createElement('input');
     plexCheck.type = 'checkbox';
     plexCheck.className = 'form-check-input';
     plexCheck.checked = true;
     const plexText = document.createElement('div');
-    plexText.className = 'playlist-settings-section-label';
+    plexText.className = 'merge-target-label';
     plexText.textContent = 'Plex';
     plexRow.appendChild(plexCheck);
     plexRow.appendChild(plexText);
     targetList.appendChild(plexRow);
     const jellyfinRow = document.createElement('label');
-    jellyfinRow.className = 'routing-rule-row';
+    jellyfinRow.className = 'merge-target-row';
     const jellyfinCheck = document.createElement('input');
     jellyfinCheck.type = 'checkbox';
     jellyfinCheck.className = 'form-check-input';
     jellyfinCheck.checked = false;
     const jellyfinText = document.createElement('div');
-    jellyfinText.className = 'playlist-settings-section-label';
+    jellyfinText.className = 'merge-target-label';
     jellyfinText.textContent = 'Jellyfin';
     jellyfinRow.appendChild(jellyfinCheck);
     jellyfinRow.appendChild(jellyfinText);
     targetList.appendChild(jellyfinRow);
     targetSection.appendChild(targetList);
     panel.appendChild(targetSection);
+
+    const existingTargetSection = document.createElement('div');
+    existingTargetSection.className = 'playlist-settings-section';
+    existingTargetSection.innerHTML = '<div class="playlist-settings-section-title">Target playlist option</div>';
+    const useExistingWrap = document.createElement('label');
+    useExistingWrap.className = 'merge-target-row';
+    const useExistingCheck = document.createElement('input');
+    useExistingCheck.type = 'checkbox';
+    useExistingCheck.className = 'form-check-input';
+    const useExistingText = document.createElement('div');
+    useExistingText.className = 'merge-target-label';
+    useExistingText.textContent = 'Merge into existing playlist on target server';
+    useExistingWrap.appendChild(useExistingCheck);
+    useExistingWrap.appendChild(useExistingText);
+    existingTargetSection.appendChild(useExistingWrap);
+
+    const plexExistingSelect = document.createElement('select');
+    plexExistingSelect.className = 'form-select';
+    plexExistingSelect.disabled = true;
+    plexExistingSelect.hidden = true;
+    plexExistingSelect.innerHTML = '<option value="">Select existing Plex playlist</option>';
+    existingTargetSection.appendChild(plexExistingSelect);
+
+    const jellyfinExistingSelect = document.createElement('select');
+    jellyfinExistingSelect.className = 'form-select';
+    jellyfinExistingSelect.disabled = true;
+    jellyfinExistingSelect.hidden = true;
+    jellyfinExistingSelect.innerHTML = '<option value="">Select existing Jellyfin playlist</option>';
+    existingTargetSection.appendChild(jellyfinExistingSelect);
+
+    panel.appendChild(existingTargetSection);
 
     const syncModeSection = document.createElement('div');
     syncModeSection.className = 'playlist-settings-section';
@@ -1597,10 +1635,79 @@ async function openPlaylistMergePanel(items) {
     syncModeSection.appendChild(syncModeSelect);
     panel.appendChild(syncModeSection);
 
+    const mergeTargetPlaylistsCache = new Map();
+    async function loadTargetPlaylistOptions(target, selectElement) {
+        const normalizedTarget = String(target || '').trim().toLowerCase();
+        if (!normalizedTarget) {
+            return;
+        }
+
+        if (!mergeTargetPlaylistsCache.has(normalizedTarget)) {
+            const items = await fetchJson(`/api/library/playlists/merge-target-playlists?target=${encodeURIComponent(normalizedTarget)}`);
+            mergeTargetPlaylistsCache.set(normalizedTarget, Array.isArray(items) ? items : []);
+        }
+
+        const options = mergeTargetPlaylistsCache.get(normalizedTarget) || [];
+        const defaultLabel = normalizedTarget === 'plex'
+            ? 'Select existing Plex playlist'
+            : 'Select existing Jellyfin playlist';
+        selectElement.innerHTML = `<option value="">${defaultLabel}</option>`;
+        options.forEach(item => {
+            const option = document.createElement('option');
+            option.value = String(item.id || '').trim();
+            if (!option.value) {
+                return;
+            }
+            const count = Number.isFinite(Number(item.trackCount)) ? ` (${Number(item.trackCount)} tracks)` : '';
+            option.textContent = `${String(item.name || option.value)}${count}`;
+            selectElement.appendChild(option);
+        });
+    }
+
+    async function refreshExistingTargetPlaylistControls() {
+        const useExisting = useExistingCheck.checked;
+        const allowPlex = useExisting && plexCheck.checked;
+        const allowJellyfin = useExisting && jellyfinCheck.checked;
+
+        plexExistingSelect.hidden = !allowPlex;
+        jellyfinExistingSelect.hidden = !allowJellyfin;
+        plexExistingSelect.disabled = !allowPlex;
+        jellyfinExistingSelect.disabled = !allowJellyfin;
+
+        if (!allowPlex) {
+            plexExistingSelect.value = '';
+        } else {
+            await loadTargetPlaylistOptions('plex', plexExistingSelect);
+        }
+
+        if (!allowJellyfin) {
+            jellyfinExistingSelect.value = '';
+        } else {
+            await loadTargetPlaylistOptions('jellyfin', jellyfinExistingSelect);
+        }
+    }
+
+    useExistingCheck.addEventListener('change', async () => {
+        try {
+            await refreshExistingTargetPlaylistControls();
+        } catch (error) {
+            showToast(`Failed to load target playlists: ${error?.message || 'Unknown error'}`, true);
+            useExistingCheck.checked = false;
+            await refreshExistingTargetPlaylistControls();
+        }
+    });
+    plexCheck.addEventListener('change', () => {
+        void refreshExistingTargetPlaylistControls();
+    });
+    jellyfinCheck.addEventListener('change', () => {
+        void refreshExistingTargetPlaylistControls();
+    });
+
     const confirmed = await globalThis.DeezSpoTag.ui.showModal({
         title: 'Merge Monitored Playlists',
         message: '',
         allowHtml: false,
+        dialogClass: 'is-resizable playlist-settings-modal',
         contentElement: panel,
         buttons: [
             { label: 'Merge & Sync', value: 'merge', primary: true },
@@ -1627,13 +1734,30 @@ async function openPlaylistMergePanel(items) {
         return;
     }
 
+    if (useExistingCheck.checked) {
+        if (plexCheck.checked && !plexExistingSelect.value) {
+            showToast('Select an existing Plex playlist.', true);
+            return;
+        }
+        if (jellyfinCheck.checked && !jellyfinExistingSelect.value) {
+            showToast('Select an existing Jellyfin playlist.', true);
+            return;
+        }
+    }
+
     const payload = {
         playlists: selectedPlaylists,
         name: String(nameInput.value || '').trim(),
         description: String(descriptionInput.value || '').trim(),
         syncMode: syncModeSelect.value || 'mirror',
         syncToPlex: plexCheck.checked,
-        syncToJellyfin: jellyfinCheck.checked
+        syncToJellyfin: jellyfinCheck.checked,
+        existingPlexPlaylistId: useExistingCheck.checked && plexCheck.checked
+            ? String(plexExistingSelect.value || '').trim()
+            : null,
+        existingJellyfinPlaylistId: useExistingCheck.checked && jellyfinCheck.checked
+            ? String(jellyfinExistingSelect.value || '').trim()
+            : null
     };
 
     try {

@@ -97,7 +97,9 @@ public sealed class PlaylistSyncService
         string? SourceUsername,
         string? SyncMode,
         bool SyncToPlex,
-        bool SyncToJellyfin);
+        bool SyncToJellyfin,
+        string? ExistingPlexPlaylistId = null,
+        string? ExistingJellyfinPlaylistId = null);
 
     public sealed record PlaylistMergeTargetResult(
         string Target,
@@ -121,6 +123,11 @@ public sealed class PlaylistSyncService
         string? Service = null,
         long? LocalTrackId = null,
         string? TargetId = null);
+
+    public sealed record TargetPlaylistOption(
+        string Id,
+        string Name,
+        int? TrackCount = null);
 
     public async Task<PlaylistMergeSyncResult> MergeAndSyncPlaylistsAsync(
         IReadOnlyList<PlaylistMergeSourceInput> mergeSources,
@@ -194,6 +201,57 @@ public sealed class PlaylistSyncService
             candidateTrackCount,
             mergedTracks.Count,
             targets);
+    }
+
+    public async Task<IReadOnlyList<TargetPlaylistOption>> GetTargetPlaylistsAsync(
+        string target,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(target, PlexService, StringComparison.OrdinalIgnoreCase))
+        {
+            var (plex, configurationError) = await TryLoadConfiguredPlexAsync();
+            if (configurationError is not null || plex is null)
+            {
+                return Array.Empty<TargetPlaylistOption>();
+            }
+
+            var playlists = await _plexApiClient.GetPlaylistsAsync(plex.Url, plex.Token, cancellationToken);
+            return playlists
+                .Where(static playlist => !string.IsNullOrWhiteSpace(playlist.Id)
+                    && !string.IsNullOrWhiteSpace(playlist.Title))
+                .Select(static playlist => new TargetPlaylistOption(
+                    playlist.Id!,
+                    playlist.Title!,
+                    playlist.TrackCount))
+                .OrderBy(static playlist => playlist.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        if (string.Equals(target, JellyfinService, StringComparison.OrdinalIgnoreCase))
+        {
+            var (jellyfin, configurationError) = await TryLoadConfiguredJellyfinAsync();
+            if (configurationError is not null || jellyfin is null)
+            {
+                return Array.Empty<TargetPlaylistOption>();
+            }
+
+            var playlists = await _jellyfinApiClient.GetPlaylistsAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                cancellationToken);
+            return playlists
+                .Where(static playlist => !string.IsNullOrWhiteSpace(playlist.Id)
+                    && !string.IsNullOrWhiteSpace(playlist.Name))
+                .Select(static playlist => new TargetPlaylistOption(
+                    playlist.Id!,
+                    playlist.Name!,
+                    null))
+                .OrderBy(static playlist => playlist.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        return Array.Empty<TargetPlaylistOption>();
     }
 
     private static List<PlaylistMergeSourceInput> BuildValidMergeSourceList(IReadOnlyList<PlaylistMergeSourceInput> mergeSources)
@@ -295,6 +353,7 @@ public sealed class PlaylistSyncService
                 mergedPlaylist,
                 CreateMergedPlaylistPreference(mergedPlaylist, PlexService, syncMode, now),
                 mergedTracks,
+                request.ExistingPlexPlaylistId,
                 cancellationToken);
             targets.Add(new PlaylistMergeTargetResult(
                 PlexService,
@@ -310,6 +369,7 @@ public sealed class PlaylistSyncService
                 mergedPlaylist,
                 CreateMergedPlaylistPreference(mergedPlaylist, JellyfinService, syncMode, now),
                 mergedTracks,
+                request.ExistingJellyfinPlaylistId,
                 cancellationToken);
             targets.Add(new PlaylistMergeTargetResult(
                 JellyfinService,
@@ -383,8 +443,8 @@ public sealed class PlaylistSyncService
 
         return service switch
         {
-            PlexService => await SyncToPlexAsync(playlist, preference, tracks, cancellationToken),
-            JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, cancellationToken),
+            PlexService => await SyncToPlexAsync(playlist, preference, tracks, existingPlaylistId: null, cancellationToken),
+            JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, existingPlaylistId: null, cancellationToken),
             _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
         };
     }
@@ -577,6 +637,7 @@ public sealed class PlaylistSyncService
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
         IReadOnlyList<SyncTrackSummary> tracks,
+        string? existingPlaylistId,
         CancellationToken cancellationToken)
     {
         var (plex, configurationError) = await TryLoadConfiguredPlexAsync();
@@ -630,7 +691,10 @@ public sealed class PlaylistSyncService
             playlistName,
             matchSummary.TargetIds,
             options: new PlexApiClient.PlaylistUpsertOptions(
-                AppendMissingOnly: appendMissingOnly),
+                AppendMissingOnly: appendMissingOnly,
+                ExistingPlaylistId: string.IsNullOrWhiteSpace(existingPlaylistId)
+                    ? null
+                    : existingPlaylistId.Trim()),
             cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(playlistId))
         {
@@ -661,6 +725,7 @@ public sealed class PlaylistSyncService
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
         IReadOnlyList<SyncTrackSummary> tracks,
+        string? existingPlaylistId,
         CancellationToken cancellationToken)
     {
         var (jellyfin, configurationError) = await TryLoadConfiguredJellyfinAsync();
@@ -709,12 +774,14 @@ public sealed class PlaylistSyncService
                 matchSummary);
         }
 
-        var playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
-            jellyfin.Url,
-            jellyfin.ApiKey,
-            jellyfin.UserId,
-            playlistName,
-            cancellationToken);
+        var playlistId = string.IsNullOrWhiteSpace(existingPlaylistId)
+            ? await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                playlistName,
+                cancellationToken)
+            : existingPlaylistId.Trim();
 
         var syncedTracks = 0;
         if (string.IsNullOrWhiteSpace(playlistId))
