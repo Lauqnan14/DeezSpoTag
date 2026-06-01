@@ -205,11 +205,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             request.TrackName,
             request.ArtistName,
             expectedDurationSec,
-            requireStrongMatch: false,
+            requireStrongMatch: true,
             cancellationToken);
         if (metadataTrack == null)
         {
-            throw new InvalidOperationException("Qobuz download requires an ISRC or metadata match.");
+            throw new InvalidOperationException("Qobuz download requires an ISRC or a strict metadata match.");
         }
 
         return metadataTrack.Isrc;
@@ -721,8 +721,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return null;
         }
 
-        var best = SelectBestSearchTrack(allTracks, title, artist, expectedDurationSec, requireStrongMatch);
-        return best ?? (requireStrongMatch ? null : allTracks[0]);
+        return SelectBestSearchTrack(allTracks, title, artist, expectedDurationSec, requireStrongMatch);
     }
 
     private async Task<List<QobuzTrack>> SearchTracksByQueriesAsync(
@@ -1311,7 +1310,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return match.Id;
         }
 
-        return payload?.Tracks?.Items?.FirstOrDefault(track => track.Id > 0)?.Id;
+        return null;
     }
 
     private async Task<long?> ResolveFallbackTrackIdAsync(

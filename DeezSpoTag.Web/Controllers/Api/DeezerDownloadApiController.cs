@@ -104,6 +104,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                 urls,
                 ParseDestinationFolderId(payload),
                 ParseMetadata(payload),
+                ParseQueueInBackground(payload),
                 _deezerClient.LoggedIn,
                 _settingsService.LoadSettings());
         }
@@ -164,6 +165,22 @@ namespace DeezSpoTag.Web.Controllers.Api
             return null;
         }
 
+        private static bool ParseQueueInBackground(JsonElement payload)
+        {
+            if (!payload.TryGetProperty("queueInBackground", out var queueInBackgroundElement))
+            {
+                return false;
+            }
+
+            return queueInBackgroundElement.ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.String when bool.TryParse(queueInBackgroundElement.GetString(), out var parsed) => parsed,
+                _ => false
+            };
+        }
+
         private async Task ProcessAddWithSettingsUrlAsync(
             string url,
             AddWithSettingsRequest request,
@@ -197,6 +214,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                     intent,
                     isBatch,
                     forceImmediateNoIsrc,
+                    request.QueueInBackground,
                     request.DestinationFolderId,
                     accumulator,
                     cancellationToken);
@@ -379,12 +397,27 @@ namespace DeezSpoTag.Web.Controllers.Api
             DownloadIntent intent,
             bool isBatch,
             bool forceImmediateNoIsrc,
+            bool queueInBackground,
             long? destinationFolderId,
             AddWithSettingsAccumulator accumulator,
             CancellationToken cancellationToken)
         {
             intent.DestinationFolderId ??= destinationFolderId;
             var requiresAutoTagProfile = RequiresAutoTagDefaults(intent.ContentType, intent.SourceUrl);
+
+            if (queueInBackground)
+            {
+                if (_backgroundQueue.Enqueue(intent))
+                {
+                    accumulator.Deferred++;
+                }
+                else
+                {
+                    accumulator.Skipped++;
+                    accumulator.SetLastErrorIfEmpty("Background queue is unavailable.");
+                }
+                return;
+            }
 
             if (string.IsNullOrWhiteSpace(intent.Isrc) && isBatch && !forceImmediateNoIsrc)
             {
@@ -435,6 +468,15 @@ namespace DeezSpoTag.Web.Controllers.Api
             AddWithSettingsAccumulator accumulator,
             CancellationToken cancellationToken)
         {
+            var verifiedQueued = await FilterExistingQueueUuidsAsync(accumulator.Queued, cancellationToken);
+            if (verifiedQueued.Count != accumulator.Queued.Count && _logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(
+                    "Deezer enqueue response mismatch: reported queued={Reported} existing={Existing}",
+                    accumulator.Queued.Count,
+                    verifiedQueued.Count);
+            }
+
             if (accumulator.Queued.Count == 0 && accumulator.Deferred > 0)
             {
                 if (_logger.IsEnabled(LogLevel.Information))
@@ -479,11 +521,22 @@ namespace DeezSpoTag.Web.Controllers.Api
                 });
             }
 
+            if (verifiedQueued.Count == 0)
+            {
+                _logger.LogWarning("Deezer download mapped via intent but no queue rows were found for reported queued ids.");
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Nothing queued.",
+                    reasonCodes = accumulator.ReasonCodes
+                });
+            }
+
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
                     "Deezer download mapped via intent: queued {Queued} deferred {Deferred} skipped {Skipped}",
-                    accumulator.Queued.Count,
+                    verifiedQueued.Count,
                     accumulator.Deferred,
                     accumulator.Skipped);
             }
@@ -495,12 +548,35 @@ namespace DeezSpoTag.Web.Controllers.Api
             return Ok(new
             {
                 success = true,
-                downloadId = accumulator.Queued[0],
-                downloadIds = accumulator.Queued,
+                downloadId = verifiedQueued[0],
+                downloadIds = verifiedQueued,
                 linkType = accumulator.Engine,
                 deferredCount = accumulator.Deferred,
                 reasonCodes = accumulator.ReasonCodes
             });
+        }
+
+        private async Task<List<string>> FilterExistingQueueUuidsAsync(
+            IEnumerable<string> queueUuids,
+            CancellationToken cancellationToken)
+        {
+            var verified = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var queueUuid in queueUuids)
+            {
+                if (string.IsNullOrWhiteSpace(queueUuid) || !seen.Add(queueUuid))
+                {
+                    continue;
+                }
+
+                var item = await _queueRepository.GetByUuidAsync(queueUuid, cancellationToken);
+                if (item != null)
+                {
+                    verified.Add(queueUuid);
+                }
+            }
+
+            return verified;
         }
 
         private async Task<List<string>> FindAlreadyQueuedDownloadIdsAsync(
@@ -535,6 +611,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             IReadOnlyCollection<string> Urls,
             long? DestinationFolderId,
             DownloadIntent? InputMetadata,
+            bool QueueInBackground,
             bool DeezerLoggedIn,
             DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings Settings);
 

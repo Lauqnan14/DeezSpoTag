@@ -957,7 +957,7 @@ DeezSpoTag.Download = {
             }
         };
     },
-    async enqueueIntentWithPreference({ sourceService, sourceUrl, isrc, url, bitrate, destinationId, options, intentContext, notify, notifyQueue }) {
+    async enqueueIntentWithPreference({ sourceService, sourceUrl, isrc, url, bitrate, destinationId, options, intentContext, notify, notifyQueue, resolveImmediately = true }) {
         const metadata = options?.metadata && typeof options.metadata === 'object'
             ? options.metadata
             : null;
@@ -968,7 +968,7 @@ DeezSpoTag.Download = {
             },
             keepalive: true,
             body: JSON.stringify({
-                resolveImmediately: true,
+                resolveImmediately,
                 intents: [{
                     sourceService,
                     sourceUrl: sourceUrl || undefined,
@@ -1403,6 +1403,7 @@ DeezSpoTag.Download = {
                 bitrate,
                 userId: this.getCurrentUserId(),
                 destinationFolderId: destinationId,
+                queueInBackground: true,
                 metadata: Object.keys(metadata).length > 0
                     ? metadata
                     : undefined
@@ -1554,6 +1555,11 @@ DeezSpoTag.Download = {
         throw this.buildResultError(result, 'Failed to add to queue');
     },
     async executeAddToQueueBySource(context) {
+        const backgroundIntentResult = await this.tryHandleBackgroundIntent(context);
+        if (backgroundIntentResult) {
+            return backgroundIntentResult;
+        }
+
         const handlers = [
             this.tryHandleQobuzIsrcDownload,
             this.tryHandleAmazonDownload,
@@ -1572,6 +1578,44 @@ DeezSpoTag.Download = {
 
         return this.handleDeezerDownload(context);
     },
+    resolveIntentSourceService(url) {
+        if (this.isQobuzUrl(url)) return 'qobuz';
+        if (this.isAmazonUrl(url)) return 'amazon';
+        if (this.isTidalUrl(url)) return 'tidal';
+        if (this.isAppleUrl(url)) return 'apple';
+        if (this.isSpotifyUrl(url)) return 'spotify';
+
+        const parsed = this.tryParseAbsoluteUrl(url);
+        if (!parsed) return null;
+        if (this.hostMatches(parsed.hostname, ['boomplay.com'])) return 'boomplay';
+        if (this.hostMatches(parsed.hostname, ['deezer.com'])) return 'deezer';
+        return null;
+    },
+    async tryHandleBackgroundIntent(context) {
+        const isrcToken = this.extractIsrcToken(context.url);
+        if (isrcToken) {
+            return null;
+        }
+
+        const sourceService = this.resolveIntentSourceService(context.url);
+        if (!sourceService) {
+            return null;
+        }
+
+        return this.enqueueIntentWithPreference({
+            sourceService,
+            sourceUrl: context.url,
+            isrc: '',
+            url: context.url,
+            bitrate: context.bitrate,
+            destinationId: context.destinationId,
+            options: context.options,
+            intentContext: context.intentContext,
+            notify: context.notify,
+            notifyQueue: context.notifyQueue,
+            resolveImmediately: false
+        });
+    },
     handleAddToQueueError(error, { url, bitrate, destinationId, options, notify }) {
         const errorMessage = error?.message || 'Unknown error';
         console.error('Error adding to download queue:', error);
@@ -1584,6 +1628,9 @@ DeezSpoTag.Download = {
             this.logDownloadEvent('error', `failed to add: ${errorMessage}`);
         }
         const shouldKeepPending = error?.name === 'AbortError'
+            || Number(error?.status || 0) >= 500
+            || Number(error?.status || 0) === 408
+            || Number(error?.status || 0) === 429
             || /network|failed to fetch|load failed|the network connection/i.test(String(errorMessage));
         if (!options.skipPending && !shouldKeepPending) {
             this.removePendingQueueItem({ url, bitrate, destinationFolderId: destinationId });
@@ -1684,6 +1731,9 @@ DeezSpoTag.Download = {
             : '';
         this.showNotification(`Adding ${dedupedUrls.length}${inputSummary} items to download queue...`, 'info');
 
+        // Persist the full bulk selection up front so queue submission survives page navigation.
+        this.enqueuePendingQueueItems(dedupedUrls, bitrate, destinationId);
+
         const chunkSize = 20;
         const concurrency = 4;
         for (let index = 0; index < dedupedUrls.length; index += chunkSize) {
@@ -1703,7 +1753,11 @@ DeezSpoTag.Download = {
                 }
 
                 try {
-                    const outcome = await this.addToQueue(url, bitrate, destinationId, { skipPending: true, silent: true });
+                    const outcome = await this.addToQueue(url, bitrate, destinationId, {
+                        skipPending: false,
+                        pendingPrequeued: true,
+                        silent: true
+                    });
                     this.recordBatchQueueOutcome(results, outcome, url, bitrate, destinationId);
                 } catch (error) {
                     this.recordBatchQueueError(results, url, error);
