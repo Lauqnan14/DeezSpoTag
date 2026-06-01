@@ -8801,6 +8801,123 @@ SELECT f.root_path, af.relative_path, af.path
         return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
     }
 
+    public async Task<bool> ExistsTrackByMetadataInFolderAsync(
+        string trackTitle,
+        string artistName,
+        int? durationMs,
+        long folderId,
+        string? audioVariant = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(trackTitle) || string.IsNullOrWhiteSpace(artistName))
+        {
+            return false;
+        }
+
+        var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
+        var normalizedPrimaryArtist = ArtistNameNormalizer.ExtractPrimaryArtist(artistName.Trim());
+        var artistSearchTerm = string.IsNullOrWhiteSpace(normalizedPrimaryArtist)
+            ? artistName.Trim()
+            : normalizedPrimaryArtist.Trim();
+        var artistSearch = $"%{artistSearchTerm}%";
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
+       COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
+       f.root_path,
+       af.relative_path,
+       af.path
+FROM track t
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE af.folder_id = @folderId
+  AND (
+      LOWER(ar.name) LIKE LOWER(@artistSearch)
+      OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(@artistSearch)
+      OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(@artistSearch)
+  )
+  AND (@durationMs IS NULL OR COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) IS NULL OR ABS(COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) - @durationMs) <= 2000)
+  AND (
+      @requireAtmos IS NULL
+      OR (
+          CASE
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 1
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'stereo' THEN 0
+              WHEN (
+                  LOWER(COALESCE(af.codec, '')) LIKE '%dolby atmos%'
+                  OR LOWER(COALESCE(af.codec, '')) LIKE '%joc%'
+                  OR LOWER(COALESCE(af.codec, '')) LIKE '%atmos%'
+                  OR (
+                      (
+                          LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac-3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%mlp%'
+                          OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.ac3', '.mlp')
+                      )
+                      AND af.channels IS NOT NULL
+                      AND af.channels > 2
+                  )
+                  OR (
+                      (
+                          LOWER(REPLACE(COALESCE(af.path, ''), '\', '/')) LIKE '%/atmos/%'
+                          OR LOWER(REPLACE(COALESCE(af.path, ''), '\', '/')) LIKE '%/dolby atmos/%'
+                          OR LOWER(REPLACE(COALESCE(af.path, ''), '\', '/')) LIKE '%/spatial/%'
+                          OR LOWER(COALESCE(af.path, '')) LIKE '%atmos%'
+                      )
+                      AND (
+                          (af.channels IS NOT NULL AND af.channels > 2)
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac-3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac3%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+                          OR LOWER(COALESCE(af.codec, '')) LIKE '%mlp%'
+                          OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.ac3', '.mlp')
+                      )
+                  )
+              ) THEN 1
+              ELSE 0
+          END
+      ) = @requireAtmos
+  )
+LIMIT 200;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
+        command.Parameters.AddWithValue(ArtistSearchParameter, artistSearch);
+        command.Parameters.AddWithValue(DurationMsField, durationMs.HasValue ? durationMs.Value : (object)DBNull.Value);
+        command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var candidateArtist = await ReadNullableStringAsync(reader, 0, cancellationToken) ?? string.Empty;
+            var candidateTitle = await ReadNullableStringAsync(reader, 1, cancellationToken) ?? string.Empty;
+            if (!TrackTitleMatcher.ArtistsMatch(artistName, candidateArtist)
+                || !TrackTitleMatcher.TitlesMatch(trackTitle, candidateTitle))
+            {
+                continue;
+            }
+
+            var rootPath = await ReadNullableStringAsync(reader, 2, cancellationToken);
+            var relativePath = await ReadNullableStringAsync(reader, 3, cancellationToken);
+            var rawPath = await ReadNullableStringAsync(reader, 4, cancellationToken);
+            var fullPath = BuildAbsolutePath(rootPath, relativePath, rawPath);
+            if (!string.IsNullOrWhiteSpace(fullPath) && File.Exists(fullPath))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static async Task<bool> AnyStoredAudioFileExistsAsync(
         SqliteCommand command,
         CancellationToken cancellationToken)

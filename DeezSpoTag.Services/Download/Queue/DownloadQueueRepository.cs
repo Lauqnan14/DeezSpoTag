@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 
@@ -1265,14 +1266,6 @@ WHERE (
         OR (
             @durationMs IS NOT NULL
             AND @durationMs > 0
-            AND (
-                lower(artist_name) = lower(@artistName)
-                OR (
-                    @artistPrimaryName IS NOT NULL
-                    AND @artistPrimaryName <> ''
-                    AND lower(artist_name) = lower(@artistPrimaryName)
-                )
-            )
             AND lower(track_title) = lower(@trackTitle)
             AND duration_ms = @durationMs
         )
@@ -1315,6 +1308,11 @@ ORDER BY
         while (await reader.ReadAsync(cancellationToken))
         {
             var item = ReadItem(reader);
+            if (!MatchesDuplicateRequest(request, item))
+            {
+                continue;
+            }
+
             if (IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item))
             {
                 continue;
@@ -1324,6 +1322,63 @@ ORDER BY
         }
 
         return null;
+    }
+
+    private static bool MatchesDuplicateRequest(DuplicateLookupRequest request, DownloadQueueItem item)
+    {
+        return HasStrongIdentityMatch(request, item) || HasMetadataMatch(request, item);
+    }
+
+    private static bool HasStrongIdentityMatch(DuplicateLookupRequest request, DownloadQueueItem item)
+    {
+        return EqualsNormalizedIsrc(request.Isrc, item.Isrc)
+            || EqualsNormalizedId(request.DeezerTrackId, item.DeezerTrackId)
+            || EqualsNormalizedId(request.SpotifyTrackId, item.SpotifyTrackId)
+            || EqualsNormalizedId(request.AppleTrackId, item.AppleTrackId);
+    }
+
+    private static bool HasMetadataMatch(DuplicateLookupRequest request, DownloadQueueItem item)
+    {
+        if (!request.DurationMs.HasValue || request.DurationMs.Value <= 0)
+        {
+            return false;
+        }
+
+        if (!item.DurationMs.HasValue || item.DurationMs.Value != request.DurationMs.Value)
+        {
+            return false;
+        }
+
+        if (!TrackTitleMatcher.TitlesMatch(request.TrackTitle, item.TrackTitle))
+        {
+            return false;
+        }
+
+        if (TrackTitleMatcher.ArtistsMatch(request.ArtistName, item.ArtistName))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(request.ArtistPrimaryName)
+            && TrackTitleMatcher.ArtistsMatch(request.ArtistPrimaryName, item.ArtistName);
+    }
+
+    private static bool EqualsNormalizedIsrc(string? left, string? right)
+    {
+        var normalizedLeft = NormalizeIsrc(left);
+        var normalizedRight = NormalizeIsrc(right);
+        return normalizedLeft is not null
+            && normalizedRight is not null
+            && string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
+    }
+
+    private static bool EqualsNormalizedId(string? left, string? right)
+    {
+        var normalizedLeft = NormalizeId(left);
+        var normalizedRight = NormalizeId(right);
+        return normalizedLeft is not null
+            && normalizedRight is not null
+            && string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
     }
 
     public async Task<DownloadQueueItem?> GetByMetadataAsync(

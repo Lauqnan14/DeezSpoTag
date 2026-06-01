@@ -127,6 +127,9 @@ public sealed class DownloadIntentService
         string? AppleAlbumId,
         string? AppleArtistId,
         string TrackTitle,
+        string TrackArtist,
+        string? TrackPrimaryArtist,
+        int? DurationMs,
         long? DestinationFolderId,
         string? RequestedAudioVariant,
         CancellationToken CancellationToken);
@@ -5822,6 +5825,9 @@ public sealed class DownloadIntentService
                     context.Identity.AppleAlbumId,
                     context.Identity.AppleArtistId,
                     context.Identity.TrackTitle,
+                    context.Identity.TrackArtist,
+                    context.Identity.TrackPrimaryArtist,
+                    context.Identity.DurationMs,
                     context.Identity.DestinationFolderId,
                     context.Identity.RequestedAudioVariant,
                     cancellationToken)))
@@ -6404,6 +6410,9 @@ public sealed class DownloadIntentService
                 sourceChecks,
                 albumChecks,
                 check.TrackTitle,
+                check.TrackArtist,
+                check.TrackPrimaryArtist,
+                check.DurationMs,
                 check.DestinationFolderId.Value,
                 check.RequestedAudioVariant,
                 check.CancellationToken)
@@ -6411,6 +6420,9 @@ public sealed class DownloadIntentService
                 sourceChecks,
                 albumChecks,
                 check.TrackTitle,
+                check.TrackArtist,
+                check.TrackPrimaryArtist,
+                check.DurationMs,
                 check.RequestedAudioVariant,
                 check.CancellationToken);
     }
@@ -6419,6 +6431,9 @@ public sealed class DownloadIntentService
         IEnumerable<(string Source, string? Value)> sourceChecks,
         IEnumerable<(string Source, string? AlbumId, string? ArtistId)> albumChecks,
         string trackTitle,
+        string trackArtist,
+        string? trackPrimaryArtist,
+        int? durationMs,
         long destinationFolderId,
         string? requestedAudioVariant,
         CancellationToken cancellationToken)
@@ -6453,6 +6468,28 @@ public sealed class DownloadIntentService
             }
         }
 
+        var metadataArtists = new[]
+        {
+            trackArtist,
+            trackPrimaryArtist
+        }
+        .Where(static artist => !string.IsNullOrWhiteSpace(artist))
+        .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var metadataArtist in metadataArtists)
+        {
+            if (await _libraryRepository.ExistsTrackByMetadataInFolderAsync(
+                    trackTitle,
+                    metadataArtist!,
+                    durationMs,
+                    destinationFolderId,
+                    audioVariant: requestedAudioVariant,
+                    cancellationToken: cancellationToken))
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -6460,6 +6497,9 @@ public sealed class DownloadIntentService
         IEnumerable<(string Source, string? Value)> sourceChecks,
         IEnumerable<(string Source, string? AlbumId, string? ArtistId)> albumChecks,
         string trackTitle,
+        string trackArtist,
+        string? trackPrimaryArtist,
+        int? durationMs,
         string? requestedAudioVariant,
         CancellationToken cancellationToken)
     {
@@ -6486,6 +6526,32 @@ public sealed class DownloadIntentService
                     artistId,
                     audioVariant: requestedAudioVariant,
                     cancellationToken: cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        var metadataArtists = new[]
+        {
+            trackArtist,
+            trackPrimaryArtist
+        }
+        .Where(static artist => !string.IsNullOrWhiteSpace(artist))
+        .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var metadataArtist in metadataArtists)
+        {
+            var result = await _libraryRepository.ExistsInLibraryAsync(
+                new[]
+                {
+                    new LibraryRepository.LibraryExistenceInput(
+                        null,
+                        trackTitle,
+                        metadataArtist,
+                        durationMs)
+                },
+                cancellationToken);
+            if (result.Count > 0 && result[0])
             {
                 return true;
             }
