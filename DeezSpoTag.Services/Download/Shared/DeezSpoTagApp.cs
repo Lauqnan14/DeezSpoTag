@@ -504,7 +504,10 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         _cancellationRegistry.ClearUserCanceled(uuid);
         await _queueRepository.ClearRetryArtifactsAsync(uuid, cancellationToken);
 
-        var requeued = await _queueRepository.RequeueAsync(uuid, cancellationToken);
+        var requeued = await _queueRepository.RequeueAsync(
+            uuid,
+            QueueRequeueOrigin.Manual,
+            cancellationToken);
         if (!requeued)
         {
             return false;

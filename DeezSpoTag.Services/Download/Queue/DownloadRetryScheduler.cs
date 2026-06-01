@@ -106,7 +106,10 @@ public sealed class DownloadRetryScheduler
             }
 
             await ResetFallbackStateAsync(item);
-            var requeued = await _queueRepository.RequeueAsync(request.QueueUuid, cancellationToken: cancellationToken);
+            var requeued = await _queueRepository.RequeueAsync(
+                request.QueueUuid,
+                QueueRequeueOrigin.AutoRetry,
+                cancellationToken: cancellationToken);
             _pendingRetries.TryRemove(request.QueueUuid, out _);
             if (!requeued)
             {
@@ -133,7 +136,7 @@ public sealed class DownloadRetryScheduler
     }
 
     private static bool IsRetryableStatus(string? status)
-        => (status ?? string.Empty) is "failed" or "cancelled" or "canceled";
+        => (status ?? string.Empty) is "failed";
 
     private static bool ShouldClearRetryState(string? status)
     {

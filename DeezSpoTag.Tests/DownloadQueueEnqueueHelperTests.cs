@@ -38,6 +38,35 @@ public sealed class DownloadQueueEnqueueHelperTests
     }
 
     [Fact]
+    public async Task EnqueueWithDedupAsync_DoesNotAutoRequeueCancelledDuplicate()
+    {
+        await using var context = await CreateContextAsync();
+        var payload = CreatePayload("cancelled-dup-1");
+
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(payload, "queued"), CancellationToken.None);
+        await context.QueueRepository.UpdateStatusAsync(
+            payload.Id,
+            "canceled",
+            cancellationToken: CancellationToken.None);
+
+        var outcome = await DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
+            payload,
+            redownloadCooldownMinutes: 720,
+            context.QueueRepository,
+            context.Listener,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.False(outcome.Success);
+        Assert.True(outcome.AlreadyQueued);
+        Assert.Equal("queue_cancelled_manual_retry_required", outcome.ReasonCode);
+
+        var persisted = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("canceled", persisted!.Status, ignoreCase: true);
+    }
+
+    [Fact]
     public async Task EnqueueWithDedupAsync_ReturnsRecentlyDownloaded_WhenMatchingItemCompleted()
     {
         await using var context = await CreateContextAsync();

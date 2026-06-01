@@ -4,11 +4,22 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
+
+public enum QueueRequeueOrigin
+{
+    Manual = 0,
+    AutoRetry = 1,
+    DuplicateRehydrate = 2,
+    QueueUpgradeRecovery = 3,
+    FallbackAdvance = 4,
+    Unknown = 99
+}
 
 public sealed class DownloadQueueRepository
 {
@@ -96,17 +107,31 @@ END;";
         return id;
     }
 
-    public async Task<bool> RequeueAsync(string queueUuid, CancellationToken cancellationToken = default)
-        => await RequeueAsync(queueUuid, requeueToFront: false, newestFirst: false, cancellationToken);
+    public async Task<bool> RequeueAsync(
+        string queueUuid,
+        QueueRequeueOrigin origin,
+        CancellationToken cancellationToken = default)
+        => await RequeueAsync(queueUuid, origin, requeueToFront: false, newestFirst: false, cancellationToken);
 
     public async Task<bool> RequeueAsync(
         string queueUuid,
+        QueueRequeueOrigin origin,
         bool requeueToFront,
         bool newestFirst,
         CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        var currentStatus = await GetStatusAsync(connection, queueUuid, cancellationToken);
+        if (IsCanceledStatus(currentStatus) && origin != QueueRequeueOrigin.Manual)
+        {
+            _logger.LogInformation(
+                "Blocked non-manual requeue for cancelled item {QueueUuid} (origin={Origin})",
+                LogSanitizer.OneLine(queueUuid),
+                origin);
+            return false;
+        }
+
         var queueOrder = requeueToFront
             ? await GetFrontQueueOrderAsync(connection, newestFirst, cancellationToken)
             : await GetNextQueueOrderAsync(connection, cancellationToken);
@@ -139,6 +164,28 @@ WHERE queue_uuid = @queueUuid;";
         }
 
         return affected > 0;
+    }
+
+    private static bool IsCanceledStatus(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is "canceled" or "cancelled";
+    }
+
+    private static async Task<string?> GetStatusAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT status
+FROM download_task
+WHERE queue_uuid = @queueUuid
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result as string;
     }
 
     public async Task UpdateProgressAsync(

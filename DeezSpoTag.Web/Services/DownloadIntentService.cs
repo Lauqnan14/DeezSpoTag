@@ -5856,6 +5856,16 @@ public sealed class DownloadIntentService
         }
 
         var status = existing.Status ?? string.Empty;
+        if (IsCanceledQueueStatus(status))
+        {
+            return new QueueDuplicateResolution(
+                EnqueueItemDecision.Fail(
+                    "queue_cancelled_manual_retry_required",
+                    "Skipped: matching track is cancelled and requires manual retry.",
+                    existing.QueueUuid),
+                false);
+        }
+
         if (IsRetryableFailedQueueStatus(status))
         {
             var decision = await RequeueFailedDuplicateAsync(payload, context, existing, cancellationToken);
@@ -5984,7 +5994,10 @@ public sealed class DownloadIntentService
             context.Identity.DestinationFolderId ?? existing.DestinationFolderId,
             cancellationToken);
         await _queueRepository.UpdatePayloadAsync(existing.QueueUuid, replacementJson, cancellationToken);
-        await _queueRepository.RequeueAsync(existing.QueueUuid, cancellationToken);
+        await _queueRepository.RequeueAsync(
+            existing.QueueUuid,
+            QueueRequeueOrigin.DuplicateRehydrate,
+            cancellationToken);
         _activityLog.Info($"Duplicate triggered retry (engine={context.Identity.Engine}): {existing.QueueUuid}");
         _deezspotagListener.Send("updateQueue", new
         {
@@ -6071,7 +6084,10 @@ public sealed class DownloadIntentService
         => status is "completed" or "complete";
 
     private static bool IsRetryableFailedQueueStatus(string status)
-        => status is "failed" or "canceled" or "cancelled";
+        => status is "failed";
+
+    private static bool IsCanceledQueueStatus(string status)
+        => status is "canceled" or "cancelled";
 
     private static string BuildCooldownMessage(int redownloadCooldownMinutes)
     {

@@ -105,7 +105,10 @@ internal static class DownloadQueueEnqueueHelper
         var duplicateStatus = duplicate.Status ?? string.Empty;
         if (IsRetryableQueueStatus(duplicateStatus))
         {
-            await queueRepository.RequeueAsync(duplicate.QueueUuid, cancellationToken);
+            await queueRepository.RequeueAsync(
+                duplicate.QueueUuid,
+                QueueRequeueOrigin.DuplicateRehydrate,
+                cancellationToken);
             if (logger.IsEnabled(LogLevel.Information))
             {
                 logger.LogInformation("Duplicate triggered retry (engine={Engine}): {QueueUuid}", payload.Engine, duplicate.QueueUuid);
@@ -144,7 +147,7 @@ internal static class DownloadQueueEnqueueHelper
     }
 
     private static bool IsRetryableQueueStatus(string status)
-        => status is "failed" or "canceled" or "cancelled";
+        => status is "failed";
 
     private static bool IsCompletedStatus(string status)
         => status.Equals("completed", StringComparison.OrdinalIgnoreCase)
@@ -173,6 +176,13 @@ internal static class DownloadQueueEnqueueHelper
             return EnqueueOutcome.Skipped("queue_recently_downloaded", "Skipped: track was downloaded recently.");
         }
 
+        if (IsCanceledStatus(existingStatus))
+        {
+            return EnqueueOutcome.Skipped(
+                "queue_cancelled_manual_retry_required",
+                "Skipped: matching track is cancelled and requires manual retry.");
+        }
+
         payload.Id = existing.QueueUuid;
         var payloadJson = JsonSerializer.Serialize(payload);
         await queueRepository.UpdateEngineAsync(existing.QueueUuid, payload.Engine, cancellationToken);
@@ -196,6 +206,9 @@ internal static class DownloadQueueEnqueueHelper
 
     private static bool IsQueuedQueueStatus(string status)
         => status is QueuedStatus or RunningStatus or PausedStatus;
+
+    private static bool IsCanceledStatus(string status)
+        => status is "canceled" or "cancelled";
 
     private static async Task<EnqueueOutcome> EnqueueNewItemAsync<TPayload>(
         TPayload payload,

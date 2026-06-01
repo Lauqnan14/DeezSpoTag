@@ -411,12 +411,53 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 10, CancellationToken.None),
             item => item.QueueUuid == "failed-hidden-retry");
 
-        var requeued = await context.QueueRepository.RequeueAsync("failed-hidden-retry", CancellationToken.None);
+        var requeued = await context.QueueRepository.RequeueAsync(
+            "failed-hidden-retry",
+            QueueRequeueOrigin.DuplicateRehydrate,
+            CancellationToken.None);
 
         Assert.True(requeued);
         Assert.Contains(
             await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 10, CancellationToken.None),
             item => item.QueueUuid == "failed-hidden-retry");
+    }
+
+    [Fact]
+    public async Task RequeueAsync_BlocksCancelledItem_WhenOriginIsNotManual()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("cancelled-auto-block", "Artist", "Blocked", 42) with { Status = "canceled" },
+            CancellationToken.None);
+
+        var requeued = await context.QueueRepository.RequeueAsync(
+            "cancelled-auto-block",
+            QueueRequeueOrigin.AutoRetry,
+            CancellationToken.None);
+
+        Assert.False(requeued);
+        var persisted = await context.QueueRepository.GetByUuidAsync("cancelled-auto-block", CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("canceled", persisted!.Status, ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task RequeueAsync_AllowsCancelledItem_WhenOriginIsManual()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("cancelled-manual-allow", "Artist", "Allowed", 42) with { Status = "canceled" },
+            CancellationToken.None);
+
+        var requeued = await context.QueueRepository.RequeueAsync(
+            "cancelled-manual-allow",
+            QueueRequeueOrigin.Manual,
+            CancellationToken.None);
+
+        Assert.True(requeued);
+        var persisted = await context.QueueRepository.GetByUuidAsync("cancelled-manual-allow", CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("queued", persisted!.Status, ignoreCase: true);
     }
 
     [Fact]

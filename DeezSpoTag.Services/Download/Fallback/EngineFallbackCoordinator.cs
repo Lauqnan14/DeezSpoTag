@@ -327,7 +327,17 @@ public sealed class EngineFallbackCoordinator
         context.Mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
         TrySetResolvedAppleId(context.PayloadForSerialization, step.Source, resolvedUrl);
         context.Mutators.ApplyStep((step.Source, step.Quality, stepIndex));
-        await PersistAdvancedFallbackStateAsync(request.QueueUuid, step.Source, context.PayloadForSerialization, cancellationToken);
+        var requeued = await PersistAdvancedFallbackStateAsync(
+            request.QueueUuid,
+            step.Source,
+            context.PayloadForSerialization,
+            cancellationToken);
+        if (!requeued)
+        {
+            _activityLog.Warn($"Fallback requeue blocked: {request.QueueUuid} -> {step.Source}");
+            return false;
+        }
+
         _activityLog.Info($"Fallback advanced: {request.QueueUuid} -> {step.Source} (auto_index={stepIndex})");
         return true;
     }
@@ -346,7 +356,7 @@ public sealed class EngineFallbackCoordinator
         }
     }
 
-    private async Task PersistAdvancedFallbackStateAsync(
+    private async Task<bool> PersistAdvancedFallbackStateAsync(
         string queueUuid,
         string stepSource,
         object payloadForSerialization,
@@ -355,7 +365,10 @@ public sealed class EngineFallbackCoordinator
         var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
         await _queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
         await _queueRepository.UpdateEngineAsync(queueUuid, stepSource, cancellationToken);
-        await _queueRepository.UpdateStatusAsync(queueUuid, "queued", error: null, downloaded: 0, failed: 0, progress: 0, cancellationToken: cancellationToken);
+        return await _queueRepository.RequeueAsync(
+            queueUuid,
+            QueueRequeueOrigin.FallbackAdvance,
+            cancellationToken);
     }
 
     private async Task<string?> ResolveSpotifyIdForFallbackAsync(
