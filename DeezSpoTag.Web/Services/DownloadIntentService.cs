@@ -857,7 +857,10 @@ public sealed class DownloadIntentService
             return (profileValidation.Failure, null);
         }
 
-        await PopulateIntentMetadataAsync(intent, preparation.Settings, profileValidation.ResolvedDownloadTagSource, cancellationToken);
+        if (!ShouldSkipWatchlistPreEnqueueMetadataHydration(intent))
+        {
+            await PopulateIntentMetadataAsync(intent, preparation.Settings, profileValidation.ResolvedDownloadTagSource, cancellationToken);
+        }
         var blocklistFailure = await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
         if (blocklistFailure != null)
         {
@@ -2155,6 +2158,11 @@ public sealed class DownloadIntentService
             return directResult.Value;
         }
 
+        if (ShouldBypassQobuzWatchlistPreResolve(intent, engine, sourceUrl))
+        {
+            return (engine, sourceUrl, string.Empty, "watchlist-qobuz-deferred");
+        }
+
         await TryHydrateIntentIsrcFromBootstrapAsync(intent, bootstrap);
 
         var settings = _settingsService.LoadSettings();
@@ -2224,6 +2232,74 @@ public sealed class DownloadIntentService
         }
 
         return (engine, sourceUrl, string.Empty, string.Empty);
+    }
+
+    private static bool ShouldBypassQobuzWatchlistPreResolve(
+        DownloadIntent intent,
+        string engine,
+        string sourceUrl)
+    {
+        if (!string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var isWatchlistIntent = !string.IsNullOrWhiteSpace(intent.WatchlistOrigin)
+            || !string.IsNullOrWhiteSpace(intent.WatchlistSource)
+            || !string.IsNullOrWhiteSpace(intent.WatchlistPlaylistId)
+            || !string.IsNullOrWhiteSpace(intent.WatchlistTrackId);
+        if (!isWatchlistIntent)
+        {
+            return false;
+        }
+
+        if (string.Equals(intent.SourceService, "boomplay", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(intent.Isrc))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Isrc))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(sourceUrl);
+    }
+
+    private static bool ShouldSkipWatchlistPreEnqueueMetadataHydration(DownloadIntent intent)
+    {
+        var isWatchlistIntent = !string.IsNullOrWhiteSpace(intent.WatchlistOrigin)
+            || !string.IsNullOrWhiteSpace(intent.WatchlistSource)
+            || !string.IsNullOrWhiteSpace(intent.WatchlistPlaylistId)
+            || !string.IsNullOrWhiteSpace(intent.WatchlistTrackId);
+        if (!isWatchlistIntent)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.SourceUrl)
+            && string.IsNullOrWhiteSpace(intent.SpotifyId)
+            && string.IsNullOrWhiteSpace(intent.DeezerId)
+            && string.IsNullOrWhiteSpace(intent.AppleId)
+            && string.IsNullOrWhiteSpace(intent.Isrc))
+        {
+            return false;
+        }
+
+        if (string.Equals(intent.SourceService, "boomplay", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(intent.Isrc))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Isrc))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(intent.Title)
+            && !string.IsNullOrWhiteSpace(intent.Artist);
     }
 
     private static IntentResolutionBootstrap BootstrapIntentResolution(DownloadIntent intent)

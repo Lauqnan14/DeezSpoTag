@@ -379,6 +379,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound("Playlist watchlist entry not found.");
         }
 
+        await SetPlaylistWatchSchedulerFocusAsync(item.Source, item.SourceId, cancellationToken);
         await _playlistWatchService.CheckPlaylistWatchItemAsync(
             item,
             cancellationToken,
@@ -400,6 +401,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound("Playlist watchlist entry not found.");
         }
 
+        await SetPlaylistWatchSchedulerFocusAsync(item.Source, item.SourceId, cancellationToken);
         var repairNotifications = _watchlistFinalizationService == null
             ? 0
             : await _watchlistFinalizationService.RepairPlaylistAsync(
@@ -1028,6 +1030,28 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal" => normalized,
             _ => null
         };
+    }
+
+    private async Task SetPlaylistWatchSchedulerFocusAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSource = NormalizePlaylistSource(source);
+        if (string.IsNullOrWhiteSpace(normalizedSource) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        await _repository.UpsertWatchlistSchedulerStateAsync(
+            new LibraryRepository.WatchlistSchedulerStateUpsertInput(
+                WatchType: "playlist",
+                ActiveSource: normalizedSource,
+                ActiveSourceId: sourceId.Trim(),
+                ActiveStartedUtc: DateTimeOffset.UtcNow,
+                LastProgressUtc: null,
+                ZeroQueueStreak: 0),
+            cancellationToken);
     }
 
     private static string? NormalizeDownloadVariantMode(string? value)

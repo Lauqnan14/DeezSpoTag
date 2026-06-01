@@ -53,7 +53,10 @@ public sealed class PlaylistWatchService
 
     private readonly record struct WatchQueueCapacity(int Limit, int ActiveCount)
     {
-        public int Remaining => Math.Max(0, Limit - ActiveCount);
+        // Queue admission is capped per run via watch settings + run budget.
+        // Do not subtract currently active queue rows; that causes under-admission
+        // (often 1-2 tracks per pass) when users configured a larger enqueue target.
+        public int Remaining => Math.Max(0, Limit);
     }
 
     private const string SpotifySource = "spotify";
@@ -523,6 +526,16 @@ public sealed class PlaylistWatchService
                 currentPlaylist.Name,
                 syncResult.SyncedTracks,
                 syncResult.Success ? "media_sync_completed" : "media_sync_failed",
+                cancellationToken);
+        }
+        else if (queueResult.QueuedCount > 0 || queueResult.Deferred)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                candidates.Count,
+                "media_sync_deferred_queue_active",
                 cancellationToken);
         }
         else
@@ -3075,7 +3088,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
-        var downloadGate = await orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
+        var downloadGate = await orchestrationService.EvaluateManualQueueGateAsync(cancellationToken);
         if (downloadGate.Allowed)
         {
             return capacity;
@@ -3371,7 +3384,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     {
         try
         {
-            return await intentService.EnqueueAsync(intent, cancellationToken);
+            return await intentService.EnqueueManualAsync(intent, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3424,7 +3437,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var atmosIntent = CreateAtmosOnlyIntent(baseIntent, options.AtmosDestinationFolderId);
         try
         {
-            var atmosResult = await intentService.EnqueueAsync(atmosIntent, cancellationToken);
+            var atmosResult = await intentService.EnqueueManualAsync(atmosIntent, cancellationToken);
             return atmosResult.Success ? 1 : 0;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

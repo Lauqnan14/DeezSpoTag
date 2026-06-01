@@ -44,14 +44,12 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
-    public void WatchlistQueueing_RemainsOnStrictDownloadGate()
+    public void WatchlistQueueing_UsesManualQueueGateForAdmission()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
 
-        Assert.Contains("EvaluateDownloadGateAsync", source, StringComparison.Ordinal);
-        Assert.Contains("intentService.EnqueueAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("EvaluateManualQueueGateAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("EnqueueManualAsync", source, StringComparison.Ordinal);
+        Assert.Contains("EvaluateManualQueueGateAsync", source, StringComparison.Ordinal);
+        Assert.Contains("intentService.EnqueueManualAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
