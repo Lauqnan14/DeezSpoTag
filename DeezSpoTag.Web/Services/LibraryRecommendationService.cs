@@ -873,6 +873,14 @@ public sealed class LibraryRecommendationService
         {
             throw;
         }
+        catch (OperationCanceledException ex)
+        {
+            RecordDailyPoolBuildFailure(scope, dayLocal, [BackgroundGenerationFailedReason]);
+            _logger.LogWarning(
+                ex,
+                "Background recommendation generation timed out for scope {ScopeKey}.",
+                scope.ScopeKey);
+        }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             RecordDailyPoolBuildFailure(scope, dayLocal, [BackgroundGenerationFailedReason]);
@@ -980,9 +988,17 @@ public sealed class LibraryRecommendationService
         {
             await RefreshDailyRecommendationScopeAsync(scope, dayLocal, artworkAssignments, cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Daily recommendation refresh timed out for library {LibraryId}, folder {FolderId}.",
+                scope.LibraryId,
+                scope.FolderId);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {

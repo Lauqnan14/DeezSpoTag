@@ -79,6 +79,32 @@ public sealed class RecommendationImplementationContractTests
         Assert.Contains("scope.ScopeKey", method, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void RefreshDailyRecommendationFolder_DoesNotAbortRunOnNonShutdownTimeout()
+    {
+        var source = ReadRecommendationServiceSource();
+        var method = ExtractBetween(
+            source,
+            "private async Task RefreshDailyRecommendationFolderAsync",
+            "private async Task RefreshDailyRecommendationScopeAsync");
+
+        Assert.Contains("catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)", method, StringComparison.Ordinal);
+        Assert.Contains("Daily recommendation refresh timed out", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BackgroundDailyPoolFolder_DoesNotAbortRunOnNonShutdownTimeout()
+    {
+        var source = ReadRecommendationServiceSource();
+        var method = ExtractBetween(
+            source,
+            "private async Task ProcessBackgroundDailyPoolFolderAsync",
+            "private async Task BuildMissingBackgroundDailyPoolAsync");
+
+        Assert.Contains("catch (OperationCanceledException) when (_backgroundCancellationToken.IsCancellationRequested)", method, StringComparison.Ordinal);
+        Assert.Contains("Background recommendation generation timed out", method, StringComparison.Ordinal);
+    }
+
     private static string ReadRecommendationServiceSource()
         => File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "LibraryRecommendationService.cs"));
 
