@@ -163,6 +163,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static readonly TimeSpan StagingGateLogThrottle = TimeSpan.FromMinutes(1);
     private const string WarningLogLevel = "warning";
     private const string ErrorLogLevel = "error";
+    private const string EnrichmentStatusPending = "pending";
+    private const string EnrichmentStatusRunning = "running";
+    private const string EnrichmentStatusCompleted = "completed";
+    private const string EnrichmentStatusFailed = "failed";
+    private const string EnrichmentStatusCanceled = "canceled";
+    private const string EnrichmentStatusInterrupted = "interrupted";
+    private const string EnrichmentStatusNotRequired = "not_required";
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
     private const string FolderContentAtmos = "atmos";
@@ -780,7 +787,23 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
             foreach (var group in context.Groups)
             {
+                await _queueRepository.SetEnrichmentStatusAsync(
+                    group.PendingQueueUuids,
+                    EnrichmentStatusRunning,
+                    cancellationToken);
                 var enrichmentResult = await RunPipelineEnrichmentAsync(context, group, cancellationToken);
+                await ApplyGroupEnrichmentStatusAsync(group, enrichmentResult.Status, cancellationToken);
+
+                if (!IsFinalizationAllowed(enrichmentResult.Status))
+                {
+                    await MarkPostDownloadFinalizationBlockedAsync(group, cancellationToken);
+                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                        DateTimeOffset.UtcNow,
+                        WarningLogLevel,
+                        $"Automation: post-download finalization blocked for destination folder {group.DestinationFolderId} (enrichment status={enrichmentResult.Status})."));
+                    allGroupsFinalized = false;
+                    continue;
+                }
 
                 var finalizationCompleted = await RunPostDownloadFinalizationAsync(
                     context,
@@ -788,7 +811,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     enrichmentResult,
                     cancellationToken);
 
-                await RunPostAutoTagStagesAsync(group, cancellationToken);
+                if (finalizationCompleted)
+                {
+                    await RunPostAutoTagStagesAsync(group, cancellationToken);
+                }
 
                 if (finalizationCompleted)
                 {
@@ -970,6 +996,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         PipelineEnrichmentResult enrichmentResult,
         CancellationToken cancellationToken)
     {
+        foreach (var queueUuid in group.PendingQueueUuids)
+        {
+            await _queueRepository.MarkMoveRunningAsync(queueUuid, cancellationToken);
+        }
+
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
@@ -1050,6 +1081,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
+    private async Task MarkPostDownloadFinalizationBlockedAsync(PipelineWorkGroup group, CancellationToken cancellationToken)
+    {
+        foreach (var queueUuid in group.PendingQueueUuids)
+        {
+            await _queueRepository.MarkMoveBlockedAsync(queueUuid, cancellationToken);
+        }
+    }
+
     private async Task MarkPostDownloadFinalizationNotRequiredAsync(PipelineWorkGroup group, CancellationToken cancellationToken)
     {
         foreach (var queueUuid in group.PendingQueueUuids)
@@ -1099,6 +1138,42 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         return new PipelineEnrichmentResult(status, SafeToContinue: false, SafeToPersist: false);
+    }
+
+    private async Task ApplyGroupEnrichmentStatusAsync(
+        PipelineWorkGroup group,
+        string enrichmentResultStatus,
+        CancellationToken cancellationToken)
+    {
+        var mappedStatus = MapEnrichmentResultToQueueStatus(enrichmentResultStatus);
+        await _queueRepository.SetEnrichmentStatusAsync(group.PendingQueueUuids, mappedStatus, cancellationToken);
+    }
+
+    private static string MapEnrichmentResultToQueueStatus(string? enrichmentResultStatus)
+    {
+        var normalized = enrichmentResultStatus?.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            AutoTagLiterals.CompletedStatus => EnrichmentStatusCompleted,
+            AutoTagLiterals.SkippedStatus => EnrichmentStatusNotRequired,
+            "skipped_no_enrichment_tags" => EnrichmentStatusNotRequired,
+            "skipped_no_candidate_files" => EnrichmentStatusInterrupted,
+            "blocked" => EnrichmentStatusInterrupted,
+            AutoTagLiterals.CanceledStatus => EnrichmentStatusCanceled,
+            AutoTagLiterals.InterruptedStatus => EnrichmentStatusInterrupted,
+            AutoTagLiterals.PausedStatus => EnrichmentStatusInterrupted,
+            AutoTagLiterals.FailedStatus => EnrichmentStatusFailed,
+            AutoTagLiterals.ErrorStatus => EnrichmentStatusFailed,
+            _ => EnrichmentStatusFailed
+        };
+    }
+
+    private static bool IsFinalizationAllowed(string? enrichmentResultStatus)
+    {
+        var normalized = enrichmentResultStatus?.Trim().ToLowerInvariant();
+        return normalized is AutoTagLiterals.CompletedStatus
+            or AutoTagLiterals.SkippedStatus
+            or "skipped_no_enrichment_tags";
     }
 
     private async Task<Dictionary<long, List<string>>> GetRecentMovedAudioFilesByDestinationAsync(
@@ -2338,31 +2413,19 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             .OrderByDescending(item => item.UpdatedAt)
             .ThenByDescending(item => item.Id)
             .ToList();
-        var hasDownloadRoot = TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out _);
-
         var freshItems = completedItems
             .Where(item => item.UpdatedAt > _lastPipelineCompletedAt)
             .Where(IsCompletedItemUnprocessed)
+            .Where(NeedsEnrichmentPipelineWork)
             .ToList();
-        if (freshItems.Count > 0 && hasDownloadRoot)
-        {
-            freshItems = freshItems
-                .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath!))
-                .ToList();
-        }
         if (freshItems.Count > 0)
         {
             return await FilterAutoTagEligiblePendingItemsAsync(freshItems, foldersById, cancellationToken);
         }
 
-        if (!hasDownloadRoot)
-        {
-            return freshItems;
-        }
-
         var recoveredItems = completedItems
             .Where(IsCompletedItemUnprocessed)
-            .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
+            .Where(NeedsEnrichmentPipelineWork)
             .ToList();
         return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
     }
@@ -2438,7 +2501,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 continue;
             }
 
-            if (!PayloadHasExistingSourceUnderRoot(currentItem.PayloadJson, context.DownloadRootPath))
+            if (IsFinalizationComplete(currentItem.FinalizationStatus)
+                || !PayloadHasExistingSourceUnderRoot(currentItem.PayloadJson, context.DownloadRootPath))
             {
                 safeMarkers[marker] = currentItem.UpdatedAt > updatedAt ? currentItem.UpdatedAt : updatedAt;
             }
@@ -2605,6 +2669,23 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         return item.UpdatedAt > processedAt;
+    }
+
+    private static bool NeedsEnrichmentPipelineWork(DownloadQueueItem item)
+    {
+        var status = item.EnrichmentStatus?.Trim().ToLowerInvariant();
+        return status switch
+        {
+            EnrichmentStatusCompleted => false,
+            EnrichmentStatusNotRequired => false,
+            _ => true
+        };
+    }
+
+    private static bool IsFinalizationComplete(string? finalizationStatus)
+    {
+        var normalized = finalizationStatus?.Trim().ToLowerInvariant();
+        return normalized is "moved" or "not_required";
     }
 
     private static Dictionary<string, DateTimeOffset> BuildCompletionMarkers(IEnumerable<DownloadQueueItem> items)

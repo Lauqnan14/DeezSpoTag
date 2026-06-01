@@ -208,6 +208,7 @@ public sealed class LibraryDbService
 
         await EnsureColumnAsync(connection, DownloadTaskTable, DestinationFolderIdColumn, IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "move_status", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "enrichment_status", TextType, cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "final_destinations_json", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_download_task_isrc", DownloadTaskTable, "isrc", unique: false, cancellationToken);
 

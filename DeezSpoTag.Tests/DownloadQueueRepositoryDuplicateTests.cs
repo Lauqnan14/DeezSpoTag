@@ -219,6 +219,48 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task UpdateStatusAsync_CompletedWithDestination_SetsPendingEnrichmentAndFinalization()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("enrichment-with-destination", "Artist", "Track", 9),
+            CancellationToken.None);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "enrichment-with-destination",
+            "completed",
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: CancellationToken.None);
+
+        var updated = await context.QueueRepository.GetByUuidAsync("enrichment-with-destination", CancellationToken.None);
+        Assert.NotNull(updated);
+        Assert.Equal("pending", updated!.EnrichmentStatus);
+        Assert.Equal("pending", updated.FinalizationStatus);
+    }
+
+    [Fact]
+    public async Task UpdateStatusAsync_CompletedWithoutDestination_SetsEnrichmentAndFinalizationNotRequired()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("enrichment-no-destination", "Artist", "Track", destinationFolderId: null),
+            CancellationToken.None);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "enrichment-no-destination",
+            "completed",
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: CancellationToken.None);
+
+        var updated = await context.QueueRepository.GetByUuidAsync("enrichment-no-destination", CancellationToken.None);
+        Assert.NotNull(updated);
+        Assert.Equal("not_required", updated!.EnrichmentStatus);
+        Assert.Equal("not_required", updated.FinalizationStatus);
+    }
+
+    [Fact]
     public async Task GetUnfinishedWatchlistDownloadCountAsync_IgnoresTerminalFailedAndCanceledRows()
     {
         await using var context = await CreateContextAsync();

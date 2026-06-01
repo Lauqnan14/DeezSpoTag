@@ -20,9 +20,18 @@ public sealed class DownloadQueueRepository
     private const string PayloadParameterName = "payload";
     private const string LyricsStatusParameterName = "lyricsStatus";
     private const string MoveStatusPending = "pending";
+    private const string MoveStatusRunning = "running";
     private const string MoveStatusMoved = "moved";
+    private const string MoveStatusBlocked = "blocked";
     private const string MoveStatusFailed = "failed";
     private const string MoveStatusNotRequired = "not_required";
+    private const string EnrichmentStatusPending = "pending";
+    private const string EnrichmentStatusRunning = "running";
+    private const string EnrichmentStatusCompleted = "completed";
+    private const string EnrichmentStatusFailed = "failed";
+    private const string EnrichmentStatusCanceled = "canceled";
+    private const string EnrichmentStatusInterrupted = "interrupted";
+    private const string EnrichmentStatusNotRequired = "not_required";
     private readonly string _connectionString;
     private readonly DownloadStagingCleanupService? _stagingCleanupService;
     private readonly ILogger<DownloadQueueRepository> _logger;
@@ -67,9 +76,9 @@ public sealed class DownloadQueueRepository
         var queueOrder = item.QueueOrder ?? await GetNextQueueOrderAsync(connection, cancellationToken);
         const string sql = @"
 INSERT OR IGNORE INTO " + DownloadTaskTable + @"
-    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, status, payload, progress, downloaded, failed, error, created_at, updated_at)
+    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status, status, payload, progress, downloaded, failed, error, created_at, updated_at)
 VALUES
-    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @enrichmentStatus, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 SELECT CASE
     WHEN changes() = 0 THEN NULL
     ELSE last_insert_rowid()
@@ -107,6 +116,14 @@ SET status = 'queued',
     progress = 0,
     downloaded = 0,
     failed = 0,
+    move_status = CASE
+        WHEN destination_folder_id IS NOT NULL THEN '" + MoveStatusPending + @"'
+        ELSE NULL
+    END,
+    enrichment_status = CASE
+        WHEN destination_folder_id IS NOT NULL THEN '" + EnrichmentStatusPending + @"'
+        ELSE '" + EnrichmentStatusNotRequired + @"'
+    END,
     queue_order = @queueOrder,
     activities_cleared_at = NULL,
     updated_at = CURRENT_TIMESTAMP
@@ -169,7 +186,7 @@ WHERE queue_uuid = @queueUuid;";
         const string sql = @"
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
        status, payload, progress, downloaded, failed, error, created_at, updated_at
 FROM download_task
 WHERE queue_uuid = @queueUuid
@@ -232,7 +249,7 @@ LIMIT 1;";
         const string sql = @"
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
        status, payload, progress, downloaded, failed, error, created_at, updated_at
 FROM download_task
 WHERE (@engine IS NULL OR engine = @engine)
@@ -275,12 +292,12 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
-FROM download_task
-WHERE status = 'running'
+	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	FROM download_task
+	WHERE status = 'running'
   AND updated_at <= datetime('now', '-' || @ageSeconds || ' seconds')
 ORDER BY updated_at ASC;";
         await using var command = new SqliteCommand(sql, connection);
@@ -410,13 +427,26 @@ SET status = @status,
     move_status = CASE
         WHEN lower(@status) IN ('completed', 'complete')
              AND destination_folder_id IS NOT NULL
-             AND (move_status IS NULL OR move_status = '')
             THEN '" + MoveStatusPending + @"'
         WHEN lower(@status) IN ('completed', 'complete')
              AND destination_folder_id IS NULL
-             AND (move_status IS NULL OR move_status = '')
             THEN '" + MoveStatusNotRequired + @"'
         ELSE move_status
+    END,
+    enrichment_status = CASE
+        WHEN lower(@status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying')
+             AND destination_folder_id IS NOT NULL
+            THEN '" + EnrichmentStatusPending + @"'
+        WHEN lower(@status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying')
+             AND destination_folder_id IS NULL
+            THEN '" + EnrichmentStatusNotRequired + @"'
+        WHEN lower(@status) IN ('completed', 'complete')
+             AND destination_folder_id IS NOT NULL
+            THEN '" + EnrichmentStatusPending + @"'
+        WHEN lower(@status) IN ('completed', 'complete')
+             AND destination_folder_id IS NULL
+            THEN '" + EnrichmentStatusNotRequired + @"'
+        ELSE enrichment_status
     END,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
@@ -597,12 +627,12 @@ WHERE queue_uuid = @queueUuid
         var orderBy = newestFirst ? "DESC" : "ASC";
         var queueOrderBy = newestFirst ? "DESC" : "ASC";
         return $@"
-SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
-FROM download_task
-WHERE status = 'queued'
+	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	FROM download_task
+	WHERE status = 'queued'
   {extraWhereClause}
 ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
 LIMIT 1;";
@@ -613,7 +643,7 @@ LIMIT 1;";
         const string selectedColumns = @"
 	id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-	duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
+	duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
 	status, payload, progress, downloaded, failed, error, created_at, updated_at";
 
         const string activeStatuses = "'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
@@ -744,9 +774,19 @@ WHERE queue_uuid = @queueUuid;";
         await UpdateMoveStatusAsync(queueUuid, MoveStatusPending, cancellationToken);
     }
 
+    public async Task MarkMoveRunningAsync(string queueUuid, CancellationToken cancellationToken = default)
+    {
+        await UpdateMoveStatusAsync(queueUuid, MoveStatusRunning, cancellationToken);
+    }
+
     public async Task MarkMoveSucceededAsync(string queueUuid, CancellationToken cancellationToken = default)
     {
         await UpdateMoveStatusAsync(queueUuid, MoveStatusMoved, cancellationToken);
+    }
+
+    public async Task MarkMoveBlockedAsync(string queueUuid, CancellationToken cancellationToken = default)
+    {
+        await UpdateMoveStatusAsync(queueUuid, MoveStatusBlocked, cancellationToken);
     }
 
     public async Task MarkMoveFailedAsync(string queueUuid, CancellationToken cancellationToken = default)
@@ -757,6 +797,94 @@ WHERE queue_uuid = @queueUuid;";
     public async Task MarkMoveNotRequiredAsync(string queueUuid, CancellationToken cancellationToken = default)
     {
         await UpdateMoveStatusAsync(queueUuid, MoveStatusNotRequired, cancellationToken);
+    }
+
+    public async Task SetEnrichmentStatusAsync(
+        string queueUuid,
+        string enrichmentStatus,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await UpdateEnrichmentStatusAsync(connection, queueUuid, enrichmentStatus, cancellationToken);
+    }
+
+    public async Task SetEnrichmentStatusAsync(
+        IReadOnlyCollection<string> queueUuids,
+        string enrichmentStatus,
+        CancellationToken cancellationToken = default)
+    {
+        if (queueUuids.Count == 0)
+        {
+            return;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var queueUuid in queueUuids)
+        {
+            if (string.IsNullOrWhiteSpace(queueUuid))
+            {
+                continue;
+            }
+
+            await UpdateEnrichmentStatusAsync(connection, queueUuid, enrichmentStatus, cancellationToken, transaction);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<Dictionary<string, string?>> GetEnrichmentStatusesAsync(
+        IReadOnlyCollection<string> queueUuids,
+        CancellationToken cancellationToken = default)
+    {
+        var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (queueUuids.Count == 0)
+        {
+            return map;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var normalized = queueUuids
+            .Where(queueUuid => !string.IsNullOrWhiteSpace(queueUuid))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalized.Count == 0)
+        {
+            return map;
+        }
+
+        var placeholders = normalized.Select((_, index) => $"@queueUuid{index}").ToArray();
+        var sql = $@"
+SELECT queue_uuid, enrichment_status
+FROM download_task
+WHERE queue_uuid IN ({string.Join(", ", placeholders)});";
+        await using var command = new SqliteCommand(sql, connection);
+        for (var index = 0; index < normalized.Count; index++)
+        {
+            command.Parameters.AddWithValue($"queueUuid{index}", normalized[index]);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var queueUuid = GetNullableString(reader, 0);
+            if (string.IsNullOrWhiteSpace(queueUuid))
+            {
+                continue;
+            }
+
+            map[queueUuid] = GetNullableString(reader, 1);
+        }
+
+        return map;
     }
 
     private async Task UpdateMoveStatusAsync(string queueUuid, string moveStatus, CancellationToken cancellationToken)
@@ -776,6 +904,24 @@ WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("moveStatus", moveStatus);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task UpdateEnrichmentStatusAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        string enrichmentStatus,
+        CancellationToken cancellationToken,
+        SqliteTransaction? transaction = null)
+    {
+        const string sql = @"
+UPDATE download_task
+SET enrichment_status = @enrichmentStatus,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("enrichmentStatus", NormalizeEnrichmentStatus(enrichmentStatus));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -810,6 +956,10 @@ SET final_destinations_json = NULL,
         WHEN destination_folder_id IS NOT NULL THEN '" + MoveStatusPending + @"'
         ELSE NULL
     END,
+    enrichment_status = CASE
+        WHEN destination_folder_id IS NOT NULL THEN '" + EnrichmentStatusPending + @"'
+        ELSE '" + EnrichmentStatusNotRequired + @"'
+    END,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
@@ -835,6 +985,11 @@ SET quality_rank = @qualityRank,
         WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusPending + @"'
         WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusNotRequired + @"'
         ELSE move_status
+    END,
+    enrichment_status = CASE
+        WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusPending + @"'
+        WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusNotRequired + @"'
+        ELSE enrichment_status
     END,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
@@ -1054,11 +1209,11 @@ SELECT EXISTS(
         // Queue dedupe must remain track-granular; album/artist IDs are intentionally excluded
         // so different tracks from the same release can be queued independently.
         const string sql = @"
-SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
-FROM download_task
+	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	FROM download_task
 WHERE (
         (
             @isrc IS NOT NULL
@@ -1151,11 +1306,11 @@ ORDER BY
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
-FROM download_task
+	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	FROM download_task
 WHERE (
         lower(artist_name) = lower(@artistName)
         OR (
@@ -1198,11 +1353,11 @@ LIMIT 1;";
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
-FROM download_task
+	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	FROM download_task
 WHERE lower(engine) = lower(@engine)
   AND lower(artist_name) = lower(@artistName)
   AND lower(track_title) = lower(@trackTitle)
@@ -1241,11 +1396,11 @@ LIMIT 1;";
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-       duration_ms, destination_folder_id, quality_rank, queue_order, content_type,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
-FROM download_task
+	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	FROM download_task
 WHERE lower(engine) = lower(@engine)
   AND lower(deezer_track_id) = lower(@deezerTrackId)
 ORDER BY updated_at DESC
@@ -1293,6 +1448,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
     duration_ms INTEGER,
     destination_folder_id INTEGER,
     move_status TEXT,
+    enrichment_status TEXT,
     quality_rank INTEGER,
     queue_order INTEGER,
     content_type TEXT,
@@ -1330,6 +1486,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureColumnAsync(connection, DownloadTaskTable, "bitrate_kbps", "INTEGER", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "destination_folder_id", "INTEGER", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "move_status", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "enrichment_status", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "queue_order", "INTEGER", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "content_type", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "final_destinations_json", "TEXT", cancellationToken);
@@ -1340,6 +1497,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureIndexesAsync(connection, cancellationToken);
         await NormalizeLegacyPlaceholderIdsAsync(connection, cancellationToken);
         await NormalizeLegacyAtmosContentTypesAsync(connection, cancellationToken);
+        await NormalizeLegacyEnrichmentStatusesAsync(connection, cancellationToken);
 
         lock (_schemaLock)
         {
@@ -1459,6 +1617,27 @@ UPDATE download_task
 SET apple_artist_id = NULL
 WHERE lower(trim(COALESCE(apple_artist_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');";
 
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task NormalizeLegacyEnrichmentStatusesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+UPDATE download_task
+SET enrichment_status = CASE
+        WHEN lower(status) IN ('completed', 'complete') AND destination_folder_id IS NOT NULL THEN '" + EnrichmentStatusPending + @"'
+        WHEN lower(status) IN ('completed', 'complete') AND destination_folder_id IS NULL THEN '" + EnrichmentStatusNotRequired + @"'
+        WHEN destination_folder_id IS NULL THEN '" + EnrichmentStatusNotRequired + @"'
+        ELSE '" + EnrichmentStatusPending + @"'
+    END
+WHERE enrichment_status IS NULL OR trim(enrichment_status) = '';
+
+UPDATE download_task
+SET enrichment_status = '" + EnrichmentStatusCanceled + @"'
+WHERE lower(trim(COALESCE(enrichment_status, ''))) = 'cancelled';";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -1825,6 +2004,7 @@ LIMIT 1;";
         command.Parameters.AddWithValue("queueOrder", (object?)item.QueueOrder ?? DBNull.Value);
         command.Parameters.AddWithValue("contentType", (object?)NormalizeId(item.ContentType) ?? DBNull.Value);
         command.Parameters.AddWithValue("moveStatus", ResolveInitialMoveStatus(item));
+        command.Parameters.AddWithValue("enrichmentStatus", ResolveInitialEnrichmentStatus(item));
         command.Parameters.AddWithValue("status", item.Status);
         command.Parameters.AddWithValue(PayloadParameterName, (object?)item.PayloadJson ?? DBNull.Value);
         command.Parameters.AddWithValue("progress", (object?)item.Progress ?? DBNull.Value);
@@ -1866,9 +2046,9 @@ WHERE queue_order IS NOT NULL;";
 
     private static DownloadQueueItem ReadItem(SqliteDataReader reader)
     {
-        var payloadJson = GetNullableString(reader, 21);
-        var createdAt = ParseTimestampOrUtcNow(GetNullableString(reader, 26));
-        var updatedAt = ParseTimestampOrUtcNow(GetNullableString(reader, 27));
+        var payloadJson = GetNullableString(reader, 23);
+        var createdAt = ParseTimestampOrUtcNow(GetNullableString(reader, 28));
+        var updatedAt = ParseTimestampOrUtcNow(GetNullableString(reader, 29));
         return new DownloadQueueItem(
             reader.GetInt64(0),
             GetNullableString(reader, 1) ?? string.Empty,
@@ -1890,12 +2070,14 @@ WHERE queue_order IS NOT NULL;";
             GetNullableInt32(reader, 17),
             GetNullableInt32(reader, 18),
             GetNullableString(reader, 19),
-            reader.GetString(20),
+            GetNullableString(reader, 20),
+            GetNullableString(reader, 21),
+            reader.GetString(22),
             payloadJson,
-            GetNullableDouble(reader, 22),
-            GetNullableInt32(reader, 23),
-            GetNullableInt32(reader, 24),
-            GetNullableString(reader, 25),
+            GetNullableDouble(reader, 24),
+            GetNullableInt32(reader, 25),
+            GetNullableInt32(reader, 26),
+            GetNullableString(reader, 27),
             createdAt,
             updatedAt
         );
@@ -1951,12 +2133,50 @@ WHERE queue_order IS NOT NULL;";
 
     private static object ResolveInitialMoveStatus(DownloadQueueItem item)
     {
+        if (!string.IsNullOrWhiteSpace(item.FinalizationStatus))
+        {
+            return item.FinalizationStatus.Trim();
+        }
+
         if (item.DestinationFolderId.HasValue)
         {
             return IsCompletedStatus(item.Status) ? MoveStatusPending : DBNull.Value;
         }
 
         return IsCompletedStatus(item.Status) ? MoveStatusNotRequired : DBNull.Value;
+    }
+
+    private static object ResolveInitialEnrichmentStatus(DownloadQueueItem item)
+    {
+        var normalized = NormalizeEnrichmentStatus(item.EnrichmentStatus);
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            return normalized;
+        }
+
+        if (item.DestinationFolderId.HasValue)
+        {
+            return IsCompletedStatus(item.Status) ? EnrichmentStatusPending : EnrichmentStatusPending;
+        }
+
+        return EnrichmentStatusNotRequired;
+    }
+
+    private static string NormalizeEnrichmentStatus(string? status)
+    {
+        var normalized = status?.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            EnrichmentStatusPending => EnrichmentStatusPending,
+            EnrichmentStatusRunning => EnrichmentStatusRunning,
+            EnrichmentStatusCompleted => EnrichmentStatusCompleted,
+            EnrichmentStatusFailed => EnrichmentStatusFailed,
+            "cancelled" => EnrichmentStatusCanceled,
+            EnrichmentStatusCanceled => EnrichmentStatusCanceled,
+            EnrichmentStatusInterrupted => EnrichmentStatusInterrupted,
+            EnrichmentStatusNotRequired => EnrichmentStatusNotRequired,
+            _ => EnrichmentStatusPending
+        };
     }
 
     private static bool IsCompletedStatus(string? status)
@@ -2037,6 +2257,8 @@ public sealed record DownloadQueueItem(
     int? QualityRank,
     int? QueueOrder,
     string? ContentType,
+    string? FinalizationStatus,
+    string? EnrichmentStatus,
     string Status,
     string? PayloadJson,
     double? Progress,
@@ -2046,6 +2268,69 @@ public sealed record DownloadQueueItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt)
 {
+    public DownloadQueueItem(
+        long Id,
+        string QueueUuid,
+        string Engine,
+        string ArtistName,
+        string TrackTitle,
+        string? Isrc,
+        string? DeezerTrackId,
+        string? DeezerAlbumId,
+        string? DeezerArtistId,
+        string? SpotifyTrackId,
+        string? SpotifyAlbumId,
+        string? SpotifyArtistId,
+        string? AppleTrackId,
+        string? AppleAlbumId,
+        string? AppleArtistId,
+        int? DurationMs,
+        long? DestinationFolderId,
+        int? QualityRank,
+        int? QueueOrder,
+        string? ContentType,
+        string Status,
+        string? PayloadJson,
+        double? Progress,
+        int? Downloaded,
+        int? Failed,
+        string? Error,
+        DateTimeOffset CreatedAt,
+        DateTimeOffset UpdatedAt)
+        : this(
+            Id,
+            QueueUuid,
+            Engine,
+            ArtistName,
+            TrackTitle,
+            Isrc,
+            DeezerTrackId,
+            DeezerAlbumId,
+            DeezerArtistId,
+            SpotifyTrackId,
+            SpotifyAlbumId,
+            SpotifyArtistId,
+            AppleTrackId,
+            AppleAlbumId,
+            AppleArtistId,
+            DurationMs,
+            DestinationFolderId,
+            QualityRank,
+            QueueOrder,
+            ContentType,
+            FinalizationStatus: null,
+            EnrichmentStatus: null,
+            Status,
+            PayloadJson,
+            Progress,
+            Downloaded,
+            Failed,
+            Error,
+            CreatedAt,
+            UpdatedAt)
+    {
+    }
+
     public DownloadQueueItem(
         long Id,
         string QueueUuid,
@@ -2095,6 +2380,8 @@ public sealed record DownloadQueueItem(
             QualityRank,
             QueueOrder,
             ContentType: null,
+            FinalizationStatus: null,
+            EnrichmentStatus: null,
             Status,
             PayloadJson,
             Progress,

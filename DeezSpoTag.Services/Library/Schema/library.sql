@@ -720,6 +720,7 @@ CREATE TABLE IF NOT EXISTS download_task (
     duration_ms INTEGER,
     destination_folder_id INTEGER,
     move_status TEXT,
+    enrichment_status TEXT,
     quality_rank INTEGER,
     lyrics_status TEXT,
     file_extension TEXT,

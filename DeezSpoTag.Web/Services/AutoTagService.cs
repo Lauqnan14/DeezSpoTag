@@ -7357,8 +7357,9 @@ public partial class AutoTagService
 
     private void TryQueueStaleRecoveryCleanup(AutoTagJob job)
     {
-        if (!string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
         {
+            AppendLog(job, "stale recovery: cleanup auto-move skipped for download enrichment (finalization owned by orchestration)");
             return;
         }
 
