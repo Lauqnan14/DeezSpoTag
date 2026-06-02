@@ -858,7 +858,13 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return BadRequest("Routing destination folder was not found or is disabled.");
         }
 
-        await UpsertWatchPreferenceRulesAsync(source, sourceId, normalizedRules, ignoreRules: null, cancellationToken);
+        await UpsertWatchPreferenceRulesAsync(
+            source,
+            sourceId,
+            normalizedRules,
+            ignoreRules: null,
+            cancellationToken,
+            replaceRoutingRules: true);
 
         return Ok(new { saved = normalizedRules?.Count ?? 0 });
     }
@@ -883,12 +889,18 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         foreach (var item in watchlist)
         {
+            var existing = await _repository.GetPlaylistWatchPreferenceAsync(
+                NormalizePlaylistSource(item.Source),
+                item.SourceId,
+                cancellationToken);
+            var applicableRules = FilterGlobalRoutingRulesForPreference(normalizedRules, existing);
             await UpsertWatchPreferenceRulesAsync(
                 item.Source,
                 item.SourceId,
-                normalizedRules,
+                applicableRules,
                 ignoreRules: null,
-                cancellationToken);
+                cancellationToken,
+                replaceRoutingRules: true);
         }
 
         return Ok(new
@@ -940,7 +952,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
-        if (existing?.RoutingRules is { Count: > 0 })
+        var applicableRules = FilterGlobalRoutingRulesForPreference(templateRules, existing);
+        if (applicableRules == null || applicableRules.Count == 0)
         {
             return;
         }
@@ -948,9 +961,38 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         await UpsertWatchPreferenceRulesAsync(
             source,
             sourceId,
-            templateRules,
+            applicableRules,
             ignoreRules: null,
-            cancellationToken);
+            cancellationToken,
+            replaceRoutingRules: true);
+    }
+
+    private static List<PlaylistTrackRoutingRule>? FilterGlobalRoutingRulesForPreference(
+        IReadOnlyList<PlaylistTrackRoutingRule>? rules,
+        PlaylistWatchPreferenceDto? preference)
+    {
+        if (rules == null || rules.Count == 0)
+        {
+            return null;
+        }
+
+        var configuredDestinationFolderIds = new HashSet<long>();
+        if (preference?.DestinationFolderId is long destinationFolderId && destinationFolderId > 0)
+        {
+            configuredDestinationFolderIds.Add(destinationFolderId);
+        }
+
+        if (preference?.AtmosDestinationFolderId is long atmosDestinationFolderId && atmosDestinationFolderId > 0)
+        {
+            configuredDestinationFolderIds.Add(atmosDestinationFolderId);
+        }
+
+        var filtered = rules
+            .Where(rule => !configuredDestinationFolderIds.Contains(rule.DestinationFolderId))
+            .Select((rule, index) => rule with { Order = index })
+            .ToList();
+
+        return filtered.Count == 0 ? null : filtered;
     }
 
     [HttpGet("{source}/{sourceId}/ignore-rules")]
@@ -1146,7 +1188,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string sourceId,
         IReadOnlyList<PlaylistTrackRoutingRule>? routingRules,
         IReadOnlyList<PlaylistTrackBlockRule>? ignoreRules,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool replaceRoutingRules = false)
     {
         var normalizedSource = NormalizePlaylistSource(source);
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
@@ -1163,7 +1206,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 existing?.SyncMode,
                 normalizedArtwork.UpdateArtwork,
                 normalizedArtwork.ReuseSavedArtwork,
-                routingRules ?? existing?.RoutingRules,
+                replaceRoutingRules ? routingRules : routingRules ?? existing?.RoutingRules,
                 ignoreRules ?? existing?.IgnoreRules,
                 existing?.AtmosDestinationFolderId),
             cancellationToken);

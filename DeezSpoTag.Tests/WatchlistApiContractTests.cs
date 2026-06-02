@@ -158,6 +158,107 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PlaylistWatchlist_Add_AppliesSavedGlobalRoutingRules()
+    {
+        var routeFolder = await AddEligibleFolderAsync("Route Folder", "/music/route");
+        var controller = new LibraryPlaylistWatchlistApiController(
+            _repository,
+            _configStore,
+            playlistWatchService: null!,
+            playlistSyncService: null!,
+            playlistVisualService: _playlistVisualService);
+
+        var applyResult = await controller.ApplyRoutingRulesGlobally(
+            "spotify",
+            "template-source",
+            new List<PlaylistTrackRoutingRule>
+            {
+                new("genre", "contains", "Reggae", routeFolder.Id, 0)
+            },
+            CancellationToken.None);
+        Assert.IsType<OkObjectResult>(applyResult);
+
+        var addResult = await controller.Add(
+            new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+                Source: "spotify",
+                SourceId: "37i9dQZEVXcTTTHAwtPLUs",
+                Name: "Test Playlist",
+                ImageUrl: null,
+                Description: null,
+                TrackCount: 50),
+            CancellationToken.None);
+        Assert.IsType<OkObjectResult>(addResult);
+
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync(
+            "spotify",
+            "37i9dQZEVXcTTTHAwtPLUs",
+            CancellationToken.None);
+        Assert.NotNull(preference);
+        var rule = Assert.Single(preference!.RoutingRules!);
+        Assert.Equal("genre", rule.ConditionField);
+        Assert.Equal("Reggae", rule.ConditionValue);
+        Assert.Equal(routeFolder.Id, rule.DestinationFolderId);
+    }
+
+    [Fact]
+    public async Task PlaylistWatchlist_Add_DoesNotApplyGlobalRoutingRuleForConfiguredDestinationFolder()
+    {
+        var defaultFolder = await AddEligibleFolderAsync("Default Folder", "/music/default");
+        var routeFolder = await AddEligibleFolderAsync("Route Folder", "/music/route");
+        var controller = new LibraryPlaylistWatchlistApiController(
+            _repository,
+            _configStore,
+            playlistWatchService: null!,
+            playlistSyncService: null!,
+            playlistVisualService: _playlistVisualService);
+
+        var applyResult = await controller.ApplyRoutingRulesGlobally(
+            "spotify",
+            "template-source",
+            new List<PlaylistTrackRoutingRule>
+            {
+                new("genre", "contains", "Default", defaultFolder.Id, 0),
+                new("genre", "contains", "Route", routeFolder.Id, 1)
+            },
+            CancellationToken.None);
+        Assert.IsType<OkObjectResult>(applyResult);
+
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "spotify",
+                SourceId: "37i9dQZEVXcTTTHAwtPLUs",
+                DestinationFolderId: defaultFolder.Id,
+                Service: null,
+                PreferredEngine: null,
+                DownloadVariantMode: null,
+                SyncMode: null,
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false,
+                RoutingRules: null,
+                IgnoreRules: null));
+
+        var addResult = await controller.Add(
+            new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+                Source: "spotify",
+                SourceId: "37i9dQZEVXcTTTHAwtPLUs",
+                Name: "Test Playlist",
+                ImageUrl: null,
+                Description: null,
+                TrackCount: 50),
+            CancellationToken.None);
+        Assert.IsType<OkObjectResult>(addResult);
+
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync(
+            "spotify",
+            "37i9dQZEVXcTTTHAwtPLUs",
+            CancellationToken.None);
+        Assert.NotNull(preference);
+        var rule = Assert.Single(preference!.RoutingRules!);
+        Assert.Equal("Route", rule.ConditionValue);
+        Assert.Equal(routeFolder.Id, rule.DestinationFolderId);
+    }
+
+    [Fact]
     public async Task ArtistWatchlist_AddStatusRemove_SpotifyContract_Works()
     {
         var controller = new LibraryWatchlistApiController(
@@ -210,6 +311,26 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.IsType<BadRequestObjectResult>(result);
+    }
+
+    private async Task<FolderDto> AddEligibleFolderAsync(string displayName, string rootPath)
+    {
+        var folder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: rootPath,
+                DisplayName: displayName,
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null));
+
+        var activated = await _repository.UpdateFolderProfileAsync(folder.Id, $"{displayName}-profile");
+        Assert.NotNull(activated);
+        var enabled = await _repository.UpdateFolderAutoTagEnabledAsync(folder.Id, true);
+        Assert.NotNull(enabled);
+        return enabled!;
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment
