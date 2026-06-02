@@ -1312,11 +1312,11 @@
         <span class="material-icons">notifications</span>
         <span class="monitor-label">Monitor Playlist</span>
     </button>
-    <button class="btn btn-secondary action-btn btn-download" onclick="downloadAll()">
+    <button class="btn btn-secondary action-btn btn-download" id="download-all-button" onclick="downloadAll(this)">
         <span class="material-icons">file_download</span>
         <span id="download-all-text">Download</span>
     </button>
-    <button class="btn btn-secondary action-btn btn-download" onclick="downloadSelected()">
+    <button class="btn btn-secondary action-btn btn-download" id="download-selected-button" onclick="downloadSelected(this)">
         <span class="material-icons">playlist_add_check</span>
         <span id="download-selected-text">Download Selected</span>
     </button>
@@ -6537,7 +6537,7 @@ function isSpotifyArtistLink(url) {
         || /^spotify:artist:[A-Za-z0-9]+$/i.test(trimmed);
 }
 
-async function downloadAll() {
+async function downloadAll(triggerButton) {
     console.log('Download all tracks');
 
     const allTracks = getDownloadEligibleTrackCheckboxes(false);
@@ -6549,12 +6549,12 @@ async function downloadAll() {
     }
 
     if (tracklistType === 'show') {
-        downloadEpisodeTracks(allTracks);
+        downloadEpisodeTracks(allTracks, triggerButton);
         return;
     }
 
     if (tracklistSource !== 'deezer') {
-        await downloadTracks(allTracks);
+        await downloadTracks(allTracks, triggerButton);
         return;
     }
 
@@ -6563,10 +6563,10 @@ async function downloadAll() {
         return;
     }
 
-    await downloadTracks(allTracks);
+    await downloadTracks(allTracks, triggerButton);
 }
 
-async function downloadSelected() {
+async function downloadSelected(triggerButton) {
     const selectedTracks = getDownloadEligibleTrackCheckboxes(true);
 
     if (selectedTracks.length === 0) {
@@ -6579,12 +6579,12 @@ async function downloadSelected() {
     console.log('Download selected tracks:', selectedTracks.length);
 
     if (tracklistType === 'show') {
-        downloadEpisodeTracks(selectedTracks);
+        downloadEpisodeTracks(selectedTracks, triggerButton);
         return;
     }
 
     if (tracklistSource !== 'deezer') {
-        await downloadTracks(selectedTracks);
+        await downloadTracks(selectedTracks, triggerButton);
         return;
     }
 
@@ -6600,11 +6600,24 @@ async function downloadSelected() {
         window.DeezSpoTagDownload.downloadSelectedTracks(trackIds);
     } else {
         // Fallback to direct API calls
-        await downloadTracks(selectedTracks);
+        await downloadTracks(selectedTracks, triggerButton);
     }
 }
 
-async function downloadEpisodeTracks(trackElements) {
+function getTracklistDownloadActionButton(triggerButton, fallbackButtonId) {
+    if (triggerButton instanceof HTMLButtonElement && triggerButton.id !== 'monitor-playlist') {
+        return triggerButton;
+    }
+
+    const fallbackButton = document.getElementById(fallbackButtonId);
+    if (fallbackButton instanceof HTMLButtonElement && fallbackButton.id !== 'monitor-playlist') {
+        return fallbackButton;
+    }
+
+    return null;
+}
+
+async function downloadEpisodeTracks(trackElements, triggerButton) {
     const downloader = window.DeezSpoTagDownload;
     const requireDestination = !!stereoDestinationSelect;
     const destinationFolderId = getStereoDestinationFolderId(requireDestination);
@@ -6652,7 +6665,7 @@ async function downloadEpisodeTracks(trackElements) {
         showTracklistToast('No episode IDs available for download.', 'warning');
         return;
     }
-    const downloadButton = document.querySelector('.btn-download');
+    const downloadButton = getTracklistDownloadActionButton(triggerButton, 'download-all-button');
     const originalText = downloadButton?.innerHTML;
 
     try {
@@ -6768,7 +6781,7 @@ async function downloadEpisodeTracks(trackElements) {
     }
 }
 
-async function downloadTracks(trackElements) {
+async function downloadTracks(trackElements, triggerButton) {
     const downloader = window.DeezSpoTagDownload;
     if (tracklistSource === 'apple') {
         try {
@@ -6830,13 +6843,18 @@ async function downloadTracks(trackElements) {
             return;
         }
     }
-    const downloadButton = document.querySelector('.btn-download');
-    const originalText = downloadButton.innerHTML;
+    const fallbackButtonId = getDownloadEligibleTrackCheckboxes(true).length > 0
+        ? 'download-selected-button'
+        : 'download-all-button';
+    const downloadButton = getTracklistDownloadActionButton(triggerButton, fallbackButtonId);
+    const originalText = downloadButton?.innerHTML || '';
     
     try {
         // Update button to show progress
-        downloadButton.innerHTML = 'Adding to queue...';
-        downloadButton.disabled = true;
+        if (downloadButton) {
+            downloadButton.innerHTML = 'Adding to queue...';
+            downloadButton.disabled = true;
+        }
         let successCount = 0;
         let deferredCount = 0;
         let alreadyQueuedCount = 0;
@@ -7398,8 +7416,10 @@ async function downloadTracks(trackElements) {
         showTracklistToast(error?.message || 'Error occurred while adding tracks to download queue', 'error');
     } finally {
         // Restore button
-        downloadButton.innerHTML = originalText;
-        downloadButton.disabled = false;
+        if (downloadButton) {
+            downloadButton.innerHTML = originalText;
+            downloadButton.disabled = false;
+        }
     }
 }
 
