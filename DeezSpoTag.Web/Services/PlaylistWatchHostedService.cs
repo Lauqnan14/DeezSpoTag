@@ -469,6 +469,11 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     FailureCount: 0),
                 stoppingToken);
 
+            if (!queueProgressed)
+            {
+                break;
+            }
+
             if (remainingBudget <= 0)
             {
                 break;

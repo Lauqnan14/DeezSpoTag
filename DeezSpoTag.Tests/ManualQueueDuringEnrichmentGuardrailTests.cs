@@ -155,13 +155,15 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
-    public void Orchestration_UsesEventFirstWakeWithWatchdog()
+    public void Orchestration_UsesEventFirstWakeWithDeadlineWake()
     {
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
-        Assert.Contains("_watchdogInterval = TimeSpan.FromSeconds(1)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("WaitForWakeAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("GetNextWakeDelay", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("_wakeSignal.WaitAsync(cancellationToken)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_watchdogInterval = TimeSpan.FromSeconds(", orchestrationSource, StringComparison.Ordinal);
         Assert.DoesNotContain("_pollInterval = TimeSpan.FromSeconds(10)", orchestrationSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Task.Delay(_pollInterval", orchestrationSource, StringComparison.Ordinal);
     }
