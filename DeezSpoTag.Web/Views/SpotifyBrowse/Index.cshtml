@@ -87,11 +87,6 @@
     color: var(--text-dim);
     font-style: italic;
 }
-.browse-load-more {
-    display: flex;
-    justify-content: center;
-    margin-top: 16px;
-}
 </style>
 }
 
@@ -109,9 +104,6 @@
     <div id="browse-sections">
         <div class="empty-section">Loading Spotify browse category...</div>
     </div>
-    <div class="browse-load-more" id="browse-load-more" style="display:none;">
-        <button type="button" class="action-btn action-btn-sm" onclick="loadBrowseCategory()">Load more</button>
-    </div>
 </section>
 
 @section Scripts {
@@ -122,10 +114,6 @@ const categoryUri = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData
 const categoryTitle = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["CategoryTitle"] ?? ""));
 const browseSection = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["BrowseSection"] ?? ""));
 
-let browseOffset = 0;
-const browseLimit = 5;
-const browseCooldownMs = 1500;
-let lastBrowseRequestAt = 0;
 let browseTotal = null;
 let browseLoading = false;
 let browseRow = null;
@@ -259,20 +247,6 @@ function updateBrowseStatus(text) {
     }
 }
 
-function updateLoadMoreVisibility() {
-    const loadMore = document.getElementById('browse-load-more');
-    if (!loadMore) return;
-    if (browseSection) {
-        loadMore.style.display = 'none';
-        return;
-    }
-    if (browseTotal !== null && browseOffset >= browseTotal) {
-        loadMore.style.display = 'none';
-        return;
-    }
-    loadMore.style.display = browseOffset > 0 ? 'flex' : 'none';
-}
-
 function renderBrowseCategoryCard(item) {
     const id = escapeHtml(item.id || item.categoryId || '');
     const name = escapeHtml(item.name || item.title || id);
@@ -351,15 +325,8 @@ async function loadBrowseSectionCategories() {
 async function loadBrowseCategory(reset = false) {
     if (browseLoading) return;
     browseLoading = true;
-    const now = Date.now();
-    const elapsed = now - lastBrowseRequestAt;
-    if (elapsed < browseCooldownMs) {
-        await new Promise(resolve => setTimeout(resolve, browseCooldownMs - elapsed));
-    }
-    lastBrowseRequestAt = Date.now();
 
     if (reset) {
-        browseOffset = 0;
         browseTotal = null;
         resetBrowseSection();
     }
@@ -369,8 +336,7 @@ async function loadBrowseCategory(reset = false) {
     const params = new URLSearchParams();
     if (categoryId) params.set('categoryId', categoryId);
     if (categoryUri) params.set('uri', categoryUri);
-    params.set('offset', browseOffset.toString());
-    params.set('limit', browseLimit.toString());
+    params.set('all', 'true');
 
     try {
         const response = await fetch(`/api/spotify/home-feed/browse/category?${params.toString()}`);
@@ -382,8 +348,7 @@ async function loadBrowseCategory(reset = false) {
             if (data?.error && data.error.toString().includes('rate limited')) {
                 const retryAfter = Number.isFinite(data.retryAfterSeconds) ? data.retryAfterSeconds : 30;
                 updateBrowseStatus(`Spotify rate limited. Retrying in ${retryAfter}s...`);
-                updateLoadMoreVisibility();
-                setTimeout(() => loadBrowseCategory(false), retryAfter * 1000);
+                setTimeout(() => loadBrowseCategory(true), retryAfter * 1000);
                 return;
             }
             throw new Error(data?.error || 'Browse category failed');
@@ -391,20 +356,18 @@ async function loadBrowseCategory(reset = false) {
 
         const items = Array.isArray(data.items) ? data.items : [];
         if (browseRow && items.length > 0) {
-            browseRow.insertAdjacentHTML('beforeend', items.map(renderSpotifyItem).join(''));
+            browseRow.innerHTML = items.map(renderSpotifyItem).join('');
         }
-        browseOffset += items.length;
         browseTotal = Number.isFinite(data.total) ? data.total : browseTotal;
 
-        if (browseOffset === 0) {
+        if (items.length === 0) {
             const container = document.getElementById('browse-sections');
             if (container) {
                 container.innerHTML = '<div class="empty-section">No playlists found in this category.</div>';
             }
         }
 
-        updateBrowseStatus(`Showing ${browseOffset}${browseTotal ? ` of ${browseTotal}` : ''} playlists`);
-        updateLoadMoreVisibility();
+        updateBrowseStatus(`Showing ${items.length}${browseTotal ? ` of ${browseTotal}` : ''} playlists`);
     } catch (error) {
         console.error('Failed to load Spotify browse category:', error);
         const container = document.getElementById('browse-sections');
@@ -412,7 +375,6 @@ async function loadBrowseCategory(reset = false) {
             container.innerHTML = '<div class="empty-section">Failed to load Spotify browse category</div>';
         }
         updateBrowseStatus('Spotify browse category unavailable');
-        updateLoadMoreVisibility();
     } finally {
         browseLoading = false;
     }

@@ -68,6 +68,8 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private const string ErrorBrowseDisabled = "Spotify browse disabled.";
     private const string ErrorCategoryIdRequired = "Category id is required.";
     private const string ErrorCategoryPlaylistsUnavailable = "Spotify category playlists unavailable.";
+    private const int BrowseCategoryFullPageLimit = 50;
+    private const int BrowseCategoryFullMaxItems = 500;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly bool SpotifyBrowseEnabled = ReadSpotifyBrowseEnabled();
     private static readonly HashSet<string> SupportedHomeItemTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -513,6 +515,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         [FromQuery] string? categoryId,
         [FromQuery] string? uri,
         [FromQuery] bool refresh = false,
+        [FromQuery] bool all = false,
         [FromQuery] int offset = 0,
         [FromQuery] int limit = 30,
         CancellationToken cancellationToken = default)
@@ -534,21 +537,25 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
             if (!refresh && TryGetFreshBrowseCategoryPlaylistsCache(resolvedId, browseCacheTtl, out var cachedPlaylists))
             {
-                var slice = cachedPlaylists.Items.Skip(offset).Take(limit).ToList();
+                var slice = all
+                    ? cachedPlaylists.Items.ToList()
+                    : cachedPlaylists.Items.Skip(offset).Take(limit).ToList();
                 return Ok(new
                 {
                     success = true,
                     items = slice,
-                    offset,
-                    limit,
+                    offset = all ? 0 : offset,
+                    limit = all ? slice.Count : limit,
                     total = cachedPlaylists.Total,
                     cached = true
                 });
             }
 
             offset = Math.Max(offset, 0);
-            limit = Math.Clamp(limit, 1, 50);
-            var result = await FetchBrowseCategoryPlaylistsAsync(resolvedId, uri, offset, limit, cancellationToken);
+            limit = all ? BrowseCategoryFullPageLimit : Math.Clamp(limit, 1, BrowseCategoryFullPageLimit);
+            var result = all
+                ? await FetchAllBrowseCategoryPlaylistsAsync(resolvedId, uri, cancellationToken)
+                : await FetchBrowseCategoryPlaylistsAsync(resolvedId, uri, offset, limit, cancellationToken);
             if (!result.Success)
             {
                 return Ok(new { success = false, error = result.Error ?? ErrorCategoryPlaylistsUnavailable });
@@ -563,10 +570,10 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             {
                 success = true,
                 items = result.ContainsFullList
-                    ? result.Items.Skip(offset).Take(limit).ToList()
+                    ? (all ? result.Items.ToList() : result.Items.Skip(offset).Take(limit).ToList())
                     : result.Items,
-                offset,
-                limit,
+                offset = all ? 0 : offset,
+                limit = all ? result.Items.Count : limit,
                 total = result.Total,
                 cached = result.Cached
             });
@@ -834,6 +841,108 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
 
         return new BrowseCategoryPlaylistsResult(true, items, total, false, containsFullList);
+    }
+
+    private async Task<BrowseCategoryPlaylistsResult> FetchAllBrowseCategoryPlaylistsAsync(
+        string categoryId,
+        string? uri,
+        CancellationToken cancellationToken)
+    {
+        var pageUri = BuildBrowsePageUri(categoryId, uri);
+        if (string.IsNullOrWhiteSpace(pageUri))
+        {
+            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, false, ErrorCategoryPlaylistsUnavailable);
+        }
+
+        var pageDoc = await _pathfinderClient.FetchBrowsePageWithBlobAsync(
+            pageUri,
+            0,
+            BrowseCategoryFullPageLimit,
+            0,
+            BrowseCategoryFullPageLimit,
+            cancellationToken);
+        if (pageDoc is null)
+        {
+            return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, false, ErrorCategoryPlaylistsUnavailable);
+        }
+
+        var directItems = DeduplicateBrowseItems(ParseBrowsePlaylistItems(pageDoc));
+        if (directItems.Count > 0)
+        {
+            var directTotal = Math.Max(TryGetBrowseTotal(pageDoc.RootElement) ?? directItems.Count, directItems.Count);
+            if (directItems.Count >= directTotal)
+            {
+                BrowseCategoryPlaylistsCache[categoryId] = (DateTimeOffset.UtcNow, directItems, directTotal);
+                return new BrowseCategoryPlaylistsResult(true, directItems, directTotal, false, true);
+            }
+        }
+
+        var sectionUris = FindUrisByPrefix(pageDoc.RootElement, "spotify:section:");
+        foreach (var sectionUri in sectionUris)
+        {
+            var fetched = await FetchBrowseSectionPlaylistPagesAsync(
+                sectionUri,
+                BrowseCategoryFullPageLimit,
+                BrowseCategoryFullMaxItems,
+                cancellationToken);
+            if (fetched.Items.Count == 0)
+            {
+                continue;
+            }
+
+            BrowseCategoryPlaylistsCache[categoryId] = (DateTimeOffset.UtcNow, fetched.Items, fetched.Total);
+            return new BrowseCategoryPlaylistsResult(true, fetched.Items, fetched.Total, false, true);
+        }
+
+        return new BrowseCategoryPlaylistsResult(false, Array.Empty<object>(), 0, false, false, ErrorCategoryPlaylistsUnavailable);
+    }
+
+    private async Task<(IReadOnlyList<object> Items, int Total)> FetchBrowseSectionPlaylistPagesAsync(
+        string sectionUri,
+        int pageLimit,
+        int maxItems,
+        CancellationToken cancellationToken)
+    {
+        var collected = new List<object>();
+        var total = 0;
+        var offset = 0;
+
+        while (offset < maxItems)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var sectionDoc = await _pathfinderClient.FetchBrowseSectionWithBlobAsync(
+                sectionUri,
+                offset,
+                pageLimit,
+                cancellationToken);
+            if (sectionDoc is null)
+            {
+                break;
+            }
+
+            var pageItems = DeduplicateBrowseItems(ParseBrowsePlaylistItems(sectionDoc));
+            if (pageItems.Count == 0)
+            {
+                break;
+            }
+
+            collected.AddRange(pageItems);
+            collected = DeduplicateBrowseItems(collected);
+            total = Math.Max(total, TryGetBrowseTotal(sectionDoc.RootElement) ?? collected.Count);
+            if (collected.Count >= total || pageItems.Count < pageLimit || collected.Count >= maxItems)
+            {
+                break;
+            }
+
+            offset += pageLimit;
+        }
+
+        if (collected.Count > maxItems)
+        {
+            collected = collected.Take(maxItems).ToList();
+        }
+
+        return (collected, Math.Max(total, collected.Count));
     }
 
     private async Task<object> ResolveBrowseBatchCategoryAsync(
