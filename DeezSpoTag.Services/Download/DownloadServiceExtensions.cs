@@ -93,6 +93,7 @@ public static class DownloadServiceExtensions
         services.AddSingleton<ResolveProxyClient>();
         services.AddSingleton<SongLinkResolver>();
         services.AddSingleton<IDownloadApiHealthTracker, DownloadApiHealthTracker>();
+        services.AddSingleton<EngineFallbackSearchService>();
         services.AddSingleton<EngineFallbackCoordinator>();
         services.AddSingleton<DeezerIsrcResolver>();
         services.AddSingleton<Download.Tidal.TidalApiProviderSource>();

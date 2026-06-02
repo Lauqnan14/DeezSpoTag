@@ -148,6 +148,8 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
         public Task<List<QobuzAlbum>> GetArtistAlbums(int artistId, string store, CancellationToken ct)
             => Task.FromResult(new List<QobuzAlbum>());
 
+        public Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct) => Task.FromResult<QobuzTrack?>(null);
+
         public Task<QobuzQualityInfo?> GetTrackQuality(int trackId, CancellationToken ct)
             => Task.FromResult<QobuzQualityInfo?>(null);
     }

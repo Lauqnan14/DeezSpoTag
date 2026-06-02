@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Core.Utils;
@@ -57,14 +58,14 @@ public sealed class QobuzTrackResolver
 
         var candidates = new Dictionary<int, QobuzTrack>();
         await CollectAlbumCandidatesAsync(candidates, artist, album, cancellationToken);
-        await CollectCandidatesAsync(candidates, title, artist, album, cancellationToken);
+        await CollectCandidatesAsync(candidates, title, artist, album, requireArtist: !string.IsNullOrWhiteSpace(isrc), cancellationToken);
 
         if (!string.IsNullOrWhiteSpace(isrc))
         {
             await CollectQueryAsync(candidates, $"isrc:{isrc.Trim()}", cancellationToken);
         }
 
-        var best = PickBestCandidate(candidates.Values, title, artist, album, expectedDurationSec);
+        var best = PickBestCandidate(candidates.Values, isrc, title, artist, album, expectedDurationSec);
         return best;
     }
 
@@ -82,16 +83,70 @@ public sealed class QobuzTrackResolver
             : null;
     }
 
+    public async Task<QobuzTrackResolution?> ValidateTrackIdAsync(
+        int trackId,
+        string? isrc,
+        string? title,
+        string? artist,
+        string? album,
+        int? durationMs,
+        CancellationToken cancellationToken)
+    {
+        if (trackId <= 0)
+        {
+            return null;
+        }
+
+        var track = await TryGetTrackAsync(trackId, cancellationToken);
+        if (track == null || track.Id <= 0)
+        {
+            return null;
+        }
+
+        var expectedDurationSec = durationMs.HasValue && durationMs.Value > 0
+            ? (int)Math.Round(durationMs.Value / 1000d)
+            : 0;
+        if (!string.IsNullOrWhiteSpace(isrc)
+            && !IsExactIsrcMatch(track, isrc))
+        {
+            return null;
+        }
+
+        if (HasContradictoryMetadata(track, title, artist, expectedDurationSec))
+        {
+            return null;
+        }
+
+        var score = ScoreCandidate(track, title, artist, album, expectedDurationSec, preferHiRes: true);
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            var hasStrictTitle = TitlesMatch(title, track.Title);
+            var hasStrictArtist = ArtistsMatch(artist, GetTrackArtist(track));
+            if (!hasStrictTitle || !hasStrictArtist || score < 14)
+            {
+                return null;
+            }
+        }
+
+        return BuildResolution(track, "direct_url", score);
+    }
+
     private async Task CollectCandidatesAsync(
         Dictionary<int, QobuzTrack> candidates,
         string? title,
         string? artist,
         string? album,
+        bool requireArtist,
         CancellationToken cancellationToken)
     {
-        foreach (var query in BuildQueries(title, artist, album))
+        foreach (var query in BuildQueries(title, artist, album, requireArtist))
         {
             await CollectQueryAsync(candidates, query, cancellationToken);
+
+            if (requireArtist)
+            {
+                continue;
+            }
 
             foreach (var store in ResolveStores())
             {
@@ -128,7 +183,38 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (IsRateLimit(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Qobuz ISRC lookup throttled for {Isrc}; continuing with alternate Qobuz resolution.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
+                return null;
+            }
+
             _logger.LogWarning(ex, "Qobuz ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
+            return null;
+        }
+    }
+
+    private async Task<QobuzTrack?> TryGetTrackAsync(int trackId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _metadataService.GetTrack(trackId, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (IsRateLimit(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Qobuz track lookup throttled for id {TrackId}; continuing with alternate Qobuz resolution.",
+                    trackId);
+                return null;
+            }
+
+            _logger.LogWarning(ex, "Qobuz track lookup failed for id {TrackId}", trackId);
             return null;
         }
     }
@@ -153,6 +239,15 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (IsRateLimit(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Qobuz track search throttled for query {Query}; continuing with alternate Qobuz resolution.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
+                return new List<QobuzTrack>();
+            }
+
             _logger.LogWarning(ex, "Qobuz track search failed for query {Query}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             return new List<QobuzTrack>();
         }
@@ -166,6 +261,15 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (IsRateLimit(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Qobuz album track search throttled for query {Query}; continuing with alternate Qobuz resolution.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
+                return new List<QobuzTrack>();
+            }
+
             _logger.LogWarning(ex, "Qobuz album track search failed for query {Query}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
             return new List<QobuzTrack>();
         }
@@ -182,13 +286,27 @@ public sealed class QobuzTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (IsRateLimit(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Qobuz autosuggest throttled for query {Query} store {Store}; continuing with alternate Qobuz resolution.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(query),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(store));
+                return new List<QobuzTrack>();
+            }
+
             _logger.LogWarning(ex, "Qobuz autosuggest failed for query {Query} store {Store}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query), DeezSpoTag.Core.Security.LogSanitizer.OneLine(store));
             return new List<QobuzTrack>();
         }
     }
 
+    private static bool IsRateLimit(Exception exception)
+        => exception is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests };
+
     private QobuzTrackResolution? PickBestCandidate(
         IEnumerable<QobuzTrack> candidates,
+        string? expectedIsrc,
         string? expectedTitle,
         string? expectedArtist,
         string? expectedAlbum,
@@ -199,6 +317,13 @@ public sealed class QobuzTrackResolver
 
         foreach (var candidate in candidates)
         {
+            if (!string.IsNullOrWhiteSpace(expectedIsrc)
+                && !string.IsNullOrWhiteSpace(candidate.ISRC)
+                && !IsExactIsrcMatch(candidate, expectedIsrc))
+            {
+                continue;
+            }
+
             var score = ScoreCandidate(candidate, expectedTitle, expectedArtist, expectedAlbum, expectedDurationSec, preferHiRes: true);
             if (score > bestScore)
             {
@@ -212,8 +337,12 @@ public sealed class QobuzTrackResolver
             return null;
         }
 
-        var hasStrictTitle = TitlesMatch(expectedTitle, bestTrack.Title);
-        var hasStrictArtist = ArtistsMatch(expectedArtist, GetTrackArtist(bestTrack));
+        var hasStrictTitle = !string.IsNullOrWhiteSpace(expectedIsrc)
+            ? StrictTitlesMatch(expectedTitle, bestTrack.Title)
+            : TitlesMatch(expectedTitle, bestTrack.Title);
+        var hasStrictArtist = !string.IsNullOrWhiteSpace(expectedIsrc)
+            ? StrictArtistsMatch(expectedArtist, GetTrackArtist(bestTrack))
+            : ArtistsMatch(expectedArtist, GetTrackArtist(bestTrack));
         var minimumScore = hasStrictTitle ? 11 : 8;
         if (bestScore < minimumScore || !hasStrictArtist)
         {
@@ -350,7 +479,7 @@ public sealed class QobuzTrackResolver
         return Math.Abs(track.Duration - expectedDurationSec) > 20;
     }
 
-    private static HashSet<string> BuildQueries(string? title, string? artist, string? album)
+    private static HashSet<string> BuildQueries(string? title, string? artist, string? album, bool requireArtist)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -367,7 +496,7 @@ public sealed class QobuzTrackResolver
             seen.Add($"{title.Trim()} {artist.Trim()} {album.Trim()}");
         }
 
-        if (!string.IsNullOrWhiteSpace(title))
+        if (!requireArtist && !string.IsNullOrWhiteSpace(title))
         {
             seen.Add(title.Trim());
         }
@@ -426,6 +555,14 @@ public sealed class QobuzTrackResolver
             || cleanActual.Contains(cleanExpected, StringComparison.Ordinal);
     }
 
+    private static bool StrictTitlesMatch(string? expected, string? actual)
+    {
+        var normalizedExpected = CleanTitle(TrackTitleMatcher.NormalizeText(expected));
+        var normalizedActual = CleanTitle(TrackTitleMatcher.NormalizeText(actual));
+        return !string.IsNullOrWhiteSpace(normalizedExpected)
+            && normalizedExpected == normalizedActual;
+    }
+
     private static bool ArtistsMatch(string? expected, string? actual)
     {
         var normalizedExpected = TrackTitleMatcher.NormalizeText(expected);
@@ -452,6 +589,15 @@ public sealed class QobuzTrackResolver
             exp == act
             || exp.Contains(act, StringComparison.Ordinal)
             || act.Contains(exp, StringComparison.Ordinal)));
+    }
+
+    private static bool StrictArtistsMatch(string? expected, string? actual)
+    {
+        var expectedParts = SplitArtists(TrackTitleMatcher.NormalizeText(expected));
+        var actualParts = SplitArtists(TrackTitleMatcher.NormalizeText(actual));
+        return expectedParts.Count > 0
+            && actualParts.Count > 0
+            && expectedParts.Any(expectedPart => actualParts.Contains(expectedPart, StringComparer.Ordinal));
     }
 
     private static bool AlbumMatches(string? expected, string? actual)

@@ -24,7 +24,7 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
             item.PayloadJson,
             "{\"SourceUrl\":\"https://play.qobuz.com/track/123\"}",
             "qobuz",
-            CancellationToken.None);
+            cancellationToken: CancellationToken.None);
         var stored = await context.QueueRepository.GetByUuidAsync(item.QueueUuid, CancellationToken.None);
 
         Assert.True(updated);
@@ -45,7 +45,7 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
             "{\"SourceUrl\":\"different\"}",
             "{\"SourceUrl\":\"new\"}",
             "qobuz",
-            CancellationToken.None);
+            cancellationToken: CancellationToken.None);
         var stored = await context.QueueRepository.GetByUuidAsync(item.QueueUuid, CancellationToken.None);
 
         Assert.False(updated);
@@ -67,7 +67,7 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
             item.PayloadJson,
             "{\"SourceUrl\":\"new\"}",
             "qobuz",
-            CancellationToken.None);
+            cancellationToken: CancellationToken.None);
         var stored = await context.QueueRepository.GetByUuidAsync(item.QueueUuid, CancellationToken.None);
 
         Assert.False(updated);

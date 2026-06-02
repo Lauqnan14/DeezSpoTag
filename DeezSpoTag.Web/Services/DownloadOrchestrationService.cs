@@ -924,6 +924,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
         var pendingItems = await GetPendingPostDownloadItemsAsync(cancellationToken, profileContext.FoldersById);
+        pendingItems = await CloseCompletedItemsWithoutStagingFilesAsync(pendingItems, downloadRootPath, cancellationToken);
         if (pendingItems.Count == 0)
         {
             _logger.LogInformation("Orchestration skipped: no AutoTag-eligible completed downloads found.");
@@ -956,6 +957,47 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             pipelineStartedAt,
             downloadRootPath,
             groups);
+    }
+
+    private async Task<List<DownloadQueueItem>> CloseCompletedItemsWithoutStagingFilesAsync(
+        List<DownloadQueueItem> pendingItems,
+        string downloadRootPath,
+        CancellationToken cancellationToken)
+    {
+        if (pendingItems.Count == 0)
+        {
+            return pendingItems;
+        }
+
+        var remaining = new List<DownloadQueueItem>(pendingItems.Count);
+        var closedMarkers = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in pendingItems)
+        {
+            if (PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
+            {
+                remaining.Add(item);
+                continue;
+            }
+
+            await _queueRepository.MarkMoveNotRequiredAsync(item.QueueUuid, cancellationToken);
+            await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusNotRequired, cancellationToken);
+            var marker = BuildCompletionMarker(item);
+            if (!string.IsNullOrWhiteSpace(marker))
+            {
+                closedMarkers[marker] = item.UpdatedAt;
+            }
+        }
+
+        if (closedMarkers.Count > 0)
+        {
+            MarkCompletedItemsAsProcessed(closedMarkers);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: closed {closedMarkers.Count} completed download item(s) whose staging files were already finalized."));
+        }
+
+        return remaining;
     }
 
     private async Task<PipelineEnrichmentResult> RunPipelineEnrichmentAsync(
@@ -2192,7 +2234,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 .OrderByDescending(item => item.UpdatedAt)
                 .ThenByDescending(item => item.Id)
                 .ToList();
-            var sourceFiles = ResolveExistingSourceAudioFilesUnderRoot(items, downloadRootPath);
+            var itemsWithSourceFiles = items
+                .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
+                .ToList();
+            var sourceFiles = ResolveExistingSourceAudioFilesUnderRoot(itemsWithSourceFiles, downloadRootPath);
             if (sourceFiles.Count == 0)
             {
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -2208,14 +2253,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 profile,
                 scopedConfigJson,
                 GetAutoTagStages(scopedConfigJson),
-                items,
-                items
+                itemsWithSourceFiles,
+                itemsWithSourceFiles
                     .Select(item => item.QueueUuid)
                     .Where(queueUuid => !string.IsNullOrWhiteSpace(queueUuid))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList(),
                 sourceFiles,
-                BuildCompletionMarkers(items)));
+                BuildCompletionMarkers(itemsWithSourceFiles)));
         }
 
         if (groups.Count > 1)

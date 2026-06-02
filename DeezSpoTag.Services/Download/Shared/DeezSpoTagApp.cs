@@ -115,7 +115,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
             queue[task.QueueUuid] = payload;
 
-            if (task.Status == "queued" || task.Status == "running")
+            if (task.Status == "resolving" || task.Status == "queued" || task.Status == "running")
             {
                 queueOrder.Add(task.QueueUuid);
             }

@@ -14,5 +14,6 @@ public interface IQobuzMetadataService
     Task<List<QobuzArtist>> SearchArtists(string query, CancellationToken ct);
     Task<QobuzArtist?> GetArtistDiscography(int artistId, string store, CancellationToken ct);
     Task<List<QobuzAlbum>> GetArtistAlbums(int artistId, string store, CancellationToken ct);
+    Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct);
     Task<QobuzQualityInfo?> GetTrackQuality(int trackId, CancellationToken ct);
 }

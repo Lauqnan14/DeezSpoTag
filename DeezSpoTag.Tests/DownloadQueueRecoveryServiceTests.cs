@@ -65,22 +65,29 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             new DeezSpoTagListener(),
             NullLogger<DownloadRetryScheduler>.Instance,
             _cancellationRegistry);
+        var songLinkResolver = new SongLinkResolver(new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = new StubHttpClientFactory(),
+            Logger = NullLogger<SongLinkResolver>.Instance
+        });
+        var appleCatalogService = new AppleMusicCatalogService(
+            new StubHttpClientFactory(),
+            _settingsService,
+            NullLogger<AppleMusicCatalogService>.Instance,
+            new MemoryCache(new MemoryCacheOptions()));
+        var fallbackSearchService = new EngineFallbackSearchService(
+            songLinkResolver,
+            appleCatalogService,
+            NullLogger<EngineFallbackSearchService>.Instance);
         var fallbackCoordinator = new EngineFallbackCoordinator(
             _queueRepository,
             _settingsService,
-            new SongLinkResolver(new SongLinkResolver.Dependencies
-            {
-                HttpClientFactory = new StubHttpClientFactory(),
-                Logger = NullLogger<SongLinkResolver>.Instance
-            }),
+            songLinkResolver,
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
-            new AppleMusicCatalogService(
-                new StubHttpClientFactory(),
-                _settingsService,
-                NullLogger<AppleMusicCatalogService>.Instance,
-                new MemoryCache(new MemoryCacheOptions())),
+            appleCatalogService,
+            fallbackSearchService,
             new NullActivityLogWriter());
 
         var runtime = new DownloadQueueRecoveryRuntime(
@@ -198,20 +205,17 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
 
         await EnqueueRunningItemAsync(queueUuid, payload);
 
-        var fallbackCoordinator = new EngineFallbackCoordinator(
-            _queueRepository,
-            _settingsService,
-            new SongLinkResolver(new SongLinkResolver.Dependencies
+        var songLinkResolver = new SongLinkResolver(new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = new StubHttpClientFactory(new StubHttpMessageHandler(request =>
             {
-                HttpClientFactory = new StubHttpClientFactory(new StubHttpMessageHandler(request =>
+                var requestUri = request.RequestUri?.ToString() ?? string.Empty;
+                if (!requestUri.Contains("api.deezer.com/track/3094483121", StringComparison.OrdinalIgnoreCase))
                 {
-            var requestUri = request.RequestUri?.ToString() ?? string.Empty;
-            if (!requestUri.Contains("api.deezer.com/track/3094483121", StringComparison.OrdinalIgnoreCase))
-            {
-                return new HttpResponseMessage(HttpStatusCode.NotFound);
-            }
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
+                }
 
-            const string payloadJson = """
+                const string payloadJson = """
 {
   "id": 3094483121,
   "title": "Nairobi",
@@ -226,22 +230,32 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
 }
 """;
 
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(payloadJson)
-            };
-        })),
-                Logger = NullLogger<SongLinkResolver>.Instance,
-                SpotifyIdResolver = new StubSpotifyIdResolver("2f2ksxHYvYxfL8M4L4sKcA")
-            }),
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(payloadJson)
+                };
+            })),
+            Logger = NullLogger<SongLinkResolver>.Instance,
+            SpotifyIdResolver = new StubSpotifyIdResolver("2f2ksxHYvYxfL8M4L4sKcA")
+        });
+        var appleCatalogService = new AppleMusicCatalogService(
+            new StubHttpClientFactory(),
+            _settingsService,
+            NullLogger<AppleMusicCatalogService>.Instance,
+            new MemoryCache(new MemoryCacheOptions()));
+        var fallbackSearchService = new EngineFallbackSearchService(
+            songLinkResolver,
+            appleCatalogService,
+            NullLogger<EngineFallbackSearchService>.Instance);
+        var fallbackCoordinator = new EngineFallbackCoordinator(
+            _queueRepository,
+            _settingsService,
+            songLinkResolver,
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
-            new AppleMusicCatalogService(
-                new StubHttpClientFactory(),
-                _settingsService,
-                NullLogger<AppleMusicCatalogService>.Instance,
-                new MemoryCache(new MemoryCacheOptions())),
+            appleCatalogService,
+            fallbackSearchService,
             new NullActivityLogWriter());
 
         var advanced = await fallbackCoordinator.TryAdvanceAsync(queueUuid, "qobuz", payload, CancellationToken.None);

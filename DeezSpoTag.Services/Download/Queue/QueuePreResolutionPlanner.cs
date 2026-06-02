@@ -4,7 +4,8 @@ public static class QueuePreResolutionPlanner
 {
     private static readonly HashSet<string> EligibleStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
-        "queued"
+        "queued",
+        "resolving"
     };
 
     public static DownloadQueueItem? SelectNext(

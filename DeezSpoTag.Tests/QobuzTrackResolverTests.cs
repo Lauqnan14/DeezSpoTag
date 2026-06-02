@@ -168,6 +168,11 @@ public sealed class QobuzTrackResolverTests
             return Task.FromResult(new List<QobuzAlbum>());
         }
 
+        public Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct)
+        {
+            return Task.FromResult<QobuzTrack?>(null);
+        }
+
         public Task<QobuzQualityInfo?> GetTrackQuality(int trackId, CancellationToken ct)
         {
             return Task.FromResult<QobuzQualityInfo?>(null);

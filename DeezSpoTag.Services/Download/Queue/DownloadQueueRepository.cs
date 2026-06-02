@@ -101,7 +101,7 @@ END;";
         var id = result is null or DBNull ? (long?)null : Convert.ToInt64(result);
         if (id.HasValue)
         {
-            PublishQueueStateChanged(item.QueueUuid, "queued");
+            PublishQueueStateChanged(item.QueueUuid, item.Status);
         }
 
         return id;
@@ -721,7 +721,7 @@ LIMIT 1;";
 	duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
 	status, payload, progress, downloaded, failed, error, created_at, updated_at";
 
-        const string activeStatuses = "'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
+        const string activeStatuses = "'resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
         return @"
 WITH active_items AS (
 	SELECT " + selectedColumns + @"
@@ -794,6 +794,8 @@ WHERE queue_uuid = @queueUuid;";
         string? expectedPayloadJson,
         string payloadJson,
         string? engine = null,
+        string? status = null,
+        string? error = null,
         CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -803,18 +805,32 @@ WHERE queue_uuid = @queueUuid;";
 UPDATE download_task
 SET payload = @payload,
     engine = COALESCE(@engine, engine),
+    status = COALESCE(@status, status),
+    error = CASE
+        WHEN @status = 'failed' THEN COALESCE(@error, error)
+        WHEN @status = 'queued' THEN NULL
+        ELSE error
+    END,
     lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid
-  AND status = 'queued'
+  AND status IN ('queued', 'resolving')
   AND ((payload IS NULL AND @expectedPayload IS NULL) OR payload = @expectedPayload);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
         command.Parameters.AddWithValue("engine", (object?)engine ?? DBNull.Value);
+        command.Parameters.AddWithValue("status", (object?)status ?? DBNull.Value);
+        command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
         command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("expectedPayload", (object?)expectedPayloadJson ?? DBNull.Value);
-        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        if (updated && !string.IsNullOrWhiteSpace(status))
+        {
+            PublishQueueStateChanged(queueUuid, status);
+        }
+
+        return updated;
     }
 
     public async Task UpdateFinalDestinationsAsync(
@@ -1325,12 +1341,6 @@ WHERE (
         @contentType IS NULL
         OR lower(content_type) = lower(@contentType)
     )
-    AND (
-        status NOT IN ('completed', 'complete')
-        OR @cooldownMinutes IS NULL
-        OR @cooldownMinutes <= 0
-        OR updated_at >= datetime('now', '-' || @cooldownMinutes || ' minutes')
-    )
 ORDER BY
     CASE
         WHEN lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying') THEN 0
@@ -1356,11 +1366,6 @@ ORDER BY
         {
             var item = ReadItem(reader);
             if (!MatchesDuplicateRequest(request, item))
-            {
-                continue;
-            }
-
-            if (IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item))
             {
                 continue;
             }
@@ -1627,6 +1632,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await NormalizeLegacyPlaceholderIdsAsync(connection, cancellationToken);
         await NormalizeLegacyAtmosContentTypesAsync(connection, cancellationToken);
         await NormalizeLegacyEnrichmentStatusesAsync(connection, cancellationToken);
+        await NormalizeCompletedFinalizationStatusesAsync(connection, cancellationToken);
 
         lock (_schemaLock)
         {
@@ -1767,6 +1773,30 @@ WHERE enrichment_status IS NULL OR trim(enrichment_status) = '';
 UPDATE download_task
 SET enrichment_status = '" + EnrichmentStatusCanceled + @"'
 WHERE lower(trim(COALESCE(enrichment_status, ''))) = 'cancelled';";
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task NormalizeCompletedFinalizationStatusesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+UPDATE download_task
+SET move_status = '" + MoveStatusMoved + @"'
+WHERE lower(status) IN ('completed', 'complete')
+  AND final_destinations_json IS NOT NULL
+  AND trim(final_destinations_json) <> ''
+  AND lower(COALESCE(move_status, '')) NOT IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"');
+
+UPDATE download_task
+SET move_status = '" + MoveStatusNotRequired + @"',
+    enrichment_status = CASE
+        WHEN lower(COALESCE(enrichment_status, '')) IN ('" + EnrichmentStatusCompleted + @"', '" + EnrichmentStatusNotRequired + @"') THEN enrichment_status
+        ELSE '" + EnrichmentStatusNotRequired + @"'
+    END
+WHERE lower(status) NOT IN ('completed', 'complete')
+  AND lower(COALESCE(move_status, '')) IN ('" + MoveStatusPending + @"', '" + MoveStatusRunning + @"');";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

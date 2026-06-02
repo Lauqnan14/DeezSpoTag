@@ -13,6 +13,7 @@ using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Net;
 using System.IO;
 using TagLib;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
@@ -262,6 +263,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         await _folderConversionSettingsOverlay.ApplyAsync(settings, payload.DestinationFolderId, itemToken);
         DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
 
+        ResetRuntimeProgress(payload);
+        await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);
         _deezspotagListener.SendStartDownload(next.QueueUuid);
         _deezspotagListener.Send(UpdateQueueEvent, new
         {
@@ -273,6 +276,22 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
         await _queueRepository.UpdateStatusAsync(next.QueueUuid, RunningStatus, progress: payload.Progress, cancellationToken: itemToken);
         return payload;
+    }
+
+    private static void ResetRuntimeProgress(QobuzQueueItem payload)
+    {
+        payload.Progress = 0;
+        payload.Downloaded = 0;
+        payload.Failed = 0;
+        payload.TotalSize = 0;
+        payload.Speed = 0;
+        payload.StartTime = 0;
+        payload.EndTime = 0;
+        payload.ErrorMessage = string.Empty;
+        payload.FilePath = string.Empty;
+        payload.Files.Clear();
+        payload.FinalDestinations.Clear();
+        payload.QobuzActualQuality = string.Empty;
     }
 
     private async Task<EngineAudioPostDownloadHelper.EngineTrackContext> BuildTrackContextAsync(
@@ -347,10 +366,37 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var sourceSelection = ResolveQobuzSource(payload);
         if (!string.IsNullOrWhiteSpace(payload.QobuzId) && sourceSelection.HasTrackUrl)
         {
-            payload.QobuzResolutionSource = "direct_url";
-            payload.QobuzResolutionScore = null;
-            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-            return null;
+            var directTrackId = ExtractQobuzTrackId(sourceSelection.TrackUrl);
+            if (directTrackId.HasValue)
+            {
+                var directResolution = await _qobuzTrackResolver.ValidateTrackIdAsync(
+                    directTrackId.Value,
+                    resolvedIsrc,
+                    payload.Title,
+                    payload.Artist,
+                    payload.Album,
+                    payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
+                    cancellationToken);
+                if (directResolution != null)
+                {
+                    payload.QobuzId = directResolution.Track.Id.ToString();
+                    payload.QobuzResolutionSource = directResolution.Source;
+                    payload.QobuzResolutionScore = directResolution.Score;
+                    payload.SourceUrl = $"https://play.qobuz.com/track/{directResolution.Track.Id}";
+                    payload.ResolutionError = string.Empty;
+                    await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+                    return directResolution;
+                }
+            }
+
+            _logger.LogWarning(
+                "Qobuz direct source rejected for {QueueUuid}: trackUrl={TrackUrl} title={Title} artist={Artist} isrc={Isrc}",
+                queueUuid,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceSelection.TrackUrl),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Title),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Artist),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedIsrc ?? payload.Isrc));
+            ClearQobuzDirectSource(payload, sourceSelection.TrackUrl);
         }
 
         var resolvedTrack = await ResolvePreferredQobuzTrackAsync(payload, resolvedIsrc, cancellationToken);
@@ -365,6 +411,24 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         payload.SourceUrl = $"https://play.qobuz.com/track/{resolvedTrack.Track.Id}";
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
         return resolvedTrack;
+    }
+
+    private static void ClearQobuzDirectSource(QobuzQueueItem payload, string rejectedTrackUrl)
+    {
+        payload.QobuzId = string.Empty;
+        payload.QobuzResolutionSource = string.Empty;
+        payload.QobuzResolutionScore = null;
+        payload.ResolutionError = "Qobuz direct source did not match requested metadata.";
+
+        if (string.Equals(payload.SourceUrl, rejectedTrackUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            payload.SourceUrl = string.Empty;
+        }
+
+        if (string.Equals(payload.ResolvedSourceUrl, rejectedTrackUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            payload.ResolvedSourceUrl = string.Empty;
+        }
     }
 
     private static QobuzSourceSelection ResolveQobuzSource(QobuzQueueItem payload)
@@ -618,7 +682,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
-            _activityLog.Warn($"Download failed (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
+            var failureKind = IsRateLimitFailure(ex) ? "throttled" : "failed";
+            _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
             var advanced = await _fallbackCoordinator.TryAdvanceAsync(
                 next.QueueUuid,
                 next.Engine,
@@ -636,6 +701,20 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             }
         }
 
+        if (IsRateLimitFailure(ex))
+        {
+            var quality = payload == null || string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
+            _activityLog.Warn($"Download throttled (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
+            await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, ex.Message, cancellationToken: CancellationToken.None);
+            if (payload != null)
+            {
+                await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, FailedStatus, _serviceProvider, CancellationToken.None);
+            }
+
+            _retryScheduler.ScheduleRetry(next.QueueUuid, EngineName, ex.Message);
+            return;
+        }
+
         await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, ex.Message, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
@@ -645,6 +724,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         _activityLog.Error($"Download failed (engine={EngineName}): {next.QueueUuid} {ex.Message}");
         _retryScheduler.ScheduleRetry(next.QueueUuid, EngineName, ex.Message);
     }
+
+    private static bool IsRateLimitFailure(Exception exception)
+        => exception is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests };
 
     private readonly record struct QobuzSourceSelection(string TrackUrl, bool HasTrackUrl);
 

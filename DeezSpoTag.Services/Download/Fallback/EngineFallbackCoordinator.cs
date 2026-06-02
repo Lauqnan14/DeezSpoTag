@@ -26,6 +26,7 @@ public sealed class EngineFallbackCoordinator
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
+    private readonly EngineFallbackSearchService _fallbackSearchService;
     private readonly IActivityLogWriter _activityLog;
     private readonly IDownloadApiHealthTracker _apiHealthTracker;
     private sealed record FallbackAdvanceRequest(
@@ -77,6 +78,7 @@ public sealed class EngineFallbackCoordinator
         SongLinkResolver songLinkResolver,
         DeezerIsrcResolver deezerIsrcResolver,
         AppleMusicCatalogService appleCatalogService,
+        EngineFallbackSearchService fallbackSearchService,
         IActivityLogWriter activityLog,
         OptionalServices? optionalServices = null)
     {
@@ -87,6 +89,7 @@ public sealed class EngineFallbackCoordinator
         _deezerIsrcResolver = deezerIsrcResolver;
         _qobuzTrackResolver = optionalServices.QobuzTrackResolver;
         _appleCatalogService = appleCatalogService;
+        _fallbackSearchService = fallbackSearchService;
         _activityLog = activityLog;
         _apiHealthTracker = optionalServices.ApiHealthTracker ?? new DownloadApiHealthTracker();
     }
@@ -483,62 +486,25 @@ public sealed class EngineFallbackCoordinator
         SourceResolutionRequest request,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(request.SourceUrl) && IsServiceUrlMatch(request.SourceUrl, request.Engine))
-        {
-            return request.SourceUrl;
-        }
-
-        var normalizedDeezerId = NormalizeDeezerTrackId(request.DeezerId);
-        if (string.Equals(request.Engine, DeezerEngine, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(normalizedDeezerId))
-        {
-            return $"https://www.deezer.com/track/{normalizedDeezerId}";
-        }
-
-        var appleFallbackUrl = await TryBuildAppleFallbackUrlAsync(request, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(appleFallbackUrl))
-        {
-            return appleFallbackUrl;
-        }
-
-        var songLink = await ResolveSongLinkFromDeezerAsync(normalizedDeezerId, request.UserCountry, cancellationToken);
-        var resolvedUrl = GetEngineUrl(songLink, request.Engine);
-
-        (resolvedUrl, songLink) = await TryResolveFromSourceUrlAsync(
-            request,
-            songLink,
-            resolvedUrl,
+        var result = await _fallbackSearchService.ResolveAsync(
+            new EngineFallbackSearchRequest(
+                request.Engine,
+                request.SourceUrl,
+                request.SpotifyId,
+                request.AppleId,
+                request.Isrc,
+                request.Title,
+                request.Artist,
+                request.Album,
+                request.DurationMs,
+                request.DeezerId,
+                request.Storefront,
+                request.Language,
+                request.MediaUserToken,
+                request.UserCountry,
+                request.FallbackSearchEnabled),
             cancellationToken);
-        (resolvedUrl, songLink) = await TryResolveFromSpotifyAsync(
-            request,
-            songLink,
-            resolvedUrl,
-            cancellationToken);
-        (resolvedUrl, _) = await TryResolveFromSpotifyFallbackSearchAsync(
-            request,
-            songLink,
-            resolvedUrl,
-            cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(resolvedUrl))
-        {
-            return resolvedUrl;
-        }
-
-        if (string.Equals(request.Engine, QobuzEngine, StringComparison.OrdinalIgnoreCase))
-        {
-            var qobuzUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(request, cancellationToken);
-            if (string.IsNullOrWhiteSpace(qobuzUrl) && !string.IsNullOrWhiteSpace(request.Isrc))
-            {
-                qobuzUrl = await _songLinkResolver.ResolveQobuzUrlByIsrcAsync(request.Isrc, cancellationToken);
-            }
-            if (!string.IsNullOrWhiteSpace(qobuzUrl))
-            {
-                return qobuzUrl;
-            }
-        }
-
-        return resolvedUrl;
+        return result.ResolvedUrl;
     }
 
     private async Task<string?> ResolveQobuzUrlFromBuiltInLookupAsync(
@@ -777,21 +743,7 @@ public sealed class EngineFallbackCoordinator
             }
         }
 
-        if (bestScore >= 65)
-        {
-            return bestId;
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            var id = item.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
-            if (!string.IsNullOrWhiteSpace(id))
-            {
-                return id;
-            }
-        }
-
-        return null;
+        return bestScore >= 65 ? bestId : null;
     }
 
     private static int ScoreCandidate(System.Text.Json.JsonElement item, SourceResolutionRequest request)

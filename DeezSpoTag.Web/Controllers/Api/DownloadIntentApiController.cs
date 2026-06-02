@@ -38,11 +38,6 @@ public sealed class DownloadIntentApiController : ControllerBase
         }
         try
         {
-            if (!request.ResolveImmediately)
-            {
-                return Ok(await EnqueueDeferredAsync(request));
-            }
-
             var immediateResponse = await EnqueueImmediatelyAsync(request, CancellationToken.None);
             return Ok(immediateResponse);
         }
@@ -76,48 +71,13 @@ public sealed class DownloadIntentApiController : ControllerBase
         return BadRequest(new { error = "No intents supplied." });
     }
 
-    private Task<object> EnqueueDeferredAsync(DownloadIntentBatchRequest request)
-    {
-        var deferredCount = 0;
-        var skipped = 0;
-        var reasonCodes = new List<string>();
-        var errors = new List<string>();
-        foreach (var intent in request.Intents)
-        {
-            ApplyDestinationDefaults(intent, request);
-            if (_backgroundQueue.Enqueue(intent))
-            {
-                deferredCount++;
-                continue;
-            }
-
-            skipped++;
-            reasonCodes.Add("background_queue_full");
-            errors.Add("Background queue is full.");
-        }
-
-        return Task.FromResult<object>(new
-        {
-            success = deferredCount > 0,
-            queued = Array.Empty<string>(),
-            deferred = deferredCount > 0,
-            deferredCount,
-            skipped,
-            engine = string.Empty,
-            message = deferredCount > 0
-                ? $"Queued {deferredCount} item(s) for background matching."
-                : (errors.FirstOrDefault() ?? "Nothing queued."),
-            reasonCodes
-        });
-    }
-
     private async Task<object> EnqueueImmediatelyAsync(DownloadIntentBatchRequest request, CancellationToken cancellationToken)
     {
         var state = new ImmediateQueueState();
         foreach (var intent in request.Intents)
         {
             ApplyDestinationDefaults(intent, request);
-            var result = await _intentService.EnqueueManualAsync(intent, cancellationToken);
+            var result = await _intentService.EnqueueManualVisibleAsync(intent, cancellationToken);
             state.Apply(result);
         }
 

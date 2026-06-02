@@ -101,6 +101,13 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         var results = new Dictionary<int, QobuzTrack>();
         foreach (var album in albums.Where(static album => !string.IsNullOrWhiteSpace(album.Url)))
         {
+            var singleTrackAlbum = await BuildSingleTrackAlbumCandidateAsync(album, ct);
+            if (singleTrackAlbum?.Id > 0)
+            {
+                results.TryAdd(singleTrackAlbum.Id, singleTrackAlbum);
+                continue;
+            }
+
             var pageTracks = await _apiClient.GetAlbumPageTracksAsync(album.Url!, ct);
             foreach (var track in pageTracks.Where(static track => track.Id > 0))
             {
@@ -450,6 +457,16 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
     {
         var artist = await _artistService.GetArtistWithDiscographyAsync(artistId, store, ct);
         return artist?.Albums?.Items ?? new List<QobuzAlbum>();
+    }
+
+    public async Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct)
+    {
+        if (trackId <= 0)
+        {
+            return null;
+        }
+
+        return await _apiClient.GetTrackAsync(trackId, ct);
     }
 
     public async Task<QobuzQualityInfo?> GetTrackQuality(int trackId, CancellationToken ct)

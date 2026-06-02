@@ -237,6 +237,7 @@ public sealed class EngineFallbackCoordinatorParityTests
             songLinkResolver: null!,
             deezerIsrcResolver: null!,
             appleCatalogService: null!,
+            fallbackSearchService: null!,
             activityLog: new NullActivityLogWriter(),
             optionalServices: new EngineFallbackCoordinator.OptionalServices
             {
@@ -303,22 +304,29 @@ public sealed class EngineFallbackCoordinatorParityTests
         Assert.NotNull(method);
 
         var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var songLinkResolver = new SongLinkResolver(new SongLinkResolver.Dependencies
+        {
+            HttpClientFactory = new StubHttpClientFactory(),
+            Logger = NullLogger<SongLinkResolver>.Instance
+        });
+        var appleCatalogService = new AppleMusicCatalogService(
+            new StubHttpClientFactory(),
+            settingsService,
+            NullLogger<AppleMusicCatalogService>.Instance,
+            new MemoryCache(new MemoryCacheOptions()));
+        var fallbackSearchService = new EngineFallbackSearchService(
+            songLinkResolver,
+            appleCatalogService,
+            NullLogger<EngineFallbackSearchService>.Instance);
         var coordinator = new EngineFallbackCoordinator(
             queueRepository: null!,
             settingsService,
-            new SongLinkResolver(new SongLinkResolver.Dependencies
-            {
-                HttpClientFactory = new StubHttpClientFactory(),
-                Logger = NullLogger<SongLinkResolver>.Instance
-            }),
+            songLinkResolver,
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
-            new AppleMusicCatalogService(
-                new StubHttpClientFactory(),
-                settingsService,
-                NullLogger<AppleMusicCatalogService>.Instance,
-                new MemoryCache(new MemoryCacheOptions())),
+            appleCatalogService,
+            fallbackSearchService,
             new NullActivityLogWriter());
 
         var task = method!.Invoke(coordinator, [request, CancellationToken.None]) as Task<string?>;

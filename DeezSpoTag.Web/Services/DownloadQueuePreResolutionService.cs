@@ -1,6 +1,7 @@
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.DependencyInjection;
+using System.Net;
 using System.Diagnostics.CodeAnalysis;
 
 namespace DeezSpoTag.Web.Services;
@@ -107,6 +108,19 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
             var resolver = scope.ServiceProvider.GetRequiredService<DownloadIntentService>();
             var result = await resolver.ResolveQueuedPayloadAsync(resolvingItem, cancellationToken);
             var resolvedPayload = QueuePreResolutionPayload.ParseOrEmpty(resolvingPayloadJson);
+            if (IsProviderRateLimit(result.Error))
+            {
+                QueuePreResolutionPayload.ApplyFailed(resolvedPayload, "Pre-resolution deferred by provider rate limit.", DateTimeOffset.UtcNow);
+                await _queueRepository.TryUpdateQueuedPayloadIfCurrentAsync(
+                    item.QueueUuid,
+                    resolvingPayloadJson,
+                    resolvedPayload.ToJsonString(),
+                    status: "queued",
+                    error: null,
+                    cancellationToken: cancellationToken);
+                return;
+            }
+
             if (!string.IsNullOrWhiteSpace(result.Error))
             {
                 QueuePreResolutionPayload.ApplyFailed(resolvedPayload, result.Error!, DateTimeOffset.UtcNow);
@@ -121,10 +135,33 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
                 resolvingPayloadJson,
                 resolvedPayload.ToJsonString(),
                 result.Engine,
+                string.IsNullOrWhiteSpace(result.Error) ? "queued" : "failed",
+                result.Error,
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (IsProviderRateLimit(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Queue pre-resolution deferred by provider rate limit for {QueueUuid} ({Artist} - {Title}).",
+                    item.QueueUuid,
+                    item.ArtistName,
+                    item.TrackTitle);
+
+                var deferredPayload = QueuePreResolutionPayload.ParseOrEmpty(resolvingPayloadJson);
+                QueuePreResolutionPayload.ApplyFailed(deferredPayload, "Pre-resolution deferred by provider rate limit.", DateTimeOffset.UtcNow);
+                await _queueRepository.TryUpdateQueuedPayloadIfCurrentAsync(
+                    item.QueueUuid,
+                    resolvingPayloadJson,
+                    deferredPayload.ToJsonString(),
+                    status: "queued",
+                    error: null,
+                    cancellationToken: CancellationToken.None);
+                return;
+            }
+
             _logger.LogWarning(
                 ex,
                 "Queue pre-resolution failed for {QueueUuid} ({Artist} - {Title}).",
@@ -137,7 +174,27 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
                 item.QueueUuid,
                 resolvingPayloadJson,
                 failedPayload.ToJsonString(),
+                status: "failed",
+                error: ex.Message,
                 cancellationToken: CancellationToken.None);
         }
+    }
+
+    private static bool IsProviderRateLimit(Exception exception)
+    {
+        if (exception is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests })
+        {
+            return true;
+        }
+
+        return exception.Message.Contains("429", StringComparison.OrdinalIgnoreCase)
+            || exception.Message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsProviderRateLimit(string? message)
+    {
+        return !string.IsNullOrWhiteSpace(message)
+            && (message.Contains("429", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase));
     }
 }

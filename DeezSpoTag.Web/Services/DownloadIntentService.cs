@@ -348,6 +348,112 @@ public sealed class DownloadIntentService
         bool preferIsrcOnly = false)
         => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: true, cancellationToken);
 
+    public async Task<DownloadIntentResult> EnqueueManualVisibleAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken,
+        bool preferIsrcOnly = false)
+    {
+        var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment: true, cancellationToken);
+        if (gateFailure != null)
+        {
+            return gateFailure;
+        }
+
+        var preparation = await PrepareEnqueueAsync(intent, cancellationToken);
+        var profileValidation = await TryValidateEnqueueProfileAsync(intent, preparation, cancellationToken);
+        if (profileValidation.Failure != null)
+        {
+            return profileValidation.Failure;
+        }
+
+        var blocklistFailure = await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
+        if (blocklistFailure != null)
+        {
+            return blocklistFailure;
+        }
+
+        var routingFailure = TryValidateExplicitEngineRouting(intent, preparation);
+        if (routingFailure != null)
+        {
+            return routingFailure;
+        }
+
+        var settings = preparation.Settings;
+        var engine = ResolveVisibleQueueEngine(intent, settings, preparation.IsPodcastIntent);
+        if (string.IsNullOrWhiteSpace(engine))
+        {
+            return new DownloadIntentResult
+            {
+                Success = false,
+                Message = "No supported download engine is available for this item.",
+                Engine = string.Empty,
+                SkipReasonCodes = new List<string> { "engine_unavailable" },
+                SkipReasons = new List<string> { "No supported download engine is available for this item." }
+            };
+        }
+
+        var selectedQuality = ApplyResolvedQuality(
+            intent,
+            settings,
+            engine,
+            string.IsNullOrWhiteSpace(intent.Quality) ? ResolvePreferredQuality(settings, engine) : intent.Quality);
+        var useMultiQuality = IsMultiQualityDualEnabled(settings.MultiQuality);
+        var destinationRouting = await ResolveDestinationRoutingAsync(
+            intent,
+            settings,
+            useMultiQuality,
+            useAtmosStereoDual: false,
+            engine,
+            cancellationToken);
+        if (destinationRouting.Failure != null)
+        {
+            return destinationRouting.Failure;
+        }
+
+        intent.DestinationFolderId = destinationRouting.PrimaryDestinationFolderId;
+        intent.SecondaryDestinationFolderId = destinationRouting.SecondaryDestinationFolderId;
+        intent.AlbumArtist = ResolveEffectiveAlbumArtist(
+            intent.AlbumArtist,
+            intent.Artist,
+            settings.Tags?.SingleAlbumArtist != false);
+
+        var payload = BuildVisiblePreResolutionPayload(intent, settings, engine, selectedQuality);
+        var requestedQualityRank = ParseRequestedQualityRank(selectedQuality ?? intent.Quality);
+        var enqueueDecision = await EnqueueItemAsync(
+            payload,
+            intent.AllowQualityUpgrade,
+            requestedQualityRank,
+            initialStatus: "resolving",
+            cancellationToken);
+        if (!enqueueDecision.Success)
+        {
+            return new DownloadIntentResult
+            {
+                Success = false,
+                Engine = engine,
+                Skipped = 1,
+                Message = enqueueDecision.Message,
+                SkipReasonCodes = new List<string> { enqueueDecision.ReasonCode },
+                SkipReasons = new List<string> { enqueueDecision.Message }
+            };
+        }
+
+        var queueUuid = enqueueDecision.QueueUuid ?? payload.Id;
+        NotifyQueueAdded(payload);
+        if (IsMusicIntent(intent))
+        {
+            _orchestrationService.MarkDownloadQueued();
+        }
+
+        return new DownloadIntentResult
+        {
+            Success = true,
+            Engine = engine,
+            Queued = new List<string> { queueUuid },
+            Message = "Queued 1 item(s)."
+        };
+    }
+
     private async Task<DownloadIntentResult> EnqueueCoreAsync(
         DownloadIntent intent,
         bool preferIsrcOnly,
@@ -4949,6 +5055,117 @@ public sealed class DownloadIntentService
         return string.Empty;
     }
 
+    private static string ResolveVisibleQueueEngine(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        bool isPodcastIntent)
+    {
+        var normalizedPreferredEngine = NormalizeEngineName(intent.PreferredEngine);
+        if (isPodcastIntent)
+        {
+            return ResolvePodcastEngine(intent, normalizedPreferredEngine);
+        }
+
+        if (RequiresAppleOnly(intent, intent.Quality))
+        {
+            return ApplePlatform;
+        }
+
+        if (IsKnownDownloadEngine(normalizedPreferredEngine)
+            && !string.Equals(normalizedPreferredEngine, AutoService, StringComparison.OrdinalIgnoreCase))
+        {
+            return normalizedPreferredEngine;
+        }
+
+        var sourceServiceEngine = NormalizeEngineName(intent.SourceService);
+        if (IsKnownDownloadEngine(sourceServiceEngine))
+        {
+            return sourceServiceEngine;
+        }
+
+        var sourceUrlEngine = ResolveEngineFromUrl(intent.SourceUrl);
+        if (IsKnownDownloadEngine(sourceUrlEngine))
+        {
+            return sourceUrlEngine;
+        }
+
+        var targetQuality = string.IsNullOrWhiteSpace(intent.Quality) ? null : intent.Quality;
+        var autoSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
+        return autoSources.Count == 0
+            ? string.Empty
+            : DownloadSourceOrder.DecodeAutoSource(autoSources[0]).Source;
+    }
+
+    private EngineQueueItemBase BuildVisiblePreResolutionPayload(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        string engine,
+        string? selectedQuality)
+    {
+        var contentType = ResolveContentType(
+            intent.ContentType,
+            intent.SourceUrl,
+            string.IsNullOrWhiteSpace(intent.Album) ? TrackType : AlbumType,
+            intent.HasAtmos,
+            selectedQuality);
+        var autoSources = DownloadSourceOrder.ResolveEngineQualitySources(
+            engine,
+            selectedQuality,
+            strict: UseStrictQualityFallback(settings, engine, selectedQuality));
+        var fallbackPlan = BuildFallbackPlanFromSources(intent, autoSources, settings.FallbackSearch);
+        var durationSeconds = intent.DurationMs > 0 ? (int)Math.Round(intent.DurationMs / 1000d) : 0;
+        var payload = CreateQueuePayloadForEngine(engine);
+        PopulateStandardQueuePayload(payload, intent, new StandardPayloadContext(
+            intent.SourceUrl ?? string.Empty,
+            string.IsNullOrWhiteSpace(intent.Album) ? TrackType : AlbumType,
+            contentType,
+            autoSources,
+            0,
+            fallbackPlan,
+            intent.ReleaseDate ?? string.Empty,
+            durationSeconds,
+            intent.DestinationFolderId,
+            string.Empty));
+        payload.Engine = engine;
+        payload.SourceService = string.IsNullOrWhiteSpace(intent.SourceService) ? engine : intent.SourceService;
+        payload.Quality = selectedQuality ?? ResolvePreferredQuality(settings, engine) ?? string.Empty;
+        payload.ResolutionStatus = QueuePreResolutionPayload.Pending;
+        ApplyIntentMetadataForPayload(payload, intent);
+        return payload;
+    }
+
+    private static EngineQueueItemBase CreateQueuePayloadForEngine(string engine)
+        => engine switch
+        {
+            ApplePlatform => new AppleQueueItem(),
+            TidalPlatform => new TidalQueueItem(),
+            AmazonPlatform => new AmazonQueueItem(),
+            QobuzPlatform => new QobuzQueueItem(),
+            _ => new DeezerQueueItem()
+        };
+
+    private static void ApplyIntentMetadataForPayload(EngineQueueItemBase payload, DownloadIntent intent)
+    {
+        switch (payload)
+        {
+            case DeezerQueueItem deezer:
+                ApplyIntentMetadata(deezer, intent);
+                break;
+            case AppleQueueItem apple:
+                ApplyIntentMetadataToStereoPayload(apple, intent);
+                break;
+            case TidalQueueItem tidal:
+                ApplyIntentMetadata(tidal, intent);
+                break;
+            case AmazonQueueItem amazon:
+                ApplyIntentMetadata(amazon, intent);
+                break;
+            case QobuzQueueItem qobuz:
+                ApplyIntentMetadata(qobuz, intent);
+                break;
+        }
+    }
+
     private static string NormalizeEngineName(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
@@ -5666,6 +5883,7 @@ public sealed class DownloadIntentService
         TPayload payload,
         bool allowQualityUpgrade,
         int? requestedQualityRank,
+        string initialStatus,
         CancellationToken cancellationToken)
         where TPayload : class
     {
@@ -5675,7 +5893,8 @@ public sealed class DownloadIntentService
         }
 
         var context = BuildEnqueueItemContext(payload, allowQualityUpgrade, requestedQualityRank);
-        var payloadFailure = TryValidateResolvedQueuePayload(payload, context);
+        var requireResolvedEngineIdentity = !string.Equals(initialStatus, "resolving", StringComparison.OrdinalIgnoreCase);
+        var payloadFailure = TryValidateResolvedQueuePayload(payload, context, requireResolvedEngineIdentity);
         if (payloadFailure != null)
         {
             return payloadFailure;
@@ -5703,8 +5922,16 @@ public sealed class DownloadIntentService
             return EnqueueItemDecision.Fail("queue_duplicate", "Skipped: matching track is already in queue.");
         }
 
-        return await InsertQueueItemAsync(payload, context, cancellationToken);
+        return await InsertQueueItemAsync(payload, context, initialStatus, cancellationToken);
     }
+
+    private Task<EnqueueItemDecision> EnqueueItemAsync<TPayload>(
+        TPayload payload,
+        bool allowQualityUpgrade,
+        int? requestedQualityRank,
+        CancellationToken cancellationToken)
+        where TPayload : class
+        => EnqueueItemAsync(payload, allowQualityUpgrade, requestedQualityRank, "queued", cancellationToken);
 
     private EnqueueItemContext BuildEnqueueItemContext<TPayload>(
         TPayload payload,
@@ -5728,7 +5955,8 @@ public sealed class DownloadIntentService
 
     private static EnqueueItemDecision? TryValidateResolvedQueuePayload<TPayload>(
         TPayload payload,
-        EnqueueItemContext context)
+        EnqueueItemContext context,
+        bool requireResolvedEngineIdentity)
         where TPayload : class
     {
         var identity = context.Identity;
@@ -5741,7 +5969,7 @@ public sealed class DownloadIntentService
         }
 
         var sourceUrl = TryGetPayloadString(payload, "SourceUrl");
-        if (!HasRequiredEngineIdentity(identity, sourceUrl))
+        if (requireResolvedEngineIdentity && !HasRequiredEngineIdentity(identity, sourceUrl))
         {
             return EnqueueItemDecision.Fail(
                 "unresolved_engine_identity",
@@ -6031,6 +6259,7 @@ public sealed class DownloadIntentService
     private async Task<EnqueueItemDecision> InsertQueueItemAsync<TPayload>(
         TPayload payload,
         EnqueueItemContext context,
+        string initialStatus,
         CancellationToken cancellationToken)
         where TPayload : class
     {
@@ -6057,7 +6286,7 @@ public sealed class DownloadIntentService
             QualityRank: context.RequestedQualityRank,
             QueueOrder: null,
             ContentType: context.Identity.ContentType,
-            Status: "queued",
+            Status: string.IsNullOrWhiteSpace(initialStatus) ? "queued" : initialStatus,
             PayloadJson: json,
             Progress: 0,
             Downloaded: 0,

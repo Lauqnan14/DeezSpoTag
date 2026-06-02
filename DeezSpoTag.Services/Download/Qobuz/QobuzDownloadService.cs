@@ -169,27 +169,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var track = resolution.Track;
-        var downloadResolution = await GetDownloadUrlWithRetryAsync(
-            track.Id,
-            request.Quality,
-            request.AllowQualityFallback,
-            request.DurationSeconds,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(downloadResolution.Url))
-        {
-            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
-        }
-        var effectiveSelectedQuality = await ResolveEffectiveSelectedQualityAsync(downloadResolution, cancellationToken);
-        request.Quality = effectiveSelectedQuality;
-        await NotifySelectedQualityAsync(request, effectiveSelectedQuality);
-
         var outputPath = expectedPath;
-        await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
-        {
-            DownloadUrl = downloadResolution.Url!,
-            OutputPath = outputPath,
-            Request = request
-        }, cancellationToken);
+        await DownloadTrackWithProviderFallbackAsync(track.Id, request, outputPath, cancellationToken);
         return outputPath;
     }
 
@@ -247,26 +228,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new InvalidOperationException("Qobuz track not found for ISRC or metadata.");
         }
 
-        var fallbackResolution = await GetDownloadUrlWithRetryAsync(
-            fallbackTrackId.Value,
-            request.Quality,
-            request.AllowQualityFallback,
-            request.DurationSeconds,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(fallbackResolution.Url))
-        {
-            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
-        }
-
-        var effectiveSelectedQuality = await ResolveEffectiveSelectedQualityAsync(fallbackResolution, cancellationToken);
-        request.Quality = effectiveSelectedQuality;
-        await NotifySelectedQualityAsync(request, effectiveSelectedQuality);
-        await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
-        {
-            DownloadUrl = fallbackResolution.Url!,
-            OutputPath = expectedPath,
-            Request = request
-        }, cancellationToken);
+        await DownloadTrackWithProviderFallbackAsync(fallbackTrackId.Value, request, expectedPath, cancellationToken);
 
         return expectedPath;
     }
@@ -314,27 +276,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
         CleanUnverifiedExpectedOutput(expectedPath);
 
-        var downloadResolution = await GetDownloadUrlWithRetryAsync(
-            trackId.Value,
-            request.Quality,
-            request.AllowQualityFallback,
-            request.DurationSeconds,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(downloadResolution.Url))
-        {
-            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
-        }
-        var effectiveSelectedQuality = await ResolveEffectiveSelectedQualityAsync(downloadResolution, cancellationToken);
-        request.Quality = effectiveSelectedQuality;
-        await NotifySelectedQualityAsync(request, effectiveSelectedQuality);
-
         var outputPath = expectedPath;
-        await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
-        {
-            DownloadUrl = downloadResolution.Url!,
-            OutputPath = outputPath,
-            Request = request
-        }, cancellationToken);
+        await DownloadTrackWithProviderFallbackAsync(trackId.Value, request, outputPath, cancellationToken);
         return outputPath;
     }
 
@@ -672,6 +615,119 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         return new DownloadUrlResolution(null, normalizedRequestedQuality);
+    }
+
+    private async Task DownloadTrackWithProviderFallbackAsync(
+        long trackId,
+        QobuzDownloadRequest request,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        var requestedQuality = NormalizeQobuzQualityCode(request.Quality);
+        var qualityOrder = GetQualityFallbackOrder(requestedQuality, request.AllowQualityFallback);
+        Exception? lastFailure = null;
+
+        foreach (var qualityCode in qualityOrder)
+        {
+            var providers = BuildOrderedProviders(trackId, qualityCode);
+            foreach (var provider in providers)
+            {
+                if (IsProviderCoolingDown(provider.Name))
+                {
+                    continue;
+                }
+
+                var downloadUrl = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
+                if (string.IsNullOrWhiteSpace(downloadUrl))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    request.Quality = qualityCode;
+                    await NotifySelectedQualityAsync(request, qualityCode);
+                    await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
+                    {
+                        DownloadUrl = downloadUrl,
+                        OutputPath = outputPath,
+                        Request = request
+                    }, cancellationToken);
+                    MarkPreferredProvider(provider.Name);
+                    return;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    lastFailure = ex;
+                    DownloadFileUtilities.TryDeleteFile(outputPath);
+                    ClearPreferredProvider(provider.Name);
+                    if (IsProviderStreamFailure(ex))
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Qobuz provider {Provider} stream failed for track {TrackId} quality {Quality}; trying next provider.",
+                            DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.Name),
+                            trackId,
+                            DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
+                        continue;
+                    }
+
+                    throw;
+                }
+            }
+        }
+
+        if (lastFailure != null)
+        {
+            throw lastFailure;
+        }
+
+        throw new InvalidOperationException(DownloadUrlUnavailableMessage);
+    }
+
+    private ProviderCandidate[] BuildOrderedProviders(long trackId, string qualityCode)
+    {
+        var providers = BuildProviders(trackId, qualityCode).ToList();
+        var preferredProviderName = GetPreferredProviderName();
+        if (string.IsNullOrWhiteSpace(preferredProviderName))
+        {
+            return providers.ToArray();
+        }
+
+        var preferredIndex = providers.FindIndex(provider =>
+            string.Equals(provider.Name, preferredProviderName, StringComparison.OrdinalIgnoreCase));
+        if (preferredIndex <= 0)
+        {
+            return providers.ToArray();
+        }
+
+        var preferred = providers[preferredIndex];
+        providers.RemoveAt(preferredIndex);
+        providers.Insert(0, preferred);
+        return providers.ToArray();
+    }
+
+    private static bool IsProviderStreamFailure(Exception ex)
+    {
+        if (ex is HttpRequestException)
+        {
+            return true;
+        }
+
+        if (ex is InvalidOperationException invalidOperation)
+        {
+            var message = invalidOperation.Message;
+            return message.Contains("Qobuz download failed", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("duration", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("identity validation failed", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("output file is missing", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 
     private async Task DownloadFileWithRetryAsync(
@@ -1321,7 +1377,24 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var fromProxy = await TryResolveTrackIdViaResolveProxyAsync(request, cancellationToken);
         if (fromProxy.HasValue && fromProxy.Value > 0)
         {
-            return fromProxy;
+            var validated = await _trackResolver.ValidateTrackIdAsync(
+                checked((int)fromProxy.Value),
+                resolvedIsrc,
+                request.TrackName,
+                request.ArtistName,
+                request.AlbumName,
+                request.DurationSeconds > 0 ? request.DurationSeconds * 1000 : null,
+                cancellationToken);
+            if (validated?.Track.Id > 0)
+            {
+                return validated.Track.Id;
+            }
+
+            _logger.LogWarning(
+                "Rejected Qobuz resolve-proxy track id {TrackId} because it did not match requested metadata for {Artist} - {Title}.",
+                fromProxy.Value,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.ArtistName),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.TrackName));
         }
 
         return await TryResolveTrackIdByIsrcAsync(resolvedIsrc ?? string.Empty, cancellationToken);
