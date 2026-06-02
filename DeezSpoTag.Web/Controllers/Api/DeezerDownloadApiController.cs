@@ -407,14 +407,20 @@ namespace DeezSpoTag.Web.Controllers.Api
 
             if (queueInBackground)
             {
+                // queueInBackground must remain non-blocking and resilient to upstream throttling.
+                // Persist the intent for background processing instead of forcing synchronous resolution here.
                 if (_backgroundQueue.Enqueue(intent))
                 {
                     accumulator.Deferred++;
+                    if (!string.IsNullOrWhiteSpace(intent.PreferredEngine))
+                    {
+                        accumulator.Engine = intent.PreferredEngine;
+                    }
                 }
                 else
                 {
                     accumulator.Skipped++;
-                    accumulator.SetLastErrorIfEmpty("Background queue is unavailable.");
+                    accumulator.SetLastErrorIfEmpty("Background queue is full. Please retry.");
                 }
                 return;
             }

@@ -157,6 +157,56 @@ DeezSpoTag.Download = {
         }
         return !/^(false|0|no|off|disabled)$/i.test(normalized);
     },
+    isFolderAutoTagActivated(folder) {
+        const profileId = String(folder?.autoTagProfileId ?? '').trim();
+        return profileId.length > 0;
+    },
+    isDestinationFolderEligible(folder, contentMode = 'all') {
+        if (!this.isFolderEnabled(folder)) {
+            return false;
+        }
+
+        const mode = this.normalizeDestinationContentMode(contentMode);
+        if (mode === 'music' || mode === 'all') {
+            const desiredQuality = String(folder?.desiredQuality ?? '').trim().toLowerCase();
+            const isVideoFolder = desiredQuality === 'video';
+            const isPodcastFolder = desiredQuality === 'podcast';
+            if (!isVideoFolder && !isPodcastFolder) {
+                return this.isFolderAutoTagActivated(folder);
+            }
+        }
+
+        return true;
+    },
+    getPreferredDestinationSelect() {
+        const selects = Array.from(document.querySelectorAll('.download-destination-select'));
+        if (!selects.length) {
+            return null;
+        }
+
+        const visible = selects.find((select) => {
+            if (!(select instanceof HTMLSelectElement)) {
+                return false;
+            }
+
+            if (select.disabled) {
+                return false;
+            }
+
+            const style = globalThis.getComputedStyle ? globalThis.getComputedStyle(select) : null;
+            if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+                return false;
+            }
+
+            if (select.closest('[hidden], .d-none, [aria-hidden=\"true\"]')) {
+                return false;
+            }
+
+            return true;
+        });
+
+        return visible || selects[0] || null;
+    },
     persistDestinationPreference(storageKey, value) {
         localStorage.setItem(storageKey, value);
         if (!globalThis.UserPrefs || !value) {
@@ -277,7 +327,7 @@ DeezSpoTag.Download = {
             }
             const folders = await response.json();
             this.destinationFoldersByMode[normalizedMode] = Array.isArray(folders)
-                ? folders.filter((folder) => this.isFolderEnabled(folder))
+                ? folders.filter((folder) => this.isDestinationFolderEligible(folder, normalizedMode))
                 : [];
         } catch (error) {
             console.warn('Failed to load destination folders', error);
@@ -426,7 +476,7 @@ DeezSpoTag.Download = {
     },
 
     getDestinationFolderId(requireSelection = false) {
-        const select = document.querySelector('.download-destination-select');
+        const select = this.getPreferredDestinationSelect();
         if (!select) {
             return null;
         }

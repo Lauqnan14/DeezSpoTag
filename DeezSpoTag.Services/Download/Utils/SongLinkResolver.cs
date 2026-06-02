@@ -397,7 +397,18 @@ public sealed class SongLinkResolver
 
         if (string.IsNullOrWhiteSpace(result.QobuzUrl))
         {
-            result.QobuzUrl = await ResolveQobuzUrlFromMetadataAsync(metadata, cancellationToken);
+            try
+            {
+                result.QobuzUrl = await ResolveQobuzUrlFromMetadataAsync(metadata, cancellationToken);
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Qobuz metadata lookup throttled while resolving native links for {Title} by {Artist}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadata.Title),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(metadata.Artist));
+            }
         }
 
         if (string.IsNullOrWhiteSpace(result.DeezerUrl) && !string.IsNullOrWhiteSpace(result.DeezerId))
@@ -1142,7 +1153,17 @@ public sealed class SongLinkResolver
                 continue;
             }
 
-            var searchResults = await _qobuzMetadataService.SearchTracks(query, cancellationToken);
+            IReadOnlyList<QobuzTrack> searchResults;
+            try
+            {
+                searchResults = await _qobuzMetadataService.SearchTracks(query, cancellationToken);
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                _logger.LogWarning(ex, "Qobuz track search throttled for query {Query}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
+                continue;
+            }
+
             foreach (var track in searchResults.Where(static track => track.Id > 0))
             {
                 results[track.Id] = track;
@@ -1150,7 +1171,21 @@ public sealed class SongLinkResolver
 
             foreach (var store in ResolveQobuzStores())
             {
-                var autosuggestResults = await _qobuzMetadataService.SearchTracksAutosuggest(query, store, cancellationToken);
+                IReadOnlyList<QobuzTrack> autosuggestResults;
+                try
+                {
+                    autosuggestResults = await _qobuzMetadataService.SearchTracksAutosuggest(query, store, cancellationToken);
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Qobuz autosuggest throttled for query {Query} store {Store}.",
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(query),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(store));
+                    continue;
+                }
+
                 foreach (var track in autosuggestResults.Where(static track => track.Id > 0))
                 {
                     results[track.Id] = track;

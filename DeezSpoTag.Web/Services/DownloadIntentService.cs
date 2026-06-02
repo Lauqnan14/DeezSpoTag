@@ -2589,14 +2589,31 @@ public sealed class DownloadIntentService
             return songLink;
         }
 
-        var qobuzUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(intent, cancellationToken)
-            ?? await _songLinkResolver.ResolveQobuzUrlByMetadataAsync(
-                intent.Isrc,
-                intent.Title,
-                intent.Artist,
-                intent.Album,
-                intent.DurationMs > 0 ? intent.DurationMs : null,
-                cancellationToken);
+        if (IsrcValidator.IsValid(intent.Isrc))
+        {
+            // A valid ISRC is sufficient for the queued Qobuz processor to resolve the final source.
+            // Do not block user-visible queue insertion on an extra Qobuz metadata lookup here.
+            return songLink;
+        }
+
+        string? qobuzUrl;
+        try
+        {
+            qobuzUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(intent, cancellationToken)
+                ?? await _songLinkResolver.ResolveQobuzUrlByMetadataAsync(
+                    intent.Isrc,
+                    intent.Title,
+                    intent.Artist,
+                    intent.Album,
+                    intent.DurationMs > 0 ? intent.DurationMs : null,
+                    cancellationToken);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+        {
+            _activityLog.Warn($"Qobuz fallback throttled before queue insert: title='{intent.Title}' artist='{intent.Artist}' isrc='{intent.Isrc}'");
+            return songLink;
+        }
+
         if (string.IsNullOrWhiteSpace(qobuzUrl))
         {
             LogQobuzFallbackMiss(intent, songLink);

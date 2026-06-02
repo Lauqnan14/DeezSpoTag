@@ -204,7 +204,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly SemaphoreSlim _pipelineLock = new(1, 1);
     private readonly SemaphoreSlim _enhancementPauseLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
-    private readonly TimeSpan _watchdogInterval = TimeSpan.FromSeconds(1);
     private readonly TimeSpan _downloadIdleDelay = TimeSpan.FromSeconds(15);
     private readonly object _enhancementResumeLock = new();
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
@@ -549,14 +548,54 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task WaitForWakeAsync(CancellationToken cancellationToken)
     {
+        var timeout = GetNextWakeDelay();
+
         try
         {
-            await _wakeSignal.WaitAsync(_watchdogInterval, cancellationToken);
+            if (timeout.HasValue)
+            {
+                await _wakeSignal.WaitAsync(timeout.Value, cancellationToken);
+            }
+            else
+            {
+                await _wakeSignal.WaitAsync(cancellationToken);
+            }
         }
         finally
         {
             Interlocked.Exchange(ref _wakeSignalPending, 0);
         }
+    }
+
+    private TimeSpan? GetNextWakeDelay()
+    {
+        DateTimeOffset? countdownUntilUtc;
+        lock (_phaseLock)
+        {
+            countdownUntilUtc = _countdownUntilUtc;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var deadlines = new List<DateTimeOffset>(2);
+
+        if (countdownUntilUtc.HasValue && countdownUntilUtc.Value > now)
+        {
+            deadlines.Add(countdownUntilUtc.Value);
+        }
+
+        if (_enhancementResumeNotBeforeUtc.HasValue && _enhancementResumeNotBeforeUtc.Value > now)
+        {
+            deadlines.Add(_enhancementResumeNotBeforeUtc.Value);
+        }
+
+        if (deadlines.Count == 0)
+        {
+            return null;
+        }
+
+        var nextDeadline = deadlines.Min();
+        var delay = nextDeadline - now;
+        return delay <= TimeSpan.Zero ? TimeSpan.Zero : delay;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

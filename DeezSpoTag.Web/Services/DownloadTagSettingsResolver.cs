@@ -48,11 +48,6 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                 return null;
             }
 
-            if (!folder.AutoTagEnabled)
-            {
-                return null;
-            }
-
             var profile = AutoTagProfileResolutionService.ResolveFolderProfile(
                 state,
                 folder.Id,

@@ -36,12 +36,11 @@ public sealed class DownloadIntentApiController : ControllerBase
         {
             return validationResult;
         }
-
         try
         {
             if (!request.ResolveImmediately)
             {
-                return Ok(EnqueueDeferred(request));
+                return Ok(await EnqueueDeferredAsync(request));
             }
 
             var immediateResponse = await EnqueueImmediatelyAsync(request, CancellationToken.None);
@@ -77,36 +76,39 @@ public sealed class DownloadIntentApiController : ControllerBase
         return BadRequest(new { error = "No intents supplied." });
     }
 
-    private object EnqueueDeferred(DownloadIntentBatchRequest request)
+    private Task<object> EnqueueDeferredAsync(DownloadIntentBatchRequest request)
     {
-        var deferred = 0;
+        var deferredCount = 0;
         var skipped = 0;
-
+        var reasonCodes = new List<string>();
+        var errors = new List<string>();
         foreach (var intent in request.Intents)
         {
             ApplyDestinationDefaults(intent, request);
             if (_backgroundQueue.Enqueue(intent))
             {
-                deferred++;
+                deferredCount++;
+                continue;
             }
-            else
-            {
-                skipped++;
-            }
+
+            skipped++;
+            reasonCodes.Add("background_queue_full");
+            errors.Add("Background queue is full.");
         }
 
-        return new
+        return Task.FromResult<object>(new
         {
-            success = deferred > 0,
+            success = deferredCount > 0,
             queued = Array.Empty<string>(),
-            deferred = deferred > 0,
-            deferredCount = deferred,
+            deferred = deferredCount > 0,
+            deferredCount,
             skipped,
-            engine = "background",
-            message = deferred > 0
-                ? $"Queued {deferred} item(s) for background intent resolution."
-                : "Nothing queued."
-        };
+            engine = string.Empty,
+            message = deferredCount > 0
+                ? $"Queued {deferredCount} item(s) for background matching."
+                : (errors.FirstOrDefault() ?? "Nothing queued."),
+            reasonCodes
+        });
     }
 
     private async Task<object> EnqueueImmediatelyAsync(DownloadIntentBatchRequest request, CancellationToken cancellationToken)
