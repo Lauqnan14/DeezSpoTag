@@ -25,6 +25,11 @@ public sealed class DownloadStagingCleanupService
         "filePath",
         "outputPath"
     ];
+    private static readonly string[] FileObjectDirectoryProperties =
+    [
+        "albumPath",
+        "artistPath"
+    ];
     private static readonly string[] DirectoryProperties =
     [
         "extrasPath"
@@ -41,6 +46,24 @@ public sealed class DownloadStagingCleanupService
         ".part",
         ".download"
     ];
+    private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac",
+        ".mp3",
+        ".m4a",
+        ".mp4",
+        ".aac",
+        ".alac",
+        ".wav",
+        ".aif",
+        ".aiff",
+        ".ogg",
+        ".oga",
+        ".opus",
+        ".wma",
+        ".mka",
+        ".webm"
+    };
 
     private readonly DeezSpoTagSettingsService? _settingsService;
     private readonly ILogger<DownloadStagingCleanupService> _logger;
@@ -59,6 +82,13 @@ public sealed class DownloadStagingCleanupService
     public Task<DownloadStagingCleanupResult> CleanupAsync(
         string queueUuid,
         string? payloadJson,
+        CancellationToken cancellationToken = default)
+        => CleanupAsync(queueUuid, payloadJson, Array.Empty<string>(), cancellationToken);
+
+    public Task<DownloadStagingCleanupResult> CleanupAsync(
+        string queueUuid,
+        string? payloadJson,
+        IReadOnlyCollection<string> protectedPaths,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(queueUuid))
@@ -83,7 +113,57 @@ public sealed class DownloadStagingCleanupService
             return Task.FromResult(DownloadStagingCleanupResult.Skipped("no staging paths were recorded"));
         }
 
-        return Task.FromResult(CleanupCore(queueUuid, rootPath, candidates, cancellationToken));
+        var protectedStagingPaths = ResolveProtectedPaths(protectedPaths, rootPath);
+        return Task.FromResult(CleanupCore(queueUuid, rootPath, candidates, protectedStagingPaths, cancellationToken));
+    }
+
+    public Task<DownloadStagingCleanupResult> CleanupOrphanSidecarDirectoriesAsync(
+        IReadOnlyCollection<string> protectedPaths,
+        CancellationToken cancellationToken = default)
+    {
+        var rootPath = ResolveDownloadRoot();
+        if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath))
+        {
+            return Task.FromResult(DownloadStagingCleanupResult.Skipped("download staging root is not configured"));
+        }
+
+        var protectedStagingPaths = ResolveProtectedPaths(protectedPaths, rootPath);
+        var errors = new List<string>();
+        var skippedPaths = 0;
+        var deletedDirectories = 0;
+        var candidates = Directory
+            .EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories)
+            .OrderByDescending(static path => path.Length)
+            .ToList();
+
+        foreach (var directory in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            if (ContainsProtectedPath(directory, protectedStagingPaths)
+                || ContainsAudioFile(directory)
+                || TraversesReparsePoint(directory, rootPath))
+            {
+                skippedPaths++;
+                continue;
+            }
+
+            if (TryDeleteDirectoryTree(directory, rootPath, errors))
+            {
+                deletedDirectories++;
+            }
+        }
+
+        return Task.FromResult(BuildCleanupResult(
+            "orphan-sidecar-cleanup",
+            deletedFiles: 0,
+            deletedDirectories,
+            skippedPaths,
+            errors));
     }
 
     private string? ResolveDownloadRoot()
@@ -100,6 +180,7 @@ public sealed class DownloadStagingCleanupService
         string queueUuid,
         string rootPath,
         StagingCleanupCandidates candidates,
+        IReadOnlyCollection<string> protectedPaths,
         CancellationToken cancellationToken)
     {
         var deletedFiles = 0;
@@ -109,7 +190,8 @@ public sealed class DownloadStagingCleanupService
 
         deletedFiles = DeleteCandidateFiles(candidates.FilePaths, rootPath, parentDirectories, errors, ref skippedPaths, cancellationToken);
         CollectCandidateDirectories(candidates.DirectoryPaths, rootPath, parentDirectories, ref skippedPaths, cancellationToken);
-        var deletedDirectories = DeleteEmptyCandidateDirectories(parentDirectories, rootPath, errors, cancellationToken);
+        var deletedDirectories = DeleteOwnedRemnantDirectories(parentDirectories, rootPath, protectedPaths, errors, ref skippedPaths, cancellationToken);
+        deletedDirectories += DeleteEmptyCandidateDirectories(parentDirectories, rootPath, errors, cancellationToken);
 
         return BuildCleanupResult(queueUuid, deletedFiles, deletedDirectories, skippedPaths, errors);
     }
@@ -219,6 +301,137 @@ public sealed class DownloadStagingCleanupService
         return deletedDirectories;
     }
 
+    private static int DeleteOwnedRemnantDirectories(
+        HashSet<string> parentDirectories,
+        string rootPath,
+        IReadOnlyCollection<string> protectedPaths,
+        List<string> errors,
+        ref int skippedPaths,
+        CancellationToken cancellationToken)
+    {
+        var deletedDirectories = 0;
+        foreach (var directory in parentDirectories.OrderByDescending(static path => path.Length).ToList())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            if (ContainsProtectedPath(directory, protectedPaths))
+            {
+                skippedPaths++;
+                continue;
+            }
+
+            if (ContainsAudioFile(directory))
+            {
+                skippedPaths++;
+                continue;
+            }
+
+            if (TryDeleteDirectoryTree(directory, rootPath, errors))
+            {
+                deletedDirectories++;
+                parentDirectories.Remove(directory);
+                AddAncestorDirectories(directory, rootPath, parentDirectories);
+            }
+        }
+
+        return deletedDirectories;
+    }
+
+    private static bool TryDeleteDirectoryTree(string directory, string rootPath, List<string> errors)
+    {
+        if (!IsStrictChildOfRoot(directory, rootPath)
+            || TraversesReparsePoint(directory, rootPath)
+            || !Directory.Exists(directory))
+        {
+            return false;
+        }
+
+        try
+        {
+            Directory.Delete(directory, recursive: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            errors.Add($"{directory}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool ContainsAudioFile(string directory)
+    {
+        try
+        {
+            return Directory
+                .EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                .Any(IsPrimaryMediaFile);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
+    private static bool IsPrimaryMediaFile(string path)
+    {
+        if (!AudioExtensions.Contains(Path.GetExtension(path)))
+        {
+            return false;
+        }
+
+        var name = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return true;
+        }
+
+        var normalized = name
+            .Replace('-', ' ')
+            .Replace('_', ' ')
+            .Trim()
+            .ToLowerInvariant();
+        return !normalized.Contains("cover", StringComparison.Ordinal)
+            && !normalized.Contains("artwork", StringComparison.Ordinal);
+    }
+
+    private static bool ContainsProtectedPath(string directory, IReadOnlyCollection<string> protectedPaths)
+    {
+        return protectedPaths.Any(path =>
+            string.Equals(path, directory, StringComparison.OrdinalIgnoreCase)
+            || IsSameOrDescendantPath(path, directory));
+    }
+
+    private static bool IsSameOrDescendantPath(string path, string directory)
+    {
+        var normalizedDirectory = Path.TrimEndingDirectorySeparator(directory);
+        var normalizedPath = Path.TrimEndingDirectorySeparator(path);
+        if (string.Equals(normalizedPath, normalizedDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return normalizedPath.StartsWith(
+            normalizedDirectory + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AddAncestorDirectories(
+        string directory,
+        string rootPath,
+        HashSet<string> parentDirectories)
+    {
+        var parent = Directory.GetParent(directory)?.FullName;
+        while (!string.IsNullOrWhiteSpace(parent) && IsStrictChildOfRoot(parent, rootPath))
+        {
+            parentDirectories.Add(parent);
+            parent = Directory.GetParent(parent)?.FullName;
+        }
+    }
+
     private DownloadStagingCleanupResult BuildCleanupResult(
         string queueUuid,
         int deletedFiles,
@@ -272,6 +485,16 @@ public sealed class DownloadStagingCleanupService
         var extension = Path.GetExtension(rawFilePath);
         if (string.IsNullOrWhiteSpace(extension))
         {
+            foreach (var audioExtension in AudioExtensions)
+            {
+                var audioPath = rawFilePath + audioExtension;
+                yield return audioPath;
+                foreach (var suffix in RelatedPathSuffixes)
+                {
+                    yield return audioPath + suffix;
+                }
+            }
+
             yield break;
         }
 
@@ -337,6 +560,22 @@ public sealed class DownloadStagingCleanupService
 
         fullPath = resolvedPath;
         return true;
+    }
+
+    private static List<string> ResolveProtectedPaths(IReadOnlyCollection<string> protectedPaths, string rootPath)
+    {
+        var resolved = new List<string>();
+        foreach (var protectedPath in protectedPaths)
+        {
+            if (TryResolveOwnedChildPath(protectedPath, rootPath, out var fullPath))
+            {
+                resolved.Add(fullPath);
+            }
+        }
+
+        return resolved
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static bool TraversesReparsePoint(string path, string rootPath)
@@ -424,8 +663,9 @@ public sealed class DownloadStagingCleanupService
             }
 
             AddRootPathCandidates(document.RootElement, filePaths);
-            AddFileArrayCandidates(document.RootElement, filePaths);
+            AddFileArrayCandidates(document.RootElement, filePaths, directoryPaths);
             AddDirectoryCandidates(document.RootElement, directoryPaths);
+            AddSiblingDirectoryCandidates(filePaths, directoryPaths);
         }
         catch (JsonException)
         {
@@ -443,7 +683,10 @@ public sealed class DownloadStagingCleanupService
         }
     }
 
-    private static void AddFileArrayCandidates(JsonElement root, ISet<string> filePaths)
+    private static void AddFileArrayCandidates(
+        JsonElement root,
+        ISet<string> filePaths,
+        ISet<string> directoryPaths)
     {
         foreach (var propertyName in FileArrayProperties)
         {
@@ -456,6 +699,15 @@ public sealed class DownloadStagingCleanupService
             {
                 if (file.ValueKind != JsonValueKind.Object)
                 {
+                    if (file.ValueKind == JsonValueKind.String)
+                    {
+                        var rawPath = file.GetString();
+                        if (!string.IsNullOrWhiteSpace(rawPath))
+                        {
+                            filePaths.Add(rawPath);
+                        }
+                    }
+
                     continue;
                 }
 
@@ -463,6 +715,31 @@ public sealed class DownloadStagingCleanupService
                 {
                     AddStringProperty(file, pathPropertyName, filePaths);
                 }
+
+                foreach (var directoryPropertyName in FileObjectDirectoryProperties)
+                {
+                    AddStringProperty(file, directoryPropertyName, directoryPaths);
+                }
+            }
+        }
+    }
+
+    private static void AddSiblingDirectoryCandidates(
+        IEnumerable<string> filePaths,
+        ISet<string> directoryPaths)
+    {
+        foreach (var rawFilePath in filePaths)
+        {
+            var ioPath = DownloadPathResolver.ResolveIoPath(rawFilePath);
+            if (string.IsNullOrWhiteSpace(ioPath) || DownloadPathResolver.IsSmbPath(ioPath))
+            {
+                continue;
+            }
+
+            var directory = Path.GetDirectoryName(ioPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                directoryPaths.Add(directory);
             }
         }
     }

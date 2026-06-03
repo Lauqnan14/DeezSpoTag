@@ -425,9 +425,12 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     {
         _cancellationRegistry.MarkUserCanceled(uuid);
         _retryScheduler.Clear(uuid);
-        if (_cancellationRegistry.Cancel(uuid))
+        var activeCancellationRequested = _cancellationRegistry.Cancel(uuid);
+        if (activeCancellationRequested)
         {
             Listener?.Send("cancellingCurrentItem", uuid);
+            DeezSpoTagSpeedTracker.Clear(uuid);
+            return;
         }
 
         var queueItem = await _queueRepository.GetByUuidAsync(uuid, CancellationToken.None);

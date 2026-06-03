@@ -552,10 +552,11 @@ WHERE queue_uuid = @queueUuid;";
         }
 
         var payloadJson = await GetPayloadJsonAsync(connection, queueUuid, cancellationToken);
+        var protectedPaths = await GetActivePayloadPathsExceptAsync(connection, queueUuid, cancellationToken);
         DownloadStagingCleanupResult result;
         try
         {
-            result = await _stagingCleanupService.CleanupAsync(queueUuid, payloadJson, cancellationToken);
+            result = await _stagingCleanupService.CleanupAsync(queueUuid, payloadJson, protectedPaths, cancellationToken);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -567,6 +568,28 @@ WHERE queue_uuid = @queueUuid;";
         }
 
         await UpdateStagingCleanupStatusAsync(connection, queueUuid, result, cancellationToken);
+    }
+
+    private static async Task<List<string>> GetActivePayloadPathsExceptAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT payload
+FROM download_task
+WHERE queue_uuid <> @queueUuid
+  AND lower(status) IN ('resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying');";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            AddPayloadPaths(GetNullableString(reader, 0), paths);
+        }
+
+        return paths.ToList();
     }
 
     private static bool IsFailedOrCanceledStatus(string status)
@@ -1117,6 +1140,7 @@ WHERE queue_uuid = @queueUuid;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await CleanupTerminalRowsByStatusAsync(connection, status, cancellationToken);
         const string sql = @"
 UPDATE download_task
 SET activities_cleared_at = CURRENT_TIMESTAMP,
@@ -1132,6 +1156,7 @@ WHERE lower(status) = lower(@status)
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await CleanupTerminalRowByUuidAsync(connection, queueUuid, cancellationToken);
         const string sql = @"
 UPDATE download_task
 SET activities_cleared_at = CURRENT_TIMESTAMP,
@@ -1147,6 +1172,7 @@ WHERE queue_uuid = @queueUuid
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await CleanupAllTerminalFailureRowsAsync(connection, cancellationToken);
         const string activeStatuses = "'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
         const string sql = @"
 UPDATE download_task
@@ -1162,6 +1188,7 @@ WHERE lower(status) NOT IN (" + activeStatuses + @")
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await CleanupTerminalRowsByStatusAsync(connection, status, cancellationToken);
         const string sql = @"
 DELETE FROM download_task
 WHERE status = @status
@@ -1173,7 +1200,9 @@ WHERE status = @status
   );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("status", status);
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
+        await CleanupOrphanSidecarDirectoriesAsync(connection, cancellationToken);
+        return deleted;
     }
 
     public async Task<int> DeleteByUuidAsync(string queueUuid, CancellationToken cancellationToken = default)
@@ -1190,6 +1219,7 @@ WHERE status = @status
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await CleanupTerminalRowByUuidAsync(connection, queueUuid, cancellationToken);
         const string sql = @"
 DELETE FROM download_task
 WHERE queue_uuid = @queueUuid
@@ -1201,7 +1231,9 @@ WHERE queue_uuid = @queueUuid
   );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
+        await CleanupOrphanSidecarDirectoriesAsync(connection, cancellationToken);
+        return deleted;
     }
 
     public async Task<int> DeleteAllAsync(CancellationToken cancellationToken = default)
@@ -1210,13 +1242,16 @@ WHERE queue_uuid = @queueUuid
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"DELETE FROM download_task;";
         await using var command = new SqliteCommand(sql, connection);
-        return await command.ExecuteNonQueryAsync(cancellationToken);
+        var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
+        await CleanupOrphanSidecarDirectoriesAsync(connection, cancellationToken);
+        return deleted;
     }
 
     public async Task<int> DeleteClearableAllAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await CleanupAllTerminalFailureRowsAsync(connection, cancellationToken);
         const string sql = @"
 DELETE FROM download_task
 WHERE destination_folder_id IS NULL
@@ -1225,6 +1260,106 @@ WHERE destination_folder_id IS NULL
    OR (lower(status) IN ('failed', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'));";
         await using var command = new SqliteCommand(sql, connection);
         return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task CleanupTerminalRowsByStatusAsync(
+        SqliteConnection connection,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        if (_stagingCleanupService == null || !IsFailedOrCanceledStatus(status))
+        {
+            return;
+        }
+
+        const string sql = @"
+SELECT queue_uuid
+FROM download_task
+WHERE lower(status) = lower(@status);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("status", status);
+        await CleanupSelectedTerminalRowsAsync(connection, command, cancellationToken);
+    }
+
+    private async Task CleanupTerminalRowByUuidAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        CancellationToken cancellationToken)
+    {
+        if (_stagingCleanupService == null || string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        const string sql = @"
+SELECT queue_uuid
+FROM download_task
+WHERE queue_uuid = @queueUuid
+  AND lower(status) IN ('failed', 'canceled', 'cancelled');";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await CleanupSelectedTerminalRowsAsync(connection, command, cancellationToken);
+    }
+
+    private async Task CleanupAllTerminalFailureRowsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (_stagingCleanupService == null)
+        {
+            return;
+        }
+
+        const string sql = @"
+SELECT queue_uuid
+FROM download_task
+WHERE lower(status) IN ('failed', 'canceled', 'cancelled');";
+        await using var command = new SqliteCommand(sql, connection);
+        await CleanupSelectedTerminalRowsAsync(connection, command, cancellationToken);
+    }
+
+    private async Task CleanupSelectedTerminalRowsAsync(
+        SqliteConnection connection,
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        var queueUuids = new List<string>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var queueUuid = GetNullableString(reader, 0);
+                if (!string.IsNullOrWhiteSpace(queueUuid))
+                {
+                    queueUuids.Add(queueUuid);
+                }
+            }
+        }
+
+        foreach (var queueUuid in queueUuids.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            await TryCleanupStagingForTerminalStatusAsync(connection, queueUuid, "failed", cancellationToken);
+        }
+    }
+
+    private async Task CleanupOrphanSidecarDirectoriesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (_stagingCleanupService == null)
+        {
+            return;
+        }
+
+        var protectedPaths = await GetActivePayloadPathsExceptAsync(connection, string.Empty, cancellationToken);
+        try
+        {
+            await _stagingCleanupService.CleanupOrphanSidecarDirectoriesAsync(protectedPaths, cancellationToken);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            _logger.LogWarning(ex, "Orphan staging sidecar cleanup failed.");
+        }
     }
 
     public async Task<int> DeleteByEngineAsync(string engine, CancellationToken cancellationToken = default)

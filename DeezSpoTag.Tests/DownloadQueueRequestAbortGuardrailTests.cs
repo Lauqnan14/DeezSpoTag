@@ -54,6 +54,18 @@ public sealed class DownloadQueueRequestAbortGuardrailTests
         Assert.DoesNotContain("var abortToken = HttpContext.RequestAborted", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ActiveDownloadCancellation_DoesNotMarkQueueTerminalBeforeEngineUnwinds()
+    {
+        var source = ReadSource("DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagApp.cs");
+
+        Assert.Contains("var activeCancellationRequested = _cancellationRegistry.Cancel(uuid);", source, StringComparison.Ordinal);
+        Assert.Contains("if (activeCancellationRequested)", source, StringComparison.Ordinal);
+        Assert.Contains("Listener?.Send(\"cancellingCurrentItem\", uuid);", source, StringComparison.Ordinal);
+        Assert.Contains("return;", source, StringComparison.Ordinal);
+        Assert.Contains("await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);", source, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] pathParts)
         => File.ReadAllText(Path.Join([ResolveRepoRoot(), .. pathParts]));
 

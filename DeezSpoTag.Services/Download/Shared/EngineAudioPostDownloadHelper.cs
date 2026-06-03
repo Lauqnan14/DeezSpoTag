@@ -42,6 +42,7 @@ public static partial class EngineAudioPostDownloadHelper
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
     private const string DeezerTrackIdKey = "deezer_track_id";
+    private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
     private static readonly Regex LrcTimestampRegex = LrcTimestampGeneratedRegex();
     private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -173,6 +174,8 @@ public static partial class EngineAudioPostDownloadHelper
 
     private sealed class PrefetchGateState
     {
+        public CancellationTokenSource Cancellation { get; } = new();
+
         public TaskCompletionSource<PrefetchCompletionResult> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -1323,7 +1326,11 @@ public static partial class EngineAudioPostDownloadHelper
             await request.TaskScheduler.EnqueueAsync(
                 prefetchPaths.QueueUuid,
                 request.Engine,
-                (provider, token) => RunPrefetchWorkAsync(provider, execution, token),
+                async (provider, token) =>
+                {
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token, gateState.Cancellation.Token);
+                    await RunPrefetchWorkAsync(provider, execution, linkedCts.Token);
+                },
                 CancellationToken.None);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2000,7 +2007,38 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
-        PrefetchGates.TryRemove(queueUuid, out _);
+        if (PrefetchGates.TryRemove(queueUuid, out var gateState))
+        {
+            gateState.Cancellation.Cancel();
+            gateState.Cancellation.Dispose();
+        }
+    }
+
+    public static async Task CancelPrefetchAndWaitAsync(
+        string queueUuid,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid)
+            || !PrefetchGates.TryGetValue(queueUuid, out var gateState))
+        {
+            return;
+        }
+
+        gateState.Cancellation.Cancel();
+        try
+        {
+            await gateState.Completion.Task.WaitAsync(timeout, cancellationToken);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
+        {
+            // Terminal queue cleanup still runs after this. The prefetch worker is canceled
+            // above, and cleanup removes any sidecars already written before cancellation.
+        }
+        finally
+        {
+            TryRemovePrefetchState(queueUuid, gateState);
+        }
     }
 
     public static async Task UpdateWatchlistTrackStatusAsync(
@@ -2213,7 +2251,7 @@ public static partial class EngineAudioPostDownloadHelper
         CancellationToken cancellationToken = default)
         where TPayload : EngineQueueItemBase
     {
-        ClearPrefetchState(queueUuid);
+        await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, cancellationToken);
         var current = await context.QueueRepository.GetByUuidAsync(queueUuid, cancellationToken);
         var status = current?.Status ?? CancelledStatus;
         if (status is CompletedStatusName or FailedStatus)
@@ -2252,10 +2290,10 @@ public static partial class EngineAudioPostDownloadHelper
         CancellationToken stoppingToken)
         where TPayload : EngineQueueItemBase
     {
-        ClearPrefetchState(queueUuid);
         context.Logger.LogError(exception, "{Engine} download failed for {QueueUuid}", context.EngineName, queueUuid);
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
+            await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
             var failedEngine = string.IsNullOrWhiteSpace(payload.Engine)
                 ? context.EngineName
@@ -2280,6 +2318,7 @@ public static partial class EngineAudioPostDownloadHelper
             }
         }
 
+        await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
         await context.QueueRepository.UpdateStatusAsync(queueUuid, FailedStatus, exception.Message, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
@@ -2317,6 +2356,7 @@ public static partial class EngineAudioPostDownloadHelper
             && ReferenceEquals(current, expected))
         {
             PrefetchGates.TryRemove(queueUuid, out _);
+            expected.Cancellation.Dispose();
         }
     }
     [GeneratedRegex(@"^\[(?<m>\d{1,3}):(?<s>\d{2})(?:\.(?<f>\d{1,3}))?\]", RegexOptions.CultureInvariant)]

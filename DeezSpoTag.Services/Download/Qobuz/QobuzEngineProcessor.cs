@@ -26,8 +26,10 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private const string FailedStatus = "failed";
     private const string CompletedStatus = "completed";
     private const string CancelledStatus = "cancelled";
+    private const string CanceledStatus = "canceled";
     private const string RunningStatus = "running";
     private const string InvalidPayloadMessage = "Invalid payload";
+    private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
     private const string UpdateQueueEvent = "updateQueue";
     private const string TrackType = "track";
     private readonly DownloadQueueRepository _queueRepository;
@@ -654,11 +656,21 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
     private async Task HandleCancellationAsync(string queueUuid, QobuzQueueItem? payload)
     {
-        EngineAudioPostDownloadHelper.ClearPrefetchState(queueUuid);
+        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+            queueUuid,
+            PrefetchCancelDrainTimeout,
+            CancellationToken.None);
         var current = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
         var status = current?.Status ?? CancelledStatus;
         if (status is CompletedStatus or FailedStatus)
         {
+            return;
+        }
+
+        if (_cancellationRegistry.WasUserCanceled(queueUuid))
+        {
+            await _queueRepository.UpdateStatusAsync(queueUuid, CanceledStatus, cancellationToken: CancellationToken.None);
+            _deezspotagListener.Send(UpdateQueueEvent, new { uuid = queueUuid, status = CanceledStatus });
             return;
         }
 
@@ -677,10 +689,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         Exception ex,
         CancellationToken stoppingToken)
     {
-        EngineAudioPostDownloadHelper.ClearPrefetchState(next.QueueUuid);
         _logger.LogError(ex, "Qobuz download failed for {QueueUuid}", next.QueueUuid);
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
+            await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+                next.QueueUuid,
+                PrefetchCancelDrainTimeout,
+                CancellationToken.None);
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
             var failureKind = IsRateLimitFailure(ex) ? "throttled" : "failed";
             _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
@@ -703,6 +718,10 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
         if (IsRateLimitFailure(ex))
         {
+            await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+                next.QueueUuid,
+                PrefetchCancelDrainTimeout,
+                CancellationToken.None);
             var quality = payload == null || string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
             _activityLog.Warn($"Download throttled (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
             await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, ex.Message, cancellationToken: CancellationToken.None);
@@ -715,6 +734,10 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             return;
         }
 
+        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+            next.QueueUuid,
+            PrefetchCancelDrainTimeout,
+            CancellationToken.None);
         await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, ex.Message, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
