@@ -1061,6 +1061,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     ProfileId: automationProfile?.Id,
                     ProfileName: automationProfile?.Name,
                     RunIntent: AutoTagLiterals.RunIntentDownloadEnrichment));
+            if (enrichmentJob == null)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: post-download enrichment skipped for destination folder {destinationFolderId} because downloads are active."));
+                return new PipelineEnrichmentResult("skipped_downloads_active", SafeToContinue: false, SafeToPersist: false);
+            }
+
             await WaitForJobCompletionAsync(enrichmentJob, cancellationToken);
         }
         finally
@@ -1244,6 +1253,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             AutoTagLiterals.SkippedStatus => EnrichmentStatusNotRequired,
             "skipped_no_enrichment_tags" => EnrichmentStatusNotRequired,
             "skipped_no_candidate_files" => EnrichmentStatusInterrupted,
+            "skipped_downloads_active" => EnrichmentStatusInterrupted,
             "blocked" => EnrichmentStatusInterrupted,
             AutoTagLiterals.CanceledStatus => EnrichmentStatusCanceled,
             AutoTagLiterals.InterruptedStatus => EnrichmentStatusInterrupted,
@@ -1783,6 +1793,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     ProfileId: enhancementProfile.Id,
                     ProfileName: enhancementProfile.Name,
                     RunIntent: AutoTagLiterals.RunIntentEnhancementOnly));
+            if (enhancementJob == null)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: enhancement skipped for {target.RootPath} because downloads are active."));
+                return new EnhancementTargetRunResult(false, false);
+            }
+
             MarkEnhancementStageStarted(enhancementJob);
             await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
         }

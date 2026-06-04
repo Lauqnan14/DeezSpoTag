@@ -574,7 +574,7 @@ public partial class AutoTagService
         string? RunIntent = null,
         FolderStructureSettings? FolderStructureOverride = null);
 
-    public async Task<AutoTagJob> StartJob(
+    public async Task<AutoTagJob?> StartJob(
         string path,
         string configJson,
         StartJobOptions? options = null)
@@ -599,15 +599,10 @@ public partial class AutoTagService
             return blockedByTriggerPolicy;
         }
 
-        var blockedByActiveDownloads = await TryCreateBlockedJobForActiveDownloadsAsync(
-            normalizedPath,
-            normalizedTrigger,
-            normalizedRunIntent,
-            options.ProfileId,
-            options.ProfileName);
-        if (blockedByActiveDownloads != null)
+        if (await ShouldSkipForActiveDownloadsAsync())
         {
-            return blockedByActiveDownloads;
+            _logger.LogInformation("AutoTag skipped: downloads active.");
+            return null;
         }
 
         var blockedByScope = await TryCreateBlockedJobForScopePolicyAsync(
@@ -726,28 +721,9 @@ public partial class AutoTagService
         return blockedJob;
     }
 
-    private async Task<AutoTagJob?> TryCreateBlockedJobForActiveDownloadsAsync(
-        string normalizedPath,
-        string normalizedTrigger,
-        string normalizedRunIntent,
-        string? profileId,
-        string? profileName)
+    private async Task<bool> ShouldSkipForActiveDownloadsAsync()
     {
-        if (!await _queueRepository.HasActiveDownloadsAsync())
-        {
-            return null;
-        }
-
-        var blockedJob = CreateBlockedJob(
-            "Downloads active; AutoTag skipped.",
-            normalizedPath,
-            normalizedTrigger,
-            normalizedRunIntent,
-            profileId,
-            profileName);
-        AppendActivityLog(blockedJob.Id, "autotag skipped: downloads active");
-        _logger.LogInformation("AutoTag skipped: downloads active.");
-        return blockedJob;
+        return await _queueRepository.HasActiveDownloadsAsync();
     }
 
     private AutoTagJob? TryCreateBlockedJobForActiveJobPolicy(
@@ -7242,6 +7218,12 @@ public partial class AutoTagService
                     ProfileId: job.ProfileId,
                     ProfileName: job.ProfileName,
                     RunIntent: job.RunIntent));
+            if (resumed == null)
+            {
+                AppendLog(job, "stuck watchdog: auto-resume skipped because downloads are active.");
+                return;
+            }
+
             AppendLog(job, $"stuck watchdog: auto-resume created job {resumed.Id} (status={resumed.Status}).");
         }
         catch (OperationCanceledException)

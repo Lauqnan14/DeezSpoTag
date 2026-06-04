@@ -120,8 +120,19 @@ public class AutoTagJobsController : ControllerBase
         return true;
     }
 
-    private static IActionResult CreateStartJobResponse(AutoTagJob job)
+    private static IActionResult CreateStartJobResponse(AutoTagJob? job)
     {
+        if (job == null)
+        {
+            var skippedPayload = new
+            {
+                jobId = string.Empty,
+                status = AutoTagLiterals.SkippedStatus,
+                error = "Downloads are active. AutoTag did not start."
+            };
+            return new ConflictObjectResult(skippedPayload);
+        }
+
         var payload = new
         {
             jobId = job.Id,
