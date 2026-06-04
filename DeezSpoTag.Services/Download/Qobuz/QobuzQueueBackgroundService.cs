@@ -12,8 +12,9 @@ public sealed class QobuzQueueBackgroundService : EngineQueueBackgroundService<Q
         QobuzEngineProcessor processor,
         DeezSpoTagSettingsService settingsService,
         IDownloadQueueExecutionGate executionGate,
+        DownloadQueueWakeSignal queueWakeSignal,
         ILogger<QobuzQueueBackgroundService> logger)
-        : base(queueRepository, processor, settingsService, executionGate, logger)
+        : base(queueRepository, processor, settingsService, executionGate, queueWakeSignal, logger)
     {
     }
 

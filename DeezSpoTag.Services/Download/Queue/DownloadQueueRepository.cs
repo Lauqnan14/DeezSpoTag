@@ -856,6 +856,62 @@ WHERE queue_uuid = @queueUuid
         return updated;
     }
 
+    public async Task<bool> TryUpdateQueuedIdentityIfCurrentAsync(
+        DownloadQueueItem item,
+        string? expectedPayloadJson,
+        string? status = null,
+        string? error = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, item.PayloadJson);
+        const string sql = @"
+UPDATE download_task
+SET payload = @payload,
+    engine = @engine,
+    artist_name = @artistName,
+    track_title = @trackTitle,
+    isrc = COALESCE(NULLIF(@isrc, ''), isrc),
+    deezer_track_id = COALESCE(NULLIF(@deezerTrackId, ''), deezer_track_id),
+    deezer_album_id = COALESCE(NULLIF(@deezerAlbumId, ''), deezer_album_id),
+    deezer_artist_id = COALESCE(NULLIF(@deezerArtistId, ''), deezer_artist_id),
+    spotify_track_id = COALESCE(NULLIF(@spotifyTrackId, ''), spotify_track_id),
+    spotify_album_id = COALESCE(NULLIF(@spotifyAlbumId, ''), spotify_album_id),
+    spotify_artist_id = COALESCE(NULLIF(@spotifyArtistId, ''), spotify_artist_id),
+    apple_track_id = COALESCE(NULLIF(@appleTrackId, ''), apple_track_id),
+    apple_album_id = COALESCE(NULLIF(@appleAlbumId, ''), apple_album_id),
+    apple_artist_id = COALESCE(NULLIF(@appleArtistId, ''), apple_artist_id),
+    duration_ms = COALESCE(@durationMs, duration_ms),
+    destination_folder_id = @destinationFolderId,
+    quality_rank = COALESCE(@qualityRank, quality_rank),
+    content_type = COALESCE(NULLIF(@contentType, ''), content_type),
+    status = COALESCE(@status, status),
+    error = CASE
+        WHEN @status = 'failed' THEN COALESCE(@error, error)
+        WHEN @status = 'queued' THEN NULL
+        ELSE error
+    END,
+    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid
+  AND status IN ('queued', 'resolving')
+  AND ((payload IS NULL AND @expectedPayload IS NULL) OR payload = @expectedPayload);";
+        await using var command = new SqliteCommand(sql, connection);
+        BindCommonParameters(command, item);
+        command.Parameters.AddWithValue("status", (object?)status ?? DBNull.Value);
+        command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
+        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue("expectedPayload", (object?)expectedPayloadJson ?? DBNull.Value);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        if (updated && !string.IsNullOrWhiteSpace(status))
+        {
+            PublishQueueStateChanged(item.QueueUuid, status);
+        }
+
+        return updated;
+    }
+
     public async Task UpdateFinalDestinationsAsync(
         string queueUuid,
         string? finalDestinationsJson,
@@ -1490,22 +1546,58 @@ WHERE (
         (
             @isrc IS NOT NULL
             AND @isrc <> ''
-            AND upper(isrc) = upper(@isrc)
+            AND (
+                upper(isrc) = upper(@isrc)
+                OR (
+                    json_valid(payload)
+                    AND (
+                        upper(json_extract(payload, '$.Isrc')) = upper(@isrc)
+                        OR upper(json_extract(payload, '$.isrc')) = upper(@isrc)
+                    )
+                )
+            )
         )
         OR (
             @deezerTrackId IS NOT NULL
             AND @deezerTrackId <> ''
-            AND lower(deezer_track_id) = lower(@deezerTrackId)
+            AND (
+                lower(deezer_track_id) = lower(@deezerTrackId)
+                OR (
+                    json_valid(payload)
+                    AND (
+                        lower(json_extract(payload, '$.DeezerId')) = lower(@deezerTrackId)
+                        OR lower(json_extract(payload, '$.deezerId')) = lower(@deezerTrackId)
+                    )
+                )
+            )
         )
         OR (
             @spotifyTrackId IS NOT NULL
             AND @spotifyTrackId <> ''
-            AND lower(spotify_track_id) = lower(@spotifyTrackId)
+            AND (
+                lower(spotify_track_id) = lower(@spotifyTrackId)
+                OR (
+                    json_valid(payload)
+                    AND (
+                        lower(json_extract(payload, '$.SpotifyId')) = lower(@spotifyTrackId)
+                        OR lower(json_extract(payload, '$.spotifyId')) = lower(@spotifyTrackId)
+                    )
+                )
+            )
         )
         OR (
             @appleTrackId IS NOT NULL
             AND @appleTrackId <> ''
-            AND lower(apple_track_id) = lower(@appleTrackId)
+            AND (
+                lower(apple_track_id) = lower(@appleTrackId)
+                OR (
+                    json_valid(payload)
+                    AND (
+                        lower(json_extract(payload, '$.AppleId')) = lower(@appleTrackId)
+                        OR lower(json_extract(payload, '$.appleId')) = lower(@appleTrackId)
+                    )
+                )
+            )
         )
         OR (
             @durationMs IS NOT NULL
@@ -1564,7 +1656,9 @@ ORDER BY
             return false;
         }
 
-        return HasStrongIdentityMatch(request, item) || HasMetadataMatch(request, item);
+        return HasStrongIdentityMatch(request, item)
+            || HasPayloadStrongIdentityMatch(request, item)
+            || HasMetadataMatch(request, item);
     }
 
     private static bool HasStrongIdentityMatch(DuplicateLookupRequest request, DownloadQueueItem item)
@@ -1573,6 +1667,45 @@ ORDER BY
             || EqualsNormalizedId(request.DeezerTrackId, item.DeezerTrackId)
             || EqualsNormalizedId(request.SpotifyTrackId, item.SpotifyTrackId)
             || EqualsNormalizedId(request.AppleTrackId, item.AppleTrackId);
+    }
+
+    private static bool HasPayloadStrongIdentityMatch(DuplicateLookupRequest request, DownloadQueueItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.PayloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(item.PayloadJson);
+            var root = document.RootElement;
+            return EqualsNormalizedIsrc(request.Isrc, ReadPayloadString(root, "Isrc", "isrc"))
+                || EqualsNormalizedId(request.DeezerTrackId, ReadPayloadString(root, "DeezerId", "deezerId"))
+                || EqualsNormalizedId(request.SpotifyTrackId, ReadPayloadString(root, "SpotifyId", "spotifyId"))
+                || EqualsNormalizedId(request.AppleTrackId, ReadPayloadString(root, "AppleId", "appleId"));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string? ReadPayloadString(JsonElement root, string pascalName, string camelName)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.TryGetProperty(pascalName, out var pascalValue) && pascalValue.ValueKind == JsonValueKind.String)
+        {
+            return pascalValue.GetString();
+        }
+
+        return root.TryGetProperty(camelName, out var camelValue) && camelValue.ValueKind == JsonValueKind.String
+            ? camelValue.GetString()
+            : null;
     }
 
     private static bool HasMetadataMatch(DuplicateLookupRequest request, DownloadQueueItem item)
@@ -1819,6 +1952,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await NormalizeLegacyAtmosContentTypesAsync(connection, cancellationToken);
         await NormalizeLegacyEnrichmentStatusesAsync(connection, cancellationToken);
         await NormalizeCompletedFinalizationStatusesAsync(connection, cancellationToken);
+        await BackfillMissingIdentityFromPayloadAsync(connection, cancellationToken);
 
         lock (_schemaLock)
         {
@@ -1842,6 +1976,57 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await connection.OpenAsync(cancellationToken);
         await ConfigureConnectionAsync(connection, cancellationToken);
         return connection;
+    }
+
+    private static async Task BackfillMissingIdentityFromPayloadAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+UPDATE " + DownloadTaskTable + @"
+SET isrc = CASE
+        WHEN NULLIF(trim(COALESCE(isrc, '')), '') IS NULL THEN upper(NULLIF(trim(COALESCE(json_extract(payload, '$.Isrc'), json_extract(payload, '$.isrc'), '')), ''))
+        ELSE isrc
+    END,
+    deezer_track_id = CASE
+        WHEN NULLIF(trim(COALESCE(deezer_track_id, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.DeezerId'), json_extract(payload, '$.deezerId'), '')), ''))
+        ELSE deezer_track_id
+    END,
+    spotify_track_id = CASE
+        WHEN NULLIF(trim(COALESCE(spotify_track_id, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.SpotifyId'), json_extract(payload, '$.spotifyId'), '')), ''))
+        ELSE spotify_track_id
+    END,
+    apple_track_id = CASE
+        WHEN NULLIF(trim(COALESCE(apple_track_id, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.AppleId'), json_extract(payload, '$.appleId'), '')), ''))
+        ELSE apple_track_id
+    END,
+    duration_ms = CASE
+        WHEN duration_ms IS NULL AND COALESCE(json_extract(payload, '$.DurationMs'), json_extract(payload, '$.durationMs'), 0) > 0
+            THEN CAST(COALESCE(json_extract(payload, '$.DurationMs'), json_extract(payload, '$.durationMs')) AS INTEGER)
+        WHEN duration_ms IS NULL AND COALESCE(json_extract(payload, '$.DurationSeconds'), json_extract(payload, '$.durationSeconds'), 0) > 0
+            THEN CAST(COALESCE(json_extract(payload, '$.DurationSeconds'), json_extract(payload, '$.durationSeconds')) AS INTEGER) * 1000
+        ELSE duration_ms
+    END,
+    destination_folder_id = CASE
+        WHEN destination_folder_id IS NULL AND COALESCE(json_extract(payload, '$.DestinationFolderId'), json_extract(payload, '$.destinationFolderId'), 0) > 0
+            THEN CAST(COALESCE(json_extract(payload, '$.DestinationFolderId'), json_extract(payload, '$.destinationFolderId')) AS INTEGER)
+        ELSE destination_folder_id
+    END,
+    content_type = CASE
+        WHEN NULLIF(trim(COALESCE(content_type, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.ContentType'), json_extract(payload, '$.contentType'), '')), ''))
+        ELSE content_type
+    END
+WHERE json_valid(payload)
+  AND (
+        NULLIF(trim(COALESCE(isrc, '')), '') IS NULL
+        OR NULLIF(trim(COALESCE(deezer_track_id, '')), '') IS NULL
+        OR NULLIF(trim(COALESCE(spotify_track_id, '')), '') IS NULL
+        OR NULLIF(trim(COALESCE(apple_track_id, '')), '') IS NULL
+        OR duration_ms IS NULL
+        OR destination_folder_id IS NULL
+        OR NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
+      );";
+        await ExecuteNonQueryAsync(connection, sql, cancellationToken);
     }
 
     private static async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)

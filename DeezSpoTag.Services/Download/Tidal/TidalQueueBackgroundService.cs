@@ -12,8 +12,9 @@ public sealed class TidalQueueBackgroundService : EngineQueueBackgroundService<T
         TidalEngineProcessor processor,
         DeezSpoTagSettingsService settingsService,
         IDownloadQueueExecutionGate executionGate,
+        DownloadQueueWakeSignal queueWakeSignal,
         ILogger<TidalQueueBackgroundService> logger)
-        : base(queueRepository, processor, settingsService, executionGate, logger)
+        : base(queueRepository, processor, settingsService, executionGate, queueWakeSignal, logger)
     {
     }
 

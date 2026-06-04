@@ -641,7 +641,16 @@ public sealed class DownloadIntentService
             selectedQuality,
             fallbackInfo.AutoIndex,
             fallbackInfo.FallbackPlan,
-            target.Resolution.Message);
+            target.Resolution.Message,
+            Isrc: intent.Isrc,
+            DeezerId: intent.DeezerId,
+            DeezerAlbumId: intent.DeezerAlbumId,
+            DeezerArtistId: intent.DeezerArtistId,
+            SpotifyId: intent.SpotifyId,
+            AppleId: intent.AppleId,
+            DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
+            DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
+            ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
     }
 
     [ExcludeFromCodeCoverage]

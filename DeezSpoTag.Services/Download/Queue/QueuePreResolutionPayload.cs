@@ -23,7 +23,20 @@ public static class QueuePreResolutionPayload
         string? Quality,
         int? AutoIndex,
         IReadOnlyList<FallbackPlanStep>? FallbackPlan,
-        string? Error);
+        string? Error,
+        string? Isrc = null,
+        string? DeezerId = null,
+        string? DeezerAlbumId = null,
+        string? DeezerArtistId = null,
+        string? SpotifyId = null,
+        string? SpotifyAlbumId = null,
+        string? SpotifyArtistId = null,
+        string? AppleId = null,
+        string? AppleAlbumId = null,
+        string? AppleArtistId = null,
+        int? DurationMs = null,
+        long? DestinationFolderId = null,
+        string? ContentType = null);
 
     public static JsonObject ParseOrEmpty(string? payloadJson)
     {
@@ -112,6 +125,28 @@ public static class QueuePreResolutionPayload
             SetResolutionPair(payload, "Quality", "quality", result.Quality);
         }
 
+        SetResolutionPairIfPresent(payload, "Isrc", "isrc", result.Isrc);
+        SetResolutionPairIfPresent(payload, "DeezerId", "deezerId", result.DeezerId);
+        SetResolutionPairIfPresent(payload, "DeezerAlbumId", "deezerAlbumId", result.DeezerAlbumId);
+        SetResolutionPairIfPresent(payload, "DeezerArtistId", "deezerArtistId", result.DeezerArtistId);
+        SetResolutionPairIfPresent(payload, "SpotifyId", "spotifyId", result.SpotifyId);
+        SetResolutionPairIfPresent(payload, "SpotifyAlbumId", "spotifyAlbumId", result.SpotifyAlbumId);
+        SetResolutionPairIfPresent(payload, "SpotifyArtistId", "spotifyArtistId", result.SpotifyArtistId);
+        SetResolutionPairIfPresent(payload, "AppleId", "appleId", result.AppleId);
+        SetResolutionPairIfPresent(payload, "AppleAlbumId", "appleAlbumId", result.AppleAlbumId);
+        SetResolutionPairIfPresent(payload, "AppleArtistId", "appleArtistId", result.AppleArtistId);
+        SetResolutionPairIfPresent(payload, "ContentType", "contentType", result.ContentType);
+
+        if (result.DurationMs.HasValue && result.DurationMs.Value > 0)
+        {
+            SetResolutionPair(payload, "DurationMs", "durationMs", result.DurationMs.Value);
+        }
+
+        if (result.DestinationFolderId.HasValue && result.DestinationFolderId.Value > 0)
+        {
+            SetResolutionPair(payload, "DestinationFolderId", "destinationFolderId", result.DestinationFolderId.Value);
+        }
+
         if (result.AutoIndex.HasValue)
         {
             SetResolutionPair(payload, "ResolvedAutoIndex", "resolvedAutoIndex", result.AutoIndex.Value);
@@ -131,6 +166,12 @@ public static class QueuePreResolutionPayload
         SetResolutionPair(payload, ResolutionStatusPascalKey, ResolutionStatusCamelKey, Failed);
         SetResolutionPair(payload, "ResolutionFailedAtUtc", "resolutionFailedAtUtc", now);
         SetResolutionPair(payload, ResolutionErrorPascalKey, ResolutionErrorCamelKey, error);
+    }
+
+    public static void ApplyPending(JsonObject payload)
+    {
+        SetResolutionPair(payload, ResolutionStatusPascalKey, ResolutionStatusCamelKey, Pending);
+        SetResolutionPair(payload, ResolutionErrorPascalKey, ResolutionErrorCamelKey, string.Empty);
     }
 
     private static string? ReadString(JsonObject payload, string key)
@@ -168,10 +209,24 @@ public static class QueuePreResolutionPayload
         payload[camelKey] = value;
     }
 
+    private static void SetResolutionPair(JsonObject payload, string pascalKey, string camelKey, long value)
+    {
+        payload[pascalKey] = value;
+        payload[camelKey] = value;
+    }
+
     private static void SetResolutionPair(JsonObject payload, string pascalKey, string camelKey, DateTimeOffset value)
     {
         var text = value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
         payload[pascalKey] = text;
         payload[camelKey] = text;
+    }
+
+    private static void SetResolutionPairIfPresent(JsonObject payload, string pascalKey, string camelKey, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            SetResolutionPair(payload, pascalKey, camelKey, value.Trim());
+        }
     }
 }

@@ -12,8 +12,9 @@ public sealed class AppleQueueBackgroundService : EngineQueueBackgroundService<A
         AppleEngineProcessor processor,
         DeezSpoTagSettingsService settingsService,
         IDownloadQueueExecutionGate executionGate,
+        DownloadQueueWakeSignal queueWakeSignal,
         ILogger<AppleQueueBackgroundService> logger)
-        : base(queueRepository, processor, settingsService, executionGate, logger)
+        : base(queueRepository, processor, settingsService, executionGate, queueWakeSignal, logger)
     {
     }
 

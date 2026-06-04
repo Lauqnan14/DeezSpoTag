@@ -53,7 +53,14 @@ public sealed class QueuePreResolutionPayloadTests
                 "27",
                 2,
                 plan,
-                null),
+                null,
+                Isrc: "QT3F22565438",
+                DeezerId: "359542303",
+                SpotifyId: "spotify-track",
+                AppleId: "apple-track",
+                DurationMs: 205000,
+                DestinationFolderId: 1,
+                ContentType: "stereo"),
             now);
 
         Assert.True(QueuePreResolutionPayload.IsResolved(payload));
@@ -62,6 +69,13 @@ public sealed class QueuePreResolutionPayloadTests
         Assert.Equal("https://play.qobuz.com/track/123", QueuePreResolutionPayload.ReadResolvedSourceUrl(payload));
         Assert.Equal("https://play.qobuz.com/track/123", payload["SourceUrl"]?.ToString());
         Assert.Equal("27", payload["Quality"]?.ToString());
+        Assert.Equal("QT3F22565438", payload["Isrc"]?.ToString());
+        Assert.Equal("359542303", payload["DeezerId"]?.ToString());
+        Assert.Equal("spotify-track", payload["SpotifyId"]?.ToString());
+        Assert.Equal("apple-track", payload["AppleId"]?.ToString());
+        Assert.Equal("205000", payload["DurationMs"]?.ToString());
+        Assert.Equal("1", payload["DestinationFolderId"]?.ToString());
+        Assert.Equal("stereo", payload["ContentType"]?.ToString());
         Assert.Equal("2", payload["AutoIndex"]?.ToString());
         Assert.IsType<JsonArray>(payload["FallbackPlan"]);
         Assert.IsType<JsonArray>(payload["fallbackPlan"]);

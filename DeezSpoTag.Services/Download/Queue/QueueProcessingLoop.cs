@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using DeezSpoTag.Services.Download.Shared;
 
 namespace DeezSpoTag.Services.Download.Queue;
 
@@ -9,6 +10,7 @@ public static class QueueProcessingLoop
         Func<CancellationToken, Task> work,
         ILogger logger,
         TimeSpan idleDelay,
+        DownloadQueueWakeSignal? wakeSignal,
         CancellationToken stoppingToken)
     {
         if (logger.IsEnabled(LogLevel.Information))
@@ -32,7 +34,14 @@ public static class QueueProcessingLoop
                     logger.LogError(ex, "Error in {QueueName} queue background service", name);
                 }
 
-                await Task.Delay(idleDelay, stoppingToken);
+                if (wakeSignal == null)
+                {
+                    await Task.Delay(idleDelay, stoppingToken);
+                }
+                else
+                {
+                    await wakeSignal.WaitAsync(idleDelay, stoppingToken);
+                }
             }
         }
         catch (OperationCanceledException ex)

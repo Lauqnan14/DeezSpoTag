@@ -196,6 +196,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly WatchlistFinalizationService _watchlistFinalizationService;
     private readonly LibraryConfigStore _configStore;
     private readonly BackgroundWorkCoordinator _workCoordinator;
+    private readonly DownloadQueueWakeSignal _queueWakeSignal;
     private readonly IConfiguration _configuration;
     private readonly ILogger<DownloadOrchestrationService> _logger;
     private readonly string _enhancementSchedulePath;
@@ -254,6 +255,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _watchlistFinalizationService = serviceProvider.GetRequiredService<WatchlistFinalizationService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _workCoordinator = serviceProvider.GetRequiredService<BackgroundWorkCoordinator>();
+        _queueWakeSignal = serviceProvider.GetRequiredService<DownloadQueueWakeSignal>();
         _configuration = serviceProvider.GetRequiredService<IConfiguration>();
         _logger = logger;
 
@@ -872,6 +874,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         finally
         {
             _postDownloadPipelineInProgress = false;
+            _queueWakeSignal.Pulse();
         }
     }
 

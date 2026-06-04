@@ -24,6 +24,7 @@ public static class DeezSpoTagServiceExtensions
     public static IServiceCollection AddDeezSpoTagQueue(this IServiceCollection services)
     {
         services.TryAddSingleton<BackgroundWorkCoordinator>();
+        services.AddSingleton<DownloadQueueWakeSignal>();
         services.AddSingleton<DownloadQueueRepository>();
         services.AddSingleton<DownloadStagingCleanupService>();
         services.AddSingleton<DownloadQueueRecoveryRuntime>();
@@ -104,18 +105,21 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
     private readonly DownloadQueueRecoveryService _recoveryService;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly IDownloadQueueExecutionGate _executionGate;
+    private readonly DownloadQueueWakeSignal _queueWakeSignal;
 
     public DeezSpoTagQueueBackgroundService(
         DeezSpoTagApp deezSpoTagApp,
         DownloadQueueRecoveryService recoveryService,
         BackgroundWorkCoordinator workCoordinator,
         IDownloadQueueExecutionGate executionGate,
+        DownloadQueueWakeSignal queueWakeSignal,
         ILogger<DeezSpoTagQueueBackgroundService> logger)
     {
         _deezSpoTagApp = deezSpoTagApp;
         _recoveryService = recoveryService;
         _workCoordinator = workCoordinator;
         _executionGate = executionGate;
+        _queueWakeSignal = queueWakeSignal;
         _logger = logger;
     }
 
@@ -155,6 +159,7 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
             },
             _logger,
             TimeSpan.FromSeconds(10),
+            _queueWakeSignal,
             stoppingToken);
     }
 

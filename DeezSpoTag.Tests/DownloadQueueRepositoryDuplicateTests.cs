@@ -84,6 +84,47 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task ExistsDuplicateAsync_MatchesPayloadOnlyTrackIdentity()
+    {
+        await using var context = await CreateContextAsync();
+        const string payloadJson = """
+            {
+              "Title":"Sahani",
+              "Artist":"Davy Waweru, Muthoka",
+              "Isrc":"QT3F22565438",
+              "DeezerId":"359542303"
+            }
+            """;
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                queueUuid: "payload-only-identity",
+                artist: "Davy Waweru, Muthoka",
+                title: "Sahani",
+                destinationFolderId: 1) with
+            {
+                Status = "failed",
+                PayloadJson = payloadJson,
+                DurationMs = 205000
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Davy Waweru, Muthoka",
+                TrackTitle = "Sahani",
+                DestinationFolderId = 1,
+                ContentType = "stereo",
+                Isrc = "QT3F22565438",
+                DurationMs = 205000
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    [Fact]
     public async Task ExistsDuplicateAsync_IgnoresCompletedRowWhenPayloadFileIsMissing()
     {
         await using var context = await CreateContextAsync();

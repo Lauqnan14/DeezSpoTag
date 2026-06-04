@@ -13,6 +13,7 @@ public abstract class EngineQueueBackgroundService<TProcessor> : BackgroundServi
     private readonly TProcessor _processor;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly IDownloadQueueExecutionGate _executionGate;
+    private readonly DownloadQueueWakeSignal _queueWakeSignal;
     private readonly ILogger _logger;
 
     protected EngineQueueBackgroundService(
@@ -20,12 +21,14 @@ public abstract class EngineQueueBackgroundService<TProcessor> : BackgroundServi
         TProcessor processor,
         DeezSpoTagSettingsService settingsService,
         IDownloadQueueExecutionGate executionGate,
+        DownloadQueueWakeSignal queueWakeSignal,
         ILogger logger)
     {
         _queueRepository = queueRepository;
         _processor = processor;
         _settingsService = settingsService;
         _executionGate = executionGate;
+        _queueWakeSignal = queueWakeSignal;
         _logger = logger;
     }
 
@@ -40,6 +43,7 @@ public abstract class EngineQueueBackgroundService<TProcessor> : BackgroundServi
             ProcessNextAsync,
             _logger,
             _pollInterval,
+            _queueWakeSignal,
             stoppingToken);
     }
 
