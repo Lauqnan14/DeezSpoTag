@@ -759,7 +759,7 @@
     var layoutAttr = string.IsNullOrWhiteSpace(layoutParam) ? string.Empty : layoutParam;
 }
 <body data-home-layout="@layoutAttr">
-    <button class="hamburger" onclick="toggleSidebar()" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button>
+    <button class="hamburger" id="sidebarToggle" type="button" aria-label="Toggle sidebar" aria-controls="sidebar" aria-expanded="false">☰</button>
     
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
@@ -1016,7 +1016,18 @@
             return window.matchMedia('(max-width: 900px)').matches;
         }
 
+        function getSidebarElements() {
+            const sidebar = document.getElementById('sidebar');
+            const mainContent = document.getElementById('mainContent');
+            const hamburger = document.getElementById('sidebarToggle');
+            return { sidebar, mainContent, hamburger };
+        }
+
         function applySidebarVisualState(sidebar, mainContent, hamburger, collapsed) {
+            if (!sidebar || !mainContent || !hamburger) {
+                return;
+            }
+
             sidebar.classList.toggle('collapsed', collapsed);
             mainContent.classList.toggle('sidebar-collapsed', collapsed);
             hamburger.classList.toggle('sidebar-collapsed', collapsed);
@@ -1028,15 +1039,36 @@
         }
 
         function closeSidebar(sidebar, mainContent, hamburger, collapsed) {
+            if (!sidebar || !mainContent || !hamburger) {
+                return;
+            }
+
             sidebar.classList.remove('open');
             applySidebarVisualState(sidebar, mainContent, hamburger, collapsed);
+        }
+
+        function bindSidebarToggleButton(hamburger) {
+            if (!hamburger || hamburger.dataset.sidebarToggleBound === 'true') {
+                return;
+            }
+
+            hamburger.dataset.sidebarToggleBound = 'true';
+            hamburger.addEventListener('click', function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleSidebar();
+            });
         }
         
         // Initialize sidebar state on page load
         document.addEventListener('DOMContentLoaded', function() {
-            const sidebar = document.getElementById('sidebar');
-            const mainContent = document.getElementById('mainContent');
-            const hamburger = document.querySelector('.hamburger');
+            const { sidebar, mainContent, hamburger } = getSidebarElements();
+            if (!sidebar || !mainContent || !hamburger) {
+                document.documentElement.classList.remove('sidebar-precollapsed');
+                return;
+            }
+
+            bindSidebarToggleButton(hamburger);
             
             if (isSidebarMobile()) {
                 closeSidebar(sidebar, mainContent, hamburger, true);
@@ -1058,9 +1090,10 @@
 
         // Unified toggle function for both desktop and mobile
         function toggleSidebar() {
-            const sidebar = document.getElementById('sidebar');
-            const mainContent = document.getElementById('mainContent');
-            const hamburger = document.querySelector('.hamburger');
+            const { sidebar, mainContent, hamburger } = getSidebarElements();
+            if (!sidebar || !mainContent || !hamburger) {
+                return;
+            }
             
             if (isSidebarMobile()) {
                 if (sidebar.classList.contains('collapsed')) {
@@ -1091,11 +1124,16 @@
             }
         }
 
+        window.toggleSidebar = toggleSidebar;
+        window.toggleSidebarCollapse = toggleSidebarCollapse;
+        window.toggleSidebarMobile = toggleSidebarMobile;
+
         // Close sidebar when clicking outside on mobile
         document.addEventListener('click', function(event) {
-            const sidebar = document.getElementById('sidebar');
-            const hamburger = document.querySelector('.hamburger');
-            const mainContent = document.getElementById('mainContent');
+            const { sidebar, mainContent, hamburger } = getSidebarElements();
+            if (!sidebar || !hamburger || !mainContent) {
+                return;
+            }
             
             if (isSidebarMobile() &&
                 !sidebar.contains(event.target) &&
@@ -1162,9 +1200,10 @@
         
         // Handle window resize
         window.addEventListener('resize', function() {
-            const sidebar = document.getElementById('sidebar');
-            const mainContent = document.getElementById('mainContent');
-            const hamburger = document.querySelector('.hamburger');
+            const { sidebar, mainContent, hamburger } = getSidebarElements();
+            if (!sidebar || !mainContent || !hamburger) {
+                return;
+            }
             
             if (isSidebarMobile()) {
                 closeSidebar(sidebar, mainContent, hamburger, true);
@@ -1203,7 +1242,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             setTimeout(updateLogoColors, 100);
         });
-    
+    </script>
 
     <script>
         (function () {
