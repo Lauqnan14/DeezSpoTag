@@ -242,14 +242,13 @@ public static class DownloadSourceOrder
             return new DownloadEngineOrderValidationResult(false, "Custom download engine order requires at least one enabled engine.");
         }
 
-        foreach (var engine in enabledEngines)
+        var engineWithoutEnabledQuality = enabledEngines.FirstOrDefault(engine =>
+            engine.Qualities == null || !engine.Qualities.Any(quality => quality.Enabled));
+        if (engineWithoutEnabledQuality != null)
         {
-            if (engine.Qualities == null || !engine.Qualities.Any(quality => quality.Enabled))
-            {
-                return new DownloadEngineOrderValidationResult(
-                    false,
-                    $"Custom download engine order requires at least one enabled quality for {GetDisplayName(engine.Engine)}.");
-            }
+            return new DownloadEngineOrderValidationResult(
+                false,
+                $"Custom download engine order requires at least one enabled quality for {GetDisplayName(engineWithoutEnabledQuality.Engine)}.");
         }
 
         return new DownloadEngineOrderValidationResult(true, null);
@@ -307,9 +306,11 @@ public static class DownloadSourceOrder
             StringComparer.OrdinalIgnoreCase);
         var seenQualities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var quality in configuredQualities)
+        var normalizedQualities = configuredQualities
+            .Select(quality => NormalizeQuality(engine, quality.Quality));
+
+        foreach (var normalizedQuality in normalizedQualities)
         {
-            var normalizedQuality = NormalizeQuality(engine, quality.Quality);
             if (!validQualities.Contains(normalizedQuality))
             {
                 return new DownloadEngineOrderValidationResult(false, $"Custom download engine order contains an unknown {GetDisplayName(engine)} quality.");

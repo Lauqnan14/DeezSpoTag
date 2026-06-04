@@ -258,15 +258,10 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
 
     private static string? FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value.Trim();
-            }
-        }
-
-        return null;
+        return values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .FirstOrDefault();
     }
 
     private static string? ReadString(JsonElement root, string pascalName, string camelName)
