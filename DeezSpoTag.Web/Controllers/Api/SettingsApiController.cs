@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using System.Globalization;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.RateLimiting;
 using DeezSpoTag.Web.Services;
@@ -123,6 +124,13 @@ namespace DeezSpoTag.Web.Controllers.Api
 
                 PreserveSensitiveFieldsIfRedacted(persisted, settings, platformAuth);
                 PreserveCriticalFieldsIfBlank(persisted, settings);
+                var engineOrderValidation = DownloadSourceOrder.ValidateDownloadEngineOrderSettings(settings.DownloadEngineOrder);
+                if (!engineOrderValidation.IsValid)
+                {
+                    return Ok(new { result = false, error = engineOrderValidation.Error });
+                }
+
+                settings.DownloadEngineOrder = DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(settings.DownloadEngineOrder);
                 await PersistAppleMusicPlatformTokensAsync(settings, platformAuth);
                 _settingsService.SaveSettings(settings);
                 await SyncUserPreferencesAsync(settings);

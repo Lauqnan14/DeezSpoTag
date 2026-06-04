@@ -1057,6 +1057,7 @@ public sealed class DownloadIntentService
             ? DownloadSourceOrder.CollapseAutoSourcesByService(
                 BuildFallbackPlanSources(autoSources, settings, engine, quality))
             : DownloadSourceOrder.ResolveEngineQualitySources(
+                settings,
                 engine,
                 quality,
                 strict: UseStrictQualityFallback(settings, engine, quality));
@@ -1833,10 +1834,10 @@ public sealed class DownloadIntentService
         }
 
         var autoSources = preparation.IsPodcastIntent
-            ? DownloadSourceOrder.ResolveEngineQualitySources(normalizedPreferredEngine, DownloadContentTypes.Podcast, strict: true)
+            ? DownloadSourceOrder.ResolveEngineQualitySources(settings, normalizedPreferredEngine, DownloadContentTypes.Podcast, strict: true)
             : DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
         autoSources = FilterAutoSourcesByAvailability(autoSources, availability, normalizedPreferredEngine);
-        autoSources = PrioritizeAutoSourcesByHealth(autoSources, intentRequestsAuto, normalizedPreferredEngine);
+        autoSources = PrioritizeAutoSourcesByHealth(autoSources, settings, intentRequestsAuto, normalizedPreferredEngine);
         var preferredEngine = ResolvePreferredEngine(normalizedPreferredEngine, intentRequestsAuto, appleOnlyRequired, preparation.IsPodcastIntent, autoSources);
         targetQuality = NormalizeTargetQuality(intent, settings, preferredEngine, targetQuality, explicitStereoRequest, useAtmosStereoDual);
         if (useAtmosStereoDual)
@@ -1917,6 +1918,7 @@ public sealed class DownloadIntentService
     {
         var selectedQuality = routing.TargetQuality ?? ResolvePreferredQuality(settings, ApplePlatform);
         var autoSources = DownloadSourceOrder.ResolveEngineQualitySources(
+            settings,
             ApplePlatform,
             selectedQuality,
             strict: UseStrictQualityFallback(settings, ApplePlatform, selectedQuality));
@@ -4430,10 +4432,11 @@ public sealed class DownloadIntentService
 
     private List<string> PrioritizeAutoSourcesByHealth(
         IEnumerable<string> sources,
+        DeezSpoTagSettings settings,
         bool intentRequestsAuto,
         string? normalizedPreferredEngine)
     {
-        if (intentRequestsAuto)
+        if (intentRequestsAuto || settings.DownloadEngineOrder?.Enabled == true)
         {
             return sources
                 .Where(source => !string.IsNullOrWhiteSpace(source))
@@ -4663,7 +4666,7 @@ public sealed class DownloadIntentService
     {
         if (!string.IsNullOrWhiteSpace(engine))
         {
-            planSources.AddRange(DownloadSourceOrder.ResolveEngineQualitySources(engine, requestedQuality, strict));
+            planSources.AddRange(DownloadSourceOrder.ResolveEngineQualitySources(settings, engine, requestedQuality, strict));
         }
 
         var seenEngines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -4683,7 +4686,7 @@ public sealed class DownloadIntentService
             var preferredQuality = string.IsNullOrWhiteSpace(decoded.Quality)
                 ? ResolvePreferredQuality(settings, decoded.Source)
                 : decoded.Quality;
-            planSources.AddRange(DownloadSourceOrder.ResolveEngineQualitySources(decoded.Source, preferredQuality, strict));
+            planSources.AddRange(DownloadSourceOrder.ResolveEngineQualitySources(settings, decoded.Source, preferredQuality, strict));
         }
     }
 
@@ -5113,6 +5116,7 @@ public sealed class DownloadIntentService
             intent.HasAtmos,
             selectedQuality);
         var autoSources = DownloadSourceOrder.ResolveEngineQualitySources(
+            settings,
             engine,
             selectedQuality,
             strict: UseStrictQualityFallback(settings, engine, selectedQuality));
@@ -5490,6 +5494,7 @@ public sealed class DownloadIntentService
             AllowCrossEngineFallback: false,
             UseAtmosStereoDual: false,
             AutoSources: DownloadSourceOrder.ResolveEngineQualitySources(
+                request.Settings,
                 ApplePlatform,
                 secondaryQuality,
                 strict: UseStrictQualityFallback(request.Settings, ApplePlatform, secondaryQuality)),

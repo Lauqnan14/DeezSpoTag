@@ -59,6 +59,7 @@ public class DeezSpoTagSettings
     public bool EnableQueuePreResolution { get; set; } = true;
     public int QueuePreResolutionWindow { get; set; } = 10;
     public int QueuePreResolutionRetryMinutes { get; set; } = 2;
+    public DownloadEngineOrderSettings DownloadEngineOrder { get; set; } = DownloadEngineOrderSettings.CreateDefault();
 
     // Lyrics preference + fallback
     public bool LyricsFallbackEnabled { get; set; } = true;
@@ -253,6 +254,87 @@ public class DeezSpoTagSettings
         var runningInContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
         return string.Equals(runningInContainer, "true", StringComparison.OrdinalIgnoreCase);
     }
+}
+
+public class DownloadEngineOrderSettings
+{
+    public bool Enabled { get; set; } = false;
+    public List<DownloadEngineOrderItem> Engines { get; set; } = new();
+
+    public static DownloadEngineOrderSettings CreateDefault()
+    {
+        return new DownloadEngineOrderSettings
+        {
+            Enabled = false,
+            Engines = new List<DownloadEngineOrderItem>
+            {
+                new()
+                {
+                    Engine = "qobuz",
+                    Enabled = true,
+                    Qualities = new List<DownloadEngineQualityItem>
+                    {
+                        new() { Quality = "27", Enabled = true },
+                        new() { Quality = "7", Enabled = true },
+                        new() { Quality = "6", Enabled = true }
+                    }
+                },
+                new()
+                {
+                    Engine = "tidal",
+                    Enabled = true,
+                    Qualities = new List<DownloadEngineQualityItem>
+                    {
+                        new() { Quality = "HI_RES_LOSSLESS", Enabled = true },
+                        new() { Quality = "LOSSLESS", Enabled = true }
+                    }
+                },
+                new()
+                {
+                    Engine = "apple",
+                    Enabled = true,
+                    Qualities = new List<DownloadEngineQualityItem>
+                    {
+                        new() { Quality = "ALAC", Enabled = true },
+                        new() { Quality = "AAC", Enabled = true }
+                    }
+                },
+                new()
+                {
+                    Engine = "amazon",
+                    Enabled = true,
+                    Qualities = new List<DownloadEngineQualityItem>
+                    {
+                        new() { Quality = "FLAC", Enabled = true }
+                    }
+                },
+                new()
+                {
+                    Engine = "deezer",
+                    Enabled = true,
+                    Qualities = new List<DownloadEngineQualityItem>
+                    {
+                        new() { Quality = "9", Enabled = true },
+                        new() { Quality = "3", Enabled = true },
+                        new() { Quality = "1", Enabled = true }
+                    }
+                }
+            }
+        };
+    }
+}
+
+public class DownloadEngineOrderItem
+{
+    public string Engine { get; set; } = string.Empty;
+    public bool Enabled { get; set; } = true;
+    public List<DownloadEngineQualityItem> Qualities { get; set; } = new();
+}
+
+public class DownloadEngineQualityItem
+{
+    public string Quality { get; set; } = string.Empty;
+    public bool Enabled { get; set; } = true;
 }
 
 public sealed class GenreTagAliasRule

@@ -25,6 +25,7 @@ public sealed class EngineFallbackCoordinatorParityTests
     private static readonly string[] ExpectedAutoSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "deezer|9" };
     private static readonly string[] ExpectedAutoPlusFallbackPlanSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "apple|ALAC", "qobuz|7" };
     private static readonly string[] ExpectedForcedDeezerFallbackSteps = { "deezer|9", "deezer|3", "deezer|1" };
+    private static readonly string[] ExpectedCustomFallbackSteps = { "apple|ALAC", "qobuz|6" };
     private static readonly string[] ExpectedCanonicalAutoRemainingSteps =
     {
         "qobuz|27",
@@ -95,6 +96,77 @@ public sealed class EngineFallbackCoordinatorParityTests
         var steps = BuildPlanSteps(new List<FallbackPlanStep>(), new List<string>(), settings);
 
         Assert.Equal(ExpectedForcedDeezerFallbackSteps, steps);
+    }
+
+    [Fact]
+    public void BuildPlanSteps_UsesCustomOrder_WhenPayloadHasNoPlan()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = true,
+                Engines = new List<DownloadEngineOrderItem>
+                {
+                    new()
+                    {
+                        Engine = "apple",
+                        Enabled = true,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "ALAC", Enabled = true },
+                            new() { Quality = "AAC", Enabled = false }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "qobuz",
+                        Enabled = true,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "27", Enabled = false },
+                            new() { Quality = "7", Enabled = false },
+                            new() { Quality = "6", Enabled = true }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "tidal",
+                        Enabled = false,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "HI_RES_LOSSLESS", Enabled = true },
+                            new() { Quality = "LOSSLESS", Enabled = true }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "amazon",
+                        Enabled = false,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "FLAC", Enabled = true }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "deezer",
+                        Enabled = false,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "9", Enabled = true },
+                            new() { Quality = "3", Enabled = true },
+                            new() { Quality = "1", Enabled = true }
+                        }
+                    }
+                }
+            }
+        };
+
+        var steps = BuildPlanSteps(new List<FallbackPlanStep>(), new List<string>(), settings);
+
+        Assert.Equal(ExpectedCustomFallbackSteps, steps);
     }
 
     [Fact]

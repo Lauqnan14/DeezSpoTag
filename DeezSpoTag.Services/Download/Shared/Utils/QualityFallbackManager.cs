@@ -66,6 +66,7 @@ public class QualityFallbackManager
 
         var available = options.Select(option => option.Value).ToList();
         var ordered = DownloadSourceOrder.ResolveEngineQualitySources(
+                settings,
                 normalized,
                 requestedQuality,
                 strict: !settings.FallbackBitrate)

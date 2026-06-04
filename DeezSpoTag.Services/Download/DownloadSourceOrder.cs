@@ -18,6 +18,7 @@ public static class DownloadSourceOrder
     public readonly record struct AutoSourceStep(string Source, string? Quality);
 
     private sealed record DownloadProfile(string Source, string Label, string? Quality, int? DeezerBitrate);
+    public sealed record DownloadEngineOrderValidationResult(bool IsValid, string? Error);
 
     // WARNING: Do not change this order and do not remove any items; fallback behavior depends on it.
     private static readonly DownloadProfile[] AutoPriority =
@@ -45,7 +46,7 @@ public static class DownloadSourceOrder
 
         if (service == AutoService)
         {
-            var firstAvailable = AutoPriority.FirstOrDefault(profile => IsSourceAvailable(profile.Source));
+            var firstAvailable = ResolveConfiguredProfiles(settings).FirstOrDefault(profile => IsSourceAvailable(profile.Source));
             return firstAvailable?.Source ?? DeezerSource;
         }
 
@@ -66,12 +67,13 @@ public static class DownloadSourceOrder
         var forcedService = settings.Service?.Trim().ToLowerInvariant();
         if (!string.IsNullOrWhiteSpace(forcedService) && forcedService != AutoService)
         {
-            return CollapseAutoSourcesByService(BuildAutoSources(
+            return CollapseAutoSourcesByService(BuildConfiguredAutoSources(
+                settings,
                 includeDeezer,
                 profile => string.Equals(profile.Source, forcedService, StringComparison.OrdinalIgnoreCase)));
         }
 
-        return CollapseAutoSourcesByService(BuildAutoSources(includeDeezer));
+        return CollapseAutoSourcesByService(BuildConfiguredAutoSources(settings, includeDeezer));
     }
 
     public static List<string> ResolveQualityAutoSources(
@@ -81,7 +83,8 @@ public static class DownloadSourceOrder
     {
         var forcedService = settings.Service?.Trim().ToLowerInvariant();
         var includeAtmos = string.Equals(targetQuality, "atmos", StringComparison.OrdinalIgnoreCase);
-        var sources = BuildAutoSources(
+        var sources = BuildConfiguredAutoSources(
+            settings,
             includeDeezer,
             profile => ShouldIncludeQualityProfile(profile, forcedService, includeAtmos));
 
@@ -106,13 +109,22 @@ public static class DownloadSourceOrder
 
     public static List<string> ResolveEngineQualitySources(string engine, string? requestedQuality, bool strict)
     {
+        return ResolveEngineQualitySources(null, engine, requestedQuality, strict);
+    }
+
+    public static List<string> ResolveEngineQualitySources(
+        DeezSpoTagSettings? settings,
+        string engine,
+        string? requestedQuality,
+        bool strict)
+    {
         var normalized = engine?.Trim().ToLowerInvariant() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(normalized))
         {
             return new List<string>();
         }
 
-        var engineQualities = AutoPriority
+        var engineQualities = ResolveConfiguredProfiles(settings)
             .Where(profile => string.Equals(profile.Source, normalized, StringComparison.OrdinalIgnoreCase))
             .Select(profile => profile.Quality)
             .Where(quality => !string.IsNullOrWhiteSpace(quality))
@@ -155,6 +167,161 @@ public static class DownloadSourceOrder
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(quality => EncodeAutoSource(normalized, quality))
             .ToList();
+    }
+
+    public static DownloadEngineOrderSettings NormalizeDownloadEngineOrderSettings(DownloadEngineOrderSettings? configured)
+    {
+        var defaults = DownloadEngineOrderSettings.CreateDefault();
+        if (configured == null)
+        {
+            return defaults;
+        }
+
+        var normalized = new DownloadEngineOrderSettings
+        {
+            Enabled = configured.Enabled,
+            Engines = new List<DownloadEngineOrderItem>()
+        };
+
+        var defaultByEngine = defaults.Engines.ToDictionary(
+            item => NormalizeEngine(item.Engine),
+            item => item,
+            StringComparer.OrdinalIgnoreCase);
+        var seenEngines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var incoming in configured.Engines ?? new List<DownloadEngineOrderItem>())
+        {
+            var engine = NormalizeEngine(incoming.Engine);
+            if (!defaultByEngine.TryGetValue(engine, out var defaultEngine) || !seenEngines.Add(engine))
+            {
+                continue;
+            }
+
+            normalized.Engines.Add(new DownloadEngineOrderItem
+            {
+                Engine = engine,
+                Enabled = incoming.Enabled,
+                Qualities = NormalizeQualityItems(engine, incoming.Qualities, defaultEngine.Qualities)
+            });
+        }
+
+        foreach (var defaultEngine in defaults.Engines)
+        {
+            var engine = NormalizeEngine(defaultEngine.Engine);
+            if (!seenEngines.Add(engine))
+            {
+                continue;
+            }
+
+            normalized.Engines.Add(CloneEngineOrderItem(defaultEngine));
+        }
+
+        return normalized;
+    }
+
+    public static DownloadEngineOrderValidationResult ValidateDownloadEngineOrderSettings(DownloadEngineOrderSettings? configured)
+    {
+        if (configured?.Enabled == true)
+        {
+            var rawValidation = ValidateRawDownloadEngineOrderSettings(configured);
+            if (!rawValidation.IsValid)
+            {
+                return rawValidation;
+            }
+        }
+
+        var normalized = NormalizeDownloadEngineOrderSettings(configured);
+        if (!normalized.Enabled)
+        {
+            return new DownloadEngineOrderValidationResult(true, null);
+        }
+
+        var enabledEngines = normalized.Engines.Where(engine => engine.Enabled).ToList();
+        if (enabledEngines.Count == 0)
+        {
+            return new DownloadEngineOrderValidationResult(false, "Custom download engine order requires at least one enabled engine.");
+        }
+
+        foreach (var engine in enabledEngines)
+        {
+            if (engine.Qualities == null || !engine.Qualities.Any(quality => quality.Enabled))
+            {
+                return new DownloadEngineOrderValidationResult(
+                    false,
+                    $"Custom download engine order requires at least one enabled quality for {GetDisplayName(engine.Engine)}.");
+            }
+        }
+
+        return new DownloadEngineOrderValidationResult(true, null);
+    }
+
+    private static DownloadEngineOrderValidationResult ValidateRawDownloadEngineOrderSettings(DownloadEngineOrderSettings configured)
+    {
+        if (configured.Engines == null || configured.Engines.Count == 0)
+        {
+            return new DownloadEngineOrderValidationResult(false, "Custom download engine order requires configured engines.");
+        }
+
+        var defaults = DownloadEngineOrderSettings.CreateDefault();
+        var defaultByEngine = defaults.Engines.ToDictionary(
+            engine => NormalizeEngine(engine.Engine),
+            engine => engine,
+            StringComparer.OrdinalIgnoreCase);
+        var seenEngines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var engine in configured.Engines)
+        {
+            var normalizedEngine = NormalizeEngine(engine.Engine);
+            if (!defaultByEngine.TryGetValue(normalizedEngine, out var defaultEngine))
+            {
+                return new DownloadEngineOrderValidationResult(false, "Custom download engine order contains an unknown engine.");
+            }
+
+            if (!seenEngines.Add(normalizedEngine))
+            {
+                return new DownloadEngineOrderValidationResult(false, $"Custom download engine order contains duplicate {GetDisplayName(normalizedEngine)} entries.");
+            }
+
+            var qualityValidation = ValidateRawQualityItems(normalizedEngine, engine.Qualities, defaultEngine.Qualities);
+            if (!qualityValidation.IsValid)
+            {
+                return qualityValidation;
+            }
+        }
+
+        return new DownloadEngineOrderValidationResult(true, null);
+    }
+
+    private static DownloadEngineOrderValidationResult ValidateRawQualityItems(
+        string engine,
+        List<DownloadEngineQualityItem>? configuredQualities,
+        IReadOnlyList<DownloadEngineQualityItem> defaultQualities)
+    {
+        if (configuredQualities == null || configuredQualities.Count == 0)
+        {
+            return new DownloadEngineOrderValidationResult(false, $"Custom download engine order requires qualities for {GetDisplayName(engine)}.");
+        }
+
+        var validQualities = new HashSet<string>(
+            defaultQualities.Select(quality => NormalizeQuality(engine, quality.Quality)),
+            StringComparer.OrdinalIgnoreCase);
+        var seenQualities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var quality in configuredQualities)
+        {
+            var normalizedQuality = NormalizeQuality(engine, quality.Quality);
+            if (!validQualities.Contains(normalizedQuality))
+            {
+                return new DownloadEngineOrderValidationResult(false, $"Custom download engine order contains an unknown {GetDisplayName(engine)} quality.");
+            }
+
+            if (!seenQualities.Add(normalizedQuality))
+            {
+                return new DownloadEngineOrderValidationResult(false, $"Custom download engine order contains duplicate {GetDisplayName(engine)} quality entries.");
+            }
+        }
+
+        return new DownloadEngineOrderValidationResult(true, null);
     }
 
     public static int ResolveDeezerBitrate(DeezSpoTagSettings settings, int requestedBitrate)
@@ -208,6 +375,64 @@ public static class DownloadSourceOrder
         return sources;
     }
 
+    private static List<string> BuildConfiguredAutoSources(
+        DeezSpoTagSettings settings,
+        bool includeDeezer,
+        Func<DownloadProfile, bool>? profileFilter = null)
+    {
+        var profiles = ResolveConfiguredProfiles(settings);
+        var sources = new List<string>();
+        foreach (var profile in profiles)
+        {
+            if (!ShouldIncludeProfile(includeDeezer, profile, profileFilter))
+            {
+                continue;
+            }
+
+            sources.Add(EncodeAutoSource(profile.Source, profile.Quality));
+        }
+
+        return sources;
+    }
+
+    private static IReadOnlyList<DownloadProfile> ResolveConfiguredProfiles(DeezSpoTagSettings? settings)
+    {
+        if (settings?.DownloadEngineOrder?.Enabled != true)
+        {
+            return AutoPriority;
+        }
+
+        var normalized = NormalizeDownloadEngineOrderSettings(settings.DownloadEngineOrder);
+        var profiles = new List<DownloadProfile>();
+        foreach (var engine in normalized.Engines)
+        {
+            if (!engine.Enabled)
+            {
+                continue;
+            }
+
+            foreach (var quality in engine.Qualities)
+            {
+                if (!quality.Enabled)
+                {
+                    continue;
+                }
+
+                var source = NormalizeEngine(engine.Engine);
+                var normalizedQuality = NormalizeQuality(source, quality.Quality);
+                var profile = AutoPriority.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Source, source, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(candidate.Quality, normalizedQuality, StringComparison.OrdinalIgnoreCase));
+                if (profile != null)
+                {
+                    profiles.Add(profile);
+                }
+            }
+        }
+
+        return profiles;
+    }
+
     private static bool ShouldIncludeProfile(
         bool includeDeezer,
         DownloadProfile profile,
@@ -224,6 +449,105 @@ public static class DownloadSourceOrder
         }
 
         return profileFilter?.Invoke(profile) ?? true;
+    }
+
+    private static List<DownloadEngineQualityItem> NormalizeQualityItems(
+        string engine,
+        IEnumerable<DownloadEngineQualityItem>? configuredQualities,
+        IReadOnlyList<DownloadEngineQualityItem> defaultQualities)
+    {
+        var defaultQualityByValue = defaultQualities.ToDictionary(
+            item => NormalizeQuality(engine, item.Quality),
+            item => item,
+            StringComparer.OrdinalIgnoreCase);
+        var seenQualities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalized = new List<DownloadEngineQualityItem>();
+
+        foreach (var incoming in configuredQualities ?? Enumerable.Empty<DownloadEngineQualityItem>())
+        {
+            var quality = NormalizeQuality(engine, incoming.Quality);
+            if (!defaultQualityByValue.TryGetValue(quality, out _) || !seenQualities.Add(quality))
+            {
+                continue;
+            }
+
+            normalized.Add(new DownloadEngineQualityItem
+            {
+                Quality = quality,
+                Enabled = incoming.Enabled
+            });
+        }
+
+        foreach (var defaultQuality in defaultQualities)
+        {
+            var quality = NormalizeQuality(engine, defaultQuality.Quality);
+            if (!seenQualities.Add(quality))
+            {
+                continue;
+            }
+
+            normalized.Add(new DownloadEngineQualityItem
+            {
+                Quality = quality,
+                Enabled = defaultQuality.Enabled
+            });
+        }
+
+        return normalized;
+    }
+
+    private static DownloadEngineOrderItem CloneEngineOrderItem(DownloadEngineOrderItem source)
+    {
+        return new DownloadEngineOrderItem
+        {
+            Engine = NormalizeEngine(source.Engine),
+            Enabled = source.Enabled,
+            Qualities = source.Qualities
+                .Select(quality => new DownloadEngineQualityItem
+                {
+                    Quality = NormalizeQuality(source.Engine, quality.Quality),
+                    Enabled = quality.Enabled
+                })
+                .ToList()
+        };
+    }
+
+    private static string NormalizeEngine(string? engine)
+    {
+        var normalized = engine?.Trim().ToLowerInvariant() ?? string.Empty;
+        return normalized switch
+        {
+            "applemusic" or "apple-music" or "apple_music" => AppleSource,
+            "amazonmusic" or "amazon-music" or "amazon_music" => AmazonSource,
+            _ => normalized
+        };
+    }
+
+    private static string NormalizeQuality(string? engine, string? quality)
+    {
+        var source = NormalizeEngine(engine);
+        var normalized = quality?.Trim() ?? string.Empty;
+        if (string.Equals(source, TidalSource, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(source, AppleSource, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(source, AmazonSource, StringComparison.OrdinalIgnoreCase))
+        {
+            return normalized.ToUpperInvariant();
+        }
+
+        return normalized;
+    }
+
+    private static string GetDisplayName(string? engine)
+    {
+        return NormalizeEngine(engine) switch
+        {
+            QobuzSource => "Qobuz",
+            TidalSource => "Tidal",
+            AppleSource => "Apple Music",
+            AmazonSource => "Amazon Music",
+            DeezerSource => "Deezer",
+            _ => "the selected engine"
+        };
     }
 
     private static bool ShouldIncludeQualityProfile(

@@ -135,6 +135,77 @@
     user-select: none;
 }
 
+.engine-order-panel {
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--bg-primary);
+    margin-bottom: 20px;
+}
+
+.engine-order-list {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.engine-order-item {
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    padding: 12px;
+}
+
+.engine-order-item.dragging {
+    opacity: 0.65;
+}
+
+.engine-order-header {
+    display: grid;
+    grid-template-columns: auto auto 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+}
+
+.engine-order-handle {
+    color: var(--text-muted);
+    cursor: grab;
+    font-family: 'Material Icons';
+    font-size: 20px;
+}
+
+.engine-order-title {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.engine-order-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.engine-order-actions button {
+    min-width: 54px;
+    height: 30px;
+    border-radius: 6px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.engine-quality-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+    padding-left: 32px;
+}
+
+.engine-quality-list .checkbox-group {
+    margin-bottom: 0;
+}
+
 #livePreviewIngest + label,
 #enableSignalAnalysis + label {
     color: var(--text-primary);
@@ -678,6 +749,7 @@
                             <button type="button" class="dropdown-trigger" id="downloadSourceTrigger">Deezer</button>
                             <div class="dropdown-menu" id="downloadSourceMenu">
                                 <button type="button" class="dropdown-option" data-value="auto">Auto</button>
+                                <button type="button" class="dropdown-option" data-value="custom">Custom</button>
                                 <button type="button" class="dropdown-option" data-value="amazon">Amazon Music</button>
                                 <button type="button" class="dropdown-option" data-value="apple">Apple Music</button>
                                 <button type="button" class="dropdown-option" data-value="deezer">Deezer</button>
@@ -762,6 +834,12 @@
                         </div>
                         <div class="warning-text" style="margin-top: 12px;">Stereo uses the selected source and its configured quality automatically.</div>
                     </div>
+                </div>
+                <div class="engine-order-panel" id="downloadEngineOrderPanel" style="display: none;">
+                    <input type="hidden" id="downloadEngineOrderEnabled" value="false">
+                    <div class="form-label">Custom download engine order</div>
+                    <div class="warning-text">When enabled, only checked engines and checked qualities are used for automatic audio fallback. Existing queued items keep the order stored when they were queued.</div>
+                    <div class="engine-order-list" id="downloadEngineOrderList"></div>
                 </div>
                 <div class="form-group">
                     <label for="queueOrder">Queue Order</label>
@@ -1380,6 +1458,54 @@ const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize
             kvp => kvp.Key,
             kvp => kvp.Value.Select(option => new { value = option.Value, label = option.Label }).ToList(),
             StringComparer.OrdinalIgnoreCase)));
+const defaultDownloadEngineOrder = [
+    {
+        engine: 'qobuz',
+        label: 'Qobuz',
+        enabled: true,
+        qualities: [
+            { quality: '27', label: 'Hi-Res 24/96+', enabled: true },
+            { quality: '7', label: 'FLAC 24-bit', enabled: true },
+            { quality: '6', label: 'FLAC 16-bit', enabled: true }
+        ]
+    },
+    {
+        engine: 'tidal',
+        label: 'Tidal',
+        enabled: true,
+        qualities: [
+            { quality: 'HI_RES_LOSSLESS', label: 'Hi-Res Lossless', enabled: true },
+            { quality: 'LOSSLESS', label: 'Lossless', enabled: true }
+        ]
+    },
+    {
+        engine: 'apple',
+        label: 'Apple Music',
+        enabled: true,
+        qualities: [
+            { quality: 'ALAC', label: 'ALAC', enabled: true },
+            { quality: 'AAC', label: 'AAC', enabled: true }
+        ]
+    },
+    {
+        engine: 'amazon',
+        label: 'Amazon Music',
+        enabled: true,
+        qualities: [
+            { quality: 'FLAC', label: 'FLAC', enabled: true }
+        ]
+    },
+    {
+        engine: 'deezer',
+        label: 'Deezer',
+        enabled: true,
+        qualities: [
+            { quality: '9', label: 'FLAC', enabled: true },
+            { quality: '3', label: 'MP3 320kbps', enabled: true },
+            { quality: '1', label: 'MP3 128kbps', enabled: true }
+        ]
+    }
+];
 
 window.DeezSpoTagRevealMaterialIconsWhenReady('.settings-page.material-icons-pending');
 
@@ -1983,6 +2109,7 @@ function updateQualityDropdownVisibility(source, autoOpen) {
     if (deezerGroup) {
         deezerGroup.style.display = source === 'deezer' ? 'block' : 'none';
     }
+    updateCustomEngineOrderVisibility(source);
     if (fallbackQuality) {
         fallbackQuality.removeAttribute('title');
         if (fallbackQualityLabel) {
@@ -2001,6 +2128,193 @@ function updateQualityDropdownVisibility(source, autoOpen) {
     } else if (source === 'apple') {
         document.getElementById('applePreferredAudioProfileMenu')?.classList.add('open');
     }
+}
+
+function updateCustomEngineOrderVisibility(source) {
+    const panel = document.getElementById('downloadEngineOrderPanel');
+    const enabled = document.getElementById('downloadEngineOrderEnabled');
+    const isCustom = String(source || '').toLowerCase() === 'custom';
+    if (panel) {
+        panel.style.display = isCustom ? 'block' : 'none';
+    }
+    if (enabled) {
+        enabled.value = isCustom ? 'true' : 'false';
+    }
+}
+
+function normalizeDownloadEngineOrderConfig(config) {
+    const incoming = config && typeof config === 'object' ? config : {};
+    const incomingEngines = Array.isArray(incoming.engines) ? incoming.engines : [];
+    const byEngine = new Map(defaultDownloadEngineOrder.map(engine => [engine.engine, engine]));
+    const normalized = {
+        enabled: incoming.enabled === true,
+        engines: []
+    };
+    const seenEngines = new Set();
+
+    incomingEngines.forEach(engineConfig => {
+        const engineKey = String(engineConfig?.engine || '').trim().toLowerCase();
+        const defaultEngine = byEngine.get(engineKey);
+        if (!defaultEngine || seenEngines.has(engineKey)) {
+            return;
+        }
+
+        seenEngines.add(engineKey);
+        normalized.engines.push(normalizeDownloadEngineOrderItem(engineConfig, defaultEngine));
+    });
+
+    defaultDownloadEngineOrder.forEach(defaultEngine => {
+        if (seenEngines.has(defaultEngine.engine)) {
+            return;
+        }
+
+        normalized.engines.push(normalizeDownloadEngineOrderItem(defaultEngine, defaultEngine));
+    });
+
+    return normalized;
+}
+
+function normalizeDownloadEngineOrderItem(engineConfig, defaultEngine) {
+    const incomingQualities = Array.isArray(engineConfig?.qualities) ? engineConfig.qualities : [];
+    const byQuality = new Map(defaultEngine.qualities.map(quality => [quality.quality.toLowerCase(), quality]));
+    const seenQualities = new Set();
+    const qualities = [];
+
+    incomingQualities.forEach(qualityConfig => {
+        const qualityKey = String(qualityConfig?.quality || '').trim();
+        const defaultQuality = byQuality.get(qualityKey.toLowerCase());
+        if (!defaultQuality || seenQualities.has(defaultQuality.quality.toLowerCase())) {
+            return;
+        }
+
+        seenQualities.add(defaultQuality.quality.toLowerCase());
+        qualities.push({
+            quality: defaultQuality.quality,
+            label: defaultQuality.label,
+            enabled: qualityConfig.enabled !== false
+        });
+    });
+
+    defaultEngine.qualities.forEach(defaultQuality => {
+        if (seenQualities.has(defaultQuality.quality.toLowerCase())) {
+            return;
+        }
+
+        qualities.push({ ...defaultQuality });
+    });
+
+    return {
+        engine: defaultEngine.engine,
+        label: defaultEngine.label,
+        enabled: engineConfig?.enabled !== false,
+        qualities
+    };
+}
+
+function renderDownloadEngineOrder(config) {
+    const list = document.getElementById('downloadEngineOrderList');
+    const enabled = document.getElementById('downloadEngineOrderEnabled');
+    if (!list || !enabled) {
+        return;
+    }
+
+    const normalized = normalizeDownloadEngineOrderConfig(config);
+    enabled.value = normalized.enabled ? 'true' : 'false';
+    list.innerHTML = '';
+
+    normalized.engines.forEach(engine => {
+        const row = document.createElement('div');
+        row.className = 'engine-order-item';
+        row.draggable = true;
+        row.dataset.engine = engine.engine;
+        row.innerHTML = `
+            <div class="engine-order-header">
+                <span class="engine-order-handle" aria-hidden="true">drag_indicator</span>
+                <input type="checkbox" class="engine-order-enabled" ${engine.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)}">
+                <span class="engine-order-title">${escapeHtml(engine.label)}</span>
+                <div class="engine-order-actions">
+                    <button type="button" class="engine-order-up" title="Move up" aria-label="Move ${escapeHtml(engine.label)} up">Up</button>
+                    <button type="button" class="engine-order-down" title="Move down" aria-label="Move ${escapeHtml(engine.label)} down">Down</button>
+                </div>
+            </div>
+            <div class="engine-quality-list">
+                ${engine.qualities.map(quality => `
+                    <div class="checkbox-group" data-quality="${escapeHtml(quality.quality)}">
+                        <input type="checkbox" class="engine-quality-enabled" ${quality.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)} ${escapeHtml(quality.label)}">
+                        <label>${escapeHtml(quality.label)}</label>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+        list.appendChild(row);
+    });
+
+    bindDownloadEngineOrderControls(list);
+}
+
+function bindDownloadEngineOrderControls(list) {
+    let dragged = null;
+    list.querySelectorAll('.engine-order-item').forEach(item => {
+        item.addEventListener('dragstart', () => {
+            dragged = item;
+            item.classList.add('dragging');
+        });
+        item.addEventListener('dragend', () => {
+            item.classList.remove('dragging');
+            dragged = null;
+        });
+        item.addEventListener('dragover', event => {
+            event.preventDefault();
+            if (!dragged || dragged === item) {
+                return;
+            }
+
+            const rect = item.getBoundingClientRect();
+            const before = event.clientY < rect.top + rect.height / 2;
+            list.insertBefore(dragged, before ? item : item.nextSibling);
+        });
+
+        item.querySelector('.engine-order-up')?.addEventListener('click', () => {
+            const previous = item.previousElementSibling;
+            if (previous) {
+                list.insertBefore(item, previous);
+            }
+        });
+
+        item.querySelector('.engine-order-down')?.addEventListener('click', () => {
+            const next = item.nextElementSibling;
+            if (next) {
+                list.insertBefore(next, item);
+            }
+        });
+    });
+}
+
+function collectDownloadEngineOrder() {
+    const source = document.getElementById('downloadSource')?.value || 'deezer';
+    const enabled = source === 'custom';
+    const engines = Array.from(document.querySelectorAll('#downloadEngineOrderList .engine-order-item'))
+        .map(item => ({
+            engine: item.dataset.engine || '',
+            enabled: item.querySelector('.engine-order-enabled')?.checked === true,
+            qualities: Array.from(item.querySelectorAll('.engine-quality-list .checkbox-group'))
+                .map(qualityRow => ({
+                    quality: qualityRow.dataset.quality || '',
+                    enabled: qualityRow.querySelector('.engine-quality-enabled')?.checked === true
+                }))
+        }))
+        .filter(engine => engine.engine);
+
+    return normalizeDownloadEngineOrderConfig({ enabled, engines });
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function initTabPreferenceToggle() {
@@ -3233,7 +3547,9 @@ function loadSettings(settings) {
     setFieldValue('illegalCharacterReplacer', settings.illegalCharacterReplacer);
     
     setFieldValue('queueOrder', settings.queueOrder || 'fifo');
-    setFieldValue('downloadSource', settings.service || 'deezer');
+    const loadedDownloadEngineOrder = settings.downloadEngineOrder || settings.DownloadEngineOrder;
+    const loadedDownloadSource = loadedDownloadEngineOrder?.enabled === true ? 'custom' : (settings.service || 'deezer');
+    setFieldValue('downloadSource', loadedDownloadSource);
     setCheckboxValue('preferAlbumLayoutForPlaylists', settings.preferAlbumLayoutForPlaylists);
     setMaxBitrateValue(settings.maxBitrate);
     setCheckboxValue('fallbackBitrate', settings.fallbackBitrate);
@@ -3241,6 +3557,8 @@ function loadSettings(settings) {
     setCheckboxValue('strictSpotifyDeezerMode', settings.strictSpotifyDeezerMode ?? true);
     setCheckboxValue('autoMaxBitrate', settings.autoMaxBitrate);
     setCheckboxValue('logErrors', settings.logErrors);
+    renderDownloadEngineOrder(loadedDownloadEngineOrder);
+    updateCustomEngineOrderVisibility(loadedDownloadSource);
     setFieldValue('maxConcurrentDownloads', settings.maxConcurrentDownloads);
     setCheckboxValue('realTime', settings.realTime);
     setFieldValue('realTimeMultiplier', settings.realTimeMultiplier);
@@ -3534,6 +3852,8 @@ function collectFormData() {
     );
     const baseVideo = baseSettings.video || {};
     const baseTags = baseSettings.tags || {};
+    const selectedDownloadSource = getValue('downloadSource', 'deezer');
+    const persistedDownloadService = selectedDownloadSource === 'custom' ? 'auto' : selectedDownloadSource;
     const formData = {
         downloadLocation: getValue('downloadLocation'),
 
@@ -3557,7 +3877,7 @@ function collectFormData() {
         illegalCharacterReplacer: getValue('illegalCharacterReplacer', baseSettings.illegalCharacterReplacer ?? ''),
 
         queueOrder: getValue('queueOrder', 'fifo'),
-        service: getValue('downloadSource', 'deezer'),
+        service: persistedDownloadService,
         preferAlbumLayoutForPlaylists: getChecked('preferAlbumLayoutForPlaylists', baseSettings.preferAlbumLayoutForPlaylists ?? true),
         maxBitrate: getNumber('maxBitrate', baseSettings.maxBitrate ?? 9),
         feelingLucky: baseSettings.feelingLucky ?? false,
@@ -3632,6 +3952,7 @@ function collectFormData() {
         tidalQuality: getValue('multisource-tidalQuality', baseSettings.tidalQuality || 'HI_RES_LOSSLESS'),
         qobuzQuality: getValue('multisource-qobuzQuality', baseSettings.qobuzQuality || '27'),
         strictEngineQuality: false,
+        downloadEngineOrder: collectDownloadEngineOrder(),
 
         appleMusic: {
             storefront: getValue('appleStorefront', baseApple.storefront || 'us'),

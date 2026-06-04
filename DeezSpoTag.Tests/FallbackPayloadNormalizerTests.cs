@@ -19,6 +19,7 @@ public sealed class FallbackPayloadNormalizerTests
     private static readonly string[] ExpectedAppleAtmosSource = { "apple|ATMOS" };
     private static readonly string[] ExpectedAutoSourcePreferred = { "deezer|9", "tidal|LOSSLESS" };
     private static readonly string[] ExpectedCanonicalSources = { "qobuz|27", "tidal|LOSSLESS" };
+    private static readonly string[] ExpectedCustomRecoveredSources = { "apple|ALAC", "qobuz|6" };
 
     [Fact]
     public void ResolveCanonicalState_UsesSingleAppleVideoStep_ForVideoPayload()
@@ -168,6 +169,80 @@ public sealed class FallbackPayloadNormalizerTests
         Assert.Contains("tidal|HI_RES_LOSSLESS", state.AutoSources);
         Assert.Contains("apple|ALAC", state.AutoSources);
         Assert.Contains("deezer|9", state.AutoSources);
+    }
+
+    [Fact]
+    public void ResolveCanonicalState_UsesCustomOrder_WhenRebuildingMissingAutoSources()
+    {
+        var item = CreateQueueItem(engine: "apple");
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "auto",
+            DownloadEngineOrder = new DownloadEngineOrderSettings
+            {
+                Enabled = true,
+                Engines = new List<DownloadEngineOrderItem>
+                {
+                    new()
+                    {
+                        Engine = "apple",
+                        Enabled = true,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "ALAC", Enabled = true },
+                            new() { Quality = "AAC", Enabled = false }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "qobuz",
+                        Enabled = true,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "27", Enabled = false },
+                            new() { Quality = "7", Enabled = false },
+                            new() { Quality = "6", Enabled = true }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "tidal",
+                        Enabled = false,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "HI_RES_LOSSLESS", Enabled = true },
+                            new() { Quality = "LOSSLESS", Enabled = true }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "amazon",
+                        Enabled = false,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "FLAC", Enabled = true }
+                        }
+                    },
+                    new()
+                    {
+                        Engine = "deezer",
+                        Enabled = false,
+                        Qualities = new List<DownloadEngineQualityItem>
+                        {
+                            new() { Quality = "9", Enabled = true },
+                            new() { Quality = "3", Enabled = true },
+                            new() { Quality = "1", Enabled = true }
+                        }
+                    }
+                }
+            }
+        };
+
+        var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, settings, new JsonObject());
+
+        Assert.Equal(ExpectedCustomRecoveredSources, state.AutoSources);
+        Assert.Equal("apple", state.FirstStep.Source);
+        Assert.Equal("ALAC", state.FirstStep.Quality);
     }
 
     [Fact]

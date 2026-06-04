@@ -1,6 +1,7 @@
 
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Configuration;
@@ -603,6 +604,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         EnsureNestedSettings(settings, fixes);
         NormalizeSpotifySettings(settings, defaultSettings, fixes);
         NormalizeDownloadExecutionSettings(settings, defaultSettings, fixes);
+        NormalizeDownloadEngineOrderSettings(settings, fixes);
         NormalizeWatchSettings(settings, defaultSettings, fixes);
         NormalizeRegionalAndLyricsSettings(settings, defaultSettings, fixes);
         EnsureApiToken(settings, fixes);
@@ -714,6 +716,12 @@ public class DeezSpoTagSettingsService : ISettingsService
             () => settings.MultiQuality = new DeezSpoTag.Core.Models.Settings.MultiQualityDownloadSettings(),
             fixes,
             nameof(settings.MultiQuality));
+
+        ApplyFixIf(
+            settings.DownloadEngineOrder == null,
+            () => settings.DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault(),
+            fixes,
+            nameof(settings.DownloadEngineOrder));
     }
 
     private static void NormalizeSpotifySettings(
@@ -811,6 +819,58 @@ public class DeezSpoTagSettingsService : ISettingsService
             () => settings.RetryDelayIncrease = defaultSettings.RetryDelayIncrease,
             fixes,
             nameof(settings.RetryDelayIncrease));
+    }
+
+    private static void NormalizeDownloadEngineOrderSettings(
+        DeezSpoTagSettings settings,
+        SettingsFixTracker fixes)
+    {
+        var normalized = DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(settings.DownloadEngineOrder);
+        if (!AreDownloadEngineOrderSettingsEqual(settings.DownloadEngineOrder, normalized))
+        {
+            settings.DownloadEngineOrder = normalized;
+            fixes.Mark(nameof(settings.DownloadEngineOrder));
+        }
+    }
+
+    private static bool AreDownloadEngineOrderSettingsEqual(
+        DownloadEngineOrderSettings? left,
+        DownloadEngineOrderSettings? right)
+    {
+        if (left == null || right == null)
+        {
+            return left == right;
+        }
+
+        if (left.Enabled != right.Enabled || left.Engines.Count != right.Engines.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < left.Engines.Count; i++)
+        {
+            var leftEngine = left.Engines[i];
+            var rightEngine = right.Engines[i];
+            if (!string.Equals(leftEngine.Engine, rightEngine.Engine, StringComparison.OrdinalIgnoreCase)
+                || leftEngine.Enabled != rightEngine.Enabled
+                || leftEngine.Qualities.Count != rightEngine.Qualities.Count)
+            {
+                return false;
+            }
+
+            for (var q = 0; q < leftEngine.Qualities.Count; q++)
+            {
+                var leftQuality = leftEngine.Qualities[q];
+                var rightQuality = rightEngine.Qualities[q];
+                if (!string.Equals(leftQuality.Quality, rightQuality.Quality, StringComparison.OrdinalIgnoreCase)
+                    || leftQuality.Enabled != rightQuality.Enabled)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private static void NormalizeWatchSettings(

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
 
@@ -16,6 +17,7 @@ public sealed class QueueSourceSettingsSnapshot
     public string? ApplePreferredAudioProfile { get; set; }
     public bool? FallbackBitrate { get; set; }
     public bool? StrictEngineQuality { get; set; }
+    public DownloadEngineOrderSettings? DownloadEngineOrder { get; set; }
 
     public bool HasValues =>
         !string.IsNullOrWhiteSpace(Service)
@@ -24,7 +26,8 @@ public sealed class QueueSourceSettingsSnapshot
         || !string.IsNullOrWhiteSpace(QobuzQuality)
         || !string.IsNullOrWhiteSpace(ApplePreferredAudioProfile)
         || FallbackBitrate.HasValue
-        || StrictEngineQuality.HasValue;
+        || StrictEngineQuality.HasValue
+        || DownloadEngineOrder != null;
 
     public static QueueSourceSettingsSnapshot Capture(DeezSpoTagSettings? settings)
     {
@@ -37,7 +40,8 @@ public sealed class QueueSourceSettingsSnapshot
             QobuzQuality = NormalizeString(settings.QobuzQuality),
             ApplePreferredAudioProfile = NormalizeString(settings.AppleMusic?.PreferredAudioProfile),
             FallbackBitrate = settings.FallbackBitrate,
-            StrictEngineQuality = settings.StrictEngineQuality
+            StrictEngineQuality = settings.StrictEngineQuality,
+            DownloadEngineOrder = CloneDownloadEngineOrder(settings.DownloadEngineOrder)
         };
     }
 
@@ -54,6 +58,9 @@ public sealed class QueueSourceSettingsSnapshot
             QobuzQuality = QobuzQuality ?? fallback.QobuzQuality,
             FallbackBitrate = FallbackBitrate ?? fallback.FallbackBitrate,
             StrictEngineQuality = StrictEngineQuality ?? fallback.StrictEngineQuality,
+            DownloadEngineOrder = DownloadEngineOrder == null
+                ? fallback.DownloadEngineOrder
+                : CloneDownloadEngineOrder(DownloadEngineOrder),
             AppleMusic = new AppleMusicSettings
             {
                 PreferredAudioProfile = ApplePreferredAudioProfile ?? fallbackApple.PreferredAudioProfile
@@ -82,10 +89,34 @@ public sealed class QueueSourceSettingsSnapshot
             QobuzQuality = ReadString(snapshotObj, "QobuzQuality", "qobuzQuality"),
             ApplePreferredAudioProfile = ReadString(snapshotObj, "ApplePreferredAudioProfile", "applePreferredAudioProfile"),
             FallbackBitrate = ReadBool(snapshotObj, "FallbackBitrate", "fallbackBitrate"),
-            StrictEngineQuality = ReadBool(snapshotObj, "StrictEngineQuality", "strictEngineQuality")
+            StrictEngineQuality = ReadBool(snapshotObj, "StrictEngineQuality", "strictEngineQuality"),
+            DownloadEngineOrder = ReadDownloadEngineOrder(snapshotObj)
         };
 
         return snapshot.HasValues ? snapshot : null;
+    }
+
+    private static DownloadEngineOrderSettings? ReadDownloadEngineOrder(JsonObject obj)
+    {
+        var node = obj["DownloadEngineOrder"] ?? obj["downloadEngineOrder"];
+        if (node == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return node.Deserialize<DownloadEngineOrderSettings>();
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return null;
+        }
+    }
+
+    private static DownloadEngineOrderSettings CloneDownloadEngineOrder(DownloadEngineOrderSettings? settings)
+    {
+        return DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(settings);
     }
 
     private static string? ReadString(JsonObject obj, params string[] keys)
