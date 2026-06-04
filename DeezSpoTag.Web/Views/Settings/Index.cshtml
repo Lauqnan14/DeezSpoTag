@@ -145,15 +145,16 @@
 
 .engine-order-list {
     display: grid;
-    gap: 10px;
+    gap: 8px;
     margin-top: 12px;
 }
 
 .engine-order-item {
     border: 1px solid var(--border-secondary);
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--bg-secondary);
-    padding: 12px;
+    padding: 0;
+    overflow: hidden;
 }
 
 .engine-order-item.dragging {
@@ -162,9 +163,11 @@
 
 .engine-order-header {
     display: grid;
-    grid-template-columns: auto auto 1fr auto auto;
+    grid-template-columns: auto auto 1fr auto;
     align-items: center;
     gap: 10px;
+    min-height: 44px;
+    padding: 8px 10px;
 }
 
 .engine-order-handle {
@@ -179,31 +182,31 @@
     font-weight: 600;
 }
 
-.engine-order-actions {
-    display: flex;
-    gap: 6px;
-}
-
-.engine-order-actions button {
-    min-width: 54px;
-    height: 30px;
-    border-radius: 6px;
-    border: 1px solid var(--border-secondary);
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    cursor: pointer;
+.engine-order-status {
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: right;
+    white-space: nowrap;
 }
 
 .engine-quality-list {
-    display: grid;
+    display: flex;
+    flex-wrap: wrap;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 8px;
-    margin-top: 12px;
-    padding-left: 32px;
+    gap: 8px 14px;
+    padding: 0 10px 12px 40px;
 }
 
 .engine-quality-list .checkbox-group {
     margin-bottom: 0;
+}
+
+.engine-order-item.engine-disabled .engine-quality-list {
+    display: none;
+}
+
+.engine-order-item.engine-disabled .engine-order-title {
+    color: var(--text-muted);
 }
 
 #livePreviewIngest + label,
@@ -838,7 +841,7 @@
                 <div class="engine-order-panel" id="downloadEngineOrderPanel" style="display: none;">
                     <input type="hidden" id="downloadEngineOrderEnabled" value="false">
                     <div class="form-label">Custom download engine order</div>
-                    <div class="warning-text">When enabled, only checked engines and checked qualities are used for automatic audio fallback. Existing queued items keep the order stored when they were queued.</div>
+                    <div class="warning-text">Drag engines into priority order. Quality choices are shown only for enabled engines. Existing queued items keep the order stored when they were queued.</div>
                     <div class="engine-order-list" id="downloadEngineOrderList"></div>
                 </div>
                 <div class="form-group">
@@ -2224,7 +2227,7 @@ function renderDownloadEngineOrder(config) {
 
     normalized.engines.forEach(engine => {
         const row = document.createElement('div');
-        row.className = 'engine-order-item';
+        row.className = `engine-order-item${engine.enabled ? '' : ' engine-disabled'}`;
         row.draggable = true;
         row.dataset.engine = engine.engine;
         row.innerHTML = `
@@ -2232,10 +2235,7 @@ function renderDownloadEngineOrder(config) {
                 <span class="engine-order-handle" aria-hidden="true">drag_indicator</span>
                 <input type="checkbox" class="engine-order-enabled" ${engine.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)}">
                 <span class="engine-order-title">${escapeHtml(engine.label)}</span>
-                <div class="engine-order-actions">
-                    <button type="button" class="engine-order-up" title="Move up" aria-label="Move ${escapeHtml(engine.label)} up">Up</button>
-                    <button type="button" class="engine-order-down" title="Move down" aria-label="Move ${escapeHtml(engine.label)} down">Down</button>
-                </div>
+                <span class="engine-order-status">${engine.enabled ? 'enabled' : 'disabled'}</span>
             </div>
             <div class="engine-quality-list">
                 ${engine.qualities.map(quality => `
@@ -2274,17 +2274,12 @@ function bindDownloadEngineOrderControls(list) {
             list.insertBefore(dragged, before ? item : item.nextSibling);
         });
 
-        item.querySelector('.engine-order-up')?.addEventListener('click', () => {
-            const previous = item.previousElementSibling;
-            if (previous) {
-                list.insertBefore(item, previous);
-            }
-        });
-
-        item.querySelector('.engine-order-down')?.addEventListener('click', () => {
-            const next = item.nextElementSibling;
-            if (next) {
-                list.insertBefore(next, item);
+        item.querySelector('.engine-order-enabled')?.addEventListener('change', event => {
+            const checked = event.target?.checked === true;
+            item.classList.toggle('engine-disabled', !checked);
+            const status = item.querySelector('.engine-order-status');
+            if (status) {
+                status.textContent = checked ? 'enabled' : 'disabled';
             }
         });
     });
