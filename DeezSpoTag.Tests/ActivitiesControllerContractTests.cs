@@ -126,13 +126,14 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
-    public void DownloadScript_DoesNotOwnQueueUiOutsideActivities()
+    public void DownloadScript_ExposesQueueRealtimeConnectionWithoutOwningQueueUi()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/wwwroot/js/download.js"));
 
-        Assert.DoesNotContain("deezerQueueHub", source, StringComparison.Ordinal);
+        Assert.Contains("connection: null", source, StringComparison.Ordinal);
+        Assert.Contains(".withUrl('/deezerQueueHub')", source, StringComparison.Ordinal);
         Assert.DoesNotContain("cancelDownload(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("retryDownload(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("download-queue", source, StringComparison.Ordinal);

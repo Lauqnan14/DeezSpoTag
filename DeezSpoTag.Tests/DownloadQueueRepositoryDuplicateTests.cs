@@ -302,6 +302,59 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task UpdateStatusAsync_PreservesProgressWhenStatusWriteDoesNotProvideProgress()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("progress-preserve", "Artist", "Track", 9),
+            CancellationToken.None);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "progress-preserve",
+            "running",
+            progress: 42.5,
+            cancellationToken: CancellationToken.None);
+        await context.QueueRepository.UpdateStatusAsync(
+            "progress-preserve",
+            "paused",
+            cancellationToken: CancellationToken.None);
+
+        var paused = await context.QueueRepository.GetByUuidAsync("progress-preserve", CancellationToken.None);
+        Assert.NotNull(paused);
+        Assert.Equal(42.5, paused!.Progress);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "progress-preserve",
+            "failed",
+            "Download failed",
+            cancellationToken: CancellationToken.None);
+
+        var failed = await context.QueueRepository.GetByUuidAsync("progress-preserve", CancellationToken.None);
+        Assert.NotNull(failed);
+        Assert.Equal(42.5, failed!.Progress);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "progress-preserve",
+            "queued",
+            error: null,
+            cancellationToken: CancellationToken.None);
+
+        var queued = await context.QueueRepository.GetByUuidAsync("progress-preserve", CancellationToken.None);
+        Assert.NotNull(queued);
+        Assert.Equal(0, queued!.Progress);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "progress-preserve",
+            "completed",
+            downloaded: 1,
+            cancellationToken: CancellationToken.None);
+
+        var completed = await context.QueueRepository.GetByUuidAsync("progress-preserve", CancellationToken.None);
+        Assert.NotNull(completed);
+        Assert.Equal(100, completed!.Progress);
+    }
+
+    [Fact]
     public async Task GetUnfinishedWatchlistDownloadCountAsync_IgnoresTerminalFailedAndCanceledRows()
     {
         await using var context = await CreateContextAsync();

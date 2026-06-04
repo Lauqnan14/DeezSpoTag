@@ -496,9 +496,17 @@ AND lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', '
 UPDATE download_task
 SET status = @status,
     error = @error,
-    downloaded = @downloaded,
-    failed = @failed,
-    progress = @progress,
+    downloaded = COALESCE(@downloaded, downloaded),
+    failed = COALESCE(@failed, failed),
+    progress = CASE
+        WHEN @progress IS NOT NULL
+            THEN @progress
+        WHEN lower(@status) IN ('queued', 'inqueue', 'retrying')
+            THEN 0
+        WHEN lower(@status) IN ('completed', 'complete')
+            THEN 100
+        ELSE progress
+    END,
     move_status = CASE
         WHEN lower(@status) IN ('completed', 'complete')
              AND destination_folder_id IS NOT NULL

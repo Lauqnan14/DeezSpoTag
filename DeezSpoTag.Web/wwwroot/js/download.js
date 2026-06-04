@@ -18,6 +18,8 @@ DeezSpoTag.Download = {
     inFlightLockTimeoutMs: 45000,
     inFlightSequence: 0,
     inFlightByUrl: {},
+    connection: null,
+    connectionStartPromise: null,
     settings: null,
     settingsPromise: null,
     appleNotifications: {
@@ -35,6 +37,7 @@ DeezSpoTag.Download = {
         this.refreshAppleNotificationMode();
         this.ensureDestinationSelects();
         this.ensureSettingsLoaded();
+        this.ensureQueueConnection();
         this.logger = DeezSpoTag.DownloadLogger || null;
         globalThis.addEventListener('deezspotag:settings-updated', (event) => {
             this.applyUpdatedSettings(event?.detail?.settings || null);
@@ -51,6 +54,36 @@ DeezSpoTag.Download = {
     },
     isActivitiesPage() {
         return /^\/activities(?:\/|$)/i.test(globalThis.location?.pathname || '');
+    },
+    ensureQueueConnection() {
+        if (this.connection || this.connectionStartPromise) {
+            return this.connectionStartPromise || Promise.resolve(this.connection);
+        }
+
+        if (!globalThis.signalR?.HubConnectionBuilder) {
+            return Promise.resolve(null);
+        }
+
+        this.connection = new globalThis.signalR.HubConnectionBuilder()
+            .withUrl('/deezerQueueHub')
+            .withAutomaticReconnect()
+            .build();
+
+        this.connectionStartPromise = this.connection.start()
+            .then(() => {
+                console.log('SignalR connected for Deezer download updates');
+                return this.connection;
+            })
+            .catch((error) => {
+                console.error('SignalR connection failed for Deezer download updates:', error);
+                this.connection = null;
+                return null;
+            })
+            .finally(() => {
+                this.connectionStartPromise = null;
+            });
+
+        return this.connectionStartPromise;
     },
 
     // Bind download-related events
