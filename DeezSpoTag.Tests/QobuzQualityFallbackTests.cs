@@ -3,6 +3,7 @@ using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Qobuz;
+using System.Text.Json;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -81,6 +82,59 @@ public sealed class QobuzQualityFallbackTests
         Assert.Equal(ExpectedMidTierFallbackOrder, order);
     }
 
+    [Theory]
+    [InlineData(16, 44.1, "6")]
+    [InlineData(24, 48, "7")]
+    [InlineData(24, 96, "27")]
+    [InlineData(32, 192, "27")]
+    public void MapCatalogQuality_MapsQobuzMetadataToEngineQuality(int bitDepth, double sampleRate, string expected)
+    {
+        Assert.Equal(expected, InvokeMapCatalogQuality(bitDepth, sampleRate));
+    }
+
+    [Theory]
+    [InlineData("27", "6", "6")]
+    [InlineData("27", "7", "7")]
+    [InlineData("27", "27", "27")]
+    [InlineData("7", "27", "7")]
+    [InlineData("6", "27", "6")]
+    public void SelectQualityWithinCatalogCeiling_UsesCatalogAsMaximumQuality(
+        string requested,
+        string catalog,
+        string expected)
+    {
+        Assert.Equal(expected, InvokeSelectQualityWithinCatalogCeiling(requested, catalog));
+    }
+
+    [Fact]
+    public void ToQueuePayload_IncludesQobuzCatalogQualityDecisionFields()
+    {
+        var payload = new QobuzQueueItem
+        {
+            Id = "queue-1",
+            Title = "Track",
+            Artist = "Artist",
+            Quality = "6",
+            QobuzRequestedQuality = "27",
+            QobuzResolvedQuality = "6",
+            QobuzActualQuality = "6",
+            QobuzMaximumBitDepth = 16,
+            QobuzMaximumSamplingRate = 44.1,
+            QobuzCatalogQuality = "6",
+            QobuzQualityDecisionReason = "catalog_quality_lower_than_requested"
+        };
+
+        var json = JsonSerializer.Serialize(payload.ToQueuePayload());
+
+        Assert.Contains("\"qobuzRequestedQuality\":\"27\"", json);
+        Assert.Contains("\"qobuzResolvedQuality\":\"6\"", json);
+        Assert.Contains("\"qobuzActualQuality\":\"6\"", json);
+        Assert.Contains("\"qobuzMaximumBitDepth\":16", json);
+        Assert.Contains("\"qobuzMaximumSamplingRate\":44.1", json);
+        Assert.Contains("\"qobuzCatalogQuality\":\"6\"", json);
+        Assert.Contains("\"qobuzQualityDecisionReason\":\"catalog_quality_lower_than_requested\"", json);
+    }
+
     private static List<string> InvokeGetQualityFallbackOrder(string quality, bool allowQualityFallback)
     {
         var method = typeof(QobuzDownloadService).GetMethod(
@@ -93,5 +147,29 @@ public sealed class QobuzQualityFallbackTests
         Assert.NotNull(result);
 
         return Assert.IsAssignableFrom<List<string>>(result);
+    }
+
+    private static string InvokeMapCatalogQuality(int bitDepth, double sampleRate)
+    {
+        var method = typeof(QobuzEngineProcessor).GetMethod(
+            "MapCatalogQuality",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object[] { bitDepth, sampleRate });
+        return Assert.IsType<string>(result);
+    }
+
+    private static string InvokeSelectQualityWithinCatalogCeiling(string requested, string catalog)
+    {
+        var method = typeof(QobuzEngineProcessor).GetMethod(
+            "SelectQualityWithinCatalogCeiling",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object[] { requested, catalog });
+        return Assert.IsType<string>(result);
     }
 }

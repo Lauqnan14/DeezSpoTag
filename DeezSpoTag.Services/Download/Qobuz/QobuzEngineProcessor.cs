@@ -47,6 +47,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private readonly IFolderConversionSettingsOverlay _folderConversionSettingsOverlay;
     private readonly IDownloadTagSettingsResolver _tagSettingsResolver;
     private readonly QobuzTrackResolver _qobuzTrackResolver;
+    private readonly IQobuzMetadataService _qobuzMetadataService;
     private readonly ILogger<QobuzEngineProcessor> _logger;
 
     public QobuzEngineProcessor(
@@ -69,6 +70,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         _folderConversionSettingsOverlay = serviceProvider.GetRequiredService<IFolderConversionSettingsOverlay>();
         _tagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
         _qobuzTrackResolver = serviceProvider.GetRequiredService<QobuzTrackResolver>();
+        _qobuzMetadataService = serviceProvider.GetRequiredService<IQobuzMetadataService>();
         _logger = logger;
     }
 
@@ -152,13 +154,18 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
         var context = await BuildTrackContextAsync(payload, settings, itemToken);
         var request = BuildRequest(payload, settings, context);
+        payload.QobuzRequestedQuality = request.Quality;
+        var qualityDecision = await ApplyCatalogQualityDecisionAsync(next.QueueUuid, payload, request, resolvedTrack, itemToken);
+        if (qualityDecision.SkipCurrentPlanStep)
+        {
+            throw new QobuzCatalogQualityBelowPlanStepException(qualityDecision.Message);
+        }
         await QueueHelperUtils.PersistExpectedStagingPathAsync(
             _queueRepository,
             next.QueueUuid,
             payload,
             ResolveExpectedOutputPath(context),
             itemToken);
-        payload.QobuzRequestedQuality = request.Quality;
         var progressReporter = CreateProgressReporter(next.QueueUuid, itemToken);
         _activityLog.Info($"Download start: {next.QueueUuid} engine={EngineName} quality={request.Quality}");
 
@@ -508,6 +515,162 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
     }
 
+    private async Task<QobuzQualityDecisionResult> ApplyCatalogQualityDecisionAsync(
+        string queueUuid,
+        QobuzQueueItem payload,
+        QobuzDownloadRequest request,
+        QobuzTrackResolution resolution,
+        CancellationToken cancellationToken)
+    {
+        var requestedQuality = NormalizeQobuzQualityCode(request.Quality);
+        payload.QobuzRequestedQuality = string.IsNullOrWhiteSpace(payload.QobuzRequestedQuality)
+            ? requestedQuality
+            : NormalizeQobuzQualityCode(payload.QobuzRequestedQuality);
+
+        var signal = await ResolveCatalogQualitySignalAsync(resolution.Track, cancellationToken);
+        if (signal == null)
+        {
+            payload.QobuzCatalogQuality = string.Empty;
+            payload.QobuzQualityDecisionReason = "catalog_quality_unknown";
+            payload.QobuzMaximumBitDepth = 0;
+            payload.QobuzMaximumSamplingRate = 0;
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+            return QobuzQualityDecisionResult.Continue();
+        }
+
+        var catalogQuality = MapCatalogQuality(signal.Value.BitDepth, signal.Value.SampleRate);
+        payload.QobuzMaximumBitDepth = signal.Value.BitDepth;
+        payload.QobuzMaximumSamplingRate = signal.Value.SampleRate;
+        payload.QobuzCatalogQuality = catalogQuality;
+
+        var selectedQuality = SelectQualityWithinCatalogCeiling(requestedQuality, catalogQuality);
+        var lowersRequestedQuality = !string.Equals(selectedQuality, requestedQuality, StringComparison.OrdinalIgnoreCase);
+        if (lowersRequestedQuality && !ShouldUseInEngineQualityFallback(payload))
+        {
+            payload.QobuzQualityDecisionReason = "catalog_quality_lower_than_requested_global_plan_preserved";
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+            var message =
+                $"Qobuz catalog max quality is {selectedQuality}, below current plan step {requestedQuality}; advancing global source plan.";
+            _logger.LogInformation(
+                "Qobuz catalog quality below current global plan step for {QueueUuid}: requested={RequestedQuality} catalog={CatalogQuality} max={BitDepth}-bit/{SampleRate}kHz",
+                queueUuid,
+                requestedQuality,
+                selectedQuality,
+                signal.Value.BitDepth,
+                signal.Value.SampleRate);
+            return QobuzQualityDecisionResult.Skip(message);
+        }
+
+        request.Quality = selectedQuality;
+        payload.Quality = selectedQuality;
+        payload.QobuzResolvedQuality = selectedQuality;
+        payload.QobuzQualityDecisionReason = !lowersRequestedQuality
+            ? "catalog_quality_allows_requested"
+            : "catalog_quality_lower_than_requested";
+
+        await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+        if (lowersRequestedQuality)
+        {
+            _logger.LogInformation(
+                "Qobuz catalog quality selected {SelectedQuality} instead of requested {RequestedQuality} for {QueueUuid}: max={BitDepth}-bit/{SampleRate}kHz",
+                selectedQuality,
+                requestedQuality,
+                queueUuid,
+                signal.Value.BitDepth,
+                signal.Value.SampleRate);
+        }
+
+        return QobuzQualityDecisionResult.Continue();
+    }
+
+    private async Task<QobuzCatalogQualitySignal?> ResolveCatalogQualitySignalAsync(
+        DeezSpoTag.Core.Models.Qobuz.QobuzTrack track,
+        CancellationToken cancellationToken)
+    {
+        var direct = BuildCatalogQualitySignal(track.MaximumBitDepth, track.MaximumSamplingRate);
+        if (direct != null)
+        {
+            return direct;
+        }
+
+        if (track.Id <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var quality = await _qobuzMetadataService.GetTrackQuality(track.Id, cancellationToken);
+            return quality == null
+                ? null
+                : BuildCatalogQualitySignal(quality.BitDepth, quality.SampleRate);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Qobuz catalog quality lookup failed for track {TrackId}; keeping requested quality.",
+                track.Id);
+            return null;
+        }
+    }
+
+    private static QobuzCatalogQualitySignal? BuildCatalogQualitySignal(int bitDepth, double sampleRate)
+    {
+        if (bitDepth <= 0)
+        {
+            return null;
+        }
+
+        return new QobuzCatalogQualitySignal(bitDepth, sampleRate > 0 ? sampleRate : 0);
+    }
+
+    internal static string SelectQualityWithinCatalogCeiling(string requestedQuality, string catalogQuality)
+    {
+        var requested = NormalizeQobuzQualityCode(requestedQuality);
+        var catalog = NormalizeQobuzQualityCode(catalogQuality);
+        return QualityRank(catalog) < QualityRank(requested) ? catalog : requested;
+    }
+
+    internal static string MapCatalogQuality(int bitDepth, double sampleRate)
+    {
+        if (bitDepth >= 24)
+        {
+            return sampleRate >= 96 ? "27" : "7";
+        }
+
+        return "6";
+    }
+
+    private static int QualityRank(string quality)
+        => NormalizeQobuzQualityCode(quality) switch
+        {
+            "27" => 3,
+            "7" => 2,
+            "6" => 1,
+            _ => 0
+        };
+
+    private static string NormalizeQobuzQualityCode(string? quality)
+        => QobuzQualityCodeNormalizer.Normalize(quality, defaultCode: "6");
+
+    private readonly record struct QobuzCatalogQualitySignal(int BitDepth, double SampleRate);
+
+    private readonly record struct QobuzQualityDecisionResult(bool SkipCurrentPlanStep, string Message)
+    {
+        public static QobuzQualityDecisionResult Continue() => new(false, string.Empty);
+
+        public static QobuzQualityDecisionResult Skip(string message) => new(true, message);
+    }
+
+    private sealed class QobuzCatalogQualityBelowPlanStepException : InvalidOperationException
+    {
+        public QobuzCatalogQualityBelowPlanStepException(string message)
+            : base(message)
+        {
+        }
+    }
+
     private static bool ShouldUseInEngineQualityFallback(QobuzQueueItem payload)
     {
         // If the queue item is in a multi-engine fallback plan (e.g. qobuz -> tidal -> apple),
@@ -696,7 +859,15 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         Exception ex,
         CancellationToken stoppingToken)
     {
-        _logger.LogError(ex, "Qobuz download failed for {QueueUuid}", next.QueueUuid);
+        if (ex is QobuzCatalogQualityBelowPlanStepException)
+        {
+            _logger.LogInformation(ex, "Qobuz plan step skipped for {QueueUuid}", next.QueueUuid);
+        }
+        else
+        {
+            _logger.LogError(ex, "Qobuz download failed for {QueueUuid}", next.QueueUuid);
+        }
+
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
             await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
@@ -705,7 +876,11 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 CancellationToken.None);
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
             var failureKind = IsRateLimitFailure(ex) ? "throttled" : "failed";
-            _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
+            if (ex is not QobuzCatalogQualityBelowPlanStepException)
+            {
+                _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
+            }
+
             var advanced = await _fallbackCoordinator.TryAdvanceAsync(
                 next.QueueUuid,
                 next.Engine,
