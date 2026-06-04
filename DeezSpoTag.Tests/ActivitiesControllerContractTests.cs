@@ -87,6 +87,19 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void MapStatusForUi_KeepsRetryingActionable()
+    {
+        var mapStatusForUi = typeof(ActivitiesController).GetMethod(
+            "MapStatusForUi",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(mapStatusForUi);
+
+        var mapped = mapStatusForUi!.Invoke(null, ["retrying"]) as string;
+        Assert.Equal("retrying", mapped);
+    }
+
+    [Fact]
     public void ActivitiesDownloadsTab_HandlesQueueRemovalEvents()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -113,16 +126,39 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
-    public void DownloadScript_HandlesQueueRemovalEventsOutsideActivities()
+    public void DownloadScript_DoesNotOwnQueueUiOutsideActivities()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/wwwroot/js/download.js"));
 
-        Assert.Contains("this.connection.on(\"removedFromQueue\"", source, StringComparison.Ordinal);
-        Assert.Contains("this.connection.on(\"removedAllDownloads\"", source, StringComparison.Ordinal);
-        Assert.Contains("this.connection.on(\"removedFinishedDownloads\"", source, StringComparison.Ordinal);
-        Assert.Contains("clearLocalQueue()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("deezerQueueHub", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("cancelDownload(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("retryDownload(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("download-queue", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("queue-list", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesDownloadsTab_AllowsCancelDuringRetrying()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("allowDuringRetry === true", source, StringComparison.Ordinal);
+        Assert.Contains("statusForUi === 'retrying'", source, StringComparison.Ordinal);
+        Assert.Contains("beginTaskAction(taskId, { allowDuringRetry: true })", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PauseQueuedAsync_CoversAllPendingActiveStatuses()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Queue/DownloadQueueRepository.cs"));
+
+        Assert.Contains("lower(status) IN ('queued', 'inqueue', 'resolving', 'retrying')", source, StringComparison.Ordinal);
     }
 
     [Fact]

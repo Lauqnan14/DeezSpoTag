@@ -626,7 +626,7 @@ WHERE queue_uuid = @queueUuid;";
 UPDATE download_task
 SET status = 'paused',
     updated_at = CURRENT_TIMESTAMP
-WHERE status = 'queued';";
+WHERE lower(status) IN ('queued', 'inqueue', 'resolving', 'retrying');";
         await ExecuteNonQueryAsync(connection, sql, cancellationToken);
         PublishQueueStateChanged(string.Empty, "paused");
     }

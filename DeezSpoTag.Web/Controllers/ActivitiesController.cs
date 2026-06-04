@@ -28,6 +28,8 @@ public class ActivitiesController : Controller
     private const string QueuedStatus = "queued";
     private const string InQueueStatus = "inqueue";
     private const string PausedStatus = "paused";
+    private const string ResolvingStatus = "resolving";
+    private const string RetryingStatus = "retrying";
     private const string RunningStatus = "running";
     private const string FinishedStatus = "finished";
     private const string DownloadFinishedStatus = "download finished";
@@ -111,9 +113,17 @@ public class ActivitiesController : Controller
             {
                 await GetDeezSpoTagApp().PauseDownloadAsync(request.Uuid);
             }
-            else if (status is QueuedStatus or InQueueStatus)
+            else if (status is QueuedStatus or InQueueStatus or ResolvingStatus or RetryingStatus)
             {
                 await _queueRepository.UpdateStatusAsync(request.Uuid, PausedStatus, cancellationToken: HttpContext.RequestAborted);
+            }
+            else if (IsTerminalQueueStatus(status))
+            {
+                return BadRequest("Completed, failed, or canceled downloads cannot be paused.");
+            }
+            else if (status != PausedStatus)
+            {
+                return BadRequest("Only active downloads can be paused.");
             }
 
             if (_logger.IsEnabled(LogLevel.Information))
@@ -149,6 +159,14 @@ public class ActivitiesController : Controller
             if (status == PausedStatus)
             {
                 await _queueRepository.UpdateStatusAsync(request.Uuid, QueuedStatus, error: null, cancellationToken: HttpContext.RequestAborted);
+            }
+            else if (IsTerminalQueueStatus(status))
+            {
+                return BadRequest("Completed, failed, or canceled downloads cannot be resumed.");
+            }
+            else
+            {
+                return BadRequest("Only paused downloads can be resumed.");
             }
 
             await GetDeezSpoTagApp().EnsureQueueProcessorRunningAsync();
@@ -317,7 +335,7 @@ public class ActivitiesController : Controller
                 }
 
                 var status = task.Status?.ToLowerInvariant() ?? string.Empty;
-                if (status is CompletedStatus or CompleteStatus or FailedStatus or CanceledStatus or CancelledStatus or SkippedStatus)
+                if (IsTerminalQueueStatus(status))
                 {
                     continue;
                 }
@@ -528,6 +546,19 @@ public class ActivitiesController : Controller
             ["queue"] = queue,
             ["queueOrder"] = queueOrder
         };
+    }
+
+    private static bool IsTerminalQueueStatus(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is CompletedStatus
+            or CompleteStatus
+            or FinishedStatus
+            or DownloadFinishedStatus
+            or FailedStatus
+            or CanceledStatus
+            or CancelledStatus
+            or SkippedStatus;
     }
 
     private DeezSpoTag.Services.Download.Shared.DeezSpoTagApp GetDeezSpoTagApp()

@@ -3241,9 +3241,12 @@ function getTaskById(taskId) {
     return tasks.find(task => task.taskId === taskId) || null;
 }
 
-function beginTaskAction(taskId) {
+function beginTaskAction(taskId, options) {
     const target = getTaskById(taskId);
-    if (!target || target._actionInFlight || target._retryInFlight) {
+    const allowDuringRetry = options?.allowDuringRetry === true;
+    if (!target
+        || (target._actionInFlight && !(allowDuringRetry && target._retryInFlight))
+        || (!allowDuringRetry && target._retryInFlight)) {
         return null;
     }
 
@@ -4500,8 +4503,9 @@ async function clearCanceledTasks() {
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
 
-		        const cancelButton = (statusForUi === 'queued' || statusForUi === 'running' || statusForUi === 'paused')
-		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
+	        const cancelActionAttrs = (taskActionInFlight && !task._retryInFlight) ? ' disabled aria-disabled="true"' : '';
+		        const cancelButton = (statusForUi === 'queued' || statusForUi === 'running' || statusForUi === 'paused' || statusForUi === 'retrying')
+		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${cancelActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
 		            : '';
 
         const taskActions = (pauseButton || resumeButton || retryButton || deleteFailedButton || deleteCanceledButton || cancelButton)
@@ -4829,7 +4833,7 @@ async function resumeTask(taskId) {
 }
 
 async function cancelTask(taskId) {
-    const target = beginTaskAction(taskId);
+    const target = beginTaskAction(taskId, { allowDuringRetry: true });
     if (!target) {
         return;
     }
@@ -4842,6 +4846,13 @@ async function cancelTask(taskId) {
 
     try {
         await ensureJsonActionSuccess('/Activities/CancelTask', { uuid: taskId });
+        target.status = 'canceled';
+        target.error = null;
+        target._retryInFlight = false;
+        target._actionInFlight = false;
+        delete target._retryPreviousError;
+        delete target._retryPreviousStatus;
+        scheduleRenderTasks();
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error(`Failed to cancel task ${taskId}:`, error);
