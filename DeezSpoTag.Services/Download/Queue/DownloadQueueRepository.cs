@@ -367,7 +367,7 @@ ORDER BY updated_at ASC;";
         const string sql = @"
 SELECT COUNT(*)
 FROM download_task
-WHERE status = 'queued'
+WHERE status IN ('queued', 'resolving')
   AND engine = @engine;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("engine", engine);
@@ -382,7 +382,7 @@ WHERE status = 'queued'
         const string sql = @"
 SELECT COUNT(*)
 FROM download_task
-WHERE status = 'queued';";
+WHERE status IN ('queued', 'resolving');";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 0 : Convert.ToInt32(result);
@@ -730,7 +730,7 @@ WHERE queue_uuid = @queueUuid
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
 	       status, payload, progress, downloaded, failed, error, created_at, updated_at
 	FROM download_task
-	WHERE status = 'queued'
+	WHERE status IN ('queued', 'resolving')
   {extraWhereClause}
 ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
 LIMIT 1;";
@@ -1112,6 +1112,52 @@ WHERE queue_uuid = @queueUuid;";
         command.Parameters.AddWithValue("contentType", NormalizeId(contentType) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("destinationFolderId", (object?)destinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdateQueueIdentityAsync(
+        DownloadQueueItem item,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, item.PayloadJson);
+        const string sql = @"
+UPDATE download_task
+SET engine = @engine,
+    artist_name = @artistName,
+    track_title = @trackTitle,
+    isrc = @isrc,
+    deezer_track_id = @deezerTrackId,
+    deezer_album_id = @deezerAlbumId,
+    deezer_artist_id = @deezerArtistId,
+    spotify_track_id = @spotifyTrackId,
+    spotify_album_id = @spotifyAlbumId,
+    spotify_artist_id = @spotifyArtistId,
+    apple_track_id = @appleTrackId,
+    apple_album_id = @appleAlbumId,
+    apple_artist_id = @appleArtistId,
+    duration_ms = @durationMs,
+    destination_folder_id = @destinationFolderId,
+    quality_rank = @qualityRank,
+    content_type = @contentType,
+    payload = @payload,
+    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
+    move_status = CASE
+        WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusPending + @"'
+        WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusNotRequired + @"'
+        ELSE move_status
+    END,
+    enrichment_status = CASE
+        WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusPending + @"'
+        WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusNotRequired + @"'
+        ELSE enrichment_status
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        BindCommonParameters(command, item);
+        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1513,6 +1559,11 @@ ORDER BY
 
     private static bool MatchesDuplicateRequest(DuplicateLookupRequest request, DownloadQueueItem item)
     {
+        if (IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item))
+        {
+            return false;
+        }
+
         return HasStrongIdentityMatch(request, item) || HasMetadataMatch(request, item);
     }
 

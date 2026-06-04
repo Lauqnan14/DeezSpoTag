@@ -135,6 +135,21 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         DeezSpoTagSettings settings,
         CancellationToken itemToken)
     {
+        var explicitQobuzTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
+        if (explicitQobuzTrackId.HasValue && string.IsNullOrWhiteSpace(payload.QobuzId))
+        {
+            payload.QobuzId = explicitQobuzTrackId.Value.ToString();
+        }
+
+        var resolvedIsrc = await ResolveIsrcAsync(payload, itemToken);
+        var resolvedTrack = await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
+        if (resolvedTrack == null)
+        {
+            payload.ResolutionError = "Qobuz track not found for ISRC or metadata.";
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);
+            throw new InvalidOperationException(payload.ResolutionError);
+        }
+
         var context = await BuildTrackContextAsync(payload, settings, itemToken);
         var request = BuildRequest(payload, settings, context);
         await QueueHelperUtils.PersistExpectedStagingPathAsync(
@@ -147,14 +162,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var progressReporter = CreateProgressReporter(next.QueueUuid, itemToken);
         _activityLog.Info($"Download start: {next.QueueUuid} engine={EngineName} quality={request.Quality}");
 
-        var explicitQobuzTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
-        if (explicitQobuzTrackId.HasValue && string.IsNullOrWhiteSpace(payload.QobuzId))
-        {
-            payload.QobuzId = explicitQobuzTrackId.Value.ToString();
-        }
-
-        var resolvedIsrc = await ResolveIsrcAsync(payload, itemToken);
-        await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
         payload.QobuzResolvedQuality = request.Quality;
         payload.Quality = request.Quality;
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);

@@ -40,6 +40,30 @@ public sealed class DownloadQueueOrderingTests
         Assert.Equal("queue-newest", next!.QueueUuid);
     }
 
+    [Fact]
+    public async Task DequeueNextAnyAsync_PicksResolvingItemSoPreResolutionCannotBlockDownload()
+    {
+        await using var context = CreateContext();
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-resolving", status: "resolving"), CancellationToken.None);
+
+        var next = await context.QueueRepository.DequeueNextAnyAsync(newestFirst: false, CancellationToken.None);
+
+        Assert.NotNull(next);
+        Assert.Equal("queue-resolving", next!.QueueUuid);
+        Assert.Equal("running", next.Status);
+    }
+
+    [Fact]
+    public async Task GetQueuedCountAsync_CountsResolvingItemSoQueueProcessorWakes()
+    {
+        await using var context = CreateContext();
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-resolving", status: "resolving"), CancellationToken.None);
+
+        var count = await context.QueueRepository.GetQueuedCountAsync(CancellationToken.None);
+
+        Assert.Equal(1, count);
+    }
+
     private static TestContext CreateContext()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-queue-order-tests-" + Path.GetRandomFileName());
@@ -58,7 +82,7 @@ public sealed class DownloadQueueOrderingTests
         return new TestContext(tempRoot, queueRepository);
     }
 
-    private static DownloadQueueItem CreateQueueItem(string queueUuid)
+    private static DownloadQueueItem CreateQueueItem(string queueUuid, string status = "queued")
     {
         return new DownloadQueueItem(
             Id: 0,
@@ -81,7 +105,7 @@ public sealed class DownloadQueueOrderingTests
             QualityRank: 50,
             QueueOrder: null,
             ContentType: "stereo",
-            Status: "queued",
+            Status: status,
             PayloadJson: null,
             Progress: 0,
             Downloaded: 0,

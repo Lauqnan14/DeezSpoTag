@@ -423,17 +423,20 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     public async Task CancelDownloadAsync(string uuid)
     {
+        var queueItem = await _queueRepository.GetByUuidAsync(uuid, CancellationToken.None);
         _cancellationRegistry.MarkUserCanceled(uuid);
         _retryScheduler.Clear(uuid);
         var activeCancellationRequested = _cancellationRegistry.Cancel(uuid);
         if (activeCancellationRequested)
         {
+            await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
+            await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
+            Listener?.Send("updateQueue", new { uuid, status = CanceledStatus });
             Listener?.Send("cancellingCurrentItem", uuid);
             DeezSpoTagSpeedTracker.Clear(uuid);
             return;
         }
 
-        var queueItem = await _queueRepository.GetByUuidAsync(uuid, CancellationToken.None);
         await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
         await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
         Listener?.Send("removedFromQueue", new { uuid });

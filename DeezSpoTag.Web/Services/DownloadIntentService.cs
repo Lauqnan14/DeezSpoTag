@@ -423,7 +423,7 @@ public sealed class DownloadIntentService
             payload,
             intent.AllowQualityUpgrade,
             requestedQualityRank,
-            initialStatus: "resolving",
+            initialStatus: "queued",
             cancellationToken);
         if (!enqueueDecision.Success)
         {
@@ -5893,7 +5893,7 @@ public sealed class DownloadIntentService
         }
 
         var context = BuildEnqueueItemContext(payload, allowQualityUpgrade, requestedQualityRank);
-        var requireResolvedEngineIdentity = !string.Equals(initialStatus, "resolving", StringComparison.OrdinalIgnoreCase);
+        var requireResolvedEngineIdentity = !IsPreResolutionPayload(payload);
         var payloadFailure = TryValidateResolvedQueuePayload(payload, context, requireResolvedEngineIdentity);
         if (payloadFailure != null)
         {
@@ -5932,6 +5932,14 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken)
         where TPayload : class
         => EnqueueItemAsync(payload, allowQualityUpgrade, requestedQualityRank, "queued", cancellationToken);
+
+    private static bool IsPreResolutionPayload<TPayload>(TPayload payload)
+        where TPayload : class
+    {
+        var value = TryGetPayloadString(payload, "ResolutionStatus");
+        return string.Equals(value, QueuePreResolutionPayload.Pending, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, QueuePreResolutionPayload.Resolving, StringComparison.OrdinalIgnoreCase);
+    }
 
     private EnqueueItemContext BuildEnqueueItemContext<TPayload>(
         TPayload payload,
@@ -6113,6 +6121,11 @@ public sealed class DownloadIntentService
 
         if (IsRetryableFailedQueueStatus(status))
         {
+            if (!CanRehydrateFailedDuplicate(payload, context, existing))
+            {
+                return new QueueDuplicateResolution(null, true);
+            }
+
             var decision = await RequeueFailedDuplicateAsync(payload, context, existing, cancellationToken);
             return new QueueDuplicateResolution(decision, false);
         }
@@ -6201,14 +6214,9 @@ public sealed class DownloadIntentService
         SetPayloadId(payload, existing.QueueUuid);
         ApplySourceSettingsSnapshot(payload, context.Settings);
         var replacementJson = JsonSerializer.Serialize(payload);
-        await _queueRepository.UpdateEngineAsync(existing.QueueUuid, context.Identity.Engine, cancellationToken);
-        await _queueRepository.UpdateQueueMetadataAsync(
-            existing.QueueUuid,
-            context.RequestedQualityRank,
-            context.Identity.ContentType,
-            context.Identity.DestinationFolderId ?? existing.DestinationFolderId,
+        await _queueRepository.UpdateQueueIdentityAsync(
+            BuildIdentityRefreshItem(existing, context, replacementJson),
             cancellationToken);
-        await _queueRepository.UpdatePayloadAsync(existing.QueueUuid, replacementJson, cancellationToken);
         await _queueRepository.UpdateStatusAsync(
             existing.QueueUuid,
             "queued",
@@ -6231,14 +6239,9 @@ public sealed class DownloadIntentService
         SetPayloadId(payload, existing.QueueUuid);
         ApplySourceSettingsSnapshot(payload, context.Settings);
         var replacementJson = JsonSerializer.Serialize(payload);
-        await _queueRepository.UpdateEngineAsync(existing.QueueUuid, context.Identity.Engine, cancellationToken);
-        await _queueRepository.UpdateQueueMetadataAsync(
-            existing.QueueUuid,
-            context.RequestedQualityRank,
-            context.Identity.ContentType,
-            context.Identity.DestinationFolderId ?? existing.DestinationFolderId,
+        await _queueRepository.UpdateQueueIdentityAsync(
+            BuildIdentityRefreshItem(existing, context, replacementJson),
             cancellationToken);
-        await _queueRepository.UpdatePayloadAsync(existing.QueueUuid, replacementJson, cancellationToken);
         await _queueRepository.RequeueAsync(
             existing.QueueUuid,
             QueueRequeueOrigin.DuplicateRehydrate,
@@ -6254,6 +6257,124 @@ public sealed class DownloadIntentService
             error = default(string)
         });
         return EnqueueItemDecision.Ok(existing.QueueUuid);
+    }
+
+    private static DownloadQueueItem BuildIdentityRefreshItem(
+        DownloadQueueItem existing,
+        EnqueueItemContext context,
+        string replacementJson)
+    {
+        return existing with
+        {
+            Engine = context.Identity.Engine,
+            ArtistName = context.Identity.TrackArtist,
+            TrackTitle = context.Identity.TrackTitle,
+            Isrc = context.Identity.Isrc,
+            DeezerTrackId = context.Identity.DeezerTrackId,
+            DeezerAlbumId = context.Identity.DeezerAlbumId,
+            DeezerArtistId = context.Identity.DeezerArtistId,
+            SpotifyTrackId = context.Identity.SpotifyTrackId,
+            SpotifyAlbumId = context.Identity.SpotifyAlbumId,
+            SpotifyArtistId = context.Identity.SpotifyArtistId,
+            AppleTrackId = context.Identity.AppleTrackId,
+            AppleAlbumId = context.Identity.AppleAlbumId,
+            AppleArtistId = context.Identity.AppleArtistId,
+            DurationMs = context.Identity.DurationMs,
+            DestinationFolderId = context.Identity.DestinationFolderId ?? existing.DestinationFolderId,
+            QualityRank = context.RequestedQualityRank,
+            ContentType = context.Identity.ContentType,
+            PayloadJson = replacementJson
+        };
+    }
+
+    private static bool CanRehydrateFailedDuplicate<TPayload>(
+        TPayload payload,
+        EnqueueItemContext context,
+        DownloadQueueItem existing)
+        where TPayload : class
+    {
+        if (HasStrongQueueIdentityMatch(context.Identity, existing))
+        {
+            return true;
+        }
+
+        return HasSameSourceUrl(payload, existing.PayloadJson);
+    }
+
+    private static bool HasStrongQueueIdentityMatch(PayloadIdentity identity, DownloadQueueItem existing)
+    {
+        return EqualsNormalizedIsrc(identity.Isrc, existing.Isrc)
+            || EqualsNormalizedId(identity.DeezerTrackId, existing.DeezerTrackId)
+            || EqualsNormalizedId(identity.SpotifyTrackId, existing.SpotifyTrackId)
+            || EqualsNormalizedId(identity.AppleTrackId, existing.AppleTrackId);
+    }
+
+    private static bool HasSameSourceUrl<TPayload>(TPayload payload, string? existingPayloadJson)
+        where TPayload : class
+    {
+        var requestedSourceUrl = NormalizeComparableUrl(TryGetPayloadString(payload, "SourceUrl"));
+        if (string.IsNullOrWhiteSpace(requestedSourceUrl))
+        {
+            requestedSourceUrl = NormalizeComparableUrl(TryGetPayloadString(payload, "Url"));
+        }
+
+        if (string.IsNullOrWhiteSpace(requestedSourceUrl)
+            || string.IsNullOrWhiteSpace(existingPayloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(existingPayloadJson);
+            return UrlPropertyMatches(document.RootElement, "SourceUrl", requestedSourceUrl)
+                || UrlPropertyMatches(document.RootElement, "Url", requestedSourceUrl)
+                || UrlPropertyMatches(document.RootElement, "ResolvedSourceUrl", requestedSourceUrl);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool UrlPropertyMatches(JsonElement root, string propertyName, string requestedSourceUrl)
+    {
+        return root.TryGetProperty(propertyName, out var value)
+            && value.ValueKind == JsonValueKind.String
+            && string.Equals(NormalizeComparableUrl(value.GetString()), requestedSourceUrl, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeComparableUrl(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+    }
+
+    private static bool EqualsNormalizedIsrc(string? left, string? right)
+    {
+        var normalizedLeft = NormalizeComparableIsrc(left);
+        var normalizedRight = NormalizeComparableIsrc(right);
+        return !string.IsNullOrWhiteSpace(normalizedLeft)
+            && !string.IsNullOrWhiteSpace(normalizedRight)
+            && string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
+    }
+
+    private static bool EqualsNormalizedId(string? left, string? right)
+    {
+        var normalizedLeft = NormalizeComparableId(left);
+        var normalizedRight = NormalizeComparableId(right);
+        return !string.IsNullOrWhiteSpace(normalizedLeft)
+            && !string.IsNullOrWhiteSpace(normalizedRight)
+            && string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeComparableIsrc(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToUpperInvariant();
+    }
+
+    private static string NormalizeComparableId(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
     }
 
     private async Task<EnqueueItemDecision> InsertQueueItemAsync<TPayload>(

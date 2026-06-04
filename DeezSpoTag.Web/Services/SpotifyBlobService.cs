@@ -44,8 +44,10 @@ public sealed class SpotifyBlobService
     private const string SpotifyOpenTokenPath = "/api/token";
     private const string CredentialsNotFoundError = "credentials_not_found";
     private const string AllRetriesFailedError = "all_retries_failed";
+    private const string ProcessTimeoutError = "process_timeout";
     private const string WebPlayerProtectionPurpose = "DeezSpoTag.Spotify.WebPlayer";
     private const string LibrespotProtectionPurpose = "DeezSpoTag.Spotify.Librespot";
+    private static readonly TimeSpan LibrespotMetadataRequestTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan[] WebApiRetryDelays =
     {
         TimeSpan.FromSeconds(2),
@@ -178,7 +180,7 @@ public sealed class SpotifyBlobService
 
             using var process = new Process { StartInfo = startInfo };
             process.Start();
-            var processOutput = await WaitForProcessExitAsync(process, cancellationToken);
+            var processOutput = await WaitForProcessExitAsync(process, timeout: null, cancellationToken);
             var stdout = processOutput.StandardOutput;
             var stderr = processOutput.StandardError;
             if (!string.IsNullOrWhiteSpace(stderr))
@@ -598,6 +600,7 @@ public sealed class SpotifyBlobService
                 var executionResult = await RunPythonScriptAsync(
                     pythonExecutable,
                     scriptPath,
+                    LibrespotMetadataRequestTimeout,
                     cancellationToken,
                     effectiveArguments);
 
@@ -1233,7 +1236,7 @@ public sealed class SpotifyBlobService
 
                 using var process = new Process { StartInfo = startInfo };
                 process.Start();
-                var processOutput = await WaitForProcessExitAsync(process, cancellationToken);
+                var processOutput = await WaitForProcessExitAsync(process, timeout: null, cancellationToken);
                 stdout = processOutput.StandardOutput;
                 stderr = processOutput.StandardError;
             }
@@ -1655,7 +1658,7 @@ public sealed class SpotifyBlobService
 
         using var process = new Process { StartInfo = startInfo };
         process.Start();
-        var processOutput = await WaitForProcessExitAsync(process, cancellationToken);
+        var processOutput = await WaitForProcessExitAsync(process, timeout: null, cancellationToken);
         if (processOutput.ExitCode != 0)
         {
             var error = string.IsNullOrWhiteSpace(processOutput.StandardError)
@@ -1674,6 +1677,7 @@ public sealed class SpotifyBlobService
     private static async Task<ProcessOutputResult> RunPythonScriptAsync(
         string pythonExecutable,
         string scriptPath,
+        TimeSpan timeout,
         CancellationToken cancellationToken,
         params string[] arguments)
     {
@@ -1684,18 +1688,54 @@ public sealed class SpotifyBlobService
             arguments);
         using var process = new Process { StartInfo = startInfo };
         process.Start();
-        return await WaitForProcessExitAsync(process, cancellationToken);
+        return await WaitForProcessExitAsync(process, timeout, cancellationToken);
     }
 
-    private static async Task<ProcessOutputResult> WaitForProcessExitAsync(Process process, CancellationToken cancellationToken)
+    private static async Task<ProcessOutputResult> WaitForProcessExitAsync(
+        Process process,
+        TimeSpan? timeout,
+        CancellationToken cancellationToken)
     {
         var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        using var timeoutCts = timeout.HasValue && timeout.Value > TimeSpan.Zero
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        if (timeoutCts != null)
+        {
+            timeoutCts.CancelAfter(timeout!.Value);
+        }
+
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts?.Token ?? cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeoutCts?.IsCancellationRequested == true)
+        {
+            TryKillProcessTree(process);
+            await process.WaitForExitAsync(CancellationToken.None);
+            var timeoutMessage = $"{ProcessTimeoutError}: helper exceeded {timeout!.Value.TotalSeconds:0}s.";
+            return new ProcessOutputResult(-1, string.Empty, timeoutMessage);
+        }
 
         var stdout = (await stdoutTask).Trim();
         var stderr = (await stderrTask).Trim();
         return new ProcessOutputResult(process.ExitCode, stdout, stderr);
+    }
+
+    private static void TryKillProcessTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+        {
+            // The process has already exited or this platform does not support tree kill.
+        }
     }
 
     private static void ApplyPythonCompatibilityEnvironment(ProcessStartInfo startInfo)

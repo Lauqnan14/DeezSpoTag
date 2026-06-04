@@ -12,6 +12,10 @@ public sealed class DownloadCancellationRegistry
     public void Register(string queueUuid, CancellationTokenSource cancellationTokenSource)
     {
         _active[queueUuid] = cancellationTokenSource;
+        if (WasCancellationRequestedBeforeRegistration(queueUuid))
+        {
+            cancellationTokenSource.Cancel();
+        }
     }
 
     public bool Cancel(string queueUuid)
@@ -28,6 +32,18 @@ public sealed class DownloadCancellationRegistry
     public bool IsActive(string queueUuid)
     {
         return !string.IsNullOrWhiteSpace(queueUuid) && _active.ContainsKey(queueUuid);
+    }
+
+    private bool WasCancellationRequestedBeforeRegistration(string queueUuid)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return false;
+        }
+
+        return _userCanceled.ContainsKey(queueUuid)
+            || _userPaused.ContainsKey(queueUuid)
+            || _timedOut.ContainsKey(queueUuid);
     }
 
     public void MarkUserCanceled(string queueUuid)

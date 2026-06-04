@@ -482,6 +482,56 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task UpdateQueueIdentityAsync_ReplacesStaleIdentityColumnsAndPayload()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("identity-refresh", "Old Artist", "Old Title", 10) with
+            {
+                Engine = "qobuz",
+                Isrc = "OLDISRC12345",
+                AppleTrackId = "old-apple",
+                DurationMs = 100000,
+                QualityRank = 1,
+                PayloadJson = """{"SourceService":"qobuz","Isrc":"OLDISRC12345"}"""
+            },
+            CancellationToken.None);
+
+        var existing = await context.QueueRepository.GetByUuidAsync("identity-refresh", CancellationToken.None);
+        Assert.NotNull(existing);
+
+        await context.QueueRepository.UpdateQueueIdentityAsync(
+            existing! with
+            {
+                Engine = "qobuz",
+                ArtistName = "Benzema & Dyana Cods",
+                TrackTitle = "101%",
+                Isrc = "QZPYN2262797",
+                AppleTrackId = "1658724857",
+                DurationMs = 173845,
+                DestinationFolderId = 20,
+                QualityRank = 27,
+                ContentType = "stereo",
+                PayloadJson = """{"SourceService":"apple","Isrc":"QZPYN2262797","SourceUrl":"https://music.apple.com/ke/album/101/1658724362?i=1658724857"}"""
+            },
+            CancellationToken.None);
+
+        var refreshed = await context.QueueRepository.GetByUuidAsync("identity-refresh", CancellationToken.None);
+
+        Assert.NotNull(refreshed);
+        Assert.Equal("Benzema & Dyana Cods", refreshed!.ArtistName);
+        Assert.Equal("101%", refreshed.TrackTitle);
+        Assert.Equal("QZPYN2262797", refreshed.Isrc);
+        Assert.Equal("1658724857", refreshed.AppleTrackId);
+        Assert.Equal(173845, refreshed.DurationMs);
+        Assert.Equal(20, refreshed.DestinationFolderId);
+        Assert.Equal(27, refreshed.QualityRank);
+        Assert.Contains("\"SourceService\":\"apple\"", refreshed.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"Isrc\":\"QZPYN2262797\"", refreshed.PayloadJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("OLDISRC12345", refreshed.PayloadJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UpdateStatusAsync_FailedItemDeletesOnlyStagingFilesAndKeepsDestinationFolderId()
     {
         await using var context = await CreateContextAsync(enableStagingCleanup: true);

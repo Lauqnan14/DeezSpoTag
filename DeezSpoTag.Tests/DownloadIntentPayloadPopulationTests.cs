@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using DeezSpoTag.Services.Download.Deezer;
 using DeezSpoTag.Services.Download.Fallback;
@@ -42,6 +43,18 @@ public sealed class DownloadIntentPayloadPopulationTests
             "CreateManualParityQueueIntent",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("PlaylistWatchService.CreateManualParityQueueIntent not found.");
+
+    [Fact]
+    public void ManualVisiblePreResolutionQueueItems_AreInsertedAsQueuedNotResolving()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Services/DownloadIntentService.cs"));
+
+        Assert.DoesNotContain("initialStatus: \"resolving\"", source, StringComparison.Ordinal);
+        Assert.Contains("initialStatus: \"queued\"", source, StringComparison.Ordinal);
+        Assert.Contains("IsPreResolutionPayload(payload)", source, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void PopulateStandardQueuePayload_PreservesPreResolvedDeezerId()
@@ -235,7 +248,7 @@ public sealed class DownloadIntentPayloadPopulationTests
         where TPayload : class
     {
         var method = TryValidateResolvedQueuePayloadMethod.MakeGenericMethod(typeof(TPayload));
-        return method.Invoke(null, new[] { payload, context });
+        return method.Invoke(null, new[] { payload, context, true });
     }
 
     private static string? ReadDecisionProperty(object decision, string propertyName)
