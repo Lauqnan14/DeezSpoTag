@@ -344,16 +344,12 @@ public class LibraryArtistsApiController : ControllerBase
             return [];
         }
 
-        var candidates = new List<DeezerArtistCandidate>();
-        foreach (var item in searchData.EnumerateArray())
-        {
-            if (TryParseArtistCandidate(item, out var candidate))
-            {
-                candidates.Add(candidate);
-            }
-        }
-
-        return candidates;
+        return searchData
+            .EnumerateArray()
+            .Select(item => TryParseArtistCandidate(item, out var candidate) ? candidate : (DeezerArtistCandidate?)null)
+            .Where(static candidate => candidate is not null)
+            .Select(static candidate => candidate!)
+            .ToList();
     }
 
     private static bool TryParseArtistCandidate(JsonElement item, out DeezerArtistCandidate candidate)
@@ -950,16 +946,12 @@ public class LibraryArtistsApiController : ControllerBase
             return Array.Empty<DeezerAlbumCandidate>();
         }
 
-        var albums = new List<DeezerAlbumCandidate>();
-        foreach (var album in albumsData.EnumerateArray())
-        {
-            if (TryParseAlbumCandidate(album, out var parsedAlbum))
-            {
-                albums.Add(parsedAlbum);
-            }
-        }
-
-        return albums;
+        return albumsData
+            .EnumerateArray()
+            .Select(album => TryParseAlbumCandidate(album, out var parsedAlbum) ? parsedAlbum : (DeezerAlbumCandidate?)null)
+            .Where(static album => album is not null)
+            .Select(static album => album!)
+            .ToArray();
     }
 
     private static bool TryParseAlbumCandidate(JsonElement album, out DeezerAlbumCandidate candidate)

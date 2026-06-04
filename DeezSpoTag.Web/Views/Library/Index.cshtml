@@ -3,7 +3,7 @@
     Layout = "~/Views/Shared/_Layout.cshtml";
 }
 
-<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/library.css")" />
 
 <div class="library-page library-index">
     <nav id="libraryLetterNav" class="alpha-jump-nav" aria-label="Artist letter navigation" hidden></nav>
@@ -109,7 +109,7 @@
     </dialog>
 </div>
 
-<script src="~/js/library-interactions.js" asp-append-version="true"></script>
-<script src="~/js/library.js" asp-append-version="true"></script>
-<script src="~/js/library-apple-extras.js" asp-append-version="true"></script>
-<script src="~/js/library-bootstrap.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-interactions.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-apple-extras.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-bootstrap.js")"></script>

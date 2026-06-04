@@ -656,7 +656,7 @@ WHERE status = 'paused';";
         {
             handler(new QueueStateChangedEvent(queueUuid ?? string.Empty, status));
         }
-        catch
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             // Queue state notifications are best-effort and must never impact queue persistence.
         }
@@ -2124,12 +2124,9 @@ LIMIT 1;";
 
         if (value.ValueKind == JsonValueKind.Array)
         {
-            foreach (var token in value.EnumerateArray())
+            foreach (var token in value.EnumerateArray().Where(static token => token.ValueKind == JsonValueKind.String))
             {
-                if (token.ValueKind == JsonValueKind.String)
-                {
-                    MarkLyricsStatusToken(token.GetString(), ref status);
-                }
+                MarkLyricsStatusToken(token.GetString(), ref status);
             }
 
             return;

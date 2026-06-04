@@ -2488,16 +2488,10 @@ public sealed class SpotifyArtistService
             return false;
         }
 
-        foreach (var alias in aliasTargets)
-        {
-            var aliasCanonical = NormalizeArtistCanonicalKey(alias);
-            if (!string.IsNullOrWhiteSpace(aliasCanonical) && candidateVariants.Contains(aliasCanonical))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return aliasTargets
+            .Select(NormalizeArtistCanonicalKey)
+            .Where(aliasCanonical => !string.IsNullOrWhiteSpace(aliasCanonical))
+            .Any(candidateVariants.Contains);
     }
 
     private async Task<string?> TryResolveArtistIdViaShazamEvidenceAsync(

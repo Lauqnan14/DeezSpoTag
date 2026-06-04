@@ -453,24 +453,14 @@ public sealed class CoverLibraryMaintenanceService
 
     private static bool HasAnimatedArtworkFiles(string albumDir)
     {
-        foreach (var path in Directory.EnumerateFiles(albumDir))
-        {
-            var filename = Path.GetFileNameWithoutExtension(path);
-            if (string.IsNullOrWhiteSpace(filename))
-            {
-                continue;
-            }
-
-            if (filename.Equals("square_animated_artwork", StringComparison.OrdinalIgnoreCase)
+        return Directory.EnumerateFiles(albumDir)
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(filename => !string.IsNullOrWhiteSpace(filename))
+            .Select(filename => filename!)
+            .Any(filename => filename.Equals("square_animated_artwork", StringComparison.OrdinalIgnoreCase)
                 || filename.Equals("tall_animated_artwork", StringComparison.OrdinalIgnoreCase)
                 || filename.EndsWith(" - square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-                || filename.EndsWith(" - tall_animated_artwork", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
+                || filename.EndsWith(" - tall_animated_artwork", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string? ResolveExternalCoverPath(string albumDir)

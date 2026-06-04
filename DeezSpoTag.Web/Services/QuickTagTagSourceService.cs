@@ -433,12 +433,11 @@ public sealed class QuickTagTagSourceService
             yield break;
         }
 
-        foreach (var item in source)
+        foreach (var mappedItem in source
+            .Select(item => TryMapStreamingItem(item, defaultType, out var mappedItem) ? mappedItem : null)
+            .Where(mappedItem => mappedItem is not null))
         {
-            if (TryMapStreamingItem(item, defaultType, out var mappedItem))
-            {
-                yield return mappedItem;
-            }
+            yield return mappedItem!;
         }
     }
 

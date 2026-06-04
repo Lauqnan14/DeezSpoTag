@@ -824,12 +824,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static void AddUniqueTracks(List<QobuzTrack> allTracks, HashSet<long> seenTrackIds, List<QobuzTrack> items)
     {
-        foreach (var item in items)
+        foreach (var item in items.Where(item => item.Id <= 0 || seenTrackIds.Add(item.Id)))
         {
-            if (item.Id <= 0 || seenTrackIds.Add(item.Id))
-            {
-                allTracks.Add(item);
-            }
+            allTracks.Add(item);
         }
     }
 
@@ -1668,14 +1665,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static bool TryReadProviderUrl(JsonElement element, out string? url)
     {
-        foreach (var propertyName in ProviderUrlPropertyNames)
+        foreach (var providerUrl in ProviderUrlPropertyNames
+            .Select(propertyName => element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null)
+            .Where(static providerUrl => !string.IsNullOrWhiteSpace(providerUrl)))
         {
-            if (element.TryGetProperty(propertyName, out var property)
-                && property.ValueKind == JsonValueKind.String)
-            {
-                url = property.GetString();
-                return !string.IsNullOrWhiteSpace(url);
-            }
+            url = providerUrl;
+            return true;
         }
 
         url = null;
@@ -1817,12 +1814,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static string? FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values)
+        foreach (var value in values.Where(static value => !string.IsNullOrWhiteSpace(value)))
         {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return null;

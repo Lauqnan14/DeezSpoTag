@@ -137,13 +137,11 @@ public static class GenreTagAliasNormalizer
 
             var tokens = trimmed.Split(CompositeGenreSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-            foreach (var token in tokens)
+            foreach (var normalized in tokens
+                .Select(token => NormalizeValue(token, aliasMap))
+                .Where(normalized => !string.IsNullOrWhiteSpace(normalized)))
             {
-                var normalized = NormalizeValue(token, aliasMap);
-                if (!string.IsNullOrWhiteSpace(normalized))
-                {
-                    output.Add(normalized);
-                }
+                output.Add(normalized);
             }
         }
 
@@ -198,13 +196,11 @@ public static class GenreTagAliasNormalizer
             return output;
         }
 
-        foreach (var value in values)
+        foreach (var key in values
+            .Select(ToLookupKey)
+            .Where(key => key.Length > 0))
         {
-            var key = ToLookupKey(value);
-            if (key.Length > 0)
-            {
-                output.Add(key);
-            }
+            output.Add(key);
         }
 
         return output;

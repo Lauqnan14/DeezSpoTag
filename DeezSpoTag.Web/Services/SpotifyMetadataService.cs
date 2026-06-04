@@ -673,12 +673,11 @@ public sealed class SpotifyMetadataService
         Dictionary<string, int> scores,
         IEnumerable<SpotifyGenreSignal> signals)
     {
-        foreach (var canonical in signals.Select(static signal => signal.Canonical))
+        foreach (var canonical in signals
+            .Select(static signal => signal.Canonical)
+            .Where(scores.ContainsKey))
         {
-            if (scores.TryGetValue(canonical, out var current))
-            {
-                scores[canonical] = Math.Max(0, current - 1);
-            }
+            scores[canonical] = Math.Max(0, scores[canonical] - 1);
         }
     }
 
@@ -737,17 +736,15 @@ public sealed class SpotifyMetadataService
 
     private static bool TryGetNested(JsonElement element, out JsonElement value, params string[] path)
     {
-        value = element;
-        foreach (var segment in path)
-        {
-            if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(segment, out value))
-            {
-                value = default;
-                return false;
-            }
-        }
-
-        return true;
+        var resolved = path.Aggregate(
+            (Found: true, Current: element),
+            static (state, segment) => state.Found
+                && state.Current.ValueKind == JsonValueKind.Object
+                && state.Current.TryGetProperty(segment, out var next)
+                    ? (true, next)
+                    : (false, default));
+        value = resolved.Found ? resolved.Current : default;
+        return resolved.Found;
     }
 
     private static string? TryGetString(JsonElement element, params string[] path)
@@ -2615,16 +2612,14 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        foreach (var fileId in imagesProp
+        foreach (var imageUrl in imagesProp
                      .EnumerateArray()
                      .Select(image => image.TryGetProperty("file_id", out var fileIdProp) ? fileIdProp.GetString() : null)
-                     .Where(fileId => !string.IsNullOrWhiteSpace(fileId)))
+                     .Where(fileId => !string.IsNullOrWhiteSpace(fileId))
+                     .Select(BuildImageUrlFromPicture)
+                     .Where(imageUrl => !string.IsNullOrWhiteSpace(imageUrl)))
         {
-            var imageUrl = BuildImageUrlFromPicture(fileId);
-            if (!string.IsNullOrWhiteSpace(imageUrl))
-            {
-                return imageUrl;
-            }
+            return imageUrl;
         }
 
         return null;
@@ -2763,13 +2758,11 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        foreach (var image in images.EnumerateArray())
+        foreach (var url in images.EnumerateArray()
+            .Select(image => TryReadJsonStringProperty(image, "url"))
+            .Where(url => !string.IsNullOrWhiteSpace(url)))
         {
-            var url = TryReadJsonStringProperty(image, "url");
-            if (!string.IsNullOrWhiteSpace(url))
-            {
-                return url;
-            }
+            return url;
         }
 
         return null;
@@ -3042,18 +3035,14 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        foreach (var entry in values.EnumerateArray())
+        foreach (var text in values.EnumerateArray()
+            .Where(static entry => entry.ValueKind == JsonValueKind.Object
+                && entry.TryGetProperty("text", out var textProp)
+                && textProp.ValueKind == JsonValueKind.String)
+            .Select(static entry => entry.GetProperty("text").GetString())
+            .Where(static text => !string.IsNullOrWhiteSpace(text)))
         {
-            if (entry.ValueKind == JsonValueKind.Object &&
-                entry.TryGetProperty("text", out var textProp) &&
-                textProp.ValueKind == JsonValueKind.String)
-            {
-                var text = textProp.GetString();
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text;
-                }
-            }
+            return text;
         }
 
         return null;
@@ -3153,28 +3142,22 @@ public sealed class SpotifyMetadataService
 
     private static bool TryResolveNestedElement(JsonElement item, IReadOnlyList<string> path, out JsonElement current)
     {
-        current = item;
-        foreach (var segment in path)
-        {
-            if (!current.TryGetProperty(segment, out current))
-            {
-                current = default;
-                return false;
-            }
-        }
-
-        return true;
+        var resolved = path.Aggregate(
+            (Found: true, Current: item),
+            static (state, segment) => state.Found && state.Current.TryGetProperty(segment, out var next)
+                ? (true, next)
+                : (false, default));
+        current = resolved.Found ? resolved.Current : default;
+        return resolved.Found;
     }
 
     private static string? TryReadImageUrlFromArray(JsonElement imageArray)
     {
-        foreach (var entry in imageArray.EnumerateArray())
+        foreach (var imageUrl in imageArray.EnumerateArray()
+            .Select(TryReadImageUrlFromObject)
+            .Where(imageUrl => !string.IsNullOrWhiteSpace(imageUrl)))
         {
-            var imageUrl = TryReadImageUrlFromObject(entry);
-            if (!string.IsNullOrWhiteSpace(imageUrl))
-            {
-                return imageUrl;
-            }
+            return imageUrl;
         }
 
         return null;

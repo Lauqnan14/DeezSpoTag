@@ -354,13 +354,11 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
     private static string? ReadNestedString(System.Text.Json.JsonElement element, params string[] path)
     {
         var current = element;
-        foreach (var segment in path)
+        if (!path.All(segment =>
+            current.ValueKind == System.Text.Json.JsonValueKind.Object
+            && current.TryGetProperty(segment, out current)))
         {
-            if (current.ValueKind != System.Text.Json.JsonValueKind.Object
-                || !current.TryGetProperty(segment, out current))
-            {
-                return null;
-            }
+            return null;
         }
 
         return current.ValueKind == System.Text.Json.JsonValueKind.String ? current.GetString() : null;
@@ -395,12 +393,9 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
     private static int ReadNestedInt32OrDefault(System.Text.Json.JsonElement element, params string[] path)
     {
         var current = element;
-        foreach (var segment in path)
+        if (!path.All(segment => current.TryGetProperty(segment, out current)))
         {
-            if (!current.TryGetProperty(segment, out current))
-            {
-                return 0;
-            }
+            return 0;
         }
 
         return ReadInt32OrDefault(current);

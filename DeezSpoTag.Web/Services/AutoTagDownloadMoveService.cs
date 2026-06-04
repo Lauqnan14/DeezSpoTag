@@ -594,16 +594,13 @@ public sealed class AutoTagDownloadMoveService
             return null;
         }
 
-        foreach (var candidate in files.OrderBy(static path => path, StringComparer.OrdinalIgnoreCase))
+        foreach (var ioPath in files
+            .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+            .Select(DownloadPathResolver.ResolveIoPath)
+            .Where(ioPath => !string.IsNullOrWhiteSpace(ioPath)
+                && IsAudioExtension(ioPath)
+                && IOFile.Exists(ioPath)))
         {
-            var ioPath = DownloadPathResolver.ResolveIoPath(candidate);
-            if (string.IsNullOrWhiteSpace(ioPath)
-                || !IsAudioExtension(ioPath)
-                || !IOFile.Exists(ioPath))
-            {
-                continue;
-            }
-
             return ioPath;
         }
 
@@ -688,15 +685,11 @@ public sealed class AutoTagDownloadMoveService
 
     private static bool TryReadStringProperty(JsonElement source, IReadOnlyList<string> propertyNames, out string value)
     {
-        foreach (var propertyName in propertyNames)
+        foreach (var resolved in propertyNames
+            .Select(propertyName => ReadStringProperty(source, propertyName))
+            .Where(resolved => !string.IsNullOrWhiteSpace(resolved)))
         {
-            var resolved = ReadStringProperty(source, propertyName);
-            if (string.IsNullOrWhiteSpace(resolved))
-            {
-                continue;
-            }
-
-            value = resolved.Trim();
+            value = resolved!.Trim();
             return true;
         }
 
@@ -2454,13 +2447,11 @@ public sealed class AutoTagDownloadMoveService
             return protectedDirectories;
         }
 
-        foreach (var bucket in new[] { "Atmos", "Stereo" })
+        foreach (var bucketPath in new[] { "Atmos", "Stereo" }
+            .Select(bucket => Path.Join(rootIo, bucket))
+            .Where(Directory.Exists))
         {
-            var bucketPath = Path.Join(rootIo, bucket);
-            if (Directory.Exists(bucketPath))
-            {
-                protectedDirectories.Add(Path.GetFullPath(bucketPath));
-            }
+            protectedDirectories.Add(Path.GetFullPath(bucketPath));
         }
 
         return protectedDirectories;

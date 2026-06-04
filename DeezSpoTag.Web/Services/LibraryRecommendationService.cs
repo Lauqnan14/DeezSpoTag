@@ -467,9 +467,10 @@ public sealed class LibraryRecommendationService
         var nowLocal = DateTimeOffset.Now;
         var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
         var stations = new List<RecommendationStationDto>(folders.Count);
-        foreach (var folder in folders.OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase))
+        foreach (var scope in folders
+            .OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Select(folder => BuildScope(libraryId, folder)))
         {
-            var scope = BuildScope(libraryId, folder);
             var stationId = scope.StationId;
 
             var imageUrl = ResolveRecommendationArtworkUrl(stationId, artworkAssignments);
@@ -2511,16 +2512,12 @@ public sealed class LibraryRecommendationService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (card.Tags.TryGetValue("SHAZAM_DEEZER_URL", out var deezerUrls))
         {
-            foreach (var deezerUrl in deezerUrls)
+            foreach (var normalized in deezerUrls
+                .Select(deezerUrl => NormalizeText(deezerUrl, string.Empty))
+                .Where(normalized => !string.IsNullOrWhiteSpace(normalized)
+                    && IsDeezerLinkCandidate(normalized)
+                    && seen.Add(normalized)))
             {
-                var normalized = NormalizeText(deezerUrl, string.Empty);
-                if (string.IsNullOrWhiteSpace(normalized)
-                    || !IsDeezerLinkCandidate(normalized)
-                    || !seen.Add(normalized))
-                {
-                    continue;
-                }
-
                 yield return normalized;
             }
         }
@@ -2599,13 +2596,11 @@ public sealed class LibraryRecommendationService
     private static string TryGetQueryValueFromAbsoluteUri(Uri uri, string parameterName)
     {
         var query = uri.Query.TrimStart('?');
-        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var parts in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(pair => pair.Split('=', 2, StringSplitOptions.TrimEntries))
+            .Where(parts => string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase)))
         {
-            var parts = pair.Split('=', 2, StringSplitOptions.TrimEntries);
-            if (string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase))
-            {
-                return parts.Length == 2 ? parts[1] : string.Empty;
-            }
+            return parts.Length == 2 ? parts[1] : string.Empty;
         }
 
         return string.Empty;
@@ -3423,9 +3418,8 @@ public sealed class LibraryRecommendationService
             try
             {
                 var gatewayTracks = await _deezerGatewayService.GetTracksAsync(batch);
-                foreach (var gatewayTrack in gatewayTracks)
+                foreach (var deezerMetadata in gatewayTracks.Select(MapGatewayTrack))
                 {
-                    var deezerMetadata = MapGatewayTrack(gatewayTrack);
                     var deezerId = NormalizeId(deezerMetadata.Id);
                     if (string.IsNullOrWhiteSpace(deezerId) || !unresolvedTrackIds.Remove(deezerId))
                     {
@@ -3802,14 +3796,11 @@ public sealed class LibraryRecommendationService
         }
 
         var query = uri.Query.TrimStart('?');
-        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var parts in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(pair => pair.Split('=', 2, StringSplitOptions.TrimEntries))
+            .Where(parts => parts.Length == 2 && string.Equals(parts[0], "i", StringComparison.OrdinalIgnoreCase)))
         {
-            var parts = pair.Split('=', 2, StringSplitOptions.TrimEntries);
-            if (parts.Length == 2
-                && string.Equals(parts[0], "i", StringComparison.OrdinalIgnoreCase))
-            {
-                return NormalizeId(Uri.UnescapeDataString(parts[1]));
-            }
+            return NormalizeId(Uri.UnescapeDataString(parts[1]));
         }
 
         var lastSegment = uri.AbsolutePath

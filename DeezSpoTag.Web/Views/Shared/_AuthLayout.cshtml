@@ -8,7 +8,7 @@
 <head>
     <title>@ViewData["Title"] - DeezSpoTag</title>
     <meta name="deezspotag-csrf-token" content="@_csrfRequestToken" />
-    <partial name="_CommonHeadAssets" />
+    @await Html.PartialAsync("_CommonHeadAssets")
 </head>
 <body>
     <main class="main-content auth-main-content" id="mainContent">
@@ -18,6 +18,6 @@
     @{
         ViewData["IncludeSignalR"] = true;
     }
-    <partial name="_CommonFooterScripts" />
+    @await Html.PartialAsync("_CommonFooterScripts")
 </body>
 </html>

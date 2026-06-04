@@ -5,13 +5,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <meta name="theme-color" content="#0f172a">
-    <link rel="icon" href="~/images/logo.svg" type="image/svg+xml">
+    <link rel="icon" href="@Url.Content("~/images/logo.svg")" type="image/svg+xml">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
           rel="stylesheet"
           integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM"
           crossorigin="anonymous">
-    <link href="~/css/themes.css" rel="stylesheet" asp-append-version="true">
-    <link href="~/css/site.css" rel="stylesheet" asp-append-version="true">
+    <link href="@AssetUrl.Versioned(ViewContext, Url, "~/css/themes.css")" rel="stylesheet">
+    <link href="@AssetUrl.Versioned(ViewContext, Url, "~/css/site.css")" rel="stylesheet">
     <style>
         body.auth-page {
             background: var(--bg-primary);

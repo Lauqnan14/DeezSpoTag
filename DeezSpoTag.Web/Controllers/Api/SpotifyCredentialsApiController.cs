@@ -1994,16 +1994,16 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
             var usersRoot = Path.Join(spotifyRoot, "users");
             if (Directory.Exists(usersRoot))
             {
-                foreach (var dir in Directory.EnumerateDirectories(usersRoot))
+                var userDirectories = Directory.EnumerateDirectories(usersRoot).ToList();
+                for (var i = 0; i < userDirectories.Count; i++)
                 {
-                    if (await ProcessSingleUserProfileArtifactsAsync(
-                            dir,
-                            currentUserId,
-                            blobPaths,
-                            accountNames))
-                    {
-                        removedProfiles++;
-                    }
+                    removedProfiles += await ProcessSingleUserProfileArtifactsAsync(
+                        userDirectories[i],
+                        currentUserId,
+                        blobPaths,
+                        accountNames)
+                        ? 1
+                        : 0;
                 }
             }
 

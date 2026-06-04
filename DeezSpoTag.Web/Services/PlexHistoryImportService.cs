@@ -56,10 +56,8 @@ public sealed class PlexHistoryImportService
         var metadataLookupCache = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
         var ratingKeyUpserts = new List<PlexTrackMetadataUpsertDto>();
 
-        foreach (var item in history)
+        foreach (var item in history.Where(static item => item.ViewedAtUtc is not null))
         {
-            if (item.ViewedAtUtc is null) continue;
-
             var trackId = await ResolveTrackIdAsync(item, trackIdsByRatingKey, metadataLookupCache, stats, cancellationToken);
             var libraryId = await ResolveLibraryIdAsync(item.FilePath, cancellationToken);
             if (!trackId.HasValue) stats.Unresolved++;

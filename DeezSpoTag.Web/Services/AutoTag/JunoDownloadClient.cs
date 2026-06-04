@@ -274,13 +274,12 @@ public sealed class JunoDownloadClient
     private static List<string> GetTextParts(HtmlNode node)
     {
         var parts = new List<string>();
-        foreach (var textNode in node.DescendantsAndSelf().Where(n => n.NodeType == HtmlNodeType.Text))
+        foreach (var value in node.DescendantsAndSelf()
+            .Where(n => n.NodeType == HtmlNodeType.Text)
+            .Select(textNode => HtmlEntity.DeEntitize(textNode.InnerText).Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            var value = HtmlEntity.DeEntitize(textNode.InnerText).Trim();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                parts.Add(value);
-            }
+            parts.Add(value);
         }
 
         return parts;

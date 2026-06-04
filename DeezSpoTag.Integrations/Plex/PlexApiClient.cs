@@ -842,14 +842,12 @@ public class PlexApiClient
             }
 
             var doc = XDocument.Parse(content);
-            foreach (var candidate in EnumerateArtistCandidates(doc, targetName, targetLoose, sections, sectionKeyHint))
-            {
-                if (!candidates.TryGetValue(candidate.ratingKey, out var existing) ||
+            foreach (var candidate in EnumerateArtistCandidates(doc, targetName, targetLoose, sections, sectionKeyHint)
+                .Where(candidate => !candidates.TryGetValue(candidate.ratingKey, out var existing) ||
                     candidate.score > existing.score ||
-                    (candidate.score == existing.score && candidate.lengthDelta < existing.lengthDelta))
-                {
-                    candidates[candidate.ratingKey] = (candidate.score, candidate.lengthDelta, candidate.sectionKey, candidate.title);
-                }
+                    (candidate.score == existing.score && candidate.lengthDelta < existing.lengthDelta)))
+            {
+                candidates[candidate.ratingKey] = (candidate.score, candidate.lengthDelta, candidate.sectionKey, candidate.title);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -998,9 +996,8 @@ public class PlexApiClient
 
     private static void AddSearchTracks(XDocument doc, Dictionary<string, PlexTrack> tracksByRatingKey)
     {
-        foreach (var track in doc.Descendants(TrackElementName))
+        foreach (var mapped in doc.Descendants(TrackElementName).Select(MapTrack))
         {
-            var mapped = MapTrack(track);
             var dedupeKey = GetTrackDedupeKey(mapped);
             if (!tracksByRatingKey.ContainsKey(dedupeKey))
             {

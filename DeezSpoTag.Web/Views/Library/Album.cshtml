@@ -7,7 +7,7 @@
         : $"/Library?folderId={Uri.EscapeDataString(folderId)}";
 }
 
-<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/library.css")" />
 
 <div class="library-page album-page" data-album-id="@ViewData["AlbumId"]">
     <div class="library-breadcrumbs">
@@ -76,5 +76,5 @@
     </section>
 </div>
 
-<script src="~/js/library-interactions.js" asp-append-version="true"></script>
-<script src="~/js/library-album-page.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-interactions.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-album-page.js")"></script>

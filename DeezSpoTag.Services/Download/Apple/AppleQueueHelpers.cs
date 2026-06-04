@@ -290,12 +290,12 @@ public static class AppleQueueHelpers
     private static bool TryExtractArtworkFromSearch(System.Text.Json.JsonElement results, string? artist, string? album, int size, out string? url)
     {
         url = null;
-        foreach (var key in new[] { "songs", "albums" })
+        foreach (var candidateUrl in new[] { "songs", "albums" }
+            .Select(key => TryExtractArtworkFromSearchBucket(results, key, artist, album, size, out var bucketUrl) ? bucketUrl : null)
+            .Where(static bucketUrl => !string.IsNullOrWhiteSpace(bucketUrl)))
         {
-            if (TryExtractArtworkFromSearchBucket(results, key, artist, album, size, out url))
-            {
-                return true;
-            }
+            url = candidateUrl;
+            return true;
         }
 
         return false;

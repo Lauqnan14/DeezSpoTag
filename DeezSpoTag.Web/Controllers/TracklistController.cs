@@ -674,17 +674,15 @@ namespace DeezSpoTag.Web.Controllers
             int resolvedBitrate)
         {
             var queued = new List<Dictionary<string, object>>();
-            foreach (var url in urls)
+            foreach (var intent in urls.Select(url => new DownloadIntent
+                     {
+                         SourceService = DeezerSource,
+                         SourceUrl = url,
+                         PreferredEngine = DeezerSource,
+                         Quality = resolvedBitrate.ToString(),
+                         ContentType = "music"
+                     }))
             {
-                var intent = new DownloadIntent
-                {
-                    SourceService = DeezerSource,
-                    SourceUrl = url,
-                    PreferredEngine = DeezerSource,
-                    Quality = resolvedBitrate.ToString(),
-                    ContentType = "music"
-                };
-
                 var result = await _intentService.EnqueueManualAsync(intent, CancellationToken.None);
                 queued.AddRange(result.Queued.Select(static uuid => new Dictionary<string, object> { ["uuid"] = uuid }));
             }

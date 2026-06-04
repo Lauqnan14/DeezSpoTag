@@ -406,12 +406,11 @@ public sealed class AppleExternalToolRunner
         for (var i = 0; i < 6; i++)
         {
             var toolsBin = Path.Join(root, "tools", "bin");
-            foreach (var name in allNames)
+            foreach (var localPath in allNames
+                .Select(name => TryResolveInDirectory(toolsBin, name, out var resolved) ? resolved : null)
+                .Where(localPath => !string.IsNullOrWhiteSpace(localPath)))
             {
-                if (TryResolveInDirectory(toolsBin, name, out var localPath))
-                {
-                    return localPath;
-                }
+                return localPath;
             }
 
             root = Path.GetDirectoryName(root) ?? root;
@@ -449,15 +448,11 @@ public sealed class AppleExternalToolRunner
     private static string? ResolveFromExtraToolDirs(string[] toolNames)
     {
         var additionalDirs = EnumerateAdditionalToolDirs().Distinct(StringComparer.OrdinalIgnoreCase);
-        foreach (var dir in additionalDirs)
+        foreach (var resolved in additionalDirs
+            .SelectMany(dir => toolNames.Select(name => TryResolveInDirectory(dir, name, out var resolved) ? resolved : null))
+            .Where(resolved => !string.IsNullOrWhiteSpace(resolved)))
         {
-            foreach (var name in toolNames)
-            {
-                if (TryResolveInDirectory(dir, name, out var resolved))
-                {
-                    return resolved;
-                }
-            }
+            return resolved;
         }
 
         return null;

@@ -526,15 +526,13 @@ public partial class AutoTagService
             return true;
         }
 
-        foreach (var activeJobId in _activeJobIds.Keys)
+        foreach (var activeJobId in _activeJobIds.Keys.Where(activeJobId =>
+            _jobs.TryGetValue(activeJobId, out var activeJob)
+            && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
+            && IsEnhancementRunIntent(activeJob.RunIntent)))
         {
-            if (_jobs.TryGetValue(activeJobId, out var activeJob)
-                && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
-                && IsEnhancementRunIntent(activeJob.RunIntent))
-            {
-                jobId = activeJobId;
-                return true;
-            }
+            jobId = activeJobId;
+            return true;
         }
 
         jobId = null;
@@ -1016,23 +1014,16 @@ public partial class AutoTagService
         string normalizedRunIntent,
         string? normalizedProfileId)
     {
-        AutoTagJob? latestMatchingJob = null;
-        foreach (var path in Directory.EnumerateFiles(_jobsDir, "*.json"))
-        {
-            var job = TryLoadResumeScopeJob(path);
-            if (job == null
-                || !IsResumeScopeMatch(job, normalizedPath, normalizedRunIntent, normalizedProfileId))
-            {
-                continue;
-            }
-
-            if (latestMatchingJob == null || job.StartedAt >= latestMatchingJob.StartedAt)
-            {
-                latestMatchingJob = job;
-            }
-        }
-
-        return latestMatchingJob;
+        return Directory.EnumerateFiles(_jobsDir, "*.json")
+            .Select(TryLoadResumeScopeJob)
+            .Where(job => job is not null
+                && IsResumeScopeMatch(job, normalizedPath, normalizedRunIntent, normalizedProfileId))
+            .Select(job => job!)
+            .Aggregate<AutoTagJob, AutoTagJob?>(
+                null,
+                static (latestMatchingJob, job) => latestMatchingJob == null || job.StartedAt >= latestMatchingJob.StartedAt
+                    ? job
+                    : latestMatchingJob);
     }
 
     private AutoTagJob? TryLoadResumeScopeJob(string path)
@@ -3991,10 +3982,7 @@ public partial class AutoTagService
             var refreshed = 0;
             foreach (var section in musicSections)
             {
-                if (await _plexApiClient.RefreshLibraryAsync(plexUrl, plexToken, section.Key, cancellationToken))
-                {
-                    refreshed++;
-                }
+                refreshed += await _plexApiClient.RefreshLibraryAsync(plexUrl, plexToken, section.Key, cancellationToken) ? 1 : 0;
             }
 
             AppendLog(job, $"plex scan requested: {musicSections.Count} libraries (refreshed={refreshed})");
@@ -6435,17 +6423,12 @@ public partial class AutoTagService
                 return repairedMissingArchive.Count > 0 ? repairedMissingArchive : new List<string>();
             }
 
-            List<string> archived = new();
-            foreach (var path in candidatePaths)
-            {
-                var lines = File.ReadAllLines(path, Encoding.UTF8)
+            var archived = candidatePaths
+                .Select(path => File.ReadAllLines(path, Encoding.UTF8)
                     .Where(line => !string.IsNullOrWhiteSpace(line))
-                    .ToList();
-                if (lines.Count > archived.Count)
-                {
-                    archived = lines;
-                }
-            }
+                    .ToList())
+                .OrderByDescending(lines => lines.Count)
+                .FirstOrDefault() ?? new List<string>();
             if (archived.Count > 0)
             {
                 return archived;
@@ -6733,17 +6716,13 @@ public partial class AutoTagService
     {
         var entries = new List<TaggingStatusSnapshot>();
         var skippedMalformed = 0;
-        foreach (var rawLine in File.ReadLines(path, Encoding.UTF8))
+        foreach (var line in File.ReadLines(path, Encoding.UTF8)
+            .Select(static rawLine => rawLine?.Trim())
+            .Where(static line => !string.IsNullOrWhiteSpace(line)))
         {
-            var line = rawLine?.Trim();
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
             try
             {
-                var entry = JsonSerializer.Deserialize<TaggingStatusSnapshot>(line, _jsonOptions);
+                var entry = JsonSerializer.Deserialize<TaggingStatusSnapshot>(line!, _jsonOptions);
                 if (entry != null)
                 {
                     entries.Add(entry);
@@ -6816,13 +6795,11 @@ public partial class AutoTagService
             return null;
         }
 
-        foreach (var root in EnumerateHistoryRoots())
+        foreach (var candidate in EnumerateHistoryRoots()
+            .Select(root => Path.Join(root, jobId, fileName))
+            .Where(File.Exists))
         {
-            var candidate = Path.Join(root, jobId, fileName);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+            return candidate;
         }
 
         return null;
@@ -6836,19 +6813,13 @@ public partial class AutoTagService
         }
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var root in EnumerateHistoryRoots())
+        foreach (var normalized in EnumerateHistoryRoots()
+            .Select(root => Path.Join(root, jobId, fileName))
+            .Where(File.Exists)
+            .Select(Path.GetFullPath)
+            .Where(seen.Add))
         {
-            var candidate = Path.Join(root, jobId, fileName);
-            if (!File.Exists(candidate))
-            {
-                continue;
-            }
-
-            var normalized = Path.GetFullPath(candidate);
-            if (seen.Add(normalized))
-            {
-                yield return normalized;
-            }
+            yield return normalized;
         }
     }
 
@@ -6861,22 +6832,19 @@ public partial class AutoTagService
                 return;
             }
 
-            foreach (var path in Directory.EnumerateFiles(_jobsDir, "*.json"))
+            foreach (var jobId in Directory.EnumerateFiles(_jobsDir, "*.json")
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(jobId => !string.IsNullOrWhiteSpace(jobId)))
             {
-                var jobId = Path.GetFileNameWithoutExtension(path);
-                if (string.IsNullOrWhiteSpace(jobId))
-                {
-                    continue;
-                }
-
-                var archiveComplete = IsRunArchiveComplete(jobId);
-                var needsRepair = archiveComplete && ShouldRepairRunArchive(jobId);
+                var currentJobId = jobId!;
+                var archiveComplete = IsRunArchiveComplete(currentJobId);
+                var needsRepair = archiveComplete && ShouldRepairRunArchive(currentJobId);
                 if (archiveComplete && !needsRepair)
                 {
                     continue;
                 }
 
-                var job = LoadJob(jobId);
+                var job = LoadJob(currentJobId);
                 if (job == null)
                 {
                     continue;

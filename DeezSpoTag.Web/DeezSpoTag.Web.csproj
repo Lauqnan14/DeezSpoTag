@@ -52,4 +52,53 @@
     </Content>
   </ItemGroup>
 
+  <UsingTask TaskName="NormalizeRazorGeneratedFields"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <GeneratedFiles ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="Microsoft.Build.Framework" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+foreach (var generatedFile in GeneratedFiles ?? Array.Empty<ITaskItem>())
+{
+    var path = generatedFile.ItemSpec;
+    if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+    {
+        continue;
+    }
+
+    var content = File.ReadAllText(path);
+    var normalized = content.Replace(
+        "private global::Microsoft.AspNetCore.Razor.Runtime.TagHelpers.TagHelperRunner __tagHelperRunner =",
+        "private readonly global::Microsoft.AspNetCore.Razor.Runtime.TagHelpers.TagHelperRunner __tagHelperRunner =");
+    if (!string.Equals(content, normalized, StringComparison.Ordinal))
+    {
+        File.WriteAllText(path, normalized);
+    }
+}
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="NormalizeRazorGeneratedFieldsForAnalyzers"
+          AfterTargets="RazorGenerate"
+          BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <RazorGeneratedFilesForAnalyzer Include="$(IntermediateOutputPath)generated/**/*.g.cs" />
+    </ItemGroup>
+    <NormalizeRazorGeneratedFields GeneratedFiles="@(RazorGeneratedFilesForAnalyzer)" />
+  </Target>
+
+  <Target Name="NormalizeRazorGeneratedFieldsAfterCompileForAnalyzers"
+          AfterTargets="CoreCompile">
+    <ItemGroup>
+      <RazorGeneratedFilesForAnalyzerPostCompile Include="$(IntermediateOutputPath)generated/**/*.g.cs" />
+    </ItemGroup>
+    <NormalizeRazorGeneratedFields GeneratedFiles="@(RazorGeneratedFilesForAnalyzerPostCompile)" />
+  </Target>
+
 </Project>

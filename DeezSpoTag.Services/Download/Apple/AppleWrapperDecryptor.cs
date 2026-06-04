@@ -248,13 +248,11 @@ public sealed class AppleWrapperDecryptor
             ? new[] { "C:\\Program Files\\Go\\bin\\go.exe" }
             : new[] { "/usr/bin/go", "/usr/local/go/bin/go" };
 
-        foreach (var candidate in candidates)
+        foreach (var fullPath in candidates
+            .Select(Path.GetFullPath)
+            .Where(File.Exists))
         {
-            var fullPath = Path.GetFullPath(candidate);
-            if (File.Exists(fullPath))
-            {
-                return fullPath;
-            }
+            return fullPath;
         }
 
         return null;

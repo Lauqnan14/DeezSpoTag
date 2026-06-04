@@ -476,17 +476,12 @@ public sealed class WatchlistFinalizationService
                 return Array.Empty<string>();
             }
 
-            var paths = new List<string>();
-            foreach (var value in finalDestinations.EnumerateObject().Select(static property => property.Value))
-            {
-                if (value.ValueKind == JsonValueKind.String
+            return finalDestinations.EnumerateObject()
+                .Select(static property => property.Value)
+                .Where(value => value.ValueKind == JsonValueKind.String
                     && !string.IsNullOrWhiteSpace(value.GetString()))
-                {
-                    paths.Add(value.GetString()!);
-                }
-            }
-
-            return paths;
+                .Select(static value => value.GetString()!)
+                .ToArray();
         }
         catch (JsonException)
         {
@@ -579,15 +574,13 @@ public sealed class WatchlistFinalizationService
 
     private static bool TryReadStringProperty(JsonElement source, IReadOnlyList<string> propertyNames, out string value)
     {
-        foreach (var propertyName in propertyNames)
+        foreach (var property in propertyNames
+            .Select(propertyName => TryGetPropertyIgnoreCase(source, propertyName, out var property) ? property : default)
+            .Where(property => property.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(property.GetString())))
         {
-            if (TryGetPropertyIgnoreCase(source, propertyName, out var property)
-                && property.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(property.GetString()))
-            {
-                value = property.GetString()!.Trim();
-                return true;
-            }
+            value = property.GetString()!.Trim();
+            return true;
         }
 
         value = string.Empty;

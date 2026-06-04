@@ -121,13 +121,12 @@ public sealed class ShazamRecognitionService
         }
 
         ShazamRecognitionAttempt? firstRecognizerFailure = null;
-        foreach (var signatureWindowSeconds in AudioOnlySignatureRetryWindowsSeconds)
+        foreach (var attempt in AudioOnlySignatureRetryWindowsSeconds.Select(signatureWindowSeconds => RecognizeWithDetails(
+                     filePath,
+                     signatureWindowSeconds: signatureWindowSeconds,
+                     mode: RecognitionMode.AudioOnly,
+                     cancellationToken: cancellationToken)))
         {
-            var attempt = RecognizeWithDetails(
-                filePath,
-                signatureWindowSeconds: signatureWindowSeconds,
-                mode: RecognitionMode.AudioOnly,
-                cancellationToken: cancellationToken);
             if (attempt.Matched)
             {
                 return attempt;

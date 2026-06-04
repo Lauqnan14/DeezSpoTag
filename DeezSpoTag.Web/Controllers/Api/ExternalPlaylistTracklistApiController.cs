@@ -629,9 +629,8 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     private static int AppendTidalTracks(JsonElement itemsElement, List<object> tracks, ref int position)
     {
         var appended = 0;
-        foreach (var wrapper in itemsElement.EnumerateArray())
+        foreach (var trackNode in itemsElement.EnumerateArray().Select(ResolveTidalTrackNode))
         {
-            var trackNode = ResolveTidalTrackNode(wrapper);
             if (!TryBuildTidalTrack(trackNode, ++position, out var track))
             {
                 position--;
@@ -853,12 +852,9 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             try
             {
                 using var doc = JsonDocument.Parse(json);
-                foreach (var candidate in EnumerateJsonNodes(doc.RootElement))
+                foreach (var candidate in EnumerateJsonNodes(doc.RootElement).Where(candidate => IsJsonNodeType(candidate, expectedType)))
                 {
-                    if (IsJsonNodeType(candidate, expectedType))
-                    {
-                        return candidate.Clone();
-                    }
+                    return candidate.Clone();
                 }
             }
             catch (JsonException)
@@ -1494,9 +1490,15 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         };
     }
 
-    [GeneratedRegex(@"^PT(?:(?<h>\d+)H)?(?:(?<m>\d+)M)?(?:(?<s>\d+(?:\.\d+)?)S)?$", RegexOptions.IgnoreCase)]
-    private static partial Regex IsoDurationRegex();
+    private static readonly Regex s_isoDurationRegex = new(
+        @"^PT(?:(?<h>\d+)H)?(?:(?<m>\d+)M)?(?:(?<s>\d+(?:\.\d+)?)S)?$",
+        RegexOptions.IgnoreCase);
 
-    [GeneratedRegex(@"/playlists?/[^/]+/([^/?#]+)", RegexOptions.IgnoreCase)]
-    private static partial Regex QobuzPlaylistIdRegex();
+    private static readonly Regex s_qobuzPlaylistIdRegex = new(
+        @"/playlists?/[^/]+/([^/?#]+)",
+        RegexOptions.IgnoreCase);
+
+    private static Regex IsoDurationRegex() => s_isoDurationRegex;
+
+    private static Regex QobuzPlaylistIdRegex() => s_qobuzPlaylistIdRegex;
 }

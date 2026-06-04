@@ -874,13 +874,11 @@ public class DeezSpoTagSettingsService : ISettingsService
         var groups = new SortedSet<string>(StringComparer.Ordinal);
         if (configuredGroups != null)
         {
-            foreach (var group in configuredGroups)
+            foreach (var normalized in configuredGroups
+                .Select(NormalizeWatchedArtistAlbumGroup)
+                .Where(normalized => !string.IsNullOrWhiteSpace(normalized)))
             {
-                var normalized = NormalizeWatchedArtistAlbumGroup(group);
-                if (!string.IsNullOrWhiteSpace(normalized))
-                {
-                    groups.Add(normalized);
-                }
+                groups.Add(normalized!);
             }
         }
 

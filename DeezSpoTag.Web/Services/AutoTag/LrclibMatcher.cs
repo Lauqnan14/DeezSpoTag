@@ -124,19 +124,12 @@ public sealed class LrclibMatcher
         IEnumerable<string> titleCandidates)
     {
         var queries = new List<string>();
-        foreach (var artist in artistCandidates)
+        foreach (var query in artistCandidates
+            .SelectMany(artist => titleCandidates.Select(titleCandidate => $"{artist} {titleCandidate}".Trim()))
+            .Where(query => !string.IsNullOrWhiteSpace(query)
+                && !queries.Contains(query, StringComparer.OrdinalIgnoreCase)))
         {
-            foreach (var titleCandidate in titleCandidates)
-            {
-                var query = $"{artist} {titleCandidate}".Trim();
-                if (string.IsNullOrWhiteSpace(query)
-                    || queries.Contains(query, StringComparer.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                queries.Add(query);
-            }
+            queries.Add(query);
         }
 
         return queries;
@@ -249,13 +242,11 @@ public sealed class LrclibMatcher
             }
 
             var candidates = new List<LrclibApiTrack>();
-            foreach (var element in document.RootElement.EnumerateArray())
+            foreach (var parsed in document.RootElement.EnumerateArray()
+                .Select(ParseApiTrack)
+                .Where(parsed => parsed != null))
             {
-                var parsed = ParseApiTrack(element);
-                if (parsed != null)
-                {
-                    candidates.Add(parsed);
-                }
+                candidates.Add(parsed!);
             }
 
             return SelectBestCandidate(candidates, durationSeconds, config);
@@ -464,24 +455,16 @@ public sealed class LrclibMatcher
             return lines;
         }
 
-        foreach (var raw in syncedLyrics.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var parsedLine in syncedLyrics.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(raw => raw.Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => new { Line = line, Match = LrcLineRegex.Match(line) })
+            .Where(parsedLine => parsedLine.Match.Success))
         {
-            var line = raw.Trim();
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            var match = LrcLineRegex.Match(line);
-            if (!match.Success)
-            {
-                continue;
-            }
-
-            var minutesRaw = match.Groups[1].Value;
-            var secondsRaw = match.Groups[2].Value;
-            var fractionRaw = match.Groups[3].Value;
-            var text = match.Groups[4].Value.Trim();
+            var minutesRaw = parsedLine.Match.Groups[1].Value;
+            var secondsRaw = parsedLine.Match.Groups[2].Value;
+            var fractionRaw = parsedLine.Match.Groups[3].Value;
+            var text = parsedLine.Match.Groups[4].Value.Trim();
             if (string.IsNullOrWhiteSpace(text))
             {
                 continue;

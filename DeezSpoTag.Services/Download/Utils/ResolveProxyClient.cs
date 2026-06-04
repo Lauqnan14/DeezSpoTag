@@ -240,15 +240,12 @@ public sealed partial class ResolveProxyClient
             return null;
         }
 
-        foreach (var item in value.EnumerateArray())
+        foreach (var url in value.EnumerateArray().Select(static item => item.ValueKind == JsonValueKind.String
+            ? NormalizeUrl(item.GetString())
+            : null)
+            .Where(url => !string.IsNullOrWhiteSpace(url)))
         {
-            var url = item.ValueKind == JsonValueKind.String
-                ? NormalizeUrl(item.GetString())
-                : null;
-            if (!string.IsNullOrWhiteSpace(url))
-            {
-                return url;
-            }
+            return url;
         }
 
         return null;
@@ -300,13 +297,11 @@ public sealed partial class ResolveProxyClient
         }
 
         var query = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var pair in query)
+        foreach (var parts in query
+            .Select(static pair => pair.Split('=', 2))
+            .Where(parts => parts.Length == 2 && string.Equals(parts[0], "v", StringComparison.OrdinalIgnoreCase)))
         {
-            var parts = pair.Split('=', 2);
-            if (parts.Length == 2 && string.Equals(parts[0], "v", StringComparison.OrdinalIgnoreCase))
-            {
-                return Uri.UnescapeDataString(parts[1]);
-            }
+            return Uri.UnescapeDataString(parts[1]);
         }
 
         return null;
@@ -325,8 +320,12 @@ public sealed partial class ResolveProxyClient
                || !string.IsNullOrWhiteSpace(result.YouTubeUrl);
     }
 
-    [GeneratedRegex(@"spotify\.com\/track\/(?<id>[A-Za-z0-9]+)", RegexOptions.IgnoreCase, 250)]
-    private static partial Regex SpotifyTrackRegex();
+    private static readonly Regex s_spotifyTrackRegex = new(
+        @"spotify\.com\/track\/(?<id>[A-Za-z0-9]+)",
+        RegexOptions.IgnoreCase,
+        TimeSpan.FromMilliseconds(250));
+
+    private static Regex SpotifyTrackRegex() => s_spotifyTrackRegex;
 }
 
 public sealed record ResolveProxyLookupResult(bool Attempted, bool Completed, SongLinkResult? Result, string? Error)

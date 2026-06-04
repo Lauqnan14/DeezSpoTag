@@ -33,12 +33,11 @@ public sealed class TraxsourceClient
         var rows = trackList.SelectNodes(".//div[contains(@class,'trk-row')]")
             ?? new HtmlNodeCollection(trackList);
         var tracks = new List<TraxsourceTrackInfo>();
-        foreach (var row in rows)
+        foreach (var track in rows
+            .Select(row => TryParseTrackRow(row, out var track) ? track : null)
+            .Where(track => track is not null))
         {
-            if (TryParseTrackRow(row, out var track))
-            {
-                tracks.Add(track);
-            }
+            tracks.Add(track!);
         }
 
         return tracks;

@@ -6,8 +6,8 @@
 }
 
 @section Styles {
-<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
-<link rel="stylesheet" href="~/css/spotify-card-shared.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/library.css")" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/spotify-card-shared.css")" />
 <style>
 .tracklist-header {
     background-size: cover;
@@ -1323,7 +1323,7 @@
 </div>
 
 @section Scripts {
-<script src="~/js/library-playlist-shared.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-playlist-shared.js")"></script>
 <script>
 const tracklistId = '@Html.Raw(id)';
 const tracklistAppleUrl = '@Html.Raw(ViewData["AppleUrl"] ?? "")';
@@ -7543,8 +7543,8 @@ document.addEventListener('mouseleave', (event) => {
     cell.style.removeProperty('--marquee-distance');
 }, true);
 </script>
-<script src="~/js/library.js" asp-append-version="true"></script>
-<script src="~/js/library-watchlists.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-watchlists.js")"></script>
 <style>
     .tracks-table .track-title {
         display: flex;

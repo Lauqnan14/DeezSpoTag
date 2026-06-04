@@ -4,7 +4,7 @@
 }
 
 @section Styles {
-<link rel="stylesheet" href="~/css/loading-state-shared.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/loading-state-shared.css")" />
 <style>
 .deezer-artist-page {
     display: flex;

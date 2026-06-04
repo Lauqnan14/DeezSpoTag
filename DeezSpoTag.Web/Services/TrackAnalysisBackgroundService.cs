@@ -1747,13 +1747,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return null;
         }
 
-        foreach (var pythonDir in Directory.GetDirectories(linuxLibRoot, "python*"))
+        foreach (var sitePackages in Directory.GetDirectories(linuxLibRoot, "python*")
+            .Select(pythonDir => Path.Join(pythonDir, "site-packages"))
+            .Where(Directory.Exists))
         {
-            var sitePackages = Path.Join(pythonDir, "site-packages");
-            if (Directory.Exists(sitePackages))
-            {
-                return sitePackages;
-            }
+            return sitePackages;
         }
 
         return null;
@@ -1879,13 +1877,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, VibeAnalyzerScriptFileName)
         };
 
-        foreach (var candidate in candidates)
+        foreach (var resolvedCandidate in candidates
+            .Select(TryResolveExistingFilePath)
+            .Where(resolvedCandidate => !string.IsNullOrWhiteSpace(resolvedCandidate)))
         {
-            var resolvedCandidate = TryResolveExistingFilePath(candidate);
-            if (!string.IsNullOrWhiteSpace(resolvedCandidate))
-            {
-                return resolvedCandidate;
-            }
+            return resolvedCandidate;
         }
 
         return null;
@@ -2391,9 +2387,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
         var max = 0.0;
         var min = double.MaxValue;
-        foreach (var sample in samples)
+        foreach (var value in samples.Select(Math.Abs))
         {
-            var value = Math.Abs(sample);
             if (value > max)
             {
                 max = value;

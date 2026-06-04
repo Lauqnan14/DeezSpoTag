@@ -1184,13 +1184,11 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
 
         var sourceItems = ParseBrowsePlaylistItems(sourceDoc);
-        foreach (var sourceItem in sourceItems)
+        foreach (var mapped in sourceItems
+            .Select(MapBrowsePlaylistToHomeRawItem)
+            .Where(mapped => mapped is not null))
         {
-            var mapped = MapBrowsePlaylistToHomeRawItem(sourceItem);
-            if (mapped is not null)
-            {
-                target.Add(mapped);
-            }
+            target.Add(mapped!);
         }
     }
 
@@ -1919,14 +1917,11 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 continue;
             }
 
-            foreach (var item in sectionItemList.EnumerateArray())
+            foreach (var category in sectionItemList.EnumerateArray()
+                .Select(item => TryBuildBrowseCategory(sectionTitle, item))
+                .Where(category => category is not null))
             {
-                var category = TryBuildBrowseCategory(sectionTitle, item);
-                if (category is null)
-                {
-                    continue;
-                }
-                categories.Add(category);
+                categories.Add(category!);
             }
         }
 
@@ -2333,12 +2328,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private static bool TryResolveBrowseData(JsonElement dataElement, out JsonElement browseData)
     {
         browseData = default;
-        foreach (var key in new[] { "browseV2", "browse", "browseAll", "browseStart" })
+        foreach (var resolvedBrowseData in new[] { "browseV2", "browse", "browseAll", "browseStart" }
+            .Select(key => TryResolveNamedBrowseData(dataElement, key, out var resolved) ? resolved : (JsonElement?)null)
+            .Where(static resolved => resolved.HasValue))
         {
-            if (TryResolveNamedBrowseData(dataElement, key, out browseData))
-            {
-                return true;
-            }
+            browseData = resolvedBrowseData!.Value;
+            return true;
         }
 
         return TryResolveFallbackBrowseData(dataElement, out browseData);
@@ -3150,19 +3145,16 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         MetadataEnrichmentLimits limits,
         CancellationToken cancellationToken)
     {
-        foreach (var section in mappedSections)
+        foreach (var sectionItems in mappedSections
+            .Select(TryGetAnonymousItems)
+            .Where(items => items != null && items.Count > 0)
+            .Select(items => items!))
         {
-            var items = TryGetAnonymousItems(section);
-            if (items == null || items.Count == 0)
-            {
-                continue;
-            }
-
-            var inspectCount = Math.Min(items.Count, limits.MaxItemsPerSectionToEnrich);
+            var inspectCount = Math.Min(sectionItems.Count, limits.MaxItemsPerSectionToEnrich);
             for (var index = 0; index < inspectCount; index++)
             {
                 QueueHomeItemMetadataTask(
-                    items[index],
+                    sectionItems[index],
                     playlistLookupTasks,
                     artistLookupTasks,
                     metadataThrottle,

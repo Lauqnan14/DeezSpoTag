@@ -385,7 +385,7 @@ public sealed class BoomplayApiController : ControllerBase
             var fastHintEligible = hasUsableHints
                 && (!resolveDeezer || cachedHintResolutions >= Math.Max(1, (int)Math.Ceiling(pageIds.Count * 0.60d)));
 
-            var tracks = Array.Empty<BoomplayTrackMetadata>();
+            BoomplayTrackMetadata[] tracks;
             var missingCount = 0;
             if (fastHintEligible)
             {

@@ -738,13 +738,12 @@ public sealed class ResolveDeezerApiController : ControllerBase
         }
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var item in result.Data)
+        foreach (var id in result.Data
+            .Select(TryGetTrackIdFromSearchResultItem)
+            .Where(id => !string.IsNullOrWhiteSpace(id) && seen.Add(id))
+            .Select(id => id!))
         {
-            var id = TryGetTrackIdFromSearchResultItem(item);
-            if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
-            {
-                yield return id;
-            }
+            yield return id;
         }
     }
 

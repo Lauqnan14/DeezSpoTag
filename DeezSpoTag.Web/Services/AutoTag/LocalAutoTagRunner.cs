@@ -970,20 +970,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        foreach (var provider in providerOrder)
+        foreach (var platform in providerOrder
+            .Select(ResolveArtworkFallbackPlatform)
+            .Where(platform => !string.IsNullOrWhiteSpace(platform)
+                && !string.Equals(platform, context.Platform, StringComparison.OrdinalIgnoreCase)))
         {
-            var platform = ResolveArtworkFallbackPlatform(provider);
-            if (string.IsNullOrWhiteSpace(platform)
-                || string.Equals(platform, context.Platform, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
             AutoTagMatchResult? fallbackMatch;
             try
             {
                 fallbackMatch = await MatchPlatformAsync(
-                    platform,
+                    platform!,
                     info,
                     new PlatformMatchContext
                     {
@@ -997,7 +993,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                LogArtworkFallbackMatchFailure(ex, context.File, platform);
+                LogArtworkFallbackMatchFailure(ex, context.File, platform!);
                 continue;
             }
 
@@ -1974,22 +1970,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return selected;
         }
 
-        foreach (var value in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var normalized in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static value =>
+            {
+                var normalized = value.Trim().ToLowerInvariant();
+                return normalized switch
+                {
+                    "synced-lyrics" => LyricsTag,
+                    "time-synced-lyrics" or "timesynced-lyrics" or "time_synced_lyrics" => SyllableLyricsType,
+                    "unsyncedlyrics" or "unsynced" => UnsyncedLyricsType,
+                    _ => normalized
+                };
+            }))
         {
-            var normalized = value.Trim().ToLowerInvariant();
-            if (normalized == "synced-lyrics")
-            {
-                normalized = LyricsTag;
-            }
-            else if (normalized == "time-synced-lyrics" || normalized == "timesynced-lyrics" || normalized == "time_synced_lyrics")
-            {
-                normalized = SyllableLyricsType;
-            }
-            else if (normalized == "unsyncedlyrics" || normalized == "unsynced")
-            {
-                normalized = UnsyncedLyricsType;
-            }
-
             selected.Add(normalized);
         }
 
@@ -2533,16 +2526,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return configured;
         }
 
-        foreach (var rawTag in tags)
+        foreach (var trimmed in tags
+            .Select(static rawTag => rawTag?.Trim())
+            .Where(static trimmed => !string.IsNullOrWhiteSpace(trimmed)))
         {
-            var trimmed = rawTag?.Trim();
-            if (string.IsNullOrWhiteSpace(trimmed))
-            {
-                continue;
-            }
-
-            configured.Add(trimmed);
-            var normalized = NormalizeConfiguredTagKey(trimmed);
+            configured.Add(trimmed!);
+            var normalized = NormalizeConfiguredTagKey(trimmed!);
             if (!string.Equals(normalized, trimmed, StringComparison.OrdinalIgnoreCase))
             {
                 configured.Add(normalized);
@@ -3673,12 +3662,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             CoverDescriptionUTF8 = runtimeSettings.Tags?.CoverDescriptionUTF8 ?? true
         };
 
-        foreach (var tag in config.Tags)
+        foreach (var tag in config.Tags.Where(tag => TagSettingsAppliers.ContainsKey(tag.Trim())))
         {
-            if (TagSettingsAppliers.TryGetValue(tag.Trim(), out var applyTagSetting))
-            {
-                applyTagSetting(settings);
-            }
+            TagSettingsAppliers[tag.Trim()](settings);
         }
 
         return settings;
@@ -5164,16 +5150,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
         var preferredExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
 
-        foreach (var name in preferredNames)
+        foreach (var candidate in preferredNames
+            .SelectMany(name => preferredExtensions.Select(ext => Path.Join(directory, name + ext)))
+            .Where(IOFile.Exists))
         {
-            foreach (var ext in preferredExtensions)
-            {
-                var candidate = Path.Join(directory, name + ext);
-                if (IOFile.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
+            return candidate;
         }
 
         return null;
@@ -5705,16 +5686,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return false;
         }
 
-        foreach (var line in rawLyrics
-                     .Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (TryParseLrcLine(line, out _, out _))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return rawLyrics
+            .Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(line => TryParseLrcLine(line, out _, out _));
     }
 
     private static List<string> ReadExistingGenre(string filePath)
@@ -6659,22 +6633,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var normalized = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var line in lines)
+        foreach (var trimmed in lines
+            .Select(static line => line?.Trim())
+            .Where(static trimmed => !string.IsNullOrWhiteSpace(trimmed)))
         {
-            var trimmed = line?.Trim();
-            if (string.IsNullOrWhiteSpace(trimmed))
+            if (requireTimestamp && !trimmed!.StartsWith('['))
             {
                 continue;
             }
 
-            if (requireTimestamp && !trimmed.StartsWith('['))
+            if (seen.Add(trimmed!))
             {
-                continue;
-            }
-
-            if (seen.Add(trimmed))
-            {
-                normalized.Add(trimmed);
+                normalized.Add(trimmed!);
             }
         }
 
@@ -7487,12 +7457,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static int? ResolveFirstPositiveInt(AutoTagTrack track, params string[] keys)
     {
-        foreach (var raw in ResolveOtherValues(track, keys))
+        foreach (var parsed in ResolveOtherValues(track, keys)
+            .Select(raw => int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : (int?)null)
+            .Where(parsed => parsed > 0))
         {
-            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0)
-            {
-                return parsed;
-            }
+            return parsed;
         }
 
         return null;

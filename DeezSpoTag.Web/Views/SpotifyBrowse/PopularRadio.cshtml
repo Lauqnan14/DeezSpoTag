@@ -4,7 +4,7 @@
 }
 
 @section Styles {
-<link rel="stylesheet" href="~/css/home-index.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/home-index.css")" />
 <style>
 .popular-radio-header {
     display: flex;
@@ -37,7 +37,7 @@
 </section>
 
 @section Scripts {
-<script src="~/js/home-view-helpers.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/home-view-helpers.js")"></script>
 <script>
 function normalizeTitle(value) {
     return (value || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');

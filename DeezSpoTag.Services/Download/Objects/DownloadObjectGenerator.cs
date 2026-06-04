@@ -1667,13 +1667,11 @@ public class DownloadObjectGenerator
         }
 
         var albumIds = new List<string>();
-        foreach (var albumEntry in releaseEntries)
+        foreach (var albumId in releaseEntries
+            .Select(ExtractAlbumId)
+            .Where(albumId => !string.IsNullOrEmpty(albumId)))
         {
-            var albumId = ExtractAlbumId(albumEntry);
-            if (!string.IsNullOrEmpty(albumId))
-            {
-                albumIds.Add(albumId);
-            }
+            albumIds.Add(albumId!);
         }
 
         return albumIds;

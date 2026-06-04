@@ -191,13 +191,11 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     {
         RemoveDisabledWatchers(enabled);
 
-        foreach (var entry in enabled)
+        foreach (var exception in enabled
+            .Select(entry => RefreshWatcher(entry.Key, entry.Value))
+            .Where(exception => exception != null))
         {
-            var exception = RefreshWatcher(entry.Key, entry.Value);
-            if (exception != null)
-            {
-                return exception;
-            }
+            return exception;
         }
 
         return null;
@@ -527,22 +525,18 @@ public sealed class LibraryRealtimeScanService : BackgroundService
             }
 
             pending.DueUtc = dueUtc;
-            foreach (var path in changedFilePaths)
+            foreach (var normalizedPath in changedFilePaths
+                .Select(NormalizePath)
+                .Where(normalizedPath => normalizedPath != null))
             {
-                var normalizedPath = NormalizePath(path);
-                if (normalizedPath != null)
-                {
-                    pending.ChangedFilePaths.Add(normalizedPath);
-                }
+                pending.ChangedFilePaths.Add(normalizedPath!);
             }
 
-            foreach (var path in deletedFilePaths)
+            foreach (var normalizedPath in deletedFilePaths
+                .Select(NormalizePath)
+                .Where(normalizedPath => normalizedPath != null))
             {
-                var normalizedPath = NormalizePath(path);
-                if (normalizedPath != null)
-                {
-                    pending.DeletedFilePaths.Add(normalizedPath);
-                }
+                pending.DeletedFilePaths.Add(normalizedPath!);
             }
         }
         _signal.Release();
@@ -822,21 +816,17 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             lock (_baselineLock)
             {
-                foreach (var filePath in filePaths)
+                foreach (var normalizedPath in filePaths
+                    .Select(NormalizePath)
+                    .Where(normalizedPath => normalizedPath is not null))
                 {
-                    var normalizedPath = NormalizePath(filePath);
-                    if (normalizedPath is null)
+                    if (TryReadFileBaselineState(normalizedPath!, out var currentState))
                     {
-                        continue;
-                    }
-
-                    if (TryReadFileBaselineState(normalizedPath, out var currentState))
-                    {
-                        _baselineFiles[normalizedPath] = currentState;
+                        _baselineFiles[normalizedPath!] = currentState;
                     }
                     else
                     {
-                        _baselineFiles.Remove(normalizedPath);
+                        _baselineFiles.Remove(normalizedPath!);
                     }
                 }
             }

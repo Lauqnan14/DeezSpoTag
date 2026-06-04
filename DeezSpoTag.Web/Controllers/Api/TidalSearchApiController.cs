@@ -90,17 +90,10 @@ public sealed class TidalSearchApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var items = await FetchItemsAsync(endpointType, query, limit, token, cancellationToken);
-        var output = new List<object>(items.Count);
-        foreach (var item in items)
-        {
-            var mapped = mapper(item);
-            if (mapped != null)
-            {
-                output.Add(mapped);
-            }
-        }
-
-        return output;
+        return items
+            .Select(mapper)
+            .Where(static mapped => mapped != null)
+            .ToList()!;
     }
 
     private async Task<List<JsonElement>> FetchItemsAsync(

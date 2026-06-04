@@ -270,14 +270,10 @@ public sealed class BoomplayMatcher
 
     private static void AppendIdsFromUrlValues(IEnumerable<string> values, string key, List<string> candidateIds)
     {
-        foreach (var value in values)
+        foreach (var normalized in values
+            .Select(Normalize)
+            .Where(normalized => !string.IsNullOrWhiteSpace(normalized)))
         {
-            var normalized = Normalize(value);
-            if (string.IsNullOrWhiteSpace(normalized))
-            {
-                continue;
-            }
-
             if (TryExtractTrackIdFromBoomplayUrl(normalized, out var trackId))
             {
                 candidateIds.Add(trackId);

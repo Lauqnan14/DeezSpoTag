@@ -108,12 +108,9 @@ internal static class DeezerDownloadSharedHelpers
         }
 
         var now = DateTimeOffset.UtcNow;
-        foreach (var entry in ShowPageCache)
+        foreach (var entry in ShowPageCache.Where(entry => now - entry.Value.CachedAtUtc > ShowPageCacheTtl))
         {
-            if (now - entry.Value.CachedAtUtc > ShowPageCacheTtl)
-            {
-                ShowPageCache.TryRemove(entry.Key, out _);
-            }
+            ShowPageCache.TryRemove(entry.Key, out _);
         }
 
         if (ShowPageCache.Count <= ShowPageCacheMaxEntries)

@@ -7,8 +7,8 @@
         : $"/Library?folderId={Uri.EscapeDataString(folderId)}";
 }
 
-<link rel="stylesheet" href="~/css/library.css" asp-append-version="true" />
-<link rel="stylesheet" href="~/css/library-artist-hero.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/library.css")" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/library-artist-hero.css")" />
 
 <div class="library-page artist-page artist-neo" data-artist-id="@ViewData["ArtistId"]">
     <div class="library-breadcrumbs">
@@ -240,10 +240,10 @@
 
 </div>
 
-<script src="~/js/library-artist-hero.js" asp-append-version="true"></script>
-<script src="~/js/library-interactions.js" asp-append-version="true"></script>
-<script src="~/js/library.js" asp-append-version="true"></script>
-<script src="~/js/library-playlist-shared.js" asp-append-version="true"></script>
-<script src="~/js/library-watchlists.js" asp-append-version="true"></script>
-<script src="~/js/library-apple-extras.js" asp-append-version="true"></script>
-<script src="~/js/library-bootstrap.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-artist-hero.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-interactions.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-playlist-shared.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-watchlists.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-apple-extras.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/library-bootstrap.js")"></script>

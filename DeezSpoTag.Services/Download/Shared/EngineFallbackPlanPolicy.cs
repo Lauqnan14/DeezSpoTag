@@ -54,9 +54,8 @@ public static class EngineFallbackPlanPolicy
     {
         if (payload.AutoSources != null && payload.AutoSources.Count > 0)
         {
-            foreach (var entry in payload.AutoSources)
+            foreach (var decoded in payload.AutoSources.Select(DownloadSourceOrder.DecodeAutoSource))
             {
-                var decoded = DownloadSourceOrder.DecodeAutoSource(entry);
                 if (string.IsNullOrWhiteSpace(decoded.Source))
                 {
                     continue;

@@ -4,8 +4,8 @@
 }
 
 @section Styles {
-<link rel="stylesheet" href="~/css/home-top-genres.css" asp-append-version="true" />
-<link rel="stylesheet" href="~/css/home-index.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/home-top-genres.css")" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/home-index.css")" />
 }
 
 <header class="header">
@@ -37,6 +37,6 @@
 </section>
 
 @section Scripts {
-<script src="~/js/home-view-helpers.js" asp-append-version="true"></script>
-<script src="~/js/home-index.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/home-view-helpers.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/home-index.js")"></script>
 }

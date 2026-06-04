@@ -206,13 +206,11 @@ public sealed partial class ShazamDiscoveryService
         candidates.Add(Path.Join(baseDir, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
         candidates.Add(Path.Join(baseDir, "..", "..", "..", "..", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
 
-        foreach (var candidate in candidates)
+        foreach (var full in candidates
+            .Select(Path.GetFullPath)
+            .Where(File.Exists))
         {
-            var full = Path.GetFullPath(candidate);
-            if (File.Exists(full))
-            {
-                return full;
-            }
+            return full;
         }
 
         return null;
@@ -387,14 +385,11 @@ public sealed partial class ShazamDiscoveryService
         var cards = new List<ShazamTrackCard>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var candidate in EnumerateTrackCandidates(root))
+        foreach (var card in EnumerateTrackCandidates(root)
+            .Select(ParseTrack)
+            .Where(card => card is not null)
+            .Select(card => card!))
         {
-            var card = ParseTrack(candidate);
-            if (card == null)
-            {
-                continue;
-            }
-
             var key = !string.IsNullOrWhiteSpace(card.Id)
                 ? card.Id
                 : $"{card.Title}|{card.Artist}";
@@ -707,16 +702,14 @@ public sealed partial class ShazamDiscoveryService
     {
         if (TryGetArray(track, "artists", out var artists))
         {
-            foreach (var artist in artists.EnumerateArray())
-            {
-                var name = FirstNonEmpty(
-                    TryGetString(artist, "name"),
-                    TryGetNestedString(artist, AttributesPropertyName, "name"));
-                if (!string.IsNullOrWhiteSpace(name))
+                foreach (var name in artists.EnumerateArray()
+                    .Select(artist => FirstNonEmpty(
+                        TryGetString(artist, "name"),
+                        TryGetNestedString(artist, AttributesPropertyName, "name")))
+                    .Where(name => !string.IsNullOrWhiteSpace(name)))
                 {
                     return name;
                 }
-            }
         }
 
         return null;
@@ -1069,12 +1062,11 @@ public sealed partial class ShazamDiscoveryService
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
-            foreach (var value in element.EnumerateObject().Select(prop => prop.Value))
+            foreach (var value in element.EnumerateObject()
+                .Select(prop => prop.Value)
+                .Where(static value => value.ValueKind == JsonValueKind.Object || value.ValueKind == JsonValueKind.Array))
             {
-                if (value.ValueKind == JsonValueKind.Object || value.ValueKind == JsonValueKind.Array)
-                {
-                    queue.Enqueue(value);
-                }
+                queue.Enqueue(value);
             }
 
             return;
@@ -1129,13 +1121,17 @@ public sealed partial class ShazamDiscoveryService
     private static string? TryGetNestedString(JsonElement element, params string[] propertyPath)
     {
         var current = element;
-        foreach (var property in propertyPath)
+        var resolved = propertyPath.Aggregate(
+            (Found: true, Current: current),
+            static (state, property) => state.Found && TryGetProperty(state.Current, property, out var next)
+                ? (true, next)
+                : (false, default));
+        if (!resolved.Found)
         {
-            if (!TryGetProperty(current, property, out current))
-            {
-                return null;
-            }
+            return null;
         }
+
+        current = resolved.Current;
 
         if (current.ValueKind == JsonValueKind.String)
         {

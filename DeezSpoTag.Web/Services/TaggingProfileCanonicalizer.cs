@@ -205,29 +205,20 @@ public static class TaggingProfileCanonicalizer
         var trackTemplate = ReadNonBlankString(data, trackKey);
         if (string.IsNullOrWhiteSpace(trackTemplate))
         {
-            foreach (var legacyKeyName in LegacyTemplateKeys)
+            foreach (var legacyTemplate in LegacyTemplateKeys
+                .Select(legacyKeyName => ReadNonBlankString(data, ResolveKey(data, legacyKeyName)))
+                .Where(legacyTemplate => !string.IsNullOrWhiteSpace(legacyTemplate)))
             {
-                var legacyKey = ResolveKey(data, legacyKeyName);
-                var legacyTemplate = ReadNonBlankString(data, legacyKey);
-                if (string.IsNullOrWhiteSpace(legacyTemplate))
-                {
-                    continue;
-                }
-
-                data[TracknameTemplateKey] = JsonSerializer.SerializeToElement(legacyTemplate.Trim());
+                data[TracknameTemplateKey] = JsonSerializer.SerializeToElement(legacyTemplate!.Trim());
                 changed = true;
                 break;
             }
         }
 
-        foreach (var legacyKeyName in LegacyTemplateKeys)
-        {
-            var legacyKey = ResolveKey(data, legacyKeyName);
-            if (!string.IsNullOrWhiteSpace(legacyKey) && data.Remove(legacyKey))
-            {
-                changed = true;
-            }
-        }
+        changed |= LegacyTemplateKeys
+            .Select(legacyKeyName => ResolveKey(data, legacyKeyName))
+            .Where(legacyKey => !string.IsNullOrWhiteSpace(legacyKey))
+            .Any(data.Remove);
 
         return changed;
     }
@@ -360,14 +351,10 @@ public static class TaggingProfileCanonicalizer
     {
         var result = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var raw in tags)
+        foreach (var normalized in tags
+            .Select(normalizer)
+            .Where(normalized => !string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized)))
         {
-            var normalized = normalizer(raw);
-            if (string.IsNullOrWhiteSpace(normalized) || !seen.Add(normalized))
-            {
-                continue;
-            }
-
             result.Add(normalized);
         }
 
@@ -425,14 +412,11 @@ public static class TaggingProfileCanonicalizer
 
     private static void ApplyTags(UnifiedTagConfig config, IEnumerable<string> tags, TagSource source)
     {
-        foreach (var rawTag in tags)
+        foreach (var descriptor in tags
+            .Select(NormalizeTagKey)
+            .Where(tag => !string.IsNullOrWhiteSpace(tag) && TagLookup.ContainsKey(tag))
+            .Select(tag => TagLookup[tag]))
         {
-            var tag = NormalizeTagKey(rawTag);
-            if (string.IsNullOrWhiteSpace(tag) || !TagLookup.TryGetValue(tag, out var descriptor))
-            {
-                continue;
-            }
-
             descriptor.Setter(config, MergeSource(descriptor.Getter(config), source));
         }
     }

@@ -43,7 +43,9 @@ public static partial class EngineAudioPostDownloadHelper
     private const string UpdateQueueEvent = "updateQueue";
     private const string DeezerTrackIdKey = "deezer_track_id";
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
-    private static readonly Regex LrcTimestampRegex = LrcTimestampGeneratedRegex();
+    private static readonly Regex LrcTimestampRegex = new(
+        @"^\[(?<m>\d{1,3}):(?<s>\d{2})(?:\.(?<f>\d{1,3}))?\]",
+        RegexOptions.CultureInvariant);
     private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".flac",
@@ -2359,6 +2361,4 @@ public static partial class EngineAudioPostDownloadHelper
             expected.Cancellation.Dispose();
         }
     }
-    [GeneratedRegex(@"^\[(?<m>\d{1,3}):(?<s>\d{2})(?:\.(?<f>\d{1,3}))?\]", RegexOptions.CultureInvariant)]
-    private static partial Regex LrcTimestampGeneratedRegex();
 }

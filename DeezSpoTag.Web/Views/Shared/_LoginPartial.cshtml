@@ -7,10 +7,10 @@
 @if (SignInManager.IsSignedIn(User))
 {
     <li class="nav-item">
-        <a class="nav-link" asp-area="Identity" asp-page="/Account/Manage/Index" title="Manage">@User.Identity?.Name</a>
+        <a class="nav-link" href="/Identity/Account/Manage" title="Manage">@User.Identity?.Name</a>
     </li>
     <li class="nav-item">
-        <form class="form-inline" asp-area="Identity" asp-page="/Account/Logout" asp-route-returnUrl="/Identity/Account/Login">
+        <form class="form-inline" method="post" action="/Identity/Account/Logout?returnUrl=%2FIdentity%2FAccount%2FLogin">
             @Html.AntiForgeryToken()
             <button type="submit" class="nav-link btn btn-link">Logout</button>
         </form>
@@ -19,7 +19,7 @@
 else
 {
     <li class="nav-item">
-        <a class="nav-link" asp-area="Identity" asp-page="/Account/Login">Login</a>
+        <a class="nav-link" href="/Identity/Account/Login">Login</a>
     </li>
 }
 </ul>

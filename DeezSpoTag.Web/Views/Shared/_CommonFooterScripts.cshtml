@@ -11,14 +11,14 @@
             integrity="sha512-ZqjBuyHOJ5inr58y0trfRo8TgD0zC0WJROOUmgjAIA6iiqXxobgj3ZocloB2Wp9ov2+LB9UM09aiwI3MDpm5HA=="
             crossorigin="anonymous"></script>
 }
-<script src="~/js/themes.js" asp-append-version="true"></script>
-<script src="~/js/site.js" asp-append-version="true"></script>
-<script src="~/js/tab-preferences.js" asp-append-version="true"></script>
-<script src="~/js/deezer-playback-context.js" asp-append-version="true"></script>
-<script src="~/js/deezer-resolver.js" asp-append-version="true"></script>
-<script src="~/js/deezer-playback-facade.js" asp-append-version="true"></script>
-<script src="~/js/deezer-playback-state.js" asp-append-version="true"></script>
-<script src="~/js/deezer-unified-playback.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/themes.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/site.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/tab-preferences.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/deezer-playback-context.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/deezer-resolver.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/deezer-playback-facade.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/deezer-playback-state.js")"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/deezer-unified-playback.js")"></script>
 <script>
     window.DeezSpoTagAppInstanceId = '@AppInstanceIdProvider.InstanceId';
 </script>

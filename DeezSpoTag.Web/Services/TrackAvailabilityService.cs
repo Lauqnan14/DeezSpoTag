@@ -346,15 +346,11 @@ public sealed class TrackAvailabilityService
 
         AppleCandidate? best = null;
         var bestScore = -1;
-        foreach (var item in response.Items)
+        foreach (var candidate in response.Items
+            .Select(TryReadAppleCandidate)
+            .Where(candidate => candidate is not null))
         {
-            var candidate = TryReadAppleCandidate(item);
-            if (candidate == null)
-            {
-                continue;
-            }
-
-            var score = ScoreAppleCandidate(candidate, targetTitle, targetArtist, targetAlbum);
+            var score = ScoreAppleCandidate(candidate!, targetTitle, targetArtist, targetAlbum);
             if (score > bestScore)
             {
                 bestScore = score;

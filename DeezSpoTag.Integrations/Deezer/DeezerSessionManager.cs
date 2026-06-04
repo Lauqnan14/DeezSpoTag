@@ -577,9 +577,10 @@ public sealed class DeezerSessionManager : IDisposable
                 _logger.LogDebug("Retrieved {Count} child accounts", childAccounts.Count);
             }
 
-            foreach (var child in childAccounts.Where(static child => child.ExtraFamily?.IsLoggableAs == true))
+            foreach (var childUser in childAccounts
+                .Where(static child => child.ExtraFamily?.IsLoggableAs == true)
+                .Select(child => BuildFamilyChild(user, child)))
             {
-                var childUser = BuildFamilyChild(user, child);
                 Children.Add(childUser);
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {

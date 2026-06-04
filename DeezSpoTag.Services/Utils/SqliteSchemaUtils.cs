@@ -90,15 +90,17 @@ internal static partial class SqliteSchemaUtils
 
     private static string QuoteIdentifier(string identifier) => $"\"{identifier}\"";
 
-    [GeneratedRegex(
+    private static readonly Regex s_sqliteIdentifierRegex = new(
         "^[A-Za-z_][A-Za-z0-9_]*$",
         RegexOptions.CultureInvariant,
-        matchTimeoutMilliseconds: 250)]
-    private static partial Regex SqliteIdentifierRegex();
+        TimeSpan.FromMilliseconds(250));
 
-    [GeneratedRegex(
+    private static readonly Regex s_sqliteTypeClauseRegex = new(
         "^(TEXT|INTEGER|REAL|BIGINT)(?:\\s+NOT\\s+NULL)?(?:\\s+DEFAULT\\s+(?:-?\\d+|'(?:''|[^'])*'))?$",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
-        matchTimeoutMilliseconds: 250)]
-    private static partial Regex SqliteTypeClauseRegex();
+        TimeSpan.FromMilliseconds(250));
+
+    private static Regex SqliteIdentifierRegex() => s_sqliteIdentifierRegex;
+
+    private static Regex SqliteTypeClauseRegex() => s_sqliteTypeClauseRegex;
 }

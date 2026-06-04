@@ -88,10 +88,7 @@ public class MediaServerScanApiController : ControllerBase
         var refreshed = 0;
         foreach (var section in musicSections)
         {
-            if (await _plexApiClient.RefreshLibraryAsync(plexUrl, plexToken, section.Key, cancellationToken))
-            {
-                refreshed++;
-            }
+            refreshed += await _plexApiClient.RefreshLibraryAsync(plexUrl, plexToken, section.Key, cancellationToken) ? 1 : 0;
         }
 
         return (refreshed, $"Plex refresh requested for {musicSections.Count} libraries.");

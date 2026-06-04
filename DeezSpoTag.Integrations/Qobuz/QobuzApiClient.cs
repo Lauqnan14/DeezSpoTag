@@ -127,12 +127,13 @@ public sealed class QobuzApiClient : IQobuzApiClient
     private static List<int> ParseAlbumPageTrackIds(string html)
     {
         var trackIds = new List<int>();
-        foreach (Match match in AlbumTrackIdRegex.Matches(html))
+        foreach (var trackId in AlbumTrackIdRegex.Matches(html)
+            .Cast<Match>()
+            .Select(static match => int.TryParse(match.Groups["id"].Value, out var parsedTrackId) ? parsedTrackId : (int?)null)
+            .Where(static parsedTrackId => parsedTrackId.HasValue)
+            .Select(static parsedTrackId => parsedTrackId.GetValueOrDefault()))
         {
-            if (int.TryParse(match.Groups["id"].Value, out var trackId))
-            {
-                trackIds.Add(trackId);
-            }
+            trackIds.Add(trackId);
         }
 
         return trackIds.Distinct().ToList();

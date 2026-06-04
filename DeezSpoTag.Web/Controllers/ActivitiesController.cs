@@ -602,9 +602,8 @@ public class ActivitiesController : Controller
 
     private static bool HasAttachedLyricsFiles(Dictionary<string, object> payload)
     {
-        foreach (var file in ExtractFiles(payload))
+        foreach (var filePath in ExtractFiles(payload).Select(GetFilePath))
         {
-            var filePath = GetFilePath(file);
             if (string.IsNullOrWhiteSpace(filePath))
             {
                 continue;
@@ -942,13 +941,11 @@ public class ActivitiesController : Controller
 
     private static string? FindPrimaryLyricPath(string baseName, string extension, List<string> searchDirs)
     {
-        foreach (var searchDir in searchDirs)
+        foreach (var lyricIo in searchDirs
+            .Select(searchDir => Path.Join(searchDir, baseName + extension))
+            .Where(System.IO.File.Exists))
         {
-            var lyricIo = Path.Join(searchDir, baseName + extension);
-            if (System.IO.File.Exists(lyricIo))
-            {
-                return lyricIo;
-            }
+            return lyricIo;
         }
 
         return null;

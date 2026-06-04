@@ -738,12 +738,11 @@ public sealed class ArtistWatchService
     private static List<DownloadIntent> BuildAppleTrackIntents(JsonElement tracksData, AppleAlbumIntentContext context)
     {
         var intents = new List<DownloadIntent>();
-        foreach (var track in tracksData.EnumerateArray())
+        foreach (var intent in tracksData.EnumerateArray()
+            .Select(track => TryCreateAppleTrackIntent(track, context, out var intent) ? intent : null)
+            .Where(intent => intent is not null))
         {
-            if (TryCreateAppleTrackIntent(track, context, out var intent))
-            {
-                intents.Add(intent);
-            }
+            intents.Add(intent!);
         }
 
         return intents;

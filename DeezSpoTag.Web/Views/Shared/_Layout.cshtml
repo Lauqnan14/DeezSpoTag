@@ -259,7 +259,7 @@
             } catch (e) {}
         })();
     </script>
-    <partial name="_CommonHeadAssets" />
+    @await Html.PartialAsync("_CommonHeadAssets")
     <style>
         * {
             margin: 0;
@@ -765,7 +765,7 @@
         <div class="sidebar-header">
             <div class="logo-section">
                 <div class="logo-icon" id="logoIcon" aria-label="Identify song with Shazam">
-                    <partial name="_DeezSpoTagLogo" model='"theme-logo"' />
+                    @await Html.PartialAsync("_DeezSpoTagLogo", "theme-logo")
                 </div>
             </div>
                     </div>
@@ -945,7 +945,7 @@
                         <div class="profile-dropdown-actions">
                             <button class="profile-link" id="changeUsernameButton" type="button">Change username</button>
                             <button class="profile-link" id="changePasswordButton" type="button">Change password</button>
-                            <form method="post" asp-area="Identity" asp-page="/Account/Logout" asp-route-returnUrl="/Identity/Account/Login">
+                            <form method="post" action="/Identity/Account/Logout?returnUrl=%2FIdentity%2FAccount%2FLogin">
                                 @Html.AntiForgeryToken()
                                 <button class="profile-link logout" type="submit">Logout</button>
                             </form>
@@ -975,19 +975,19 @@
         <button type="button" class="pwa-install-action" data-pwa-install>Install App</button>
     </div>
     
-    <script src="~/js/user-preferences.js" asp-append-version="true"></script>
+    <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/user-preferences.js")"></script>
     @{
         ViewData["IncludeSignalR"] = !_isLoginPage;
     }
-    <partial name="_CommonFooterScripts" />
+    @await Html.PartialAsync("_CommonFooterScripts")
     @if (!_isLoginPage)
     {
-        <script src="~/js/shazam-listen.js" asp-append-version="true"></script>
+        <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/shazam-listen.js")"></script>
     }
     @if (!_isLoginPage && !_isHomeIndexPage)
     {
-        <script src="~/js/download-logger.js" asp-append-version="true"></script>
-        <script src="~/js/download.js" asp-append-version="true"></script>
+        <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/download-logger.js")"></script>
+        <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/download.js")"></script>
     }
     
     <script>
@@ -1203,7 +1203,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             setTimeout(updateLogoColors, 100);
         });
-    </script>
+    
 
     <script>
         (function () {
@@ -1402,6 +1402,7 @@
                 });
             })();
         </script>
+        
     }
 
     @if (User?.Identity?.IsAuthenticated == true)

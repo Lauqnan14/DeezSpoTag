@@ -3,7 +3,7 @@
     Layout = "~/Views/Shared/_Layout.cshtml";
 }
 
-<link rel="stylesheet" href="~/css/lrc-editor.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/lrc-editor.css")" />
 
 <div class="lrc-editor-page">
     <div class="card lrc-card">
@@ -253,4 +253,4 @@
     </div>
 </div>
 
-<script src="~/js/lrc-editor.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/lrc-editor.js")"></script>

@@ -485,9 +485,8 @@ public sealed class DownloadStagingCleanupService
         var extension = Path.GetExtension(rawFilePath);
         if (string.IsNullOrWhiteSpace(extension))
         {
-            foreach (var audioExtension in AudioExtensions)
+            foreach (var audioPath in AudioExtensions.Select(audioExtension => rawFilePath + audioExtension))
             {
-                var audioPath = rawFilePath + audioExtension;
                 yield return audioPath;
                 foreach (var suffix in RelatedPathSuffixes)
                 {
@@ -565,12 +564,11 @@ public sealed class DownloadStagingCleanupService
     private static List<string> ResolveProtectedPaths(IReadOnlyCollection<string> protectedPaths, string rootPath)
     {
         var resolved = new List<string>();
-        foreach (var protectedPath in protectedPaths)
+        foreach (var fullPath in protectedPaths
+            .Select(protectedPath => TryResolveOwnedChildPath(protectedPath, rootPath, out var fullPath) ? fullPath : null)
+            .Where(static fullPath => !string.IsNullOrWhiteSpace(fullPath)))
         {
-            if (TryResolveOwnedChildPath(protectedPath, rootPath, out var fullPath))
-            {
-                resolved.Add(fullPath);
-            }
+            resolved.Add(fullPath!);
         }
 
         return resolved
@@ -728,19 +726,13 @@ public sealed class DownloadStagingCleanupService
         IEnumerable<string> filePaths,
         ISet<string> directoryPaths)
     {
-        foreach (var rawFilePath in filePaths)
+        foreach (var directory in filePaths
+            .Select(DownloadPathResolver.ResolveIoPath)
+            .Where(static ioPath => !string.IsNullOrWhiteSpace(ioPath) && !DownloadPathResolver.IsSmbPath(ioPath))
+            .Select(Path.GetDirectoryName)
+            .Where(static directory => !string.IsNullOrWhiteSpace(directory)))
         {
-            var ioPath = DownloadPathResolver.ResolveIoPath(rawFilePath);
-            if (string.IsNullOrWhiteSpace(ioPath) || DownloadPathResolver.IsSmbPath(ioPath))
-            {
-                continue;
-            }
-
-            var directory = Path.GetDirectoryName(ioPath);
-            if (!string.IsNullOrWhiteSpace(directory))
-            {
-                directoryPaths.Add(directory);
-            }
+            directoryPaths.Add(directory!);
         }
     }
 

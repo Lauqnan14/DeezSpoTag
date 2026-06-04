@@ -1332,12 +1332,12 @@ public sealed class TidalDownloadService
             return true;
         }
 
-        foreach (var property in element.EnumerateObject())
+        foreach (var resolvedManifestUri in element.EnumerateObject()
+            .Select(property => TryFindManifestUri(property.Value, out var resolvedUri) ? resolvedUri : null)
+            .Where(static resolvedUri => !string.IsNullOrWhiteSpace(resolvedUri)))
         {
-            if (TryFindManifestUri(property.Value, out manifestUri))
-            {
-                return true;
-            }
+            manifestUri = resolvedManifestUri!;
+            return true;
         }
 
         return false;
@@ -1358,12 +1358,12 @@ public sealed class TidalDownloadService
 
     private static bool TryFindManifestUriInArray(JsonElement element, out string manifestUri)
     {
-        foreach (var item in element.EnumerateArray())
+        foreach (var resolvedManifestUri in element.EnumerateArray()
+            .Select(item => TryFindManifestUri(item, out var resolvedUri) ? resolvedUri : null)
+            .Where(static resolvedUri => !string.IsNullOrWhiteSpace(resolvedUri)))
         {
-            if (TryFindManifestUri(item, out manifestUri))
-            {
-                return true;
-            }
+            manifestUri = resolvedManifestUri!;
+            return true;
         }
 
         manifestUri = "";

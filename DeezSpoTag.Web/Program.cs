@@ -66,10 +66,11 @@ public partial class Program
         "text/javascript",
         "application/manifest+json"
     };
-    [GeneratedRegex(
+    private static readonly Regex s_buildVersionPatternRegex = new(
         @"^v?(?<core>\d+\.\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?$",
-        RegexOptions.CultureInvariant)]
-    private static partial Regex BuildVersionPatternRegex();
+        RegexOptions.CultureInvariant);
+
+    private static Regex BuildVersionPatternRegex() => s_buildVersionPatternRegex;
     public static async Task Main(string[] args)
     {
         ApplyLocalRuntimeParityEnvironment();
@@ -167,14 +168,14 @@ public partial class Program
 
     static void LoadDotEnvWithoutOverridingExisting(string envFilePath)
     {
-        foreach (var rawLine in File.ReadLines(envFilePath))
+        foreach (var rawLine in File.ReadLines(envFilePath).Select(static rawLine => rawLine.Trim()))
         {
-            var line = rawLine.Trim();
-            if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+            if (string.IsNullOrWhiteSpace(rawLine) || rawLine.StartsWith('#'))
             {
                 continue;
             }
 
+            var line = rawLine;
             if (line.StartsWith("export ", StringComparison.OrdinalIgnoreCase))
             {
                 line = line[7..].TrimStart();

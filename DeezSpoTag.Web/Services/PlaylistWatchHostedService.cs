@@ -339,14 +339,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 PlaylistWatchType,
                 activeItem.Source,
                 stoppingToken);
-            if (IsCircuitOpen(sourceCircuit))
+            if (sourceCircuit is { } openCircuit && IsCircuitOpen(openCircuit))
             {
-                var openUntilUtc = sourceCircuit?.OpenUntilUtc;
+                var openUntilUtc = openCircuit.OpenUntilUtc;
                 await PersistPlaylistSchedulerStateAsync(
                     activeItem,
                     serviceProvider,
                     "circuit_open",
-                    string.IsNullOrWhiteSpace(sourceCircuit?.Reason) ? "Source circuit breaker open." : sourceCircuit!.Reason,
+                    string.IsNullOrWhiteSpace(openCircuit.Reason) ? "Source circuit breaker open." : openCircuit.Reason,
                     openUntilUtc,
                     _consecutiveFailures.TryGetValue(activeItem.Key, out var circuitFailures) ? circuitFailures : 0,
                     stoppingToken);
@@ -409,14 +409,13 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             var playlistResult = execution.PlaylistResult;
             resolutionAttempts += Math.Max(1, playlistResult?.AttemptedTracks ?? 0);
             var queuedThisAttempt = playlistResult?.QueuedTracks ?? 0;
-            var systemicFailure = playlistResult is { QueuedTracks: 0, SystemicFailures: > 0 };
-            if (systemicFailure)
+            if (playlistResult is { QueuedTracks: 0, SystemicFailures: > 0 } systemicFailureResult)
             {
                 await OpenSourceCircuitAsync(
                     repository,
                     activeItem.Source,
-                    playlistResult?.FailureFingerprint,
-                    playlistResult?.FailureMessage,
+                    systemicFailureResult.FailureFingerprint,
+                    systemicFailureResult.FailureMessage,
                     stoppingToken);
                 activeItem = await AdvanceToNextPlaylistAsync(playlistItems, repository, stoppingToken);
                 continue;

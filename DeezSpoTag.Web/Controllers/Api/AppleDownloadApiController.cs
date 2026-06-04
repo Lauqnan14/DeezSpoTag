@@ -174,16 +174,14 @@ public sealed class AppleDownloadApiController : ControllerBase
         QueueAggregateResult aggregate,
         CancellationToken cancellationToken)
     {
-        foreach (var track in tracks)
+        foreach (var intent in tracks.Select(track => BuildDownloadIntent(
+                     track,
+                     options.DestinationFolderId,
+                     options.SecondaryDestinationFolderId,
+                     options.Quality,
+                     options.AllowQualityUpgrade,
+                     forceVideoContent)))
         {
-            var intent = BuildDownloadIntent(
-                track,
-                options.DestinationFolderId,
-                options.SecondaryDestinationFolderId,
-                options.Quality,
-                options.AllowQualityUpgrade,
-                forceVideoContent);
-
             var result = await _intentService.EnqueueManualAsync(intent, cancellationToken);
             if (result.Success && result.Queued.Count > 0)
             {

@@ -611,20 +611,17 @@ public sealed class SpotifyPathfinderMetadataClient
             return new List<SpotifyTrackSummary>();
         }
         List<SpotifyTrackSummary> list = new List<SpotifyTrackSummary>();
-        foreach (JsonElement item in value.EnumerateArray())
+        foreach (JsonElement item in value.EnumerateArray().Where(static item => item.ValueKind == JsonValueKind.Object))
         {
-            if (item.ValueKind == JsonValueKind.Object)
+            string text = TryGetString(item, "id") ?? ExtractIdFromUri(TryGetString(item, "uri")) ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(text))
             {
-                string text = TryGetString(item, "id") ?? ExtractIdFromUri(TryGetString(item, "uri")) ?? string.Empty;
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    string sourceUrl = BuildSpotifyUrl(EpisodeType, text);
-                    string? imageUrl = TryGetLargestImageUrl(item, CoverImageKey, ImageKey) ?? TryGetLargestImageUrl(root, CoverImageKey, ImageKey);
-                    string? showId = TryGetString(item, ShowType, "id") ?? fallbackShowId;
-                    string? showName = TryGetString(item, ShowType, "name") ?? fallbackShowName;
-                    string? publisher = TryGetString(item, ShowType, "publisher") ?? fallbackPublisher;
-                    list.Add(MapBurstEpisodeToTrackSummary(item, text, showId, showName, publisher, sourceUrl, imageUrl));
-                }
+                string sourceUrl = BuildSpotifyUrl(EpisodeType, text);
+                string? imageUrl = TryGetLargestImageUrl(item, CoverImageKey, ImageKey) ?? TryGetLargestImageUrl(root, CoverImageKey, ImageKey);
+                string? showId = TryGetString(item, ShowType, "id") ?? fallbackShowId;
+                string? showName = TryGetString(item, ShowType, "name") ?? fallbackShowName;
+                string? publisher = TryGetString(item, ShowType, "publisher") ?? fallbackPublisher;
+                list.Add(MapBurstEpisodeToTrackSummary(item, text, showId, showName, publisher, sourceUrl, imageUrl));
             }
         }
         return list;
@@ -3122,15 +3119,14 @@ public sealed class SpotifyPathfinderMetadataClient
         Dictionary<string, SpotifyTrackSummary> dictionary = new Dictionary<string, SpotifyTrackSummary>(StringComparer.OrdinalIgnoreCase);
         CollectBrowseSectionTracks(root, dictionary, list);
         List<SpotifyTrackSummary> list2 = new List<SpotifyTrackSummary>(Math.Min(num, list.Count));
-        foreach (string item in list)
+        foreach (var value in list
+            .Select(item => dictionary.TryGetValue(item, out var mapped) ? mapped : null)
+            .Where(static mapped => mapped is not null))
         {
-            if (dictionary.TryGetValue(item, out var value))
+            list2.Add(value!);
+            if (list2.Count >= num)
             {
-                list2.Add(value);
-                if (list2.Count >= num)
-                {
-                    break;
-                }
+                break;
             }
         }
         return list2;
@@ -3164,12 +3160,11 @@ public sealed class SpotifyPathfinderMetadataClient
             return;
         }
 
-        foreach (JsonElement item in items.EnumerateArray())
+        foreach (var summary in items.EnumerateArray()
+            .Select(item => TryParseBrowseSectionTrackItem(item, out SpotifyTrackSummary? summary) ? summary : null)
+            .Where(static summary => summary is not null))
         {
-            if (TryParseBrowseSectionTrackItem(item, out SpotifyTrackSummary? summary) && summary is not null)
-            {
-                AddOrReplaceTrackSummary(summary, tracksById, orderedIds);
-            }
+            AddOrReplaceTrackSummary(summary!, tracksById, orderedIds);
         }
     }
 
@@ -3371,15 +3366,14 @@ public sealed class SpotifyPathfinderMetadataClient
         Dictionary<string, SpotifyTrackSummary> dictionary = new Dictionary<string, SpotifyTrackSummary>(StringComparer.OrdinalIgnoreCase);
         CollectSearchSuggestionTracks(root, dictionary, list);
         List<SpotifyTrackSummary> list2 = new List<SpotifyTrackSummary>(Math.Min(num, list.Count));
-        foreach (string item in list)
+        foreach (var value in list
+            .Select(item => dictionary.TryGetValue(item, out var mapped) ? mapped : null)
+            .Where(static mapped => mapped is not null))
         {
-            if (dictionary.TryGetValue(item, out var value))
+            list2.Add(value!);
+            if (list2.Count >= num)
             {
-                list2.Add(value);
-                if (list2.Count >= num)
-                {
-                    break;
-                }
+                break;
             }
         }
         return list2;
@@ -3468,14 +3462,12 @@ public sealed class SpotifyPathfinderMetadataClient
     private static bool TryParseSearchSuggestionTrack(JsonElement element, out SpotifyTrackSummary? summary)
     {
         summary = null;
-        foreach (JsonElement candidate in EnumerateSearchSuggestionTrackCandidates(element))
+        foreach (var parsed in EnumerateSearchSuggestionTrackCandidates(element)
+            .Select(ParseTrackSummary)
+            .Where(static parsed => parsed is not null && IsTrackSummaryUsable(parsed)))
         {
-            SpotifyTrackSummary? parsed = ParseTrackSummary(candidate);
-            if (parsed is not null && IsTrackSummaryUsable(parsed))
-            {
-                summary = parsed;
-                return true;
-            }
+            summary = parsed!;
+            return true;
         }
         return false;
     }
@@ -5139,12 +5131,10 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             yield break;
         }
-        foreach (JsonElement release in releases.EnumerateArray())
+        foreach (JsonElement release in releases.EnumerateArray()
+            .Where(static release => release.ValueKind == JsonValueKind.Object))
         {
-            if (release.ValueKind == JsonValueKind.Object)
-            {
-                yield return release;
-            }
+            yield return release;
         }
     }
 
@@ -5300,12 +5290,10 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return;
         }
-        foreach (JsonElement item in array.Value.EnumerateArray())
+        foreach (JsonElement item in array.Value.EnumerateArray()
+            .Where(static item => item.ValueKind == JsonValueKind.String))
         {
-            if (item.ValueKind == JsonValueKind.String)
-            {
-                AddGenre(genres, item.GetString());
-            }
+            AddGenre(genres, item.GetString());
         }
     }
 
@@ -5315,18 +5303,14 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return;
         }
-        foreach (JsonElement item in array.Value.EnumerateArray())
+        foreach (JsonElement item in array.Value.EnumerateArray()
+            .Where(static item => item.ValueKind == JsonValueKind.Object))
         {
-            if (item.ValueKind != JsonValueKind.Object)
+            foreach (var value in properties
+                .Select(propertyName => item.TryGetProperty(propertyName, out var value) ? value : default)
+                .Where(value => value.ValueKind == JsonValueKind.String))
             {
-                continue;
-            }
-            foreach (string propertyName in properties)
-            {
-                if (item.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String)
-                {
-                    AddGenre(genres, value.GetString());
-                }
+                AddGenre(genres, value.GetString());
             }
         }
     }
@@ -5473,12 +5457,12 @@ public sealed class SpotifyPathfinderMetadataClient
     private static bool TryGetPathfinderFeatureValue(JsonElement node, string key, out JsonElement value)
     {
         string value2 = NormalizePathfinderFeatureKey(key);
-        foreach (JsonElement item in EnumeratePathfinderFeatureContainers(node))
+        foreach (var candidateValue in EnumeratePathfinderFeatureContainers(node)
+            .Select(item => TryGetPathfinderFeatureValueFromContainer(item, value2, out var resolvedValue) ? resolvedValue : (JsonElement?)null)
+            .Where(static resolvedValue => resolvedValue.HasValue))
         {
-            if (TryGetPathfinderFeatureValueFromContainer(item, value2, out value))
-            {
-                return true;
-            }
+            value = candidateValue!.Value;
+            return true;
         }
         value = default(JsonElement);
         return false;
@@ -5613,33 +5597,32 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return list;
         }
-        foreach (JsonElement item2 in items)
+        foreach (JsonElement value in items
+            .Select(item2 => TryGetNested(item2, out var value) ? value : default)
+            .Where(value => value.ValueKind != JsonValueKind.Undefined))
         {
-            if (TryGetNested(item2, out var value, TrackType))
+            string? text2 = ExtractIdFromUri(TryGetString(value, "uri")) ?? TryGetString(value, "id");
+            if (!string.IsNullOrWhiteSpace(text2))
             {
-                string? text2 = ExtractIdFromUri(TryGetString(value, "uri")) ?? TryGetString(value, "id");
-                if (!string.IsNullOrWhiteSpace(text2))
+                string name = TryGetString(value, "name") ?? SpotifyTrackFallbackTitle;
+                string? artists = ExtractArtistsFromItems(value, ArtistsKey);
+                int? durationMs = TryGetInt(value, DurationKey, TotalMillisecondsKey);
+                string sourceUrl = BuildSpotifyUrl(TrackType, text2);
+                string? imageUrl = ExtractCoverUrl(value, CoverArtKey) ?? defaultCoverUrl;
+                int? trackNumber = TryGetInt(value, "trackNumber") ?? TryGetInt(value, "track_number") ?? TryGetInt(value, "number");
+                int? discNumber = TryGetInt(value, "discNumber") ?? TryGetInt(value, "disc_number");
+                string? text3 = TryGetString(value, ContentRatingKey, LabelKey);
+                bool? flag = ((!string.IsNullOrWhiteSpace(text3)) ? new bool?(string.Equals(text3, ExplicitLabel, StringComparison.OrdinalIgnoreCase)) : ((bool?)null));
+                SpotifyTrackSummary item = new SpotifyTrackSummary(text2, name, artists, album, durationMs, sourceUrl, imageUrl, ExtractIsrc(value), releaseDate, trackNumber, discNumber, trackTotal, flag)
                 {
-                    string name = TryGetString(value, "name") ?? SpotifyTrackFallbackTitle;
-                    string? artists = ExtractArtistsFromItems(value, ArtistsKey);
-                    int? durationMs = TryGetInt(value, DurationKey, TotalMillisecondsKey);
-                    string sourceUrl = BuildSpotifyUrl(TrackType, text2);
-                    string? imageUrl = ExtractCoverUrl(value, CoverArtKey) ?? defaultCoverUrl;
-                    int? trackNumber = TryGetInt(value, "trackNumber") ?? TryGetInt(value, "track_number") ?? TryGetInt(value, "number");
-                    int? discNumber = TryGetInt(value, "discNumber") ?? TryGetInt(value, "disc_number");
-                    string? text3 = TryGetString(value, ContentRatingKey, LabelKey);
-                    bool? flag = ((!string.IsNullOrWhiteSpace(text3)) ? new bool?(string.Equals(text3, ExplicitLabel, StringComparison.OrdinalIgnoreCase)) : ((bool?)null));
-                    SpotifyTrackSummary item = new SpotifyTrackSummary(text2, name, artists, album, durationMs, sourceUrl, imageUrl, ExtractIsrc(value), releaseDate, trackNumber, discNumber, trackTotal, flag)
-                    {
-                        AlbumId = albumId,
-                        AlbumArtist = albumArtist,
-                        Label = label,
-                        Genres = genres,
-                        AlbumGroup = albumGroup,
-                        ReleaseType = releaseType
-                    };
-                    list.Add(item);
-                }
+                    AlbumId = albumId,
+                    AlbumArtist = albumArtist,
+                    Label = label,
+                    Genres = genres,
+                    AlbumGroup = albumGroup,
+                    ReleaseType = releaseType
+                };
+                list.Add(item);
             }
         }
         return list;
@@ -6017,13 +6000,12 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static SpotifyTrackSummary? TryParsePlaylistItemTrack(JsonElement item, out JsonElement trackData)
     {
-        foreach (JsonElement item2 in EnumeratePlaylistTrackCandidates(item))
+        foreach (JsonElement item2 in EnumeratePlaylistTrackCandidates(item)
+            .Where(item2 => TryParsePlaylistTrackCandidate(item2, out _)))
         {
-            if (TryParsePlaylistTrackCandidate(item2, out SpotifyTrackSummary? spotifyTrackSummary))
-            {
-                trackData = item2;
-                return spotifyTrackSummary;
-            }
+            var spotifyTrackSummary = TryParsePlaylistTrackCandidate(item2, out var parsed) ? parsed : null;
+            trackData = item2;
+            return spotifyTrackSummary;
         }
         trackData = default(JsonElement);
         return null;
@@ -6209,13 +6191,11 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static string? ExtractDirectImageUrlFromArray(JsonElement node)
     {
-        foreach (JsonElement item in node.EnumerateArray())
+        foreach (var image in node.EnumerateArray()
+            .Select(ExtractDirectImageUrl)
+            .Where(static image => !string.IsNullOrWhiteSpace(image)))
         {
-            string? image = ExtractDirectImageUrl(item);
-            if (!string.IsNullOrWhiteSpace(image))
-            {
-                return image;
-            }
+            return image;
         }
         return null;
     }
@@ -6234,13 +6214,11 @@ public sealed class SpotifyPathfinderMetadataClient
             return sourceUrl;
         }
 
-        foreach (JsonProperty property in node.EnumerateObject())
+        foreach (var nested in node.EnumerateObject()
+            .Select(property => ExtractDirectImageUrl(property.Value))
+            .Where(static nested => !string.IsNullOrWhiteSpace(nested)))
         {
-            string? nested = ExtractDirectImageUrl(property.Value);
-            if (!string.IsNullOrWhiteSpace(nested))
-            {
-                return nested;
-            }
+            return nested;
         }
 
         return null;
@@ -6489,13 +6467,11 @@ public sealed class SpotifyPathfinderMetadataClient
             }
         }
 
-        foreach (JsonElement candidate in EnumerateNestedReleaseCandidates(item))
+        foreach (var parsed in EnumerateNestedReleaseCandidates(item)
+            .Select(ParseRelease)
+            .Where(static parsed => parsed is not null))
         {
-            DiscographyRelease? parsed = ParseRelease(candidate);
-            if (parsed is not null)
-            {
-                return parsed;
-            }
+            return parsed;
         }
 
         return null;
@@ -6627,12 +6603,11 @@ public sealed class SpotifyPathfinderMetadataClient
     private static List<ImageSource> ParseSources(JsonElement sources)
     {
         List<ImageSource> list = new List<ImageSource>();
-        foreach (JsonElement item in sources.EnumerateArray())
+        foreach (var source in sources.EnumerateArray()
+            .Select(item => TryParseImageSource(item, out ImageSource? source) ? source : null)
+            .Where(static source => source is not null))
         {
-            if (TryParseImageSource(item, out ImageSource? source) && source is not null)
-            {
-                list.Add(source);
-            }
+            list.Add(source!);
         }
         return list;
     }
@@ -7066,12 +7041,14 @@ public sealed class SpotifyPathfinderMetadataClient
             return false;
         }
         Dictionary<string, PersistedQueryOverride> parsedOverrides = new Dictionary<string, PersistedQueryOverride>(StringComparer.OrdinalIgnoreCase);
-        foreach (JsonProperty item in operations.EnumerateObject())
+        foreach (var item in operations.EnumerateObject()
+            .Select(item => TryBuildPersistedQueryOverride(item.Value, out PersistedQueryOverride persisted)
+                ? new { item.Name, Persisted = persisted }
+                : null)
+            .Where(item => item is not null)
+            .Select(item => item!))
         {
-            if (TryBuildPersistedQueryOverride(item.Value, out PersistedQueryOverride persisted))
-            {
-                parsedOverrides[item.Name] = persisted;
-            }
+            parsedOverrides[item.Name] = item.Persisted;
         }
         overrides = parsedOverrides;
         return true;

@@ -109,9 +109,8 @@ public sealed class QueueSourceSettingsSnapshot
 
     private static int? ReadInt(JsonObject obj, params string[] keys)
     {
-        foreach (var key in keys)
+        foreach (var raw in keys.Select(key => ReadString(obj, key)))
         {
-            var raw = ReadString(obj, key);
             if (string.IsNullOrWhiteSpace(raw))
             {
                 continue;
@@ -128,9 +127,8 @@ public sealed class QueueSourceSettingsSnapshot
 
     private static bool? ReadBool(JsonObject obj, params string[] keys)
     {
-        foreach (var key in keys)
+        foreach (var raw in keys.Select(key => ReadString(obj, key)))
         {
-            var raw = ReadString(obj, key);
             if (string.IsNullOrWhiteSpace(raw))
             {
                 continue;

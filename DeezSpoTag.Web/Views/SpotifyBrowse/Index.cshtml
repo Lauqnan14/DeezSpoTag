@@ -4,8 +4,8 @@
 }
 
 @section Styles {
-<link rel="stylesheet" href="~/css/home-top-genres.css" asp-append-version="true" />
-<link rel="stylesheet" href="~/css/spotify-card-shared.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/home-top-genres.css")" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/spotify-card-shared.css")" />
 <style>
 .header {
     margin-bottom: 24px;
@@ -107,7 +107,7 @@
 </section>
 
 @section Scripts {
-<script src="~/js/home-view-helpers.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/home-view-helpers.js")"></script>
 <script>
 const categoryId = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["CategoryId"] ?? ""));
 const categoryUri = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["CategoryUri"] ?? ""));

@@ -495,8 +495,13 @@ public sealed class EngineFallbackSearchService
 
     private static string? GetValidatedEngineUrl(SongLinkResult? songLink, EngineFallbackSearchRequest request)
     {
+        if (songLink == null)
+        {
+            return null;
+        }
+
         var candidateUrl = GetEngineUrl(songLink, request.Engine);
-        if (string.IsNullOrWhiteSpace(candidateUrl) || songLink == null)
+        if (string.IsNullOrWhiteSpace(candidateUrl))
         {
             return null;
         }

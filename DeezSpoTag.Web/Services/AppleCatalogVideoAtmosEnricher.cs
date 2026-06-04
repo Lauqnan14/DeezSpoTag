@@ -66,13 +66,11 @@ public sealed class AppleCatalogVideoAtmosEnricher
     private static HashSet<string> CollectResolvedIds(IEnumerable<Dictionary<string, object?>> videos)
     {
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var video in videos)
+        foreach (var resolvedId in videos
+            .Select(ResolveVideoId)
+            .Where(resolvedId => !string.IsNullOrWhiteSpace(resolvedId)))
         {
-            var resolvedId = ResolveVideoId(video);
-            if (!string.IsNullOrWhiteSpace(resolvedId))
-            {
-                ids.Add(resolvedId);
-            }
+            ids.Add(resolvedId);
         }
 
         return ids;

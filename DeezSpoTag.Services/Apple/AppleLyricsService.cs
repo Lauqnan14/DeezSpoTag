@@ -1107,9 +1107,8 @@ public sealed class AppleLyricsService
         var metadata = FindMetadata(tt);
         foreach (var div in body.Elements())
         {
-            foreach (var item in div.Elements())
+            foreach (var state in div.Elements().Select(item => BuildSyllableLineState(item, metadata)))
             {
-                var state = BuildSyllableLineState(item, metadata);
                 AppendSyllableLines(lrcLines, state);
             }
         }

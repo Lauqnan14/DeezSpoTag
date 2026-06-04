@@ -546,9 +546,10 @@ public sealed class PlaylistSyncService
 
         var checkedLocalTracks = 0;
         var missingLocalTracks = 0;
-        foreach (var candidate in candidates.Where(candidate => eligibleIds.Contains(candidate.TrackSourceId)))
+        foreach (var track in candidates
+            .Where(candidate => eligibleIds.Contains(candidate.TrackSourceId))
+            .Select(ToSyncTrackSummary))
         {
-            var track = ToSyncTrackSummary(candidate);
             var localTrackId = await ResolveLocalTrackIdAsync(playlist.Source, track, cancellationToken);
             if (!localTrackId.HasValue)
             {
@@ -1042,7 +1043,7 @@ public sealed class PlaylistSyncService
 
     private static bool ShouldSyncPlaylistArtwork(PlaylistWatchPreferenceDto? preference)
     {
-        return preference?.UpdateArtwork != false || preference?.ReuseSavedArtwork == true;
+        return preference == null || preference.UpdateArtwork || preference.ReuseSavedArtwork;
     }
 
     private async Task SyncPlexPlaylistArtworkAsync(
@@ -1951,22 +1952,11 @@ public sealed class PlaylistSyncService
         }
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var normalized = new List<string>(genres.Count);
-        foreach (var genre in genres)
-        {
-            var value = (genre ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                continue;
-            }
-
-            if (seen.Add(value))
-            {
-                normalized.Add(value);
-            }
-        }
-
-        return normalized;
+        return genres
+            .Select(genre => (genre ?? string.Empty).Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Where(seen.Add)
+            .ToList();
     }
 }
 

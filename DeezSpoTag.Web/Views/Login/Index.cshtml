@@ -5,7 +5,7 @@
 }
 
 @section Styles {
-<link rel="stylesheet" href="~/css/dropdown-select.css" />
+<link rel="stylesheet" href="@Url.Content("~/css/dropdown-select.css")" />
 }
 
 <div class="fixed-footer platform-login-shell">
@@ -157,7 +157,7 @@
                         <button class="btn btn-primary action-btn mt-4" type="button" id="spotifyGenerateBlobBtn">Login</button>
                     </div>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "spotifyLoggedInInfo", ImageId = "spotifyLoggedInPicture", ImageAlt = "Spotify Profile", ButtonId = "spotifyLogoutBtn", NameId = "spotifyLoggedInName", NameFallback = "Spotify account", DetailId = "spotifyLoggedInPlanLocation", DetailText = "Unknown | UL" }' />
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "spotifyLoggedInInfo", ImageId = "spotifyLoggedInPicture", ImageAlt = "Spotify Profile", ButtonId = "spotifyLogoutBtn", NameId = "spotifyLoggedInName", NameFallback = "Spotify account", DetailId = "spotifyLoggedInPlanLocation", DetailText = "Unknown | UL" })
             </div>
         </div>
 
@@ -223,7 +223,7 @@
                         <p class="text-muted" id="appleMusicLoginState"></p>
                     </form>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "appleMusicLoggedInInfo", ImageId = "appleMusicLoggedInPicture", ImageAlt = "Apple Music", ButtonId = "appleMusicDisconnectBtn", NameId = "appleMusicLoggedInName", NameFallback = "Apple Music account", DetailId = "appleMusicLoggedInStatus" }' />
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "appleMusicLoggedInInfo", ImageId = "appleMusicLoggedInPicture", ImageAlt = "Apple Music", ButtonId = "appleMusicDisconnectBtn", NameId = "appleMusicLoggedInName", NameFallback = "Apple Music account", DetailId = "appleMusicLoggedInStatus" })
             </div>
         </div>
 
@@ -242,7 +242,7 @@
                         <p class="text-muted" id="discogsStatus"></p>
                     </form>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "discogsLoggedInInfo", ImageAlt = "Discogs", ImageSrc = "/images/icons/discogs.png", ImageCssClass = "h-20 w-20", ButtonId = "discogsDisconnectBtn", NameId = "discogsLoggedInName", NameFallback = "Discogs account" }' />
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "discogsLoggedInInfo", ImageAlt = "Discogs", ImageSrc = "/images/icons/discogs.png", ImageCssClass = "h-20 w-20", ButtonId = "discogsDisconnectBtn", NameId = "discogsLoggedInName", NameFallback = "Discogs account" })
             </div>
         </div>
 
@@ -268,7 +268,7 @@
                         <p class="text-muted" id="lastfmStatus"></p>
                     </form>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "lastfmLoggedInInfo", ImageAlt = "Last.fm", ImageSrc = "/images/icons/last-fm.png", ImageCssClass = "h-20 w-20", ButtonId = "lastfmDisconnectBtn", TextPrefix = "Configured for", NameId = "lastfmLoggedInName", NameFallback = "Last.fm" }' />
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "lastfmLoggedInInfo", ImageAlt = "Last.fm", ImageSrc = "/images/icons/last-fm.png", ImageCssClass = "h-20 w-20", ButtonId = "lastfmDisconnectBtn", TextPrefix = "Configured for", NameId = "lastfmLoggedInName", NameFallback = "Last.fm" })
             </div>
         </div>
 
@@ -302,7 +302,7 @@
                         <p class="text-muted" id="bpmStatus"></p>
                     </form>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "bpmLoggedInInfo", ImageId = "bpmLoggedInPicture", ImageAlt = "BPM Supreme Profile", ButtonId = "bpmDisconnectBtn", NameId = "bpmLoggedInName", NameFallback = "BPM Supreme account" }' />
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "bpmLoggedInInfo", ImageId = "bpmLoggedInPicture", ImageAlt = "BPM Supreme Profile", ButtonId = "bpmDisconnectBtn", NameId = "bpmLoggedInName", NameFallback = "BPM Supreme account" })
             </div>
         </div>
 
@@ -325,7 +325,7 @@
                         <p class="text-muted" id="plexStatus"></p>
                     </form>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "plexLoggedInInfo", ImageId = "plexLoggedInPicture", ImageAlt = "Plex Profile", ButtonId = "plexDisconnectBtn", NameId = "plexLoggedInName", NameFallback = "Plex account" }' />
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "plexLoggedInInfo", ImageId = "plexLoggedInPicture", ImageAlt = "Plex Profile", ButtonId = "plexDisconnectBtn", NameId = "plexLoggedInName", NameFallback = "Plex account" })
             </div>
         </div>
 
@@ -352,7 +352,7 @@
                         <p class="text-muted" id="jellyfinStatus"></p>
                     </form>
                 </div>
-                <partial name="~/Views/Shared/_PlatformLoginStatusCard.cshtml" model='new PlatformLoginStatusCardModel { ContainerId = "jellyfinLoggedInInfo", ImageAlt = "Jellyfin", ImageSrc = "/images/icons/jellyfin.png", ImageCssClass = "h-20 w-20", ButtonId = "jellyfinDisconnectBtn", NameId = "jellyfinLoggedInName", NameFallback = "Jellyfin account" }' />
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "jellyfinLoggedInInfo", ImageAlt = "Jellyfin", ImageSrc = "/images/icons/jellyfin.png", ImageCssClass = "h-20 w-20", ButtonId = "jellyfinDisconnectBtn", NameId = "jellyfinLoggedInName", NameFallback = "Jellyfin account" })
             </div>
         </div>
     </div>

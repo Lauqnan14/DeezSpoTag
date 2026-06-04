@@ -1255,16 +1255,11 @@ public sealed class QuickTagService
         var directory = Path.GetDirectoryName(playlistPath) ?? string.Empty;
         var files = new List<string>();
 
-        foreach (var line in EnumeratePlaylistContentLines(playlistPath))
+        foreach (var candidate in EnumeratePlaylistContentLines(playlistPath)
+            .Select(line => TryResolvePlaylistCandidate(line, extension))
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate)))
         {
-            var candidate = TryResolvePlaylistCandidate(line, extension);
-
-            if (string.IsNullOrWhiteSpace(candidate))
-            {
-                continue;
-            }
-
-            var normalized = NormalizePlaylistCandidatePath(candidate, directory);
+            var normalized = NormalizePlaylistCandidatePath(candidate!, directory);
             if (ShouldIgnoreTagEditorFile(normalized))
             {
                 continue;
@@ -1538,12 +1533,10 @@ public sealed class QuickTagService
         out List<string> values,
         params string[] keys)
     {
-        foreach (var key in keys)
+        foreach (var key in keys.Where(tags.ContainsKey))
         {
-            if (tags.TryGetValue(key, out values!))
-            {
-                return true;
-            }
+            values = tags[key];
+            return true;
         }
 
         values = new List<string>();

@@ -124,13 +124,9 @@ public class PlatformRegistryApiController : ControllerBase
             return;
         }
 
-        foreach (var element in document.RootElement.EnumerateArray())
+        foreach (var entry in document.RootElement.EnumerateArray().Select(CreateEntryOrNull).Where(static entry => entry is not null))
         {
-            var entry = CreateEntryOrNull(element);
-            if (entry is not null)
-            {
-                entries[entry.Id] = entry;
-            }
+            entries[entry!.Id] = entry;
         }
     }
 

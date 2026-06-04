@@ -274,12 +274,13 @@ internal static class QobuzRomajiHelper
     private static Dictionary<char, string> CreateKatakanaMap()
     {
         var map = new Dictionary<char, string>();
-        foreach (var entry in HiraganaToRomaji)
+        foreach (var entry in HiraganaToRomaji
+            .Select(static entry => TryToKatakana(entry.Key, out var katakana)
+                ? (Katakana: (char?)katakana, entry.Value)
+                : (Katakana: null, entry.Value))
+            .Where(static entry => entry.Katakana.HasValue))
         {
-            if (TryToKatakana(entry.Key, out var katakana))
-            {
-                map[katakana] = entry.Value;
-            }
+            map[entry.Katakana.GetValueOrDefault()] = entry.Value;
         }
 
         map['ー'] = string.Empty;
@@ -290,12 +291,13 @@ internal static class QobuzRomajiHelper
     private static Dictionary<string, string> CreateKatakanaCombinations()
     {
         var map = new Dictionary<string, string>();
-        foreach (var entry in CombinationHiragana)
+        foreach (var entry in CombinationHiragana
+            .Select(static entry => TryToKatakana(entry.Key, out var katakana)
+                ? (Katakana: katakana, entry.Value)
+                : (Katakana: null, entry.Value))
+            .Where(static entry => !string.IsNullOrWhiteSpace(entry.Katakana)))
         {
-            if (TryToKatakana(entry.Key, out var katakana))
-            {
-                map[katakana] = entry.Value;
-            }
+            map[entry.Katakana!] = entry.Value;
         }
 
         map["ティ"] = "ti";

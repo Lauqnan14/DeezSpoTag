@@ -9,8 +9,8 @@
 <div class="auth-center">
     <form class="auth-card text-center" method="post">
         <div class="mb-4">
-            <a class="d-inline-flex align-items-center justify-content-center" asp-area="" asp-controller="Home" asp-action="Index">
-                <partial name="_DeezSpoTagLogo" model='"auth-logo theme-logo auth-theme-logo"' />
+            <a class="d-inline-flex align-items-center justify-content-center" href="@Url.Action("Index", "Home", new { area = "" })">
+                @await Html.PartialAsync("_DeezSpoTagLogo", "auth-logo theme-logo auth-theme-logo")
             </a>
             <h2 class="auth-title mt-3">Sign In</h2>
         </div>
@@ -26,13 +26,13 @@
         }
         <div class="mb-3">
             <label for="Input_Username" class="visually-hidden">Username</label>
-            <input asp-for="Input.Username" id="Input_Username" type="text" class="app-modal-input" autocomplete="username" />
-            <span asp-validation-for="Input.Username" class="text-danger small"></span>
+            @Html.TextBoxFor(model => model.Input.Username, new { id = "Input_Username", @class = "app-modal-input", autocomplete = "username" })
+            @Html.ValidationMessageFor(model => model.Input.Username, string.Empty, new { @class = "text-danger small" })
         </div>
         <div class="mb-4">
             <label for="Input_Password" class="visually-hidden">Password</label>
-            <input asp-for="Input.Password" id="Input_Password" type="password" class="app-modal-input" autocomplete="current-password" />
-            <span asp-validation-for="Input.Password" class="text-danger small"></span>
+            @Html.PasswordFor(model => model.Input.Password, new { id = "Input_Password", @class = "app-modal-input", autocomplete = "current-password" })
+            @Html.ValidationMessageFor(model => model.Input.Password, string.Empty, new { @class = "text-danger small" })
         </div>
         <button class="btn btn-lg btn-primary w-100" type="submit">Let me in</button>
     </form>

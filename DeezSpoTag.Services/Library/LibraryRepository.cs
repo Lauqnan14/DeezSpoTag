@@ -9035,12 +9035,11 @@ LIMIT 200;";
 
             var albumId = await GetOrCreateAlbumAsync(connection, transaction, artistId, album, cancellationToken);
             albumIdByKey[BuildAlbumKey(album.ArtistName, album.Title)] = albumId;
-            foreach (var folderName in album.LocalFolders)
+            foreach (var folder in album.LocalFolders
+                .Select(folderName => folderByDisplay.TryGetValue(folderName, out var folder) ? folder : null)
+                .Where(folder => folder is not null))
             {
-                if (folderByDisplay.TryGetValue(folderName, out var folder))
-                {
-                    await EnsureAlbumLocalAsync(connection, transaction, albumId, folder.Id, cancellationToken);
-                }
+                await EnsureAlbumLocalAsync(connection, transaction, albumId, folder!.Id, cancellationToken);
             }
         }
 

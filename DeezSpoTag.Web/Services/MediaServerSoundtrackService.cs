@@ -1716,13 +1716,10 @@ public sealed partial class MediaServerSoundtrackService
     private static bool MarkStaleLibraries(MediaServerSoundtrackServerSettings server, HashSet<string> seenIds)
     {
         var changed = false;
-        foreach (var staleLibrary in server.Libraries.Values.Where(entry => !seenIds.Contains(entry.LibraryId)))
+        foreach (var staleLibrary in server.Libraries.Values.Where(entry => !seenIds.Contains(entry.LibraryId) && entry.LastSeenUtc != null))
         {
-            if (staleLibrary.LastSeenUtc != null)
-            {
-                staleLibrary.LastSeenUtc = null;
-                changed = true;
-            }
+            staleLibrary.LastSeenUtc = null;
+            changed = true;
         }
 
         return changed;
@@ -3568,12 +3565,11 @@ public sealed partial class MediaServerSoundtrackService
     private static string SanitizeSoundtrackTitle(string title)
     {
         var sanitized = TitleBracketNoiseRegex().Replace(title, " ");
-        foreach (var token in SoundtrackNoiseTokens)
+        foreach (var tokenRegex in SoundtrackNoiseTokens.Select(token => new Regex(
+                     $@"\b{Regex.Escape(token)}\b",
+                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                     RegexDynamicTimeout)))
         {
-            var tokenRegex = new Regex(
-                $@"\b{Regex.Escape(token)}\b",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-                RegexDynamicTimeout);
             sanitized = tokenRegex.Replace(sanitized, " ");
         }
 
@@ -3581,41 +3577,80 @@ public sealed partial class MediaServerSoundtrackService
         return string.IsNullOrWhiteSpace(sanitized) ? title.Trim() : sanitized;
     }
 
-    [GeneratedRegex(@"\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex TitleBracketNoiseRegex();
+    private static readonly Regex s_titleBracketNoiseRegex = CreateStaticRegex(
+        @"\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}",
+        RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex TitleWhitespaceRegex();
+    private static readonly Regex s_titleWhitespaceRegex = CreateStaticRegex(
+        @"\s+",
+        RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(SpotifyMarkdownLinkPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SpotifyMarkdownLinkRegex();
+    private static readonly Regex s_spotifyMarkdownLinkRegex = CreateStaticRegex(
+        SpotifyMarkdownLinkPattern,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(SpotifyWebLinkPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SpotifyWebLinkRegex();
+    private static readonly Regex s_spotifyWebLinkRegex = CreateStaticRegex(
+        SpotifyWebLinkPattern,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(SpotifyUriPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SpotifyUriRegex();
+    private static readonly Regex s_spotifyUriRegex = CreateStaticRegex(
+        SpotifyUriPattern,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(DeezerWebLinkPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex DeezerWebLinkRegex();
+    private static readonly Regex s_deezerWebLinkRegex = CreateStaticRegex(
+        DeezerWebLinkPattern,
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(@"\b(?:part|chapter|episode|vol|volume)\s*(?<n>[2-9]|1[0-2])\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SequelKeywordRegex();
+    private static readonly Regex s_sequelKeywordRegex = CreateStaticRegex(
+        @"\b(?:part|chapter|episode|vol|volume)\s*(?<n>[2-9]|1[0-2])\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(@"\b(?<n>[2-9]|1[0-2])\s*:", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SequelBeforeColonRegex();
+    private static readonly Regex s_sequelBeforeColonRegex = CreateStaticRegex(
+        @"\b(?<n>[2-9]|1[0-2])\s*:",
+        RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(@"\b(?<n>[2-9]|1[0-2])\b\s*$", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SequelAtEndRegex();
+    private static readonly Regex s_sequelAtEndRegex = CreateStaticRegex(
+        @"\b(?<n>[2-9]|1[0-2])\b\s*$",
+        RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(@"\b(?<n>II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SequelRomanRegex();
+    private static readonly Regex s_sequelRomanRegex = CreateStaticRegex(
+        @"\b(?<n>II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(@"\b(19|20)\d{2}\b", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex TitleYearRegex();
+    private static readonly Regex s_titleYearRegex = CreateStaticRegex(
+        @"\b(19|20)\d{2}\b",
+        RegexOptions.CultureInvariant);
 
-    [GeneratedRegex(@"\b(?<n>[2-9]|10)\b", RegexOptions.CultureInvariant, RegexTimeoutMilliseconds)]
-    private static partial Regex SimpleSequelNumberRegex();
+    private static readonly Regex s_simpleSequelNumberRegex = CreateStaticRegex(
+        @"\b(?<n>[2-9]|10)\b",
+        RegexOptions.CultureInvariant);
+
+    private static Regex CreateStaticRegex(string pattern, RegexOptions options)
+        => new(pattern, options, TimeSpan.FromMilliseconds(RegexTimeoutMilliseconds));
+
+    private static Regex TitleBracketNoiseRegex() => s_titleBracketNoiseRegex;
+
+    private static Regex TitleWhitespaceRegex() => s_titleWhitespaceRegex;
+
+    private static Regex SpotifyMarkdownLinkRegex() => s_spotifyMarkdownLinkRegex;
+
+    private static Regex SpotifyWebLinkRegex() => s_spotifyWebLinkRegex;
+
+    private static Regex SpotifyUriRegex() => s_spotifyUriRegex;
+
+    private static Regex DeezerWebLinkRegex() => s_deezerWebLinkRegex;
+
+    private static Regex SequelKeywordRegex() => s_sequelKeywordRegex;
+
+    private static Regex SequelBeforeColonRegex() => s_sequelBeforeColonRegex;
+
+    private static Regex SequelAtEndRegex() => s_sequelAtEndRegex;
+
+    private static Regex SequelRomanRegex() => s_sequelRomanRegex;
+
+    private static Regex TitleYearRegex() => s_titleYearRegex;
+
+    private static Regex SimpleSequelNumberRegex() => s_simpleSequelNumberRegex;
 
     private static string ComputeContentHash(MediaServerContentItem item)
     {

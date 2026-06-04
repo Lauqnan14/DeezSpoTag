@@ -348,12 +348,11 @@ public sealed class SpotifyFavoritesService
             return items;
         }
 
-        foreach (var item in itemsElement.EnumerateArray())
+        foreach (var parsedItem in itemsElement.EnumerateArray()
+            .Select(item => TryParseRawHomeItem(item, out var parsedItem) ? parsedItem : null)
+            .Where(parsedItem => parsedItem is not null))
         {
-            if (TryParseRawHomeItem(item, out var parsedItem))
-            {
-                items.Add(parsedItem);
-            }
+            items.Add(parsedItem!);
         }
 
         return items;
@@ -504,13 +503,11 @@ public sealed class SpotifyFavoritesService
 
     private static string? TryGetStringFromCandidates(IEnumerable<JsonElement> candidates, params string[] path)
     {
-        foreach (var candidate in candidates)
+        foreach (var value in candidates
+            .Select(candidate => TryGetString(candidate, path))
+            .Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            var value = TryGetString(candidate, path);
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return null;
@@ -518,13 +515,11 @@ public sealed class SpotifyFavoritesService
 
     private static string? TryGetStringAtFromCandidates(IEnumerable<JsonElement> candidates, params object[] path)
     {
-        foreach (var candidate in candidates)
+        foreach (var value in candidates
+            .Select(candidate => TryGetStringAt(candidate, path))
+            .Where(value => !string.IsNullOrWhiteSpace(value)))
         {
-            var value = TryGetStringAt(candidate, path);
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+            return value;
         }
 
         return null;

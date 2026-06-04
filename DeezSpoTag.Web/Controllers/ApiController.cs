@@ -658,14 +658,9 @@ namespace DeezSpoTag.Web.Controllers
             var index = 0;
             foreach (var ch in value)
             {
-                if (char.IsLetterOrDigit(ch) || char.IsWhiteSpace(ch) || ch is '\'' or '’' or '-')
-                {
-                    buffer[index++] = char.ToLowerInvariant(ch);
-                }
-                else
-                {
-                    buffer[index++] = ' ';
-                }
+                buffer[index++] = char.IsLetterOrDigit(ch) || char.IsWhiteSpace(ch) || ch is '\'' or '’' or '-'
+                    ? char.ToLowerInvariant(ch)
+                    : ' ';
             }
 
             return new string(buffer[..index]).Trim();

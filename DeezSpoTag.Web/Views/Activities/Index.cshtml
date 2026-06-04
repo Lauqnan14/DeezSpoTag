@@ -2824,7 +2824,7 @@
                                     </button>
                                 </div>
                                 <div class="tool-card-controls">
-                                    <partial name="_ArtistMetadataUpdaterControls" />
+                                    @await Html.PartialAsync("_ArtistMetadataUpdaterControls")
                                 </div>
                                  <div class="tool-card-progress-section">
                                     <p class="progress-phase-label" id="metadata-phase-label">Current Artist: Not running</p>

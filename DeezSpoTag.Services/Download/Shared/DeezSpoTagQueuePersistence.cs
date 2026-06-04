@@ -22,12 +22,13 @@ public class DeezSpoTagQueuePersistence
     {
         var queueOrder = RestoreQueueOrder();
         var queue = new Dictionary<string, Dictionary<string, object>>();
-        foreach (var file in EnumerateQueueItemFiles())
+        foreach (var restored in EnumerateQueueItemFiles()
+            .Select(file => TryRestoreQueueItem(file, out var uuid, out var queueItem)
+                ? (Uuid: uuid, QueueItem: queueItem)
+                : (Uuid: null, QueueItem: null))
+            .Where(static restored => !string.IsNullOrWhiteSpace(restored.Uuid) && restored.QueueItem != null))
         {
-            if (TryRestoreQueueItem(file, out var uuid, out var queueItem))
-            {
-                queue[uuid] = queueItem;
-            }
+            queue[restored.Uuid!] = restored.QueueItem!;
         }
 
         return (queueOrder, queue);

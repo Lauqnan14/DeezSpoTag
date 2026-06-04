@@ -2019,12 +2019,9 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         }
 
         var now = DateTimeOffset.UtcNow;
-        foreach (var entry in EpisodeGatewayCache)
+        foreach (var entry in EpisodeGatewayCache.Where(entry => now - entry.Value.CachedAtUtc > EpisodeGatewayCacheTtl))
         {
-            if (now - entry.Value.CachedAtUtc > EpisodeGatewayCacheTtl)
-            {
-                EpisodeGatewayCache.TryRemove(entry.Key, out _);
-            }
+            EpisodeGatewayCache.TryRemove(entry.Key, out _);
         }
 
         if (EpisodeGatewayCache.Count <= EpisodeGatewayCacheMaxEntries)
@@ -2432,11 +2429,17 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         public long SpeedWindowBytes;
     }
 
-    [GeneratedRegex("href\\s*=\\s*[\"'](?<url>[^\"']*/download/\\?[^\"'<>\r\n]+)[\"']", RegexOptions.IgnoreCase)]
-    private static partial Regex HearThisDownloadHrefRegex();
+    private static readonly Regex s_hearThisDownloadHrefRegex = new(
+        "href\\s*=\\s*[\"'](?<url>[^\"']*/download/\\?[^\"'<>\r\n]+)[\"']",
+        RegexOptions.IgnoreCase);
 
-    [GeneratedRegex("https?:\\\\/\\\\/[^\"'\\s]+/download/\\?[^\"'\\s]+", RegexOptions.IgnoreCase)]
-    private static partial Regex HearThisEscapedDownloadUrlRegex();
+    private static readonly Regex s_hearThisEscapedDownloadUrlRegex = new(
+        "https?:\\\\/\\\\/[^\"'\\s]+/download/\\?[^\"'\\s]+",
+        RegexOptions.IgnoreCase);
+
+    private static Regex HearThisDownloadHrefRegex() => s_hearThisDownloadHrefRegex;
+
+    private static Regex HearThisEscapedDownloadUrlRegex() => s_hearThisEscapedDownloadUrlRegex;
 
     private static void UpdatePayloadFiles(DeezerQueueItem payload, string outputPath)
     {

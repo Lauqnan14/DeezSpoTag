@@ -4023,13 +4023,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
     private static string? GetJsonStringFromObject(JsonElement value)
     {
-        foreach (var propertyName in JsonStringObjectPropertyNames)
+        foreach (var candidate in JsonStringObjectPropertyNames
+            .Select(propertyName => value.TryGetProperty(propertyName, out var candidate) ? candidate : default)
+            .Where(candidate => candidate.ValueKind == JsonValueKind.String))
         {
-            if (value.TryGetProperty(propertyName, out var candidate)
-                && candidate.ValueKind == JsonValueKind.String)
-            {
-                return candidate.GetString();
-            }
+            return candidate.GetString();
         }
         return null;
     }

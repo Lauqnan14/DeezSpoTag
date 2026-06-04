@@ -4,7 +4,7 @@
 }
 
 @section Styles {
-<link rel="stylesheet" href="~/css/quicktag.css" asp-append-version="true" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/quicktag.css")" />
 }
 
 <div id="quicktag-app" class="qt-page">
@@ -202,5 +202,5 @@
 </div>
 
 @section Scripts {
-<script src="~/js/quicktag.js" asp-append-version="true"></script>
+<script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/quicktag.js")"></script>
 }

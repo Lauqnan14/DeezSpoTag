@@ -264,9 +264,8 @@ public sealed class TidalApiProviderSource
 
         void AddRange(IEnumerable<string> urls)
         {
-            foreach (var value in urls)
+            foreach (var normalized in urls.Select(NormalizeUrl))
             {
-                var normalized = NormalizeUrl(value);
                 if (string.IsNullOrWhiteSpace(normalized) || !seen.Add(normalized))
                 {
                     continue;
@@ -334,9 +333,8 @@ public sealed class TidalApiProviderSource
             return normalized;
         }
 
-        foreach (var value in urls)
+        foreach (var normalizedUrl in urls.Select(NormalizeUrl))
         {
-            var normalizedUrl = NormalizeUrl(value);
             if (string.IsNullOrWhiteSpace(normalizedUrl) || !seen.Add(normalizedUrl))
             {
                 continue;
