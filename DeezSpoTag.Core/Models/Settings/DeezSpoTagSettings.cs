@@ -192,6 +192,7 @@ public class DeezSpoTagSettings
 
     // UI preferences
     public bool RememberTabsPreference { get; set; } = true;
+    public bool TrackAvailabilityColumnEnabled { get; set; } = false;
     public string DeezerLanguage { get; set; } = "en";
     public string DeezerCountry { get; set; } = "US";
     public string ApiToken { get; set; } = string.Empty;

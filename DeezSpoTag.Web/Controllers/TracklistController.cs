@@ -303,6 +303,7 @@ namespace DeezSpoTag.Web.Controllers
             ViewData["MatchContextItemId"] = request.MatchContextItemId ?? "";
             ViewData["MatchContextTitle"] = request.MatchContextTitle ?? "";
             ViewData["MatchContextYear"] = request.MatchContextYear ?? "";
+            ViewData["TrackAvailabilityColumnEnabled"] = _settingsService.LoadSettings().TrackAvailabilityColumnEnabled;
         }
 
         private static string? NormalizeAudioVariant(string? audioVariant)

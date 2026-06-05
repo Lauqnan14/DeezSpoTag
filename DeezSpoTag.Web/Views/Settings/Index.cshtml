@@ -1341,6 +1341,19 @@
                         <div class="warning-text" data-tooltip-target="rememberTabsPreference">When enabled, tabbed pages reopen the last tab you used.</div>
                     </div>
 
+                    <div class="settings-section settings-section--toggle-style" style="margin-bottom: 0;">
+                        <div class="switch-row">
+                            <label class="switch-label" for="trackAvailabilityColumnEnabled">Track availability column</label>
+                            <span class="switch">
+                                <input type="checkbox" id="trackAvailabilityColumnEnabled">
+                                <span class="slider"></span>
+                            </span>
+                        </div>
+                        <div class="warning-text" data-tooltip-target="trackAvailabilityColumnEnabled">Shows platform availability badges that can help choose a reliable download source, but it performs external API checks and can consume rate limits before downloads need those APIs.</div>
+                    </div>
+                </div>
+
+                <div class="form-row">
                     <div class="other-pad-column">
                         <div class="checkbox-group">
                             <input type="checkbox" id="padTracks">
@@ -3582,6 +3595,7 @@ function loadSettings(settings) {
     setCheckboxValue('rememberTabsPreference', settings.rememberTabsPreference);
     localStorage.setItem('tabs-preference-enabled', settings.rememberTabsPreference ? 'true' : 'false');
     if (window.UserPrefs) window.UserPrefs.set('tabsPreferenceEnabled', !!settings.rememberTabsPreference);
+    setCheckboxValue('trackAvailabilityColumnEnabled', settings.trackAvailabilityColumnEnabled === true);
     setFieldValue('librespotConcurrency', settings.librespotConcurrency);
     const spotifyResolveMatchConcurrency = settings.spotifyResolveConcurrency ?? settings.spotifyMatchConcurrency ?? 10;
     setFieldValue('spotifyResolveMatchConcurrency', spotifyResolveMatchConcurrency);
@@ -3935,6 +3949,7 @@ function collectFormData() {
         saveDownloadQueue: baseSettings.saveDownloadQueue ?? false,
         tagsLanguage: baseSettings.tagsLanguage ?? "",
         rememberTabsPreference: getChecked('rememberTabsPreference', baseSettings.rememberTabsPreference ?? true),
+        trackAvailabilityColumnEnabled: getChecked('trackAvailabilityColumnEnabled', baseSettings.trackAvailabilityColumnEnabled ?? false),
         librespotConcurrency: getNumber('librespotConcurrency', baseSettings.librespotConcurrency ?? 2),
         spotifyResolveConcurrency: spotifyResolveMatchConcurrency,
         spotifyMatchConcurrency: spotifyResolveMatchConcurrency,

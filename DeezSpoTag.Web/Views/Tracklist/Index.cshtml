@@ -3,6 +3,7 @@
     Layout = "~/Views/Shared/_Layout.cshtml";
     var id = ViewData["Id"]?.ToString();
     var type = ViewData["Type"]?.ToString();
+    var trackAvailabilityColumnEnabled = ViewData["TrackAvailabilityColumnEnabled"] as bool? ?? false;
 }
 
 @section Styles {
@@ -357,22 +358,22 @@
 }
 
 .tracks-table col.col-number { width: 60px; }
+.tracks-table col.col-title { width: 420px; }
 .tracks-table col.col-quality { width: 170px; }
 .tracks-table col.col-duration { width: 72px; }
 .tracks-table col.col-availability { width: 240px; }
 .tracks-table col.col-actions { width: 72px; }
-.tracks-table.tracks-table--playlistlike col.col-title { width: 28%; }
-.tracks-table.tracks-table--playlistlike col.col-artist { width: 21%; }
-.tracks-table.tracks-table--playlistlike col.col-album { width: 21%; }
+.tracks-table col.col-quick-download { width: 64px; }
+.tracks-table.tracks-table--playlistlike col.col-title { width: 360px; }
 .tracks-table.tracks-table--podcast {
     min-width: 980px;
 }
 .tracks-table.tracks-table--podcast col.col-number { width: 38px; }
+.tracks-table.tracks-table--podcast col.col-title { width: 440px; }
 .tracks-table.tracks-table--podcast col.col-duration { width: 68px; }
 .tracks-table.tracks-table--podcast col.col-actions { width: 60px; }
-.tracks-table.tracks-table--playlistlike.tracks-table--podcast col.col-title { width: 44%; }
-.tracks-table.tracks-table--playlistlike.tracks-table--podcast col.col-artist { width: 16%; }
-.tracks-table.tracks-table--playlistlike.tracks-table--podcast col.col-album { width: 16%; }
+.tracks-table.tracks-table--podcast col.col-quick-download { width: 58px; }
+.tracks-table.tracks-table--playlistlike.tracks-table--podcast col.col-title { width: 440px; }
 .tracks-table.tracks-table--with-ignore {
     min-width: 1200px;
 }
@@ -410,6 +411,13 @@
 .tracks-table td.track-actions {
     padding-left: 8px;
     padding-right: 8px;
+}
+
+.tracks-table th.track-quick-download,
+.tracks-table td.track-quick-download {
+    padding-left: 8px;
+    padding-right: 8px;
+    text-align: center;
 }
 
 .tracks-table th {
@@ -836,6 +844,35 @@
     opacity: 0.55;
 }
 
+.track-quick-download-btn {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 42%, transparent);
+    background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+    color: var(--primary-color);
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.track-quick-download-btn .material-icons {
+    font-size: 19px;
+    line-height: 1;
+}
+
+.track-quick-download-btn:hover {
+    background: color-mix(in srgb, var(--primary-color) 22%, transparent);
+    border-color: var(--primary-color);
+}
+
+.track-quick-download-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
 .loading {
     text-align: center;
     padding: 60px;
@@ -1105,7 +1142,16 @@
 
     .track-actions {
         grid-column: 3;
-        grid-row: 1 / 3;
+        grid-row: 1;
+        width: auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .track-quick-download {
+        grid-column: 3;
+        grid-row: 2;
         width: auto;
         display: flex;
         align-items: center;
@@ -5004,13 +5050,22 @@ function getTracklistColumnCount(isPlaylistLike, isLocalSource) {
     if (!shouldShowQualityColumn()) {
         base -= 1;
     }
-    return base + (shouldShowAvailabilityColumn(isLocalSource) ? 1 : 0);
+    return base
+        + (shouldShowAvailabilityColumn(isLocalSource) ? 1 : 0)
+        + (shouldShowQuickDownloadColumn(isLocalSource) ? 1 : 0);
 }
 
 function shouldShowAvailabilityColumn(isLocalSource) {
+    if (!availabilityChecksEnabled) {
+        return false;
+    }
     const isPodcastView = String(tracklistType || '').toLowerCase() === 'show'
         || String(tracklistType || '').toLowerCase() === 'episode';
     return !isLocalSource && !tracklistIsAtmosView && !isPodcastView;
+}
+
+function shouldShowQuickDownloadColumn(isLocalSource) {
+    return !isLocalSource;
 }
 
 function shouldShowQualityColumn() {
@@ -5030,7 +5085,7 @@ function renderAvailabilityCell() {
     `;
 }
 
-const availabilityChecksEnabled = true;
+const availabilityChecksEnabled = @trackAvailabilityColumnEnabled.ToString().ToLowerInvariant();
 const availabilityCache = new Map();
 const availabilityQueue = [];
 let availabilityActive = 0;
@@ -5986,6 +6041,15 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                     ${recommendationRejectButton}
                 </div>
             </td>
+            ${shouldShowQuickDownloadColumn(isLocalSource) ? `<td class="track-quick-download">
+                <button class="track-quick-download-btn" type="button"
+                    onclick="downloadSingleTrackFromRow(this)"
+                    ${isDeadExternalRow ? 'disabled aria-disabled="true"' : ''}
+                    title="${isPodcastShow ? 'Download episode' : 'Download track'}"
+                    aria-label="${isPodcastShow ? 'Download episode' : 'Download track'}">
+                    <span class="material-icons" aria-hidden="true">file_download</span>
+                </button>
+            </td>` : ''}
         </tr>
     `;
     }).join('');
@@ -6020,6 +6084,7 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
                 <col class="col-duration">
                 ${shouldShowAvailabilityColumn(isLocalSource) ? '<col class="col-availability">' : ''}
                 <col class="col-actions">
+                ${shouldShowQuickDownloadColumn(isLocalSource) ? '<col class="col-quick-download">' : ''}
             </colgroup>
             <thead>
                 <tr>
@@ -6038,6 +6103,7 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
                             <span class="material-icons track-ignore-toggle ${ignoreToggleClass}" title="${ignoreToggleTitle}">visibility_off</span>
                         </div>
                     </th>
+                    ${shouldShowQuickDownloadColumn(isLocalSource) ? '<th class="track-quick-download"><span class="material-icons" title="Download">file_download</span></th>' : ''}
                 </tr>
             </thead>
             <tbody id="tracks-table-body">
@@ -6464,6 +6530,22 @@ function getDownloadEligibleTrackCheckboxes(checkedOnly = false) {
 function toggleAllTracks(checkbox) {
     const trackCheckboxes = getDownloadEligibleTrackCheckboxes(false);
     trackCheckboxes.forEach(cb => cb.checked = checkbox.checked);
+}
+
+async function downloadSingleTrackFromRow(button) {
+    const row = button?.closest('tr');
+    const checkbox = row?.querySelector('.track-checkbox');
+    if (!row || !checkbox || checkbox.disabled) {
+        showTracklistToast('This track is not ready to download.', 'warning');
+        return;
+    }
+
+    if (tracklistType === 'show') {
+        await downloadEpisodeTracks([checkbox], button);
+        return;
+    }
+
+    await downloadTracks([checkbox], button);
 }
 
 function showTracklistToast(message, type = 'info', options = {}) {
