@@ -22,6 +22,7 @@ public class TechnicalTagSettings
     public bool EmbedLyrics { get; set; } = true;
     public string LrcType { get; set; } = "lyrics,syllable-lyrics,unsynced-lyrics";
     public string LrcFormat { get; set; } = "both";
+    public bool SynthesizeTtmlLyrics { get; set; } = false;
     public bool LyricsFallbackEnabled { get; set; } = true;
     public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch";
 

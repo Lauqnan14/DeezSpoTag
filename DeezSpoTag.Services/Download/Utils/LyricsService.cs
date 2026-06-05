@@ -153,7 +153,7 @@ public class LyricsService
             return null;
         }
 
-        var requiresTtmlForOutput = ShouldPrioritizeTtml(settings);
+        var outputRequirements = ResolveOutputRequirements(settings);
         var providers = ResolveLyricsProviders(settings);
 
         var state = new LyricsResolutionState();
@@ -167,7 +167,7 @@ public class LyricsService
             }
 
             MergeProviderLyrics(state, providerLyrics);
-            if (ShouldReturnResolvedLyrics(state, requiresTtmlForOutput))
+            if (ShouldReturnResolvedLyrics(state, outputRequirements))
             {
                 return state.ResolvedLyrics;
             }
@@ -223,14 +223,32 @@ public class LyricsService
         }
     }
 
-    private static bool ShouldReturnResolvedLyrics(LyricsResolutionState state, bool requiresTtmlForOutput)
+    private readonly record struct LyricsOutputRequirements(bool WantsRichLyrics, bool WantsPlainLyrics);
+
+    private static bool ShouldReturnResolvedLyrics(
+        LyricsResolutionState state,
+        LyricsOutputRequirements requirements)
     {
-        if (!requiresTtmlForOutput)
+        var lyrics = state.ResolvedLyrics;
+        if (lyrics == null)
         {
-            return true;
+            return false;
         }
 
-        return !string.IsNullOrWhiteSpace(state.ResolvedLyrics?.TtmlLyrics);
+        if (requirements.WantsRichLyrics
+            && !HasLyricsLines(lyrics.SyncedLyrics)
+            && string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
+        {
+            return false;
+        }
+
+        if (requirements.WantsPlainLyrics
+            && string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private async Task<LyricsBase?> TryResolveProviderLyricsAsync(
@@ -336,15 +354,14 @@ public class LyricsService
         MergeLyricsData(state.ResolvedLyrics, providerLyrics);
     }
 
-    private static bool ShouldPrioritizeTtml(DeezSpoTagSettings settings)
+    private static LyricsOutputRequirements ResolveOutputRequirements(DeezSpoTagSettings settings)
     {
-        if (settings.SyncedLyrics)
-        {
-            return true;
-        }
-
-        var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
-        return outputFormat is "ttml" or "both";
+        var selectedTypes = ParseSelectedLyricsTypes(settings);
+        var wantsRichLyrics = settings.SyncedLyrics
+            && (selectedTypes.Contains(LyricsType) || selectedTypes.Contains(SyllableLyricsType));
+        var wantsPlainLyrics = settings.SaveLyrics
+            && selectedTypes.Contains(UnsyncedLyricsType);
+        return new LyricsOutputRequirements(wantsRichLyrics, wantsPlainLyrics);
     }
 
     private static LrclibLyricsService.LrclibRequestOptions? BuildLrclibRequestOptions(
@@ -450,6 +467,16 @@ public class LyricsService
             return LyricsNew.CreateError("No Musixmatch lyrics payload");
         }
 
+        var validation = ValidateMusixmatchPayload(track, body);
+        if (!validation.IsMatch)
+        {
+            _logger.LogInformation(
+                "Rejected Musixmatch lyrics candidate for track {TrackId}: {Reason}",
+                track.Id,
+                validation.Reason);
+            return LyricsNew.CreateError($"Musixmatch lyrics identity rejected: {validation.Reason}");
+        }
+
         var output = new LyricsSource();
         if (TryReadMusixmatchRichsync(body, out var richsyncLines) && richsyncLines.Count > 0)
         {
@@ -504,7 +531,7 @@ public class LyricsService
             {
                 ["format"] = "json",
                 ["namespace"] = "lyrics_richsynced",
-                ["optional_calls"] = "track.richsync",
+                ["optional_calls"] = "track.richsync,track.lyrics,matcher.track.get",
                 ["subtitle_format"] = "lrc",
                 ["q_artist"] = artist,
                 ["q_track"] = title
@@ -893,6 +920,51 @@ public class LyricsService
         return true;
     }
 
+    private static LyricsIdentityValidationResult ValidateMusixmatchPayload(
+        Track expected,
+        MusixmatchMacroCallsBody body)
+    {
+        var track = ResolveMusixmatchTrack(body);
+        if (track == null)
+        {
+            return new LyricsIdentityValidationResult(
+                false,
+                "Musixmatch response did not include matched track metadata.",
+                0);
+        }
+
+        return LyricsIdentityValidator.ValidateSearchCandidate(
+            expected,
+            new LyricsCandidateIdentity(
+                MusixmatchProvider,
+                track.TrackId?.ToString() ?? track.CommonTrackId?.ToString(),
+                track.TrackName,
+                track.ArtistName,
+                track.AlbumName,
+                track.TrackLength.HasValue ? (int)Math.Round(track.TrackLength.Value) : null),
+            durationToleranceSeconds: 10,
+            requireArtist: true);
+    }
+
+    private static MusixmatchTrack? ResolveMusixmatchTrack(MusixmatchMacroCallsBody body)
+    {
+        if (body.MacroCalls == null)
+        {
+            return null;
+        }
+
+        foreach (var response in body.MacroCalls.Values)
+        {
+            var track = response?.Message?.Body?.Track;
+            if (track != null && (!string.IsNullOrWhiteSpace(track.TrackName) || !string.IsNullOrWhiteSpace(track.ArtistName)))
+            {
+                return track;
+            }
+        }
+
+        return null;
+    }
+
     private sealed class MusixmatchMacroCallsBody
     {
         [JsonPropertyName("macro_calls")]
@@ -913,6 +985,9 @@ public class LyricsService
 
     private sealed class MusixmatchBody
     {
+        [JsonPropertyName("track")]
+        public MusixmatchTrack? Track { get; set; }
+
         [JsonPropertyName("lyrics")]
         public MusixmatchLyrics? Lyrics { get; set; }
 
@@ -921,6 +996,27 @@ public class LyricsService
 
         [JsonPropertyName("richsync")]
         public MusixmatchRichsync? Richsync { get; set; }
+    }
+
+    private sealed class MusixmatchTrack
+    {
+        [JsonPropertyName("track_id")]
+        public long? TrackId { get; set; }
+
+        [JsonPropertyName("commontrack_id")]
+        public long? CommonTrackId { get; set; }
+
+        [JsonPropertyName("track_name")]
+        public string? TrackName { get; set; }
+
+        [JsonPropertyName("artist_name")]
+        public string? ArtistName { get; set; }
+
+        [JsonPropertyName("album_name")]
+        public string? AlbumName { get; set; }
+
+        [JsonPropertyName("track_length")]
+        public double? TrackLength { get; set; }
     }
 
     private sealed class MusixmatchLyrics
@@ -1023,6 +1119,21 @@ public class LyricsService
 
             if (songLink != null)
             {
+                var validation = LyricsIdentityValidator.ValidateResolvedMapping(
+                    track,
+                    DeezerProvider,
+                    songLink.SourceTitle,
+                    songLink.SourceArtist,
+                    songLink.Isrc);
+                if (!validation.IsMatch)
+                {
+                    _logger.LogInformation(
+                        "Rejected SongLink Deezer lyrics mapping for track {TrackId}: {Reason}",
+                        track.Id,
+                        validation.Reason);
+                    return null;
+                }
+
                 if (TrackIdNormalization.TryNormalizeDeezerTrackId(songLink.DeezerId, out var deezerTrackId))
                 {
                     return deezerTrackId;
@@ -1170,6 +1281,21 @@ public class LyricsService
 
         if (songLink != null)
         {
+            var validation = LyricsIdentityValidator.ValidateResolvedMapping(
+                track,
+                SpotifyProvider,
+                songLink.SourceTitle,
+                songLink.SourceArtist,
+                songLink.Isrc);
+            if (!validation.IsMatch)
+            {
+                _logger.LogInformation(
+                    "Rejected SongLink Spotify lyrics mapping for track {TrackId}: {Reason}",
+                    track.Id,
+                    validation.Reason);
+                return null;
+            }
+
             if (TrackIdNormalization.TryNormalizeSpotifyTrackId(songLink.SpotifyId, out var spotifyTrackId))
             {
                 return spotifyTrackId;
@@ -2542,7 +2668,7 @@ public class LyricsService
 
     private void EnsureTtmlFromSyncedLyricsWhenRequested(LyricsBase lyrics, Track track, DeezSpoTagSettings settings)
     {
-        if (!ShouldOutputTtmlBySettings(settings)
+        if (!ShouldSynthesizeTtmlBySettings(settings)
             || !string.IsNullOrWhiteSpace(lyrics.TtmlLyrics)
             || !lyrics.IsSynced())
         {
@@ -2728,6 +2854,12 @@ public class LyricsService
 
         var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
         return outputFormat is "ttml" or "both";
+    }
+
+    private static bool ShouldSynthesizeTtmlBySettings(DeezSpoTagSettings settings)
+    {
+        return settings.SynthesizeTtmlLyrics
+            && ShouldOutputTtmlBySettings(settings);
     }
 
     private static string? TryBuildTtmlFromSyncedLyrics(LyricsBase lyrics)

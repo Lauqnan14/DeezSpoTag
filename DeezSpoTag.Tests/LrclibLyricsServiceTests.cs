@@ -22,6 +22,10 @@ public sealed class LrclibLyricsServiceTests
             Assert.Contains("/api/get", request.RequestUri!.AbsoluteUri, StringComparison.Ordinal);
             return Json(HttpStatusCode.OK, """
                 {
+                  "id": 1,
+                  "name": "Track A",
+                  "artistName": "Artist A",
+                  "albumName": "Album A",
                   "plainLyrics": null,
                   "syncedLyrics": "[00:10.00] Hello\nThis is plain",
                   "duration": 180
@@ -29,7 +33,7 @@ public sealed class LrclibLyricsServiceTests
                 """);
         });
         var service = CreateService(handler);
-        var track = CreateTrack("Track A", "Artist A", durationSeconds: 180);
+        var track = CreateTrack("Track A", "Artist A", "Album A", durationSeconds: 180);
 
         var lyrics = await service.ResolveLyricsAsync(track);
 
@@ -54,8 +58,8 @@ public sealed class LrclibLyricsServiceTests
             {
                 return Json(HttpStatusCode.OK, """
                     [
-                      { "plainLyrics": "fallback plain", "syncedLyrics": null, "duration": 300 },
-                      { "plainLyrics": "fallback plain 2", "syncedLyrics": "[00:01.00] Synced pick", "duration": 205 }
+                      { "id": 10, "name": "Wrong Track", "artistName": "Artist B", "albumName": "Album B", "plainLyrics": "fallback plain", "syncedLyrics": null, "duration": 200 },
+                      { "id": 11, "name": "Track B", "artistName": "Artist B", "albumName": "Album B", "plainLyrics": "fallback plain 2", "syncedLyrics": "[00:01.00] Synced pick", "duration": 205 }
                     ]
                     """);
             }
@@ -64,7 +68,7 @@ public sealed class LrclibLyricsServiceTests
         });
 
         var service = CreateService(handler);
-        var track = CreateTrack("Track B", "Artist B", durationSeconds: 200);
+        var track = CreateTrack("Track B", "Artist B", "Album B", durationSeconds: 200);
 
         var lyrics = await service.ResolveLyricsAsync(track);
 
@@ -92,6 +96,10 @@ public sealed class LrclibLyricsServiceTests
             {
                 return Json(HttpStatusCode.OK, """
                     {
+                      "id": 12,
+                      "name": "Song",
+                      "artistName": "Artist C",
+                      "albumName": "Album C",
                       "plainLyrics": "Simplified success",
                       "syncedLyrics": null,
                       "duration": 180
@@ -103,7 +111,7 @@ public sealed class LrclibLyricsServiceTests
         });
 
         var service = CreateService(handler);
-        var track = CreateTrack("Song (Radio Edit) - Mix", "Artist C", durationSeconds: 180);
+        var track = CreateTrack("Song (Radio Edit) - Mix", "Artist C", "Album C", durationSeconds: 180);
 
         var lyrics = await service.ResolveLyricsAsync(track);
 
@@ -123,7 +131,7 @@ public sealed class LrclibLyricsServiceTests
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         });
         var service = CreateService(handler);
-        var track = CreateTrack("Track C", "Artist C", durationSeconds: 200);
+        var track = CreateTrack("Track C", "Artist C", "Album C", durationSeconds: 200);
 
         var lyrics = await service.ResolveLyricsAsync(
             track,
@@ -146,13 +154,13 @@ public sealed class LrclibLyricsServiceTests
 
             return Json(HttpStatusCode.OK, """
                 [
-                  { "plainLyrics": "plain preferred", "syncedLyrics": null, "duration": 300 },
-                  { "plainLyrics": null, "syncedLyrics": "[00:01.00] synced", "duration": 300 }
+                  { "id": 13, "name": "Track D", "artistName": "Artist D", "albumName": "Album D", "plainLyrics": "plain preferred", "syncedLyrics": null, "duration": 300 },
+                  { "id": 14, "name": "Track D", "artistName": "Artist D", "albumName": "Album D", "plainLyrics": null, "syncedLyrics": "[00:01.00] synced", "duration": 300 }
                 ]
                 """);
         });
         var service = CreateService(handler);
-        var track = CreateTrack("Track D", "Artist D", durationSeconds: 300);
+        var track = CreateTrack("Track D", "Artist D", "Album D", durationSeconds: 300);
 
         var lyrics = await service.ResolveLyricsAsync(
             track,
@@ -172,13 +180,64 @@ public sealed class LrclibLyricsServiceTests
         return new LrclibLyricsService(factory, NullLogger<LrclibLyricsService>.Instance);
     }
 
-    private static Track CreateTrack(string title, string artist, int durationSeconds)
+    [Fact]
+    public async Task ResolveLyricsAsync_RejectsSearchCandidate_WhenPrimaryArtistDiffers()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.AbsoluteUri.Contains("/api/get", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+
+            return Json(HttpStatusCode.OK, """
+                [
+                  { "id": 21, "name": "Same Title", "artistName": "Wrong Artist", "albumName": "Album E", "plainLyrics": "wrong lyrics", "syncedLyrics": null, "duration": 240 }
+                ]
+                """);
+        });
+        var service = CreateService(handler);
+        var track = CreateTrack("Same Title", "Correct Artist", "Album E", durationSeconds: 240);
+
+        var lyrics = await service.ResolveLyricsAsync(track);
+
+        Assert.False(lyrics.IsLoaded());
+        Assert.Equal("LRCLIB lyrics not found.", lyrics.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ResolveLyricsAsync_RejectsSearchCandidate_WhenOnlyDurationMatches()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.AbsoluteUri.Contains("/api/get", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+
+            return Json(HttpStatusCode.OK, """
+                [
+                  { "id": 22, "name": "Other Song", "artistName": "Artist F", "albumName": "Album F", "plainLyrics": "wrong lyrics", "syncedLyrics": null, "duration": 180 }
+                ]
+                """);
+        });
+        var service = CreateService(handler);
+        var track = CreateTrack("Expected Song", "Artist F", "Album F", durationSeconds: 180);
+
+        var lyrics = await service.ResolveLyricsAsync(track);
+
+        Assert.False(lyrics.IsLoaded());
+        Assert.Equal("LRCLIB lyrics not found.", lyrics.ErrorMessage);
+    }
+
+    private static Track CreateTrack(string title, string artist, string album, int durationSeconds)
     {
         return new Track
         {
             Title = title,
             Duration = durationSeconds,
-            MainArtist = new Artist(artist)
+            MainArtist = new Artist(artist),
+            Album = new Album(album)
         };
     }
 

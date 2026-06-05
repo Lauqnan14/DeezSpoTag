@@ -97,6 +97,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.CreateM3U8File, (v) => settings.CreateM3U8File = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SyncedLyrics),
                 () => settings.SyncedLyrics, (v) => settings.SyncedLyrics = v);
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SynthesizeTtmlLyrics),
+                () => settings.SynthesizeTtmlLyrics, (v) => settings.SynthesizeTtmlLyrics = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LyricsFallbackEnabled),
                 () => settings.LyricsFallbackEnabled, (v) => settings.LyricsFallbackEnabled = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ArtworkFallbackEnabled),
@@ -500,6 +502,7 @@ public class DeezSpoTagSettingsValidator
             CreateM3U8File = false,
             PlaylistFilenameTemplate = "playlist",
             SyncedLyrics = true,
+            SynthesizeTtmlLyrics = false,
             LyricsFallbackEnabled = true,
             LyricsFallbackOrder = "apple,deezer,spotify,lrclib,musixmatch",
             ArtworkFallbackEnabled = true,

@@ -209,6 +209,57 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void ResolveOutputRequirements_ObeysSyncedOnlyTechnicalPreference()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = false,
+            LrcType = "lyrics,syllable-lyrics",
+            LrcFormat = "lrc"
+        };
+
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+
+        AssertRequirement(requirements, "WantsRichLyrics", expected: true);
+        AssertRequirement(requirements, "WantsPlainLyrics", expected: false);
+    }
+
+    [Fact]
+    public void ResolveOutputRequirements_ObeysUnsyncedOnlyTechnicalPreference()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = false,
+            SaveLyrics = true,
+            LrcType = "unsynced-lyrics",
+            LrcFormat = "both"
+        };
+
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+
+        AssertRequirement(requirements, "WantsRichLyrics", expected: false);
+        AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
+    }
+
+    [Fact]
+    public void ResolveOutputRequirements_RequiresBoth_WhenBothTechnicalTypesAreEnabled()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = true,
+            LrcType = "lyrics,unsynced-lyrics",
+            LrcFormat = "both"
+        };
+
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+
+        AssertRequirement(requirements, "WantsRichLyrics", expected: true);
+        AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
+    }
+
+    [Fact]
     public void TryBuildTtmlFromSyncedLyrics_BuildsOrderedEncodedParagraphs()
     {
         var lyrics = new LyricsSource
@@ -233,6 +284,40 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void ShouldSynthesizeTtmlBySettings_IsDisabledByDefault()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcFormat = "ttml"
+        };
+
+        var result = InvokeStatic<bool>("ShouldSynthesizeTtmlBySettings", settings);
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void ShouldSynthesizeTtmlBySettings_RequiresExplicitPreferenceAndTtmlOutput()
+    {
+        var lrcOnly = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcFormat = "lrc",
+            SynthesizeTtmlLyrics = true
+        };
+        var ttml = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcFormat = "ttml",
+            SynthesizeTtmlLyrics = true
+        };
+
+        Assert.False(InvokeStatic<bool>("ShouldSynthesizeTtmlBySettings", lrcOnly));
+        Assert.True(InvokeStatic<bool>("ShouldSynthesizeTtmlBySettings", ttml));
+    }
+
+    [Fact]
     public async Task ResolveLoadedLyricsOrNullAsync_ReturnsNull_WhenResolverReturnsNull()
     {
         var resolver = (Func<Task<LyricsBase>>)(() => Task.FromResult<LyricsBase>(null!));
@@ -244,5 +329,14 @@ public sealed class LyricsServicePrivateHelpersTests
         var resolved = await task;
 
         Assert.Null(resolved);
+    }
+
+    private static void AssertRequirement(object requirements, string propertyName, bool expected)
+    {
+        var property = requirements.GetType().GetProperty(propertyName)
+            ?? throw new InvalidOperationException($"Requirement property {propertyName} not found.");
+        var actual = (bool)(property.GetValue(requirements)
+            ?? throw new InvalidOperationException($"Requirement property {propertyName} returned null."));
+        Assert.Equal(expected, actual);
     }
 }

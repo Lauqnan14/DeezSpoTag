@@ -47,7 +47,8 @@ public sealed class LrclibLyricsService
         var effectiveOptions = NormalizeOptions(options);
         var duration = ResolveHintedDuration(track, effectiveOptions);
 
-        var resolved = await TryResolveWithVariantAsync(title, artist, track.Duration, duration, effectiveOptions, cancellationToken);
+        var album = track.Album?.Title ?? string.Empty;
+        var resolved = await TryResolveWithVariantAsync(track, title, artist, album, track.Duration, duration, effectiveOptions, cancellationToken);
         if (resolved != null)
         {
             return resolved;
@@ -56,9 +57,12 @@ public sealed class LrclibLyricsService
         var simplifiedTitle = SimplifyTrackName(title);
         if (!string.Equals(simplifiedTitle, title, StringComparison.OrdinalIgnoreCase))
         {
+            var simplifiedTrack = CloneTrackForLyricsLookup(track, simplifiedTitle);
             var simplifiedResolved = await TryResolveWithVariantAsync(
+                simplifiedTrack,
                 simplifiedTitle,
                 artist,
+                album,
                 track.Duration,
                 duration,
                 effectiveOptions,
@@ -83,17 +87,29 @@ public sealed class LrclibLyricsService
         => options.UseDurationHint && track.Duration > 0 ? track.Duration : 0;
 
     private async Task<LyricsBase?> TryResolveWithVariantAsync(
+        Track track,
         string title,
         string artist,
+        string album,
         int durationSeconds,
         int hintedDuration,
         LrclibRequestOptions options,
         CancellationToken cancellationToken)
     {
-        var exact = await FetchLyricsWithMetadataAsync(title, artist, hintedDuration, cancellationToken);
-        if (exact.IsLoaded())
+        var exact = await FetchLyricsWithMetadataAsync(title, artist, album, hintedDuration, cancellationToken);
+        if (HasLyricsText(exact))
         {
-            return exact;
+            var validation = ValidateCandidate(track, exact, requireArtist: true, options.DurationToleranceSeconds);
+            if (validation.IsMatch)
+            {
+                return ConvertToLyrics(exact);
+            }
+
+            _logger.LogInformation(
+                "Rejected LRCLIB exact lyrics candidate for {Title} by {Artist}: {Reason}",
+                title,
+                artist,
+                validation.Reason);
         }
 
         if (!options.SearchFallback)
@@ -101,35 +117,51 @@ public sealed class LrclibLyricsService
             return null;
         }
 
-        var search = await FetchLyricsFromSearchAsync(title, artist, durationSeconds, options, cancellationToken);
+        var search = await FetchLyricsFromSearchAsync(track, title, artist, album, durationSeconds, options, cancellationToken);
         return search.IsLoaded() ? search : null;
     }
 
-    private async Task<LyricsBase> FetchLyricsWithMetadataAsync(string trackName, string artistName, int duration, CancellationToken cancellationToken)
+    private async Task<LrclibResponse> FetchLyricsWithMetadataAsync(string trackName, string artistName, string albumName, int duration, CancellationToken cancellationToken)
     {
         var url = $"https://lrclib.net/api/get?artist_name={Uri.EscapeDataString(artistName)}&track_name={Uri.EscapeDataString(trackName)}";
+        if (!string.IsNullOrWhiteSpace(albumName))
+        {
+            url += $"&album_name={Uri.EscapeDataString(albumName)}";
+        }
         if (duration > 0)
         {
             url += $"&duration={duration}";
         }
 
-        return await FetchLyricsAsync(url, cancellationToken);
+        return await FetchLyricsPayloadAsync(url, cancellationToken);
     }
 
     private async Task<LyricsBase> FetchLyricsFromSearchAsync(
+        Track track,
         string trackName,
         string artistName,
+        string albumName,
         int durationSeconds,
         LrclibRequestOptions options,
         CancellationToken cancellationToken)
     {
-        var query = $"{artistName} {trackName}";
-        var url = $"https://lrclib.net/api/search?q={Uri.EscapeDataString(query)}";
+        var query = $"{artistName} {trackName}".Trim();
+        var builder = new UriBuilder("https", "lrclib.net")
+        {
+            Path = "/api/search",
+            Query = string.Join("&", new[]
+            {
+                $"track_name={Uri.EscapeDataString(trackName)}",
+                $"artist_name={Uri.EscapeDataString(artistName)}",
+                $"album_name={Uri.EscapeDataString(albumName)}",
+                $"q={Uri.EscapeDataString(query)}"
+            })
+        };
 
         try
         {
             using var httpClient = _httpClientFactory.CreateClient("LyricsService");
-            using var response = await httpClient.GetAsync(url, cancellationToken);
+            using var response = await httpClient.GetAsync(builder.Uri, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 return CreateError($"LRCLIB search failed with status {(int)response.StatusCode}");
@@ -142,7 +174,11 @@ public sealed class LrclibLyricsService
                 return CreateError("LRCLIB search returned no results.");
             }
 
-            var best = SelectBestResult(results, durationSeconds, options);
+            var best = SelectBestResult(track, results, durationSeconds, options);
+            if (best == null)
+            {
+                return CreateError("LRCLIB search returned no verified match.");
+            }
 
             return ConvertToLyrics(best);
         }
@@ -153,7 +189,7 @@ public sealed class LrclibLyricsService
         }
     }
 
-    private async Task<LyricsBase> FetchLyricsAsync(string url, CancellationToken cancellationToken)
+    private async Task<LrclibResponse> FetchLyricsPayloadAsync(string url, CancellationToken cancellationToken)
     {
         try
         {
@@ -161,22 +197,22 @@ public sealed class LrclibLyricsService
             using var response = await httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return CreateError($"LRCLIB request failed with status {(int)response.StatusCode}");
+                return LrclibResponse.Error($"LRCLIB request failed with status {(int)response.StatusCode}");
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             var payload = await JsonSerializer.DeserializeAsync<LrclibResponse>(stream, cancellationToken: cancellationToken);
             if (payload == null)
             {
-                return CreateError("LRCLIB returned empty response.");
+                return LrclibResponse.Error("LRCLIB returned empty response.");
             }
 
-            return ConvertToLyrics(payload);
+            return payload;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "LRCLIB request failed");
-            return CreateError("LRCLIB request failed.");
+            return LrclibResponse.Error("LRCLIB request failed.");
         }
     }
 
@@ -229,39 +265,48 @@ public sealed class LrclibLyricsService
         return lyrics;
     }
 
-    private static LrclibResponse SelectBestResult(
+    private static LrclibResponse? SelectBestResult(
+        Track track,
         IReadOnlyList<LrclibResponse> results,
         int durationSeconds,
         LrclibRequestOptions options)
     {
-        IEnumerable<LrclibResponse> candidates = results
+        var verified = results
             .Where(HasLyricsText);
-        if (!candidates.Any())
+        if (!verified.Any())
         {
-            candidates = results;
+            verified = results;
         }
 
-        if (durationSeconds > 0 && options.DurationToleranceSeconds > 0)
-        {
-            var withinTolerance = candidates
-                .Where(item => IsWithinDurationTolerance(item.Duration, durationSeconds, options.DurationToleranceSeconds))
-                .ToList();
-            if (withinTolerance.Count > 0)
+        verified = verified
+            .Select(candidate => new
             {
-                candidates = withinTolerance;
-            }
+                Candidate = candidate,
+                Validation = ValidateCandidate(track, candidate, requireArtist: true, options.DurationToleranceSeconds)
+            })
+            .Where(item => item.Validation.IsMatch)
+            .OrderByDescending(item => item.Validation.Score)
+            .ThenByDescending(item => options.PreferSynced && !string.IsNullOrWhiteSpace(item.Candidate.SyncedLyrics))
+            .ThenByDescending(item => !options.PreferSynced && !string.IsNullOrWhiteSpace(item.Candidate.PlainLyrics))
+            .ThenBy(item => DurationDelta(item.Candidate.Duration, durationSeconds))
+            .Select(item => item.Candidate)
+            .ToList();
+
+        if (!verified.Any())
+        {
+            return null;
         }
 
         if (options.PreferSynced)
         {
-            return candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.SyncedLyrics))
-                ?? candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.PlainLyrics))
-                ?? results[0];
+            return verified.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.SyncedLyrics))
+                ?? verified.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.PlainLyrics))
+                ?? verified.FirstOrDefault();
         }
 
-        return candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.PlainLyrics))
-            ?? candidates.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.SyncedLyrics))
-            ?? results[0];
+        return verified.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.PlainLyrics))
+            ?? verified.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.SyncedLyrics))
+            ?? verified.FirstOrDefault();
     }
 
     private static bool HasLyricsText(LrclibResponse payload)
@@ -270,14 +315,14 @@ public sealed class LrclibLyricsService
             || !string.IsNullOrWhiteSpace(payload.PlainLyrics);
     }
 
-    private static bool IsWithinDurationTolerance(double? resultDurationSeconds, int durationSeconds, int toleranceSeconds)
+    private static int DurationDelta(double? resultDurationSeconds, int durationSeconds)
     {
         if (!resultDurationSeconds.HasValue || durationSeconds <= 0)
         {
-            return false;
+            return int.MaxValue;
         }
 
-        return Math.Abs(resultDurationSeconds.Value - durationSeconds) <= toleranceSeconds;
+        return (int)Math.Abs(Math.Round(resultDurationSeconds.Value) - durationSeconds);
     }
 
     private static LrclibRequestOptions NormalizeOptions(LrclibRequestOptions? options)
@@ -376,8 +421,64 @@ public sealed class LrclibLyricsService
         return lyrics;
     }
 
+    private static Track CloneTrackForLyricsLookup(Track track, string title)
+    {
+        return new Track
+        {
+            Id = track.Id,
+            Source = track.Source,
+            SourceId = track.SourceId,
+            Title = title,
+            MainArtist = track.MainArtist,
+            Artists = track.Artists,
+            Artist = track.Artist,
+            Album = track.Album,
+            Duration = track.Duration,
+            ISRC = track.ISRC,
+            Urls = track.Urls,
+            DownloadURL = track.DownloadURL
+        };
+    }
+
+    private static LyricsIdentityValidationResult ValidateCandidate(
+        Track track,
+        LrclibResponse candidate,
+        bool requireArtist,
+        int durationToleranceSeconds)
+    {
+        if (!string.IsNullOrWhiteSpace(candidate.ErrorMessage))
+        {
+            return new LyricsIdentityValidationResult(false, candidate.ErrorMessage!, 0);
+        }
+
+        return LyricsIdentityValidator.ValidateSearchCandidate(
+            track,
+            new LyricsCandidateIdentity(
+                "lrclib",
+                candidate.Id?.ToString(),
+                candidate.Name,
+                candidate.ArtistName,
+                candidate.AlbumName,
+                candidate.Duration.HasValue ? (int)Math.Round(candidate.Duration.Value) : null,
+                candidate.Isrc),
+            durationToleranceSeconds,
+            requireArtist);
+    }
+
     private sealed record LrclibResponse(
+        [property: JsonPropertyName("id")] long? Id,
+        [property: JsonPropertyName("name")] string? Name,
+        [property: JsonPropertyName("artistName")] string? ArtistName,
+        [property: JsonPropertyName("albumName")] string? AlbumName,
+        [property: JsonPropertyName("duration")] double? Duration,
+        [property: JsonPropertyName("isrc")] string? Isrc,
+        [property: JsonPropertyName("spotifyId")] string? SpotifyId,
         [property: JsonPropertyName("plainLyrics")] string? PlainLyrics,
         [property: JsonPropertyName("syncedLyrics")] string? SyncedLyrics,
-        [property: JsonPropertyName("duration")] double? Duration);
+        [property: JsonPropertyName("instrumental")] bool Instrumental,
+        string? ErrorMessage = null)
+    {
+        public static LrclibResponse Error(string message)
+            => new(null, null, null, null, null, null, null, null, null, false, message);
+    }
 }

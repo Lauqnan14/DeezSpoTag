@@ -65,4 +65,25 @@ public sealed class TaggingProfileSettingsMapperTests
         Assert.False(settings.Tags.Lyrics);
         Assert.False(settings.Tags.SyncedLyrics);
     }
+
+    [Fact]
+    public void ApplyProfileToSettings_OverlaysTtmlSynthesisPreference()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SynthesizeTtmlLyrics = false,
+            Tags = new TagSettings()
+        };
+        var profile = new TaggingProfile
+        {
+            Technical = new TechnicalTagSettings
+            {
+                SynthesizeTtmlLyrics = true
+            }
+        };
+
+        TaggingProfileSettingsMapper.ApplyProfileToSettings(settings, profile);
+
+        Assert.True(settings.SynthesizeTtmlLyrics);
+    }
 }

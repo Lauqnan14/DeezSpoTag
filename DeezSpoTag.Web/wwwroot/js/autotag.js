@@ -5361,15 +5361,23 @@
     function updateEmbedLyricsFormatVisibility() {
         const saveLyrics = document.getElementById("saveLyrics");
         const embedLyricsFormatGroup = document.getElementById("embedLyricsFormatGroup");
+        const synthesizeTtmlLyricsGroup = document.getElementById("synthesizeTtmlLyricsGroup");
         const lrcFormat = document.getElementById("lrcFormat");
+        const synthesizeTtmlLyrics = document.getElementById("synthesizeTtmlLyrics");
         if (!embedLyricsFormatGroup) {
             return;
         }
 
         const show = saveLyrics?.checked === true;
         embedLyricsFormatGroup.style.display = show ? "" : "none";
+        if (synthesizeTtmlLyricsGroup) {
+            synthesizeTtmlLyricsGroup.style.display = show ? "" : "none";
+        }
         if (lrcFormat) {
             lrcFormat.disabled = !show;
+        }
+        if (synthesizeTtmlLyrics) {
+            synthesizeTtmlLyrics.disabled = !show;
         }
     }
 
@@ -5563,6 +5571,7 @@
         applyFieldCheckedWhenBoolean("embedLyrics", technical.embedLyrics ?? true);
         applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
         applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "both"));
+        applyFieldCheckedWhenBoolean("synthesizeTtmlLyrics", technical.synthesizeTtmlLyrics ?? false);
         applyFieldCheckedWhenBoolean("lyricsFallbackEnabled", technical.lyricsFallbackEnabled);
         applyFieldValueIfPresent("lyricsFallbackOrder", technical.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(","));
         applyFieldCheckedWhenBoolean("artworkFallbackEnabled", technical.artworkFallbackEnabled);
@@ -5685,6 +5694,7 @@
         technical.embedLyrics = getChecked("embedLyrics", technical.embedLyrics ?? true);
         technical.lrcType = normalizeLyricsTypeSetting(getValue("lrcType", technical.lrcType ?? DEFAULT_LYRICS_TYPE_SELECTION));
         technical.lrcFormat = normalizeEmbedLyricsFormat(getValue("lrcFormat", technical.lrcFormat ?? "both"));
+        technical.synthesizeTtmlLyrics = getChecked("synthesizeTtmlLyrics", technical.synthesizeTtmlLyrics ?? false);
         technical.lyricsFallbackEnabled = getChecked("lyricsFallbackEnabled", technical.lyricsFallbackEnabled ?? true);
         technical.lyricsFallbackOrder = resolveSavedFallbackOrder({
             fallbackEnabled: technical.lyricsFallbackEnabled,

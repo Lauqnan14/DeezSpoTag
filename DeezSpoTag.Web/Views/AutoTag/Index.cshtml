@@ -1703,7 +1703,7 @@
                     </div>
                     <div class="download-section">
                         <div class="download-section-title">Format</div>
-                        <div class="download-grid download-grid-2">
+                        <div class="download-grid download-grid-3">
                             <div class="form-group">
                                 <label for="lrcType">
                                     Lyrics type
@@ -1746,6 +1746,15 @@
                                     <option value="lrc">LRC</option>
                                     <option value="ttml">TTML</option>
                                 </select>
+                            </div>
+                            <div class="checkbox-group align-self-start" id="synthesizeTtmlLyricsGroup" style="display: none;">
+                                <input type="checkbox" id="synthesizeTtmlLyrics" />
+                                <label for="synthesizeTtmlLyrics">
+                                    Synthesize TTML from synced lyrics
+                                    <span class="autotag-tooltip-icon ms-1" title="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly." aria-label="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
                             </div>
                         </div>
                     </div>

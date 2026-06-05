@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Apple;
@@ -908,93 +909,42 @@ public sealed class AppleLyricsService
                 ? attrsEl
                 : default;
 
-            var score = ScoreAppleCandidate(attrs, track);
-            if (score > bestScore)
+            var validation = ValidateAppleCandidate(attrs, track, id);
+            if (validation.IsMatch && validation.Score > bestScore)
             {
-                bestScore = score;
+                bestScore = validation.Score;
                 bestId = id;
             }
         }
 
-        return bestScore >= 65 ? bestId : null;
+        return bestId;
     }
 
-    private static int ScoreAppleCandidate(JsonElement attrs, Track track)
+    private static LyricsIdentityValidationResult ValidateAppleCandidate(JsonElement attrs, Track track, string appleId)
     {
         if (attrs.ValueKind == JsonValueKind.Undefined)
         {
-            return 0;
+            return new LyricsIdentityValidationResult(false, "Apple candidate had no attributes.", 0);
         }
 
         var title = attrs.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
         var artist = attrs.TryGetProperty("artistName", out var artistEl) ? artistEl.GetString() : null;
         var album = attrs.TryGetProperty("albumName", out var albumEl) ? albumEl.GetString() : null;
         var durationMs = attrs.TryGetProperty("durationInMillis", out var durEl) && durEl.TryGetInt32(out var dur) ? dur : 0;
+        var isrc = attrs.TryGetProperty("isrc", out var isrcEl) ? isrcEl.GetString() : null;
 
-        var score = 0;
-        score += ScoreTextMatch(track.Title, title, 60);
-        score += ScoreTextMatch(track.MainArtist?.Name, artist, 30);
-        score += ScoreTextMatch(track.Album?.Title, album, 15);
-
-        if (track.Duration > 0 && durationMs > 0)
-        {
-            var diffMs = Math.Abs(durationMs - track.Duration * 1000);
-            if (diffMs <= 2000)
-            {
-                score += 10;
-            }
-            else if (diffMs <= 5000)
-            {
-                score += 6;
-            }
-            else if (diffMs <= 10000)
-            {
-                score += 3;
-            }
-        }
-
-        return score;
-    }
-
-    private static int ScoreTextMatch(string? expected, string? actual, int maxScore)
-    {
-        if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(actual))
-        {
-            return 0;
-        }
-
-        var normExpected = NormalizeForCompare(expected);
-        var normActual = NormalizeForCompare(actual);
-        if (string.IsNullOrWhiteSpace(normExpected) || string.IsNullOrWhiteSpace(normActual))
-        {
-            return 0;
-        }
-
-        if (string.Equals(normExpected, normActual, StringComparison.OrdinalIgnoreCase))
-        {
-            return maxScore;
-        }
-
-        var expectedTokens = normExpected.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var actualTokens = normActual.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (expectedTokens.Length == 0 || actualTokens.Length == 0)
-        {
-            return 0;
-        }
-
-        var overlap = expectedTokens.Intersect(actualTokens).Count();
-        var ratio = (double)overlap / expectedTokens.Length;
-        return (int)Math.Round(maxScore * ratio);
-    }
-
-    private static string NormalizeForCompare(string value)
-    {
-        var normalized = value.ToLowerInvariant();
-        normalized = ReplaceWithTimeout(normalized, @"\((feat|ft)\.?.*?\)", "", RegexOptions.IgnoreCase);
-        normalized = ReplaceWithTimeout(normalized, @"\[.*?\]", "");
-        normalized = ReplaceWithTimeout(normalized, @"[^a-z0-9\s]", " ");
-        normalized = ReplaceWithTimeout(normalized, @"\s+", " ").Trim();
-        return normalized;
+        return LyricsIdentityValidator.ValidateSearchCandidate(
+            track,
+            new LyricsCandidateIdentity(
+                "apple",
+                appleId,
+                title,
+                artist,
+                album,
+                durationMs > 0 ? Math.Max(1, durationMs / 1000) : null,
+                isrc),
+            durationToleranceSeconds: 10,
+            requireArtist: true);
     }
 
     private static string ConvertTtmlToLrc(string ttml)

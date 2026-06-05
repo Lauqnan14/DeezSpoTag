@@ -62,6 +62,7 @@ public class DeezSpoTagSettings
     public DownloadEngineOrderSettings DownloadEngineOrder { get; set; } = DownloadEngineOrderSettings.CreateDefault();
 
     // Lyrics preference + fallback
+    public bool SynthesizeTtmlLyrics { get; set; } = false;
     public bool LyricsFallbackEnabled { get; set; } = true;
     public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch";
     public bool NormalizeGenreTags { get; set; } = false;

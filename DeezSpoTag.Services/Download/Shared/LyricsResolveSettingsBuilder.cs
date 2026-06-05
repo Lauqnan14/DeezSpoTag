@@ -19,6 +19,7 @@ internal static class LyricsResolveSettingsBuilder
             SaveLyrics = allowsUnsyncedBySettings,
             LrcType = ResolveTypes(tagSettings, allowsSyncedBySettings, allowsUnsyncedBySettings),
             LrcFormat = settings.LrcFormat,
+            SynthesizeTtmlLyrics = settings.SynthesizeTtmlLyrics,
             LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
             LyricsFallbackOrder = settings.LyricsFallbackOrder,
             DeezerCountry = settings.DeezerCountry,

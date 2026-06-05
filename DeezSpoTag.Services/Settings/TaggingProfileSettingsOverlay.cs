@@ -33,6 +33,7 @@ public static class TaggingProfileSettingsOverlay
         settings.SaveLyrics = technical.SaveLyrics;
         settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,unsynced-lyrics";
         settings.LrcFormat = technical.LrcFormat ?? "both";
+        settings.SynthesizeTtmlLyrics = technical.SynthesizeTtmlLyrics;
         settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
         settings.LyricsFallbackOrder = technical.LyricsFallbackOrder ?? "apple,deezer,spotify,lrclib,musixmatch";
         settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;

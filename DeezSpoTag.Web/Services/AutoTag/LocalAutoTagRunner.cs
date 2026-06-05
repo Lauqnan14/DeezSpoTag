@@ -1697,6 +1697,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Video = baseSettings.Video,
             SyncedLyrics = allowsSyncedBySettings && wantsSynced,
             SaveLyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
+            SynthesizeTtmlLyrics = baseSettings.SynthesizeTtmlLyrics,
             LyricsFallbackEnabled = baseSettings.LyricsFallbackEnabled,
             LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)
                 ? $"apple,deezer,spotify,{LrclibProvider},musixmatch"
@@ -2483,6 +2484,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         builder.Append("lyricsUnsyncedToggle=").Append(settings.SaveLyrics).Append(';');
         builder.Append("lyricsType=").Append(NormalizeCacheToken(settings.LrcType)).Append(';');
         builder.Append("lyricsFormat=").Append(NormalizeCacheToken(settings.LrcFormat)).Append(';');
+        builder.Append("lyricsSynthesizeTtml=").Append(settings.SynthesizeTtmlLyrics).Append(';');
         builder.Append("beatportReleaseMeta=").Append(normalizedTags.Any(tag => tag is "albumartist" or "tracktotal")).Append(';');
         builder.Append("traxsourceExtend=").Append(normalizedTags.Any(tag => tag is "albumart" or AlbumTag or "catalognumber" or "releaseid" or "albumartist" or "tracknumber" or "tracktotal")).Append(';');
         builder.Append("traxsourceAlbumMeta=").Append(normalizedTags.Any(tag => tag is "catalognumber" or "tracknumber" or "albumart" or "tracktotal" or "albumartist")).Append(';');
