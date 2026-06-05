@@ -16,7 +16,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
         Assert.Contains("GetRecentMovedAudioFilesByDestinationAsync", source);
-        Assert.Contains("await _scanRunner.RunChangedFilesAsync", source);
+        Assert.Contains("await _scanRunner.RunChangedFilesAndWaitForIngestionAsync", source);
+        Assert.Contains("IngestMovedFilesBeforeWatchlistFinalizationAsync", source);
         Assert.Contains("targeted library scan completed", source);
         Assert.Contains("no moved library file paths detected", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_scanRunner.RunAsync(", source, StringComparison.Ordinal);
@@ -109,7 +110,8 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.Contains("ResolveChangedLibraryFolderIdsAsync", source);
         Assert.Contains("autoMoveSummary.ChangedFilePaths", source);
-        Assert.Contains("await _libraryScanRunner.RunChangedFilesAsync", methodBody);
+        Assert.Contains("await _libraryScanRunner.RunChangedFilesAndWaitForIngestionAsync", methodBody);
+        Assert.Contains("Post auto-move targeted library scan incomplete", methodBody);
         Assert.Contains("Post auto-move library scan skipped because no changed file paths were reported", methodBody, StringComparison.Ordinal);
         Assert.Contains("moved={autoMoveSummary.MovedCount}", methodBody, StringComparison.Ordinal);
         Assert.Contains("failed={autoMoveSummary.FailedCount}", methodBody, StringComparison.Ordinal);
@@ -161,10 +163,11 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void WatchlistPostDownloadSync_UsesTargetedChangedFileScansWhenPathsAreKnown()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs");
-        var methodBody = ExtractMethodBody(source, "private static async Task RunLocalLibraryScanAsync");
+        var methodBody = ExtractMethodBody(source, "private static async Task<bool> RunLocalLibraryScanAsync");
 
         Assert.Contains("ChangedFilePaths", source, StringComparison.Ordinal);
-        Assert.Contains("await scanner.RunChangedFilesAsync", methodBody, StringComparison.Ordinal);
+        Assert.Contains("await scanner.RunChangedFilesAndWaitForIngestionAsync", methodBody, StringComparison.Ordinal);
+        Assert.Contains("return ingestion.IsComplete", methodBody, StringComparison.Ordinal);
         Assert.Contains("Missing final paths are a notifier bug", methodBody, StringComparison.Ordinal);
         Assert.Contains("Watchlist playlist library scan skipped because no final file paths were provided", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
@@ -226,10 +229,11 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.Contains("NotifyFinalizedAsync", interfaceSource, StringComparison.Ordinal);
         Assert.Contains("IReadOnlyList<string>? finalFilePaths", interfaceSource, StringComparison.Ordinal);
-        Assert.Contains("NotifyQueueItemFinalizedAsync", moveSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("NotifyQueueItemFinalizedAsync", moveSource, StringComparison.Ordinal);
+        Assert.Contains("UpdateFinalDestinationsAsync", moveSource, StringComparison.Ordinal);
+        Assert.Contains("NotifyWatchlistFinalizedItemsAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
         Assert.Contains("await _notifier.NotifyFinalizedAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("RepairPlaylistAsync", finalizationSource, StringComparison.Ordinal);
-        Assert.Contains("transitions.Values", moveSource, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -31,6 +31,7 @@ public sealed class LibraryScanRunner
     private readonly Dictionary<long, HashSet<string>> _pendingChangedFileScans = new();
     private CancellationTokenSource? _activeScanCts;
     private TaskCompletionSource<object?>? _activeScanCompletion;
+    private TaskCompletionSource<object?>? _changedFileScanDrainCompletion;
     private bool _changedFileScanDrainRunning;
     private bool _pendingChangedFileScanRequiresSpotifyFetch;
     private ScanStatus _status = new(false, null, 0, 0, 0, null, 0, 0, 0);
@@ -79,6 +80,15 @@ public sealed class LibraryScanRunner
         ScanProgressOffset ProgressOffset,
         Dictionary<string, HashSet<string>> ArtistGenres,
         bool Resumed);
+
+    public sealed record ChangedFileIngestionSummary(
+        int RequestedFileCount,
+        int ExistingAudioFileCount,
+        IReadOnlyList<string> IngestedFilePaths,
+        IReadOnlyList<string> MissingFilePaths)
+    {
+        public bool IsComplete => MissingFilePaths.Count == 0;
+    }
 
     private sealed class ScanCheckpointState
     {
@@ -169,6 +179,43 @@ public sealed class LibraryScanRunner
         }
     }
 
+    public async Task RunFolderScanAndWaitAsync(
+        long folderId,
+        bool skipSpotifyFetch,
+        CancellationToken cancellationToken)
+    {
+        if (folderId <= 0)
+        {
+            return;
+        }
+
+        await WaitForCurrentScanAsync(cancellationToken);
+        await RunAsync(
+            refreshImages: false,
+            reset: false,
+            folderId: folderId,
+            skipSpotifyFetch: skipSpotifyFetch,
+            cacheSpotifyImages: false,
+            cancellationToken: cancellationToken);
+        await WaitForCurrentScanAsync(cancellationToken);
+    }
+
+    public async Task<ChangedFileIngestionSummary> RunChangedFilesAndWaitForIngestionAsync(
+        IReadOnlyDictionary<long, List<string>> changedFilesByFolder,
+        bool skipSpotifyFetch,
+        CancellationToken cancellationToken)
+    {
+        var pending = NormalizeChangedFilesByFolder(changedFilesByFolder);
+        if (pending.Count == 0)
+        {
+            AddInfoLog("Targeted library ingestion verification skipped (no changed files).");
+            return new ChangedFileIngestionSummary(0, 0, [], []);
+        }
+
+        await RunChangedFilesAsync(pending, skipSpotifyFetch, cancellationToken);
+        return await VerifyChangedFilesIngestedAsync(pending, cancellationToken);
+    }
+
     public async Task RunChangedFilesAsync(
         IReadOnlyDictionary<long, List<string>> changedFilesByFolder,
         bool skipSpotifyFetch,
@@ -182,6 +229,7 @@ public sealed class LibraryScanRunner
         }
 
         var ownsDrain = false;
+        Task? waitForDrain = null;
         lock (_changedFileScanLock)
         {
             foreach (var (folderId, paths) in pending)
@@ -202,13 +250,23 @@ public sealed class LibraryScanRunner
             if (!_changedFileScanDrainRunning)
             {
                 _changedFileScanDrainRunning = true;
+                _changedFileScanDrainCompletion = new TaskCompletionSource<object?>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
                 ownsDrain = true;
+            }
+            else
+            {
+                waitForDrain = _changedFileScanDrainCompletion?.Task;
             }
         }
 
         if (!ownsDrain)
         {
             AddInfoLog($"Targeted library scan merged into pending queue ({pending.Sum(pair => pair.Value.Count)} file(s)).");
+            if (waitForDrain != null)
+            {
+                await waitForDrain.WaitAsync(cancellationToken);
+            }
             return;
         }
 
@@ -229,6 +287,14 @@ public sealed class LibraryScanRunner
         {
             if (!TryStartScan(cancellationToken, ref cts, ref ownsActiveScan))
             {
+                await WaitForCurrentScanAsync(cancellationToken);
+                await RunAsync(
+                    refreshImages,
+                    reset,
+                    folderId,
+                    skipSpotifyFetch,
+                    cacheSpotifyImages,
+                    cancellationToken);
                 return;
             }
 
@@ -329,6 +395,7 @@ public sealed class LibraryScanRunner
 
     private async Task DrainChangedFileScansAsync(CancellationToken cancellationToken)
     {
+        TaskCompletionSource<object?>? completion = null;
         try
         {
             while (true)
@@ -341,6 +408,9 @@ public sealed class LibraryScanRunner
                     {
                         _changedFileScanDrainRunning = false;
                         _pendingChangedFileScanRequiresSpotifyFetch = false;
+                        completion = _changedFileScanDrainCompletion;
+                        _changedFileScanDrainCompletion = null;
+                        completion?.TrySetResult(null);
                         return;
                     }
 
@@ -356,16 +426,86 @@ public sealed class LibraryScanRunner
                 await RunChangedFilesBatchAsync(batch, skipSpotifyFetch, cancellationToken);
             }
         }
+        catch (OperationCanceledException ex)
+        {
+            lock (_changedFileScanLock)
+            {
+                _changedFileScanDrainRunning = false;
+                _pendingChangedFileScanRequiresSpotifyFetch = false;
+                completion = _changedFileScanDrainCompletion;
+                _changedFileScanDrainCompletion = null;
+            }
+
+            completion?.TrySetCanceled(ex.CancellationToken);
+            throw;
+        }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             lock (_changedFileScanLock)
             {
                 _changedFileScanDrainRunning = false;
                 _pendingChangedFileScanRequiresSpotifyFetch = false;
+                completion = _changedFileScanDrainCompletion;
+                _changedFileScanDrainCompletion = null;
             }
 
+            completion?.TrySetException(ex);
             throw;
         }
+    }
+
+    private async Task<ChangedFileIngestionSummary> VerifyChangedFilesIngestedAsync(
+        IReadOnlyDictionary<long, List<string>> changedFilesByFolder,
+        CancellationToken cancellationToken)
+    {
+        var requested = changedFilesByFolder
+            .SelectMany(pair => pair.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var existingAudioFiles = requested
+            .Where(IsExistingAudioFile)
+            .ToList();
+        if (existingAudioFiles.Count == 0 || !_repository.IsConfigured)
+        {
+            return new ChangedFileIngestionSummary(requested.Count, existingAudioFiles.Count, [], []);
+        }
+
+        var ingested = await _repository.GetTrackIdsByFilePathsAsync(existingAudioFiles, cancellationToken);
+        var ingestedPaths = existingAudioFiles
+            .Where(path => ingested.ContainsKey(path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var missingPaths = existingAudioFiles
+            .Where(path => !ingested.ContainsKey(path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (missingPaths.Count > 0)
+        {
+            AddWarnLog($"Targeted library ingestion incomplete ({missingPaths.Count}/{existingAudioFiles.Count} audio file(s) missing from DB).");
+        }
+        else
+        {
+            AddInfoLog($"Targeted library ingestion verified ({ingestedPaths.Count} audio file(s) present in DB).");
+        }
+
+        return new ChangedFileIngestionSummary(
+            requested.Count,
+            existingAudioFiles.Count,
+            ingestedPaths,
+            missingPaths);
+    }
+
+    private static bool IsExistingAudioFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(path);
+        return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
     }
 
     private async Task RunChangedFilesBatchAsync(

@@ -1164,6 +1164,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
             else
             {
+                if (!await IngestMovedFilesBeforeWatchlistFinalizationAsync(group, summary.ChangedFilePaths, cancellationToken))
+                {
+                    await MarkPostDownloadFinalizationFailedAsync(group, cancellationToken);
+                    return false;
+                }
+
                 await NotifyWatchlistFinalizedItemsAsync(group, summary.ChangedFilePaths, cancellationToken);
             }
 
@@ -1183,6 +1189,56 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 $"Automation: post-download finalization failed for destination folder {group.DestinationFolderId} ({ex.Message})."));
             return false;
         }
+    }
+
+    private async Task<bool> IngestMovedFilesBeforeWatchlistFinalizationAsync(
+        PipelineWorkGroup group,
+        IReadOnlyList<string> changedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
+            group.PendingQueueUuids,
+            cancellationToken);
+        if (movedFilesByDestination.Count == 0
+            && group.DestinationFolderId > 0
+            && changedFilePaths.Count > 0)
+        {
+            movedFilesByDestination = new Dictionary<long, List<string>>
+            {
+                [group.DestinationFolderId] = changedFilePaths.ToList()
+            };
+        }
+
+        var changedFileCount = movedFilesByDestination.Sum(pair => pair.Value.Count);
+        if (changedFileCount <= 0)
+        {
+            return true;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: verifying library DB ingestion for {changedFileCount} finalized file(s) before watchlist sync."));
+
+        var ingestion = await _scanRunner.RunChangedFilesAndWaitForIngestionAsync(
+            movedFilesByDestination,
+            skipSpotifyFetch: false,
+            cancellationToken);
+        if (ingestion.IsComplete)
+        {
+            return true;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            ErrorLogLevel,
+            $"Automation: post-download finalization blocked because {ingestion.MissingFilePaths.Count} finalized audio file(s) were not ingested into the library DB."));
+        foreach (var missingPath in ingestion.MissingFilePaths.Take(10))
+        {
+            _logger.LogWarning("Finalized file was not ingested into library DB before watchlist sync: {Path}", missingPath);
+        }
+
+        return false;
     }
 
     private async Task NotifyWatchlistFinalizedItemsAsync(
@@ -1580,10 +1636,18 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             "info",
             $"Automation: post-download targeted library scan starting for {changedFileCount} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
 
-        await _scanRunner.RunChangedFilesAsync(
+        var ingestion = await _scanRunner.RunChangedFilesAndWaitForIngestionAsync(
             movedFilesByDestination,
             skipSpotifyFetch: false,
             cancellationToken);
+        if (!ingestion.IsComplete)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                ErrorLogLevel,
+                $"Automation: post-download targeted library scan incomplete; {ingestion.MissingFilePaths.Count} finalized audio file(s) are missing from the library DB."));
+            return;
+        }
 
         await TriggerPlexScanAsync(cancellationToken);
 

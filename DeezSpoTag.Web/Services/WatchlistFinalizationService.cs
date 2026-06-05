@@ -68,6 +68,15 @@ public sealed class WatchlistFinalizationService
             return 0;
         }
 
+        var verifiedAudioPaths = await ResolveVerifiedFinalAudioPathsAsync(
+            item.QueueUuid,
+            normalizedFinalPaths,
+            cancellationToken);
+        if (verifiedAudioPaths.Count == 0)
+        {
+            return 0;
+        }
+
         var notifications = await ResolveNotificationsAsync(item, payloadJson, cancellationToken);
         if (notifications.Count > 0)
         {
@@ -82,7 +91,7 @@ public sealed class WatchlistFinalizationService
                 notification.PlaylistId,
                 notification.TrackId,
                 notification.DestinationFolderId,
-                normalizedFinalPaths,
+                verifiedAudioPaths,
                 cancellationToken);
             sent++;
         }
@@ -93,6 +102,45 @@ public sealed class WatchlistFinalizationService
         }
 
         return sent;
+    }
+
+    private async Task<List<string>> ResolveVerifiedFinalAudioPathsAsync(
+        string queueUuid,
+        IReadOnlyCollection<string> normalizedFinalPaths,
+        CancellationToken cancellationToken)
+    {
+        var audioPaths = normalizedFinalPaths
+            .Where(IsExistingAudioFile)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (audioPaths.Count == 0)
+        {
+            _logger.LogWarning(
+                "Watchlist finalization skipped for queue {QueueUuid} because no existing final audio paths were available.",
+                queueUuid);
+            return [];
+        }
+
+        var trackIds = await _libraryRepository.GetTrackIdsByFilePathsAsync(audioPaths, cancellationToken);
+        var missingPaths = audioPaths
+            .Where(path => !trackIds.ContainsKey(path))
+            .ToList();
+        if (missingPaths.Count == 0)
+        {
+            return audioPaths;
+        }
+
+        _logger.LogWarning(
+            "Watchlist finalization skipped for queue {QueueUuid} because {MissingCount}/{AudioCount} final audio file(s) are not in the library DB.",
+            queueUuid,
+            missingPaths.Count,
+            audioPaths.Count);
+        foreach (var missingPath in missingPaths.Take(10))
+        {
+            _logger.LogWarning("Watchlist finalization missing library DB file: {Path}", missingPath);
+        }
+
+        return [];
     }
 
     public async Task<int> RepairPlaylistAsync(
@@ -458,6 +506,17 @@ public sealed class WatchlistFinalizationService
             .Where(static path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static bool IsExistingAudioFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(path);
+        return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
     }
 
     private static IReadOnlyList<string> ReadFinalDestinationPaths(string? payloadJson)

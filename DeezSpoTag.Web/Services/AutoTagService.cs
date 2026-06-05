@@ -2633,10 +2633,18 @@ public partial class AutoTagService
                 "info",
                 $"Post auto-move targeted library scan starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
             AppendLog(job, $"post auto-move targeted library scan starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}");
-            await _libraryScanRunner.RunChangedFilesAsync(
+            var ingestion = await _libraryScanRunner.RunChangedFilesAndWaitForIngestionAsync(
                 changedFilesByFolder,
                 skipSpotifyFetch: false,
                 cancellationToken);
+            if (!ingestion.IsComplete)
+            {
+                _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "error",
+                    $"Post auto-move targeted library scan incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) are missing from the library DB."));
+                AppendLog(job, $"post auto-move targeted library scan incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) missing from DB");
+            }
             return;
         }
 

@@ -250,7 +250,10 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken);
             var effectiveRequest = ResolveEffectiveRequest(request, preference);
 
-            await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken);
+            if (!await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken))
+            {
+                return false;
+            }
             await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
 
             var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchService>();
@@ -431,32 +434,32 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task RunLocalLibraryScanAsync(
+    private static async Task<bool> RunLocalLibraryScanAsync(
         IServiceProvider services,
         SyncRequest request,
         CancellationToken cancellationToken)
     {
         if (!request.DestinationFolderId.HasValue)
         {
-            return;
+            return true;
         }
 
         var scanner = services.GetService<LibraryScanRunner>();
         if (scanner == null)
         {
-            return;
+            return true;
         }
 
         if (request.ChangedFilePaths.Count > 0)
         {
-            await scanner.RunChangedFilesAsync(
+            var ingestion = await scanner.RunChangedFilesAndWaitForIngestionAsync(
                 new Dictionary<long, List<string>>
                 {
                     [request.DestinationFolderId.Value] = request.ChangedFilePaths.ToList()
                 },
                 skipSpotifyFetch: true,
                 cancellationToken);
-            return;
+            return ingestion.IsComplete;
         }
 
         // Missing final paths are a notifier bug. The sync must be driven by real destination files.
@@ -465,6 +468,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             DateTimeOffset.UtcNow,
             "warning",
             $"Watchlist playlist library scan skipped because no final file paths were provided for {request.Source}:{request.PlaylistId}:{request.TrackId} (destinationFolderId={request.DestinationFolderId})."));
+        return false;
     }
 
     private static List<string> NormalizeChangedFilePaths(IReadOnlyList<string>? changedFilePaths)
