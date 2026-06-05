@@ -762,6 +762,22 @@
                             <input type="hidden" id="downloadSource" value="deezer">
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label for="automaticDownloadSource">Automatic source</label>
+                        <div class="dropdown-select" data-dropdown="automaticDownloadSource">
+                            <button type="button" class="dropdown-trigger" id="automaticDownloadSourceTrigger">Auto</button>
+                            <div class="dropdown-menu" id="automaticDownloadSourceMenu">
+                                <button type="button" class="dropdown-option" data-value="auto">Auto</button>
+                                <button type="button" class="dropdown-option" data-value="amazon">Amazon Music</button>
+                                <button type="button" class="dropdown-option" data-value="apple">Apple Music</button>
+                                <button type="button" class="dropdown-option" data-value="deezer">Deezer</button>
+                                <button type="button" class="dropdown-option" data-value="qobuz">Qobuz</button>
+                                <button type="button" class="dropdown-option" data-value="tidal">Tidal</button>
+                            </div>
+                            <input type="hidden" id="automaticDownloadSource" value="auto">
+                        </div>
+                        <div class="warning-text">Used by watchlist and other automatic downloads when a playlist or artist does not have its own engine preference.</div>
+                    </div>
                     <div class="form-group" id="multiQualityGroup">
                         <div class="form-label">Multi-quality downloads</div>
                         <div class="checkbox-group">
@@ -3558,6 +3574,7 @@ function loadSettings(settings) {
     const loadedDownloadEngineOrder = settings.downloadEngineOrder || settings.DownloadEngineOrder;
     const loadedDownloadSource = loadedDownloadEngineOrder?.enabled === true ? 'custom' : (settings.service || 'deezer');
     setFieldValue('downloadSource', loadedDownloadSource);
+    setFieldValue('automaticDownloadSource', settings.automaticDownloadSource || settings.AutomaticDownloadSource || 'auto');
     setCheckboxValue('preferAlbumLayoutForPlaylists', settings.preferAlbumLayoutForPlaylists);
     setMaxBitrateValue(settings.maxBitrate);
     setCheckboxValue('fallbackBitrate', settings.fallbackBitrate);
@@ -3888,6 +3905,7 @@ function collectFormData() {
 
         queueOrder: getValue('queueOrder', 'fifo'),
         service: persistedDownloadService,
+        automaticDownloadSource: getValue('automaticDownloadSource', baseSettings.automaticDownloadSource || baseSettings.AutomaticDownloadSource || 'auto'),
         preferAlbumLayoutForPlaylists: getChecked('preferAlbumLayoutForPlaylists', baseSettings.preferAlbumLayoutForPlaylists ?? true),
         maxBitrate: getNumber('maxBitrate', baseSettings.maxBitrate ?? 9),
         feelingLucky: baseSettings.feelingLucky ?? false,

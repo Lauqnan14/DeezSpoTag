@@ -2709,18 +2709,33 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             : $"{defaultLabel} {normalizedType}:{normalizedName}";
     }
 
-    private static QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
+    private QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
     {
         return new QueueWatchOptions(
             input.SourceLabel,
             input.WatchlistSource,
             input.WatchlistPlaylistId,
-            input.PreferredEngine,
+            ResolveAutomaticPreferredEngine(input.PreferredEngine),
             input.DownloadVariantMode,
             input.AtmosDestinationFolderId,
             input.RuleSet?.RoutingRules,
             input.RuleSet?.BlockRules,
             input.WatchlistOrigin);
+    }
+
+    private string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
+    {
+        var normalizedItemEngine = NormalizePreferredEngine(itemPreferredEngine);
+        if (!string.IsNullOrWhiteSpace(normalizedItemEngine))
+        {
+            return normalizedItemEngine;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        var normalizedAutomaticSource = NormalizePreferredEngine(settings.AutomaticDownloadSource);
+        return string.IsNullOrWhiteSpace(normalizedAutomaticSource)
+            ? "auto"
+            : normalizedAutomaticSource;
     }
 
     private static long? ResolveRoutingFolderId(DownloadIntent intent, IReadOnlyList<PlaylistTrackRoutingRule>? rules, long? defaultFolderId)

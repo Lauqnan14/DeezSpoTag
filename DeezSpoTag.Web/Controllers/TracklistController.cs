@@ -606,7 +606,6 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var settings = _settingsService.LoadSettings();
-                var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, bitrate);
                 var url = type.ToLowerInvariant() switch
                 {
                     "track" => $"https://www.deezer.com/track/{id}",
@@ -621,7 +620,7 @@ namespace DeezSpoTag.Web.Controllers
                     return BadRequest("Unsupported Deezer type.");
                 }
 
-                var queued = await EnqueueDeezerUrlsViaIntentAsync(new[] { url }, resolvedBitrate);
+                var queued = await EnqueueDeezerUrlsViaIntentAsync(new[] { url }, settings, bitrate);
                 return DeezerQueueActionResultHelper.FromQueued(this, queued);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -648,14 +647,13 @@ namespace DeezSpoTag.Web.Controllers
                     return BadRequest("Track IDs are required.");
                 }
 
-                var settings = _settingsService.LoadSettings();
-                var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, request.Bitrate);
                 var urls = request.TrackIds
                     .Where(id => !string.IsNullOrWhiteSpace(id))
                     .Select(id => $"https://www.deezer.com/track/{id}")
                     .ToArray();
 
-                var queued = await EnqueueDeezerUrlsViaIntentAsync(urls, resolvedBitrate);
+                var settings = _settingsService.LoadSettings();
+                var queued = await EnqueueDeezerUrlsViaIntentAsync(urls, settings, request.Bitrate);
                 if (queued.Count == 0)
                 {
                     return Json(new { success = false, message = "Nothing queued." });
@@ -672,15 +670,18 @@ namespace DeezSpoTag.Web.Controllers
 
         private async Task<List<Dictionary<string, object>>> EnqueueDeezerUrlsViaIntentAsync(
             IEnumerable<string> urls,
-            int resolvedBitrate)
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+            int requestedBitrate)
         {
+            var preferredEngine = ResolveManualPreferredEngine(settings);
+            var quality = ResolveManualPreferredQuality(settings, preferredEngine, requestedBitrate);
             var queued = new List<Dictionary<string, object>>();
             foreach (var intent in urls.Select(url => new DownloadIntent
                      {
                          SourceService = DeezerSource,
                          SourceUrl = url,
-                         PreferredEngine = DeezerSource,
-                         Quality = resolvedBitrate.ToString(),
+                         PreferredEngine = preferredEngine,
+                         Quality = quality,
                          ContentType = "music"
                      }))
             {
@@ -689,6 +690,34 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             return queued;
+        }
+
+        private static string ResolveManualPreferredEngine(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+        {
+            if (settings.DownloadEngineOrder?.Enabled == true)
+            {
+                return "auto";
+            }
+
+            var service = (settings.Service ?? string.Empty).Trim().ToLowerInvariant();
+            return service is "auto" or "amazon" or "apple" or DeezerSource or "qobuz" or "tidal"
+                ? service
+                : "auto";
+        }
+
+        private static string ResolveManualPreferredQuality(
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+            string preferredEngine,
+            int requestedBitrate)
+        {
+            return preferredEngine switch
+            {
+                DeezerSource => DownloadSourceOrder.ResolveDeezerBitrate(settings, requestedBitrate).ToString(),
+                "qobuz" => string.IsNullOrWhiteSpace(settings.QobuzQuality) ? string.Empty : settings.QobuzQuality,
+                "tidal" => string.IsNullOrWhiteSpace(settings.TidalQuality) ? string.Empty : settings.TidalQuality,
+                "apple" => settings.AppleMusic?.PreferredAudioProfile ?? string.Empty,
+                _ => string.Empty
+            };
         }
 
     }

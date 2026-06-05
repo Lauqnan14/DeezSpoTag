@@ -49,14 +49,15 @@ public class ArtistController : Controller
             }
 
             var settings = _settingsService.LoadSettings();
-            var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, bitrate);
+            var preferredEngine = ResolveManualPreferredEngine(settings);
+            var quality = ResolveManualPreferredQuality(settings, preferredEngine, bitrate);
             var url = $"https://www.deezer.com/artist/{id}";
             var intent = new DownloadIntent
             {
                 SourceService = "deezer",
                 SourceUrl = url,
-                PreferredEngine = "deezer",
-                Quality = resolvedBitrate.ToString(),
+                PreferredEngine = preferredEngine,
+                Quality = quality,
                 ContentType = "music"
             };
             var result = await _intentService.EnqueueManualAsync(intent, CancellationToken.None);
@@ -69,6 +70,34 @@ public class ArtistController : Controller
         {
             return DeezerQueueActionResultHelper.FromError(this, _logger, ex, "Error initiating artist download: ArtistId");
         }
+    }
+
+    private static string ResolveManualPreferredEngine(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    {
+        if (settings.DownloadEngineOrder?.Enabled == true)
+        {
+            return "auto";
+        }
+
+        var service = (settings.Service ?? string.Empty).Trim().ToLowerInvariant();
+        return service is "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal"
+            ? service
+            : "auto";
+    }
+
+    private static string ResolveManualPreferredQuality(
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        string preferredEngine,
+        int requestedBitrate)
+    {
+        return preferredEngine switch
+        {
+            "deezer" => DownloadSourceOrder.ResolveDeezerBitrate(settings, requestedBitrate).ToString(),
+            "qobuz" => string.IsNullOrWhiteSpace(settings.QobuzQuality) ? string.Empty : settings.QobuzQuality,
+            "tidal" => string.IsNullOrWhiteSpace(settings.TidalQuality) ? string.Empty : settings.TidalQuality,
+            "apple" => settings.AppleMusic?.PreferredAudioProfile ?? string.Empty,
+            _ => string.Empty
+        };
     }
 
 }

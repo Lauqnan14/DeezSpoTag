@@ -216,6 +216,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                     forceImmediateNoIsrc,
                     request.QueueInBackground,
                     request.DestinationFolderId,
+                    request.Settings,
                     accumulator,
                     cancellationToken);
             }
@@ -399,10 +400,12 @@ namespace DeezSpoTag.Web.Controllers.Api
             bool forceImmediateNoIsrc,
             bool queueInBackground,
             long? destinationFolderId,
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
             AddWithSettingsAccumulator accumulator,
             CancellationToken cancellationToken)
         {
             intent.DestinationFolderId ??= destinationFolderId;
+            ApplyManualDownloadPreferenceIfMissing(intent, settings);
             var requiresAutoTagProfile = RequiresAutoTagDefaults(intent.ContentType, intent.SourceUrl);
 
             if (queueInBackground)
@@ -820,17 +823,22 @@ namespace DeezSpoTag.Web.Controllers.Api
             try
             {
                 var settings = _settingsService.LoadSettings();
-                var resolvedBitrate = DownloadSourceOrder.ResolveDeezerBitrate(settings, DownloadSourceOrder.DeezerFlac);
                 var inferredContentType = IsDeezerEpisodeUrl(request.Url) || IsDeezerShowUrl(request.Url)
                     ? DownloadContentTypes.Podcast
                     : "music";
+                var preferredEngine = string.Equals(inferredContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)
+                    ? DeezerSource
+                    : ResolveManualPreferredEngine(settings);
+                var quality = string.Equals(inferredContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)
+                    ? DownloadSourceOrder.ResolveDeezerBitrate(settings, DownloadSourceOrder.DeezerFlac).ToString()
+                    : ResolveManualPreferredQuality(settings, preferredEngine, DownloadSourceOrder.DeezerFlac);
 
                 var intent = new DownloadIntent
                 {
                     SourceService = DeezerSource,
                     SourceUrl = request.Url,
-                    PreferredEngine = DeezerSource,
-                    Quality = resolvedBitrate.ToString(),
+                    PreferredEngine = preferredEngine,
+                    Quality = quality,
                     ContentType = inferredContentType
                 };
 
@@ -1170,6 +1178,49 @@ namespace DeezSpoTag.Web.Controllers.Api
                 Cover = BuildDeezerCoverUrl(track.AlbPicture),
                 DurationMs = durationMs,
                 Position = position
+            };
+        }
+
+        private static void ApplyManualDownloadPreferenceIfMissing(
+            DownloadIntent intent,
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+        {
+            if (string.IsNullOrWhiteSpace(intent.PreferredEngine))
+            {
+                intent.PreferredEngine = ResolveManualPreferredEngine(settings);
+            }
+
+            if (string.IsNullOrWhiteSpace(intent.Quality))
+            {
+                intent.Quality = ResolveManualPreferredQuality(settings, intent.PreferredEngine, DownloadSourceOrder.DeezerFlac);
+            }
+        }
+
+        private static string ResolveManualPreferredEngine(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+        {
+            if (settings.DownloadEngineOrder?.Enabled == true)
+            {
+                return "auto";
+            }
+
+            var service = (settings.Service ?? string.Empty).Trim().ToLowerInvariant();
+            return service is "auto" or "amazon" or "apple" or DeezerSource or "qobuz" or "tidal"
+                ? service
+                : "auto";
+        }
+
+        private static string ResolveManualPreferredQuality(
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+            string preferredEngine,
+            int requestedBitrate)
+        {
+            return preferredEngine switch
+            {
+                DeezerSource => DownloadSourceOrder.ResolveDeezerBitrate(settings, requestedBitrate).ToString(),
+                "qobuz" => string.IsNullOrWhiteSpace(settings.QobuzQuality) ? string.Empty : settings.QobuzQuality,
+                "tidal" => string.IsNullOrWhiteSpace(settings.TidalQuality) ? string.Empty : settings.TidalQuality,
+                "apple" => settings.AppleMusic?.PreferredAudioProfile ?? string.Empty,
+                _ => string.Empty
             };
         }
 

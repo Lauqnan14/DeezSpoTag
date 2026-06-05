@@ -45,6 +45,26 @@ public sealed class DownloadQueueRequestAbortGuardrailTests
     }
 
     [Fact]
+    public void LegacyMusicDownloadActions_KeepSourceIdentitySeparateFromPreferredEngine()
+    {
+        var tracklistSource = ReadSource("DeezSpoTag.Web", "Controllers", "TracklistController.cs");
+        var artistSource = ReadSource("DeezSpoTag.Web", "Controllers", "ArtistController.cs");
+        var deezerApiSource = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "DeezerDownloadApiController.cs");
+
+        Assert.Contains("ResolveManualPreferredEngine(settings)", tracklistSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveManualPreferredQuality(settings, preferredEngine", tracklistSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PreferredEngine = DeezerSource", tracklistSource, StringComparison.Ordinal);
+
+        Assert.Contains("ResolveManualPreferredEngine(settings)", artistSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveManualPreferredQuality(settings, preferredEngine", artistSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PreferredEngine = \"deezer\"", artistSource, StringComparison.Ordinal);
+
+        Assert.Contains("ApplyManualDownloadPreferenceIfMissing(intent, settings)", deezerApiSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveManualPreferredEngine(settings)", deezerApiSource, StringComparison.Ordinal);
+        Assert.Contains("PreferredEngine = preferredEngine", deezerApiSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DeezerAddWithSettingsQueueing_IsServerOwned()
     {
         var source = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "DeezerDownloadApiController.cs");

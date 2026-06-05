@@ -136,6 +136,21 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void SettingsView_ExposesSeparateAutomaticDownloadSource()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var settingsSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
+        var settingsModelSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Core", "Models", "Settings", "DeezSpoTagSettings.cs"));
+        var playlistWatchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+
+        Assert.Contains("public string AutomaticDownloadSource { get; set; } = \"auto\";", settingsModelSource, StringComparison.Ordinal);
+        Assert.Contains("id=\"automaticDownloadSource\"", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("automaticDownloadSource: getValue('automaticDownloadSource'", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveAutomaticPreferredEngine(input.PreferredEngine)", playlistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("settings.AutomaticDownloadSource", playlistWatchSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WatchMaxItemsPerRun_IsOnlyUsedBySchedulerAndSettingsContract()
     {
         var repoRoot = ResolveRepoRoot();

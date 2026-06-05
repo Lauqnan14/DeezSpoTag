@@ -359,7 +359,7 @@ public sealed class DownloadIntentService
             return gateFailure;
         }
 
-        var preparation = await PrepareEnqueueAsync(intent, cancellationToken);
+        var preparation = await PrepareEnqueueAsync(intent, applyManualDownloadPreference: true, cancellationToken);
         var profileValidation = await TryValidateEnqueueProfileAsync(intent, preparation, cancellationToken);
         if (profileValidation.Failure != null)
         {
@@ -968,7 +968,7 @@ public sealed class DownloadIntentService
             return (gateFailure, null);
         }
 
-        var preparation = await PrepareEnqueueAsync(intent, cancellationToken);
+        var preparation = await PrepareEnqueueAsync(intent, allowManualQueueDuringEnrichment, cancellationToken);
         var profileValidation = await TryValidateEnqueueProfileAsync(intent, preparation, cancellationToken);
         if (profileValidation.Failure != null)
         {
@@ -1701,17 +1701,63 @@ public sealed class DownloadIntentService
         };
     }
 
-    private async Task<EnqueuePreparation> PrepareEnqueueAsync(DownloadIntent intent, CancellationToken cancellationToken)
+    private async Task<EnqueuePreparation> PrepareEnqueueAsync(
+        DownloadIntent intent,
+        bool applyManualDownloadPreference,
+        CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
         NormalizeEnqueueSettings(settings);
         var isPodcastIntent = NormalizeIntentContentType(intent);
+        if (applyManualDownloadPreference && !isPodcastIntent && IsMusicIntent(intent))
+        {
+            ApplyManualDownloadPreferenceIfMissing(intent, settings);
+        }
+
         if (!intent.DestinationFolderId.HasValue)
         {
             intent.DestinationFolderId = await ResolveRoutedDestinationFolderIdAsync(intent, settings, cancellationToken);
         }
 
         return new EnqueuePreparation(settings, isPodcastIntent, ResolveMetadataDestinationFolderId(intent, settings));
+    }
+
+    private static void ApplyManualDownloadPreferenceIfMissing(DownloadIntent intent, DeezSpoTagSettings settings)
+    {
+        if (string.IsNullOrWhiteSpace(intent.PreferredEngine))
+        {
+            intent.PreferredEngine = ResolveManualPreferredEngine(settings);
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Quality))
+        {
+            intent.Quality = ResolveManualPreferredQuality(settings, intent.PreferredEngine);
+        }
+    }
+
+    private static string ResolveManualPreferredEngine(DeezSpoTagSettings settings)
+    {
+        if (settings.DownloadEngineOrder?.Enabled == true)
+        {
+            return AutoService;
+        }
+
+        var service = (settings.Service ?? string.Empty).Trim().ToLowerInvariant();
+        return service is AutoService or AmazonPlatform or ApplePlatform or DeezerPlatform or QobuzPlatform or TidalPlatform
+            ? service
+            : AutoService;
+    }
+
+    private static string ResolveManualPreferredQuality(DeezSpoTagSettings settings, string preferredEngine)
+    {
+        return preferredEngine switch
+        {
+            DeezerPlatform => DownloadSourceOrder.ResolveDeezerBitrate(settings, DownloadSourceOrder.DeezerFlac).ToString(),
+            QobuzPlatform => string.IsNullOrWhiteSpace(settings.QobuzQuality) ? string.Empty : settings.QobuzQuality,
+            TidalPlatform => string.IsNullOrWhiteSpace(settings.TidalQuality) ? string.Empty : settings.TidalQuality,
+            ApplePlatform => settings.AppleMusic?.PreferredAudioProfile ?? string.Empty,
+            _ => string.Empty
+        };
     }
 
     private static void NormalizeEnqueueSettings(DeezSpoTagSettings settings)
@@ -1833,9 +1879,14 @@ public sealed class DownloadIntentService
             appleOnlyRequired = false;
         }
 
+        var routingServiceOverride = ResolveRoutingServiceOverride(normalizedPreferredEngine);
         var autoSources = preparation.IsPodcastIntent
             ? DownloadSourceOrder.ResolveEngineQualitySources(settings, normalizedPreferredEngine, DownloadContentTypes.Podcast, strict: true)
-            : DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
+            : DownloadSourceOrder.ResolveQualityAutoSources(
+                settings,
+                includeDeezer: true,
+                targetQuality: targetQuality,
+                forcedServiceOverride: routingServiceOverride);
         autoSources = FilterAutoSourcesByAvailability(autoSources, availability, normalizedPreferredEngine);
         autoSources = PrioritizeAutoSourcesByHealth(autoSources, settings, intentRequestsAuto, normalizedPreferredEngine);
         var preferredEngine = ResolvePreferredEngine(normalizedPreferredEngine, intentRequestsAuto, appleOnlyRequired, preparation.IsPodcastIntent, autoSources);
@@ -1858,6 +1909,18 @@ public sealed class DownloadIntentService
         }
 
         return new EnqueueRoutingState(normalizedPreferredEngine, intentRequestsAuto, appleOnlyRequired, autoSources, preferredEngine, targetQuality, availability, useAtmosStereoDual);
+    }
+
+    private static string? ResolveRoutingServiceOverride(string normalizedPreferredEngine)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedPreferredEngine))
+        {
+            return null;
+        }
+
+        return string.Equals(normalizedPreferredEngine, AutoService, StringComparison.OrdinalIgnoreCase)
+            ? AutoService
+            : normalizedPreferredEngine;
     }
 
     private static DownloadIntentResult? TryValidateRoutingSources(EnqueueRoutingState routing)

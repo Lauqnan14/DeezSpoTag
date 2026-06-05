@@ -79,9 +79,12 @@ public static class DownloadSourceOrder
     public static List<string> ResolveQualityAutoSources(
         DeezSpoTagSettings settings,
         bool includeDeezer,
-        string? targetQuality)
+        string? targetQuality,
+        string? forcedServiceOverride = null)
     {
-        var forcedService = settings.Service?.Trim().ToLowerInvariant();
+        var forcedService = string.IsNullOrWhiteSpace(forcedServiceOverride)
+            ? settings.Service?.Trim().ToLowerInvariant()
+            : forcedServiceOverride.Trim().ToLowerInvariant();
         var includeAtmos = string.Equals(targetQuality, "atmos", StringComparison.OrdinalIgnoreCase);
         var sources = BuildConfiguredAutoSources(
             settings,
