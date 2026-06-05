@@ -38,7 +38,9 @@ public sealed class PlaylistWatchService
         int AttemptedCount,
         int SystemicFailureCount,
         string? FirstSystemicFailureFingerprint,
-        string? FirstFailureMessage);
+        string? FirstFailureMessage,
+        WatchQueueStopReason StopReason,
+        int RemainingQueueableCount);
 
     private readonly record struct QueueWatchTrackResult(int QueuedCount, bool Completed, bool Failed);
     private readonly record struct WatchFailureClassification(bool IsSystemic, string? Fingerprint, string? Message);
@@ -237,7 +239,24 @@ public sealed class PlaylistWatchService
         int AttemptedTracks = 0,
         int SystemicFailures = 0,
         string? FailureFingerprint = null,
-        string? FailureMessage = null);
+        string? FailureMessage = null,
+        string? QueueStopReason = null,
+        int RemainingQueueableTracks = 0,
+        bool KeepActivePlaylist = false);
+
+    public enum WatchQueueStopReason
+    {
+        None,
+        WatchlistDisabled,
+        DownloadGate,
+        QueueCapacity,
+        RunBudget,
+        ResolutionBudget,
+        TrackDeferred,
+        SystemicFailure,
+        Completed,
+        TrackFailures
+    }
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
@@ -578,7 +597,21 @@ public sealed class PlaylistWatchService
             AttemptedTracks: queueResult.AttemptedCount,
             SystemicFailures: queueResult.SystemicFailureCount,
             FailureFingerprint: queueResult.FirstSystemicFailureFingerprint,
-            FailureMessage: queueResult.FirstFailureMessage);
+            FailureMessage: queueResult.FirstFailureMessage,
+            QueueStopReason: queueResult.StopReason.ToString(),
+            RemainingQueueableTracks: queueResult.RemainingQueueableCount,
+            KeepActivePlaylist: ShouldKeepPlaylistActive(queueResult));
+    }
+
+    private static bool ShouldKeepPlaylistActive(QueueWatchResult queueResult)
+    {
+        if (queueResult.RemainingQueueableCount <= 0)
+        {
+            return false;
+        }
+
+        return queueResult.StopReason is WatchQueueStopReason.TrackDeferred
+            or WatchQueueStopReason.SystemicFailure;
     }
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
@@ -2854,7 +2887,17 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     options.SourceLabel);
             }
 
-            return new QueueWatchResult(0, 0, 0, Deferred: true, AttemptedCount: 0, SystemicFailureCount: 0, FirstSystemicFailureFingerprint: null, FirstFailureMessage: null);
+            return new QueueWatchResult(
+                0,
+                0,
+                0,
+                Deferred: true,
+                AttemptedCount: 0,
+                SystemicFailureCount: 0,
+                FirstSystemicFailureFingerprint: null,
+                FirstFailureMessage: null,
+                StopReason: WatchQueueStopReason.WatchlistDisabled,
+                RemainingQueueableCount: tracks.Count);
         }
 
         using var scope = _serviceProvider.CreateScope();
@@ -2866,10 +2909,21 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var capacity = await TryResolveWatchQueueCapacityAsync(queueRepository, orchestrationService, options, cancellationToken);
         if (capacity is null)
         {
-            return new QueueWatchResult(0, 0, 0, Deferred: true, AttemptedCount: 0, SystemicFailureCount: 0, FirstSystemicFailureFingerprint: null, FirstFailureMessage: null);
+            return new QueueWatchResult(
+                0,
+                0,
+                0,
+                Deferred: true,
+                AttemptedCount: 0,
+                SystemicFailureCount: 0,
+                FirstSystemicFailureFingerprint: null,
+                FirstFailureMessage: null,
+                StopReason: WatchQueueStopReason.DownloadGate,
+                RemainingQueueableCount: tracks.Count);
         }
 
         var queueContext = new QueuedWatchIntentContext(intentService, options, normalizedDownloadVariantMode);
+        var trackList = tracks as IReadOnlyList<WatchIntentTrack> ?? tracks.ToList();
         var queuedCount = 0;
         var completedCount = 0;
         var failedCount = 0;
@@ -2879,12 +2933,15 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? firstSystemicFailureFingerprint = null;
         string? firstFailureMessage = null;
         var deferred = false;
-        foreach (var track in tracks)
+        var stopReason = WatchQueueStopReason.None;
+        for (var index = 0; index < trackList.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var track = trackList[index];
             if (attemptedCount >= maxResolutionAttempts)
             {
                 deferred = true;
+                stopReason = WatchQueueStopReason.ResolutionBudget;
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
                     _logger.LogInformation(
@@ -2899,6 +2956,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             if (capacityRemaining <= 0)
             {
                 LogWatchQueueCapacityFilled(options, queuedCount, capacity.Value);
+                stopReason = WatchQueueStopReason.QueueCapacity;
                 break;
             }
 
@@ -2907,6 +2965,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             {
                 LogWatchRunQueueBudgetFilled(options, queuedCount);
                 deferred = true;
+                stopReason = WatchQueueStopReason.RunBudget;
                 break;
             }
 
@@ -2955,6 +3014,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             {
                 LogWatchTrackDeferred(options.SourceLabel, track.TrackId, result.Message);
                 deferred = true;
+                stopReason = WatchQueueStopReason.TrackDeferred;
                 break;
             }
 
@@ -2972,6 +3032,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 if (consumed < trackResult.QueuedCount)
                 {
                     deferred = true;
+                    stopReason = WatchQueueStopReason.RunBudget;
                     if (_logger.IsEnabled(LogLevel.Warning))
                     {
                         _logger.LogWarning(
@@ -3004,6 +3065,15 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             }
         }
 
+        if (stopReason == WatchQueueStopReason.None)
+        {
+            stopReason = systemicFailureCount > 0
+                ? WatchQueueStopReason.SystemicFailure
+                : (failedCount > 0 && queuedCount == 0
+                    ? WatchQueueStopReason.TrackFailures
+                    : WatchQueueStopReason.Completed);
+        }
+
         return new QueueWatchResult(
             queuedCount,
             completedCount,
@@ -3012,7 +3082,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             AttemptedCount: attemptedCount,
             SystemicFailureCount: systemicFailureCount,
             FirstSystemicFailureFingerprint: firstSystemicFailureFingerprint,
-            FirstFailureMessage: firstFailureMessage);
+            FirstFailureMessage: firstFailureMessage,
+            StopReason: stopReason,
+            RemainingQueueableCount: Math.Max(0, trackList.Count - attemptedCount));
     }
 
     private async Task<WatchQueueCapacity?> TryResolveWatchQueueCapacityAsync(

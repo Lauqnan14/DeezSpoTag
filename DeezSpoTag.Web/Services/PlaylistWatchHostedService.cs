@@ -320,8 +320,6 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         var maxResolutionAttemptsPerRun = Math.Max(
             1,
             Math.Max(settings.WatchMaxTracksPerPlaylistCheck, settings.WatchMaxItemsPerRun));
-        var perRunQueueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
-
         while (activeItem != null)
         {
             stoppingToken.ThrowIfCancellationRequested();
@@ -401,15 +399,11 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 failed++;
             }
 
-            var summary = await repository.GetPlaylistWatchTrackStatusSummaryAsync(
-                activeItem.Source,
-                activeItem.Playlist?.SourceId ?? string.Empty,
-                stoppingToken);
             var remainingBudget = runQueueBudget?.GetRemaining() ?? int.MaxValue;
             var playlistResult = execution.PlaylistResult;
             resolutionAttempts += Math.Max(1, playlistResult?.AttemptedTracks ?? 0);
             var queuedThisAttempt = playlistResult?.QueuedTracks ?? 0;
-            if (playlistResult is { QueuedTracks: 0, SystemicFailures: > 0 } systemicFailureResult)
+            if (playlistResult is { SystemicFailures: > 0 } systemicFailureResult)
             {
                 await OpenSourceCircuitAsync(
                     repository,
@@ -417,8 +411,15 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     systemicFailureResult.FailureFingerprint,
                     systemicFailureResult.FailureMessage,
                     stoppingToken);
-                activeItem = await AdvanceToNextPlaylistAsync(playlistItems, repository, stoppingToken);
-                continue;
+                await SaveSchedulerStateAsync(
+                    repository,
+                    activeItem.Source,
+                    activeItem.Playlist?.SourceId,
+                    schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
+                    schedulerState?.LastProgressUtc,
+                    zeroQueueStreak: 0,
+                    stoppingToken);
+                break;
             }
 
             if (execution.Outcome == WatchItemRunOutcome.Failure && execution.SystemicFailure)
@@ -429,11 +430,19 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     fingerprint: "hosted_service_exception",
                     reason: execution.FailureMessage,
                     stoppingToken);
-                activeItem = await AdvanceToNextPlaylistAsync(playlistItems, repository, stoppingToken);
-                continue;
+                await SaveSchedulerStateAsync(
+                    repository,
+                    activeItem.Source,
+                    activeItem.Playlist?.SourceId,
+                    schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
+                    schedulerState?.LastProgressUtc,
+                    zeroQueueStreak: 0,
+                    stoppingToken);
+                break;
             }
 
-            var queueProgressed = queuedThisAttempt > 0 && playlistResult?.Deferred != true;
+            var decision = ResolvePlaylistAdvanceDecision(playlistResult, remainingBudget);
+            var queueProgressed = queuedThisAttempt > 0;
             var zeroQueueStreak = 0;
             if (!queueProgressed)
             {
@@ -468,19 +477,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     FailureCount: 0),
                 stoppingToken);
 
-            if (!queueProgressed)
+            if (decision == PlaylistAdvanceDecision.StopRunKeepActive)
             {
                 break;
             }
 
-            if (remainingBudget <= 0)
+            if (decision == PlaylistAdvanceDecision.StopRunClearActive)
             {
-                break;
-            }
-
-            var missingTrackDebt = Math.Max(0, playlistResult?.MissingTracks ?? summary.UnresolvedCount);
-            if (missingTrackDebt > perRunQueueBudget)
-            {
+                _ = await AdvanceToNextPlaylistAsync(playlistItems, repository, stoppingToken);
                 break;
             }
 
@@ -506,6 +510,33 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
 
         return new PlaylistRunResult(failFastAbort);
+    }
+
+    private static PlaylistAdvanceDecision ResolvePlaylistAdvanceDecision(
+        PlaylistWatchService.PlaylistReconciliationResult? result,
+        int remainingRunBudget)
+    {
+        if (result == null)
+        {
+            return PlaylistAdvanceDecision.Advance;
+        }
+
+        if (result.KeepActivePlaylist)
+        {
+            return PlaylistAdvanceDecision.StopRunKeepActive;
+        }
+
+        if (remainingRunBudget <= 0)
+        {
+            return PlaylistAdvanceDecision.StopRunClearActive;
+        }
+
+        if (result.RemainingQueueableTracks <= 0)
+        {
+            return PlaylistAdvanceDecision.Advance;
+        }
+
+        return PlaylistAdvanceDecision.Advance;
     }
 
     private async Task ProcessArtistWatchItemsAsync(
@@ -1028,6 +1059,13 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         Success,
         Failure,
         LockBusy
+    }
+
+    private enum PlaylistAdvanceDecision
+    {
+        Advance,
+        StopRunKeepActive,
+        StopRunClearActive
     }
 
     private enum WatchItemEligibility
