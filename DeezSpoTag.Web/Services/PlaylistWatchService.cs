@@ -441,6 +441,54 @@ public sealed class PlaylistWatchService
                 .ToList(),
             cancellationToken);
 
+        PlaylistSyncResult? syncResult = null;
+        if (_playlistSyncService == null)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                candidates.Count,
+                "media_sync_skipped_sync_service_unavailable",
+                cancellationToken);
+        }
+        else if (bypassFolderAndSync)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                candidates.Count,
+                "media_sync_skipped_bypass_mode",
+                cancellationToken);
+        }
+        else
+        {
+            await TouchPlaylistWatchStateAsync(
+                source,
+                sourceId,
+                liveTrackCount,
+                liveSnapshot.SnapshotId,
+                "syncing",
+                "Syncing monitored playlist with currently available tracks.",
+                nextAttemptUtc: null,
+                consecutiveFailures: 0,
+                cancellationToken);
+            syncResult = await _playlistSyncService.SyncAvailablePlaylistTracksAsync(
+                currentPlaylist,
+                preference,
+                candidates,
+                force: forceMediaServerSync,
+                cancellationToken);
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                syncResult.SyncedTracks,
+                syncResult.Success ? "media_sync_completed" : "media_sync_waiting",
+                cancellationToken);
+        }
+
         var queueResult = await QueueWatchIntentTracksAsync(
             selection.MissingTracks,
             bypassFolderAndSync ? null : preference?.DestinationFolderId,
@@ -482,90 +530,6 @@ public sealed class PlaylistWatchService
                 cancellationToken);
         }
 
-        PlaylistSyncResult? syncResult = null;
-        if (_playlistSyncService == null)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                candidates.Count,
-                "media_sync_skipped_sync_service_unavailable",
-                cancellationToken);
-        }
-        else if (bypassFolderAndSync)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                candidates.Count,
-                "media_sync_skipped_bypass_mode",
-                cancellationToken);
-        }
-        else if (forceMediaServerSync)
-        {
-            await TouchPlaylistWatchStateAsync(
-                source,
-                sourceId,
-                liveTrackCount,
-                liveSnapshot.SnapshotId,
-                "syncing",
-                "Syncing monitored playlist.",
-                nextAttemptUtc: null,
-                consecutiveFailures: 0,
-                cancellationToken);
-            syncResult = await _playlistSyncService.SyncPlaylistAsync(
-                currentPlaylist,
-                preference,
-                candidates,
-                force: true,
-                cancellationToken);
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                syncResult.SyncedTracks,
-                syncResult.Success ? "media_sync_completed" : "media_sync_failed",
-                cancellationToken);
-        }
-        else if (queueResult.QueuedCount > 0 || queueResult.Deferred)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                candidates.Count,
-                "media_sync_deferred_queue_active",
-                cancellationToken);
-        }
-        else
-        {
-            await TouchPlaylistWatchStateAsync(
-                source,
-                sourceId,
-                liveTrackCount,
-                liveSnapshot.SnapshotId,
-                "syncing",
-                "Syncing monitored playlist.",
-                nextAttemptUtc: null,
-                consecutiveFailures: 0,
-                cancellationToken);
-            syncResult = await _playlistSyncService.SyncPlaylistAsync(
-                currentPlaylist,
-                preference,
-                candidates,
-                force: false,
-                cancellationToken);
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                syncResult.SyncedTracks,
-                syncResult.Success ? "media_sync_completed" : "media_sync_failed",
-                cancellationToken);
-        }
-
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
@@ -582,7 +546,9 @@ public sealed class PlaylistWatchService
         }
 
         var success = queueResult.FailedCount == 0;
-        if (syncResult is { Success: false })
+        if (syncResult is { Success: false }
+            && queueResult.QueuedCount == 0
+            && !queueResult.Deferred)
         {
             success = false;
         }

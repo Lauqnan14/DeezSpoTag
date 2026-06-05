@@ -449,6 +449,168 @@ public sealed class PlaylistSyncService
         };
     }
 
+    public async Task<PlaylistSyncResult> SyncAvailablePlaylistTracksAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
+        bool force,
+        CancellationToken cancellationToken,
+        IReadOnlySet<string>? liveLookupTrackSourceIds = null)
+    {
+        if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
+        {
+            return PlaylistSyncResult.Failed("Playlist not available.");
+        }
+
+        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
+        if (string.IsNullOrWhiteSpace(service))
+        {
+            return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
+        }
+
+        if (string.Equals(service, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return PlaylistSyncResult.Failed("Playlist sync target is disabled.");
+        }
+
+        if (force)
+        {
+            await _mediaServerRefreshService.RefreshAsync(service, cancellationToken);
+        }
+
+        var loadResult = await LoadTracksForSyncAsync(playlist, trackCandidates, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(loadResult.ErrorMessage))
+        {
+            return PlaylistSyncResult.Failed(loadResult.ErrorMessage);
+        }
+
+        var eligibleTracks = await FilterTracksForSyncAsync(
+            playlist,
+            preference,
+            loadResult.Tracks,
+            cancellationToken);
+        if (eligibleTracks.Count == 0)
+        {
+            return PlaylistSyncResult.Failed("No eligible tracks after blocked/ignored filtering.");
+        }
+
+        var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
+        foreach (var track in eligibleTracks)
+        {
+            var localTrackId = await ResolveLocalTrackIdAsync(playlist.Source, track, cancellationToken);
+            if (localTrackId.HasValue)
+            {
+                availableTrackRows.Add((track, localTrackId.Value));
+            }
+        }
+
+        if (availableTrackRows.Count == 0)
+        {
+            return new PlaylistSyncResult(
+                false,
+                "No eligible playlist tracks are visible in the DeezSpoTag library yet.",
+                SourceTracks: eligibleTracks.Count,
+                MissingTracks: eligibleTracks.Count);
+        }
+
+        var availableTracks = service switch
+        {
+            PlexService => await SelectPlexTracksVisibleForAvailableSyncAsync(
+                availableTrackRows,
+                force,
+                liveLookupTrackSourceIds,
+                cancellationToken),
+            _ => availableTrackRows.Select(static row => row.Track).ToList()
+        };
+        if (availableTracks.Count == 0)
+        {
+            return new PlaylistSyncResult(
+                false,
+                "No eligible playlist tracks are visible in the target server yet.",
+                SourceTracks: eligibleTracks.Count,
+                LocalMatches: availableTrackRows.Count,
+                MissingTracks: eligibleTracks.Count);
+        }
+
+        var result = service switch
+        {
+            PlexService => await SyncToPlexAsync(playlist, preference, availableTracks, existingPlaylistId: null, cancellationToken),
+            JellyfinService => await SyncToJellyfinAsync(playlist, preference, availableTracks, existingPlaylistId: null, cancellationToken),
+            _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
+        };
+
+        if (!result.Success)
+        {
+            return result;
+        }
+
+        var unavailableCount = Math.Max(0, eligibleTracks.Count - availableTracks.Count);
+        if (unavailableCount == 0)
+        {
+            return result;
+        }
+
+        return result with
+        {
+            Message = string.Concat(
+                result.Message,
+                " ",
+                unavailableCount.ToString(CultureInfo.InvariantCulture),
+                " eligible track(s) are still missing and were left for download/retry."),
+            SourceTracks = eligibleTracks.Count,
+            MissingTracks = unavailableCount + result.MissingTracks
+        };
+    }
+
+    private async Task<List<SyncTrackSummary>> SelectPlexTracksVisibleForAvailableSyncAsync(
+        IReadOnlyList<(SyncTrackSummary Track, long LocalTrackId)> availableTrackRows,
+        bool allowLiveLookup,
+        IReadOnlySet<string>? liveLookupTrackSourceIds,
+        CancellationToken cancellationToken)
+    {
+        var mapped = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
+            availableTrackRows
+                .Select(static row => row.LocalTrackId)
+                .Where(static id => id > 0)
+                .Distinct()
+                .ToList(),
+            cancellationToken);
+        var selected = new List<SyncTrackSummary>(availableTrackRows.Count);
+        var selectedSourceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in availableTrackRows)
+        {
+            if (mapped.TryGetValue(row.LocalTrackId, out var ratingKey)
+                && !string.IsNullOrWhiteSpace(ratingKey))
+            {
+                selected.Add(row.Track);
+                if (!string.IsNullOrWhiteSpace(row.Track.SourceTrackId))
+                {
+                    selectedSourceIds.Add(row.Track.SourceTrackId);
+                }
+            }
+        }
+
+        if (!allowLiveLookup || liveLookupTrackSourceIds == null || liveLookupTrackSourceIds.Count == 0)
+        {
+            return selected;
+        }
+
+        foreach (var row in availableTrackRows)
+        {
+            if (string.IsNullOrWhiteSpace(row.Track.SourceTrackId)
+                || selectedSourceIds.Contains(row.Track.SourceTrackId)
+                || !liveLookupTrackSourceIds.Contains(row.Track.SourceTrackId))
+            {
+                continue;
+            }
+
+            selected.Add(row.Track);
+            selectedSourceIds.Add(row.Track.SourceTrackId);
+        }
+
+        return selected;
+    }
+
     public async Task<PlaylistSyncResult> SyncPlaylistArtworkOnlyAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,

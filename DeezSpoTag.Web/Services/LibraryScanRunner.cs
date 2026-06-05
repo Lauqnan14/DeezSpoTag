@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -591,6 +592,37 @@ public sealed class LibraryScanRunner
             scanResult.TrackCount,
             folderId,
             cancellationToken);
+
+        TriggerWatchlistAfterLibraryUpdate();
+    }
+
+    private void TriggerWatchlistAfterLibraryUpdate()
+    {
+        var settingsService = _serviceProvider.GetService<DeezSpoTagSettingsService>();
+        if (settingsService?.LoadSettings().WatchEnabled != true)
+        {
+            return;
+        }
+
+        var watchlist = _serviceProvider.GetService<PlaylistWatchHostedService>();
+        if (watchlist is null)
+        {
+            return;
+        }
+
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await watchlist.TriggerRunOnceAsync(CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Watchlist trigger after library update failed.");
+                }
+            },
+            CancellationToken.None);
     }
 
     private bool TryStartScan(CancellationToken cancellationToken, ref CancellationTokenSource? cts, ref bool ownsActiveScan)

@@ -787,7 +787,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         try
         {
             SetPhase(OrchestrationPhase.Enriching);
-            await FinalizePipelineRunAsync(cancellationToken);
+            var finalized = await FinalizePipelineRunAsync(cancellationToken);
+            if (!finalized && await RearmPendingPipelineIfNeededAsync(cancellationToken))
+            {
+                return true;
+            }
+
             SetPhase(OrchestrationPhase.Idle);
             return true;
         }
@@ -797,12 +802,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private async Task FinalizePipelineRunAsync(CancellationToken cancellationToken)
+    private async Task<bool> FinalizePipelineRunAsync(CancellationToken cancellationToken)
     {
         var enrichmentCompleted = await RunPipelineAsync(cancellationToken);
         if (!enrichmentCompleted)
         {
-            return;
+            return false;
         }
 
         var finishedAt = DateTimeOffset.UtcNow;
@@ -814,6 +819,28 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         SaveOrchestrationRuntimeState();
+        return true;
+    }
+
+    private async Task<bool> RearmPendingPipelineIfNeededAsync(CancellationToken cancellationToken)
+    {
+        if (await _queueRepository.HasRunnableDownloadsAsync(cancellationToken))
+        {
+            _queueIdleSince = null;
+            SetPhase(OrchestrationPhase.Downloading);
+            return true;
+        }
+
+        if (!await HasPendingPostDownloadEnrichmentAsync(cancellationToken))
+        {
+            return false;
+        }
+
+        var idleSince = DateTimeOffset.UtcNow;
+        _pipelineRequested = true;
+        _queueIdleSince = idleSince;
+        SetPhase(OrchestrationPhase.EnrichmentCountdown, idleSince + _downloadIdleDelay);
+        return true;
     }
 
     private async Task<bool> RunPipelineAsync(CancellationToken cancellationToken)
@@ -1135,6 +1162,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             {
                 await MarkPostDownloadFinalizationNotRequiredAsync(group, cancellationToken);
             }
+            else
+            {
+                await NotifyWatchlistFinalizedItemsAsync(group, summary.ChangedFilePaths, cancellationToken);
+            }
 
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
@@ -1151,6 +1182,21 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 ErrorLogLevel,
                 $"Automation: post-download finalization failed for destination folder {group.DestinationFolderId} ({ex.Message})."));
             return false;
+        }
+    }
+
+    private async Task NotifyWatchlistFinalizedItemsAsync(
+        PipelineWorkGroup group,
+        IReadOnlyList<string> changedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        foreach (var item in group.PendingItems)
+        {
+            await _watchlistFinalizationService.NotifyQueueItemFinalizedAsync(
+                item,
+                item.PayloadJson,
+                changedFilePaths,
+                cancellationToken);
         }
     }
 

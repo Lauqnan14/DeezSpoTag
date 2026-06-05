@@ -259,44 +259,32 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 playlist.SourceId,
                 cancellationToken);
             var syncService = scope.ServiceProvider.GetRequiredService<PlaylistSyncService>();
-            var readiness = await syncService.CheckPlaylistReadyForAutomaticSyncAsync(
+            var syncResult = await syncService.SyncAvailablePlaylistTracksAsync(
                 playlist,
                 preference,
                 candidates,
-                cancellationToken);
-            if (!readiness.Ready)
-            {
-                await AddPlaylistSyncHistoryAsync(
-                    repository,
-                    playlist,
-                    readiness.Terminal ? "media_sync_blocked" : "media_sync_waiting",
-                    cancellationToken);
-                return HandleNotReady(request, attempt, readiness);
-            }
-
-            var reconciliation = await watcher.ReconcilePlaylistAsync(
-                playlist,
+                force: true,
                 cancellationToken,
-                forceMediaServerSync: true);
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { request.TrackId });
 
-            if (reconciliation.SyncResult?.Success == true)
+            if (syncResult.Success)
             {
                 await AddPlaylistSyncHistoryAsync(
                     repository,
                     playlist,
                     "media_sync_completed",
                     cancellationToken);
-                LogSyncCompleted(request, attempt, reconciliation.SyncResult.SyncedTracks);
+                LogSyncCompleted(request, attempt, syncResult.SyncedTracks);
                 return true;
             }
 
             await AddPlaylistSyncHistoryAsync(
                 repository,
                 playlist,
-                "media_sync_failed",
+                IsTerminalSyncFailure(syncResult) ? "media_sync_blocked" : "media_sync_waiting",
                 cancellationToken);
-            LogSyncNotReady(request, attempt, reconciliation.SyncResult?.Message ?? reconciliation.Message);
-            return false;
+            LogSyncNotReady(request, attempt, syncResult.Message);
+            return IsTerminalSyncFailure(syncResult);
         }
         catch (OperationCanceledException)
         {
@@ -313,6 +301,20 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 request.TrackId);
             return false;
         }
+    }
+
+    private static bool IsTerminalSyncFailure(PlaylistSyncResult syncResult)
+    {
+        if (syncResult.Success)
+        {
+            return false;
+        }
+
+        return string.Equals(syncResult.Message, "Playlist not available.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "No target server selected.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "Playlist sync target is disabled.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "Unsupported playlist sync target.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "No eligible tracks after blocked/ignored filtering.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task AddPlaylistSyncHistoryAsync(
