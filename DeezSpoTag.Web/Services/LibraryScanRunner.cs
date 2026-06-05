@@ -610,19 +610,19 @@ public sealed class LibraryScanRunner
             return;
         }
 
-        _ = Task.Run(
-            async () =>
-            {
-                try
-                {
-                    await watchlist.TriggerRunOnceAsync(CancellationToken.None);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, "Watchlist trigger after library update failed.");
-                }
-            },
-            CancellationToken.None);
+        _ = TriggerWatchlistAfterLibraryUpdateAsync(watchlist);
+    }
+
+    private async Task TriggerWatchlistAfterLibraryUpdateAsync(PlaylistWatchHostedService watchlist)
+    {
+        try
+        {
+            await watchlist.TriggerRunOnceAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Watchlist trigger after library update failed.");
+        }
     }
 
     private bool TryStartScan(CancellationToken cancellationToken, ref CancellationTokenSource? cts, ref bool ownsActiveScan)

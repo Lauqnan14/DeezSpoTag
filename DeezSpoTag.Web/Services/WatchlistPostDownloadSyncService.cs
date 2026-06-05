@@ -254,37 +254,30 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
 
             var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchService>();
-            var candidates = await watcher.GetPlaylistTrackCandidatesAsync(
-                playlist.Source,
-                playlist.SourceId,
-                cancellationToken);
-            var syncService = scope.ServiceProvider.GetRequiredService<PlaylistSyncService>();
-            var syncResult = await syncService.SyncAvailablePlaylistTracksAsync(
+            var reconciliationResult = await watcher.ReconcilePlaylistAsync(
                 playlist,
-                preference,
-                candidates,
-                force: true,
                 cancellationToken,
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { request.TrackId });
+                forceMediaServerSync: true);
 
-            if (syncResult.Success)
+            if (reconciliationResult.SyncResult?.Success == true)
             {
                 await AddPlaylistSyncHistoryAsync(
                     repository,
                     playlist,
                     "media_sync_completed",
                     cancellationToken);
-                LogSyncCompleted(request, attempt, syncResult.SyncedTracks);
+                LogSyncCompleted(request, attempt, reconciliationResult.SyncResult.SyncedTracks);
                 return true;
             }
 
+            var syncResult = reconciliationResult.SyncResult;
             await AddPlaylistSyncHistoryAsync(
                 repository,
                 playlist,
-                IsTerminalSyncFailure(syncResult) ? "media_sync_blocked" : "media_sync_waiting",
+                syncResult is not null && IsTerminalSyncFailure(syncResult) ? "media_sync_blocked" : "media_sync_waiting",
                 cancellationToken);
-            LogSyncNotReady(request, attempt, syncResult.Message);
-            return IsTerminalSyncFailure(syncResult);
+            LogSyncNotReady(request, attempt, syncResult?.Message ?? reconciliationResult.Message);
+            return syncResult is not null && IsTerminalSyncFailure(syncResult);
         }
         catch (OperationCanceledException)
         {

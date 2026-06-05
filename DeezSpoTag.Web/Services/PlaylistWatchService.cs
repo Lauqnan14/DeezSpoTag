@@ -433,7 +433,20 @@ public sealed class PlaylistWatchService
                 nextAttemptUtc: null,
                 consecutiveFailures: null,
                 cancellationToken);
-            return new PlaylistReconciliationResult(true, "No playlist tracks were available to reconcile.", 0, 0, 0, 0, 0, 0, 0, null);
+            return new PlaylistReconciliationResult(
+                true,
+                "No playlist tracks were available to reconcile.",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                null,
+                QueueStopReason: WatchQueueStopReason.Completed.ToString(),
+                RemainingQueueableTracks: 0,
+                KeepActivePlaylist: true);
         }
 
         await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
@@ -493,12 +506,24 @@ public sealed class PlaylistWatchService
                 nextAttemptUtc: null,
                 consecutiveFailures: 0,
                 cancellationToken);
-            syncResult = await _playlistSyncService.SyncAvailablePlaylistTracksAsync(
-                currentPlaylist,
-                preference,
-                candidates,
-                force: forceMediaServerSync,
-                cancellationToken);
+            if (forceMediaServerSync)
+            {
+                syncResult = await SyncPlaylistAsync(
+                    currentPlaylist,
+                    preference,
+                    candidates,
+                    force: true,
+                    cancellationToken);
+            }
+            else
+            {
+                syncResult = await SyncPlaylistAsync(
+                    currentPlaylist,
+                    preference,
+                    candidates,
+                    force: false,
+                    cancellationToken);
+            }
             await AddPlaylistWatchHistoryStageAsync(
                 source,
                 sourceId,
@@ -612,6 +637,21 @@ public sealed class PlaylistWatchService
 
         return queueResult.StopReason is WatchQueueStopReason.TrackDeferred
             or WatchQueueStopReason.SystemicFailure;
+    }
+
+    private async Task<PlaylistSyncResult> SyncPlaylistAsync(
+        PlaylistWatchlistDto currentPlaylist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        return await _playlistSyncService!.SyncAvailablePlaylistTracksAsync(
+            currentPlaylist,
+            preference,
+            candidates,
+            force,
+            cancellationToken);
     }
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
