@@ -215,10 +215,13 @@ public static class TaggingProfileCanonicalizer
             }
         }
 
-        changed |= LegacyTemplateKeys
+        foreach (var legacyKey in LegacyTemplateKeys
             .Select(legacyKeyName => ResolveKey(data, legacyKeyName))
             .Where(legacyKey => !string.IsNullOrWhiteSpace(legacyKey))
-            .Any(data.Remove);
+            .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            changed |= data.Remove(legacyKey!);
+        }
 
         return changed;
     }
