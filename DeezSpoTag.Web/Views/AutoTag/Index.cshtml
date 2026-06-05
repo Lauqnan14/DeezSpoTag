@@ -1371,7 +1371,7 @@
                     </div>
                     <div class="download-section">
                         <div class="download-section-title">Duration Gate</div>
-                        <div class="download-grid download-grid-3">
+                        <div class="download-grid download-grid-3 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="autotag-match-duration" />
                                 <label for="autotag-match-duration">Match Duration</label>
@@ -1389,7 +1389,7 @@
                     </div>
                     <div class="download-section">
                         <div class="download-section-title">Filename Fallback</div>
-                        <div class="download-grid download-grid-2">
+                        <div class="download-grid download-grid-2 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="autotag-parse-filename" />
                                 <label for="autotag-parse-filename">
@@ -1415,7 +1415,7 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-grid download-grid-4">
+                        <div class="download-grid download-grid-4 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="saveArtwork" checked />
                                 <label for="saveArtwork">Save artwork files</label>
@@ -1437,7 +1437,7 @@
 
                     <div class="download-section">
                         <div class="download-section-title">Naming & Formats</div>
-                        <div class="download-grid download-grid-4">
+                        <div class="download-grid download-grid-4 technical-checkbox-grid">
                             <div class="form-group" id="coverImageTemplateGroup">
                                 <label for="coverImageTemplate">
                                     Album cover filename template
@@ -1469,19 +1469,16 @@
                                     <option value="jpg,png">Both</option>
                                 </select>
                             </div>
-                            <div class="form-group">
-                                <label for="embedMaxQualityCover" class="visually-hidden">Embed max quality artwork</label>
-                                <div class="checkbox-group">
-                                    <input type="checkbox" id="embedMaxQualityCover" checked />
-                                    <label for="embedMaxQualityCover">Embed source-max artwork in tags</label>
-                                </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="embedMaxQualityCover" checked />
+                                <label for="embedMaxQualityCover">Embed source-max artwork in tags</label>
                             </div>
                         </div>
                     </div>
 
                     <div class="download-section">
                         <div class="download-section-title">Source Priority</div>
-                        <div class="download-grid download-grid-3 source-priority-row">
+                        <div class="download-grid download-grid-3 source-priority-row technical-checkbox-grid">
                             <div class="checkbox-group align-self-start source-priority-toggle">
                                 <input type="checkbox" id="artworkFallbackEnabled" checked />
                                 <label for="artworkFallbackEnabled">Enable album artwork fallback</label>
@@ -1536,7 +1533,7 @@
                             </div>
                         </div>
 
-                        <div class="download-grid download-grid-3 mt-3 source-priority-row">
+                        <div class="download-grid download-grid-3 mt-3 source-priority-row technical-checkbox-grid">
                             <div class="checkbox-group align-self-start source-priority-toggle">
                                 <input type="checkbox" id="artistArtworkFallbackEnabled" checked />
                                 <label for="artistArtworkFallbackEnabled">Enable artist artwork fallback</label>
@@ -1594,7 +1591,7 @@
 
                     <div class="download-section">
                         <div class="download-section-title">Encoding</div>
-                        <div class="download-grid download-grid-2">
+                        <div class="download-grid download-grid-2 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="coverDescriptionUTF8" />
                                 <label for="coverDescriptionUTF8">Cover description UTF-8</label>
@@ -1617,7 +1614,7 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-grid download-grid-3">
+                        <div class="download-grid download-grid-3 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="saveLyrics" />
                                 <label for="saveLyrics">Download Lyrics</label>
@@ -1634,7 +1631,7 @@
                     </div>
                     <div class="download-section">
                         <div class="download-section-title">Source Priority</div>
-                        <div class="download-grid download-grid-3 source-priority-row">
+                        <div class="download-grid download-grid-3 source-priority-row technical-checkbox-grid">
                             <div class="form-group source-priority-default" id="lyricsDefaultSourceGroup">
                                 <label for="lyricsDefaultSource">
                                     Default lyrics source
@@ -1703,7 +1700,7 @@
                     </div>
                     <div class="download-section">
                         <div class="download-section-title">Format</div>
-                        <div class="download-grid download-grid-3">
+                        <div class="download-grid download-grid-3 technical-checkbox-grid">
                             <div class="form-group">
                                 <label for="lrcType">
                                     Lyrics type
@@ -1771,7 +1768,7 @@
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
                         <div class="download-section-title">Version</div>
-                        <div class="download-grid download-grid-3">
+                        <div class="download-grid download-grid-3 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="autotag-id3v24" />
                                 <label for="autotag-id3v24">Use ID3v2.4 (vs ID3v2.3)</label>
@@ -1872,7 +1869,7 @@
 
                     <div class="download-section">
                         <div class="download-section-title">Options</div>
-                        <div class="download-grid download-grid-3">
+                        <div class="download-grid download-grid-3 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="removeAlbumVersion" />
                                 <label for="removeAlbumVersion">Remove Album Version</label>
@@ -1934,7 +1931,7 @@
 
                     <div class="download-section">
                         <div class="download-section-title">Options</div>
-                        <div class="download-grid download-grid-2">
+                        <div class="download-grid download-grid-2 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="autotag-merge-genres" />
                                 <label

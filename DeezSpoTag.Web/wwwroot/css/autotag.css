@@ -900,6 +900,31 @@ body.autotag-col-resizing * {
     accent-color: var(--primary-color);
 }
 
+#autotag-technical-panel .technical-checkbox-grid > .checkbox-group {
+    align-items: center;
+    min-height: 38px;
+    padding: 9px 11px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+#autotag-technical-panel .technical-checkbox-grid > .checkbox-group label {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+#autotag-technical-panel .technical-checkbox-grid > .checkbox-group input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin-top: 0;
+}
+
 @media (max-width: 992px) {
     .autotag-page {
         padding: 16px 18px 24px;
