@@ -2,6 +2,8 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Settings;
 using System.Linq;
 using System.Threading.Channels;
 
@@ -15,6 +17,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private readonly DeezerArtistImageService _imageService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
+    private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<LibraryArtistImageQueueService> _logger;
     private readonly Channel<QueueItem> _channel = Channel.CreateUnbounded<QueueItem>();
     private readonly Dictionary<long, QueueItem> _queueItems = new();
@@ -29,6 +32,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         DeezerArtistImageService imageService,
         AppleMusicCatalogService appleCatalogService,
         ISpotifyArtworkResolver spotifyArtworkResolver,
+        DeezSpoTagSettingsService settingsService,
         IWebHostEnvironment environment,
         ILogger<LibraryArtistImageQueueService> logger)
     {
@@ -37,6 +41,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         _imageService = imageService;
         _appleCatalogService = appleCatalogService;
         _spotifyArtworkResolver = spotifyArtworkResolver;
+        _settingsService = settingsService;
         _logger = logger;
         _dataRoot = AppDataPaths.GetDataRoot(environment);
     }
@@ -144,26 +149,50 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
 
     private async Task<string?> ResolveImagePathAsync(QueueItem item, CancellationToken cancellationToken)
     {
-        var appleUrl = await TryResolveAppleArtistImageAsync(item.ArtistName, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(appleUrl))
+        var settings = _settingsService.LoadSettings();
+        foreach (var source in ResolveArtistArtworkOrder(settings))
         {
-            var applePath = await DownloadImageAsync(item.ArtistId, appleUrl, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(applePath))
+            var imagePath = source switch
             {
-                return applePath;
+                "spotify" => await TryResolveSpotifyImagePathAsync(item, cancellationToken),
+                "deezer" => await TryResolveDeezerImagePathAsync(item, cancellationToken),
+                "apple" => await TryResolveAppleImagePathAsync(item, cancellationToken),
+                _ => null
+            };
+
+            if (!string.IsNullOrWhiteSpace(imagePath))
+            {
+                return imagePath;
             }
         }
 
-        var deezerPath = await _imageService.DownloadArtistImageAsync(
+        return null;
+    }
+
+    internal static IReadOnlyList<string> ResolveArtistArtworkOrder(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+        => ArtworkFallbackHelper.ResolveArtistOrder(settings)
+            .Where(static source => source is "spotify" or "deezer" or "apple")
+            .ToArray();
+
+    private async Task<string?> TryResolveAppleImagePathAsync(QueueItem item, CancellationToken cancellationToken)
+    {
+        var appleUrl = await TryResolveAppleArtistImageAsync(item.ArtistName, cancellationToken);
+        return string.IsNullOrWhiteSpace(appleUrl)
+            ? null
+            : await DownloadImageAsync(item.ArtistId, appleUrl, cancellationToken);
+    }
+
+    private async Task<string?> TryResolveDeezerImagePathAsync(QueueItem item, CancellationToken cancellationToken)
+    {
+        return await _imageService.DownloadArtistImageAsync(
             item.ArtistId,
             item.ArtistName,
             ImageCacheDir,
             cancellationToken);
-        if (!string.IsNullOrWhiteSpace(deezerPath))
-        {
-            return deezerPath;
-        }
+    }
 
+    private async Task<string?> TryResolveSpotifyImagePathAsync(QueueItem item, CancellationToken cancellationToken)
+    {
         var spotifyUrl = await _spotifyArtworkResolver.ResolveArtistImageByNameAsync(item.ArtistName, cancellationToken);
         if (string.IsNullOrWhiteSpace(spotifyUrl))
         {

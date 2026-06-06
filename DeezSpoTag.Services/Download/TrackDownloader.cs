@@ -1795,14 +1795,9 @@ public class TrackDownloader
 
     private static List<string> ResolveArtistArtworkFallbackOrder(DeezSpoTagSettings settings)
     {
-        var configuredOrder = ArtworkFallbackHelper.ResolveArtistOrder(settings)
+        return ArtworkFallbackHelper.ResolveArtistOrder(settings)
             .Where(source => !string.IsNullOrWhiteSpace(source))
             .ToList();
-
-        configuredOrder.RemoveAll(source => string.Equals(source, DeezerSource, StringComparison.OrdinalIgnoreCase));
-        configuredOrder.Insert(0, DeezerSource);
-
-        return configuredOrder;
     }
 
     private async Task<string?> TryResolvePreferredArtworkTrackIdAsync(

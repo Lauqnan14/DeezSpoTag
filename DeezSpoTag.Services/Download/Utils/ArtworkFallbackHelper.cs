@@ -44,7 +44,8 @@ public static class ArtworkFallbackHelper
 
     public static IReadOnlyList<string> ResolveOrder(DeezSpoTagSettings settings)
     {
-        return ResolveOrderInternal(settings.ArtworkFallbackEnabled, settings.ArtworkFallbackOrder);
+        var resolved = ResolveOrderInternal(settings.ArtworkFallbackEnabled, settings.ArtworkFallbackOrder);
+        return EnforceSpotifyArtworkLastResortOnly(resolved);
     }
 
     public static IReadOnlyList<string> ResolveArtistOrder(DeezSpoTagSettings settings)
@@ -238,17 +239,16 @@ public static class ArtworkFallbackHelper
 
     private static List<string> ResolveOrderInternal(bool enabled, string? orderSetting)
     {
-        var resolved = ProviderOrderResolver.Resolve(
+        return ProviderOrderResolver.Resolve(
             enabled,
             orderSetting,
             DefaultArtworkOrder,
             NormalizeArtworkProviderToken);
-        return EnforceSpotifyArtworkLastResortOnly(resolved);
     }
 
-    private static List<string> EnforceSpotifyArtworkLastResortOnly(List<string> providers)
+    private static List<string> EnforceSpotifyArtworkLastResortOnly(IReadOnlyList<string> providers)
     {
-        if (providers == null || providers.Count == 0)
+        if (providers.Count == 0)
         {
             return new List<string>();
         }
