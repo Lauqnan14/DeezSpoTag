@@ -733,10 +733,21 @@ public class JellyfinApiClient
         string overview,
         CancellationToken cancellationToken = default)
     {
+        return await UpdateItemMetadataAsync(serverUrl, apiKey, itemId, name: null, overview, cancellationToken);
+    }
+
+    public async Task<bool> UpdateItemMetadataAsync(
+        string serverUrl,
+        string apiKey,
+        string itemId,
+        string? name,
+        string? overview,
+        CancellationToken cancellationToken = default)
+    {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
             || string.IsNullOrWhiteSpace(itemId)
-            || string.IsNullOrWhiteSpace(overview))
+            || (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(overview)))
         {
             return false;
         }
@@ -757,7 +768,11 @@ public class JellyfinApiClient
         writer.WriteStartObject();
         foreach (var property in doc.RootElement.EnumerateObject())
         {
-            if (property.NameEquals(OverviewProperty))
+            if (!string.IsNullOrWhiteSpace(name) && property.NameEquals("Name"))
+            {
+                writer.WriteString("Name", name);
+            }
+            else if (!string.IsNullOrWhiteSpace(overview) && property.NameEquals(OverviewProperty))
             {
                 writer.WriteString(OverviewProperty, overview);
             }
@@ -767,7 +782,12 @@ public class JellyfinApiClient
             }
         }
 
-        if (!doc.RootElement.TryGetProperty(OverviewProperty, out _))
+        if (!string.IsNullOrWhiteSpace(name) && !doc.RootElement.TryGetProperty("Name", out _))
+        {
+            writer.WriteString("Name", name);
+        }
+
+        if (!string.IsNullOrWhiteSpace(overview) && !doc.RootElement.TryGetProperty(OverviewProperty, out _))
         {
             writer.WriteString(OverviewProperty, overview);
         }

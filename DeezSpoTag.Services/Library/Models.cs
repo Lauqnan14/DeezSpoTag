@@ -540,7 +540,9 @@ public sealed record PlaylistWatchPreferenceDto(
     DateTimeOffset UpdatedAt,
     IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules = null,
     IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null,
-    long? AtmosDestinationFolderId = null);
+    long? AtmosDestinationFolderId = null,
+    string? PlexPlaylistId = null,
+    string? JellyfinPlaylistId = null);
 
 public sealed record PlaylistWatchStateDto(
     string Source,

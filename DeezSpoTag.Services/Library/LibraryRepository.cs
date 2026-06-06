@@ -4337,6 +4337,8 @@ LIMIT @limit;";
         var rules = rulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(rulesJson);
         var ignoreRulesJson = await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13);
         var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
+        var plexPlaylistId = await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetString(14);
+        var jellyfinPlaylistId = await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetString(15);
         var atmosDestinationFolderId = await reader.IsDBNullAsync(3, cancellationToken) ? null : (long?)reader.GetInt64(3);
         return new PlaylistWatchPreferenceDto(
             reader.GetString(0),
@@ -4352,7 +4354,9 @@ LIMIT @limit;";
             updated,
             rules,
             ignoreRules,
-            atmosDestinationFolderId);
+            atmosDestinationFolderId,
+            plexPlaylistId,
+            jellyfinPlaylistId);
     }
 
     private async Task<HashSet<string>> QueryPlaylistWatchTrackSourceIdsAsync(
@@ -5820,8 +5824,13 @@ ORDER BY pw.created_at DESC;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT OR IGNORE INTO playlist_watchlist (source, source_id, name, image_url, description, track_count)
-VALUES (@source, @sourceId, @name, @imageUrl, @description, @trackCount);";
+INSERT INTO playlist_watchlist (source, source_id, name, image_url, description, track_count)
+VALUES (@source, @sourceId, @name, @imageUrl, @description, @trackCount)
+ON CONFLICT(source, source_id) DO UPDATE SET
+    name = CASE WHEN excluded.name IS NULL OR TRIM(excluded.name) = '' THEN playlist_watchlist.name ELSE excluded.name END,
+    image_url = COALESCE(excluded.image_url, playlist_watchlist.image_url),
+    description = COALESCE(excluded.description, playlist_watchlist.description),
+    track_count = COALESCE(excluded.track_count, playlist_watchlist.track_count);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -5935,7 +5944,9 @@ DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;
 	       created_at,
 	       updated_at,
        routing_rules_json,
-       ignore_rules_json
+       ignore_rules_json,
+       plex_playlist_id,
+       jellyfin_playlist_id
 FROM playlist_watch_preferences
 ORDER BY updated_at DESC;";
         await using var command = new SqliteCommand(sql, connection);
@@ -5968,7 +5979,9 @@ ORDER BY updated_at DESC;";
 	       created_at,
 	       updated_at,
        routing_rules_json,
-       ignore_rules_json
+       ignore_rules_json,
+       plex_playlist_id,
+       jellyfin_playlist_id
 FROM playlist_watch_preferences
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
@@ -6040,6 +6053,47 @@ WHERE source = @source AND source_id = @sourceId;";
         }
 
         return await GetPlaylistWatchPreferenceAsync(normalizedSource, normalizedSourceId, cancellationToken);
+    }
+
+    public async Task UpdatePlaylistWatchTargetPlaylistIdAsync(
+        string source,
+        string sourceId,
+        string service,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
+            || string.IsNullOrWhiteSpace(service)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return;
+        }
+
+        var sql = service.Trim().ToLowerInvariant() switch
+        {
+            "plex" => @"
+UPDATE playlist_watch_preferences
+SET plex_playlist_id = @playlistId,
+    updated_at = CURRENT_TIMESTAMP
+WHERE source = @source AND source_id = @sourceId;",
+            "jellyfin" => @"
+UPDATE playlist_watch_preferences
+SET jellyfin_playlist_id = @playlistId,
+    updated_at = CURRENT_TIMESTAMP
+WHERE source = @source AND source_id = @sourceId;",
+            _ => null
+        };
+        if (sql is null)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("playlistId", playlistId.Trim());
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<PlaylistWatchStateDto?> GetPlaylistWatchStateAsync(

@@ -379,6 +379,8 @@ CREATE TABLE IF NOT EXISTS playlist_watch_preferences (
     sync_mode TEXT,
     update_artwork INTEGER NOT NULL DEFAULT 1,
     reuse_saved_artwork INTEGER NOT NULL DEFAULT 0,
+    plex_playlist_id TEXT,
+    jellyfin_playlist_id TEXT,
     routing_rules_json TEXT,
     ignore_rules_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

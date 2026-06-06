@@ -336,6 +336,18 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal("spotify", added!.Source);
         Assert.Equal("pl-123", added.SourceId);
 
+        var renamed = await _repository.AddPlaylistWatchlistAsync(
+            source: "spotify",
+            sourceId: "pl-123",
+            metadata: new PlaylistWatchlistMetadataInput(
+                "Road Mix Renamed",
+                "https://example.com/new-cover.jpg",
+                "Renamed description",
+                25));
+        Assert.NotNull(renamed);
+        Assert.Equal(added.Id, renamed!.Id);
+        Assert.Equal("Road Mix Renamed", renamed.Name);
+
         var watchlisted = await _repository.IsPlaylistWatchlistedAsync("spotify", "pl-123");
         Assert.True(watchlisted);
         Assert.True(await _repository.IsPlaylistWatchlistedAsync(" SPOTIFY ", "  pl-123 "));
@@ -374,6 +386,11 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal("mirror", pref.SyncMode);
         Assert.Single(pref.RoutingRules!);
         Assert.Single(pref.IgnoreRules!);
+        await _repository.UpdatePlaylistWatchTargetPlaylistIdAsync("spotify", "pl-123", "plex", "plex-playlist-1");
+        await _repository.UpdatePlaylistWatchTargetPlaylistIdAsync("spotify", "pl-123", "jellyfin", "jellyfin-playlist-1");
+        var boundPref = await _repository.GetPlaylistWatchPreferenceAsync("spotify", "pl-123");
+        Assert.Equal("plex-playlist-1", boundPref?.PlexPlaylistId);
+        Assert.Equal("jellyfin-playlist-1", boundPref?.JellyfinPlaylistId);
         Assert.Equal("spotify", pref.Source);
         Assert.Equal("pl-123", pref.SourceId);
 

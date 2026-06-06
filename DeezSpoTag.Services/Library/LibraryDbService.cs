@@ -245,6 +245,8 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "atmos_destination_folder_id", BigIntType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "update_artwork", $"{IntegerType} DEFAULT 1", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "reuse_saved_artwork", $"{IntegerType} DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "plex_playlist_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "jellyfin_playlist_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "routing_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "ignore_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "status", $"{TextType} DEFAULT 'queued'", cancellationToken);

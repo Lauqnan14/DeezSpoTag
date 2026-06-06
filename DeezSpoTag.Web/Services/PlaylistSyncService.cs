@@ -443,8 +443,8 @@ public sealed class PlaylistSyncService
 
         return service switch
         {
-            PlexService => await SyncToPlexAsync(playlist, preference, tracks, existingPlaylistId: null, cancellationToken),
-            JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, existingPlaylistId: null, cancellationToken),
+            PlexService => await SyncToPlexAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, PlexService), cancellationToken),
+            JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, JellyfinService), cancellationToken),
             _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
         };
     }
@@ -534,8 +534,8 @@ public sealed class PlaylistSyncService
 
         var result = service switch
         {
-            PlexService => await SyncToPlexAsync(playlist, preference, availableTracks, existingPlaylistId: null, cancellationToken),
-            JellyfinService => await SyncToJellyfinAsync(playlist, preference, availableTracks, existingPlaylistId: null, cancellationToken),
+            PlexService => await SyncToPlexAsync(playlist, preference, availableTracks, ResolveExistingTargetPlaylistId(preference, PlexService), cancellationToken),
+            JellyfinService => await SyncToJellyfinAsync(playlist, preference, availableTracks, ResolveExistingTargetPlaylistId(preference, JellyfinService), cancellationToken),
             _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
         };
 
@@ -875,6 +875,7 @@ public sealed class PlaylistSyncService
             cancellationToken);
 
         await SyncPlexPlaylistArtworkAsync(plex, playlist, preference, playlistId, cancellationToken);
+        await PersistTargetPlaylistBindingAsync(playlist, preference, PlexService, playlistId, cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         return BuildSuccessResult(
@@ -986,17 +987,16 @@ public sealed class PlaylistSyncService
             syncedTracks = syncItemsResult.SyncedTracks;
         }
 
-        if (!string.IsNullOrWhiteSpace(playlist.Description))
-        {
-            await _jellyfinApiClient.UpdateItemOverviewAsync(
-                jellyfin.Url,
-                jellyfin.ApiKey,
-                playlistId,
-                playlist.Description,
-                cancellationToken);
-        }
+        await _jellyfinApiClient.UpdateItemMetadataAsync(
+            jellyfin.Url,
+            jellyfin.ApiKey,
+            playlistId,
+            playlistName,
+            playlist.Description,
+            cancellationToken);
 
         await SyncJellyfinPlaylistArtworkAsync(jellyfin, playlist, preference, playlistId, cancellationToken);
+        await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         return BuildSuccessResult(
@@ -1034,6 +1034,50 @@ public sealed class PlaylistSyncService
         return matchSummary.LocalMatches > 0
                && matchSummary.TargetMatches > 0
                && matchSummary.TargetMatches < matchSummary.LocalMatches;
+    }
+
+    private static string? ResolveExistingTargetPlaylistId(PlaylistWatchPreferenceDto? preference, string service)
+    {
+        if (preference is null || string.IsNullOrWhiteSpace(service))
+        {
+            return null;
+        }
+
+        return service.Trim().ToLowerInvariant() switch
+        {
+            PlexService => NormalizeExistingTargetPlaylistId(preference.PlexPlaylistId),
+            JellyfinService => NormalizeExistingTargetPlaylistId(preference.JellyfinPlaylistId),
+            _ => null
+        };
+    }
+
+    private static string? NormalizeExistingTargetPlaylistId(string? playlistId)
+    {
+        var normalized = (playlistId ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private async Task PersistTargetPlaylistBindingAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string service,
+        string? playlistId,
+        CancellationToken cancellationToken)
+    {
+        if (preference is null
+            || string.IsNullOrWhiteSpace(playlistId)
+            || !string.Equals(playlist.Source, preference.Source, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(playlist.SourceId, preference.SourceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        await _libraryRepository.UpdatePlaylistWatchTargetPlaylistIdAsync(
+            playlist.Source,
+            playlist.SourceId,
+            service,
+            playlistId,
+            cancellationToken);
     }
 
     private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> AppendMissingJellyfinItemsAsync(
