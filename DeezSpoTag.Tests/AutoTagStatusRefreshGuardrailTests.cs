@@ -166,6 +166,27 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
+    public void AutoTagService_SeedsEnrichmentResumeCheckpointBeforeRunnerStarts()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.Contains("EnsureInitialEnrichmentResumeCheckpoint(job, stage);", source, StringComparison.Ordinal);
+        Assert.Contains("!string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage", source, StringComparison.Ordinal);
+        Assert.Contains("PlatformIndex = 0", source, StringComparison.Ordinal);
+        Assert.Contains("FileIndex = 0", source, StringComparison.Ordinal);
+
+        var earlySeedIndex = source.IndexOf("EnsureInitialEnrichmentResumeCheckpoint(job, stages);", StringComparison.Ordinal);
+        var executeStagesIndex = source.IndexOf("ExecuteStagesAsync(job, stages", StringComparison.Ordinal);
+        var seedIndex = source.IndexOf("EnsureInitialEnrichmentResumeCheckpoint(job, stage);", StringComparison.Ordinal);
+        var runnerIndex = source.IndexOf("_autoTagRunner.RunAsync(", StringComparison.Ordinal);
+        Assert.True(earlySeedIndex >= 0 && executeStagesIndex >= 0 && earlySeedIndex < executeStagesIndex);
+        Assert.True(seedIndex >= 0 && runnerIndex >= 0 && seedIndex < runnerIndex);
+    }
+
+    [Fact]
     public void AutoTagService_CollapsesResumeChainsInRunIndex()
     {
         var repoRoot = ResolveRepoRoot();

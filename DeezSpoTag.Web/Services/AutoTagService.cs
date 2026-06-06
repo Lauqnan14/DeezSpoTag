@@ -2056,6 +2056,7 @@ public partial class AutoTagService
         {
             return;
         }
+        EnsureInitialEnrichmentResumeCheckpoint(job, stages);
 
         var execution = await ExecuteStagesAsync(job, stages, path, configPath, fileOutcomes, cancellationToken);
         FinalizeStageExecution(job, execution.Success);
@@ -2311,6 +2312,7 @@ public partial class AutoTagService
             job.ResumeCheckpoint = null;
             SaveJob(job);
         }
+        EnsureInitialEnrichmentResumeCheckpoint(job, stage);
 
         try
         {
@@ -2364,6 +2366,45 @@ public partial class AutoTagService
             ? "Interrupted by user. Resume is available."
             : "Stopped by user.";
         return new StageExecutionResult(false);
+    }
+
+    private void EnsureInitialEnrichmentResumeCheckpoint(AutoTagJob job, AutoTagStageConfig stage)
+    {
+        if (job.ResumeCheckpoint != null
+            || !string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        job.ResumeCheckpoint = new AutoTagResumeCheckpoint
+        {
+            StageName = stage.Name,
+            StageConfigHash = stage.ConfigHash,
+            PlatformIndex = 0,
+            FileIndex = 0,
+            PlatformCount = 1,
+            FileCount = 1,
+            LastPath = null,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        SaveJob(job);
+    }
+
+    private void EnsureInitialEnrichmentResumeCheckpoint(AutoTagJob job, IReadOnlyList<AutoTagStageConfig> stages)
+    {
+        if (job.ResumeCheckpoint != null)
+        {
+            return;
+        }
+
+        var stage = stages.FirstOrDefault(stage =>
+            string.Equals(stage.Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase));
+        if (stage == null)
+        {
+            return;
+        }
+
+        EnsureInitialEnrichmentResumeCheckpoint(job, stage);
     }
 
     private async Task RunSuccessPostProcessingAsync(
