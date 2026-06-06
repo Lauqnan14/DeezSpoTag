@@ -29,11 +29,15 @@ public sealed class LibraryScanRunner
     private readonly object _previewIngestLock = new();
     private readonly object _changedFileScanLock = new();
     private readonly Dictionary<long, HashSet<string>> _pendingChangedFileScans = new();
+    private readonly Dictionary<long, PendingScanRequest> _pendingFolderScans = new();
     private CancellationTokenSource? _activeScanCts;
     private TaskCompletionSource<object?>? _activeScanCompletion;
     private TaskCompletionSource<object?>? _changedFileScanDrainCompletion;
+    private PendingScanRequest? _pendingFullScan;
     private bool _changedFileScanDrainRunning;
     private bool _pendingChangedFileScanRequiresSpotifyFetch;
+    private ScanScope? _activeScanScope;
+    private long? _activeScanFolderId;
     private ScanStatus _status = new(false, null, 0, 0, 0, null, 0, 0, 0);
 
     public LibraryScanRunner(
@@ -80,6 +84,32 @@ public sealed class LibraryScanRunner
         ScanProgressOffset ProgressOffset,
         Dictionary<string, HashSet<string>> ArtistGenres,
         bool Resumed);
+
+    private enum ScanScope
+    {
+        Full,
+        Folder,
+        ChangedFiles
+    }
+
+    private sealed record PendingScanRequest(
+        bool RefreshImages,
+        bool Reset,
+        long? FolderId,
+        bool SkipSpotifyFetch,
+        bool CacheSpotifyImages)
+    {
+        public static PendingScanRequest Merge(PendingScanRequest existing, PendingScanRequest incoming)
+        {
+            return existing with
+            {
+                RefreshImages = existing.RefreshImages || incoming.RefreshImages,
+                Reset = existing.Reset || incoming.Reset,
+                SkipSpotifyFetch = existing.SkipSpotifyFetch && incoming.SkipSpotifyFetch,
+                CacheSpotifyImages = existing.CacheSpotifyImages || incoming.CacheSpotifyImages
+            };
+        }
+    }
 
     public sealed record ChangedFileIngestionSummary(
         int RequestedFileCount,
@@ -168,14 +198,7 @@ public sealed class LibraryScanRunner
         foreach (var folderId in changedFolderIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await WaitForCurrentScanAsync(cancellationToken);
-            await RunAsync(
-                refreshImages: false,
-                reset: false,
-                folderId: folderId,
-                skipSpotifyFetch: skipSpotifyFetch,
-                cacheSpotifyImages: false,
-                cancellationToken: cancellationToken);
+            await RunFolderScanAndWaitAsync(folderId, skipSpotifyFetch, cancellationToken);
         }
     }
 
@@ -189,7 +212,6 @@ public sealed class LibraryScanRunner
             return;
         }
 
-        await WaitForCurrentScanAsync(cancellationToken);
         await RunAsync(
             refreshImages: false,
             reset: false,
@@ -197,7 +219,7 @@ public sealed class LibraryScanRunner
             skipSpotifyFetch: skipSpotifyFetch,
             cacheSpotifyImages: false,
             cancellationToken: cancellationToken);
-        await WaitForCurrentScanAsync(cancellationToken);
+        await WaitForScheduledScansIdleAsync(cancellationToken);
     }
 
     public async Task<ChangedFileIngestionSummary> RunChangedFilesAndWaitForIngestionAsync(
@@ -228,8 +250,55 @@ public sealed class LibraryScanRunner
             return;
         }
 
+        var absorbedByFullScan = false;
+        Task? absorbedByCurrentScan = null;
         var ownsDrain = false;
         Task? waitForDrain = null;
+        lock (_scanLock)
+        {
+            if (_pendingFullScan is not null)
+            {
+                AddInfoLog($"Targeted library scan absorbed by full library scan ({pending.Sum(pair => pair.Value.Count)} file(s)).");
+                absorbedByFullScan = true;
+                absorbedByCurrentScan = _activeScanCompletion?.Task;
+            }
+        }
+
+        if (absorbedByFullScan)
+        {
+            if (absorbedByCurrentScan is not null)
+            {
+                await absorbedByCurrentScan.WaitAsync(cancellationToken);
+            }
+
+            await WaitForScheduledScansIdleAsync(cancellationToken);
+            return;
+        }
+
+        Dictionary<long, List<string>> folderAbsorbed;
+        lock (_scanLock)
+        {
+            folderAbsorbed = pending
+                .Where(pair => IsCoveredByActiveOrPendingFolderScan(pair.Key))
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
+        }
+
+        if (folderAbsorbed.Count > 0)
+        {
+            foreach (var folderId in folderAbsorbed.Keys)
+            {
+                pending.Remove(folderId);
+            }
+
+            AddInfoLog($"Targeted library scan partly absorbed by folder scan ({folderAbsorbed.Sum(pair => pair.Value.Count)} file(s)).");
+        }
+
+        if (pending.Count == 0)
+        {
+            await WaitForScheduledScansIdleAsync(cancellationToken);
+            return;
+        }
+
         lock (_changedFileScanLock)
         {
             foreach (var (folderId, paths) in pending)
@@ -285,16 +354,15 @@ public sealed class LibraryScanRunner
         var ownsActiveScan = false;
         try
         {
-            if (!TryStartScan(cancellationToken, ref cts, ref ownsActiveScan))
-            {
-                await WaitForCurrentScanAsync(cancellationToken);
-                await RunAsync(
-                    refreshImages,
-                    reset,
+            var request = new PendingScanRequest(refreshImages, reset, folderId, skipSpotifyFetch, cacheSpotifyImages);
+            if (!TryStartScan(
+                    folderId.HasValue ? ScanScope.Folder : ScanScope.Full,
                     folderId,
-                    skipSpotifyFetch,
-                    cacheSpotifyImages,
-                    cancellationToken);
+                    cancellationToken,
+                    ref cts,
+                    ref ownsActiveScan))
+            {
+                QueuePendingScan(request);
                 return;
             }
 
@@ -385,10 +453,17 @@ public sealed class LibraryScanRunner
                 if (ownsActiveScan && cts != null && ReferenceEquals(_activeScanCts, cts))
                 {
                     _activeScanCts = null;
+                    _activeScanScope = null;
+                    _activeScanFolderId = null;
                     _activeScanCompletion?.TrySetResult(null);
                     _activeScanCompletion = null;
                     _status = _status with { IsRunning = false, CurrentFile = null };
                 }
+            }
+
+            if (ShouldDrainPendingAfterRun(ownsActiveScan, cts, cancellationToken))
+            {
+                await DrainPendingScheduledScansAsync(CancellationToken.None);
             }
         }
     }
@@ -423,6 +498,13 @@ public sealed class LibraryScanRunner
                 }
 
                 await WaitForCurrentScanAsync(cancellationToken);
+                if (HasPendingFullScan())
+                {
+                    AddInfoLog($"Targeted library scan batch absorbed by pending full library scan ({batch.Sum(pair => pair.Value.Count)} file(s)).");
+                    await WaitForScheduledScansIdleAsync(cancellationToken);
+                    continue;
+                }
+
                 await RunChangedFilesBatchAsync(batch, skipSpotifyFetch, cancellationToken);
             }
         }
@@ -517,7 +599,7 @@ public sealed class LibraryScanRunner
         var ownsActiveScan = false;
         try
         {
-            if (!TryStartScan(cancellationToken, ref cts, ref ownsActiveScan))
+            if (!TryStartScan(ScanScope.ChangedFiles, folderId: null, cancellationToken, ref cts, ref ownsActiveScan))
             {
                 RequeueChangedFiles(changedFilesByFolder, skipSpotifyFetch);
                 return;
@@ -612,10 +694,17 @@ public sealed class LibraryScanRunner
                 if (ownsActiveScan && cts != null && ReferenceEquals(_activeScanCts, cts))
                 {
                     _activeScanCts = null;
+                    _activeScanScope = null;
+                    _activeScanFolderId = null;
                     _activeScanCompletion?.TrySetResult(null);
                     _activeScanCompletion = null;
                     _status = _status with { IsRunning = false, CurrentFile = null };
                 }
+            }
+
+            if (ShouldDrainPendingAfterRun(ownsActiveScan, cts, cancellationToken))
+            {
+                await DrainPendingScheduledScansAsync(CancellationToken.None);
             }
         }
     }
@@ -765,22 +854,202 @@ public sealed class LibraryScanRunner
         }
     }
 
-    private bool TryStartScan(CancellationToken cancellationToken, ref CancellationTokenSource? cts, ref bool ownsActiveScan)
+    private bool TryStartScan(
+        ScanScope scope,
+        long? folderId,
+        CancellationToken cancellationToken,
+        ref CancellationTokenSource? cts,
+        ref bool ownsActiveScan)
     {
         lock (_scanLock)
         {
             if (_activeScanCts != null)
             {
-                AddWarnLog("Library scan already running; new scan request ignored.");
+                AddInfoLog("Library scan already running; new scan request will be coalesced.");
                 return false;
             }
 
             cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _activeScanCts = cts;
             _activeScanCompletion = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _activeScanScope = scope;
+            _activeScanFolderId = folderId;
+            if (scope == ScanScope.Full)
+            {
+                _pendingFolderScans.Clear();
+                ClearPendingChangedFileScansLocked();
+            }
+            else if (scope == ScanScope.Folder && folderId.HasValue)
+            {
+                RemovePendingChangedFileScanLocked(folderId.Value);
+            }
             ownsActiveScan = true;
             _status = new ScanStatus(true, DateTimeOffset.UtcNow, 0, 0, 0, null, 0, 0, 0);
             return true;
+        }
+    }
+
+    private void QueuePendingScan(PendingScanRequest request)
+    {
+        lock (_scanLock)
+        {
+            if (!request.FolderId.HasValue)
+            {
+                if (_activeScanScope == ScanScope.Full
+                    && !request.Reset
+                    && !request.RefreshImages
+                    && !request.CacheSpotifyImages)
+                {
+                    _pendingFolderScans.Clear();
+                    ClearPendingChangedFileScansLocked();
+                    AddInfoLog("Library full scan request absorbed by active full library scan.");
+                    return;
+                }
+
+                _pendingFullScan = _pendingFullScan is null
+                    ? request
+                    : PendingScanRequest.Merge(_pendingFullScan, request);
+                _pendingFolderScans.Clear();
+                ClearPendingChangedFileScansLocked();
+                AddInfoLog("Library full scan request coalesced; pending targeted scans were absorbed.");
+                return;
+            }
+
+            if (_pendingFullScan is not null || _activeScanScope == ScanScope.Full)
+            {
+                AddInfoLog($"Library folder scan request for folder id={request.FolderId.Value} absorbed by full library scan.");
+                return;
+            }
+
+            if (_activeScanScope == ScanScope.Folder && _activeScanFolderId == request.FolderId)
+            {
+                AddInfoLog($"Library folder scan request for folder id={request.FolderId.Value} absorbed by active folder scan.");
+                return;
+            }
+
+            _pendingFolderScans[request.FolderId.Value] = _pendingFolderScans.TryGetValue(request.FolderId.Value, out var existing)
+                ? PendingScanRequest.Merge(existing, request)
+                : request;
+            RemovePendingChangedFileScanLocked(request.FolderId.Value);
+            AddInfoLog($"Library folder scan request coalesced for folder id={request.FolderId.Value}.");
+        }
+    }
+
+    private async Task DrainPendingScheduledScansAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            PendingScanRequest? next;
+            lock (_scanLock)
+            {
+                if (_activeScanCts != null)
+                {
+                    return;
+                }
+
+                if (_pendingFullScan is not null)
+                {
+                    next = _pendingFullScan;
+                    _pendingFullScan = null;
+                    _pendingFolderScans.Clear();
+                    ClearPendingChangedFileScansLocked();
+                }
+                else if (_pendingFolderScans.Count > 0)
+                {
+                    var first = _pendingFolderScans
+                        .OrderBy(pair => pair.Key)
+                        .First();
+                    _pendingFolderScans.Remove(first.Key);
+                    RemovePendingChangedFileScanLocked(first.Key);
+                    next = first.Value;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            await RunAsync(
+                next.RefreshImages,
+                next.Reset,
+                next.FolderId,
+                next.SkipSpotifyFetch,
+                next.CacheSpotifyImages,
+                cancellationToken);
+        }
+    }
+
+    private async Task WaitForScheduledScansIdleAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            Task? activeScanTask;
+            var shouldDrainPending = false;
+            lock (_scanLock)
+            {
+                activeScanTask = _activeScanCompletion?.Task;
+                if (activeScanTask is null
+                    && (_pendingFullScan is not null || _pendingFolderScans.Count > 0))
+                {
+                    shouldDrainPending = true;
+                }
+                else if (activeScanTask is null)
+                {
+                    return;
+                }
+            }
+
+            if (shouldDrainPending)
+            {
+                await DrainPendingScheduledScansAsync(CancellationToken.None);
+                continue;
+            }
+
+            await activeScanTask!.WaitAsync(cancellationToken);
+        }
+    }
+
+    private static bool ShouldDrainPendingAfterRun(
+        bool ownsActiveScan,
+        CancellationTokenSource? cts,
+        CancellationToken callerCancellationToken)
+    {
+        return ownsActiveScan
+            && cts?.IsCancellationRequested != true
+            && !callerCancellationToken.IsCancellationRequested;
+    }
+
+    private bool IsCoveredByActiveOrPendingFolderScan(long folderId)
+    {
+        return _pendingFolderScans.ContainsKey(folderId);
+    }
+
+    private bool HasPendingFullScan()
+    {
+        lock (_scanLock)
+        {
+            return _pendingFullScan is not null;
+        }
+    }
+
+    private void ClearPendingChangedFileScansLocked()
+    {
+        lock (_changedFileScanLock)
+        {
+            _pendingChangedFileScans.Clear();
+            _pendingChangedFileScanRequiresSpotifyFetch = false;
+        }
+    }
+
+    private void RemovePendingChangedFileScanLocked(long folderId)
+    {
+        lock (_changedFileScanLock)
+        {
+            _pendingChangedFileScans.Remove(folderId);
+            if (_pendingChangedFileScans.Count == 0)
+            {
+                _pendingChangedFileScanRequiresSpotifyFetch = false;
+            }
         }
     }
 

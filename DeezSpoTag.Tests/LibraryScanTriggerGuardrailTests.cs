@@ -140,9 +140,24 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("moved={autoMoveSummary.MovedCount}", methodBody, StringComparison.Ordinal);
         Assert.Contains("failed={autoMoveSummary.FailedCount}", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("await _libraryScanRunner.RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunFolderScanAndWaitAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("_libraryScanRunner.RunAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("TriggerLibraryScanAfterAutoMoveAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadEnrichmentFinalization_OnlyUsesChangedFileLibraryScans()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("RunChangedFilesAndWaitForIngestionAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_scanRunner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_scanRunner.RunFolderScanAndWaitAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_scanRunner.EnqueueAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_scanRunner.RunAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -270,6 +285,97 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryScanRunner_CoalescesBusyScansInsteadOfRecursing()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryScanRunner.cs");
+
+        Assert.Contains("QueuePendingScan(request);", source, StringComparison.Ordinal);
+        Assert.Contains("DrainPendingScheduledScansAsync", source, StringComparison.Ordinal);
+        Assert.Contains("Library full scan request coalesced; pending targeted scans were absorbed.", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("await WaitForCurrentScanAsync(cancellationToken);\n                await RunAsync(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryScanRunner_FullScansAbsorbPendingTargetedScans()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryScanRunner.cs");
+        var queueMethod = ExtractMethodBody(source, "private void QueuePendingScan");
+        var startMethod = ExtractMethodBody(source, "private bool TryStartScan");
+
+        Assert.Contains("_pendingFolderScans.Clear();", queueMethod, StringComparison.Ordinal);
+        Assert.Contains("ClearPendingChangedFileScansLocked();", queueMethod, StringComparison.Ordinal);
+        Assert.Contains("_activeScanScope == ScanScope.Full", queueMethod, StringComparison.Ordinal);
+        Assert.Contains("scope == ScanScope.Full", startMethod, StringComparison.Ordinal);
+        Assert.Contains("ClearPendingChangedFileScansLocked();", startMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryScanRunner_FolderScanAndWaitDrainsQueuedFolderScan()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryScanRunner.cs");
+        var methodBody = ExtractMethodBody(source, "public async Task RunFolderScanAndWaitAsync");
+
+        Assert.Contains("await RunAsync(", methodBody, StringComparison.Ordinal);
+        Assert.Contains("await WaitForScheduledScansIdleAsync(cancellationToken);", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("await WaitForCurrentScanAsync(cancellationToken);", methodBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryScanRunner_DoesNotDrainPendingScansAfterCancellation()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryScanRunner.cs");
+        var helperBody = ExtractMethodBody(source, "private static bool ShouldDrainPendingAfterRun");
+
+        Assert.Contains("ShouldDrainPendingAfterRun(ownsActiveScan, cts, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("cts?.IsCancellationRequested != true", helperBody, StringComparison.Ordinal);
+        Assert.Contains("!callerCancellationToken.IsCancellationRequested", helperBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryScanRunner_PendingFullScanAbsorbsWaitingChangedFileBatches()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryScanRunner.cs");
+        var drainBody = ExtractMethodBody(source, "private async Task DrainChangedFileScansAsync");
+
+        Assert.Contains("if (HasPendingFullScan())", drainBody, StringComparison.Ordinal);
+        Assert.Contains("Targeted library scan batch absorbed by pending full library scan", drainBody, StringComparison.Ordinal);
+        Assert.Contains("await WaitForScheduledScansIdleAsync(cancellationToken);", drainBody, StringComparison.Ordinal);
+        Assert.True(drainBody.IndexOf("if (HasPendingFullScan())", StringComparison.Ordinal)
+            < drainBody.IndexOf("await RunChangedFilesBatchAsync", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LibraryRealtimeScanService_UsesNasSafeSettleWindow()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+
+        Assert.Contains("private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(5);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(1);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BusyRetryDelay", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_scanRunner.GetStatus().IsRunning", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryRealtimeScanService_TriggersMediaServerRefreshAfterVerifiedRealtimeChanges()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+        var processingBody = ExtractMethodBody(source, "private async Task ProcessDueScansAsync");
+        var refreshBody = ExtractMethodBody(source, "private async Task TriggerMediaServerRefreshAfterRealtimeChangeAsync");
+
+        Assert.Contains("MediaServerLibraryRefreshService mediaServerRefreshService", source, StringComparison.Ordinal);
+        Assert.Contains("RunChangedFilesAndWaitForIngestionAsync", processingBody, StringComparison.Ordinal);
+        Assert.Contains("TriggerMediaServerRefreshAfterRealtimeChangeAsync", processingBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFilesAsync", processingBody, StringComparison.Ordinal);
+        Assert.Contains("missingPaths.Count", processingBody, StringComparison.Ordinal);
+        Assert.Contains("if (ingestion is { IsComplete: false })", refreshBody, StringComparison.Ordinal);
+        Assert.Contains("Realtime media server scan skipped", refreshBody, StringComparison.Ordinal);
+        Assert.Contains("media server scan will still run for {removedFileCount} removed file(s)", refreshBody, StringComparison.Ordinal);
+        Assert.Contains("Realtime media server scan triggered", refreshBody, StringComparison.Ordinal);
+        Assert.Contains("await _mediaServerRefreshService.RefreshAsync(service: null, cancellationToken);", refreshBody, StringComparison.Ordinal);
+        Assert.Contains("Realtime media server scan failed", refreshBody, StringComparison.Ordinal);
     }
 
     [Fact]

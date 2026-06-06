@@ -26,6 +26,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly LibraryScanRunner _scanRunner;
+    private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
     private readonly ITaggingJobQueue? _taggingJobQueue;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<LibraryRealtimeScanService> _logger;
@@ -40,13 +41,13 @@ public sealed class LibraryRealtimeScanService : BackgroundService
     private bool _watchersDisabledForProcess;
 
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan BusyRetryDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(5);
 
     public LibraryRealtimeScanService(
         LibraryRepository repository,
         LibraryConfigStore configStore,
         LibraryScanRunner scanRunner,
+        MediaServerLibraryRefreshService mediaServerRefreshService,
         ILogger<LibraryRealtimeScanService> logger,
         BackgroundWorkCoordinator workCoordinator,
         ITaggingJobQueue? taggingJobQueue = null)
@@ -54,6 +55,7 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         _repository = repository;
         _configStore = configStore;
         _scanRunner = scanRunner;
+        _mediaServerRefreshService = mediaServerRefreshService;
         _logger = logger;
         _workCoordinator = workCoordinator;
         _taggingJobQueue = taggingJobQueue;
@@ -285,12 +287,6 @@ public sealed class LibraryRealtimeScanService : BackgroundService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (_scanRunner.GetStatus().IsRunning)
-            {
-                RequeueFolder(folderId, BusyRetryDelay, pendingScan.ChangedFilePaths, pendingScan.DeletedFilePaths);
-                continue;
-            }
-
             var existingPaths = new List<string>();
             var missingPaths = new HashSet<string>(pendingScan.DeletedFilePaths, StringComparer.OrdinalIgnoreCase);
             foreach (var path in pendingScan.ChangedFilePaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
@@ -320,9 +316,10 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                 await _repository.RemoveLocalAudioFilesByPathAsync(folderId, missingPaths.ToList(), cancellationToken);
             }
 
+            LibraryScanRunner.ChangedFileIngestionSummary? ingestion = null;
             if (existingPaths.Count > 0)
             {
-                await _scanRunner.RunChangedFilesAsync(
+                ingestion = await _scanRunner.RunChangedFilesAndWaitForIngestionAsync(
                     new Dictionary<long, List<string>>
                     {
                         [folderId] = existingPaths
@@ -331,7 +328,54 @@ public sealed class LibraryRealtimeScanService : BackgroundService
                     cancellationToken: cancellationToken);
             }
 
+            await TriggerMediaServerRefreshAfterRealtimeChangeAsync(folderId, missingPaths.Count, ingestion, cancellationToken);
             RefreshWatcherBaseline(folderId, existingPaths.Concat(missingPaths));
+        }
+    }
+
+    private async Task TriggerMediaServerRefreshAfterRealtimeChangeAsync(
+        long folderId,
+        int removedFileCount,
+        LibraryScanRunner.ChangedFileIngestionSummary? ingestion,
+        CancellationToken cancellationToken)
+    {
+        if (ingestion is { IsComplete: false })
+        {
+            var message = removedFileCount == 0
+                ? $"Realtime media server scan skipped for folder id={folderId} because changed-file ingestion is incomplete ({ingestion.IngestedFilePaths.Count}/{ingestion.RequestedFileCount})."
+                : $"Realtime changed-file ingestion is incomplete for folder id={folderId} ({ingestion.IngestedFilePaths.Count}/{ingestion.RequestedFileCount}); media server scan will still run for {removedFileCount} removed file(s).";
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "warning",
+                message));
+            if (removedFileCount == 0)
+            {
+                return;
+            }
+        }
+
+        var ingestedFileCount = ingestion?.IngestedFilePaths.Count ?? 0;
+        if (ingestedFileCount == 0 && removedFileCount == 0)
+        {
+            return;
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Realtime media server scan triggered for folder id={folderId} after {ingestedFileCount} ingested file(s), {removedFileCount} removed file(s)."));
+        try
+        {
+            await _mediaServerRefreshService.RefreshAsync(service: null, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException
+                                   && DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Realtime media server scan failed for folder id={FolderId}.", folderId);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "warning",
+                $"Realtime media server scan failed for folder id={folderId}: {ex.Message}"));
         }
     }
 
