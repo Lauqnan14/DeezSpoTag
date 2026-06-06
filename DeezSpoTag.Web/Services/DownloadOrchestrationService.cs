@@ -776,11 +776,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 _ = await TryPauseEnhancementForPendingPipelineAsync(cancellationToken);
             }
 
+            SchedulePendingEnrichmentRecheck(now);
             return true;
         }
 
         if (!await _pipelineLock.WaitAsync(0, cancellationToken))
         {
+            SchedulePendingEnrichmentRecheck(now);
             return true;
         }
 
@@ -820,6 +822,18 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         SaveOrchestrationRuntimeState();
         return true;
+    }
+
+    private void SchedulePendingEnrichmentRecheck(DateTimeOffset now)
+    {
+        var idleSince = _queueIdleSince ?? now;
+        var targetUtc = idleSince + _downloadIdleDelay;
+        if (targetUtc <= now)
+        {
+            targetUtc = now.Add(_downloadIdleDelay);
+        }
+
+        SetPhase(OrchestrationPhase.EnrichmentCountdown, targetUtc);
     }
 
     private async Task<bool> RearmPendingPipelineIfNeededAsync(CancellationToken cancellationToken)

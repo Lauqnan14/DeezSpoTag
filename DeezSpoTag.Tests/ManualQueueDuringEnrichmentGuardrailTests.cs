@@ -173,6 +173,20 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
+    public void PendingEnrichmentBranches_AlwaysScheduleBoundedRecheck()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var methodBody = ExtractMethodBody(orchestrationSource, "private async Task<bool> TryRunEnrichmentPipelineAsync");
+
+        Assert.Contains("SchedulePendingEnrichmentRecheck(now);", methodBody, StringComparison.Ordinal);
+        Assert.Contains("if (_autoTagService.HasRunningJobs())", methodBody, StringComparison.Ordinal);
+        Assert.Contains("if (!await _pipelineLock.WaitAsync(0, cancellationToken))", methodBody, StringComparison.Ordinal);
+        Assert.Contains("private void SchedulePendingEnrichmentRecheck", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("targetUtc = now.Add(_downloadIdleDelay);", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("SetPhase(OrchestrationPhase.EnrichmentCountdown, targetUtc);", orchestrationSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Orchestration_DefersEnrichmentCountdownWhileRetriesArePending()
     {
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
@@ -203,6 +217,32 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
 
     private static string ReadSource(params string[] pathParts)
         => File.ReadAllText(Path.Join([ResolveRepoRoot(), .. pathParts]));
+
+    private static string ExtractMethodBody(string source, string methodSignature)
+    {
+        var start = source.IndexOf(methodSignature, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Could not find method: {methodSignature}");
+        var brace = source.IndexOf('{', start);
+        Assert.True(brace > start, $"Could not find method body: {methodSignature}");
+        var depth = 0;
+        for (var index = brace; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source.Substring(brace, index - brace + 1);
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"Could not extract method body: {methodSignature}");
+    }
 
     private static string ResolveRepoRoot()
     {
