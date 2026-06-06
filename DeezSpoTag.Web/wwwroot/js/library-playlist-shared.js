@@ -139,29 +139,47 @@
         }
 
         const panel = document.createElement('div');
-        panel.className = 'playlist-settings-panel';
+        panel.className = 'playlist-settings-panel playlist-artwork-picker';
         const section = document.createElement('div');
-        section.className = 'playlist-settings-section';
-        section.innerHTML = '<div class="playlist-settings-section-title">Saved artwork history</div>';
+        section.className = 'playlist-settings-section playlist-artwork-picker__section';
+        const activeCount = visuals.filter(item => item?.isActive === true).length;
+        section.innerHTML = `
+            <div class="playlist-artwork-picker__toolbar">
+                <div>
+                    <div class="playlist-settings-section-title">Saved artwork history</div>
+                    <div class="playlist-artwork-picker__summary">${visuals.length} saved image${visuals.length === 1 ? '' : 's'}${activeCount > 0 ? ` · ${activeCount} active` : ''}</div>
+                </div>
+            </div>`;
         const grid = document.createElement('div');
-        grid.className = 'dropdown-visuals-grid';
+        grid.className = 'playlist-artwork-grid';
 
         const renderGrid = (activeFileName = null) => {
             grid.innerHTML = visuals.map(item => {
                 const fileName = String(item?.fileName || '');
                 const url = toSafeHttpUrl(String(item?.url || ''));
                 const isActive = fileName && activeFileName ? fileName === activeFileName : item?.isActive === true;
+                const source = String(item?.source || item?.platform || '').trim();
                 return `
-                <div class="visual-tile" title="Saved artwork">
-                    <img src="${escapeHtml(url)}" alt="Saved playlist artwork" loading="lazy" decoding="async" />
-                    <div class="visual-tile__actions">
+                <article class="playlist-artwork-tile ${isActive ? 'is-active' : ''}">
+                    <button class="playlist-artwork-tile__button" type="button"
+                        aria-label="${isActive ? 'Active playlist artwork' : 'Use this playlist artwork'}"
+                        ${isActive ? 'aria-current="true"' : ''}
+                        data-playlist-visual-select="${escapeHtml(fileName)}"
+                        data-playlist-visual-url="${escapeHtml(url)}">
+                        <span class="playlist-artwork-tile__image-wrap">
+                            <img src="${escapeHtml(url)}" alt="Saved playlist artwork" loading="lazy" decoding="async" />
+                            ${source ? `<span class="playlist-artwork-tile__source">${escapeHtml(source)}</span>` : ''}
+                            ${isActive ? '<span class="playlist-artwork-tile__active">Active</span>' : ''}
+                        </span>
+                    </button>
+                    <div class="playlist-artwork-tile__actions">
                         <button class="action-btn action-btn-sm ${isActive ? 'btn-secondary' : ''}" type="button"
                             data-playlist-visual-select="${escapeHtml(fileName)}"
                             data-playlist-visual-url="${escapeHtml(url)}">
                             ${isActive ? 'Active' : 'Use this art'}
                         </button>
                     </div>
-                </div>
+                </article>
             `;
             }).join('');
         };
@@ -205,6 +223,7 @@
         await globalThis.DeezSpoTag.ui.showModal({
             title: `Artwork - ${playlistName || 'Playlist'}`,
             contentElement: panel,
+            dialogClass: 'playlist-artwork-modal',
             buttons: [{ label: 'Close', value: 'close', primary: true }]
         });
         return true;
