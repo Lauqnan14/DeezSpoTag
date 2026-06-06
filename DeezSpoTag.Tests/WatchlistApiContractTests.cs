@@ -116,7 +116,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             var first = doc.RootElement[0];
             Assert.Equal("spotify", GetStringProperty(first, "source"));
             Assert.Equal("pl-123", GetStringProperty(first, "sourceId"));
-            Assert.Equal("Road Mix", GetStringProperty(first, "name"));
+            Assert.Equal("Road Mix Updated", GetStringProperty(first, "name"));
         }
 
         var statusResult = await controller.GetStatus("  SpOtIfY  ", "  pl-123 ", CancellationToken.None);
