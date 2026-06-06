@@ -181,6 +181,16 @@ internal static class DownloadQueueEnqueueHelper
         var duplicateStatus = duplicate.Status ?? string.Empty;
         if (IsRetryableQueueStatus(duplicateStatus))
         {
+            payload.Id = duplicate.QueueUuid;
+            var replacementPayloadJson = JsonSerializer.Serialize(payload);
+            await queueRepository.UpdateQueueIdentityAsync(
+                BuildIdentityRefreshItem(
+                    duplicate,
+                    payload,
+                    ResolveDurationMs(payload),
+                    replacementPayloadJson),
+                cancellationToken);
+            await queueRepository.ClearRetryArtifactsAsync(duplicate.QueueUuid, cancellationToken);
             await queueRepository.RequeueAsync(
                 duplicate.QueueUuid,
                 QueueRequeueOrigin.DuplicateRehydrate,
@@ -222,6 +232,27 @@ internal static class DownloadQueueEnqueueHelper
         return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
     }
 
+    private static DownloadQueueItem BuildIdentityRefreshItem<TPayload>(
+        DownloadQueueItem existing,
+        TPayload payload,
+        int? durationMs,
+        string replacementPayloadJson)
+        where TPayload : EngineQueueItemBase
+        => existing with
+        {
+            Engine = payload.Engine,
+            ArtistName = payload.Artist,
+            TrackTitle = payload.Title,
+            Isrc = payload.Isrc,
+            DeezerTrackId = payload.DeezerId,
+            SpotifyTrackId = payload.SpotifyId,
+            AppleTrackId = payload.AppleId,
+            DurationMs = durationMs,
+            DestinationFolderId = payload.DestinationFolderId ?? existing.DestinationFolderId,
+            ContentType = payload.ContentType,
+            PayloadJson = replacementPayloadJson
+        };
+
     private static bool IsRetryableQueueStatus(string status)
         => status is "failed";
 
@@ -261,14 +292,10 @@ internal static class DownloadQueueEnqueueHelper
 
         payload.Id = existing.QueueUuid;
         var payloadJson = JsonSerializer.Serialize(payload);
-        await queueRepository.UpdateEngineAsync(existing.QueueUuid, payload.Engine, cancellationToken);
-        await queueRepository.UpdateQueueMetadataAsync(
-            existing.QueueUuid,
-            null,
-            payload.ContentType,
-            payload.DestinationFolderId ?? existing.DestinationFolderId,
+        await queueRepository.UpdateQueueIdentityAsync(
+            BuildIdentityRefreshItem(existing, payload, ResolveDurationMs(payload), payloadJson),
             cancellationToken);
-        await queueRepository.UpdatePayloadAsync(existing.QueueUuid, payloadJson, cancellationToken);
+        await queueRepository.ClearRetryArtifactsAsync(existing.QueueUuid, cancellationToken);
         await queueRepository.UpdateStatusAsync(
             existing.QueueUuid,
             QueuedStatus,

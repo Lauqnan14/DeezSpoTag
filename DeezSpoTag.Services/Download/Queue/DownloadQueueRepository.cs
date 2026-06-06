@@ -1239,7 +1239,12 @@ SET engine = @engine,
     quality_rank = @qualityRank,
     content_type = @contentType,
     payload = @payload,
-    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
+    final_destinations_json = NULL,
+    lyrics_status = @lyricsStatus,
+    staging_cleanup_status = NULL,
+    staging_cleanup_error = NULL,
+    staging_cleanup_at = NULL,
+    activities_cleared_at = NULL,
     move_status = CASE
         WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusPending + @"'
         WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusNotRequired + @"'

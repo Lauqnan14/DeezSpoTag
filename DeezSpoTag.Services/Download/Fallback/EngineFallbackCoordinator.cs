@@ -368,6 +368,7 @@ public sealed class EngineFallbackCoordinator
         var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
         await _queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
         await _queueRepository.UpdateEngineAsync(queueUuid, stepSource, cancellationToken);
+        await _queueRepository.ClearRetryArtifactsAsync(queueUuid, cancellationToken);
         return await _queueRepository.RequeueAsync(
             queueUuid,
             QueueRequeueOrigin.FallbackAdvance,

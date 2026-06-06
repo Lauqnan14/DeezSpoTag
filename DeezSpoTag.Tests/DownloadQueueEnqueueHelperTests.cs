@@ -67,6 +67,68 @@ public sealed class DownloadQueueEnqueueHelperTests
     }
 
     [Fact]
+    public async Task EnqueueWithDedupAsync_RehydratingFailedDuplicateReplacesStaleOutputState()
+    {
+        await using var context = await CreateContextAsync();
+        var existingPayload = CreatePayload("failed-stale-output-1");
+        existingPayload.Isrc = "USAT20900265";
+        existingPayload.FilePath = Path.Join(context.TempRoot, "downs", "Smash", "Mega Freestyle Box", "Smash - Crazy for Love.flac");
+        existingPayload.Files = new List<Dictionary<string, object>>
+        {
+            new()
+            {
+                ["path"] = existingPayload.FilePath,
+                ["albumPath"] = Path.GetDirectoryName(existingPayload.FilePath)!,
+                ["artistPath"] = Path.GetDirectoryName(Path.GetDirectoryName(existingPayload.FilePath)!)!
+            }
+        };
+
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(existingPayload, "failed"), CancellationToken.None);
+        await context.QueueRepository.UpdateFinalDestinationsAsync(
+            existingPayload.Id,
+            JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                [existingPayload.FilePath] = Path.Join(context.TempRoot, "library", "Smash", "Mega Freestyle Box", "Smash - Crazy for Love.flac")
+            }),
+            JsonSerializer.Serialize(existingPayload),
+            CancellationToken.None);
+
+        var replacementPayload = CreatePayload("new-request-id");
+        replacementPayload.Title = "Day Dreaming (feat. Akon, Snoop Dogg & T.I.)";
+        replacementPayload.Artist = "DJ Drama";
+        replacementPayload.Album = "Gangsta Grillz: The Album Vol. 2";
+        replacementPayload.Isrc = existingPayload.Isrc;
+
+        var outcome = await DownloadQueueEnqueueHelper.EnqueueWithDedupAsync(
+            replacementPayload,
+            redownloadCooldownMinutes: 720,
+            context.QueueRepository,
+            context.Listener,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(outcome.Success);
+        Assert.Equal(existingPayload.Id, outcome.QueueUuid);
+
+        var persisted = await context.QueueRepository.GetByUuidAsync(existingPayload.Id, CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("queued", persisted!.Status, ignoreCase: true);
+        Assert.Equal("DJ Drama", persisted.ArtistName);
+        Assert.Equal("Day Dreaming (feat. Akon, Snoop Dogg & T.I.)", persisted.TrackTitle);
+        Assert.Null(persisted.FinalDestinationsJson);
+
+        Assert.False(string.IsNullOrWhiteSpace(persisted.PayloadJson));
+        var payload = JsonSerializer.Deserialize<QobuzQueueItem>(persisted.PayloadJson!);
+        Assert.NotNull(payload);
+        Assert.Equal(existingPayload.Id, payload!.Id);
+        Assert.Equal("DJ Drama", payload.Artist);
+        Assert.Equal("Day Dreaming (feat. Akon, Snoop Dogg & T.I.)", payload.Title);
+        Assert.True(string.IsNullOrWhiteSpace(payload.FilePath));
+        Assert.Empty(payload.Files);
+        Assert.Empty(payload.FinalDestinations);
+    }
+
+    [Fact]
     public async Task EnqueueWithDedupAsync_ReturnsRecentlyDownloaded_WhenMatchingItemCompleted()
     {
         await using var context = await CreateContextAsync();
