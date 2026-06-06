@@ -2229,24 +2229,6 @@ public partial class AutoTagService
         return new StageRunResult(true, earlyAutoMove);
     }
 
-    private static List<string> ResolveContinuationPathsAfterAutoMove(string originalPath, AutoTagMoveSummary summary)
-    {
-        var roots = summary.DestinationRoots.Count > 0
-            ? summary.DestinationRoots
-            : new List<string> { originalPath };
-
-        var existingRoots = roots
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .Select(path => Path.GetFullPath(path))
-            .Where(Directory.Exists)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        return existingRoots.Count > 0
-            ? existingRoots
-            : new List<string> { originalPath };
-    }
-
     private bool ShouldAutoMoveAfterEnrichmentStage(
         AutoTagJob job,
         string path,
@@ -2415,15 +2397,6 @@ public partial class AutoTagService
     {
         var autoMove = context.EarlyAutoMove
             ?? await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
-        if (ShouldRunGenericOrganizer(job, context.ConfigPath))
-        {
-            AppendLog(job, "post-processing organizer starting");
-            await OrganizeAfterAutoMoveAsync(job, path, context.ConfigPath, autoMove.Summary, cancellationToken);
-        }
-        else
-        {
-            AppendLog(job, "generic organizer skipped (enhancement workflows own folder uniformity)");
-        }
         await RunIntegratedEnhancementWorkflowsAsync(
             job,
             path,
@@ -2461,21 +2434,6 @@ public partial class AutoTagService
         public AutoMoveExecutionResult? EarlyAutoMove { get; init; }
     }
 
-    private async Task OrganizeAfterAutoMoveAsync(
-        AutoTagJob job,
-        string path,
-        string configPath,
-        AutoTagMoveSummary autoMoveSummary,
-        CancellationToken cancellationToken)
-    {
-        var roots = ResolveContinuationPathsAfterAutoMove(path, autoMoveSummary);
-        foreach (var root in roots)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await OrganizeJobAsync(job, root, configPath, cancellationToken);
-        }
-    }
-
     private async Task<AutoMoveExecutionResult> RunFinalAutoMoveAsync(
         AutoTagJob job,
         string path,
@@ -2510,13 +2468,6 @@ public partial class AutoTagService
         return await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
     }
 
-    private static bool ShouldRunGenericOrganizer(AutoTagJob job, string configPath)
-    {
-        _ = job;
-        _ = configPath;
-        return false;
-    }
-
     private async Task HandleRunJobFailureAsync(
         AutoTagJob job,
         Exception ex,
@@ -2534,15 +2485,6 @@ public partial class AutoTagService
 
         AppendLog(job, "tagging failed, evaluating post-failure auto-move");
         var autoMove = await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes, CancellationToken.None);
-        if (ShouldRunGenericOrganizer(job, configPath))
-        {
-            AppendLog(job, "post-processing organizer starting");
-            await OrganizeAfterAutoMoveAsync(job, path, configPath, autoMove.Summary, CancellationToken.None);
-        }
-        else
-        {
-            AppendLog(job, "generic organizer skipped (enhancement workflows own folder uniformity)");
-        }
         if (autoMove.Completed)
         {
             await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);

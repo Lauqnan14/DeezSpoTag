@@ -234,7 +234,8 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("enhancementCount > 0 || HasConfiguredEnhancementWorkflows(root)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("profile has no gap-fill tags or enhancement workflows", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("LibraryFolderPathSafety.IsMusicFolder(folder)", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("enhancement workflows own folder uniformity", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("enhancement workflows own folder uniformity", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldRunGenericOrganizer", serviceSource, StringComparison.Ordinal);
     }
 
     private static long[] ReadLongArray(JsonElement element)

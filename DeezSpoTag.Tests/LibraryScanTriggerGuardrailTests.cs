@@ -170,7 +170,9 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("RefreshMetadataAsync", source, StringComparison.Ordinal);
         Assert.Contains("_jobCancellationSources", source, StringComparison.Ordinal);
         Assert.Contains("stopped = true;", source, StringComparison.Ordinal);
-        Assert.Contains("OrganizeAfterAutoMoveAsync(job, path, context.ConfigPath, autoMove.Summary, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("RunIntegratedEnhancementWorkflowsAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("OrganizeAfterAutoMoveAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("generic organizer skipped", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TriggerPlexMetadataRefreshAfterEnhancementAsync", source, StringComparison.Ordinal);
     }
 
