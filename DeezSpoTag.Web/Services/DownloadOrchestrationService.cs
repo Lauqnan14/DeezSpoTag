@@ -1400,7 +1400,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     item.DestinationFolderId,
                     item.Status,
                     item.QueueUuid,
-                    item.PayloadJson,
+                    item.FinalDestinationsJson,
                     queueUuidSet,
                     out var destinationFolderId,
                     out var candidatePaths))
@@ -1421,7 +1421,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         long? sourceDestinationFolderId,
         string? status,
         string? queueUuid,
-        string? payloadJson,
+        string? finalDestinationsJson,
         HashSet<string> queueUuidSet,
         out long destinationFolderId,
         out HashSet<string> candidatePaths)
@@ -1436,7 +1436,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return false;
         }
 
-        CollectPayloadFinalDestinationPaths(payloadJson, candidatePaths);
+        CollectFinalDestinationJsonPaths(finalDestinationsJson, candidatePaths);
         if (candidatePaths.Count == 0)
         {
             return false;
@@ -3206,38 +3206,33 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private static void CollectPayloadFinalDestinationPaths(string? payloadJson, HashSet<string> paths)
+    private static void CollectFinalDestinationJsonPaths(string? finalDestinationsJson, HashSet<string> paths)
     {
-        if (paths == null || string.IsNullOrWhiteSpace(payloadJson))
+        if (paths == null || string.IsNullOrWhiteSpace(finalDestinationsJson))
         {
             return;
         }
 
         try
         {
-            using var document = JsonDocument.Parse(payloadJson);
+            using var document = JsonDocument.Parse(finalDestinationsJson);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
                 return;
             }
 
-            if (TryGetPropertyIgnoreCase(root, "finalDestinations", out var finalDestinationsElement)
-                && finalDestinationsElement.ValueKind == JsonValueKind.Object)
+            foreach (var finalDestinationEntry in root.EnumerateObject())
             {
-                var finalDestinationPaths = finalDestinationsElement.EnumerateObject()
-                    .Select(pathEntry => pathEntry.Value.ValueKind == JsonValueKind.String
-                        ? pathEntry.Value.GetString()
-                        : null)
-                    .Where(static path => !string.IsNullOrWhiteSpace(path));
-                foreach (var finalPath in finalDestinationPaths)
+                if (finalDestinationEntry.Value.ValueKind == JsonValueKind.String)
                 {
-                    paths.Add(finalPath!);
+                    var finalPath = finalDestinationEntry.Value.GetString();
+                    if (!string.IsNullOrWhiteSpace(finalPath))
+                    {
+                        paths.Add(finalPath);
+                    }
                 }
             }
-
-            // Keep legacy fallback paths for payloads that do not yet persist finalDestinations.
-            CollectPayloadSourcePaths(root, paths);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

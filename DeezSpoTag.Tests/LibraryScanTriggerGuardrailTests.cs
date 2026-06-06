@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -22,6 +24,28 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("no moved library file paths detected", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_scanRunner.RunAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("await _scanRunner.RunChangedFoldersAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadOrchestration_FinalDestinationReaderUsesDatabaseJsonOnly()
+    {
+        const string staleStagingPath = "/tmp/deezspotag/staging/Artist/Album/Artist - Song.flac";
+        const string finalLibraryPath = "/tmp/deezspotag/library/Artist/Album/Artist - Song.flac";
+        var finalDestinationsJson = $$"""
+            {
+              "{{staleStagingPath}}": "{{finalLibraryPath}}"
+            }
+            """;
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "CollectFinalDestinationJsonPaths",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        method.Invoke(null, [finalDestinationsJson, paths]);
+
+        Assert.Contains(finalLibraryPath, paths);
+        Assert.DoesNotContain(staleStagingPath, paths);
     }
 
     [Fact]

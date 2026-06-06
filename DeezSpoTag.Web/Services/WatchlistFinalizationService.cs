@@ -54,11 +54,6 @@ public sealed class WatchlistFinalizationService
         var normalizedFinalPaths = NormalizeFinalFilePaths(finalFilePaths);
         if (normalizedFinalPaths.Count == 0)
         {
-            normalizedFinalPaths = NormalizeFinalFilePaths(ReadFinalDestinationPaths(payloadJson));
-        }
-
-        if (normalizedFinalPaths.Count == 0)
-        {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(
@@ -517,35 +512,6 @@ public sealed class WatchlistFinalizationService
 
         var extension = Path.GetExtension(path);
         return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
-    }
-
-    private static IReadOnlyList<string> ReadFinalDestinationPaths(string? payloadJson)
-    {
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(payloadJson);
-            if (!TryGetPropertyIgnoreCase(document.RootElement, "finalDestinations", out var finalDestinations)
-                || finalDestinations.ValueKind != JsonValueKind.Object)
-            {
-                return Array.Empty<string>();
-            }
-
-            return finalDestinations.EnumerateObject()
-                .Select(static property => property.Value)
-                .Where(value => value.ValueKind == JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(value.GetString()))
-                .Select(static value => value.GetString()!)
-                .ToArray();
-        }
-        catch (JsonException)
-        {
-            return Array.Empty<string>();
-        }
     }
 
     private static bool TryReadWatchlistTrackContext(

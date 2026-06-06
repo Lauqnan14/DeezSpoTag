@@ -690,7 +690,10 @@ public class ActivitiesController : Controller
         var clone = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in payload)
         {
-            clone[entry.Key] = entry.Value;
+            var key = string.Equals(entry.Key, "finalDestinations", StringComparison.OrdinalIgnoreCase)
+                ? "finalDestinations"
+                : entry.Key;
+            clone[key] = entry.Value;
         }
 
         return clone;
@@ -781,7 +784,6 @@ public class ActivitiesController : Controller
         EnsurePayloadFieldRaw(payload, "fallbackPlan", "FallbackPlan");
         EnsurePayloadFieldRaw(payload, "fallbackHistory", "FallbackHistory");
         EnsurePayloadFieldRaw(payload, "fallbackQueuedExternally", "FallbackQueuedExternally");
-        EnsurePayloadFieldRaw(payload, "finalDestinations", "FinalDestinations");
         EnsurePayloadField(payload, "videoResolution", "VideoResolution", "videoResolutionTier", "VideoResolutionTier");
         EnsurePayloadField(payload, "videoHdr", "VideoHdr");
         EnsurePayloadField(payload, "videoAudioProfile", "VideoAudioProfile");

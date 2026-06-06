@@ -2529,31 +2529,6 @@ public sealed class AutoTagDownloadMoveService
             }
         }
 
-        // Use final destination/source maps only as a legacy fallback when explicit
-        // payload paths are absent. This avoids stale path contamination from old rows.
-        if (files.Count == 0 && roots.Count == 0)
-        {
-            CollectFinalDestinationSourcePaths(rootPath, root, files, roots);
-        }
-    }
-
-    private static void CollectFinalDestinationSourcePaths(
-        string rootPath,
-        JsonElement root,
-        HashSet<string> files,
-        HashSet<string> roots)
-    {
-        if (!TryGetPropertyIgnoreCase(root, "finalDestinations", out var finalDestinationsElement)
-            || finalDestinationsElement.ValueKind != JsonValueKind.Object)
-        {
-            return;
-        }
-
-        foreach (var rawPath in finalDestinationsElement.EnumerateObject().Select(pathEntry => pathEntry.Name))
-        {
-            AddFileFromRawPath(files, rootPath, rawPath);
-            AddRootFromRawPath(roots, rootPath, rawPath);
-        }
     }
 
     private static void AddPathsToPayloadMaps(
@@ -3126,7 +3101,12 @@ public sealed class AutoTagDownloadMoveService
                 continue;
             }
 
-            if (!TryApplyFinalDestinationTransitions(item.PayloadJson, transitions, out var payloadJson, out var finalDestinationsJson))
+            if (!TryApplyFinalDestinationTransitions(
+                    item.PayloadJson,
+                    item.FinalDestinationsJson,
+                    transitions,
+                    out var payloadJson,
+                    out var finalDestinationsJson))
             {
                 continue;
             }
@@ -3260,6 +3240,7 @@ public sealed class AutoTagDownloadMoveService
 
     private static bool TryApplyFinalDestinationTransitions(
         string payloadJson,
+        string? existingFinalDestinationsJson,
         Dictionary<string, string> transitions,
         out string updatedPayloadJson,
         out string? finalDestinationsJson)
@@ -3286,7 +3267,7 @@ public sealed class AutoTagDownloadMoveService
             return false;
         }
 
-        var finalMap = ReadFinalDestinations(root);
+        var finalMap = ReadFinalDestinations(existingFinalDestinationsJson);
         SeedFinalDestinationsFromPayload(root, finalMap);
 
         foreach (var transition in transitions)
@@ -3309,29 +3290,47 @@ public sealed class AutoTagDownloadMoveService
         }
 
         finalDestinationsJson = FinalDestinationTracker.Serialize(finalMap);
+        root.Remove("FinalDestinations");
         root["finalDestinations"] = BuildFinalDestinationsNode(finalMap);
         updatedPayloadJson = root.ToJsonString();
         return changed || !string.IsNullOrWhiteSpace(finalDestinationsJson);
     }
 
-    private static Dictionary<string, string> ReadFinalDestinations(JsonObject root)
+    private static Dictionary<string, string> ReadFinalDestinations(string? finalDestinationsJson)
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (root["finalDestinations"] is not JsonObject existing)
+        if (string.IsNullOrWhiteSpace(finalDestinationsJson))
         {
             return map;
         }
 
-        foreach (var property in existing)
+        try
         {
-            var key = property.Key;
-            var value = TryReadJsonString(property.Value);
-            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+            using var document = JsonDocument.Parse(finalDestinationsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                continue;
+                return map;
             }
 
-            map[key] = value;
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var value = property.Value.GetString();
+                if (string.IsNullOrWhiteSpace(property.Name) || string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                map[property.Name] = value;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return map;
         }
 
         return map;

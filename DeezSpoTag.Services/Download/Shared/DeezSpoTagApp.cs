@@ -549,7 +549,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         payloadObj["failed"] = 0;
         payloadObj["Files"] = new JsonArray();
         payloadObj["files"] = new JsonArray();
-        payloadObj["FinalDestinations"] = new JsonObject();
         payloadObj["finalDestinations"] = new JsonObject();
         payloadObj["ErrorMessage"] = string.Empty;
         payloadObj["errorMessage"] = string.Empty;

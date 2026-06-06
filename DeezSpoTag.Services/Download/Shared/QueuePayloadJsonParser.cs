@@ -35,10 +35,17 @@ public static class QueuePayloadJsonParser
         var result = CreateDictionary();
         foreach (var property in element.EnumerateObject())
         {
-            result[property.Name] = ConvertValue(property.Value)!;
+            result[NormalizePropertyName(property.Name)] = ConvertValue(property.Value)!;
         }
 
         return result;
+    }
+
+    private static string NormalizePropertyName(string propertyName)
+    {
+        return string.Equals(propertyName, "finalDestinations", StringComparison.OrdinalIgnoreCase)
+            ? "finalDestinations"
+            : propertyName;
     }
 
     private static object? ConvertValue(JsonElement element)

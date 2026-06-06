@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Core.Models;
 
@@ -62,6 +63,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string FilePath { get; set; } = "";
     public string Profile { get; set; } = "";
     public string QualityBucket { get; set; } = "";
+    [JsonPropertyName("finalDestinations")]
     public Dictionary<string, string> FinalDestinations { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public long? DestinationFolderId { get; set; }
     public List<DeezSpoTag.Services.Download.Fallback.FallbackPlanStep> FallbackPlan { get; set; } = new();

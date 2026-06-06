@@ -245,7 +245,7 @@ WHERE queue_uuid = @queueUuid;";
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
        duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 FROM download_task
 WHERE queue_uuid = @queueUuid
 LIMIT 1;";
@@ -308,7 +308,7 @@ LIMIT 1;";
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
        duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 FROM download_task
 WHERE (@engine IS NULL OR engine = @engine)
 ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
@@ -353,7 +353,7 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
 	WHERE status = 'running'
   AND updated_at <= datetime('now', '-' || @ageSeconds || ' seconds')
@@ -746,7 +746,7 @@ WHERE queue_uuid = @queueUuid
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
 	WHERE status IN ('queued', 'resolving')
   {extraWhereClause}
@@ -760,7 +760,7 @@ LIMIT 1;";
 	id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	status, payload, progress, downloaded, failed, error, created_at, updated_at";
+	status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json";
 
         const string activeStatuses = "'resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
         return @"
@@ -1578,10 +1578,10 @@ SELECT EXISTS(
         // Queue dedupe must remain track-granular; album/artist IDs are intentionally excluded
         // so different tracks from the same release can be queued independently.
         const string sql = @"
-	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
-	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
-	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+		SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+		       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+		       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+		       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
 WHERE (
         (
@@ -1803,7 +1803,7 @@ ORDER BY
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
 WHERE (
         lower(artist_name) = lower(@artistName)
@@ -1850,7 +1850,7 @@ LIMIT 1;";
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
 WHERE lower(engine) = lower(@engine)
   AND lower(artist_name) = lower(@artistName)
@@ -1893,7 +1893,7 @@ LIMIT 1;";
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
 WHERE lower(engine) = lower(@engine)
   AND lower(deezer_track_id) = lower(@deezerTrackId)
@@ -2420,7 +2420,6 @@ LIMIT 1;";
 
             foreach (var property in document.RootElement.EnumerateObject())
             {
-                AddPath(property.Name, target);
                 if (property.Value.ValueKind == JsonValueKind.String)
                 {
                     AddPath(property.Value.GetString(), target);
@@ -2453,8 +2452,6 @@ LIMIT 1;";
 
             AddPayloadFilePathsProperty(document.RootElement, "Files", target);
             AddPayloadFilePathsProperty(document.RootElement, FilesPropertyLower, target);
-            AddPayloadMapPathsProperty(document.RootElement, "FinalDestinations", target);
-            AddPayloadMapPathsProperty(document.RootElement, "finalDestinations", target);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2496,23 +2493,6 @@ LIMIT 1;";
             AddPayloadPathProperty(file, "Path", target);
             AddPayloadPathProperty(file, "filename", target);
             AddPayloadPathProperty(file, "Filename", target);
-        }
-    }
-
-    private static void AddPayloadMapPathsProperty(JsonElement root, string propertyName, ISet<string> target)
-    {
-        if (!root.TryGetProperty(propertyName, out var map) || map.ValueKind != JsonValueKind.Object)
-        {
-            return;
-        }
-
-        foreach (var property in map.EnumerateObject())
-        {
-            AddPath(property.Name, target);
-            if (property.Value.ValueKind == JsonValueKind.String)
-            {
-                AddPath(property.Value.GetString(), target);
-            }
         }
     }
 
@@ -2647,7 +2627,8 @@ WHERE queue_order IS NOT NULL;";
             GetNullableInt32(reader, 26),
             GetNullableString(reader, 27),
             createdAt,
-            updatedAt
+            updatedAt,
+            GetNullableString(reader, 30)
         );
     }
 
@@ -2834,7 +2815,8 @@ public sealed record DownloadQueueItem(
     int? Failed,
     string? Error,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt)
+    DateTimeOffset UpdatedAt,
+    string? FinalDestinationsJson = null)
 {
     public DownloadQueueItem(
         long Id,
