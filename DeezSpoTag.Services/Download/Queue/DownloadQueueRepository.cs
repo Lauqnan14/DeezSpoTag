@@ -27,6 +27,7 @@ public sealed class DownloadQueueRepository
     public static event Action<QueueStateChangedEvent>? QueueStateChanged;
 
     private static readonly SemaphoreSlim DequeueGate = new(1, 1);
+    private static readonly SemaphoreSlim EnqueueAdmissionGate = new(1, 1);
     private const string DownloadTaskTable = "download_task";
     private const string FilesPropertyLower = "files";
     private const string PayloadParameterName = "payload";
@@ -78,33 +79,42 @@ public sealed class DownloadQueueRepository
         CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
-        if (!skipDuplicateCheck && await ExistsDuplicateAsync(
-                DuplicateLookupRequest.FromQueueItem(item),
-                cancellationToken))
+        await EnqueueAdmissionGate.WaitAsync(cancellationToken);
+        try
         {
-            return null;
-        }
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        var queueOrder = item.QueueOrder ?? await GetNextQueueOrderAsync(connection, cancellationToken);
-        const string sql = @"
-INSERT OR IGNORE INTO " + DownloadTaskTable + @"
-    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status, status, payload, progress, downloaded, failed, error, created_at, updated_at)
-VALUES
-    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @enrichmentStatus, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+            if (!skipDuplicateCheck && await ExistsDuplicateAsync(
+                    DuplicateLookupRequest.FromQueueItem(item),
+                    cancellationToken))
+            {
+                return null;
+            }
+
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            var queueOrder = item.QueueOrder ?? await GetNextQueueOrderAsync(connection, cancellationToken);
+            const string sql = @"
+	INSERT OR IGNORE INTO " + DownloadTaskTable + @"
+	    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status, status, payload, progress, downloaded, failed, error, created_at, updated_at)
+	VALUES
+	    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @enrichmentStatus, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 SELECT CASE
     WHEN changes() = 0 THEN NULL
-    ELSE last_insert_rowid()
-END;";
-        await using var command = new SqliteCommand(sql, connection);
-        BindCommonParameters(command, item with { QueueOrder = queueOrder });
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        var id = result is null or DBNull ? (long?)null : Convert.ToInt64(result);
-        if (id.HasValue)
-        {
-            PublishQueueStateChanged(item.QueueUuid, item.Status);
-        }
+	    ELSE last_insert_rowid()
+	END;";
+            await using var command = new SqliteCommand(sql, connection);
+            BindCommonParameters(command, item with { QueueOrder = queueOrder });
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            var id = result is null or DBNull ? (long?)null : Convert.ToInt64(result);
+            if (id.HasValue)
+            {
+                PublishQueueStateChanged(item.QueueUuid, item.Status);
+            }
 
-        return id;
+            return id;
+        }
+        finally
+        {
+            EnqueueAdmissionGate.Release();
+        }
     }
 
     public async Task<bool> RequeueAsync(

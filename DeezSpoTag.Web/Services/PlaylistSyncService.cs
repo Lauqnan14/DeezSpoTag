@@ -1395,7 +1395,16 @@ public sealed class PlaylistSyncService
         }
 
         return rules.Any(rule =>
-            RuleMatches(track, rule.ConditionField, rule.ConditionOperator, rule.ConditionValue));
+            PlaylistTrackBlockRuleMatcher.RuleMatches(
+                track.Name,
+                track.Artists,
+                track.Album,
+                track.Genres,
+                track.Explicit,
+                track.ReleaseDate,
+                rule.ConditionField,
+                rule.ConditionOperator,
+                rule.ConditionValue));
     }
 
     private static bool RuleMatches(

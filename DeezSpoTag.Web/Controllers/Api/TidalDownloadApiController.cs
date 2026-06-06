@@ -47,7 +47,11 @@ public sealed class TidalDownloadApiController : ControllerBase
     public async Task<IActionResult> Enqueue([FromBody] TidalDownloadBatchRequest request)
     {
         var destinationFolderId = request?.DestinationFolderId;
-        var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<TidalQueueItem>(_queueRepository, _deezspotagListener, _logger);
+        var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<TidalQueueItem>(
+            _queueRepository,
+            _deezspotagListener,
+            _logger,
+            _libraryRepository);
         var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<TidalQueueItem>(
             _deezspotagListener,
             static payload => payload.ToQueuePayload());

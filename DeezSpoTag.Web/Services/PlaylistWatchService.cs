@@ -3026,16 +3026,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
             var effectiveRemainingCapacity = Math.Min(capacityRemaining, runBudgetRemaining);
 
-            var intent = track.Intent;
-            if (await HandleBlockedWatchIntentAsync(intent, track, options, cancellationToken))
-            {
-                attemptedCount++;
-                completedCount++;
-                continue;
-            }
-
-            intent = PrepareWatchIntent(
-                intent,
+            var intent = PrepareWatchIntent(
+                track.Intent,
                 track.TrackId,
                 options,
                 destinationFolderId,
@@ -3047,6 +3039,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 intent,
                 options.SourceLabel,
                 track.TrackId,
+                options.BlockRules,
                 cancellationToken);
             attemptedCount++;
             if (result is null)
@@ -3475,11 +3468,12 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         DownloadIntent intent,
         string sourceLabel,
         string trackId,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await intentService.EnqueueManualAsync(intent, cancellationToken);
+            return await intentService.EnqueueManualAsync(intent, cancellationToken, blockRules: blockRules);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3532,7 +3526,10 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var atmosIntent = CreateAtmosOnlyIntent(baseIntent, options.AtmosDestinationFolderId);
         try
         {
-            var atmosResult = await intentService.EnqueueManualAsync(atmosIntent, cancellationToken);
+            var atmosResult = await intentService.EnqueueManualAsync(
+                atmosIntent,
+                cancellationToken,
+                blockRules: options.BlockRules);
             return atmosResult.Success ? 1 : 0;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

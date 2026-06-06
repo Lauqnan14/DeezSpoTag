@@ -49,7 +49,11 @@ public sealed class AmazonDownloadApiController : ControllerBase
     {
         var destinationFolderId = request?.DestinationFolderId;
         const string quality = "FLAC";
-        var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<AmazonQueueItem>(_queueRepository, _deezspotagListener, _logger);
+        var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<AmazonQueueItem>(
+            _queueRepository,
+            _deezspotagListener,
+            _logger,
+            _libraryRepository);
         var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<AmazonQueueItem>(
             _deezspotagListener,
             static payload => payload.ToQueuePayload());

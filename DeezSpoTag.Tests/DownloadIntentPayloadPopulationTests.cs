@@ -225,6 +225,10 @@ public sealed class DownloadIntentPayloadPopulationTests
             artist,
             artist,
             null,
+            Array.Empty<string>(),
+            null,
+            null,
+            null,
             null,
             contentType,
             null);
@@ -234,6 +238,7 @@ public sealed class DownloadIntentPayloadPopulationTests
             EnqueueItemContextType,
             identity,
             new DeezSpoTagSettings(),
+            null,
             false,
             null,
             false,

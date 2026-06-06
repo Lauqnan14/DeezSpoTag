@@ -71,6 +71,10 @@ public sealed class DownloadIntentService
         string TrackTitle,
         string TrackArtist,
         string? TrackPrimaryArtist,
+        string? Album,
+        IReadOnlyList<string>? Genres,
+        bool? Explicit,
+        string? ReleaseDate,
         string? PayloadQuality,
         string? PayloadQualityBucket,
         string? RequestedAudioVariant,
@@ -102,6 +106,7 @@ public sealed class DownloadIntentService
         List<string> SkipReasons,
         SongLinkResult? Availability,
         bool PreferIsrcOnly,
+        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
         CancellationToken CancellationToken);
 
     private sealed record AppleSecondaryEnqueueRequest(
@@ -113,6 +118,7 @@ public sealed class DownloadIntentService
         List<string> Queued,
         SongLinkResult? Availability,
         bool PreferIsrcOnly,
+        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
         CancellationToken CancellationToken);
 
     private sealed record LibraryDuplicateCheck(
@@ -152,11 +158,13 @@ public sealed class DownloadIntentService
         List<string> SkipReasonCodes,
         List<string> SkipReasons,
         (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) FallbackInfo,
+        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
         CancellationToken CancellationToken);
 
     private sealed record EnqueueItemContext(
         PayloadIdentity Identity,
         DeezSpoTagSettings Settings,
+        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
         bool AllowQualityUpgrade,
         int? RequestedQualityRank,
         bool QueueQualityUpgradeRequested,
@@ -343,19 +351,22 @@ public sealed class DownloadIntentService
     public Task<DownloadIntentResult> EnqueueAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
-        bool preferIsrcOnly = false)
-        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: false, cancellationToken);
+        bool preferIsrcOnly = false,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
+        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: false, cancellationToken, blockRules);
 
     public Task<DownloadIntentResult> EnqueueManualAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
-        bool preferIsrcOnly = false)
-        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: true, cancellationToken);
+        bool preferIsrcOnly = false,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
+        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: true, cancellationToken, blockRules);
 
     public async Task<DownloadIntentResult> EnqueueManualVisibleAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
-        bool preferIsrcOnly = false)
+        bool preferIsrcOnly = false,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
     {
         var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment: true, cancellationToken);
         if (gateFailure != null)
@@ -370,7 +381,8 @@ public sealed class DownloadIntentService
             return profileValidation.Failure;
         }
 
-        var blocklistFailure = await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
+        var blocklistFailure = TryBlockByRuleSet(intent, blockRules)
+            ?? await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
         if (blocklistFailure != null)
         {
             return blocklistFailure;
@@ -425,6 +437,7 @@ public sealed class DownloadIntentService
         var requestedQualityRank = ParseRequestedQualityRank(selectedQuality ?? intent.Quality);
         var enqueueDecision = await EnqueueItemAsync(
             payload,
+            blockRules,
             intent.AllowQualityUpgrade,
             requestedQualityRank,
             initialStatus: "queued",
@@ -462,12 +475,14 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         bool preferIsrcOnly,
         bool allowManualQueueDuringEnrichment,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules)
     {
         var resolution = await TryPrepareEnqueueResolutionAsync(
             intent,
             preferIsrcOnly,
             allowManualQueueDuringEnrichment,
+            blockRules,
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -560,6 +575,7 @@ public sealed class DownloadIntentService
             skipReasonCodes,
             skipReasons,
             primaryFallback,
+            blockRules,
             cancellationToken);
         var enqueueOutcome = await EnqueueByEngineAsync(request);
         if (enqueueOutcome.Failure != null)
@@ -607,6 +623,7 @@ public sealed class DownloadIntentService
             intent,
             preferIsrcOnly: false,
             allowManualQueueDuringEnrichment: false,
+            blockRules: null,
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -964,6 +981,7 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         bool preferIsrcOnly,
         bool allowManualQueueDuringEnrichment,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         CancellationToken cancellationToken)
     {
         var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment, cancellationToken);
@@ -983,7 +1001,8 @@ public sealed class DownloadIntentService
         {
             await PopulateIntentMetadataAsync(intent, preparation.Settings, profileValidation.ResolvedDownloadTagSource, cancellationToken);
         }
-        var blocklistFailure = await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
+        var blocklistFailure = TryBlockByRuleSet(intent, blockRules)
+            ?? await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
         if (blocklistFailure != null)
         {
             return (blocklistFailure, null);
@@ -1106,6 +1125,7 @@ public sealed class DownloadIntentService
             request.SkipReasons,
             request.Availability,
             request.PreferIsrcOnly,
+            request.BlockRules,
             request.CancellationToken);
 
     private async Task<EngineEnqueueOutcome> EnqueueByEngineAsync(EngineEnqueueRequest request)
@@ -1317,6 +1337,7 @@ public sealed class DownloadIntentService
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,
+            request.BlockRules,
             request.Intent.AllowQualityUpgrade,
             request.RequestedQualityRank,
             request.CancellationToken);
@@ -1339,6 +1360,7 @@ public sealed class DownloadIntentService
                         request.Queued,
                         request.Availability,
                         request.PreferIsrcOnly,
+                        request.BlockRules,
                         request.CancellationToken));
             }
 
@@ -1361,6 +1383,7 @@ public sealed class DownloadIntentService
                     request.Queued,
                     request.Availability,
                     request.PreferIsrcOnly,
+                    request.BlockRules,
                     request.CancellationToken));
         }
 
@@ -2328,6 +2351,39 @@ public sealed class DownloadIntentService
             _logger.LogWarning(ex, "Global blocklist check failed; continuing enqueue flow.");
             return null;
         }
+    }
+
+    private DownloadIntentResult? TryBlockByRuleSet(
+        DownloadIntent intent,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules)
+    {
+        var matchedRule = PlaylistTrackBlockRuleMatcher.FindMatch(intent, blockRules);
+        if (matchedRule == null)
+        {
+            return null;
+        }
+
+        var ruleDescription = PlaylistTrackBlockRuleMatcher.Describe(matchedRule);
+        var blockMessage = $"Skipped: blocked by rule ({ruleDescription}).";
+        _activityLog.Warn(blockMessage);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Download intent blocked by rule ({Rule}): {Title} - {Artist}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ruleDescription),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist));
+        }
+
+        return new DownloadIntentResult
+        {
+            Success = false,
+            Engine = string.Empty,
+            Message = blockMessage,
+            Skipped = 1,
+            SkipReasonCodes = new List<string> { "blocklist_match" },
+            SkipReasons = new List<string> { blockMessage }
+        };
     }
 
     private async Task<(string Engine, string? SourceUrl, string Message, string MappingSource)> ResolveIntentAsync(
@@ -5572,6 +5628,7 @@ public sealed class DownloadIntentService
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,
+            request.BlockRules,
             request.AllowQualityUpgrade,
             ParseRequestedQualityRank(secondaryQuality),
             request.CancellationToken);
@@ -5957,6 +6014,7 @@ public sealed class DownloadIntentService
 
     private async Task<EnqueueItemDecision> EnqueueItemAsync<TPayload>(
         TPayload payload,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         bool allowQualityUpgrade,
         int? requestedQualityRank,
         string initialStatus,
@@ -5968,7 +6026,7 @@ public sealed class DownloadIntentService
             return EnqueueItemDecision.Fail("invalid_payload", "Queue payload is missing.");
         }
 
-        var context = BuildEnqueueItemContext(payload, allowQualityUpgrade, requestedQualityRank);
+        var context = BuildEnqueueItemContext(payload, blockRules, allowQualityUpgrade, requestedQualityRank);
         var requireResolvedEngineIdentity = !IsPreResolutionPayload(payload);
         var payloadFailure = TryValidateResolvedQueuePayload(payload, context, requireResolvedEngineIdentity);
         if (payloadFailure != null)
@@ -5980,6 +6038,12 @@ public sealed class DownloadIntentService
         if (destinationFailure != null)
         {
             return destinationFailure;
+        }
+
+        var blockRuleFailure = TryValidateBlockRuleState(context);
+        if (blockRuleFailure != null)
+        {
+            return blockRuleFailure;
         }
 
         await EnsureDestinationFolderCurrentBeforeDuplicateCheckAsync(context, cancellationToken);
@@ -6005,11 +6069,12 @@ public sealed class DownloadIntentService
 
     private Task<EnqueueItemDecision> EnqueueItemAsync<TPayload>(
         TPayload payload,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         bool allowQualityUpgrade,
         int? requestedQualityRank,
         CancellationToken cancellationToken)
         where TPayload : class
-        => EnqueueItemAsync(payload, allowQualityUpgrade, requestedQualityRank, "queued", cancellationToken);
+        => EnqueueItemAsync(payload, blockRules, allowQualityUpgrade, requestedQualityRank, "queued", cancellationToken);
 
     private static bool IsPreResolutionPayload<TPayload>(TPayload payload)
         where TPayload : class
@@ -6021,6 +6086,7 @@ public sealed class DownloadIntentService
 
     private EnqueueItemContext BuildEnqueueItemContext<TPayload>(
         TPayload payload,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         bool allowQualityUpgrade,
         int? requestedQualityRank)
         where TPayload : class
@@ -6031,6 +6097,7 @@ public sealed class DownloadIntentService
         return new EnqueueItemContext(
             identity,
             settings,
+            blockRules,
             allowQualityUpgrade,
             requestedQualityRank,
             allowQualityUpgrade && requestedQualityRank.HasValue,
@@ -6112,6 +6179,37 @@ public sealed class DownloadIntentService
 
         _activityLog.Warn($"Queue blocked: {destinationCheck.Error}");
         return EnqueueItemDecision.Fail("destination_invalid", destinationCheck.Error ?? "Destination folder is invalid.");
+    }
+
+    private EnqueueItemDecision? TryValidateBlockRuleState(EnqueueItemContext context)
+    {
+        var identity = context.Identity;
+        var matchedRule = PlaylistTrackBlockRuleMatcher.FindMatch(
+            identity.TrackTitle,
+            identity.TrackArtist,
+            identity.Album,
+            identity.Genres,
+            identity.Explicit,
+            identity.ReleaseDate,
+            context.BlockRules);
+        if (matchedRule == null)
+        {
+            return null;
+        }
+
+        var ruleDescription = PlaylistTrackBlockRuleMatcher.Describe(matchedRule);
+        var message = $"Skipped: blocked by rule ({ruleDescription}).";
+        _activityLog.Warn(message);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Download intent blocked by rule ({Rule}): {Title} - {Artist}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ruleDescription),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(identity.TrackTitle),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(identity.TrackArtist));
+        }
+
+        return EnqueueItemDecision.Fail("blocklist_match", message);
     }
 
     private async Task EnsureDestinationFolderCurrentBeforeDuplicateCheckAsync(
@@ -6525,7 +6623,7 @@ public sealed class DownloadIntentService
             CreatedAt: DateTimeOffset.UtcNow,
             UpdatedAt: DateTimeOffset.UtcNow);
 
-        var insertId = await _queueRepository.EnqueueAsync(item, skipDuplicateCheck: true, cancellationToken: cancellationToken);
+        var insertId = await _queueRepository.EnqueueAsync(item, skipDuplicateCheck: false, cancellationToken: cancellationToken);
         if (!insertId.HasValue)
         {
             return EnqueueItemDecision.Fail("queue_insert_ignored", "Skipped: item was not added to queue because a duplicate already exists.");
@@ -6612,6 +6710,7 @@ public sealed class DownloadIntentService
     {
         var enqueueDecision = await EnqueueItemAsync(
             payload,
+            context.BlockRules,
             context.AllowQualityUpgrade,
             context.RequestedQualityRank,
             context.CancellationToken);
@@ -6639,6 +6738,7 @@ public sealed class DownloadIntentService
                     context.Queued,
                     context.Availability,
                     context.PreferIsrcOnly,
+                    context.BlockRules,
                     context.CancellationToken));
         }
 
@@ -6847,6 +6947,9 @@ public sealed class DownloadIntentService
         var trackArtist = (string)payload.GetType().GetProperty("Artist")!.GetValue(payload)!;
         var payloadQuality = TryGetPayloadQuality(payload);
         var payloadQualityBucket = TryGetPayloadString(payload, "QualityBucket");
+        IReadOnlyList<string> genres = payload is EngineQueueItemBase queuePayload
+            ? queuePayload.Genres
+            : Array.Empty<string>();
         return new PayloadIdentity(
             TryGetPayloadIsrc(payload),
             TryGetPayloadString(payload, "DeezerId"),
@@ -6864,6 +6967,10 @@ public sealed class DownloadIntentService
             (string)payload.GetType().GetProperty("Title")!.GetValue(payload)!,
             trackArtist,
             NormalizePrimaryArtistForDedupe(trackArtist),
+            TryGetPayloadString(payload, "Album"),
+            genres,
+            payload is EngineQueueItemBase basePayload ? basePayload.Explicit : null,
+            TryGetPayloadString(payload, "ReleaseDate"),
             payloadQuality,
             payloadQualityBucket,
             ResolveRequestedAudioVariant(contentType, payloadQuality, payloadQualityBucket),

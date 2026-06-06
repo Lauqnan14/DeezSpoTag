@@ -2,6 +2,7 @@ using System.Text.Json;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -16,7 +17,8 @@ internal static class DownloadQueueEnqueueHelper
     public static Func<TPayload, int, CancellationToken, Task<EnqueueOutcome>> CreateDedupEnqueueDelegate<TPayload>(
         DownloadQueueRepository queueRepository,
         IDeezSpoTagListener listener,
-        ILogger logger)
+        ILogger logger,
+        LibraryRepository? libraryRepository = null)
         where TPayload : EngineQueueItemBase
     {
         return (payload, redownloadCooldownMinutes, cancellationToken) => EnqueueWithDedupAsync(
@@ -25,6 +27,7 @@ internal static class DownloadQueueEnqueueHelper
             queueRepository,
             listener,
             logger,
+            libraryRepository,
             cancellationToken);
     }
 
@@ -44,8 +47,31 @@ internal static class DownloadQueueEnqueueHelper
         ILogger logger,
         CancellationToken cancellationToken)
         where TPayload : EngineQueueItemBase
+        => await EnqueueWithDedupAsync(
+            payload,
+            redownloadCooldownMinutes,
+            queueRepository,
+            listener,
+            logger,
+            libraryRepository: null,
+            cancellationToken);
+
+    public static async Task<EnqueueOutcome> EnqueueWithDedupAsync<TPayload>(
+        TPayload payload,
+        int redownloadCooldownMinutes,
+        DownloadQueueRepository queueRepository,
+        IDeezSpoTagListener listener,
+        ILogger logger,
+        LibraryRepository? libraryRepository,
+        CancellationToken cancellationToken)
+        where TPayload : EngineQueueItemBase
     {
         var durationMs = ResolveDurationMs(payload);
+        if (await ExistsLibraryDuplicateAsync(payload, durationMs, libraryRepository, cancellationToken))
+        {
+            return EnqueueOutcome.Skipped("library_duplicate", "Skipped: matching file already exists in library.");
+        }
+
         var duplicateRequest = BuildDuplicateLookupRequest(payload, durationMs, redownloadCooldownMinutes);
         var duplicate = await queueRepository.GetDuplicateAsync(duplicateRequest, cancellationToken);
         if (duplicate != null)
@@ -66,6 +92,56 @@ internal static class DownloadQueueEnqueueHelper
         }
 
         return await EnqueueNewItemAsync(payload, durationMs, queueRepository, cancellationToken);
+    }
+
+    private static async Task<bool> ExistsLibraryDuplicateAsync<TPayload>(
+        TPayload payload,
+        int? durationMs,
+        LibraryRepository? libraryRepository,
+        CancellationToken cancellationToken)
+        where TPayload : EngineQueueItemBase
+    {
+        if (libraryRepository?.IsConfigured != true || !payload.DestinationFolderId.HasValue)
+        {
+            return false;
+        }
+
+        var destinationFolderId = payload.DestinationFolderId.Value;
+        if (!string.IsNullOrWhiteSpace(payload.Isrc)
+            && await libraryRepository.ExistsTrackSourceInFolderAsync(
+                "isrc",
+                payload.Isrc,
+                destinationFolderId,
+                cancellationToken: cancellationToken))
+        {
+            return true;
+        }
+
+        var sourceChecks = new (string Source, string? Value)[]
+        {
+            ("deezer", payload.DeezerId),
+            ("spotify", payload.SpotifyId),
+            ("apple", payload.AppleId)
+        };
+        foreach (var (source, value) in sourceChecks)
+        {
+            if (!string.IsNullOrWhiteSpace(value)
+                && await libraryRepository.ExistsTrackSourceInFolderAsync(
+                    source,
+                    value,
+                    destinationFolderId,
+                    cancellationToken: cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return await libraryRepository.ExistsTrackByMetadataInFolderAsync(
+            payload.Title,
+            payload.Artist,
+            durationMs,
+            destinationFolderId,
+            cancellationToken: cancellationToken);
     }
 
     private static DuplicateLookupRequest BuildDuplicateLookupRequest<TPayload>(
