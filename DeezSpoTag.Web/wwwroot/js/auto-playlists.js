@@ -9,11 +9,26 @@
     const recommendationsEmpty = document.getElementById("recommendationsEmpty");
     const warningEl = document.getElementById("autoPlaylistsWarning");
 
-    if (!libraryGrid || !autoGrid || !recommendationsGrid || !countEl || !libraryEmpty || !autoEmpty || !recommendationsEmpty) {
+    const hasPlaylistSections = Boolean(libraryGrid && autoGrid && countEl && sourceEl && libraryEmpty && autoEmpty);
+    const hasRecommendationSection = Boolean(recommendationsGrid && recommendationsEmpty);
+    if (!hasPlaylistSections && !hasRecommendationSection) {
         return;
     }
 
     const formatCount = (count) => `${count} playlist${count === 1 ? "" : "s"}`;
+    const uniquePositiveNumbers = (values) => {
+        const seen = new Set();
+        const output = [];
+        values.forEach((value) => {
+            const parsed = Number(value);
+            if (!Number.isFinite(parsed) || parsed <= 0 || seen.has(parsed)) {
+                return;
+            }
+            seen.add(parsed);
+            output.push(parsed);
+        });
+        return output;
+    };
 
     const setWarning = (message) => {
         if (!warningEl) {
@@ -61,6 +76,20 @@
             params.set("libraryId", libraryId);
         }
         globalThis.location.href = `/Tracklist?${params.toString()}`;
+    };
+
+    const normalizeRecommendationTitle = (station) => {
+        const normalizedName = String(station?.name || "")
+            .replace(/^recommendations\s*-\s*/i, "")
+            .trim();
+        return normalizedName || station?.name || "Recommendation";
+    };
+
+    const normalizeRecommendationMode = (station) => {
+        const raw = station?.value || station?.type || "";
+        return String(raw || "daily")
+            .replaceAll("-", " ")
+            .trim() || "daily";
     };
 
     const renderLibraryCard = (playlist) => {
@@ -159,10 +188,7 @@
 
         const title = document.createElement("h3");
         title.className = "auto-tool-title";
-        const normalizedName = (station?.name || "")
-            .replace(/^recommendations\s*-\s*/i, "")
-            .trim();
-        title.textContent = normalizedName || station.name || "Recommendation";
+        title.textContent = normalizeRecommendationTitle(station);
         header.append(title);
 
         const desc = document.createElement("p");
@@ -174,7 +200,7 @@
         const trackCount = document.createElement("span");
         trackCount.textContent = station.trackCount ? `${station.trackCount} tracks` : "Daily mix";
         const mode = document.createElement("span");
-        mode.textContent = station.value ? station.value.replaceAll("-", " ") : station.type;
+        mode.textContent = normalizeRecommendationMode(station);
         meta.append(trackCount, mode);
 
         const body = document.createElement("div");
@@ -186,6 +212,9 @@
     };
 
     const renderLists = (playlists) => {
+        if (!hasPlaylistSections) {
+            return;
+        }
         libraryGrid.innerHTML = "";
         autoGrid.innerHTML = "";
 
@@ -205,31 +234,38 @@
         countEl.textContent = formatCount(playlists.length);
     };
 
-    loadRecommendations();
+    if (hasRecommendationSection) {
+        loadRecommendations();
+    }
 
-    fetch("/api/autoplaylists", { cache: "no-store" })
-        .then((response) => response.json())
-        .then((data) => {
-            const playlists = Array.isArray(data?.playlists) ? data.playlists : [];
-            if (data?.warning) {
-                setWarning(data.warning);
-            }
-            if (playlists.length > 0) {
-                sourceEl.textContent = data.source || "Plex";
-                renderLists(playlists);
-                loadMixes(playlists);
-            } else {
+    if (hasPlaylistSections) {
+        fetch("/api/autoplaylists", { cache: "no-store" })
+            .then((response) => response.json())
+            .then((data) => {
+                const playlists = Array.isArray(data?.playlists) ? data.playlists : [];
+                if (data?.warning) {
+                    setWarning(data.warning);
+                }
+                if (playlists.length > 0) {
+                    sourceEl.textContent = data.source || "Plex";
+                    renderLists(playlists);
+                    loadMixes(playlists);
+                } else {
+                    sourceEl.textContent = "";
+                    renderLists([]);
+                }
+            })
+            .catch(() => {
+                setWarning("Failed to load playlists.");
                 sourceEl.textContent = "";
                 renderLists([]);
-            }
-        })
-        .catch(() => {
-            setWarning("Failed to load playlists.");
-            sourceEl.textContent = "";
-            renderLists([]);
-        });
+            });
+    }
 
     function loadMixes(playlists) {
+        if (!hasPlaylistSections) {
+            return;
+        }
         const libraryId = resolveLibraryId(playlists);
         if (!libraryId) {
             return;
@@ -279,11 +315,13 @@
         );
 
         recommendationsGrid.innerHTML = "";
+        const fragment = document.createDocumentFragment();
         stationResponses.forEach((entry) => {
             entry.stations.forEach((station) => {
-                recommendationsGrid.appendChild(renderRecommendationCard(station, entry.libraryId));
+                fragment.appendChild(renderRecommendationCard(station, entry.libraryId));
             });
         });
+        recommendationsGrid.appendChild(fragment);
         recommendationsEmpty.hidden = recommendationsGrid.children.length > 0;
     }
 
@@ -291,10 +329,7 @@
         try {
             const folderResponse = await fetch("/api/library/folders?includeDisabled=false&contentType=stereo", { cache: "no-store" });
             const folders = folderResponse.ok ? await folderResponse.json() : [];
-            return (Array.isArray(folders) ? folders : [])
-                .map((item) => Number(item?.libraryId))
-                .filter((value) => Number.isFinite(value) && value > 0)
-                .filter((value, index, array) => array.indexOf(value) === index);
+            return uniquePositiveNumbers((Array.isArray(folders) ? folders : []).map((item) => item?.libraryId));
         } catch (error) {
             console.warn("Failed to load recommendation folder scope.", error);
         }
