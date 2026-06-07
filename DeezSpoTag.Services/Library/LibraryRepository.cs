@@ -168,6 +168,7 @@ public sealed class LibraryRepository
     private const string ArtistType = "artist";
     private const string AlbumType = "album";
     private const string TrackType = "track";
+    private const string GenreType = "genre";
     private const string TitleField = "title";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
@@ -6797,20 +6798,30 @@ LIMIT 1;";
         string? trackTitle,
         string? artistName,
         string? albumTitle,
+        IReadOnlyCollection<string>? genres,
         CancellationToken cancellationToken = default)
     {
         var normalizedTrack = NormalizeBlocklistValue(trackTitle);
         var normalizedArtist = NormalizeBlocklistValue(artistName);
         var normalizedAlbum = NormalizeBlocklistValue(albumTitle);
+        var normalizedGenres = (genres ?? Array.Empty<string>())
+            .Select(NormalizeBlocklistValue)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         if (string.IsNullOrWhiteSpace(normalizedTrack)
             && string.IsNullOrWhiteSpace(normalizedArtist)
-            && string.IsNullOrWhiteSpace(normalizedAlbum))
+            && string.IsNullOrWhiteSpace(normalizedAlbum)
+            && normalizedGenres.Count == 0)
         {
             return null;
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        var genreClause = normalizedGenres.Count == 0
+            ? string.Empty
+            : $" OR (field = 'genre' AND normalized_value IN ({string.Join(", ", normalizedGenres.Select((_, index) => $"@genre{index}"))}))";
+        var sql = $@"
 SELECT field, value
 FROM download_blocklist
 WHERE is_enabled = 1
@@ -6818,6 +6829,7 @@ WHERE is_enabled = 1
       (field = 'track' AND normalized_value = @track)
       OR (field = 'artist' AND normalized_value = @artist)
       OR (field = 'album' AND normalized_value = @album)
+      {genreClause}
   )
 ORDER BY id
 LIMIT 1;";
@@ -6825,6 +6837,11 @@ LIMIT 1;";
         command.Parameters.AddWithValue("track", (object?)normalizedTrack ?? DBNull.Value);
         command.Parameters.AddWithValue(ArtistParameter, (object?)normalizedArtist ?? DBNull.Value);
         command.Parameters.AddWithValue("album", (object?)normalizedAlbum ?? DBNull.Value);
+        for (var i = 0; i < normalizedGenres.Count; i++)
+        {
+            command.Parameters.AddWithValue($"genre{i}", normalizedGenres[i]);
+        }
+
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
@@ -6833,6 +6850,13 @@ LIMIT 1;";
 
         return new DownloadBlocklistMatchDto(reader.GetString(0), reader.GetString(1));
     }
+
+    public Task<DownloadBlocklistMatchDto?> FindMatchingDownloadBlocklistAsync(
+        string? trackTitle,
+        string? artistName,
+        string? albumTitle,
+        CancellationToken cancellationToken = default)
+        => FindMatchingDownloadBlocklistAsync(trackTitle, artistName, albumTitle, null, cancellationToken);
 
     public async Task AddPlaylistWatchTracksAsync(
         string source,
@@ -9431,6 +9455,7 @@ ON CONFLICT DO NOTHING;";
             TitleField => TrackType,
             ArtistType => ArtistType,
             AlbumType => AlbumType,
+            GenreType => GenreType,
             _ => string.Empty
         };
     }

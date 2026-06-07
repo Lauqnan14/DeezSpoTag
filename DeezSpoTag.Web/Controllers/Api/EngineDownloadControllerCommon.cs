@@ -21,8 +21,6 @@ internal static class EngineDownloadControllerCommon
     private static readonly HashSet<string> AlreadyQueuedReasonCodes = new(StringComparer.OrdinalIgnoreCase)
     {
         "queue_duplicate",
-        "queue_recently_downloaded",
-        "queue_quality_not_higher",
         "library_duplicate",
         "library_quality_not_higher"
     };

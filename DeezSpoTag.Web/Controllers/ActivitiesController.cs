@@ -11,6 +11,7 @@ using DeezSpoTag.Services.Download.Shared;
 using System.Linq;
 using System.Text.Json;
 using DeezSpoTag.Core.Security;
+using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Controllers;
 
@@ -49,6 +50,7 @@ public class ActivitiesController : Controller
     private readonly DownloadQueueRepository _queueRepository;
     private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly IActivityLogWriter _activityLog;
+    private readonly LibraryRepository _libraryRepository;
     private readonly IServiceProvider _serviceProvider;
 
     public ActivitiesController(
@@ -57,6 +59,7 @@ public class ActivitiesController : Controller
         DownloadQueueRepository queueRepository,
         IDeezSpoTagListener deezspotagListener,
         IActivityLogWriter activityLog,
+        LibraryRepository libraryRepository,
         IServiceProvider serviceProvider)
     {
         _logger = logger;
@@ -64,6 +67,7 @@ public class ActivitiesController : Controller
         _queueRepository = queueRepository;
         _deezspotagListener = deezspotagListener;
         _activityLog = activityLog;
+        _libraryRepository = libraryRepository;
         _serviceProvider = serviceProvider;
     }
 
@@ -218,14 +222,16 @@ public class ActivitiesController : Controller
     {
         try
         {
+            var registeredCompletedUuids = await ResolveRegisteredCompletedQueueUuidsAsync(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { CompletedStatus, CompleteStatus },
+                HttpContext.RequestAborted);
             var hidden = 0;
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CompletedStatus, HttpContext.RequestAborted);
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CompleteStatus, HttpContext.RequestAborted);
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(SkippedStatus, HttpContext.RequestAborted);
             var deleted = 0;
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(CompletedStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(CompleteStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(SkippedStatus, HttpContext.RequestAborted);
+            foreach (var queueUuid in registeredCompletedUuids)
+            {
+                hidden += await _queueRepository.MarkActivitiesClearedByUuidAsync(queueUuid, HttpContext.RequestAborted);
+                deleted += await _queueRepository.DeleteClearableByUuidAsync(queueUuid, HttpContext.RequestAborted);
+            }
             if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedFinishedDownloads();
@@ -487,8 +493,23 @@ public class ActivitiesController : Controller
     {
         try
         {
-            var hidden = await _queueRepository.MarkTerminalActivitiesClearedAsync(HttpContext.RequestAborted);
-            var deleted = await _queueRepository.DeleteClearableAllAsync(HttpContext.RequestAborted);
+            var hidden = 0;
+            var deleted = 0;
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(FailedStatus, HttpContext.RequestAborted);
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
+            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(FailedStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
+            deleted += await _queueRepository.DeleteClearableByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
+
+            var registeredCompletedUuids = await ResolveRegisteredCompletedQueueUuidsAsync(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { CompletedStatus, CompleteStatus },
+                HttpContext.RequestAborted);
+            foreach (var queueUuid in registeredCompletedUuids)
+            {
+                hidden += await _queueRepository.MarkActivitiesClearedByUuidAsync(queueUuid, HttpContext.RequestAborted);
+                deleted += await _queueRepository.DeleteClearableByUuidAsync(queueUuid, HttpContext.RequestAborted);
+            }
             if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedAllDownloads(null);
@@ -1285,6 +1306,92 @@ public class ActivitiesController : Controller
             return pathUpperStr;
         }
         return null;
+    }
+
+    private async Task<IReadOnlyList<string>> ResolveRegisteredCompletedQueueUuidsAsync(
+        IReadOnlySet<string> statuses,
+        CancellationToken cancellationToken)
+    {
+        var normalizedStatuses = statuses
+            .Where(static status => !string.IsNullOrWhiteSpace(status))
+            .Select(static status => status.Trim().ToLowerInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (normalizedStatuses.Count == 0 || !_libraryRepository.IsConfigured)
+        {
+            return [];
+        }
+
+        var tasks = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var candidates = tasks
+            .Where(item => normalizedStatuses.Contains((item.Status ?? string.Empty).Trim().ToLowerInvariant()))
+            .ToList();
+        var clearable = new List<string>();
+        foreach (var item in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var finalAudioPaths = ExtractFinalAudioPaths(item.FinalDestinationsJson);
+            if (finalAudioPaths.Count == 0)
+            {
+                continue;
+            }
+
+            var registered = await _libraryRepository.GetTrackIdsByFilePathsAsync(finalAudioPaths, cancellationToken);
+            if (finalAudioPaths.All(path => registered.ContainsKey(path)))
+            {
+                clearable.Add(item.QueueUuid);
+            }
+        }
+
+        return clearable;
+    }
+
+    private static IReadOnlyList<string> ExtractFinalAudioPaths(string? finalDestinationsJson)
+    {
+        if (string.IsNullOrWhiteSpace(finalDestinationsJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(finalDestinationsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return [];
+            }
+
+            return document.RootElement
+                .EnumerateObject()
+                .Where(static property => property.Value.ValueKind == JsonValueKind.String)
+                .Select(static property => property.Value.GetString())
+                .Where(static path => IsAudioPath(path))
+                .Select(static path => DownloadPathResolver.NormalizeDisplayPath(path!))
+                .Where(static path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static bool IsAudioPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(path);
+        return !string.IsNullOrWhiteSpace(extension)
+            && !string.Equals(extension, ".lrc", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, TtmlExtension, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".webp", StringComparison.OrdinalIgnoreCase);
     }
 
     private JsonResult ErrorJson(string message)

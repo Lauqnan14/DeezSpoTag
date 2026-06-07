@@ -34,14 +34,15 @@ public sealed class QobuzResolutionGuardrailTests
     }
 
     [Fact]
-    public void DownloadIntentService_FailedDuplicateRehydrateRequiresStrongIdentityOrSameSourceUrl()
+    public void QobuzDirectEnqueue_UsesSingleDedupeService()
     {
-        var source = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
+        var controller = ReadSource("DeezSpoTag.Web/Controllers/Api/QobuzDownloadApiController.cs");
+        var helper = ReadSource("DeezSpoTag.Web/Controllers/Api/DownloadQueueEnqueueHelper.cs");
 
-        Assert.Contains("CanRehydrateFailedDuplicate", source, StringComparison.Ordinal);
-        Assert.Contains("HasStrongQueueIdentityMatch", source, StringComparison.Ordinal);
-        Assert.Contains("HasSameSourceUrl", source, StringComparison.Ordinal);
-        Assert.Contains("return new QueueDuplicateResolution(null, true);", source, StringComparison.Ordinal);
+        Assert.Contains("DownloadDedupeService dedupeService", controller, StringComparison.Ordinal);
+        Assert.Contains("_dedupeService", controller, StringComparison.Ordinal);
+        Assert.Contains("await dedupeService.CheckAsync", helper, StringComparison.Ordinal);
+        Assert.DoesNotContain("RequeueAsync(existing.QueueUuid", helper, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

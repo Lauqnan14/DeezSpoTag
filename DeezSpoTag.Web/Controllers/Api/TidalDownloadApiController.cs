@@ -23,6 +23,7 @@ public sealed class TidalDownloadApiController : ControllerBase
     private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
+    private readonly DownloadDedupeService _dedupeService;
     private readonly ILogger<TidalDownloadApiController> _logger;
 
     public TidalDownloadApiController(
@@ -32,6 +33,7 @@ public sealed class TidalDownloadApiController : ControllerBase
         IDeezSpoTagListener deezspotagListener,
         ISpotifyIdResolver spotifyIdResolver,
         DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
+        DownloadDedupeService dedupeService,
         ILogger<TidalDownloadApiController> logger)
     {
         _queueRepository = queueRepository;
@@ -40,6 +42,7 @@ public sealed class TidalDownloadApiController : ControllerBase
         _deezspotagListener = deezspotagListener;
         _spotifyIdResolver = spotifyIdResolver;
         _libraryRepository = libraryRepository;
+        _dedupeService = dedupeService;
         _logger = logger;
     }
 
@@ -49,9 +52,7 @@ public sealed class TidalDownloadApiController : ControllerBase
         var destinationFolderId = request?.DestinationFolderId;
         var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<TidalQueueItem>(
             _queueRepository,
-            _deezspotagListener,
-            _logger,
-            _libraryRepository);
+            _dedupeService);
         var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<TidalQueueItem>(
             _deezspotagListener,
             static payload => payload.ToQueuePayload());

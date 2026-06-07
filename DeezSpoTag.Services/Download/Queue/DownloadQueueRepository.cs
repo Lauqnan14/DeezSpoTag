@@ -15,7 +15,6 @@ public enum QueueRequeueOrigin
 {
     Manual = 0,
     AutoRetry = 1,
-    DuplicateRehydrate = 2,
     QueueUpgradeRecovery = 3,
     FallbackAdvance = 4,
     Unknown = 99
@@ -1646,10 +1645,7 @@ WHERE (
             )
         )
         OR (
-            @durationMs IS NOT NULL
-            AND @durationMs > 0
-            AND lower(track_title) = lower(@trackTitle)
-            AND duration_ms = @durationMs
+            lower(track_title) = lower(@trackTitle)
         )
     )
     AND (
@@ -1697,11 +1693,6 @@ ORDER BY
 
     private static bool MatchesDuplicateRequest(DuplicateLookupRequest request, DownloadQueueItem item)
     {
-        if (IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item))
-        {
-            return false;
-        }
-
         return HasStrongIdentityMatch(request, item)
             || HasPayloadStrongIdentityMatch(request, item)
             || HasMetadataMatch(request, item);
@@ -1756,28 +1747,23 @@ ORDER BY
 
     private static bool HasMetadataMatch(DuplicateLookupRequest request, DownloadQueueItem item)
     {
-        if (!request.DurationMs.HasValue || request.DurationMs.Value <= 0)
-        {
-            return false;
-        }
-
-        if (!item.DurationMs.HasValue || item.DurationMs.Value != request.DurationMs.Value)
-        {
-            return false;
-        }
-
         if (!TrackTitleMatcher.TitlesMatch(request.TrackTitle, item.TrackTitle))
         {
             return false;
         }
 
-        if (TrackTitleMatcher.ArtistsMatch(request.ArtistName, item.ArtistName))
+        var artistMatches = TrackTitleMatcher.ArtistsMatch(request.ArtistName, item.ArtistName)
+            || (!string.IsNullOrWhiteSpace(request.ArtistPrimaryName)
+                && TrackTitleMatcher.ArtistsMatch(request.ArtistPrimaryName, item.ArtistName));
+        if (!artistMatches)
         {
-            return true;
+            return false;
         }
 
-        return !string.IsNullOrWhiteSpace(request.ArtistPrimaryName)
-            && TrackTitleMatcher.ArtistsMatch(request.ArtistPrimaryName, item.ArtistName);
+        return !request.DurationMs.HasValue
+            || request.DurationMs.Value <= 0
+            || !item.DurationMs.HasValue
+            || Math.Abs(item.DurationMs.Value - request.DurationMs.Value) <= 2000;
     }
 
     private static bool EqualsNormalizedIsrc(string? left, string? right)
@@ -2504,6 +2490,7 @@ LIMIT 1;";
     public static bool HasExistingMaterializedFile(DownloadQueueItem item)
     {
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddFinalDestinationPaths(item.FinalDestinationsJson, paths);
         AddPayloadPaths(item.PayloadJson, paths);
         return paths.Any(PathExists);
     }

@@ -121,25 +121,6 @@ public sealed class DownloadIntentService
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
         CancellationToken CancellationToken);
 
-    private sealed record LibraryDuplicateCheck(
-        string? Isrc,
-        string? DeezerTrackId,
-        string? DeezerAlbumId,
-        string? DeezerArtistId,
-        string? SpotifyTrackId,
-        string? SpotifyAlbumId,
-        string? SpotifyArtistId,
-        string? AppleTrackId,
-        string? AppleAlbumId,
-        string? AppleArtistId,
-        string TrackTitle,
-        string TrackArtist,
-        string? TrackPrimaryArtist,
-        int? DurationMs,
-        long? DestinationFolderId,
-        string? RequestedAudioVariant,
-        CancellationToken CancellationToken);
-
     private sealed record EngineEnqueueRequest(
         DownloadIntent Intent,
         DeezSpoTagSettings Settings,
@@ -171,10 +152,6 @@ public sealed class DownloadIntentService
         int RequestedRank,
         int? RequestedLocalQualityRank,
         bool LocalQualityUpgradeRequested);
-
-    private sealed record QueueDuplicateResolution(
-        EnqueueItemDecision? Decision,
-        bool AllowInsert);
 
     private sealed record EngineEnqueueOutcome(
         DownloadIntentResult? Failure,
@@ -245,6 +222,7 @@ public sealed class DownloadIntentService
     private readonly IDownloadTagSettingsResolver _downloadTagSettingsResolver;
     private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly IDownloadApiHealthTracker _apiHealthTracker;
+    private readonly DownloadDedupeService _dedupeService;
     private readonly ILogger<DownloadIntentService> _logger;
     private IReadOnlyDictionary<string, string>? _genreAliasMap;
     private IReadOnlyList<string>? _genreBlockList;
@@ -273,6 +251,7 @@ public sealed class DownloadIntentService
         _downloadTagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
         _boomplayMetadataService = serviceProvider.GetRequiredService<BoomplayMetadataService>();
         _apiHealthTracker = serviceProvider.GetRequiredService<IDownloadApiHealthTracker>();
+        _dedupeService = serviceProvider.GetRequiredService<DownloadDedupeService>();
         _logger = logger;
     }
 
@@ -375,13 +354,6 @@ public sealed class DownloadIntentService
         if (profileValidation.Failure != null)
         {
             return profileValidation.Failure;
-        }
-
-        var blocklistFailure = TryBlockByRuleSet(intent, blockRules)
-            ?? await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
-        if (blocklistFailure != null)
-        {
-            return blocklistFailure;
         }
 
         var routingFailure = TryValidateExplicitEngineRouting(intent, preparation);
@@ -997,13 +969,6 @@ public sealed class DownloadIntentService
         {
             await PopulateIntentMetadataAsync(intent, preparation.Settings, profileValidation.ResolvedDownloadTagSource, cancellationToken);
         }
-        var blocklistFailure = TryBlockByRuleSet(intent, blockRules)
-            ?? await TryBlockByGlobalBlocklistAsync(intent, cancellationToken);
-        if (blocklistFailure != null)
-        {
-            return (blocklistFailure, null);
-        }
-
         var settings = preparation.Settings;
         var routingFailure = TryValidateExplicitEngineRouting(intent, preparation);
         if (routingFailure != null)
@@ -2300,86 +2265,6 @@ public sealed class DownloadIntentService
             Engine = string.Empty,
             Message = profileResult.Error ?? "Destination music folder requires a valid AutoTag profile."
         }, null);
-    }
-
-    private async Task<DownloadIntentResult?> TryBlockByGlobalBlocklistAsync(DownloadIntent intent, CancellationToken cancellationToken)
-    {
-        if (!_libraryRepository.IsConfigured)
-        {
-            return null;
-        }
-
-        try
-        {
-            var blocklistMatch = await _libraryRepository.FindMatchingDownloadBlocklistAsync(
-                intent.Title,
-                intent.Artist,
-                intent.Album,
-                cancellationToken);
-            if (blocklistMatch == null)
-            {
-                return null;
-            }
-
-            var blockMessage = $"Skipped: blocked by global {blocklistMatch.Field} rule ({blocklistMatch.Value}).";
-            _activityLog.Warn(blockMessage);
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation(
-                    "Download intent blocked by global blocklist ({Field}={Value}): {Title} - {Artist}",
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(blocklistMatch.Field),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(blocklistMatch.Value),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist));
-            }
-            return new DownloadIntentResult
-            {
-                Success = false,
-                Engine = string.Empty,
-                Message = blockMessage,
-                Skipped = 1,
-                SkipReasonCodes = new List<string> { "blocklist_match" },
-                SkipReasons = new List<string> { blockMessage }
-            };
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Global blocklist check failed; continuing enqueue flow.");
-            return null;
-        }
-    }
-
-    private DownloadIntentResult? TryBlockByRuleSet(
-        DownloadIntent intent,
-        IReadOnlyList<PlaylistTrackBlockRule>? blockRules)
-    {
-        var matchedRule = PlaylistTrackBlockRuleMatcher.FindMatch(intent, blockRules);
-        if (matchedRule == null)
-        {
-            return null;
-        }
-
-        var ruleDescription = PlaylistTrackBlockRuleMatcher.Describe(matchedRule);
-        var blockMessage = $"Skipped: blocked by rule ({ruleDescription}).";
-        _activityLog.Warn(blockMessage);
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Download intent blocked by rule ({Rule}): {Title} - {Artist}",
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ruleDescription),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist));
-        }
-
-        return new DownloadIntentResult
-        {
-            Success = false,
-            Engine = string.Empty,
-            Message = blockMessage,
-            Skipped = 1,
-            SkipReasonCodes = new List<string> { "blocklist_match" },
-            SkipReasons = new List<string> { blockMessage }
-        };
     }
 
     private async Task<(string Engine, string? SourceUrl, string Message, string MappingSource)> ResolveIntentAsync(
@@ -6036,26 +5921,13 @@ public sealed class DownloadIntentService
             return destinationFailure;
         }
 
-        var blockRuleFailure = TryValidateBlockRuleState(context);
-        if (blockRuleFailure != null)
+        var dedupeDecision = await _dedupeService.CheckAsync(BuildDedupeRequest(context), cancellationToken);
+        if (!dedupeDecision.Allowed)
         {
-            return blockRuleFailure;
-        }
-
-        var libraryFailure = await TryValidateLibraryDuplicateStateAsync(context, cancellationToken);
-        if (libraryFailure != null)
-        {
-            return libraryFailure;
-        }
-
-        var duplicateResolution = await ResolveQueueDuplicateAsync(payload, context, cancellationToken);
-        if (duplicateResolution.Decision != null)
-        {
-            return duplicateResolution.Decision;
-        }
-        if (!duplicateResolution.AllowInsert)
-        {
-            return EnqueueItemDecision.Fail("queue_duplicate", "Skipped: matching track is already in queue.");
+            return EnqueueItemDecision.Fail(
+                dedupeDecision.ReasonCode ?? "duplicate",
+                dedupeDecision.Message ?? "Skipped: matching track is already managed by DeezSpoTag.",
+                dedupeDecision.QueueUuid);
         }
 
         return await InsertQueueItemAsync(payload, context, initialStatus, cancellationToken);
@@ -6175,378 +6047,6 @@ public sealed class DownloadIntentService
         return EnqueueItemDecision.Fail("destination_invalid", destinationCheck.Error ?? "Destination folder is invalid.");
     }
 
-    private EnqueueItemDecision? TryValidateBlockRuleState(EnqueueItemContext context)
-    {
-        var identity = context.Identity;
-        var matchedRule = PlaylistTrackBlockRuleMatcher.FindMatch(
-            identity.TrackTitle,
-            identity.TrackArtist,
-            identity.Album,
-            identity.Genres,
-            identity.Explicit,
-            identity.ReleaseDate,
-            context.BlockRules);
-        if (matchedRule == null)
-        {
-            return null;
-        }
-
-        var ruleDescription = PlaylistTrackBlockRuleMatcher.Describe(matchedRule);
-        var message = $"Skipped: blocked by rule ({ruleDescription}).";
-        _activityLog.Warn(message);
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Download intent blocked by rule ({Rule}): {Title} - {Artist}",
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ruleDescription),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(identity.TrackTitle),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(identity.TrackArtist));
-        }
-
-        return EnqueueItemDecision.Fail("blocklist_match", message);
-    }
-
-    private async Task<EnqueueItemDecision?> TryValidateLibraryDuplicateStateAsync(
-        EnqueueItemContext context,
-        CancellationToken cancellationToken)
-    {
-        if (!_libraryRepository.IsConfigured)
-        {
-            return null;
-        }
-
-        var localUpgradeEligible = false;
-        if (context.LocalQualityUpgradeRequested)
-        {
-            var bestLocalQualityRank = await _libraryRepository.GetBestLocalQualityRankAsync(
-                context.Identity.TrackArtist,
-                context.Identity.TrackTitle,
-                context.Identity.DurationMs,
-                artistPrimaryName: context.Identity.TrackPrimaryArtist,
-                cancellationToken: cancellationToken);
-            if (bestLocalQualityRank.HasValue && context.RequestedLocalQualityRank!.Value <= bestLocalQualityRank.Value)
-            {
-                return EnqueueItemDecision.Fail(
-                    "library_quality_not_higher",
-                    "Skipped: requested quality is not higher than the file already in your library.");
-            }
-
-            localUpgradeEligible = bestLocalQualityRank.HasValue && context.RequestedLocalQualityRank!.Value > bestLocalQualityRank.Value;
-        }
-
-        if (localUpgradeEligible
-            || !await IsLibraryDuplicateAsync(
-                new LibraryDuplicateCheck(
-                    context.Identity.Isrc,
-                    context.Identity.DeezerTrackId,
-                    context.Identity.DeezerAlbumId,
-                    context.Identity.DeezerArtistId,
-                    context.Identity.SpotifyTrackId,
-                    context.Identity.SpotifyAlbumId,
-                    context.Identity.SpotifyArtistId,
-                    context.Identity.AppleTrackId,
-                    context.Identity.AppleAlbumId,
-                    context.Identity.AppleArtistId,
-                    context.Identity.TrackTitle,
-                    context.Identity.TrackArtist,
-                    context.Identity.TrackPrimaryArtist,
-                    context.Identity.DurationMs,
-                    context.Identity.DestinationFolderId,
-                    context.Identity.RequestedAudioVariant,
-                    cancellationToken)))
-        {
-            return null;
-        }
-
-        var message = context.LocalQualityUpgradeRequested
-            ? "Skipped: matching file already exists in library and no eligible quality upgrade was found."
-            : "Skipped: matching file already exists in library.";
-        return EnqueueItemDecision.Fail("library_duplicate", message);
-    }
-
-    private async Task<QueueDuplicateResolution> ResolveQueueDuplicateAsync<TPayload>(
-        TPayload payload,
-        EnqueueItemContext context,
-        CancellationToken cancellationToken)
-        where TPayload : class
-    {
-        var existing = await _queueRepository.GetDuplicateAsync(
-            BuildDuplicateLookupRequest(context),
-            cancellationToken);
-        if (existing == null)
-        {
-            return new QueueDuplicateResolution(null, true);
-        }
-
-        var status = existing.Status ?? string.Empty;
-        if (IsCanceledQueueStatus(status))
-        {
-            return new QueueDuplicateResolution(
-                EnqueueItemDecision.Fail(
-                    "queue_cancelled_manual_retry_required",
-                    "Skipped: matching track is cancelled and requires manual retry.",
-                    existing.QueueUuid),
-                false);
-        }
-
-        if (IsRetryableFailedQueueStatus(status))
-        {
-            if (!CanRehydrateFailedDuplicate(payload, context, existing))
-            {
-                return new QueueDuplicateResolution(null, true);
-            }
-
-            var decision = await RequeueFailedDuplicateAsync(payload, context, existing, cancellationToken);
-            return new QueueDuplicateResolution(decision, false);
-        }
-
-        var isCompletedStatus = IsCompletedQueueStatus(status);
-        if (isCompletedStatus)
-        {
-            if (!context.AllowQualityUpgrade || !context.QueueQualityUpgradeRequested)
-            {
-                return new QueueDuplicateResolution(
-                    EnqueueItemDecision.Fail("queue_recently_downloaded", BuildCooldownMessage(context.Settings.RedownloadCooldownMinutes), existing.QueueUuid),
-                    false);
-            }
-
-            var existingRank = existing.QualityRank;
-            if (existingRank.HasValue && context.RequestedRank <= existingRank.Value)
-            {
-                return new QueueDuplicateResolution(
-                    EnqueueItemDecision.Fail(
-                        "queue_quality_not_higher",
-                        $"Skipped: queue already has this track at same or higher quality (status={status}).",
-                        existing.QueueUuid),
-                    false);
-            }
-
-            return new QueueDuplicateResolution(null, true);
-        }
-
-        if (context.QueueQualityUpgradeRequested)
-        {
-            var upgradeResolution = await TryResolveQueuedQualityUpgradeAsync(
-                payload,
-                context,
-                existing,
-                status,
-                cancellationToken);
-            if (upgradeResolution.Decision != null || upgradeResolution.AllowInsert)
-            {
-                return upgradeResolution;
-            }
-        }
-
-        return new QueueDuplicateResolution(
-            EnqueueItemDecision.Fail(
-                "queue_duplicate",
-                $"Skipped: matching track is already in queue (status={status}).",
-                existing.QueueUuid),
-            false);
-    }
-
-    private async Task<QueueDuplicateResolution> TryResolveQueuedQualityUpgradeAsync<TPayload>(
-        TPayload payload,
-        EnqueueItemContext context,
-        DownloadQueueItem existing,
-        string status,
-        CancellationToken cancellationToken)
-        where TPayload : class
-    {
-        var existingRank = existing.QualityRank;
-        var hasSameOrHigherQueued = existingRank.HasValue && context.RequestedRank <= existingRank.Value;
-        if (hasSameOrHigherQueued)
-        {
-            return new QueueDuplicateResolution(
-                EnqueueItemDecision.Fail(
-                    "queue_quality_not_higher",
-                    $"Skipped: queue already has this track at same or higher quality (status={status}).",
-                    existing.QueueUuid),
-                false);
-        }
-
-        if (context.RequestedRank <= (existingRank ?? int.MinValue))
-        {
-            return new QueueDuplicateResolution(null, false);
-        }
-
-        if (status is "running")
-        {
-            return new QueueDuplicateResolution(
-                EnqueueItemDecision.Fail(
-                    "queue_upgrade_in_progress",
-                    "Skipped: matching track is currently downloading. Cancel it first to upgrade quality.",
-                    existing.QueueUuid),
-                false);
-        }
-
-        SetPayloadId(payload, existing.QueueUuid);
-        ApplySourceSettingsSnapshot(payload, context.Settings);
-        var replacementJson = JsonSerializer.Serialize(payload);
-        await _queueRepository.UpdateQueueIdentityAsync(
-            BuildIdentityRefreshItem(existing, context, replacementJson),
-            cancellationToken);
-        await _queueRepository.UpdateStatusAsync(
-            existing.QueueUuid,
-            "queued",
-            error: null,
-            downloaded: 0,
-            failed: 0,
-            progress: 0,
-            cancellationToken: cancellationToken);
-        _activityLog.Info($"Duplicate upgraded in queue (engine={context.Identity.Engine}): {existing.QueueUuid}");
-        return new QueueDuplicateResolution(EnqueueItemDecision.Ok(existing.QueueUuid), false);
-    }
-
-    private async Task<EnqueueItemDecision> RequeueFailedDuplicateAsync<TPayload>(
-        TPayload payload,
-        EnqueueItemContext context,
-        DownloadQueueItem existing,
-        CancellationToken cancellationToken)
-        where TPayload : class
-    {
-        SetPayloadId(payload, existing.QueueUuid);
-        ApplySourceSettingsSnapshot(payload, context.Settings);
-        var replacementJson = JsonSerializer.Serialize(payload);
-        await _queueRepository.UpdateQueueIdentityAsync(
-            BuildIdentityRefreshItem(existing, context, replacementJson),
-            cancellationToken);
-        await _queueRepository.RequeueAsync(
-            existing.QueueUuid,
-            QueueRequeueOrigin.DuplicateRehydrate,
-            cancellationToken);
-        _activityLog.Info($"Duplicate triggered retry (engine={context.Identity.Engine}): {existing.QueueUuid}");
-        _deezspotagListener.Send("updateQueue", new
-        {
-            uuid = existing.QueueUuid,
-            status = "inQueue",
-            progress = 0,
-            downloaded = 0,
-            failed = 0,
-            error = default(string)
-        });
-        return EnqueueItemDecision.Ok(existing.QueueUuid);
-    }
-
-    private static DownloadQueueItem BuildIdentityRefreshItem(
-        DownloadQueueItem existing,
-        EnqueueItemContext context,
-        string replacementJson)
-    {
-        return existing with
-        {
-            Engine = context.Identity.Engine,
-            ArtistName = context.Identity.TrackArtist,
-            TrackTitle = context.Identity.TrackTitle,
-            Isrc = context.Identity.Isrc,
-            DeezerTrackId = context.Identity.DeezerTrackId,
-            DeezerAlbumId = context.Identity.DeezerAlbumId,
-            DeezerArtistId = context.Identity.DeezerArtistId,
-            SpotifyTrackId = context.Identity.SpotifyTrackId,
-            SpotifyAlbumId = context.Identity.SpotifyAlbumId,
-            SpotifyArtistId = context.Identity.SpotifyArtistId,
-            AppleTrackId = context.Identity.AppleTrackId,
-            AppleAlbumId = context.Identity.AppleAlbumId,
-            AppleArtistId = context.Identity.AppleArtistId,
-            DurationMs = context.Identity.DurationMs,
-            DestinationFolderId = context.Identity.DestinationFolderId ?? existing.DestinationFolderId,
-            QualityRank = context.RequestedQualityRank,
-            ContentType = context.Identity.ContentType,
-            PayloadJson = replacementJson
-        };
-    }
-
-    private static bool CanRehydrateFailedDuplicate<TPayload>(
-        TPayload payload,
-        EnqueueItemContext context,
-        DownloadQueueItem existing)
-        where TPayload : class
-    {
-        if (HasStrongQueueIdentityMatch(context.Identity, existing))
-        {
-            return true;
-        }
-
-        return HasSameSourceUrl(payload, existing.PayloadJson);
-    }
-
-    private static bool HasStrongQueueIdentityMatch(PayloadIdentity identity, DownloadQueueItem existing)
-    {
-        return EqualsNormalizedIsrc(identity.Isrc, existing.Isrc)
-            || EqualsNormalizedId(identity.DeezerTrackId, existing.DeezerTrackId)
-            || EqualsNormalizedId(identity.SpotifyTrackId, existing.SpotifyTrackId)
-            || EqualsNormalizedId(identity.AppleTrackId, existing.AppleTrackId);
-    }
-
-    private static bool HasSameSourceUrl<TPayload>(TPayload payload, string? existingPayloadJson)
-        where TPayload : class
-    {
-        var requestedSourceUrl = NormalizeComparableUrl(TryGetPayloadString(payload, "SourceUrl"));
-        if (string.IsNullOrWhiteSpace(requestedSourceUrl))
-        {
-            requestedSourceUrl = NormalizeComparableUrl(TryGetPayloadString(payload, "Url"));
-        }
-
-        if (string.IsNullOrWhiteSpace(requestedSourceUrl)
-            || string.IsNullOrWhiteSpace(existingPayloadJson))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(existingPayloadJson);
-            return UrlPropertyMatches(document.RootElement, "SourceUrl", requestedSourceUrl)
-                || UrlPropertyMatches(document.RootElement, "Url", requestedSourceUrl)
-                || UrlPropertyMatches(document.RootElement, "ResolvedSourceUrl", requestedSourceUrl);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    private static bool UrlPropertyMatches(JsonElement root, string propertyName, string requestedSourceUrl)
-    {
-        return root.TryGetProperty(propertyName, out var value)
-            && value.ValueKind == JsonValueKind.String
-            && string.Equals(NormalizeComparableUrl(value.GetString()), requestedSourceUrl, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeComparableUrl(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
-    }
-
-    private static bool EqualsNormalizedIsrc(string? left, string? right)
-    {
-        var normalizedLeft = NormalizeComparableIsrc(left);
-        var normalizedRight = NormalizeComparableIsrc(right);
-        return !string.IsNullOrWhiteSpace(normalizedLeft)
-            && !string.IsNullOrWhiteSpace(normalizedRight)
-            && string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
-    }
-
-    private static bool EqualsNormalizedId(string? left, string? right)
-    {
-        var normalizedLeft = NormalizeComparableId(left);
-        var normalizedRight = NormalizeComparableId(right);
-        return !string.IsNullOrWhiteSpace(normalizedLeft)
-            && !string.IsNullOrWhiteSpace(normalizedRight)
-            && string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeComparableIsrc(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToUpperInvariant();
-    }
-
-    private static string NormalizeComparableId(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
-    }
-
     private async Task<EnqueueItemDecision> InsertQueueItemAsync<TPayload>(
         TPayload payload,
         EnqueueItemContext context,
@@ -6595,7 +6095,7 @@ public sealed class DownloadIntentService
         return EnqueueItemDecision.Ok(item.QueueUuid);
     }
 
-    private static DuplicateLookupRequest BuildDuplicateLookupRequest(EnqueueItemContext context)
+    private static DownloadDedupeRequest BuildDedupeRequest(EnqueueItemContext context)
         => new()
         {
             Isrc = context.Identity.Isrc,
@@ -6608,31 +6108,20 @@ public sealed class DownloadIntentService
             AppleTrackId = context.Identity.AppleTrackId,
             AppleAlbumId = context.Identity.AppleAlbumId,
             AppleArtistId = context.Identity.AppleArtistId,
-            ArtistName = context.Identity.TrackArtist,
             TrackTitle = context.Identity.TrackTitle,
+            TrackArtist = context.Identity.TrackArtist,
+            TrackPrimaryArtist = context.Identity.TrackPrimaryArtist,
+            Album = context.Identity.Album,
+            Genres = context.Identity.Genres,
+            Explicit = context.Identity.Explicit,
+            ReleaseDate = context.Identity.ReleaseDate,
             DurationMs = context.Identity.DurationMs,
             DestinationFolderId = context.Identity.DestinationFolderId,
             ContentType = context.Identity.ContentType,
-            RedownloadCooldownMinutes = context.Settings.RedownloadCooldownMinutes,
-            ArtistPrimaryName = context.Identity.TrackPrimaryArtist
+            RequestedAudioVariant = context.Identity.RequestedAudioVariant,
+            RequestedLocalQualityRank = context.LocalQualityUpgradeRequested ? context.RequestedLocalQualityRank : null,
+            BlockRules = context.BlockRules
         };
-
-    private static bool IsCompletedQueueStatus(string status)
-        => status is "completed" or "complete";
-
-    private static bool IsRetryableFailedQueueStatus(string status)
-        => status is "failed";
-
-    private static bool IsCanceledQueueStatus(string status)
-        => status is "canceled" or "cancelled";
-
-    private static string BuildCooldownMessage(int redownloadCooldownMinutes)
-    {
-        var cooldownMinutes = Math.Max(0, redownloadCooldownMinutes);
-        return cooldownMinutes > 0
-            ? $"Skipped: track was downloaded recently and is in cooldown ({cooldownMinutes} minutes)."
-            : "Skipped: matching track was downloaded recently.";
-    }
 
     private static void PopulateStandardQueuePayload(
         EngineQueueItemBase payload,
@@ -6950,177 +6439,6 @@ public sealed class DownloadIntentService
         return string.Equals(engine, platform, StringComparison.OrdinalIgnoreCase)
             ? genericArtistId
             : explicitArtistId;
-    }
-
-    private async Task<bool> IsLibraryDuplicateAsync(LibraryDuplicateCheck check)
-    {
-        var sourceChecks = new (string Source, string? Value)[]
-        {
-            ("isrc", check.Isrc),
-            (DeezerPlatform, check.DeezerTrackId),
-            (SpotifyPlatform, check.SpotifyTrackId),
-            (ApplePlatform, check.AppleTrackId)
-        };
-        var albumChecks = new (string Source, string? AlbumId, string? ArtistId)[]
-        {
-            (DeezerPlatform, check.DeezerAlbumId, check.DeezerArtistId),
-            (SpotifyPlatform, check.SpotifyAlbumId, check.SpotifyArtistId),
-            (ApplePlatform, check.AppleAlbumId, check.AppleArtistId)
-        };
-        return check.DestinationFolderId.HasValue
-            ? await ExistsLibraryDuplicateInFolderAsync(
-                sourceChecks,
-                albumChecks,
-                check.TrackTitle,
-                check.TrackArtist,
-                check.TrackPrimaryArtist,
-                check.DurationMs,
-                check.DestinationFolderId.Value,
-                check.RequestedAudioVariant,
-                check.CancellationToken)
-            : await ExistsLibraryDuplicateGloballyAsync(
-                sourceChecks,
-                albumChecks,
-                check.TrackTitle,
-                check.TrackArtist,
-                check.TrackPrimaryArtist,
-                check.DurationMs,
-                check.RequestedAudioVariant,
-                check.CancellationToken);
-    }
-
-    private async Task<bool> ExistsLibraryDuplicateInFolderAsync(
-        IEnumerable<(string Source, string? Value)> sourceChecks,
-        IEnumerable<(string Source, string? AlbumId, string? ArtistId)> albumChecks,
-        string trackTitle,
-        string trackArtist,
-        string? trackPrimaryArtist,
-        int? durationMs,
-        long destinationFolderId,
-        string? requestedAudioVariant,
-        CancellationToken cancellationToken)
-    {
-        foreach (var (source, value) in sourceChecks)
-        {
-            if (!string.IsNullOrWhiteSpace(value)
-                && await _libraryRepository.ExistsTrackSourceInFolderAsync(
-                    source,
-                    value,
-                    destinationFolderId,
-                    audioVariant: requestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        foreach (var (source, albumId, artistId) in albumChecks)
-        {
-            if (!string.IsNullOrWhiteSpace(albumId)
-                && await _libraryRepository.ExistsTrackByAlbumSourceInFolderAsync(
-                    source,
-                    albumId,
-                    trackTitle,
-                    artistId,
-                    destinationFolderId,
-                    audioVariant: requestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        var metadataArtists = new[]
-        {
-            trackArtist,
-            trackPrimaryArtist
-        }
-        .Where(static artist => !string.IsNullOrWhiteSpace(artist))
-        .Distinct(StringComparer.OrdinalIgnoreCase);
-
-        var metadataArtistList = metadataArtists.ToList();
-        for (var index = 0; index < metadataArtistList.Count; index++)
-        {
-            if (await _libraryRepository.ExistsTrackByMetadataInFolderAsync(
-                    trackTitle,
-                    metadataArtistList[index]!,
-                    durationMs,
-                    destinationFolderId,
-                    audioVariant: requestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private async Task<bool> ExistsLibraryDuplicateGloballyAsync(
-        IEnumerable<(string Source, string? Value)> sourceChecks,
-        IEnumerable<(string Source, string? AlbumId, string? ArtistId)> albumChecks,
-        string trackTitle,
-        string trackArtist,
-        string? trackPrimaryArtist,
-        int? durationMs,
-        string? requestedAudioVariant,
-        CancellationToken cancellationToken)
-    {
-        foreach (var (source, value) in sourceChecks)
-        {
-            if (!string.IsNullOrWhiteSpace(value)
-                && await _libraryRepository.ExistsTrackSourceAsync(
-                    source,
-                    value,
-                    audioVariant: requestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        foreach (var (source, albumId, artistId) in albumChecks)
-        {
-            if (!string.IsNullOrWhiteSpace(albumId)
-                && await _libraryRepository.ExistsTrackByAlbumSourceAsync(
-                    source,
-                    albumId,
-                    trackTitle,
-                    artistId,
-                    audioVariant: requestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        var metadataArtists = new[]
-        {
-            trackArtist,
-            trackPrimaryArtist
-        }
-        .Where(static artist => !string.IsNullOrWhiteSpace(artist))
-        .Distinct(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var metadataArtist in metadataArtists)
-        {
-            var result = await _libraryRepository.ExistsInLibraryAsync(
-                new[]
-                {
-                    new LibraryRepository.LibraryExistenceInput(
-                        null,
-                        trackTitle,
-                        metadataArtist,
-                        durationMs)
-                },
-                cancellationToken);
-            if (result.Count > 0 && result[0])
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static string? ResolveRequestedAudioVariant(

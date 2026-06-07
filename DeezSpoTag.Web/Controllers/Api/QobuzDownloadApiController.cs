@@ -27,6 +27,7 @@ public sealed class QobuzDownloadApiController : ControllerBase
     private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
+    private readonly DownloadDedupeService _dedupeService;
     private readonly ILogger<QobuzDownloadApiController> _logger;
 
     public QobuzDownloadApiController(
@@ -36,6 +37,7 @@ public sealed class QobuzDownloadApiController : ControllerBase
         IDeezSpoTagListener deezspotagListener,
         ISpotifyIdResolver spotifyIdResolver,
         DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
+        DownloadDedupeService dedupeService,
         ILogger<QobuzDownloadApiController> logger)
     {
         _queueRepository = queueRepository;
@@ -44,6 +46,7 @@ public sealed class QobuzDownloadApiController : ControllerBase
         _deezspotagListener = deezspotagListener;
         _spotifyIdResolver = spotifyIdResolver;
         _libraryRepository = libraryRepository;
+        _dedupeService = dedupeService;
         _logger = logger;
     }
 
@@ -53,9 +56,7 @@ public sealed class QobuzDownloadApiController : ControllerBase
         var destinationFolderId = request?.DestinationFolderId;
         var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<QobuzQueueItem>(
             _queueRepository,
-            _deezspotagListener,
-            _logger,
-            _libraryRepository);
+            _dedupeService);
         var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<QobuzQueueItem>(
             _deezspotagListener,
             static payload => payload.ToQueuePayload());

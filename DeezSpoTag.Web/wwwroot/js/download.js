@@ -2038,9 +2038,6 @@ DeezSpoTag.Download = {
             library_duplicate: 'Matching file already exists in your library.',
             library_quality_not_higher: 'Requested quality is not higher than your local file.',
             queue_duplicate: 'Matching track is already in the download queue.',
-            queue_recently_downloaded: 'Track was downloaded recently and is still in cooldown.',
-            queue_quality_not_higher: 'Queue already has this track at same or higher quality.',
-            queue_upgrade_in_progress: 'Matching track is currently downloading; cancel it before upgrading.',
             queue_insert_ignored: 'Track was skipped because a matching queued item already exists.',
             destination_invalid: 'Destination folder is invalid.',
             invalid_payload: 'Download payload is invalid.'
@@ -2085,9 +2082,6 @@ DeezSpoTag.Download = {
             'library_duplicate',
             'library_quality_not_higher',
             'queue_duplicate',
-            'queue_recently_downloaded',
-            'queue_quality_not_higher',
-            'queue_upgrade_in_progress',
             'queue_insert_ignored'
         ]);
         return reasonCodes.some((code) => skipCodes.has(String(code || '').toLowerCase()))

@@ -3641,8 +3641,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             {
                 case "library_duplicate":
                 case "library_quality_not_higher":
-                case "queue_recently_downloaded":
-                case "queue_quality_not_higher":
                 case "blocklist_match":
                     return true;
             }
@@ -3664,7 +3662,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             {
                 case "queue_duplicate":
                 case "queue_insert_ignored":
-                case "queue_upgrade_in_progress":
                     return true;
             }
         }
@@ -3751,11 +3748,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         if (normalizedCodes.Contains("queue_duplicate")
             || normalizedCodes.Contains("queue_insert_ignored")
-            || normalizedCodes.Contains("queue_upgrade_in_progress")
             || normalizedCodes.Contains("library_duplicate")
             || normalizedCodes.Contains("library_quality_not_higher")
-            || normalizedCodes.Contains("queue_recently_downloaded")
-            || normalizedCodes.Contains("queue_quality_not_higher")
             || normalizedCodes.Contains("blocklist_match"))
         {
             return new WatchFailureClassification(false, normalizedCodes.FirstOrDefault(), message);

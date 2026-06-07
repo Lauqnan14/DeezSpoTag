@@ -125,7 +125,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
-    public async Task ExistsDuplicateAsync_IgnoresCompletedRowWhenPayloadFileIsMissing()
+    public async Task ExistsDuplicateAsync_MatchesCompletedRowEvenWhenPayloadFileIsMissing()
     {
         await using var context = await CreateContextAsync();
         var missingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Missing.flac");
@@ -155,7 +155,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             },
             CancellationToken.None);
 
-        Assert.False(exists);
+        Assert.True(exists);
     }
 
     [Fact]
@@ -187,6 +187,69 @@ public sealed class DownloadQueueRepositoryDuplicateTests
                 DestinationFolderId = 9,
                 ContentType = "stereo",
                 DeezerTrackId = "dz-track-existing",
+                RedownloadCooldownMinutes = 720
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    [Fact]
+    public async Task ExistsDuplicateAsync_UsesDurationToleranceForMetadataMatches()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("duration-tolerance", "Precise Artist", "Precise Track", 9) with
+            {
+                DurationMs = 180000
+            },
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Precise Artist",
+                TrackTitle = "Precise Track",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DurationMs = 181500
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    [Fact]
+    public async Task ExistsDuplicateAsync_MatchesCompletedRowFromFinalDestinationsColumn()
+    {
+        await using var context = await CreateContextAsync();
+        var staleStagingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Stale.flac");
+        var finalLibraryPath = Path.Join(context.TempRoot, "library", "Artist", "Final.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(finalLibraryPath)!);
+        await File.WriteAllTextAsync(finalLibraryPath, "audio", CancellationToken.None);
+
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                queueUuid: "completed-final-destination",
+                artist: "Shared Artist",
+                title: "Original Title",
+                destinationFolderId: 9,
+                deezerTrackId: "dz-track-final") with
+            {
+                Status = "completed",
+                PayloadJson = $$"""{ "FilePath": "{{staleStagingPath}}" }""",
+                FinalDestinationsJson = $$"""{ "{{staleStagingPath}}": "{{finalLibraryPath}}" }"""
+            },
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Different Artist Name",
+                TrackTitle = "Different Track Name",
+                DestinationFolderId = 9,
+                ContentType = "stereo",
+                DeezerTrackId = "dz-track-final",
                 RedownloadCooldownMinutes = 720
             },
             CancellationToken.None);
@@ -507,7 +570,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
 
         var requeued = await context.QueueRepository.RequeueAsync(
             "failed-hidden-retry",
-            QueueRequeueOrigin.DuplicateRehydrate,
+            QueueRequeueOrigin.AutoRetry,
             CancellationToken.None);
 
         Assert.True(requeued);

@@ -2,7 +2,7 @@ using System.Text.Json;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
-using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -11,23 +11,17 @@ internal static class DownloadQueueEnqueueHelper
     private const string DuplicateReasonCode = "queue_duplicate";
     private const string DuplicateQueueMessage = "Skipped: matching track is already in queue.";
     private const string QueuedStatus = "queued";
-    private const string RunningStatus = "running";
-    private const string PausedStatus = "paused";
 
     public static Func<TPayload, int, CancellationToken, Task<EnqueueOutcome>> CreateDedupEnqueueDelegate<TPayload>(
         DownloadQueueRepository queueRepository,
-        IDeezSpoTagListener listener,
-        ILogger logger,
-        LibraryRepository? libraryRepository = null)
+        DownloadDedupeService dedupeService)
         where TPayload : EngineQueueItemBase
     {
         return (payload, redownloadCooldownMinutes, cancellationToken) => EnqueueWithDedupAsync(
             payload,
             redownloadCooldownMinutes,
             queueRepository,
-            listener,
-            logger,
-            libraryRepository,
+            dedupeService,
             cancellationToken);
     }
 
@@ -43,275 +37,28 @@ internal static class DownloadQueueEnqueueHelper
         TPayload payload,
         int redownloadCooldownMinutes,
         DownloadQueueRepository queueRepository,
-        IDeezSpoTagListener listener,
-        ILogger logger,
-        CancellationToken cancellationToken)
-        where TPayload : EngineQueueItemBase
-        => await EnqueueWithDedupAsync(
-            payload,
-            redownloadCooldownMinutes,
-            queueRepository,
-            listener,
-            logger,
-            libraryRepository: null,
-            cancellationToken);
-
-    public static async Task<EnqueueOutcome> EnqueueWithDedupAsync<TPayload>(
-        TPayload payload,
-        int redownloadCooldownMinutes,
-        DownloadQueueRepository queueRepository,
-        IDeezSpoTagListener listener,
-        ILogger logger,
-        LibraryRepository? libraryRepository,
+        DownloadDedupeService dedupeService,
         CancellationToken cancellationToken)
         where TPayload : EngineQueueItemBase
     {
         var durationMs = ResolveDurationMs(payload);
-        if (await ExistsLibraryDuplicateAsync(payload, durationMs, libraryRepository, cancellationToken))
-        {
-            return EnqueueOutcome.Skipped("library_duplicate", "Skipped: matching file already exists in library.");
-        }
-
-        var duplicateRequest = BuildDuplicateLookupRequest(payload, durationMs, redownloadCooldownMinutes);
-        var duplicate = await queueRepository.GetDuplicateAsync(duplicateRequest, cancellationToken);
-        if (duplicate != null)
-        {
-            return await HandleDuplicateStatusAsync(payload, duplicate, queueRepository, listener, logger, cancellationToken);
-        }
-
-        var existing = await queueRepository.GetByMetadataAsync(
-            payload.Engine,
-            payload.Artist,
-            payload.Title,
-            payload.ContentType,
-            payload.DestinationFolderId,
+        var dedupeDecision = await dedupeService.CheckAsync(
+            DownloadDedupeService.FromQueuePayload(payload, durationMs),
             cancellationToken);
-        if (existing is not null)
+        if (!dedupeDecision.Allowed)
         {
-            return await HandleExistingQueueEntryAsync(payload, existing, queueRepository, cancellationToken);
+            return EnqueueOutcome.Skipped(
+                dedupeDecision.ReasonCode ?? DuplicateReasonCode,
+                dedupeDecision.Message ?? DuplicateQueueMessage,
+                dedupeDecision.QueueUuid);
         }
 
         return await EnqueueNewItemAsync(payload, durationMs, queueRepository, cancellationToken);
     }
 
-    private static async Task<bool> ExistsLibraryDuplicateAsync<TPayload>(
-        TPayload payload,
-        int? durationMs,
-        LibraryRepository? libraryRepository,
-        CancellationToken cancellationToken)
-        where TPayload : EngineQueueItemBase
-    {
-        if (libraryRepository?.IsConfigured != true || !payload.DestinationFolderId.HasValue)
-        {
-            return false;
-        }
-
-        var destinationFolderId = payload.DestinationFolderId.Value;
-        if (!string.IsNullOrWhiteSpace(payload.Isrc)
-            && await libraryRepository.ExistsTrackSourceInFolderAsync(
-                "isrc",
-                payload.Isrc,
-                destinationFolderId,
-                cancellationToken: cancellationToken))
-        {
-            return true;
-        }
-
-        var sourceChecks = new (string Source, string? Value)[]
-        {
-            ("deezer", payload.DeezerId),
-            ("spotify", payload.SpotifyId),
-            ("apple", payload.AppleId)
-        };
-        foreach (var (source, value) in sourceChecks)
-        {
-            if (!string.IsNullOrWhiteSpace(value)
-                && await libraryRepository.ExistsTrackSourceInFolderAsync(
-                    source,
-                    value,
-                    destinationFolderId,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        return await libraryRepository.ExistsTrackByMetadataInFolderAsync(
-            payload.Title,
-            payload.Artist,
-            durationMs,
-            destinationFolderId,
-            cancellationToken: cancellationToken);
-    }
-
-    private static DuplicateLookupRequest BuildDuplicateLookupRequest<TPayload>(
-        TPayload payload,
-        int? durationMs,
-        int redownloadCooldownMinutes)
-        where TPayload : EngineQueueItemBase
-    {
-        return new DuplicateLookupRequest
-        {
-            Isrc = payload.Isrc,
-            DeezerTrackId = payload.DeezerId,
-            SpotifyTrackId = payload.SpotifyId,
-            AppleTrackId = payload.AppleId,
-            ArtistName = payload.Artist,
-            TrackTitle = payload.Title,
-            DurationMs = durationMs,
-            DestinationFolderId = payload.DestinationFolderId,
-            ContentType = payload.ContentType,
-            RedownloadCooldownMinutes = redownloadCooldownMinutes
-        };
-    }
-
     private static int? ResolveDurationMs<TPayload>(TPayload payload)
         where TPayload : EngineQueueItemBase
         => payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : (int?)null;
-
-    private static async Task<EnqueueOutcome> HandleDuplicateStatusAsync<TPayload>(
-        TPayload payload,
-        DownloadQueueItem duplicate,
-        DownloadQueueRepository queueRepository,
-        IDeezSpoTagListener listener,
-        ILogger logger,
-        CancellationToken cancellationToken)
-        where TPayload : EngineQueueItemBase
-    {
-        var duplicateStatus = duplicate.Status ?? string.Empty;
-        if (IsRetryableQueueStatus(duplicateStatus))
-        {
-            payload.Id = duplicate.QueueUuid;
-            var replacementPayloadJson = JsonSerializer.Serialize(payload);
-            await queueRepository.UpdateQueueIdentityAsync(
-                BuildIdentityRefreshItem(
-                    duplicate,
-                    payload,
-                    ResolveDurationMs(payload),
-                    replacementPayloadJson),
-                cancellationToken);
-            await queueRepository.ClearRetryArtifactsAsync(duplicate.QueueUuid, cancellationToken);
-            await queueRepository.RequeueAsync(
-                duplicate.QueueUuid,
-                QueueRequeueOrigin.DuplicateRehydrate,
-                cancellationToken);
-            if (logger.IsEnabled(LogLevel.Information))
-            {
-                logger.LogInformation("Duplicate triggered retry (engine={Engine}): {QueueUuid}", payload.Engine, duplicate.QueueUuid);
-            }
-            listener.Send("updateQueue", new
-            {
-                uuid = duplicate.QueueUuid,
-                status = "inQueue",
-                progress = 0,
-                downloaded = 0,
-                failed = 0,
-                error = default(string)
-            });
-            return EnqueueOutcome.Queued("queue_requeued", "Duplicate triggered retry", duplicate.QueueUuid);
-        }
-
-        if (IsCompletedStatus(duplicateStatus))
-        {
-            if (logger.IsEnabled(LogLevel.Information))
-            {
-                logger.LogInformation(
-                    "Skip enqueue (engine={Engine} reason=recently_downloaded): {Artist} - {Title}",
-                    payload.Engine,
-                    payload.Artist,
-                    payload.Title);
-            }
-            return EnqueueOutcome.Skipped("queue_recently_downloaded", "Skipped: track was downloaded recently.");
-        }
-
-        logger.LogWarning(
-            "Skip enqueue (engine={Engine} reason=duplicate): {Artist} - {Title}",
-            payload.Engine,
-            payload.Artist,
-            payload.Title);
-        return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
-    }
-
-    private static DownloadQueueItem BuildIdentityRefreshItem<TPayload>(
-        DownloadQueueItem existing,
-        TPayload payload,
-        int? durationMs,
-        string replacementPayloadJson)
-        where TPayload : EngineQueueItemBase
-        => existing with
-        {
-            Engine = payload.Engine,
-            ArtistName = payload.Artist,
-            TrackTitle = payload.Title,
-            Isrc = payload.Isrc,
-            DeezerTrackId = payload.DeezerId,
-            SpotifyTrackId = payload.SpotifyId,
-            AppleTrackId = payload.AppleId,
-            DurationMs = durationMs,
-            DestinationFolderId = payload.DestinationFolderId ?? existing.DestinationFolderId,
-            ContentType = payload.ContentType,
-            PayloadJson = replacementPayloadJson
-        };
-
-    private static bool IsRetryableQueueStatus(string status)
-        => status is "failed";
-
-    private static bool IsCompletedStatus(string status)
-        => status.Equals("completed", StringComparison.OrdinalIgnoreCase)
-            || status.Equals("complete", StringComparison.OrdinalIgnoreCase);
-
-    private static async Task<EnqueueOutcome> HandleExistingQueueEntryAsync<TPayload>(
-        TPayload payload,
-        DownloadQueueItem existing,
-        DownloadQueueRepository queueRepository,
-        CancellationToken cancellationToken)
-        where TPayload : EngineQueueItemBase
-    {
-        var existingStatus = existing.Status ?? string.Empty;
-        if (IsQueuedQueueStatus(existingStatus))
-        {
-            return EnqueueOutcome.Skipped(DuplicateReasonCode, DuplicateQueueMessage);
-        }
-
-        if (IsCompletedStatus(existingStatus))
-        {
-            if (!DownloadQueueRepository.HasExistingMaterializedFile(existing))
-            {
-                return await EnqueueNewItemAsync(payload, ResolveDurationMs(payload), queueRepository, cancellationToken);
-            }
-
-            return EnqueueOutcome.Skipped("queue_recently_downloaded", "Skipped: track was downloaded recently.");
-        }
-
-        if (IsCanceledStatus(existingStatus))
-        {
-            return EnqueueOutcome.Skipped(
-                "queue_cancelled_manual_retry_required",
-                "Skipped: matching track is cancelled and requires manual retry.");
-        }
-
-        payload.Id = existing.QueueUuid;
-        var payloadJson = JsonSerializer.Serialize(payload);
-        await queueRepository.UpdateQueueIdentityAsync(
-            BuildIdentityRefreshItem(existing, payload, ResolveDurationMs(payload), payloadJson),
-            cancellationToken);
-        await queueRepository.ClearRetryArtifactsAsync(existing.QueueUuid, cancellationToken);
-        await queueRepository.UpdateStatusAsync(
-            existing.QueueUuid,
-            QueuedStatus,
-            error: null,
-            downloaded: 0,
-            failed: 0,
-            progress: 0,
-            cancellationToken: cancellationToken);
-        return EnqueueOutcome.Queued("queue_requeued", "Duplicate triggered retry", existing.QueueUuid);
-    }
-
-    private static bool IsQueuedQueueStatus(string status)
-        => status is QueuedStatus or RunningStatus or PausedStatus;
-
-    private static bool IsCanceledStatus(string status)
-        => status is "canceled" or "cancelled";
 
     private static async Task<EnqueueOutcome> EnqueueNewItemAsync<TPayload>(
         TPayload payload,
@@ -373,4 +120,7 @@ public readonly record struct EnqueueOutcome(
 
     public static EnqueueOutcome Skipped(string reasonCode, string message)
         => new(false, true, reasonCode, message, null);
+
+    public static EnqueueOutcome Skipped(string reasonCode, string message, string? queueUuid)
+        => new(false, true, reasonCode, message, queueUuid);
 }

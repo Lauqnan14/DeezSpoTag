@@ -7,7 +7,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Controllers.Api;
+using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -28,8 +30,7 @@ public sealed class DownloadQueueEnqueueHelperTests
             payload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -53,13 +54,12 @@ public sealed class DownloadQueueEnqueueHelperTests
             payload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
         Assert.True(outcome.AlreadyQueued);
-        Assert.Equal("queue_cancelled_manual_retry_required", outcome.ReasonCode);
+        Assert.Equal("queue_duplicate", outcome.ReasonCode);
 
         var persisted = await context.QueueRepository.GetByUuidAsync(payload.Id, CancellationToken.None);
         Assert.NotNull(persisted);
@@ -67,7 +67,7 @@ public sealed class DownloadQueueEnqueueHelperTests
     }
 
     [Fact]
-    public async Task EnqueueWithDedupAsync_RehydratingFailedDuplicateReplacesStaleOutputState()
+    public async Task EnqueueWithDedupAsync_DoesNotAutoRehydrateFailedDuplicate()
     {
         await using var context = await CreateContextAsync();
         var existingPayload = CreatePayload("failed-stale-output-1");
@@ -103,29 +103,27 @@ public sealed class DownloadQueueEnqueueHelperTests
             replacementPayload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
-        Assert.True(outcome.Success);
+        Assert.False(outcome.Success);
+        Assert.True(outcome.AlreadyQueued);
+        Assert.Equal("queue_duplicate", outcome.ReasonCode);
         Assert.Equal(existingPayload.Id, outcome.QueueUuid);
 
         var persisted = await context.QueueRepository.GetByUuidAsync(existingPayload.Id, CancellationToken.None);
         Assert.NotNull(persisted);
-        Assert.Equal("queued", persisted!.Status, ignoreCase: true);
-        Assert.Equal("DJ Drama", persisted.ArtistName);
-        Assert.Equal("Day Dreaming (feat. Akon, Snoop Dogg & T.I.)", persisted.TrackTitle);
-        Assert.Null(persisted.FinalDestinationsJson);
+        Assert.Equal("failed", persisted!.Status, ignoreCase: true);
+        Assert.Equal("Shared Artist", persisted.ArtistName);
+        Assert.Equal("Shared Track", persisted.TrackTitle);
+        Assert.NotNull(persisted.FinalDestinationsJson);
 
         Assert.False(string.IsNullOrWhiteSpace(persisted.PayloadJson));
         var payload = JsonSerializer.Deserialize<QobuzQueueItem>(persisted.PayloadJson!);
         Assert.NotNull(payload);
         Assert.Equal(existingPayload.Id, payload!.Id);
-        Assert.Equal("DJ Drama", payload.Artist);
-        Assert.Equal("Day Dreaming (feat. Akon, Snoop Dogg & T.I.)", payload.Title);
-        Assert.True(string.IsNullOrWhiteSpace(payload.FilePath));
-        Assert.Empty(payload.Files);
-        Assert.Empty(payload.FinalDestinations);
+        Assert.Equal("Shared Artist", payload.Artist);
+        Assert.Equal("Shared Track", payload.Title);
     }
 
     [Fact]
@@ -147,17 +145,16 @@ public sealed class DownloadQueueEnqueueHelperTests
             payload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
         Assert.True(outcome.AlreadyQueued);
-        Assert.Equal("queue_recently_downloaded", outcome.ReasonCode);
+        Assert.Equal("queue_duplicate", outcome.ReasonCode);
     }
 
     [Fact]
-    public async Task EnqueueWithDedupAsync_AllowsCompletedDuplicateWhenPayloadFileWasDeleted()
+    public async Task EnqueueWithDedupAsync_BlocksCompletedDuplicateWhenPayloadFileWasDeleted()
     {
         await using var context = await CreateContextAsync();
         var payload = CreatePayload("completed-deleted-1");
@@ -175,12 +172,12 @@ public sealed class DownloadQueueEnqueueHelperTests
             retryPayload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
-        Assert.True(outcome.Success);
-        Assert.False(outcome.AlreadyQueued);
+        Assert.False(outcome.Success);
+        Assert.True(outcome.AlreadyQueued);
+        Assert.Equal("queue_duplicate", outcome.ReasonCode);
     }
 
     [Fact]
@@ -196,8 +193,7 @@ public sealed class DownloadQueueEnqueueHelperTests
             secondPayload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
         Assert.True(outcome.Success);
@@ -253,8 +249,7 @@ public sealed class DownloadQueueEnqueueHelperTests
             conflictingPayload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -275,8 +270,7 @@ public sealed class DownloadQueueEnqueueHelperTests
             secondPayload,
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
-            context.Listener,
-            NullLogger.Instance,
+            context.DedupeService,
             CancellationToken.None);
 
         Assert.True(outcome.Success);
@@ -286,15 +280,28 @@ public sealed class DownloadQueueEnqueueHelperTests
         Assert.Equal(2, queuedItems.Count);
     }
 
-    private static Task<TestContext> CreateContextAsync()
+    private static async Task<TestContext> CreateContextAsync()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-download-queue-tests-" + Path.GetRandomFileName());
         Directory.CreateDirectory(tempRoot);
 
         var queueDb = Path.Join(tempRoot, "queue.db");
         var queueRepository = BuildRepository(tempRoot, queueDb);
-        var listener = new DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener();
-        return Task.FromResult(new TestContext(tempRoot, queueDb, queueRepository, listener));
+        var libraryDb = Path.Join(tempRoot, "library.db");
+        var libraryConfiguration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = $"Data Source={libraryDb}"
+            })
+            .Build();
+        var libraryDbService = new LibraryDbService(libraryConfiguration, NullLogger<LibraryDbService>.Instance);
+        await libraryDbService.EnsureSchemaAsync(CancellationToken.None);
+        var libraryRepository = new LibraryRepository(libraryConfiguration, NullLogger<LibraryRepository>.Instance);
+        var dedupeService = new DownloadDedupeService(
+            queueRepository,
+            libraryRepository,
+            NullLogger<DownloadDedupeService>.Instance);
+        return new TestContext(tempRoot, queueDb, queueRepository, dedupeService);
     }
 
     private static DownloadQueueRepository BuildRepository(string tempRoot, string queueDbPath)
@@ -416,18 +423,18 @@ public sealed class DownloadQueueEnqueueHelperTests
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(string tempRoot, string queueDbPath, DownloadQueueRepository queueRepository, DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener listener)
+        public TestContext(string tempRoot, string queueDbPath, DownloadQueueRepository queueRepository, DownloadDedupeService dedupeService)
         {
             TempRoot = tempRoot;
             QueueDbPath = queueDbPath;
             QueueRepository = queueRepository;
-            Listener = listener;
+            DedupeService = dedupeService;
         }
 
         public string TempRoot { get; }
         public string QueueDbPath { get; }
         public DownloadQueueRepository QueueRepository { get; }
-        public DeezSpoTag.Services.Download.Shared.Models.DeezSpoTagListener Listener { get; }
+        public DownloadDedupeService DedupeService { get; }
 
         public ValueTask DisposeAsync()
         {

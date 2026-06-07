@@ -24,6 +24,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
     private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
+    private readonly DownloadDedupeService _dedupeService;
     private readonly ILogger<AmazonDownloadApiController> _logger;
 
     public AmazonDownloadApiController(
@@ -33,6 +34,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
         IDeezSpoTagListener deezspotagListener,
         ISpotifyIdResolver spotifyIdResolver,
         DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
+        DownloadDedupeService dedupeService,
         ILogger<AmazonDownloadApiController> logger)
     {
         _queueRepository = queueRepository;
@@ -41,6 +43,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
         _deezspotagListener = deezspotagListener;
         _spotifyIdResolver = spotifyIdResolver;
         _libraryRepository = libraryRepository;
+        _dedupeService = dedupeService;
         _logger = logger;
     }
 
@@ -51,9 +54,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
         const string quality = "FLAC";
         var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<AmazonQueueItem>(
             _queueRepository,
-            _deezspotagListener,
-            _logger,
-            _libraryRepository);
+            _dedupeService);
         var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<AmazonQueueItem>(
             _deezspotagListener,
             static payload => payload.ToQueuePayload());
