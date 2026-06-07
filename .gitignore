@@ -61,7 +61,10 @@ Tools/AppleMusicWrapper/runtime/app/rootfs/
 Tools/AppleMusicWrapper/source/build/
 Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
 Tools/AppleMusicWrapper/runtime/app/.backup-ref-swap/
-DeezSpoTag.Web/Tools/models/
+DeezSpoTag.Web/Tools/models/*
+!DeezSpoTag.Web/Tools/models/
+!DeezSpoTag.Web/Tools/models/*.pb
+!DeezSpoTag.Web/Tools/models/*.json
 DeezSpoTag.Web/DeezSpoTag.Web/Tools/models/
 DeezSpoTag.Web/spotify/auth/
 DeezSpoTag.Web/spotify/blobs/
