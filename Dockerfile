@@ -29,6 +29,7 @@ RUN set -eux; \
 FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION} AS runtime
 WORKDIR /app
 ARG DEEZSPOTAG_BUILD_VERSION=dev
+ARG DEEZSPOTAG_FETCH_MODELS_DURING_BUILD=1
 ARG TARGETARCH
 ARG BENTO4_URL_X86_64=https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip
 ARG BENTO4_SHA256=
@@ -185,63 +186,18 @@ COPY --from=build /app/publish .
 COPY --from=build /src/DeezSpoTag.Services/Library/Schema /app/Schema
 COPY --from=build /src/DeezSpoTag.Web/Tools /app/Tools
 COPY --from=apple-wrapper-build /out/apple-wrapper-runv2 /app/Tools/AppleMusicWrapper/runv2/apple-wrapper-runv2
+COPY scripts/fetch-vibe-models.sh /tmp/fetch-vibe-models.sh
 
 RUN set -eux; \
     python3 -m venv /opt/shazam-venv; \
     /opt/shazam-venv/bin/pip install --no-cache-dir --upgrade pip; \
     /opt/shazam-venv/bin/pip install --no-cache-dir -r /app/Tools/shazam_port/requirements-modern.txt; \
-    # Ensure all analyzer models required by current code paths are present. \
-    # Bundled repository models are used first; any missing files are fetched best-effort. \
-    # Runtime provisioning in TrackAnalysisBackgroundService will retry missing models. \
     models_dir=/app/Tools/models; \
     mkdir -p "${models_dir}"; \
-    model_fetch_failures=0; \
-    fetch_if_missing() { \
-      file="$1"; \
-      url="$2"; \
-      target="${models_dir}/${file}"; \
-      tmp="${target}.tmp"; \
-      if [ ! -s "${target}" ]; then \
-        attempt=1; \
-        max_attempts=8; \
-        while [ "${attempt}" -le "${max_attempts}" ]; do \
-          if curl -fL --connect-timeout 20 --max-time 300 -o "${tmp}" "${url}"; then \
-            mv "${tmp}" "${target}"; \
-            return 0; \
-          fi; \
-          rm -f "${tmp}"; \
-          if [ "${attempt}" -eq "${max_attempts}" ]; then \
-            echo "WARNING: Failed to download ${file} from ${url} after ${max_attempts} attempts." >&2; \
-            model_fetch_failures=$((model_fetch_failures + 1)); \
-            return 0; \
-          fi; \
-          sleep_seconds=$((attempt * 3)); \
-          echo "Retry ${attempt}/${max_attempts} for ${file} in ${sleep_seconds}s..." >&2; \
-          sleep "${sleep_seconds}"; \
-          attempt=$((attempt + 1)); \
-        done; \
-      fi; \
-    }; \
-    fetch_if_missing "msd-musicnn-1.pb" "https://essentia.upf.edu/models/feature-extractors/musicnn/msd-musicnn-1.pb"; \
-    fetch_if_missing "mood_happy-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/mood_happy/mood_happy-msd-musicnn-1.pb"; \
-    fetch_if_missing "mood_sad-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/mood_sad/mood_sad-msd-musicnn-1.pb"; \
-    fetch_if_missing "mood_relaxed-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/mood_relaxed/mood_relaxed-msd-musicnn-1.pb"; \
-    fetch_if_missing "mood_aggressive-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/mood_aggressive/mood_aggressive-msd-musicnn-1.pb"; \
-    fetch_if_missing "mood_party-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/mood_party/mood_party-msd-musicnn-1.pb"; \
-    fetch_if_missing "mood_acoustic-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/mood_acoustic/mood_acoustic-msd-musicnn-1.pb"; \
-    fetch_if_missing "mood_electronic-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/mood_electronic/mood_electronic-msd-musicnn-1.pb"; \
-    fetch_if_missing "voice_instrumental-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/voice_instrumental/voice_instrumental-msd-musicnn-1.pb"; \
-    fetch_if_missing "tonal_atonal-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/tonal_atonal/tonal_atonal-msd-musicnn-1.pb"; \
-    fetch_if_missing "danceability-msd-musicnn-1.pb" "https://essentia.upf.edu/models/classification-heads/danceability/danceability-msd-musicnn-1.pb"; \
-    fetch_if_missing "deam-msd-musicnn-2.pb" "https://essentia.upf.edu/models/classification-heads/deam/deam-msd-musicnn-2.pb"; \
-    fetch_if_missing "discogs-effnet-bs64-1.pb" "https://essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-bs64-1.pb"; \
-    fetch_if_missing "approachability_regression-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/approachability/approachability_regression-discogs-effnet-1.pb"; \
-    fetch_if_missing "engagement_regression-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/engagement/engagement_regression-discogs-effnet-1.pb"; \
-    fetch_if_missing "genre_discogs400-discogs-effnet-1.pb" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb"; \
-    fetch_if_missing "genre_discogs400-discogs-effnet-1.json" "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.json"; \
-    if [ "${model_fetch_failures}" -gt 0 ]; then \
-      echo "WARNING: ${model_fetch_failures} model file(s) were not fetched during image build." \
-        "Runtime will retry provisioning." >&2; \
+    if [ "${DEEZSPOTAG_FETCH_MODELS_DURING_BUILD}" = "1" ]; then \
+      MODELS_DIR="${models_dir}" /tmp/fetch-vibe-models.sh; \
+    else \
+      echo "Skipping model fetch during Docker build; workflow must provide bundled models."; \
     fi
 
 EXPOSE 8668

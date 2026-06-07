@@ -176,6 +176,25 @@ jobs:
           retry docker buildx imagetools inspect mcr.microsoft.com/dotnet/sdk:10.0 >/dev/null
           retry docker buildx imagetools inspect mcr.microsoft.com/dotnet/aspnet:10.0 >/dev/null
 
+      - name: Cache vibe analysis models
+        if: matrix.image_name == 'deezspotag'
+        uses: actions/cache@v4
+        with:
+          path: DeezSpoTag.Web/Tools/models
+          key: vibe-analysis-models-v1
+
+      - name: Prime vibe analysis models
+        if: matrix.image_name == 'deezspotag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/fetch-vibe-models.sh
+          MODELS_DIR=DeezSpoTag.Web/Tools/models \
+            CONNECT_TIMEOUT_SECONDS=20 \
+            MAX_TIME_SECONDS=300 \
+            MAX_ATTEMPTS=4 \
+            scripts/fetch-vibe-models.sh
+
       - name: Build app audit image
         if: matrix.image_name == 'deezspotag'
         shell: bash
@@ -197,6 +216,7 @@ jobs:
             --platform linux/amd64 \
             --network host \
             --build-arg DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
+            --build-arg DEEZSPOTAG_FETCH_MODELS_DURING_BUILD=0 \
             --load \
             -t deezspotag-audit:${{ steps.commit.outputs.full_sha }} \
             .
@@ -294,6 +314,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }}
+            DEEZSPOTAG_FETCH_MODELS_DURING_BUILD=0
           cache-from: type=gha,scope=${{ matrix.image_name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}
 
