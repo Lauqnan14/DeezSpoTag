@@ -195,6 +195,7 @@ jobs:
           }
           retry_buildx \
             --platform linux/amd64 \
+            --network host \
             --build-arg DEEZSPOTAG_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
             --load \
             -t deezspotag-audit:${{ steps.commit.outputs.full_sha }} \
@@ -287,6 +288,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           pull: true
+          network: host
           platforms: ${{ matrix.platforms }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
