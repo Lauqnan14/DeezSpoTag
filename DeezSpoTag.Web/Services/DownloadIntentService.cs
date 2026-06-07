@@ -245,10 +245,7 @@ public sealed class DownloadIntentService
     private readonly IDownloadTagSettingsResolver _downloadTagSettingsResolver;
     private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly IDownloadApiHealthTracker _apiHealthTracker;
-    private readonly LibraryScanRunner _libraryScanRunner;
     private readonly ILogger<DownloadIntentService> _logger;
-    private readonly object _queueFreshnessLock = new();
-    private readonly HashSet<long> _queueFreshnessVerifiedFolderIds = new();
     private IReadOnlyDictionary<string, string>? _genreAliasMap;
     private IReadOnlyList<string>? _genreBlockList;
     private bool _genreTagNormalizationEnabled;
@@ -276,7 +273,6 @@ public sealed class DownloadIntentService
         _downloadTagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
         _boomplayMetadataService = serviceProvider.GetRequiredService<BoomplayMetadataService>();
         _apiHealthTracker = serviceProvider.GetRequiredService<IDownloadApiHealthTracker>();
-        _libraryScanRunner = serviceProvider.GetRequiredService<LibraryScanRunner>();
         _logger = logger;
     }
 
@@ -6046,8 +6042,6 @@ public sealed class DownloadIntentService
             return blockRuleFailure;
         }
 
-        await EnsureDestinationFolderCurrentBeforeDuplicateCheckAsync(context, cancellationToken);
-
         var libraryFailure = await TryValidateLibraryDuplicateStateAsync(context, cancellationToken);
         if (libraryFailure != null)
         {
@@ -6210,37 +6204,6 @@ public sealed class DownloadIntentService
         }
 
         return EnqueueItemDecision.Fail("blocklist_match", message);
-    }
-
-    private async Task EnsureDestinationFolderCurrentBeforeDuplicateCheckAsync(
-        EnqueueItemContext context,
-        CancellationToken cancellationToken)
-    {
-        if (!_libraryRepository.IsConfigured
-            || !context.Identity.DestinationFolderId.HasValue
-            || !RequiresResolvedMusicMetadata(context.Identity))
-        {
-            return;
-        }
-
-        var destinationFolderId = context.Identity.DestinationFolderId.Value;
-        lock (_queueFreshnessLock)
-        {
-            if (_queueFreshnessVerifiedFolderIds.Contains(destinationFolderId))
-            {
-                return;
-            }
-        }
-
-        await _libraryScanRunner.RunFolderScanAndWaitAsync(
-            destinationFolderId,
-            skipSpotifyFetch: true,
-            cancellationToken);
-
-        lock (_queueFreshnessLock)
-        {
-            _queueFreshnessVerifiedFolderIds.Add(destinationFolderId);
-        }
     }
 
     private async Task<EnqueueItemDecision?> TryValidateLibraryDuplicateStateAsync(

@@ -1277,7 +1277,7 @@ public partial class Program
                 SpotifyBlobService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyBlobService>(),
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
-                LibraryScanRunner = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryScanRunner>(),
+                KnownFileIngestionService = sp.GetRequiredService<DeezSpoTag.Web.Services.KnownLibraryFileIngestionService>(),
                 QualityScannerService = sp.GetRequiredService<DeezSpoTag.Web.Services.QualityScannerService>(),
                 DuplicateCleanerService = sp.GetRequiredService<DeezSpoTag.Web.Services.DuplicateCleanerService>(),
                 LyricsRefreshQueueService = sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(),
@@ -1642,6 +1642,7 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>()));
         services.AddSingleton<DeezSpoTag.Web.Services.LocalLibraryScanner>();
+        services.AddSingleton<DeezSpoTag.Web.Services.KnownLibraryFileIngestionService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryScanRunner>();
         RegisterStartupWorker<DeezSpoTag.Web.Services.LibraryScanRunner>(
             services,

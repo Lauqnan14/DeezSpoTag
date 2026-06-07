@@ -250,7 +250,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken);
             var effectiveRequest = ResolveEffectiveRequest(request, preference);
 
-            if (!await RunLocalLibraryScanAsync(scope.ServiceProvider, effectiveRequest, cancellationToken))
+            if (!await VerifyLocalLibraryIngestionAsync(scope.ServiceProvider, effectiveRequest, cancellationToken))
             {
                 return false;
             }
@@ -434,7 +434,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task<bool> RunLocalLibraryScanAsync(
+    private static async Task<bool> VerifyLocalLibraryIngestionAsync(
         IServiceProvider services,
         SyncRequest request,
         CancellationToken cancellationToken)
@@ -444,20 +444,19 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             return true;
         }
 
-        var scanner = services.GetService<LibraryScanRunner>();
-        if (scanner == null)
+        var ingestionService = services.GetService<KnownLibraryFileIngestionService>();
+        if (ingestionService == null)
         {
             return true;
         }
 
         if (request.ChangedFilePaths.Count > 0)
         {
-            var ingestion = await scanner.RunChangedFilesAndWaitForIngestionAsync(
+            var ingestion = await ingestionService.VerifyAsync(
                 new Dictionary<long, List<string>>
                 {
                     [request.DestinationFolderId.Value] = request.ChangedFilePaths.ToList()
                 },
-                skipSpotifyFetch: true,
                 cancellationToken);
             return ingestion.IsComplete;
         }
@@ -467,7 +466,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         configStore?.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "warning",
-            $"Watchlist playlist library scan skipped because no final file paths were provided for {request.Source}:{request.PlaylistId}:{request.TrackId} (destinationFolderId={request.DestinationFolderId})."));
+            $"Watchlist playlist direct library ingestion skipped because no final file paths were provided for {request.Source}:{request.PlaylistId}:{request.TrackId} (destinationFolderId={request.DestinationFolderId})."));
         return false;
     }
 

@@ -256,7 +256,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("return remoteUrl;", visualSource, StringComparison.Ordinal);
         Assert.Contains("ResolveActiveFileName", visualSource, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("RunChangedFilesAndWaitForIngestionAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("VerifyAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
     }
 

@@ -187,9 +187,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly AutoTagConfigBuilder _configBuilder;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly DeezSpoTagSettingsService _settingsService;
-    private readonly LibraryScanRunner _scanRunner;
-    private readonly PlatformAuthService _platformAuthService;
-    private readonly PlexApiClient _plexApiClient;
+    private readonly KnownLibraryFileIngestionService _knownFileIngestionService;
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
@@ -246,9 +244,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _settingsService = serviceProvider.GetRequiredService<DeezSpoTagSettingsService>();
         _configBuilder = serviceProvider.GetRequiredService<AutoTagConfigBuilder>();
         _profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
-        _scanRunner = serviceProvider.GetRequiredService<LibraryScanRunner>();
-        _platformAuthService = serviceProvider.GetRequiredService<PlatformAuthService>();
-        _plexApiClient = serviceProvider.GetRequiredService<PlexApiClient>();
+        _knownFileIngestionService = serviceProvider.GetRequiredService<KnownLibraryFileIngestionService>();
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
@@ -1232,11 +1228,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: verifying library DB ingestion for {changedFileCount} finalized file(s) before watchlist sync."));
+            $"Automation: verifying direct library DB ingestion for {changedFileCount} finalized file(s) before watchlist sync."));
 
-        var ingestion = await _scanRunner.RunChangedFilesAndWaitForIngestionAsync(
+        var ingestion = await _knownFileIngestionService.IngestAndVerifyAsync(
             movedFilesByDestination,
-            skipSpotifyFetch: false,
             cancellationToken);
         if (ingestion.IsComplete)
         {
@@ -1631,7 +1626,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Automation: post-download library scan skipped (no moved library files detected)."));
+                "Automation: post-download direct library ingestion skipped (no moved library files detected)."));
             return;
         }
 
@@ -1641,29 +1636,26 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Automation: post-download library scan skipped (no moved library file paths detected)."));
+                "Automation: post-download direct library ingestion skipped (no moved library file paths detected)."));
             return;
         }
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: post-download targeted library scan starting for {changedFileCount} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
+            $"Automation: post-download direct library ingestion starting for {changedFileCount} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
 
-        var ingestion = await _scanRunner.RunChangedFilesAndWaitForIngestionAsync(
+        var ingestion = await _knownFileIngestionService.IngestAndVerifyAsync(
             movedFilesByDestination,
-            skipSpotifyFetch: false,
             cancellationToken);
         if (!ingestion.IsComplete)
         {
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 ErrorLogLevel,
-                $"Automation: post-download targeted library scan incomplete; {ingestion.MissingFilePaths.Count} finalized audio file(s) are missing from the library DB."));
+                $"Automation: post-download direct library ingestion incomplete; {ingestion.MissingFilePaths.Count} finalized audio file(s) are missing from the library DB."));
             return;
         }
-
-        await TriggerPlexScanAsync(cancellationToken);
 
         var vibeSettings = await _vibeSettingsStore.LoadAsync();
         if (vibeSettings.Enabled)
@@ -1671,7 +1663,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Automation: vibe analysis starting after targeted library scan completed."));
+                "Automation: vibe analysis starting after direct library ingestion completed."));
 
             await _analysisService.AnalyzeNowAsync(Math.Clamp(vibeSettings.BatchSize, 10, 500), cancellationToken);
         }
@@ -2273,64 +2265,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             || path.EndsWith(Path.AltDirectorySeparatorChar)
             ? path
             : path + Path.DirectorySeparatorChar;
-    }
-
-    private async Task TriggerPlexScanAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                "Automation: Plex scan starting after library scan."));
-
-            var authState = await _platformAuthService.LoadAsync();
-            var plex = authState.Plex;
-            if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
-            {
-                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                    DateTimeOffset.UtcNow,
-                    "info",
-                    "Automation: Plex scan skipped (Plex is not configured)."));
-                return;
-            }
-
-            var sections = await _plexApiClient.GetLibrarySectionsAsync(plex.Url, plex.Token, cancellationToken);
-            var musicSections = sections
-                .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
-                .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            if (musicSections.Count == 0)
-            {
-                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                    DateTimeOffset.UtcNow,
-                    "info",
-                    "Automation: Plex scan skipped (no music libraries found)."));
-                return;
-            }
-
-            var refreshed = 0;
-            foreach (var section in musicSections)
-            {
-                refreshed += await _plexApiClient.RefreshLibraryAsync(plex.Url, plex.Token, section.Key, cancellationToken)
-                    ? 1
-                    : 0;
-            }
-
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Automation: Plex scan requested for {musicSections.Count} music libraries (refreshed={refreshed})."));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Automation Plex scan failed.");
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                ErrorLogLevel,
-                $"Automation: Plex scan failed ({ex.Message})."));
-        }
     }
 
     private string? GetAutoTagConfigJson(TaggingProfile? profile)

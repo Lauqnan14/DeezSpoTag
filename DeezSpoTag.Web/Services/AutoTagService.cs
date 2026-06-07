@@ -242,7 +242,7 @@ public partial class AutoTagService
     private readonly SpotifyBlobService _spotifyBlobService;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
     private readonly LibraryRepository _libraryRepository;
-    private readonly LibraryScanRunner _libraryScanRunner;
+    private readonly KnownLibraryFileIngestionService _knownFileIngestionService;
     private readonly QualityScannerService _qualityScannerService;
     private readonly DuplicateCleanerService _duplicateCleanerService;
     private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
@@ -444,7 +444,7 @@ public partial class AutoTagService
         public required SpotifyBlobService SpotifyBlobService { get; init; }
         public required DeezSpoTag.Services.Settings.DeezSpoTagSettingsService SettingsService { get; init; }
         public required LibraryRepository LibraryRepository { get; init; }
-        public required LibraryScanRunner LibraryScanRunner { get; init; }
+        public required KnownLibraryFileIngestionService KnownFileIngestionService { get; init; }
         public required QualityScannerService QualityScannerService { get; init; }
         public required DuplicateCleanerService DuplicateCleanerService { get; init; }
         public required LyricsRefreshQueueService LyricsRefreshQueueService { get; init; }
@@ -476,7 +476,7 @@ public partial class AutoTagService
         _spotifyBlobService = collaborators.SpotifyBlobService;
         _settingsService = collaborators.SettingsService;
         _libraryRepository = collaborators.LibraryRepository;
-        _libraryScanRunner = collaborators.LibraryScanRunner;
+        _knownFileIngestionService = collaborators.KnownFileIngestionService;
         _qualityScannerService = collaborators.QualityScannerService;
         _duplicateCleanerService = collaborators.DuplicateCleanerService;
         _lyricsRefreshQueueService = collaborators.LyricsRefreshQueueService;
@@ -2418,7 +2418,7 @@ public partial class AutoTagService
         {
             await TriggerPlexScanAfterMoveAsync(job, cancellationToken);
         }
-        await TriggerLibraryScanAfterAutoMoveAsync(
+        await IngestKnownFilesAfterAutoMoveAsync(
             job,
             autoMove.Summary,
             cancellationToken);
@@ -2488,7 +2488,7 @@ public partial class AutoTagService
         if (autoMove.Completed)
         {
             await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
-            await TriggerLibraryScanAfterAutoMoveAsync(
+            await IngestKnownFilesAfterAutoMoveAsync(
                 job,
                 autoMove.Summary,
                 CancellationToken.None);
@@ -2567,7 +2567,7 @@ public partial class AutoTagService
         return stages;
     }
 
-    private async Task TriggerLibraryScanAfterAutoMoveAsync(
+    private async Task IngestKnownFilesAfterAutoMoveAsync(
         AutoTagJob job,
         AutoTagMoveSummary autoMoveSummary,
         CancellationToken cancellationToken)
@@ -2579,22 +2579,22 @@ public partial class AutoTagService
 
         if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
         {
-            AppendLog(job, "post auto-move library scan skipped (downloads active).");
+            AppendLog(job, "post auto-move direct library ingestion skipped (downloads active).");
             _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Post auto-move library scan skipped because downloads became active."));
+                "Post auto-move direct library ingestion skipped because downloads became active."));
             return;
         }
 
         var changedFolderIds = await ResolveChangedLibraryFolderIdsAsync(autoMoveSummary, cancellationToken);
         if (changedFolderIds.Count == 0)
         {
-            AppendLog(job, "post auto-move library scan skipped (no moved library folders).");
+            AppendLog(job, "post auto-move direct library ingestion skipped (no moved library folders).");
             _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                "Post auto-move library scan skipped because no changed library folders were detected."));
+                "Post auto-move direct library ingestion skipped because no changed library folders were detected."));
             return;
         }
 
@@ -2614,19 +2614,18 @@ public partial class AutoTagService
             _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                $"Post auto-move targeted library scan starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
-            AppendLog(job, $"post auto-move targeted library scan starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}");
-            var ingestion = await _libraryScanRunner.RunChangedFilesAndWaitForIngestionAsync(
+                $"Post auto-move direct library ingestion starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}."));
+            AppendLog(job, $"post auto-move direct library ingestion starting for {autoMoveSummary.ChangedFilePaths.Count} file(s) in folder(s): {string.Join(", ", changedFolderIds)}");
+            var ingestion = await _knownFileIngestionService.IngestAndVerifyAsync(
                 changedFilesByFolder,
-                skipSpotifyFetch: false,
                 cancellationToken);
             if (!ingestion.IsComplete)
             {
                 _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
                     DateTimeOffset.UtcNow,
                     "error",
-                    $"Post auto-move targeted library scan incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) are missing from the library DB."));
-                AppendLog(job, $"post auto-move targeted library scan incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) missing from DB");
+                    $"Post auto-move direct library ingestion incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) are missing from the library DB."));
+                AppendLog(job, $"post auto-move direct library ingestion incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) missing from DB");
             }
             return;
         }
@@ -2634,8 +2633,8 @@ public partial class AutoTagService
         _activityLog.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Post auto-move library scan skipped because no changed file paths were reported (folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})."));
-        AppendLog(job, $"post auto-move library scan skipped (no changed file paths; folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})");
+            $"Post auto-move direct library ingestion skipped because no changed file paths were reported (folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})."));
+        AppendLog(job, $"post auto-move direct library ingestion skipped (no changed file paths; folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})");
     }
 
     private async Task<List<long>> ResolveChangedLibraryFolderIdsAsync(
@@ -7362,7 +7361,7 @@ public partial class AutoTagService
             if (summary.MovedCount > 0 && string.IsNullOrWhiteSpace(summary.Error))
             {
                 await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
-                await TriggerLibraryScanAfterAutoMoveAsync(
+                await IngestKnownFilesAfterAutoMoveAsync(
                     job,
                     summary,
                     CancellationToken.None);
