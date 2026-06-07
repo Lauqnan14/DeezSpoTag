@@ -284,10 +284,13 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void RealtimeLibraryScanService_IsNotRegisteredAsHostedService()
+    public void RealtimeLibraryScanService_IsRemoved()
     {
         var source = ReadSource("DeezSpoTag.Web", "Program.cs");
+        var servicePath = Path.Combine(GetRepositoryRoot(), "DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
 
+        Assert.False(File.Exists(servicePath), "Dead realtime scan service must stay removed.");
+        Assert.DoesNotContain("LibraryRealtimeScanService", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AddHostedService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRealtimeScanService>", source, StringComparison.Ordinal);
@@ -354,34 +357,14 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void LibraryRealtimeScanService_UsesNasSafeSettleWindow()
+    public void LegacyPlaylistSyncScanPath_IsRemoved()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
+        var root = GetRepositoryRoot();
 
-        Assert.Contains("private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(5);", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(1);", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("BusyRetryDelay", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("_scanRunner.GetStatus().IsRunning", source, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void LibraryRealtimeScanService_TriggersMediaServerRefreshAfterVerifiedRealtimeChanges()
-    {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRealtimeScanService.cs");
-        var processingBody = ExtractMethodBody(source, "private async Task ProcessDueScansAsync");
-        var refreshBody = ExtractMethodBody(source, "private async Task TriggerMediaServerRefreshAfterRealtimeChangeAsync");
-
-        Assert.Contains("MediaServerLibraryRefreshService mediaServerRefreshService", source, StringComparison.Ordinal);
-        Assert.Contains("RunChangedFilesAndWaitForIngestionAsync", processingBody, StringComparison.Ordinal);
-        Assert.Contains("TriggerMediaServerRefreshAfterRealtimeChangeAsync", processingBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunChangedFilesAsync", processingBody, StringComparison.Ordinal);
-        Assert.Contains("missingPaths.Count", processingBody, StringComparison.Ordinal);
-        Assert.Contains("if (ingestion is { IsComplete: false })", refreshBody, StringComparison.Ordinal);
-        Assert.Contains("Realtime media server scan skipped", refreshBody, StringComparison.Ordinal);
-        Assert.Contains("media server scan will still run for {removedFileCount} removed file(s)", refreshBody, StringComparison.Ordinal);
-        Assert.Contains("Realtime media server scan triggered", refreshBody, StringComparison.Ordinal);
-        Assert.Contains("await _mediaServerRefreshService.RefreshAsync(service: null, cancellationToken);", refreshBody, StringComparison.Ordinal);
-        Assert.Contains("Realtime media server scan failed", refreshBody, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Services", "PlaylistSync", "PlexSyncService.cs")),
+            "Dead legacy Plex sync scan path must stay removed.");
+        Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Services", "PlaylistSync", "SyncOrchestrator.cs")),
+            "Dead legacy sync orchestrator must stay removed.");
     }
 
     [Fact]
@@ -391,7 +374,6 @@ public sealed class LibraryScanTriggerGuardrailTests
             .EnumerateFiles(Path.Combine(GetRepositoryRoot(), "DeezSpoTag.Web", "Services"), "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.EndsWith($"{Path.DirectorySeparatorChar}LibraryScanRunner.cs", StringComparison.Ordinal))
             .Where(path => !path.EndsWith($"{Path.DirectorySeparatorChar}LibraryRuntimeSnapshotService.cs", StringComparison.Ordinal))
-            .Where(path => !path.EndsWith($"{Path.DirectorySeparatorChar}LibraryRealtimeScanService.cs", StringComparison.Ordinal))
             .ToList();
 
         foreach (var path in serviceFiles)
