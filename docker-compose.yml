@@ -44,7 +44,6 @@ services:
       TZ: "UTC"
     volumes:
       - /path/to/deezspotag/data:/data
-      - /path/to/deezspotag/data:/app/Data
       - /path/to/downloads:/downloads
       - /path/to/music/library:/library
       - /path/to/apple-wrapper/data:/apple-wrapper/data

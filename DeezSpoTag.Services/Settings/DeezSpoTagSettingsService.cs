@@ -28,7 +28,6 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string LegacyProfilesFileName = "profiles.json";
     private const string ContainerDownloadsPath = "/downloads";
     private const string LegacyContainerDownloadsPath = "/data/downloads";
-    private const string LegacyAppDataDownloadsPath = "/app/Data/downloads";
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string AppleLyricsProvider = "apple";
@@ -1280,7 +1279,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
 
         var fullPath = NormalizeContainerPath(normalizedPath);
-        if (IsPathUnderRoot(fullPath, "/data") || IsPathUnderRoot(fullPath, "/app/Data"))
+        if (IsPathUnderRoot(fullPath, "/data"))
         {
             // Auto-migrate host/debug/appdata paths to the canonical in-container download root.
             fullPath = ContainerDownloadsPath;
@@ -1385,8 +1384,7 @@ public class DeezSpoTagSettingsService : ISettingsService
             .Trim()
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-        return string.Equals(normalized, LegacyContainerDownloadsPath, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(normalized, LegacyAppDataDownloadsPath, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(normalized, LegacyContainerDownloadsPath, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsPathBackedByMountedVolume(string path)
