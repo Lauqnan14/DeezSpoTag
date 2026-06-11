@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
@@ -23,8 +22,6 @@ namespace DeezSpoTag.Web.Services;
 [SuppressMessage("Major Code Smell", "S1192", Justification = "Watch state/status literals are shared with persisted runtime values and external diagnostics.")]
 public sealed class PlaylistWatchService
 {
-    private const int MaxMetadataMatchCandidatesPerRun = 20;
-    private const int MaxMetadataMatchParallelism = 4;
     private sealed record QueueWatchRuleSet(
         IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
@@ -802,6 +799,7 @@ public sealed class PlaylistWatchService
         CancellationToken cancellationToken)
     {
         var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(source, sourceId, cancellationToken);
+        var satisfied = await _libraryRepository.GetSatisfiedPlaylistWatchTrackIdsAsync(source, sourceId, cancellationToken);
         var localTrackIds = await ResolveLocalCandidateIdsAsync(source, candidates, cancellationToken);
         var missingTracks = new List<WatchIntentTrack>();
         var ignoredCount = 0;
@@ -809,6 +807,12 @@ public sealed class PlaylistWatchService
         foreach (var candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (satisfied.Contains(candidate.TrackSourceId))
+            {
+                localCount++;
+                continue;
+            }
+
             if (await TryHandleKnownPlaylistTrackAsync(source, sourceId, candidate, ignored, localTrackIds, cancellationToken))
             {
                 if (ignored.Contains(candidate.TrackSourceId))
@@ -2545,18 +2549,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             local.Add(candidate.TrackSourceId);
         }
 
-        var metadataCandidates = candidates
-            .Where(candidate => !local.Contains(candidate.TrackSourceId))
-            .Take(MaxMetadataMatchCandidatesPerRun)
-            .ToList();
-        if (metadataCandidates.Count > 0)
-        {
-            var metadataLocalMatches = await ResolveLocalMetadataMatchesAsync(metadataCandidates, cancellationToken);
-            foreach (var matchedTrackId in metadataLocalMatches)
-            {
-                local.Add(matchedTrackId);
-            }
-        }
+        await AddLocalMetadataMatchesAsync(candidates, local, cancellationToken);
 
         var sourceIds = candidates
             .Where(candidate => !local.Contains(candidate.TrackSourceId))
@@ -2573,37 +2566,34 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return local;
     }
 
-    private async Task<HashSet<string>> ResolveLocalMetadataMatchesAsync(
-        IReadOnlyList<PlaylistTrackCandidate> candidates,
+    private async Task AddLocalMetadataMatchesAsync(
+        IReadOnlyCollection<PlaylistTrackCandidate> candidates,
+        HashSet<string> local,
         CancellationToken cancellationToken)
     {
-        var matched = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
-        using var semaphore = new SemaphoreSlim(MaxMetadataMatchParallelism, MaxMetadataMatchParallelism);
-        var tasks = candidates.Select(async candidate =>
+        var metadataCandidates = candidates
+            .Where(candidate => !local.Contains(candidate.TrackSourceId))
+            .ToList();
+        if (metadataCandidates.Count == 0)
         {
-            await semaphore.WaitAsync(cancellationToken);
-            try
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var localTrackId = await _libraryRepository.FindLocalTrackIdByMetadataAsync(
-                    candidate.Title,
-                    candidate.Artist,
-                    candidate.Album,
-                    candidate.DurationMs,
-                    cancellationToken);
-                if (localTrackId.HasValue)
-                {
-                    matched.TryAdd(candidate.TrackSourceId, 0);
-                }
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-        });
+            return;
+        }
 
-        await Task.WhenAll(tasks);
-        return new HashSet<string>(matched.Keys, StringComparer.OrdinalIgnoreCase);
+        var inputs = metadataCandidates
+            .Select(candidate => new LibraryRepository.LibraryExistenceInput(
+                candidate.Isrc,
+                candidate.Title,
+                candidate.Artist,
+                candidate.DurationMs))
+            .ToList();
+        var matches = await _libraryRepository.ExistsInLibraryAsync(inputs, cancellationToken);
+        for (var i = 0; i < metadataCandidates.Count && i < matches.Count; i++)
+        {
+            if (matches[i])
+            {
+                local.Add(metadataCandidates[i].TrackSourceId);
+            }
+        }
     }
 
     private static WatchIntentTrack? BuildWatchIntentTrackFromCandidate(string source, PlaylistTrackCandidate candidate)

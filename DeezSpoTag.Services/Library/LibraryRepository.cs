@@ -6632,6 +6632,26 @@ WHERE source = @source AND source_id = @sourceId AND status = 'completed';";
         return await QueryPlaylistWatchTrackSourceIdsAsync(sql, source, sourceId, cancellationToken);
     }
 
+    public async Task<HashSet<string>> GetSatisfiedPlaylistWatchTrackIdsAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = @"
+SELECT track_source_id
+FROM playlist_watch_track
+WHERE source = @source
+  AND source_id = @sourceId
+  AND lower(status) IN ('completed', 'complete')
+UNION
+SELECT track_source_id
+FROM playlist_watch_download_claim
+WHERE source = @source
+  AND source_id = @sourceId
+  AND lower(status) IN ('pending', 'completed', 'complete');";
+        return await QueryPlaylistWatchTrackSourceIdsAsync(sql, source, sourceId, cancellationToken);
+    }
+
     public async Task<HashSet<string>> GetPlaylistWatchIgnoredTrackIdsAsync(
         string source,
         string sourceId,
@@ -7037,10 +7057,22 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO playlist_watch_download_claim (source, source_id, track_source_id, queue_uuid, destination_folder_id, status)
-VALUES (@source, @sourceId, @trackSourceId, @queueUuid, @destinationFolderId, 'pending')
+SELECT @source, @sourceId, @trackSourceId, @queueUuid, @destinationFolderId, 'pending'
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM playlist_watch_download_claim
+    WHERE source = @source
+      AND source_id = @sourceId
+      AND track_source_id = @trackSourceId
+      AND queue_uuid <> @queueUuid
+      AND lower(status) IN ('pending', 'completed', 'complete')
+)
 ON CONFLICT(source, source_id, track_source_id, queue_uuid) DO UPDATE SET
     destination_folder_id = COALESCE(excluded.destination_folder_id, playlist_watch_download_claim.destination_folder_id),
-    status = 'pending',
+    status = CASE
+        WHEN lower(playlist_watch_download_claim.status) IN ('completed', 'complete') THEN playlist_watch_download_claim.status
+        ELSE 'pending'
+    END,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);

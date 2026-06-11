@@ -50,8 +50,9 @@ public static class TrackTitleMatcher
         }
 
         return expectedSignature.BaseTitle == actualSignature.BaseTitle
-            || expectedSignature.BaseTitle.Contains(actualSignature.BaseTitle, StringComparison.Ordinal)
-            || actualSignature.BaseTitle.Contains(expectedSignature.BaseTitle, StringComparison.Ordinal);
+            || (!string.IsNullOrWhiteSpace(expectedSignature.CompactTitle)
+                && expectedSignature.CompactTitle == actualSignature.CompactTitle)
+            || HasSafeContainmentMatch(expectedSignature.BaseTitle, actualSignature.BaseTitle);
     }
 
     public static bool ArtistsMatch(string? expected, string? actual)
@@ -99,9 +100,11 @@ public static class TrackTitleMatcher
             string.Empty,
             RegexOptions.IgnoreCase,
             RegexTimeout);
+        cleaned = Regex.Replace(cleaned, @"[^\p{L}\p{Nd}]+", " ", RegexOptions.None, RegexTimeout);
         cleaned = Regex.Replace(cleaned, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
+        var compact = Regex.Replace(cleaned, @"\s+", string.Empty, RegexOptions.None, RegexTimeout);
 
-        return new TrackTitleSignature(cleaned, toxicVariants, strictVariants);
+        return new TrackTitleSignature(cleaned, compact, toxicVariants, strictVariants);
     }
 
     private static HashSet<string> ExpandArtists(string? artists)
@@ -118,6 +121,13 @@ public static class TrackTitleMatcher
         return markers
             .Where(marker => title.Contains(marker, StringComparison.Ordinal))
             .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static bool HasSafeContainmentMatch(string expectedTitle, string actualTitle)
+    {
+        var shorter = expectedTitle.Length <= actualTitle.Length ? expectedTitle : actualTitle;
+        var longer = expectedTitle.Length > actualTitle.Length ? expectedTitle : actualTitle;
+        return shorter.Length >= 4 && longer.Contains(shorter, StringComparison.Ordinal);
     }
 
     private static string RemoveTrailingVersionSection(string value, char startChar, char endChar)
@@ -144,9 +154,14 @@ public static class TrackTitleMatcher
 
     private sealed record TrackTitleSignature(
         string BaseTitle,
+        string CompactTitle,
         HashSet<string> ToxicVariants,
         HashSet<string> StrictVariants)
     {
-        public static TrackTitleSignature Empty { get; } = new(string.Empty, new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal));
+        public static TrackTitleSignature Empty { get; } = new(
+            string.Empty,
+            string.Empty,
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal));
     }
 }
