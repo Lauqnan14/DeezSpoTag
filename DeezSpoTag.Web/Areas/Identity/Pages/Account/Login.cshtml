@@ -8,6 +8,7 @@
 
 <div class="auth-center">
     <form class="auth-card text-center" method="post">
+        @Html.AntiForgeryToken()
         <div class="mb-4">
             <a class="d-inline-flex align-items-center justify-content-center" href="@Url.Action("Index", "Home", new { area = "" })">
                 @await Html.PartialAsync("_DeezSpoTagLogo", "auth-logo theme-logo auth-theme-logo")
