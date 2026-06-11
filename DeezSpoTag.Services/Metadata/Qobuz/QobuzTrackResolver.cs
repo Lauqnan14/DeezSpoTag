@@ -118,14 +118,10 @@ public sealed class QobuzTrackResolver
         }
 
         var score = ScoreCandidate(track, title, artist, album, expectedDurationSec, preferHiRes: true);
-        if (string.IsNullOrWhiteSpace(isrc))
+        if (string.IsNullOrWhiteSpace(isrc)
+            && !HasAuthoritativeMetadataMatch(track, title, artist, album, expectedDurationSec, score))
         {
-            var hasStrictTitle = TitlesMatch(title, track.Title);
-            var hasStrictArtist = ArtistsMatch(artist, GetTrackArtist(track));
-            if (!hasStrictTitle || !hasStrictArtist || score < 14)
-            {
-                return null;
-            }
+            return null;
         }
 
         return BuildResolution(track, "direct_url", score);
@@ -337,14 +333,12 @@ public sealed class QobuzTrackResolver
             return null;
         }
 
-        var hasStrictTitle = !string.IsNullOrWhiteSpace(expectedIsrc)
-            ? StrictTitlesMatch(expectedTitle, bestTrack.Title)
-            : TitlesMatch(expectedTitle, bestTrack.Title);
-        var hasStrictArtist = !string.IsNullOrWhiteSpace(expectedIsrc)
-            ? StrictArtistsMatch(expectedArtist, GetTrackArtist(bestTrack))
-            : ArtistsMatch(expectedArtist, GetTrackArtist(bestTrack));
-        var minimumScore = hasStrictTitle ? 11 : 8;
-        if (bestScore < minimumScore || !hasStrictArtist)
+        var hasStrictTitle = StrictTitlesMatch(expectedTitle, bestTrack.Title);
+        var hasStrictArtist = StrictArtistsMatch(expectedArtist, GetTrackArtist(bestTrack));
+        var accepted = !string.IsNullOrWhiteSpace(expectedIsrc)
+            ? bestScore >= (hasStrictTitle ? 11 : 8) && hasStrictArtist
+            : HasAuthoritativeMetadataMatch(bestTrack, expectedTitle, expectedArtist, expectedAlbum, expectedDurationSec, bestScore);
+        if (!accepted)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
@@ -359,6 +353,43 @@ public sealed class QobuzTrackResolver
         }
 
         return BuildResolution(bestTrack, "metadata", bestScore);
+    }
+
+    private static bool HasAuthoritativeMetadataMatch(
+        QobuzTrack candidate,
+        string? expectedTitle,
+        string? expectedArtist,
+        string? expectedAlbum,
+        int expectedDurationSec,
+        int score)
+    {
+        if (!StrictTitlesMatch(expectedTitle, candidate.Title)
+            || !StrictArtistsMatch(expectedArtist, GetTrackArtist(candidate)))
+        {
+            return false;
+        }
+
+        if (expectedDurationSec > 0)
+        {
+            if (candidate.Duration <= 0)
+            {
+                return false;
+            }
+
+            if (Math.Abs(candidate.Duration - expectedDurationSec) > 10)
+            {
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(expectedAlbum)
+            && !string.IsNullOrWhiteSpace(candidate.Album?.Title)
+            && !StrictAlbumMatches(expectedAlbum, candidate.Album.Title))
+        {
+            return false;
+        }
+
+        return score >= 14;
     }
 
     private static QobuzTrackResolution BuildResolution(QobuzTrack track, string source, int score)
@@ -557,8 +588,8 @@ public sealed class QobuzTrackResolver
 
     private static bool StrictTitlesMatch(string? expected, string? actual)
     {
-        var normalizedExpected = CleanTitle(TrackTitleMatcher.NormalizeText(expected));
-        var normalizedActual = CleanTitle(TrackTitleMatcher.NormalizeText(actual));
+        var normalizedExpected = NormalizeStrictComparableTitle(expected);
+        var normalizedActual = NormalizeStrictComparableTitle(actual);
         return !string.IsNullOrWhiteSpace(normalizedExpected)
             && normalizedExpected == normalizedActual;
     }
@@ -617,6 +648,26 @@ public sealed class QobuzTrackResolver
         return normalizedExpected == normalizedActual
             || normalizedExpected.Contains(normalizedActual, StringComparison.Ordinal)
             || normalizedActual.Contains(normalizedExpected, StringComparison.Ordinal);
+    }
+
+    private static bool StrictAlbumMatches(string? expected, string? actual)
+    {
+        var normalizedExpected = NormalizeStrictComparableTitle(expected);
+        var normalizedActual = NormalizeStrictComparableTitle(actual);
+        return !string.IsNullOrWhiteSpace(normalizedExpected)
+            && normalizedExpected == normalizedActual;
+    }
+
+    private static string NormalizeStrictComparableTitle(string? value)
+    {
+        var normalized = CleanTitle(TrackTitleMatcher.NormalizeText(value));
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"[^\p{L}\p{Nd}]+", " ", RegexOptions.None, RegexTimeout);
+        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
     }
 
     private static string GetTrackArtist(QobuzTrack track)

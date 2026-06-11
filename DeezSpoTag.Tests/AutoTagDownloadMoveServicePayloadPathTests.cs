@@ -56,6 +56,7 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
         Assert.Null(ex);
         Assert.Contains(sourcePath, files);
         Assert.Contains("/home/user/Music/Test/Downs/Atmos/Artist/Album", roots);
+        Assert.DoesNotContain("/home/user/Music/Test/Downs/Atmos/Artist", roots);
     }
 
     [Fact]

@@ -96,6 +96,90 @@ public sealed class QobuzTrackResolverTests
         Assert.Contains(service.Queries, query => query.Contains("Discovery", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task ResolveTrackAsync_RejectsMetadataMatchWhenAlbumContradictsSource()
+    {
+        var service = new StubQobuzMetadataService();
+        service.SearchHandler = _ => new List<QobuzTrack>
+        {
+            new()
+            {
+                Id = 77112233,
+                Title = "Raha",
+                Duration = 173,
+                Performer = new QobuzArtist { Name = "Arrow Bwoy" },
+                Album = new QobuzAlbum { Title = "Wrong Album" }
+            }
+        };
+        var resolver = CreateResolver(service);
+
+        var result = await resolver.ResolveTrackAsync(
+            isrc: null,
+            title: "Raha",
+            artist: "Arrow Bwoy",
+            album: "Focus",
+            durationMs: 173000,
+            CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_RejectsMetadataMatchWhenDurationIsMissing()
+    {
+        var service = new StubQobuzMetadataService();
+        service.SearchHandler = _ => new List<QobuzTrack>
+        {
+            new()
+            {
+                Id = 88112233,
+                Title = "Raha",
+                Duration = 0,
+                Performer = new QobuzArtist { Name = "Arrow Bwoy" },
+                Album = new QobuzAlbum { Title = "Focus" }
+            }
+        };
+        var resolver = CreateResolver(service);
+
+        var result = await resolver.ResolveTrackAsync(
+            isrc: null,
+            title: "Raha",
+            artist: "Arrow Bwoy",
+            album: "Focus",
+            durationMs: 173000,
+            CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_RejectsMetadataMatchWhenArtistOnlyContainsExpected()
+    {
+        var service = new StubQobuzMetadataService();
+        service.SearchHandler = _ => new List<QobuzTrack>
+        {
+            new()
+            {
+                Id = 99112234,
+                Title = "Raha",
+                Duration = 173,
+                Performer = new QobuzArtist { Name = "Arrow Bwoy Tribute" },
+                Album = new QobuzAlbum { Title = "Focus" }
+            }
+        };
+        var resolver = CreateResolver(service);
+
+        var result = await resolver.ResolveTrackAsync(
+            isrc: null,
+            title: "Raha",
+            artist: "Arrow Bwoy",
+            album: "Focus",
+            durationMs: 173000,
+            CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
     private static QobuzTrackResolver CreateResolver(StubQobuzMetadataService metadataService)
     {
         return new QobuzTrackResolver(

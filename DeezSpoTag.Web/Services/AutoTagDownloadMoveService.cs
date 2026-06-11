@@ -2509,7 +2509,6 @@ public sealed class AutoTagDownloadMoveService
         AddFileFromProperty(files, rootPath, root, FilePathProperty);
         AddRootFromProperty(roots, rootPath, root, FilePathProperty);
         AddRootFromProperty(roots, rootPath, root, "albumPath");
-        AddRootFromProperty(roots, rootPath, root, "artistPath");
         AddRootFromProperty(roots, rootPath, root, "extrasPath");
 
         if (TryGetPropertyIgnoreCase(root, FilesProperty, out var filesElement)
@@ -2525,7 +2524,6 @@ public sealed class AutoTagDownloadMoveService
                 AddFileFromProperty(files, rootPath, fileElement, "path");
                 AddRootFromProperty(roots, rootPath, fileElement, "path");
                 AddRootFromProperty(roots, rootPath, fileElement, "albumPath");
-                AddRootFromProperty(roots, rootPath, fileElement, "artistPath");
             }
         }
 
