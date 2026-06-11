@@ -1443,7 +1443,6 @@ const spotifyMatchCache = new Map();
 let spotifyMatchTimer = null;
 let spotifyLazyTimer = null;
 let boomplayLazyTimer = null;
-let boomplayTracksEventSource = null;
 let spotifyRecommendationState = null;
 let boomplayRecommendationState = null;
 let librespotHydratedIds = new Set();
@@ -2064,13 +2063,9 @@ function resetSpotifyState() {
     if (boomplayLazyTimer) {
         clearTimeout(boomplayLazyTimer);
     }
-    if (boomplayTracksEventSource) {
-        boomplayTracksEventSource.close();
-    }
     spotifyMatchTimer = null;
     spotifyLazyTimer = null;
     boomplayLazyTimer = null;
-    boomplayTracksEventSource = null;
     spotifyLazyState = null;
     boomplayLazyState = null;
     spotifyMatchState = null;
@@ -2338,19 +2333,8 @@ async function loadBoomplayPlaylistTracklist() {
     };
     updateSpotifyNotice();
 
-    const streamCompleted = await loadBoomplayPlaylistTracksStream();
-    if (!streamCompleted && boomplayLazyState?.hasMore) {
-        await loadBoomplayPlaylistTracksPage();
-        scheduleBoomplayNextPage();
-    }
-}
-
-function parseBoomplayStreamEventData(event) {
-    try {
-        return JSON.parse(event?.data || '{}');
-    } catch {
-        return null;
-    }
+    await loadBoomplayPlaylistTracksPage();
+    scheduleBoomplayNextPage();
 }
 
 function finalizeBoomplayExternalMatchState() {
@@ -2369,129 +2353,6 @@ function finalizeBoomplayExternalMatchState() {
             }
         }, tracklistNoticeAutoHideMs);
     }
-}
-
-async function loadBoomplayPlaylistTracksStream() {
-    if (!boomplayLazyState || typeof EventSource === 'undefined') {
-        return false;
-    }
-
-    const remaining = Math.max(0, (boomplayLazyState.total || 0) - (boomplayLazyState.offset || 0));
-    if (remaining === 0) {
-        boomplayLazyState.hasMore = false;
-        updateSpotifyNotice();
-        return true;
-    }
-
-    return await new Promise((resolve) => {
-        let settled = false;
-        let receivedTracks = 0;
-        const qs = new URLSearchParams();
-        qs.set('type', boomplayLazyState.type);
-        qs.set('id', boomplayLazyState.id);
-        qs.set('offset', String(boomplayLazyState.offset));
-        qs.set('limit', String(remaining));
-        if (boomplayDeezerSimilarMode) {
-            qs.set('resolveDeezer', 'true');
-        }
-
-        const eventSource = new EventSource(`/api/boomplay/playlist/tracks/stream?${qs.toString()}`);
-        boomplayTracksEventSource = eventSource;
-        boomplayLazyState.isLoading = true;
-        boomplayLazyState.backgroundLoading = true;
-        updateSpotifyNotice();
-
-        const closeAndResolve = (ok) => {
-            if (settled) {
-                return;
-            }
-
-            settled = true;
-            if (boomplayTracksEventSource === eventSource) {
-                boomplayTracksEventSource = null;
-            }
-            eventSource.close();
-
-            if (boomplayLazyState) {
-                boomplayLazyState.isLoading = false;
-                boomplayLazyState.backgroundLoading = false;
-            }
-            updateSpotifyNotice();
-            resolve(ok);
-        };
-
-        eventSource.addEventListener('track', (event) => {
-            const payload = parseBoomplayStreamEventData(event);
-            if (!payload || !payload.track) {
-                return;
-            }
-
-            receivedTracks += 1;
-            const appendedTracks = appendBoomplayTrackRows([payload.track]);
-            if (appendedTracks.length > 0) {
-                void resolveExternalTracklistMatches(appendedTracks, 'boomplay', {
-                    incremental: true,
-                    finalize: false
-                }).catch((error) => console.warn('Boomplay stream match failed', error));
-            }
-
-            if (boomplayLazyState) {
-                if (typeof payload.total === 'number') {
-                    boomplayLazyState.total = payload.total;
-                }
-                if (typeof payload.nextOffset === 'number') {
-                    boomplayLazyState.offset = payload.nextOffset;
-                    boomplayLazyState.loaded = payload.nextOffset;
-                } else if (typeof payload.loaded === 'number') {
-                    boomplayLazyState.loaded = payload.loaded;
-                }
-                if (typeof payload.hasMore === 'boolean') {
-                    boomplayLazyState.hasMore = payload.hasMore;
-                }
-            }
-
-            updateSpotifyNotice();
-        });
-
-        eventSource.addEventListener('complete', (event) => {
-            const payload = parseBoomplayStreamEventData(event);
-            if (boomplayLazyState && payload) {
-                if (typeof payload.total === 'number') {
-                    boomplayLazyState.total = payload.total;
-                }
-                if (typeof payload.nextOffset === 'number') {
-                    boomplayLazyState.offset = payload.nextOffset;
-                    boomplayLazyState.loaded = payload.nextOffset;
-                }
-                if (typeof payload.hasMore === 'boolean') {
-                    boomplayLazyState.hasMore = payload.hasMore;
-                } else {
-                    boomplayLazyState.hasMore = false;
-                }
-            }
-
-            if (boomplayLazyState && !boomplayLazyState.hasMore && (boomplayLazyState.loaded || 0) === 0) {
-                setTracksEmptyMessage('No tracks available');
-            }
-            finalizeBoomplayExternalMatchState();
-            closeAndResolve(true);
-        });
-
-        eventSource.addEventListener('error', () => {
-            if (boomplayLazyState) {
-                const total = boomplayLazyState.total || 0;
-                const loaded = boomplayLazyState.loaded || 0;
-                boomplayLazyState.hasMore = total > 0 ? loaded < total : false;
-            }
-
-            // Fall back to paged loading if stream drops before completion.
-            const shouldFallback = !!(boomplayLazyState && boomplayLazyState.hasMore);
-            if (!shouldFallback) {
-                finalizeBoomplayExternalMatchState();
-            }
-            closeAndResolve(!shouldFallback && receivedTracks > 0);
-        });
-    });
 }
 
 async function loadBoomplayPlaylistTracksPage() {

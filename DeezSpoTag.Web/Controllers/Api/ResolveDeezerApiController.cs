@@ -37,21 +37,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
         CreateRegex(@"^\s*(?<artist>[^-]{2,80}?)\s*[-–]\s*(?<title>.+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex BoomplayMultiWhitespaceRegex =
         CreateRegex(@"\s+", RegexOptions.Compiled);
-    private static readonly string[] DerivativeMarkers =
-    {
-        "cover",
-        "covers",
-        "parody",
-        "parodies",
-        "karaoke",
-        "tribute",
-        "instrumental",
-        "instrumentals",
-        "remix",
-        "remake",
-        "re recorded",
-        "as made famous by"
-    };
     private static Regex CreateRegex(string pattern, RegexOptions options)
         => new(pattern, options, RegexTimeout);
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, RegexOptions options = RegexOptions.None)
@@ -61,18 +46,18 @@ public sealed class ResolveDeezerApiController : ControllerBase
 
     private readonly SongLinkResolver _songLinkResolver;
     private readonly DeezerClient _deezerClient;
-    private readonly BoomplayMetadataService _boomplayMetadataService;
+    private readonly BoomplayDeezerMatchService _boomplayDeezerMatchService;
     private readonly ILogger<ResolveDeezerApiController> _logger;
 
     public ResolveDeezerApiController(
         SongLinkResolver songLinkResolver,
         DeezerClient deezerClient,
-        BoomplayMetadataService boomplayMetadataService,
+        BoomplayDeezerMatchService boomplayDeezerMatchService,
         ILogger<ResolveDeezerApiController> logger)
     {
         _songLinkResolver = songLinkResolver;
         _deezerClient = deezerClient;
-        _boomplayMetadataService = boomplayMetadataService;
+        _boomplayDeezerMatchService = boomplayDeezerMatchService;
         _logger = logger;
     }
 
@@ -97,8 +82,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
         public string? Album { get; set; }
         public string? Isrc { get; set; }
         public int? DurationMs { get; set; }
-        public BoomplayTrackMetadata? BoomplayTrack { get; set; }
-        public bool HasStreamTagMetadata => BoomplayTrack?.HasStreamTagMetadata == true;
     }
 
     [HttpGet]
@@ -116,7 +99,25 @@ public sealed class ResolveDeezerApiController : ControllerBase
             return Ok(await BuildResolveResponseAsync(directId, context.IncludeMeta));
         }
 
-        await EnrichBoomplayMetadataAsync(context, cancellationToken);
+        if (context.IsBoomplaySource)
+        {
+            var boomplayMatch = await _boomplayDeezerMatchService.ResolveAsync(
+                new BoomplayDeezerMatchRequest(
+                    context.Url,
+                    context.Title,
+                    context.Artist,
+                    context.Album,
+                    context.Isrc,
+                    context.DurationMs),
+                cancellationToken);
+            if (boomplayMatch == null)
+            {
+                return Ok(new { available = false, reasonCode = "no_match" });
+            }
+
+            return Ok(BuildBoomplayResolveResponse(boomplayMatch, context.IncludeMeta));
+        }
+
         var deezerId = await ResolveDeezerIdAsync(context, cancellationToken);
         if (string.IsNullOrWhiteSpace(deezerId))
         {
@@ -124,6 +125,25 @@ public sealed class ResolveDeezerApiController : ControllerBase
         }
 
         return Ok(await BuildResolveResponseAsync(deezerId, context.IncludeMeta));
+    }
+
+    private static object BuildBoomplayResolveResponse(BoomplayDeezerMatchResult match, bool includeMeta)
+    {
+        if (!includeMeta)
+        {
+            return new { available = true, deezerId = match.DeezerId };
+        }
+
+        return new
+        {
+            available = true,
+            deezerId = match.DeezerId,
+            durationMs = match.DurationMs,
+            title = match.Title,
+            artist = match.Artist,
+            album = match.Album,
+            coverMedium = match.CoverMedium
+        };
     }
 
     private static ResolveRequestContext CreateResolveRequestContext(ResolveDeezerRequest request)
@@ -144,115 +164,21 @@ public sealed class ResolveDeezerApiController : ControllerBase
         };
     }
 
-    private async Task EnrichBoomplayMetadataAsync(ResolveRequestContext context, CancellationToken cancellationToken)
-    {
-        if (!context.IsBoomplaySource
-            || !BoomplayMetadataService.TryParseBoomplayUrl(context.Url, out var type, out var trackId)
-            || !string.Equals(type, "track", StringComparison.OrdinalIgnoreCase)
-            || string.IsNullOrWhiteSpace(trackId))
-        {
-            return;
-        }
-
-        try
-        {
-            var boomplayTrack = await _boomplayMetadataService.GetSongAsync(trackId, cancellationToken);
-            if (boomplayTrack == null)
-            {
-                return;
-            }
-
-            context.BoomplayTrack = boomplayTrack;
-            context.Title ??= Normalize(boomplayTrack.Title);
-            context.Artist ??= Normalize(boomplayTrack.Artist);
-            context.Album ??= Normalize(boomplayTrack.Album);
-            context.Isrc ??= Normalize(boomplayTrack.Isrc);
-            if (!context.DurationMs.HasValue && boomplayTrack.DurationMs > 0)
-            {
-                context.DurationMs = boomplayTrack.DurationMs;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed enriching Boomplay metadata while resolving Deezer ID for Url");
-        }
-    }
-
     private async Task<string?> ResolveDeezerIdAsync(ResolveRequestContext context, CancellationToken cancellationToken)
     {
-        if (context.IsBoomplaySource)
-        {
-            var boomplayIsrcId = await TryResolveBoomplayIsrcFirstAsync(context, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(boomplayIsrcId))
-            {
-                return boomplayIsrcId;
-            }
-        }
-
         var metadataId = await TryResolveMetadataCandidatesAsync(context, cancellationToken);
         if (!string.IsNullOrWhiteSpace(metadataId))
         {
             return metadataId;
         }
 
-        if (context.IsBoomplaySource)
+        var nonBoomplayIsrcId = await TryResolveNonBoomplayIsrcAsync(context, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(nonBoomplayIsrcId))
         {
-            var directBoomplayId = await TryResolveBoomplayDirectMetadataAsync(context, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(directBoomplayId))
-            {
-                return directBoomplayId;
-            }
-
-            var fallbackSearchId = await TryResolveBoomplaySearchFallbackAsync(context, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(fallbackSearchId))
-            {
-                return fallbackSearchId;
-            }
-        }
-        else
-        {
-            var nonBoomplayIsrcId = await TryResolveNonBoomplayIsrcAsync(context, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(nonBoomplayIsrcId))
-            {
-                return nonBoomplayIsrcId;
-            }
+            return nonBoomplayIsrcId;
         }
 
         return await TryResolveBySongLinkAsync(context, cancellationToken);
-    }
-
-    private async Task<string?> TryResolveBoomplayIsrcFirstAsync(ResolveRequestContext context, CancellationToken cancellationToken)
-    {
-        if (!context.IsBoomplaySource || string.IsNullOrWhiteSpace(context.Isrc))
-        {
-            return null;
-        }
-
-        try
-        {
-            var isrcSummary = CreateTrackSummary(context, context.Title ?? string.Empty, context.Isrc);
-            var deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
-                _deezerClient,
-                _songLinkResolver,
-                isrcSummary,
-                CreateResolveOptions(
-                    allowFallbackSearch: false,
-                    preferIsrcOnly: true,
-                    strictMode: false,
-                    bypassNegativeCanonicalCache: false,
-                    cancellationToken));
-            return await ValidateResolvedCandidateAsync(
-                deezerId,
-                context,
-                context.Title,
-                context.Artist,
-                cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "ISRC-first Deezer resolve failed for Boomplay Url");
-            return null;
-        }
     }
 
     private async Task<string?> TryResolveMetadataCandidatesAsync(ResolveRequestContext context, CancellationToken cancellationToken)
@@ -262,17 +188,11 @@ public sealed class ResolveDeezerApiController : ControllerBase
             return null;
         }
 
-        var titleCandidates = context.IsBoomplaySource
-            ? BuildBoomplayTitleCandidates(context.Title, context.Album, context.Artist)
-            : new[] { context.Title };
-        var metadataStrictMode = context.IsBoomplaySource && !context.HasStreamTagMetadata;
-
-        foreach (var titleCandidate in titleCandidates)
+        foreach (var titleCandidate in new[] { context.Title })
         {
             var resolvedId = await TryResolveMetadataForTitleCandidateAsync(
                 context,
                 titleCandidate,
-                metadataStrictMode,
                 cancellationToken);
             if (!string.IsNullOrWhiteSpace(resolvedId))
             {
@@ -286,34 +206,12 @@ public sealed class ResolveDeezerApiController : ControllerBase
     private async Task<string?> TryResolveMetadataForTitleCandidateAsync(
         ResolveRequestContext context,
         string titleCandidate,
-        bool metadataStrictMode,
         CancellationToken cancellationToken)
     {
         try
         {
             var summary = CreateTrackSummary(context, titleCandidate, isrc: null);
-            var strictResult = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
-                _deezerClient,
-                _songLinkResolver,
-                summary,
-                CreateResolveOptions(
-                    allowFallbackSearch: true,
-                    preferIsrcOnly: false,
-                    strictMode: metadataStrictMode,
-                    bypassNegativeCanonicalCache: false,
-                    cancellationToken));
-            var strictId = await ValidateResolvedCandidateAsync(
-                strictResult.DeezerId,
-                context,
-                titleCandidate,
-                context.Artist,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(strictId) || !metadataStrictMode)
-            {
-                return strictId;
-            }
-
-            var relaxedResult = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
+            var result = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
                 _deezerClient,
                 _songLinkResolver,
                 summary,
@@ -321,123 +219,15 @@ public sealed class ResolveDeezerApiController : ControllerBase
                     allowFallbackSearch: true,
                     preferIsrcOnly: false,
                     strictMode: false,
-                    bypassNegativeCanonicalCache: true,
+                    bypassNegativeCanonicalCache: false,
                     cancellationToken));
-            return await ValidateResolvedCandidateAsync(
-                relaxedResult.DeezerId,
-                context,
-                titleCandidate,
-                context.Artist,
-                cancellationToken);
+            return result.DeezerId;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Metadata Deezer resolve failed for Url");
             return null;
         }
-    }
-
-    private async Task<string?> TryResolveBoomplayDirectMetadataAsync(ResolveRequestContext context, CancellationToken cancellationToken)
-    {
-        if (!context.IsBoomplaySource
-            || string.IsNullOrWhiteSpace(context.Title)
-            || string.IsNullOrWhiteSpace(context.Artist))
-        {
-            return null;
-        }
-
-        var titleCandidates = BuildBoomplayTitleCandidates(context.Title, context.Album, context.Artist);
-        foreach (var titleCandidate in titleCandidates)
-        {
-            var directId = await TryResolveSingleDirectBoomplayTitleAsync(
-                context,
-                titleCandidate,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(directId))
-            {
-                return directId;
-            }
-        }
-
-        return null;
-    }
-
-    private async Task<string?> TryResolveSingleDirectBoomplayTitleAsync(
-        ResolveRequestContext context,
-        string titleCandidate,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var directId = await _deezerClient.GetTrackIdFromMetadataAsync(
-                context.Artist!,
-                titleCandidate,
-                context.Album ?? string.Empty,
-                context.DurationMs);
-            var validated = await ValidateResolvedCandidateAsync(
-                directId,
-                context,
-                titleCandidate,
-                context.Artist,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(validated))
-            {
-                return validated;
-            }
-
-            var fastId = await _deezerClient.GetTrackIdFromMetadataFastAsync(
-                context.Artist!,
-                titleCandidate,
-                context.DurationMs);
-            validated = await ValidateResolvedCandidateAsync(
-                fastId,
-                context,
-                titleCandidate,
-                context.Artist,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(validated))
-            {
-                return validated;
-            }
-
-            var primaryArtist = StripFeaturingFromArtist(context.Artist);
-            if (!string.Equals(primaryArtist, context.Artist, StringComparison.OrdinalIgnoreCase))
-            {
-                var strippedId = await _deezerClient.GetTrackIdFromMetadataFastAsync(
-                    primaryArtist,
-                    titleCandidate,
-                    context.DurationMs);
-                return await ValidateResolvedCandidateAsync(
-                    strippedId,
-                    context,
-                    titleCandidate,
-                    primaryArtist,
-                    cancellationToken);
-            }
-
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Direct Boomplay Deezer resolve failed for Url");
-            return null;
-        }
-    }
-
-    private async Task<string?> TryResolveBoomplaySearchFallbackAsync(ResolveRequestContext context, CancellationToken cancellationToken)
-    {
-        if (!context.IsBoomplaySource || string.IsNullOrWhiteSpace(context.Title))
-        {
-            return null;
-        }
-
-        return await ResolveFromDeezerSearchFallbackAsync(
-            context.Title,
-            context.Artist,
-            context.Album,
-            context.Isrc,
-            context.DurationMs,
-            cancellationToken);
     }
 
     private async Task<string?> TryResolveNonBoomplayIsrcAsync(ResolveRequestContext context, CancellationToken cancellationToken)
@@ -477,53 +267,7 @@ public sealed class ResolveDeezerApiController : ControllerBase
             return null;
         }
 
-        if (!context.IsBoomplaySource)
-        {
-            return deezerId;
-        }
-
-        if (!HasAnySourceMetadata(context))
-        {
-            return null;
-        }
-
-        return await ValidateResolvedCandidateAsync(
-            deezerId,
-            context,
-            context.Title,
-            context.Artist,
-            cancellationToken);
-    }
-
-    private static bool HasAnySourceMetadata(ResolveRequestContext context)
-    {
-        return !string.IsNullOrWhiteSpace(context.Title)
-               || !string.IsNullOrWhiteSpace(context.Artist)
-               || !string.IsNullOrWhiteSpace(context.Album)
-               || !string.IsNullOrWhiteSpace(context.Isrc);
-    }
-
-    private async Task<string?> ValidateResolvedCandidateAsync(
-        string? deezerId,
-        ResolveRequestContext context,
-        string? title,
-        string? artist,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(deezerId) || deezerId == "0")
-        {
-            return null;
-        }
-
-        var plausible = await IsPlausibleBoomplayDirectMatchAsync(
-            deezerId,
-            title,
-            artist,
-            context.Album,
-            context.Isrc,
-            context.DurationMs,
-            cancellationToken);
-        return plausible ? deezerId : null;
+        return deezerId;
     }
 
     private static SpotifyTrackSummary CreateTrackSummary(
@@ -599,76 +343,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
         return new { available = true, deezerId };
     }
 
-    private Task<bool> IsPlausibleBoomplayDirectMatchAsync(
-        string deezerId,
-        string? sourceTitle,
-        string? sourceArtist,
-        string? sourceAlbum,
-        string? sourceIsrc,
-        int? sourceDurationMs,
-        CancellationToken cancellationToken)
-    {
-        var source = new DeezerCandidateSource(
-            sourceTitle,
-            sourceArtist,
-            sourceAlbum,
-            sourceIsrc,
-            sourceDurationMs);
-        return DeezerCandidateMatchHelper.IsPlausibleCandidateAsync(
-            deezerId,
-            source,
-            new DeezerCandidateValidationHandlers(
-                TryGetValidationCandidateAsync,
-                SourceAllowsDerivative,
-                IsDerivativeCandidate,
-                static _ => false),
-            _logger,
-            new DeezerCandidateValidationOptions(
-                MinimumArtistScore: 0.24d,
-                RejectDerivativeArtistName: false,
-                ApplyVeryLowAlbumGuard: false,
-                FailureLogMessage: "Failed to validate Boomplay direct Deezer candidate {DeezerId}"),
-            cancellationToken);
-    }
-
-    private Task<string?> ResolveFromDeezerSearchFallbackAsync(
-        string? sourceTitle,
-        string? sourceArtist,
-        string? sourceAlbum,
-        string? sourceIsrc,
-        int? sourceDurationMs,
-        CancellationToken cancellationToken)
-    {
-        var source = new DeezerCandidateSource(
-            sourceTitle,
-            sourceArtist,
-            sourceAlbum,
-            sourceIsrc,
-            sourceDurationMs);
-        return DeezerCandidateMatchHelper.ResolveFromSearchFallbackAsync(
-            _deezerClient,
-            source,
-            new DeezerFallbackSearchHandlers(
-                (candidateId, token) => IsPlausibleBoomplayDirectMatchAsync(
-                    candidateId,
-                    source.SourceTitle,
-                    source.SourceArtist,
-                    source.SourceAlbum,
-                    source.SourceIsrc,
-                    source.SourceDurationMs,
-                    token),
-                (candidateId, album, token) => GetAlbumMatchScoreAsync(candidateId, album, token),
-                TryGetValidationCandidateAsync,
-                SourceAllowsDerivative,
-                static _ => false),
-            _logger,
-            new DeezerFallbackSearchOptions(
-                ExcludeDerivativeArtistCandidates: false,
-                PreferBestAlbumMatch: false,
-                SearchFailureLogMessage: "ResolveDeezer fallback search failed for query {Query}"),
-            cancellationToken);
-    }
-
     internal static string NormalizeFallbackSearchTitle(string? value)
     {
         var normalized = Normalize(value) ?? string.Empty;
@@ -716,18 +390,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
             " ",
             RegexOptions.IgnoreCase);
         return BoomplayMultiWhitespaceRegex.Replace(relaxed, " ").Trim();
-    }
-
-    private Task<double> GetAlbumMatchScoreAsync(
-        string deezerId,
-        string? sourceAlbum,
-        CancellationToken cancellationToken)
-    {
-        return DeezerCandidateMatchHelper.GetAlbumMatchScoreAsync(
-            deezerId,
-            sourceAlbum,
-            TryGetValidationCandidateAsync,
-            cancellationToken);
     }
 
     internal static IEnumerable<string> EnumerateSearchResultTrackIds(DeezerSearchResult result)
@@ -882,18 +544,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
         {
             yield return contributorName;
         }
-    }
-
-    private Task<(bool fetched, DeezSpoTag.Core.Models.Deezer.ApiTrack? track)> TryGetValidationCandidateAsync(
-        string deezerId,
-        CancellationToken cancellationToken)
-    {
-        return DeezerCandidateMatchHelper.TryGetValidationCandidateAsync(
-            _deezerClient,
-            _logger,
-            deezerId,
-            "Failed to load Deezer candidate {DeezerId} for resolve validation",
-            cancellationToken);
     }
 
     internal static string? TryExtractDeezerTrackId(string? deezerUrl)
@@ -1104,51 +754,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
         }
 
         return normalized;
-    }
-
-    private static bool SourceAllowsDerivative(string? title, string? artist, string? album)
-    {
-        var combined = NormalizeGuardToken($"{title} {artist} {album}");
-        if (string.IsNullOrWhiteSpace(combined))
-        {
-            return false;
-        }
-
-        return DerivativeMarkers.Any(marker => ContainsWholeMarker(combined, marker));
-    }
-
-    private static bool IsDerivativeCandidate(DeezSpoTag.Core.Models.Deezer.ApiTrack candidate)
-    {
-        if (candidate == null)
-        {
-            return false;
-        }
-
-        var combined = NormalizeGuardToken($"{candidate.Title} {candidate.TitleVersion} {candidate.Album?.Title} {candidate.Artist?.Name}");
-        if (string.IsNullOrWhiteSpace(combined))
-        {
-            return false;
-        }
-
-        return DerivativeMarkers.Any(marker => ContainsWholeMarker(combined, marker));
-    }
-
-    private static bool ContainsWholeMarker(string text, string marker)
-    {
-        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(marker))
-        {
-            return false;
-        }
-
-        var normalizedMarker = NormalizeGuardToken(marker);
-        if (string.IsNullOrWhiteSpace(normalizedMarker))
-        {
-            return false;
-        }
-
-        var paddedText = $" {text} ";
-        var paddedMarker = $" {normalizedMarker} ";
-        return paddedText.Contains(paddedMarker, StringComparison.Ordinal);
     }
 
     internal static double ComputeSimilarity(string source, string candidate)

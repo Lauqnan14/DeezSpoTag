@@ -1428,6 +1428,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyDesktopSearchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayMetadataService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.BoomplayDeezerMatchService>();
         services.AddScoped<DeezSpoTag.Web.Services.LinkMapping.DeezerLinkMappingService>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.QobuzMetadataResolver>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.DeezerMetadataResolver>();
