@@ -4343,7 +4343,13 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
         JsonElement playlistData = playlistUnion.PlaylistUnion;
-        string name = TryGetString(playlistData, "name") ?? "Spotify playlist";
+        string? playlistName = TryGetString(playlistData, "name");
+        if (SpotifyMetadataService.IsGenericSpotifyPlaylistName(playlistName))
+        {
+            return null;
+        }
+
+        string name = playlistName!.Trim();
         string? description = TryGetString(playlistData, "description");
         string? imageUrl = ExtractPlaylistImageUrl(playlistData);
         string? ownerName = TryGetOwnerName(playlistData);

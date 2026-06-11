@@ -875,8 +875,15 @@ public sealed class SpotifyMetadataService
         if (TryGetPlaylistFromCache(playlistId, out var cachedPlaylist))
         {
             var cachedMetadata = cachedPlaylist with { TrackList = new List<SpotifyTrackSummary>() };
-            CachePlaylistMetadata(playlistId, cachedMetadata);
-            return cachedMetadata;
+            if (!HasTrustedPlaylistMetadata(cachedMetadata))
+            {
+                PlaylistCache.TryRemove(playlistId, out _);
+            }
+            else
+            {
+                CachePlaylistMetadata(playlistId, cachedMetadata);
+                return cachedMetadata;
+            }
         }
 
         var metadataTimeout = TimeSpan.FromSeconds(4);
@@ -890,40 +897,28 @@ public sealed class SpotifyMetadataService
             if (spotiFlacPayload != null)
             {
                 var metadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks: false);
-                CachePlaylistMetadata(playlistId, metadata);
-                return metadata;
+                if (HasTrustedPlaylistMetadata(metadata))
+                {
+                    CachePlaylistMetadata(playlistId, metadata);
+                    return metadata;
+                }
+
+                _logger.LogWarning(
+                    "Spotify playlist metadata lookup returned incomplete metadata for {PlaylistId}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
+                return null;
             }
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
                 ex,
-                "Spotify playlist metadata lookup timed out after {TimeoutMs}ms for {PlaylistId}; returning lightweight metadata.",
+                "Spotify playlist metadata lookup timed out after {TimeoutMs}ms for {PlaylistId}; metadata unavailable.",
                 (int)metadataTimeout.TotalMilliseconds,
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
         }
 
-        var lightweightMetadata = BuildLightweightPlaylistMetadata(playlistId);
-        CachePlaylistMetadata(playlistId, lightweightMetadata);
-        return lightweightMetadata;
-    }
-
-    private static SpotifyUrlMetadata BuildLightweightPlaylistMetadata(string playlistId)
-    {
-        return new SpotifyUrlMetadata(
-            PlaylistType,
-            playlistId,
-            "Spotify Playlist",
-            $"https://open.spotify.com/playlist/{playlistId}",
-            null,
-            null,
-            0,
-            null,
-            new List<SpotifyTrackSummary>(),
-            new List<SpotifyAlbumSummary>(),
-            "Spotify",
-            null,
-            null);
+        return null;
     }
 
     public async Task<SpotifyPlaylistPage?> FetchPlaylistTrackPageAsync(
@@ -940,11 +935,6 @@ public sealed class SpotifyMetadataService
         }
 
         var metadata = await FetchPlaylistMetadataAsync(playlistId, cancellationToken);
-        if (metadata is null)
-        {
-            return null;
-        }
-
         var normalizedSource = NormalizeTrackSource(trackSource);
         var boundedOffset = Math.Max(0, offset);
         var boundedLimit = Math.Clamp(limit, 1, 100);
@@ -961,7 +951,7 @@ public sealed class SpotifyMetadataService
         }
 
         var tracks = await GetPathfinderPlaylistTracksAsync(playlistId, cancellationToken);
-        var totalTracks = metadata.TotalTracks ?? tracks.Count;
+        var totalTracks = metadata?.TotalTracks ?? tracks.Count;
         var pageTracks = tracks
             .Skip(boundedOffset)
             .Take(boundedLimit)
@@ -969,17 +959,17 @@ public sealed class SpotifyMetadataService
         var hasMoreTracks = boundedOffset + pageTracks.Count < totalTracks;
 
         return new SpotifyPlaylistPage(
-            metadata.SnapshotId,
+            metadata?.SnapshotId,
             totalTracks,
-            metadata.Name,
-            metadata.Subtitle,
-            metadata.ImageUrl,
+            metadata?.Name,
+            metadata?.Subtitle,
+            metadata?.ImageUrl,
             pageTracks,
             hasMoreTracks);
     }
 
     private async Task<SpotifyPlaylistPage> BuildLibrespotPlaylistPageAsync(
-        SpotifyUrlMetadata metadata,
+        SpotifyUrlMetadata? metadata,
         string playlistId,
         int boundedOffset,
         int boundedLimit,
@@ -1001,17 +991,17 @@ public sealed class SpotifyMetadataService
 
         var hasMore = boundedOffset + hydrated.Count < trackIds.Count;
         return new SpotifyPlaylistPage(
-            metadata.SnapshotId,
-            metadata.TotalTracks ?? trackIds.Count,
-            metadata.Name,
-            metadata.Subtitle,
-            metadata.ImageUrl,
+            metadata?.SnapshotId,
+            metadata?.TotalTracks ?? trackIds.Count,
+            metadata?.Name,
+            metadata?.Subtitle,
+            metadata?.ImageUrl,
             hydrated,
             hasMore);
     }
 
     private async Task<SpotifyPlaylistPage> BuildFallbackLibrespotPlaylistPageAsync(
-        SpotifyUrlMetadata metadata,
+        SpotifyUrlMetadata? metadata,
         string playlistId,
         int boundedOffset,
         int boundedLimit,
@@ -1020,7 +1010,7 @@ public sealed class SpotifyMetadataService
         var fallbackTracks = await _pathfinderMetadataClient.FetchPlaylistTracksWithBlobAuthAsync(playlistId, cancellationToken);
         if (fallbackTracks is not { Count: > 0 })
         {
-            return BuildPlaylistPage(metadata, metadata.TotalTracks, new List<SpotifyTrackSummary>(), false);
+            return BuildPlaylistPage(metadata, metadata?.TotalTracks, new List<SpotifyTrackSummary>(), false);
         }
 
         var fallbackPageTracks = fallbackTracks
@@ -1029,7 +1019,7 @@ public sealed class SpotifyMetadataService
             .ToList();
         return BuildPlaylistPage(
             metadata,
-            metadata.TotalTracks ?? fallbackTracks.Count,
+            metadata?.TotalTracks ?? fallbackTracks.Count,
             fallbackPageTracks,
             boundedOffset + fallbackPageTracks.Count < fallbackTracks.Count);
     }
@@ -1118,17 +1108,17 @@ public sealed class SpotifyMetadataService
     }
 
     private static SpotifyPlaylistPage BuildPlaylistPage(
-        SpotifyUrlMetadata metadata,
+        SpotifyUrlMetadata? metadata,
         int? totalTracks,
         List<SpotifyTrackSummary> tracks,
         bool hasMore)
     {
         return new SpotifyPlaylistPage(
-            metadata.SnapshotId,
+            metadata?.SnapshotId,
             totalTracks,
-            metadata.Name,
-            metadata.Subtitle,
-            metadata.ImageUrl,
+            metadata?.Name,
+            metadata?.Subtitle,
+            metadata?.ImageUrl,
             tracks,
             hasMore);
     }
@@ -1488,12 +1478,55 @@ public sealed class SpotifyMetadataService
         }
 
         metadata = cached.Data;
+        if (!HasTrustedPlaylistMetadata(metadata))
+        {
+            PlaylistMetadataCache.TryRemove(playlistId, out _);
+            return false;
+        }
+
         return true;
     }
 
     private static void CachePlaylistMetadata(string playlistId, SpotifyUrlMetadata metadata)
     {
+        if (!HasTrustedPlaylistMetadata(metadata))
+        {
+            return;
+        }
+
         PlaylistMetadataCache[playlistId] = (DateTimeOffset.UtcNow, metadata);
+    }
+
+    internal static bool HasTrustedPlaylistMetadata(SpotifyUrlMetadata? metadata)
+    {
+        if (metadata is null)
+        {
+            return false;
+        }
+
+        if (!string.Equals(metadata.Type, PlaylistType, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (IsGenericSpotifyPlaylistName(metadata.Name))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(metadata.ImageUrl)
+            || !string.IsNullOrWhiteSpace(metadata.Subtitle)
+            || metadata.TotalTracks is > 0
+            || metadata.Followers is > 0
+            || !string.IsNullOrWhiteSpace(metadata.SnapshotId);
+    }
+
+    internal static bool IsGenericSpotifyPlaylistName(string? name)
+    {
+        var normalized = (name ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized)
+            || string.Equals(normalized, "Spotify Playlist", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "Spotify playlist", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<SpotifyTrackArtwork?> FetchTrackArtworkAsync(
@@ -2670,6 +2703,11 @@ public sealed class SpotifyMetadataService
     private static void CachePlaylist(string playlistId, SpotifyUrlMetadata metadata)
     {
         if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return;
+        }
+
+        if (!HasTrustedPlaylistMetadata(metadata))
         {
             return;
         }

@@ -799,25 +799,52 @@ public sealed class PlaylistWatchService
         LivePlaylistSnapshot liveSnapshot,
         int liveTrackCount)
     {
+        var trustedMetadata = HasTrustedLivePlaylistMetadata(source, liveSnapshot);
         return playlist with
         {
             Source = source,
             SourceId = sourceId,
-            Name = string.IsNullOrWhiteSpace(liveSnapshot.Name) ? playlist.Name : liveSnapshot.Name!,
-            ImageUrl = ResolveCurrentPlaylistImageUrl(playlist, liveSnapshot),
-            Description = string.IsNullOrWhiteSpace(liveSnapshot.Description) ? playlist.Description : liveSnapshot.Description,
+            Name = trustedMetadata && !string.IsNullOrWhiteSpace(liveSnapshot.Name) ? liveSnapshot.Name! : playlist.Name,
+            ImageUrl = ResolveCurrentPlaylistImageUrl(playlist, liveSnapshot, trustedMetadata),
+            Description = trustedMetadata && !string.IsNullOrWhiteSpace(liveSnapshot.Description) ? liveSnapshot.Description : playlist.Description,
             TrackCount = liveTrackCount
         };
     }
 
-    private static string? ResolveCurrentPlaylistImageUrl(PlaylistWatchlistDto playlist, LivePlaylistSnapshot liveSnapshot)
+    private static string? ResolveCurrentPlaylistImageUrl(
+        PlaylistWatchlistDto playlist,
+        LivePlaylistSnapshot liveSnapshot,
+        bool trustedMetadata)
     {
+        if (!trustedMetadata)
+        {
+            return playlist.ImageUrl;
+        }
+
         if (liveSnapshot.CanClearImageUrl)
         {
             return EmptyToNull(liveSnapshot.ImageUrl);
         }
 
         return string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl) ? playlist.ImageUrl : liveSnapshot.ImageUrl;
+    }
+
+    private static bool HasTrustedLivePlaylistMetadata(string source, LivePlaylistSnapshot liveSnapshot)
+    {
+        if (!string.Equals(source, SpotifySource, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (SpotifyMetadataService.IsGenericSpotifyPlaylistName(liveSnapshot.Name))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl)
+            || !string.IsNullOrWhiteSpace(liveSnapshot.Description)
+            || liveSnapshot.TrackCount is > 0
+            || !string.IsNullOrWhiteSpace(liveSnapshot.SnapshotId);
     }
 
     private static bool HasPlaylistSourceChanged(
@@ -1631,11 +1658,24 @@ public sealed class PlaylistWatchService
         SpotifyPlaylistPageMetadata metadata)
     {
         return new SpotifyPlaylistPageMetadata(
-            metadata.SnapshotId ?? page.SnapshotId,
-            metadata.Name ?? page.Name,
-            metadata.Description ?? page.Description,
-            metadata.ImageUrl ?? page.ImageUrl,
-            metadata.TotalTracks ?? page.TotalTracks);
+            PreferSpotifyPlaylistMetadataValue(metadata.SnapshotId, page.SnapshotId, static value => !string.IsNullOrWhiteSpace(value)),
+            PreferSpotifyPlaylistMetadataValue(metadata.Name, page.Name, static value => !SpotifyMetadataService.IsGenericSpotifyPlaylistName(value)),
+            PreferSpotifyPlaylistMetadataValue(metadata.Description, page.Description, static value => !string.IsNullOrWhiteSpace(value)),
+            PreferSpotifyPlaylistMetadataValue(metadata.ImageUrl, page.ImageUrl, static value => !string.IsNullOrWhiteSpace(value)),
+            metadata.TotalTracks is > 0 ? metadata.TotalTracks : page.TotalTracks);
+    }
+
+    private static string? PreferSpotifyPlaylistMetadataValue(
+        string? current,
+        string? candidate,
+        Func<string?, bool> isTrusted)
+    {
+        if (isTrusted(current))
+        {
+            return current;
+        }
+
+        return isTrusted(candidate) ? candidate : current;
     }
 
     private readonly record struct SpotifyPlaylistPageMetadata(
