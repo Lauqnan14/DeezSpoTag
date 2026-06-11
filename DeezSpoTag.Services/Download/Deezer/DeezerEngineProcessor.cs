@@ -230,16 +230,13 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         await _folderConversionSettingsOverlay.ApplyAsync(settings, payload.DestinationFolderId, cancellationToken);
         DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(settings, payload.QualityBucket);
 
-        _listener.SendStartDownload(queueUuid);
-        _listener.Send(UpdateQueueEvent, new
-        {
-            uuid = queueUuid,
-            progress = payload.Progress,
-            downloaded = payload.Downloaded,
-            failed = payload.Failed
-        });
-
-        await _queueRepository.UpdateStatusAsync(queueUuid, RunningStatus, progress: payload.Progress, cancellationToken: cancellationToken);
+        await QueueHelperUtils.SendRunningStartedAsync(
+            _queueRepository,
+            _listener,
+            queueUuid,
+            payload.Downloaded,
+            payload.Failed,
+            cancellationToken);
 
         var completedSuccessfully = isEpisodePayload
             ? await ProcessEpisodePayloadAsync(payload, settings, queueUuid, cancellationToken)

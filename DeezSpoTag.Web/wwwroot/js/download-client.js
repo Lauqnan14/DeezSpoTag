@@ -1,11 +1,12 @@
 /**
- * DeezSpoTag Download Engine Integration
- * Connects UI to the Deezer download engine
+ * DeezSpoTag download client.
+ * Owns download enqueue requests, destination selection, and queue toasts.
+ * Activities owns download queue rendering, actions, and realtime progress.
  */
 
 globalThis.DeezSpoTag = globalThis.DeezSpoTag || {};
 
-DeezSpoTag.Download = {
+DeezSpoTag.DownloadClient = {
     APPLE_NOTIFICATION_MODE_KEY: 'apple-download-notification-mode',
     DOWNLOAD_SOURCE_SETTING_KEY: 'deezspotag-download-source-updated',
     csrfUnsafeMethods: new Set(['POST', 'PUT', 'PATCH', 'DELETE']),
@@ -18,8 +19,6 @@ DeezSpoTag.Download = {
     inFlightLockTimeoutMs: 45000,
     inFlightSequence: 0,
     inFlightByUrl: {},
-    connection: null,
-    connectionStartPromise: null,
     settings: null,
     settingsPromise: null,
     appleNotifications: {
@@ -37,7 +36,6 @@ DeezSpoTag.Download = {
         this.refreshAppleNotificationMode();
         this.ensureDestinationSelects();
         this.ensureSettingsLoaded();
-        this.ensureQueueConnection();
         this.logger = DeezSpoTag.DownloadLogger || null;
         globalThis.addEventListener('deezspotag:settings-updated', (event) => {
             this.applyUpdatedSettings(event?.detail?.settings || null);
@@ -50,42 +48,11 @@ DeezSpoTag.Download = {
             }
         });
         this.resumePendingQueue();
-        console.log('DeezSpoTag Download Engine initialized');
+        console.log('DeezSpoTag download client initialized');
     },
     isActivitiesPage() {
         return /^\/activities(?:\/|$)/i.test(globalThis.location?.pathname || '');
     },
-    ensureQueueConnection() {
-        if (this.connection || this.connectionStartPromise) {
-            return this.connectionStartPromise || Promise.resolve(this.connection);
-        }
-
-        if (!globalThis.signalR?.HubConnectionBuilder) {
-            return Promise.resolve(null);
-        }
-
-        this.connection = new globalThis.signalR.HubConnectionBuilder()
-            .withUrl('/deezerQueueHub')
-            .withAutomaticReconnect()
-            .build();
-
-        this.connectionStartPromise = this.connection.start()
-            .then(() => {
-                console.log('SignalR connected for Deezer download updates');
-                return this.connection;
-            })
-            .catch((error) => {
-                console.error('SignalR connection failed for Deezer download updates:', error);
-                this.connection = null;
-                return null;
-            })
-            .finally(() => {
-                this.connectionStartPromise = null;
-            });
-
-        return this.connectionStartPromise;
-    },
-
     // Bind download-related events
     bindEvents() {
         document.addEventListener('click', (e) => {
@@ -1841,28 +1808,6 @@ DeezSpoTag.Download = {
         });
     },
 
-    // Parse URL to get information
-    async parseUrl(url) {
-        try {
-            const response = await this.apiFetch('/api/deezer/download/parse', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ url: url })
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            return await response.json();
-        } catch (error) {
-            console.error('Error parsing URL:', error);
-            throw error;
-        }
-    },
-
     normalizeEngine(type) {
         if (!type) return 'deezer';
         const raw = String(type).toLowerCase();
@@ -2147,69 +2092,17 @@ DeezSpoTag.Download = {
         });
     },
 
-    // Helper functions for different content types
-    downloadTrack(trackId, bitrate = 0) {
-        const url = `https://www.deezer.com/track/${trackId}`;
-        return this.addToQueue(url, bitrate);
-    },
-
-    downloadAlbum(albumId, bitrate = 0) {
-        const url = `https://www.deezer.com/album/${albumId}`;
-        return this.addToQueue(url, bitrate);
-    },
-
-    downloadPlaylist(playlistId, bitrate = 0) {
-        const url = `https://www.deezer.com/playlist/${playlistId}`;
-        return this.addToQueue(url, bitrate);
-    },
-
-    downloadArtist(artistId, bitrate = 0) {
-        const url = `https://www.deezer.com/artist/${artistId}`;
-        return this.addToQueue(url, bitrate);
-    },
-
-    downloadArtistDiscography(artistId, bitrate = 0) {
-        const url = `https://www.deezer.com/artist/${artistId}/discography`;
-        return this.addToQueue(url, bitrate);
-    },
-
-    // Batch download functions
     downloadSelectedTracks(trackIds, bitrate = 0) {
         const urls = trackIds.map(id => `https://www.deezer.com/track/${id}`);
         return this.addMultipleToQueue(urls, bitrate);
-    },
-
-    downloadTracksFromTable() {
-        const trackIds = Array.from(document.querySelectorAll('.track-checkbox[data-track-id]:checked'))
-            .map((element) => element.dataset.trackId || '')
-            .filter(Boolean);
-        
-        if (trackIds.length === 0) {
-            this.showNotification('Please select tracks to download', 'warning');
-            return;
-        }
-
-        return this.downloadSelectedTracks(trackIds);
-    },
-
-    downloadAllTracksFromTable() {
-        const trackIds = Array.from(document.querySelectorAll('.track-checkbox[data-track-id]'))
-            .map((element) => element.dataset.trackId || '')
-            .filter(Boolean);
-        
-        if (trackIds.length === 0) {
-            this.showNotification('No tracks available to download', 'warning');
-            return;
-        }
-
-        return this.downloadSelectedTracks(trackIds);
     }
 };
 
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    DeezSpoTag.Download.init();
+    DeezSpoTag.DownloadClient.init();
 });
 
 // Export for global access
-globalThis.DeezSpoTagDownload = DeezSpoTag.Download;
+DeezSpoTag.Download = DeezSpoTag.DownloadClient;
+globalThis.DeezSpoTagDownload = DeezSpoTag.DownloadClient;

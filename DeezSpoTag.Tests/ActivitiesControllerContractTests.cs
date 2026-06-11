@@ -83,7 +83,33 @@ public sealed class ActivitiesControllerContractTests
         Assert.NotNull(mapStatusForUi);
 
         var mapped = mapStatusForUi!.Invoke(null, ["skipped"]) as string;
-        Assert.Equal("completed", mapped);
+        Assert.Equal("complete", mapped);
+    }
+
+    [Theory]
+    [InlineData("completed", "complete")]
+    [InlineData("complete", "complete")]
+    [InlineData("finished", "complete")]
+    [InlineData("download finished", "complete")]
+    [InlineData("done", "complete")]
+    [InlineData("success", "complete")]
+    [InlineData("failed", "failed")]
+    [InlineData("error", "failed")]
+    [InlineData("canceled", "canceled")]
+    [InlineData("cancelled", "canceled")]
+    [InlineData("resolving", "queued")]
+    [InlineData("inqueue", "queued")]
+    [InlineData("downloading", "running")]
+    public void MapStatusForUi_ReturnsCanonicalActivityStatus(string rawStatus, string expectedStatus)
+    {
+        var mapStatusForUi = typeof(ActivitiesController).GetMethod(
+            "MapStatusForUi",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(mapStatusForUi);
+
+        var mapped = mapStatusForUi!.Invoke(null, [rawStatus]) as string;
+        Assert.Equal(expectedStatus, mapped);
     }
 
     [Fact]
@@ -115,6 +141,60 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void ActivitiesDownloadsTab_RendersActionsFromBackendFlags()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("canPause: getQueueBoolFlag(item, 'canPause', 'CanPause')", source, StringComparison.Ordinal);
+        Assert.Contains("const canCancel = task.canCancel === true", source, StringComparison.Ordinal);
+        Assert.Contains("const canRetry = task.canRetry === true", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("clearVisibleQueueTasks(isCompletedQueueTask);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("clearVisibleQueueTasks(isCanceledQueueTask);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesDownloadsTab_ResetsProgressCacheWhenRetryResetsProgress()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("function resetQueueProgressCache(taskId)", source, StringComparison.Ordinal);
+        Assert.Contains("resetQueueProgressCache(taskId);", source, StringComparison.Ordinal);
+        Assert.Contains("resetQueueProgressCache(updatedId);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadEngines_UseCanonicalRunningStartEvent()
+    {
+        var queueHelperSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Queue/QueueHelperUtils.cs"));
+        var deezerSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Deezer/DeezerEngineProcessor.cs"));
+        var qobuzSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        var appleSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Apple/AppleEngineProcessor.cs"));
+        var sharedSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Shared/EngineAudioPostDownloadHelper.cs"));
+
+        Assert.Contains("SendRunningStartedAsync", queueHelperSource, StringComparison.Ordinal);
+        Assert.Contains("status = \"running\"", queueHelperSource, StringComparison.Ordinal);
+        Assert.Contains("progress = 0", queueHelperSource, StringComparison.Ordinal);
+        Assert.Contains("QueueHelperUtils.SendRunningStartedAsync", deezerSource, StringComparison.Ordinal);
+        Assert.Contains("QueueHelperUtils.SendRunningStartedAsync", qobuzSource, StringComparison.Ordinal);
+        Assert.Contains("QueueHelperUtils.SendRunningStartedAsync", appleSource, StringComparison.Ordinal);
+        Assert.Contains("QueueHelperUtils.SendRunningStartedAsync", sharedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ActivitiesDeleteFailed_EmitsRemovedFromQueue()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -126,18 +206,44 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
-    public void DownloadScript_ExposesQueueRealtimeConnectionWithoutOwningQueueUi()
+    public void DownloadClient_DoesNotOwnQueueRealtimeConnectionOrQueueUi()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
-            "../../../../DeezSpoTag.Web/wwwroot/js/download.js"));
+            "../../../../DeezSpoTag.Web/wwwroot/js/download-client.js"));
+        var layoutSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Shared/_Layout.cshtml"));
 
-        Assert.Contains("connection: null", source, StringComparison.Ordinal);
-        Assert.Contains(".withUrl('/deezerQueueHub')", source, StringComparison.Ordinal);
+        Assert.Contains("DeezSpoTag.DownloadClient", source, StringComparison.Ordinal);
+        Assert.Contains("globalThis.DeezSpoTagDownload = DeezSpoTag.DownloadClient", source, StringComparison.Ordinal);
+        Assert.Contains("addToQueue(url", source, StringComparison.Ordinal);
+        Assert.Contains("addMultipleToQueue(urls", source, StringComparison.Ordinal);
+        Assert.Contains("ensureDestinationSelects()", source, StringComparison.Ordinal);
+        Assert.Contains("getDestinationFolderId(requireSelection", source, StringComparison.Ordinal);
+        Assert.Contains("~/js/download-client.js", layoutSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("~/js/download.js", layoutSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("/deezerQueueHub", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("connection.on(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("cancelDownload(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("retryDownload(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("download-queue", source, StringComparison.Ordinal);
         Assert.DoesNotContain("queue-list", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesDownloadsTab_OwnsQueueRealtimeConnection()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains(".withUrl('/deezerQueueHub')", source, StringComparison.Ordinal);
+        Assert.Contains("connection.on('updateQueue'", source, StringComparison.Ordinal);
+        Assert.Contains("connection.on('downloadProgress'", source, StringComparison.Ordinal);
+        Assert.Contains("connection.on('startDownload'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeezSpoTagDownload?.connection", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeezSpoTag?.Download?.connection", source, StringComparison.Ordinal);
     }
 
     [Fact]

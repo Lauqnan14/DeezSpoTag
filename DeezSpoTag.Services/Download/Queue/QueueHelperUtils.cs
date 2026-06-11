@@ -170,6 +170,33 @@ internal static class QueueHelperUtils
         return File.Exists(ioPath);
     }
 
+    public static async Task SendRunningStartedAsync(
+        DownloadQueueRepository queueRepository,
+        IDeezSpoTagListener listener,
+        string queueUuid,
+        int downloaded,
+        int failed,
+        CancellationToken cancellationToken)
+    {
+        await queueRepository.UpdateStatusAsync(
+            queueUuid,
+            "running",
+            downloaded: downloaded,
+            failed: failed,
+            progress: 0,
+            cancellationToken: cancellationToken);
+
+        listener.SendStartDownload(queueUuid);
+        listener.Send("updateQueue", new
+        {
+            uuid = queueUuid,
+            status = "running",
+            progress = 0,
+            downloaded,
+            failed
+        });
+    }
+
     public static Func<double, double, Task> CreateProgressReporter(
         DownloadQueueRepository queueRepository,
         IDeezSpoTagListener listener,

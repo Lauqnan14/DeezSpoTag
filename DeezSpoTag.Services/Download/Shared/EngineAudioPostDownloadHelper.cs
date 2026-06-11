@@ -2233,16 +2233,13 @@ public static partial class EngineAudioPostDownloadHelper
             new DownloadEngineSettingsHelper.ProfileResolutionOptions(CurrentEngine: context.EngineName));
         await context.FolderConversionSettingsOverlay.ApplyAsync(context.Settings, payload.DestinationFolderId, cancellationToken);
         DownloadEngineSettingsHelper.ApplyQualityBucketToSettings(context.Settings, payload.QualityBucket);
-        context.Listener.SendStartDownload(queueItem.QueueUuid);
-        context.Listener.Send(UpdateQueueEvent, new
-        {
-            uuid = queueItem.QueueUuid,
-            progress = payload.Progress,
-            downloaded = payload.Downloaded,
-            failed = payload.Failed
-        });
-
-        await context.QueueRepository.UpdateStatusAsync(queueItem.QueueUuid, RunningStatus, progress: payload.Progress, cancellationToken: cancellationToken);
+        await QueueHelperUtils.SendRunningStartedAsync(
+            context.QueueRepository,
+            context.Listener,
+            queueItem.QueueUuid,
+            payload.Downloaded,
+            payload.Failed,
+            cancellationToken);
         return payload;
     }
 

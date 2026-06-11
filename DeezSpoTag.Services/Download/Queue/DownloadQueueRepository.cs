@@ -612,7 +612,7 @@ WHERE queue_uuid <> @queueUuid
     private static bool IsFailedOrCanceledStatus(string status)
     {
         var normalized = status.Trim().ToLowerInvariant();
-        return normalized is "failed" or "canceled" or "cancelled";
+        return normalized is "failed" or "error" or "canceled" or "cancelled";
     }
 
     private static async Task UpdateStagingCleanupStatusAsync(
@@ -764,13 +764,13 @@ LIMIT 1;";
         const string activeStatuses = "'resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
         return @"
 WITH active_items AS (
-	SELECT " + selectedColumns + @"
+	SELECT 0 AS activity_sort_group, " + selectedColumns + @"
 	FROM download_task
 	WHERE lower(status) IN (" + activeStatuses + @")
 	  AND activities_cleared_at IS NULL
 ),
 terminal_items AS (
-	SELECT " + selectedColumns + @"
+	SELECT 1 AS activity_sort_group, " + selectedColumns + @"
 	FROM download_task
 	WHERE lower(status) NOT IN (" + activeStatuses + @")
 	  AND activities_cleared_at IS NULL
@@ -779,11 +779,17 @@ terminal_items AS (
 )
 SELECT " + selectedColumns + @"
 FROM (
-	SELECT " + selectedColumns + @" FROM active_items
+	SELECT activity_sort_group, " + selectedColumns + @" FROM active_items
 	UNION ALL
-	SELECT " + selectedColumns + @" FROM terminal_items
+	SELECT activity_sort_group, " + selectedColumns + @" FROM terminal_items
 )
-ORDER BY (queue_order IS NULL), queue_order ASC, created_at ASC, id ASC;";
+ORDER BY activity_sort_group ASC,
+         CASE WHEN activity_sort_group = 0 THEN (queue_order IS NULL) END ASC,
+         CASE WHEN activity_sort_group = 0 THEN queue_order END ASC,
+         CASE WHEN activity_sort_group = 0 THEN created_at END ASC,
+         CASE WHEN activity_sort_group = 1 THEN updated_at END DESC,
+         CASE WHEN activity_sort_group = 1 THEN id END DESC,
+         id ASC;";
     }
 
     private static async Task UpdateDequeuedItemStatusAsync(
@@ -1299,6 +1305,24 @@ WHERE lower(status) = lower(@status)
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<int> MarkActivitiesClearedByStatusesAsync(
+        IReadOnlyCollection<string> statuses,
+        CancellationToken cancellationToken = default)
+    {
+        if (statuses.Count == 0)
+        {
+            return 0;
+        }
+
+        var total = 0;
+        foreach (var status in statuses)
+        {
+            total += await MarkActivitiesClearedByStatusAsync(status, cancellationToken);
+        }
+
+        return total;
+    }
+
     public async Task<int> MarkActivitiesClearedByUuidAsync(string queueUuid, CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -1320,7 +1344,7 @@ WHERE queue_uuid = @queueUuid
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await CleanupAllTerminalFailureRowsAsync(connection, cancellationToken);
-        const string activeStatuses = "'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
+        const string activeStatuses = "'resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
         const string sql = @"
 UPDATE download_task
 SET activities_cleared_at = CURRENT_TIMESTAMP,
@@ -1338,18 +1362,36 @@ WHERE lower(status) NOT IN (" + activeStatuses + @")
         await CleanupTerminalRowsByStatusAsync(connection, status, cancellationToken);
         const string sql = @"
 DELETE FROM download_task
-WHERE status = @status
+WHERE lower(status) = lower(@status)
   AND (
     destination_folder_id IS NULL
     OR move_status = '" + MoveStatusMoved + @"'
     OR move_status = '" + MoveStatusNotRequired + @"'
-    OR (lower(status) IN ('failed', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
   );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("status", status);
         var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
         await CleanupOrphanSidecarDirectoriesAsync(connection, cancellationToken);
         return deleted;
+    }
+
+    public async Task<int> DeleteClearableByStatusesAsync(
+        IReadOnlyCollection<string> statuses,
+        CancellationToken cancellationToken = default)
+    {
+        if (statuses.Count == 0)
+        {
+            return 0;
+        }
+
+        var total = 0;
+        foreach (var status in statuses)
+        {
+            total += await DeleteClearableByStatusAsync(status, cancellationToken);
+        }
+
+        return total;
     }
 
     public async Task<int> DeleteByUuidAsync(string queueUuid, CancellationToken cancellationToken = default)
@@ -1374,7 +1416,7 @@ WHERE queue_uuid = @queueUuid
     destination_folder_id IS NULL
     OR move_status = '" + MoveStatusMoved + @"'
     OR move_status = '" + MoveStatusNotRequired + @"'
-    OR (lower(status) IN ('failed', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
   );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
@@ -1399,12 +1441,16 @@ WHERE queue_uuid = @queueUuid
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await CleanupAllTerminalFailureRowsAsync(connection, cancellationToken);
+        const string activeStatuses = "'resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
         const string sql = @"
 DELETE FROM download_task
-WHERE destination_folder_id IS NULL
-   OR move_status = '" + MoveStatusMoved + @"'
-   OR move_status = '" + MoveStatusNotRequired + @"'
-   OR (lower(status) IN ('failed', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'));";
+WHERE lower(status) NOT IN (" + activeStatuses + @")
+  AND (
+    destination_folder_id IS NULL
+    OR move_status = '" + MoveStatusMoved + @"'
+    OR move_status = '" + MoveStatusNotRequired + @"'
+    OR (lower(status) IN ('failed', 'error', 'canceled', 'cancelled') AND staging_cleanup_status IN ('completed', 'skipped'))
+  );";
         await using var command = new SqliteCommand(sql, connection);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -1442,7 +1488,7 @@ WHERE lower(status) = lower(@status);";
 SELECT queue_uuid
 FROM download_task
 WHERE queue_uuid = @queueUuid
-  AND lower(status) IN ('failed', 'canceled', 'cancelled');";
+  AND lower(status) IN ('failed', 'error', 'canceled', 'cancelled');";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await CleanupSelectedTerminalRowsAsync(connection, command, cancellationToken);
@@ -1460,7 +1506,7 @@ WHERE queue_uuid = @queueUuid
         const string sql = @"
 SELECT queue_uuid
 FROM download_task
-WHERE lower(status) IN ('failed', 'canceled', 'cancelled');";
+WHERE lower(status) IN ('failed', 'error', 'canceled', 'cancelled');";
         await using var command = new SqliteCommand(sql, connection);
         await CleanupSelectedTerminalRowsAsync(connection, command, cancellationToken);
     }

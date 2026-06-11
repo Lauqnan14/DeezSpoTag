@@ -3041,6 +3041,8 @@ const queuePrefetchByTask = {};
 let queueRealtimeAttached = false;
 let queueRealtimeAttachTimer = null;
 let queueRealtimeLifecycleAttached = false;
+let queueRealtimeConnection = null;
+let queueRealtimeConnectionStartPromise = null;
 let queueActionInFlight = false;
 let queueHydrationRefreshTimer = null;
 let lastQueueHydrationRefreshAt = 0;
@@ -4219,7 +4221,6 @@ async function clearAllTasks() {
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification(payload?.message || 'Queue cleared.', 'info');
         }
-        clearVisibleQueueTasks(task => !isActiveQueueTask(task));
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear all downloads:', error);
@@ -4261,7 +4262,6 @@ async function clearCompletedTasks() {
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification(payload?.message || 'Completed downloads cleared.', 'info');
         }
-        clearVisibleQueueTasks(isCompletedQueueTask);
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear completed downloads:', error);
@@ -4291,7 +4291,6 @@ async function clearCanceledTasks() {
         if (window.DeezSpoTag?.showNotification) {
             window.DeezSpoTag.showNotification(payload?.message || 'Canceled downloads cleared.', 'info');
         }
-        clearVisibleQueueTasks(isCanceledQueueTask);
         await loadQueueFromServer({ force: true });
     } catch (error) {
         console.error('Failed to clear canceled downloads:', error);
@@ -4476,17 +4475,27 @@ async function clearCanceledTasks() {
 	        const taskActionInFlight = Boolean(task._actionInFlight);
 	        const taskActionAttrs = taskActionInFlight ? ' disabled aria-disabled="true"' : '';
 
-		        const pauseButton = statusForUi === 'running'
+	        const canPause = task.canPause === true || (task.canPause === undefined && statusForUi === 'running');
+	        const canResume = task.canResume === true || (task.canResume === undefined && statusForUi === 'paused');
+	        const canRetry = task.canRetry === true || (task.canRetry === undefined && (
+	            statusForUi === 'failed'
+	            || statusForUi === 'canceled'
+	            || (statusForUi === 'complete' && task.failed > 0)));
+	        const canDelete = task.canDelete === true || (task.canDelete === undefined && (statusForUi === 'failed' || statusForUi === 'canceled'));
+	        const canCancel = task.canCancel === true || (task.canCancel === undefined && (
+	            statusForUi === 'queued'
+	            || statusForUi === 'running'
+	            || statusForUi === 'paused'
+	            || statusForUi === 'retrying'));
+
+		        const pauseButton = canPause
 		            ? `<button type="button" class="action-btn action-btn-amber action-btn-sm"${taskActionAttrs} onclick="pauseTask('${safeTaskIdArg}')">${activityActionIconSvg('pause')}<span>Pause</span></button>`
 		            : '';
 
-		        const resumeButton = statusForUi === 'paused'
+		        const resumeButton = canResume
 		            ? `<button type="button" class="action-btn action-btn-sm"${taskActionAttrs} onclick="resumeTask('${safeTaskIdArg}')">${activityActionIconSvg('play')}<span>Resume</span></button>`
 		            : '';
 
-	        const canRetry = statusForUi === 'failed'
-	            || statusForUi === 'canceled'
-	            || (statusForUi === 'complete' && task.failed > 0);
 	        const isRetrying = statusForUi === 'retrying' || task._retryInFlight;
 		        const retryButton = canRetry
 		            ? (isRetrying
@@ -4496,15 +4505,15 @@ async function clearCanceledTasks() {
 		                    : `<button type="button" class="action-btn action-btn-sm" onclick="retryTask('${safeTaskIdArg}')">${activityActionIconSvg('retry')}<span>Retry</span></button>`)
 		            : '';
 
-		        const deleteFailedButton = statusForUi === 'failed'
+		        const deleteFailedButton = canDelete && statusForUi === 'failed'
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
-		        const deleteCanceledButton = statusForUi === 'canceled'
+		        const deleteCanceledButton = canDelete && statusForUi === 'canceled'
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
 
 	        const cancelActionAttrs = (taskActionInFlight && !task._retryInFlight) ? ' disabled aria-disabled="true"' : '';
-		        const cancelButton = (statusForUi === 'queued' || statusForUi === 'running' || statusForUi === 'paused' || statusForUi === 'retrying')
+		        const cancelButton = canCancel
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${cancelActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
 		            : '';
 
@@ -4645,6 +4654,19 @@ function animateQueueProgress(taskId, fillEl, valueEl, target) {
     queueProgressCache[taskId] = targetValue;
 }
 
+function resetQueueProgressCache(taskId) {
+    if (!taskId) {
+        return;
+    }
+
+    if (queueProgressTextAnimationByTask[taskId] != null) {
+        cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
+        delete queueProgressTextAnimationByTask[taskId];
+    }
+
+    delete queueProgressCache[taskId];
+}
+
 function orderTasksForAutoScroll(taskList, options) {
     return Array.isArray(taskList) ? [...taskList] : [];
 }
@@ -4709,14 +4731,16 @@ function retryTask(taskId) {
             return;
         }
         target._retryPreviousStatus = target.status;
-        target._retryPreviousError = target.error;
-        target._retryInFlight = true;
-        target._actionInFlight = true;
-        target.status = 'retrying';
-        target.error = null;
-        scheduleRenderTasks();
-        updateStats();
-    }
+	        target._retryPreviousError = target.error;
+	        target._retryInFlight = true;
+	        target._actionInFlight = true;
+	        target.status = 'retrying';
+	        target.progress = 0;
+	        target.error = null;
+	        resetQueueProgressCache(taskId);
+	        scheduleRenderTasks();
+	        updateStats();
+	    }
 
     activityFetch('/Activities/RetryFailed', {
         method: 'POST',
@@ -4737,19 +4761,21 @@ function retryTask(taskId) {
             const target = tasks.find(task => task.taskId === taskId);
             const updatedId = data?.newUuid || taskId;
             if (target) {
-                target.taskId = updatedId;
-                target.status = 'queued';
-                target.progress = 0;
-                target.failed = 0;
-                target.error = null;
+	                target.taskId = updatedId;
+	                target.status = 'queued';
+	                target.progress = 0;
+	                target.failed = 0;
+	                target.error = null;
                 target._retryInFlight = false;
                 target._actionInFlight = false;
                 delete target._retryPreviousError;
                 delete target._retryPreviousStatus;
-                if (data?.engine) {
-                    target.engine = data.engine;
-                }
-            }
+	                if (data?.engine) {
+	                    target.engine = data.engine;
+	                }
+	                resetQueueProgressCache(taskId);
+	                resetQueueProgressCache(updatedId);
+	            }
             scheduleRenderTasks();
             updateStats();
             loadQueueFromServer({ force: true });
@@ -4968,14 +4994,37 @@ function mapQueueItem(item) {
         quality: displayQuality,
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
         status: mapStatus(item.status),
+        rawStatus: item.rawStatus || item.RawStatus || item.status,
         progress: normalizeQueueProgressPercent(item.progress),
         downloaded: normalizeQueueCounter(item.downloaded || item.Downloaded),
         failed: normalizeQueueCounter(item.failed || item.Failed),
         engine: normalizeEngine(resolvedEngine || 'deezer'),
         error: item.error || null,
+        canPause: getQueueBoolFlag(item, 'canPause', 'CanPause'),
+        canResume: getQueueBoolFlag(item, 'canResume', 'CanResume'),
+        canCancel: getQueueBoolFlag(item, 'canCancel', 'CanCancel'),
+        canRetry: getQueueBoolFlag(item, 'canRetry', 'CanRetry'),
+        canDelete: getQueueBoolFlag(item, 'canDelete', 'CanDelete'),
+        canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
         lyricsBadges: getLyricsBadges(item),
         cover: getCoverFromPayload(item)
     };
+}
+
+function getQueueBoolFlag(item, camelName, pascalName) {
+    if (!item || typeof item !== 'object') {
+        return undefined;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(item, camelName)) {
+        return item[camelName] === true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(item, pascalName)) {
+        return item[pascalName] === true;
+    }
+
+    return undefined;
 }
 
 function normalizeQueueCounter(value) {
@@ -5080,6 +5129,12 @@ function mergeQueueTask(existing, incoming) {
         downloaded: normalizeQueueCounter(incoming.downloaded ?? existing.downloaded),
         failed: normalizeQueueCounter(incoming.failed ?? existing.failed),
         engine: incoming.engine || existing.engine,
+        canPause: incoming.canPause,
+        canResume: incoming.canResume,
+        canCancel: incoming.canCancel,
+        canRetry: incoming.canRetry,
+        canDelete: incoming.canDelete,
+        canClear: incoming.canClear,
         error: incoming.error !== null && incoming.error !== undefined
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
@@ -5716,6 +5771,9 @@ function applyQueueRealtimeUpdate(payload) {
         task.status = mergedStatus;
         taskChanged = true;
     }
+    if (status === 'queued' && nextProgress !== null && nextProgress <= 0) {
+        resetQueueProgressCache(taskId);
+    }
     if (!status && nextProgress !== null && nextProgress > 0 && task.status === 'queued') {
         task.status = 'running';
         taskChanged = true;
@@ -5832,9 +5890,37 @@ function applyQueueRealtimeUpdate(payload) {
 }
 
 function resolveQueueRealtimeConnection() {
-    return window.DeezSpoTag?.Download?.connection
-        || window.DeezSpoTagDownload?.connection
-        || null;
+    if (queueRealtimeConnection) {
+        return queueRealtimeConnection;
+    }
+
+    if (!window.signalR?.HubConnectionBuilder) {
+        return null;
+    }
+
+    queueRealtimeConnection = new window.signalR.HubConnectionBuilder()
+        .withUrl('/deezerQueueHub')
+        .withAutomaticReconnect()
+        .build();
+
+    queueRealtimeConnectionStartPromise = queueRealtimeConnection.start()
+        .then(() => {
+            void loadQueueFromServer({ force: true });
+            return queueRealtimeConnection;
+        })
+        .catch((error) => {
+            console.error('Activities queue realtime connection failed:', error);
+            queueRealtimeAttached = false;
+            queueRealtimeLifecycleAttached = false;
+            queueRealtimeConnection = null;
+            startQueuePolling();
+            return null;
+        })
+        .finally(() => {
+            queueRealtimeConnectionStartPromise = null;
+        });
+
+    return queueRealtimeConnection;
 }
 
 function initQueueRealtimeEvents() {

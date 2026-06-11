@@ -348,15 +348,13 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         var isVideoPayload = IsVideoPayload(payload);
-        _deezspotagListener.SendStartDownload(next.QueueUuid);
-        _deezspotagListener.Send(UpdateQueueEvent, new
-        {
-            uuid = next.QueueUuid,
-            progress = payload.Progress,
-            downloaded = payload.Downloaded,
-            failed = payload.Failed
-        });
-        await _queueRepository.UpdateStatusAsync(next.QueueUuid, RunningStatus, progress: payload.Progress, cancellationToken: itemToken);
+        await QueueHelperUtils.SendRunningStartedAsync(
+            _queueRepository,
+            _deezspotagListener,
+            next.QueueUuid,
+            payload.Downloaded,
+            payload.Failed,
+            itemToken);
 
         var settings = _settingsService.LoadSettings();
         var originalDownloadLocation = settings.DownloadLocation;

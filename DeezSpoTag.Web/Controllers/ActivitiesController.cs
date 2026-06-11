@@ -11,7 +11,6 @@ using DeezSpoTag.Services.Download.Shared;
 using System.Linq;
 using System.Text.Json;
 using DeezSpoTag.Core.Security;
-using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Controllers;
 
@@ -34,6 +33,11 @@ public class ActivitiesController : Controller
     private const string RunningStatus = "running";
     private const string FinishedStatus = "finished";
     private const string DownloadFinishedStatus = "download finished";
+    private const string DoneStatus = "done";
+    private const string SuccessStatus = "success";
+    private const string ErrorStatus = "error";
+    private const string UiQueuedStatus = "queued";
+    private const string UiCompleteStatus = "complete";
     private const string DownloadNotFoundMessage = "Download not found in queue";
     private const string DeezerSource = "deezer";
     private const string ArtistKey = "artist";
@@ -45,12 +49,23 @@ public class ActivitiesController : Controller
     private static readonly TimeSpan QueuePayloadCacheTtl = TimeSpan.FromMinutes(5);
     private const int QueuePayloadCacheMaxEntries = 1024;
     private const int ActivitiesTerminalItemLimit = 200;
+    private static readonly string[] CompletedActivityStatuses =
+    [
+        CompletedStatus,
+        CompleteStatus,
+        FinishedStatus,
+        DownloadFinishedStatus,
+        DoneStatus,
+        SuccessStatus,
+        SkippedStatus
+    ];
+    private static readonly string[] CanceledActivityStatuses = [CanceledStatus, CancelledStatus];
+    private static readonly string[] FailedActivityStatuses = [FailedStatus, ErrorStatus];
     private readonly ILogger<ActivitiesController> _logger;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadQueueRepository _queueRepository;
     private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly IActivityLogWriter _activityLog;
-    private readonly LibraryRepository _libraryRepository;
     private readonly IServiceProvider _serviceProvider;
 
     public ActivitiesController(
@@ -59,7 +74,6 @@ public class ActivitiesController : Controller
         DownloadQueueRepository queueRepository,
         IDeezSpoTagListener deezspotagListener,
         IActivityLogWriter activityLog,
-        LibraryRepository libraryRepository,
         IServiceProvider serviceProvider)
     {
         _logger = logger;
@@ -67,7 +81,6 @@ public class ActivitiesController : Controller
         _queueRepository = queueRepository;
         _deezspotagListener = deezspotagListener;
         _activityLog = activityLog;
-        _libraryRepository = libraryRepository;
         _serviceProvider = serviceProvider;
     }
 
@@ -112,20 +125,20 @@ public class ActivitiesController : Controller
                 return NotFound(DownloadNotFoundMessage);
             }
 
-            var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
-            if (status is RunningStatus or DownloadingStatus)
+            var activityStatus = GetActivityStatus(item.Status);
+            if (activityStatus == ActivityStatus.Running)
             {
                 await GetDeezSpoTagApp().PauseDownloadAsync(request.Uuid);
             }
-            else if (status is QueuedStatus or InQueueStatus or ResolvingStatus or RetryingStatus)
+            else if (activityStatus is ActivityStatus.Queued or ActivityStatus.Retrying)
             {
                 await _queueRepository.UpdateStatusAsync(request.Uuid, PausedStatus, cancellationToken: HttpContext.RequestAborted);
             }
-            else if (IsTerminalQueueStatus(status))
+            else if (IsTerminalActivityStatus(activityStatus))
             {
                 return BadRequest("Completed, failed, or canceled downloads cannot be paused.");
             }
-            else if (status != PausedStatus)
+            else if (activityStatus != ActivityStatus.Paused)
             {
                 return BadRequest("Only active downloads can be paused.");
             }
@@ -159,12 +172,12 @@ public class ActivitiesController : Controller
                 return NotFound(DownloadNotFoundMessage);
             }
 
-            var status = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
-            if (status == PausedStatus)
+            var activityStatus = GetActivityStatus(item.Status);
+            if (activityStatus == ActivityStatus.Paused)
             {
                 await _queueRepository.UpdateStatusAsync(request.Uuid, QueuedStatus, error: null, cancellationToken: HttpContext.RequestAborted);
             }
-            else if (IsTerminalQueueStatus(status))
+            else if (IsTerminalActivityStatus(activityStatus))
             {
                 return BadRequest("Completed, failed, or canceled downloads cannot be resumed.");
             }
@@ -203,6 +216,11 @@ public class ActivitiesController : Controller
                 return NotFound(DownloadNotFoundMessage);
             }
 
+            if (!CanCancelActivityItem(item))
+            {
+                return BadRequest("Only active downloads can be canceled.");
+            }
+
             await GetDeezSpoTagApp().CancelDownloadAsync(request.Uuid);
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -222,16 +240,12 @@ public class ActivitiesController : Controller
     {
         try
         {
-            var registeredCompletedUuids = await ResolveRegisteredCompletedQueueUuidsAsync(
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { CompletedStatus, CompleteStatus },
+            var hidden = await _queueRepository.MarkActivitiesClearedByStatusesAsync(
+                CompletedActivityStatuses,
                 HttpContext.RequestAborted);
-            var hidden = 0;
-            var deleted = 0;
-            foreach (var queueUuid in registeredCompletedUuids)
-            {
-                hidden += await _queueRepository.MarkActivitiesClearedByUuidAsync(queueUuid, HttpContext.RequestAborted);
-                deleted += await _queueRepository.DeleteClearableByUuidAsync(queueUuid, HttpContext.RequestAborted);
-            }
+            var deleted = await _queueRepository.DeleteClearableByStatusesAsync(
+                CompletedActivityStatuses,
+                HttpContext.RequestAborted);
             if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedFinishedDownloads();
@@ -261,12 +275,12 @@ public class ActivitiesController : Controller
     {
         try
         {
-            var hidden = 0;
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
-            var deleted = 0;
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
+            var hidden = await _queueRepository.MarkActivitiesClearedByStatusesAsync(
+                CanceledActivityStatuses,
+                HttpContext.RequestAborted);
+            var deleted = await _queueRepository.DeleteClearableByStatusesAsync(
+                CanceledActivityStatuses,
+                HttpContext.RequestAborted);
             if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedFinishedDownloads();
@@ -340,8 +354,7 @@ public class ActivitiesController : Controller
                     continue;
                 }
 
-                var status = task.Status?.ToLowerInvariant() ?? string.Empty;
-                if (IsTerminalQueueStatus(status))
+                if (!CanCancelActivityItem(task))
                 {
                     continue;
                 }
@@ -403,8 +416,7 @@ public class ActivitiesController : Controller
                 return NotFound(DownloadNotFoundMessage);
             }
 
-            var normalizedStatus = (item.Status ?? string.Empty).Trim().ToLowerInvariant();
-            if (normalizedStatus is not FailedStatus and not CanceledStatus and not CancelledStatus)
+            if (!CanDeleteActivityItem(item))
             {
                 return BadRequest("Only failed or canceled downloads can be deleted");
             }
@@ -454,10 +466,7 @@ public class ActivitiesController : Controller
                 return NotFound(DownloadNotFoundMessage);
             }
 
-            if (!string.Equals(item.Status, FailedStatus, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(item.Status, CanceledStatus, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(item.Status, CancelledStatus, StringComparison.OrdinalIgnoreCase)
-                && !(string.Equals(item.Status, CompletedStatus, StringComparison.OrdinalIgnoreCase) && (item.Failed ?? 0) > 0))
+            if (!CanRetryActivityItem(item))
             {
                 return BadRequest("Only failed or canceled downloads can be retried");
             }
@@ -493,23 +502,8 @@ public class ActivitiesController : Controller
     {
         try
         {
-            var hidden = 0;
-            var deleted = 0;
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(FailedStatus, HttpContext.RequestAborted);
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
-            hidden += await _queueRepository.MarkActivitiesClearedByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(FailedStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(CanceledStatus, HttpContext.RequestAborted);
-            deleted += await _queueRepository.DeleteClearableByStatusAsync(CancelledStatus, HttpContext.RequestAborted);
-
-            var registeredCompletedUuids = await ResolveRegisteredCompletedQueueUuidsAsync(
-                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { CompletedStatus, CompleteStatus },
-                HttpContext.RequestAborted);
-            foreach (var queueUuid in registeredCompletedUuids)
-            {
-                hidden += await _queueRepository.MarkActivitiesClearedByUuidAsync(queueUuid, HttpContext.RequestAborted);
-                deleted += await _queueRepository.DeleteClearableByUuidAsync(queueUuid, HttpContext.RequestAborted);
-            }
+            var hidden = await _queueRepository.MarkTerminalActivitiesClearedAsync(HttpContext.RequestAborted);
+            var deleted = await _queueRepository.DeleteClearableAllAsync(HttpContext.RequestAborted);
             if (hidden > 0 || deleted > 0)
             {
                 _deezspotagListener.SendRemovedAllDownloads(null);
@@ -571,15 +565,51 @@ public class ActivitiesController : Controller
 
     private static bool IsTerminalQueueStatus(string? status)
     {
-        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized is CompletedStatus
-            or CompleteStatus
-            or FinishedStatus
-            or DownloadFinishedStatus
-            or FailedStatus
-            or CanceledStatus
-            or CancelledStatus
-            or SkippedStatus;
+        return IsTerminalActivityStatus(GetActivityStatus(status));
+    }
+
+    private static bool IsTerminalActivityStatus(ActivityStatus status)
+    {
+        return status is ActivityStatus.Complete
+            or ActivityStatus.Failed
+            or ActivityStatus.Canceled;
+    }
+
+    private static bool CanPauseActivityItem(DownloadQueueItem item)
+    {
+        return GetActivityStatus(item.Status) is ActivityStatus.Queued
+            or ActivityStatus.Running
+            or ActivityStatus.Retrying;
+    }
+
+    private static bool CanResumeActivityItem(DownloadQueueItem item)
+    {
+        return GetActivityStatus(item.Status) == ActivityStatus.Paused;
+    }
+
+    private static bool CanCancelActivityItem(DownloadQueueItem item)
+    {
+        return GetActivityStatus(item.Status) is ActivityStatus.Queued
+            or ActivityStatus.Running
+            or ActivityStatus.Paused
+            or ActivityStatus.Retrying;
+    }
+
+    private static bool CanRetryActivityItem(DownloadQueueItem item)
+    {
+        var activityStatus = GetActivityStatus(item.Status);
+        return activityStatus is ActivityStatus.Failed or ActivityStatus.Canceled
+            || (activityStatus == ActivityStatus.Complete && (item.Failed ?? 0) > 0);
+    }
+
+    private static bool CanDeleteActivityItem(DownloadQueueItem item)
+    {
+        return GetActivityStatus(item.Status) is ActivityStatus.Failed or ActivityStatus.Canceled;
+    }
+
+    private static bool CanClearActivityItem(DownloadQueueItem item)
+    {
+        return IsTerminalActivityStatus(GetActivityStatus(item.Status));
     }
 
     private DeezSpoTag.Services.Download.Shared.DeezSpoTagApp GetDeezSpoTagApp()
@@ -589,12 +619,19 @@ public class ActivitiesController : Controller
     {
         var payload = ParsePayload(item.PayloadJson);
         NormalizePayloadKeys(payload);
+        payload["rawStatus"] = item.Status;
         payload["status"] = MapStatusForUi(item.Status);
         payload["progress"] = item.Progress ?? 0;
         payload["downloaded"] = item.Downloaded ?? 0;
         payload["failed"] = item.Failed ?? 0;
         payload["engine"] = item.Engine;
         payload["uuid"] = item.QueueUuid;
+        payload["canPause"] = CanPauseActivityItem(item);
+        payload["canResume"] = CanResumeActivityItem(item);
+        payload["canCancel"] = CanCancelActivityItem(item);
+        payload["canRetry"] = CanRetryActivityItem(item);
+        payload["canDelete"] = CanDeleteActivityItem(item);
+        payload["canClear"] = CanClearActivityItem(item);
         if (!string.IsNullOrWhiteSpace(item.Error))
         {
             payload["error"] = item.Error;
@@ -619,15 +656,7 @@ public class ActivitiesController : Controller
 
     private static bool ShouldAttachLyricsFiles(string? status)
     {
-        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized is CompletedStatus
-            or CompleteStatus
-            or FinishedStatus
-            or DownloadFinishedStatus
-            or FailedStatus
-            or CanceledStatus
-            or CancelledStatus
-            or SkippedStatus;
+        return IsTerminalQueueStatus(status);
     }
 
     private static bool NeedsLyricsAttachment(Dictionary<string, object> payload)
@@ -883,22 +912,32 @@ public class ActivitiesController : Controller
 
     private static string MapStatusForUi(string status)
     {
+        return GetActivityStatus(status) switch
+        {
+            ActivityStatus.Queued => UiQueuedStatus,
+            ActivityStatus.Running => RunningStatus,
+            ActivityStatus.Paused => PausedStatus,
+            ActivityStatus.Retrying => RetryingStatus,
+            ActivityStatus.Complete => UiCompleteStatus,
+            ActivityStatus.Failed => FailedStatus,
+            ActivityStatus.Canceled => CanceledStatus,
+            _ => UiQueuedStatus
+        };
+    }
+
+    private static ActivityStatus GetActivityStatus(string? status)
+    {
         var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
         return normalized switch
         {
-            QueuedStatus => "inQueue",
-            InQueueStatus => "inQueue",
-            PausedStatus => PausedStatus,
-            RunningStatus => DownloadingStatus,
-            DownloadingStatus => DownloadingStatus,
-            CompleteStatus => CompletedStatus,
-            CompletedStatus => CompletedStatus,
-            FinishedStatus => CompletedStatus,
-            DownloadFinishedStatus => CompletedStatus,
-            CanceledStatus => CancelledStatus,
-            CancelledStatus => CancelledStatus,
-            SkippedStatus => CompletedStatus,
-            _ => normalized
+            ResolvingStatus or QueuedStatus or InQueueStatus => ActivityStatus.Queued,
+            RunningStatus or DownloadingStatus => ActivityStatus.Running,
+            PausedStatus => ActivityStatus.Paused,
+            RetryingStatus => ActivityStatus.Retrying,
+            CompletedStatus or CompleteStatus or FinishedStatus or DownloadFinishedStatus or DoneStatus or SuccessStatus or SkippedStatus => ActivityStatus.Complete,
+            FailedStatus or ErrorStatus => ActivityStatus.Failed,
+            CanceledStatus or CancelledStatus => ActivityStatus.Canceled,
+            _ => ActivityStatus.Queued
         };
     }
 
@@ -1308,96 +1347,21 @@ public class ActivitiesController : Controller
         return null;
     }
 
-    private async Task<IReadOnlyList<string>> ResolveRegisteredCompletedQueueUuidsAsync(
-        IReadOnlySet<string> statuses,
-        CancellationToken cancellationToken)
-    {
-        var normalizedStatuses = statuses
-            .Where(static status => !string.IsNullOrWhiteSpace(status))
-            .Select(static status => status.Trim().ToLowerInvariant())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (normalizedStatuses.Count == 0 || !_libraryRepository.IsConfigured)
-        {
-            return [];
-        }
-
-        var tasks = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
-        var candidates = tasks
-            .Where(item => normalizedStatuses.Contains((item.Status ?? string.Empty).Trim().ToLowerInvariant()))
-            .ToList();
-        var clearable = new List<string>();
-        foreach (var item in candidates)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var finalAudioPaths = ExtractFinalAudioPaths(item.FinalDestinationsJson);
-            if (finalAudioPaths.Count == 0)
-            {
-                continue;
-            }
-
-            var registered = await _libraryRepository.GetTrackIdsByFilePathsAsync(finalAudioPaths, cancellationToken);
-            if (finalAudioPaths.All(path => registered.ContainsKey(path)))
-            {
-                clearable.Add(item.QueueUuid);
-            }
-        }
-
-        return clearable;
-    }
-
-    private static IReadOnlyList<string> ExtractFinalAudioPaths(string? finalDestinationsJson)
-    {
-        if (string.IsNullOrWhiteSpace(finalDestinationsJson))
-        {
-            return [];
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(finalDestinationsJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return [];
-            }
-
-            return document.RootElement
-                .EnumerateObject()
-                .Where(static property => property.Value.ValueKind == JsonValueKind.String)
-                .Select(static property => property.Value.GetString())
-                .Where(static path => IsAudioPath(path))
-                .Select(static path => DownloadPathResolver.NormalizeDisplayPath(path!))
-                .Where(static path => !string.IsNullOrWhiteSpace(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
-    }
-
-    private static bool IsAudioPath(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return false;
-        }
-
-        var extension = Path.GetExtension(path);
-        return !string.IsNullOrWhiteSpace(extension)
-            && !string.Equals(extension, ".lrc", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(extension, TtmlExtension, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(extension, ".webp", StringComparison.OrdinalIgnoreCase);
-    }
-
     private JsonResult ErrorJson(string message)
     {
         return Json(new { success = false, error = message });
     }
+}
+
+internal enum ActivityStatus
+{
+    Queued,
+    Running,
+    Paused,
+    Retrying,
+    Complete,
+    Failed,
+    Canceled
 }
 
 internal sealed record CachedQueuePayload(DateTimeOffset CachedAtUtc, Dictionary<string, object> Payload);

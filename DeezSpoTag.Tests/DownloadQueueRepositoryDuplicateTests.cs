@@ -473,6 +473,57 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         Assert.Contains("terminal-new", queueUuids);
         Assert.DoesNotContain("terminal-old", queueUuids);
         Assert.Equal(4, queueUuids.Count);
+        Assert.Equal(
+            ["active-queued-visible", "active-running-visible", "terminal-new", "terminal-middle"],
+            queueUuids);
+    }
+
+    [Fact]
+    public async Task MarkActivitiesClearedByStatusesAsync_HidesEveryCompletedUiStatus()
+    {
+        await using var context = await CreateContextAsync();
+        var completedStatuses = new[]
+        {
+            "completed",
+            "complete",
+            "finished",
+            "download finished",
+            "done",
+            "success",
+            "skipped"
+        };
+
+        foreach (var status in completedStatuses)
+        {
+            await context.QueueRepository.EnqueueAsync(
+                CreateQueueItem($"completed-shape-{status.Replace(' ', '-')}", "Artist", status, 44) with { Status = status },
+                CancellationToken.None);
+        }
+
+        var hidden = await context.QueueRepository.MarkActivitiesClearedByStatusesAsync(completedStatuses, CancellationToken.None);
+
+        Assert.Equal(completedStatuses.Length, hidden);
+        var visible = await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 20, CancellationToken.None);
+        Assert.Empty(visible);
+    }
+
+    [Fact]
+    public async Task MarkTerminalActivitiesClearedAsync_DoesNotHideResolvingActiveRows()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("active-resolving-visible", "Artist", "Resolving", 44) with { Status = "resolving" },
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("terminal-failed-hidden", "Artist", "Failed", 44) with { Status = "failed" },
+            CancellationToken.None);
+
+        var hidden = await context.QueueRepository.MarkTerminalActivitiesClearedAsync(CancellationToken.None);
+
+        Assert.Equal(1, hidden);
+        var visible = await context.QueueRepository.GetActivitiesTasksAsync(terminalItemLimit: 20, CancellationToken.None);
+        Assert.Contains(visible, item => item.QueueUuid == "active-resolving-visible");
+        Assert.DoesNotContain(visible, item => item.QueueUuid == "terminal-failed-hidden");
     }
 
     [Fact]
