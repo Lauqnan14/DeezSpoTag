@@ -1604,6 +1604,118 @@
     color: var(--text-muted);
 }
 
+.media-operations-tab .analysis-folder-order {
+    display: grid;
+    gap: 8px;
+    width: min(520px, 100%);
+}
+
+.media-operations-tab .analysis-folder-order-toggle {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+}
+
+.media-operations-tab .analysis-folder-order-toggle .setting-checkbox-row {
+    min-width: 0;
+}
+
+.media-operations-tab .analysis-folder-order-summary {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.media-operations-tab .analysis-setting-tooltip {
+    color: var(--text-muted);
+    cursor: help;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 6px;
+    font-size: 12px;
+    line-height: 1;
+    vertical-align: middle;
+}
+
+.media-operations-tab .analysis-setting-tooltip:hover,
+.media-operations-tab .analysis-setting-tooltip:focus-visible {
+    color: var(--text-primary);
+}
+
+.media-operations-tab .analysis-folder-order-edit {
+    white-space: nowrap;
+}
+
+.media-operations-tab .analysis-folder-order-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.media-operations-tab .analysis-folder-order-item {
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    padding: 0;
+    overflow: hidden;
+}
+
+.media-operations-tab .analysis-folder-order-item.dragging {
+    opacity: 0.65;
+}
+
+.media-operations-tab .analysis-folder-order-header {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 8px 10px;
+}
+
+.media-operations-tab .analysis-folder-order-handle {
+    color: var(--text-muted);
+    cursor: grab;
+    font-family: 'Material Icons';
+    font-size: 20px;
+}
+
+.media-operations-tab .analysis-folder-order-title {
+    color: var(--text-primary);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.media-operations-tab .analysis-folder-order-status {
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.media-operations-tab .analysis-folder-order-item.engine-disabled .analysis-folder-order-title {
+    color: var(--text-muted);
+}
+
+.media-operations-tab .analysis-folder-order-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.media-operations-tab .analysis-folder-order-copy {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
 .media-operations-tab .field-group {
     display: grid;
     gap: 6px;
@@ -1726,6 +1838,18 @@
 .media-operations-tab .ops-primary .tool-card-footer .toggle-row {
     margin-top: 0;
     margin-right: auto;
+}
+
+.media-operations-tab #analysis-card .tool-card-footer {
+    display: grid;
+    grid-template-columns: minmax(260px, auto) minmax(280px, 520px) auto;
+    align-items: start;
+    justify-content: stretch;
+    gap: 12px;
+}
+
+.media-operations-tab #analysis-card .tool-card-footer .toggle-row {
+    margin-right: 0;
 }
 
 .media-operations-tab .tool-card-action-group {
@@ -2341,6 +2465,10 @@
         justify-content: flex-start;
     }
 
+    .media-operations-tab #analysis-card .tool-card-footer {
+        grid-template-columns: 1fr;
+    }
+
     .media-operations-tab .ops-primary .tool-card-footer .toggle-row {
         margin-right: 0;
     }
@@ -2685,6 +2813,26 @@
                                             <input id="analysis-enabled" type="checkbox" />
                                             <span class="slider" aria-hidden="true"></span>
                                         </span>
+                                    </div>
+                                    <div class="analysis-folder-order">
+                                        <div class="analysis-folder-order-toggle">
+                                            <label class="setting-checkbox-row" for="analysis-use-library-order">
+                                                <input id="analysis-use-library-order" type="checkbox">
+                                                <span>
+                                                    <strong>Use custom library order</strong>
+                                                    <span class="analysis-setting-tooltip" title="Analyze only the selected enabled folders, in this order." aria-label="Analyze only the selected enabled folders, in this order." tabindex="0">?</span>
+                                                </span>
+                                            </label>
+                                            <button class="action-btn action-btn-sm analysis-folder-order-edit" type="button" id="analysis-folder-order-edit-toggle" aria-expanded="false" hidden>Edit order</button>
+                                        </div>
+                                        <div class="analysis-folder-order-summary" id="analysis-folder-order-summary" hidden></div>
+                                        <div id="analysis-folder-order-panel" hidden>
+                                            <ul class="analysis-folder-order-list" id="analysis-folder-order-list"></ul>
+                                            <div class="analysis-folder-order-footer">
+                                                <span class="analysis-folder-order-copy">Drag folders into vibe analysis priority order.</span>
+                                                <button class="action-btn action-btn-sm" type="button" id="analysis-reset-folder-order">Reset order</button>
+                                            </div>
+                                        </div>
                                     </div>
                                     <div class="tool-card-action-group">
                                         <button id="runAnalysis" class="action-btn action-btn-sm" type="button">Run Analysis</button>
@@ -6632,11 +6780,13 @@ const analysisState = {
 const analysisSettingsState = {
     enabled: true,
     batchSize: 50,
-    intervalMinutes: 30
+    intervalMinutes: 30,
+    useLibraryOrder: false,
+    libraryOrder: []
 };
 
-const analysisRecent = [];
-let analysisProcessing = null;
+let analysisAvailableFolders = [];
+let analysisFolderOrderExpanded = false;
 let lastAnalysisLogKey = null;
 
 function formatTimestamp(value) {
@@ -6694,14 +6844,24 @@ function formatList(values) {
 
 async function loadAnalysisActivity() {
     try {
-        await fetchJson('/api/library/analysis/current');
-        analysisState.running = true;
+        const runtime = await fetchJson('/api/library/analysis/runtime');
+        applyAnalysisRuntime(runtime);
     } catch {
         analysisState.running = false;
+        renderAnalysisRecent([]);
     }
 }
 
-function applyLatestAnalysis(latest) {
+function applyAnalysisRuntime(runtime) {
+    analysisState.running = runtime?.running === true;
+    if (runtime?.latest) {
+        applyLatestAnalysis(runtime.latest, false);
+    }
+    renderAnalysisRecent(runtime?.recent || [], runtime?.current || null);
+    updateAnalysisStatusPill();
+}
+
+function applyLatestAnalysis(latest, addToRecent = true) {
     if (!latest) {
         return;
     }
@@ -6765,20 +6925,16 @@ function applyLatestAnalysis(latest) {
     setValue('analysisMoodElectronic', formatNumber(analysis?.moodElectronic));
 
     const analyzedAt = analysis?.analyzedAtUtc || new Date().toISOString();
-    const key = `${track?.trackId ?? track?.id ?? 'unknown'}-${analyzedAt}`;
-    if (!analysisRecent.find(item => item.key === key)) {
-        analysisRecent.unshift({
-            key,
+    if (addToRecent) {
+        renderAnalysisRecent([{
+            trackId: track?.trackId ?? track?.id ?? 0,
             title: trackLabel,
             status: statusLabel,
-            at: analyzedAt
-        });
-        if (analysisRecent.length > 10) {
-            analysisRecent.pop();
-        }
+            atUtc: analyzedAt
+        }], null);
     }
-    renderAnalysisRecent();
 
+    const key = `${track?.trackId ?? track?.id ?? 'unknown'}-${analyzedAt}`;
     if (key !== lastAnalysisLogKey) {
         const logger = window.DeezSpoTag?.DownloadLogger;
         const message = `Vibe analysis: ${trackLabel} (${statusLabel})`;
@@ -6790,7 +6946,7 @@ function applyLatestAnalysis(latest) {
 async function loadLatestAnalysis() {
     try {
         const latest = await fetchJson('/api/library/analysis/latest');
-        applyLatestAnalysis(latest);
+        applyLatestAnalysis(latest, false);
     } catch (error) {
         const trackEl = document.getElementById('analysisLatestTrack');
         if (trackEl) trackEl.textContent = 'No analyzed tracks yet';
@@ -6949,6 +7105,35 @@ function initAnalysisCard() {
             await saveAnalysisEnabled(enabledEl.checked);
         });
     }
+    const useLibraryOrder = document.getElementById('analysis-use-library-order');
+    if (useLibraryOrder) {
+        useLibraryOrder.addEventListener('change', () => {
+            analysisSettingsState.useLibraryOrder = useLibraryOrder.checked;
+            if (!useLibraryOrder.checked) {
+                analysisFolderOrderExpanded = false;
+            }
+            if (!analysisSettingsState.libraryOrder.length) {
+                analysisSettingsState.libraryOrder = analysisAvailableFolders.map(folder => folder.id);
+            }
+            renderAnalysisFolderOrder();
+            saveAnalysisSettings(true);
+        });
+    }
+    const editFolderOrder = document.getElementById('analysis-folder-order-edit-toggle');
+    if (editFolderOrder) {
+        editFolderOrder.addEventListener('click', () => {
+            analysisFolderOrderExpanded = !analysisFolderOrderExpanded;
+            renderAnalysisFolderOrder();
+        });
+    }
+    const resetFolderOrder = document.getElementById('analysis-reset-folder-order');
+    if (resetFolderOrder) {
+        resetFolderOrder.addEventListener('click', () => {
+            analysisSettingsState.libraryOrder = analysisAvailableFolders.map(folder => folder.id);
+            renderAnalysisFolderOrder();
+            saveAnalysisSettings(true);
+        });
+    }
     loadAnalysisActivity().then(loadAnalysisStatus);
     loadAnalysisSettings();
     loadLatestAnalysis();
@@ -6973,6 +7158,7 @@ async function loadAnalysisSettings() {
         return;
     }
     try {
+        await loadAnalysisFolders();
         const response = await activityFetch('/api/library/analysis/settings');
         if (!response.ok) {
             throw new Error(await response.text());
@@ -6982,14 +7168,151 @@ async function loadAnalysisSettings() {
         analysisSettingsState.enabled = enabledEl.checked;
         analysisSettingsState.batchSize = settings.batchSize ?? 50;
         analysisSettingsState.intervalMinutes = settings.intervalMinutes ?? 30;
+        analysisSettingsState.useLibraryOrder = settings.useLibraryOrder === true;
+        analysisSettingsState.libraryOrder = normalizeAnalysisFolderOrder(settings.libraryOrder || []);
+        if (!analysisSettingsState.libraryOrder.length) {
+            analysisSettingsState.libraryOrder = analysisAvailableFolders.map(folder => folder.id);
+        }
         const batchSize = document.getElementById('analysis-batch-size');
         const intervalMinutes = document.getElementById('analysis-interval-minutes');
+        const useLibraryOrder = document.getElementById('analysis-use-library-order');
         if (batchSize) batchSize.value = settings.batchSize ?? 50;
         if (intervalMinutes) intervalMinutes.value = settings.intervalMinutes ?? 30;
+        if (useLibraryOrder) useLibraryOrder.checked = analysisSettingsState.useLibraryOrder;
+        renderAnalysisFolderOrder();
         updateAnalysisStatusPill();
     } catch (error) {
         console.warn('Analysis settings failed to load.', error);
     }
+}
+
+async function loadAnalysisFolders() {
+    const response = await activityFetch('/api/library/folders');
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+    const folders = await response.json();
+    analysisAvailableFolders = (Array.isArray(folders) ? folders : [])
+        .filter(folder => folder?.enabled !== false && folder?.id != null)
+        .map(folder => ({
+            id: Number(folder.id),
+            displayName: folder.displayName || folder.libraryName || folder.rootPath || `Folder ${folder.id}`,
+            rootPath: folder.rootPath || '',
+            libraryName: folder.libraryName || ''
+        }));
+    analysisSettingsState.libraryOrder = normalizeAnalysisFolderOrder(analysisSettingsState.libraryOrder);
+}
+
+function normalizeAnalysisFolderOrder(order) {
+    const known = new Set(analysisAvailableFolders.map(folder => folder.id));
+    const normalized = [];
+    (Array.isArray(order) ? order : []).forEach(value => {
+        const id = Number(value);
+        if (known.has(id) && !normalized.includes(id)) {
+            normalized.push(id);
+        }
+    });
+    return normalized;
+}
+
+function renderAnalysisFolderOrder() {
+    const panel = document.getElementById('analysis-folder-order-panel');
+    const list = document.getElementById('analysis-folder-order-list');
+    const toggle = document.getElementById('analysis-use-library-order');
+    const summary = document.getElementById('analysis-folder-order-summary');
+    const editToggle = document.getElementById('analysis-folder-order-edit-toggle');
+    if (!panel || !list || !toggle || !summary || !editToggle) {
+        return;
+    }
+
+    const orderedIds = normalizeAnalysisFolderOrder(analysisSettingsState.libraryOrder);
+    analysisSettingsState.libraryOrder = orderedIds;
+    const isEnabled = toggle.checked;
+    const selectedCount = orderedIds.length;
+    const totalCount = analysisAvailableFolders.length;
+
+    editToggle.hidden = !isEnabled;
+    editToggle.textContent = analysisFolderOrderExpanded ? 'Done' : 'Edit order';
+    editToggle.setAttribute('aria-expanded', analysisFolderOrderExpanded ? 'true' : 'false');
+    summary.hidden = !isEnabled;
+    summary.textContent = selectedCount === 1
+        ? `1 enabled folder selected from ${totalCount}.`
+        : `${selectedCount} enabled folders selected from ${totalCount}.`;
+    panel.hidden = !isEnabled || !analysisFolderOrderExpanded;
+
+    const byId = new Map(analysisAvailableFolders.map(folder => [folder.id, folder]));
+    const displayIds = [
+        ...orderedIds,
+        ...analysisAvailableFolders.map(folder => folder.id).filter(id => !orderedIds.includes(id))
+    ];
+    list.innerHTML = displayIds.map((id, index) => {
+        const folder = byId.get(id);
+        if (!folder) {
+            return '';
+        }
+        const isSelected = orderedIds.includes(id);
+        return `
+            <li class="analysis-folder-order-item${isSelected ? '' : ' engine-disabled'}" data-folder-id="${id}" draggable="${isSelected ? 'true' : 'false'}">
+                <div class="analysis-folder-order-header">
+                    <span class="analysis-folder-order-handle" aria-hidden="true">drag_indicator</span>
+                    <input type="checkbox" class="analysis-folder-enabled" ${isSelected ? 'checked' : ''} aria-label="Enable ${escapeHtml(folder.displayName)}">
+                    <span class="analysis-folder-order-title">${escapeHtml(folder.displayName)}</span>
+                    <span class="analysis-folder-order-status">${isSelected ? 'enabled' : 'disabled'}</span>
+                </div>
+            </li>`;
+    }).join('');
+    bindAnalysisFolderOrderControls();
+}
+
+function bindAnalysisFolderOrderControls() {
+    const list = document.getElementById('analysis-folder-order-list');
+    let dragged = null;
+    list?.querySelectorAll('.analysis-folder-order-item').forEach(item => {
+        item.addEventListener('dragstart', () => {
+            if (item.classList.contains('engine-disabled')) {
+                return;
+            }
+            dragged = item;
+            item.classList.add('dragging');
+        });
+        item.addEventListener('dragend', () => {
+            item.classList.remove('dragging');
+            dragged = null;
+            syncAnalysisFolderOrderFromDom();
+            saveAnalysisSettings(true);
+        });
+        item.addEventListener('dragover', event => {
+            event.preventDefault();
+            if (!dragged || dragged === item || item.classList.contains('engine-disabled')) {
+                return;
+            }
+
+            const rect = item.getBoundingClientRect();
+            const before = event.clientY < rect.top + rect.height / 2;
+            list.insertBefore(dragged, before ? item : item.nextSibling);
+        });
+    });
+    document.querySelectorAll('.analysis-folder-enabled').forEach(input => {
+        input.addEventListener('change', () => {
+            const id = Number(input.closest('[data-folder-id]')?.dataset.folderId || 0);
+            if (!id) return;
+            if (input.checked) {
+                if (!analysisSettingsState.libraryOrder.includes(id)) {
+                    analysisSettingsState.libraryOrder.push(id);
+                }
+            } else {
+                analysisSettingsState.libraryOrder = analysisSettingsState.libraryOrder.filter(folderId => folderId !== id);
+            }
+            renderAnalysisFolderOrder();
+            saveAnalysisSettings(true);
+        });
+    });
+}
+
+function syncAnalysisFolderOrderFromDom() {
+    analysisSettingsState.libraryOrder = Array.from(document.querySelectorAll('#analysis-folder-order-list .analysis-folder-order-item:not(.engine-disabled)'))
+        .map(item => Number(item.dataset.folderId || 0))
+        .filter(id => id > 0);
 }
 
 function buildAnalysisPayload(useStateValues = false, enabledOverride) {
@@ -6997,14 +7320,18 @@ function buildAnalysisPayload(useStateValues = false, enabledOverride) {
         return {
             enabled: enabledOverride ?? analysisSettingsState.enabled,
             batchSize: analysisSettingsState.batchSize ?? 50,
-            intervalMinutes: analysisSettingsState.intervalMinutes ?? 30
+            intervalMinutes: analysisSettingsState.intervalMinutes ?? 30,
+            useLibraryOrder: analysisSettingsState.useLibraryOrder ?? false,
+            libraryOrder: analysisSettingsState.libraryOrder || []
         };
     }
 
     return {
         enabled: enabledOverride ?? (document.getElementById('analysis-enabled')?.checked ?? analysisSettingsState.enabled),
         batchSize: Number(document.getElementById('analysis-batch-size')?.value || analysisSettingsState.batchSize || 50),
-        intervalMinutes: Number(document.getElementById('analysis-interval-minutes')?.value || analysisSettingsState.intervalMinutes || 30)
+        intervalMinutes: Number(document.getElementById('analysis-interval-minutes')?.value || analysisSettingsState.intervalMinutes || 30),
+        useLibraryOrder: document.getElementById('analysis-use-library-order')?.checked ?? analysisSettingsState.useLibraryOrder,
+        libraryOrder: analysisSettingsState.libraryOrder || []
     };
 }
 
@@ -7027,6 +7354,8 @@ async function saveAnalysisEnabled(enabled) {
         analysisSettingsState.enabled = payload.enabled;
         analysisSettingsState.batchSize = payload.batchSize;
         analysisSettingsState.intervalMinutes = payload.intervalMinutes;
+        analysisSettingsState.useLibraryOrder = payload.useLibraryOrder;
+        analysisSettingsState.libraryOrder = payload.libraryOrder;
         updateAnalysisStatusPill();
         notifyActivity(`Vibe analysis ${payload.enabled ? 'enabled' : 'disabled'}.`);
         return true;
@@ -7057,6 +7386,8 @@ async function saveAnalysisSettings(silentSuccess) {
         analysisSettingsState.enabled = payload.enabled;
         analysisSettingsState.batchSize = payload.batchSize;
         analysisSettingsState.intervalMinutes = payload.intervalMinutes;
+        analysisSettingsState.useLibraryOrder = payload.useLibraryOrder;
+        analysisSettingsState.libraryOrder = payload.libraryOrder;
         if (!silentSuccess) {
             notifyActivity(`Vibe analysis ${payload.enabled ? 'enabled' : 'disabled'}.`);
         }
@@ -7094,10 +7425,21 @@ async function saveAnalysisSettings(silentSuccess) {
 	    }, LIBRARY_LOGS_POLL_MS);
 	}
 
-function renderAnalysisRecent() {
+function renderAnalysisRecent(recentItems, current) {
     const list = document.getElementById('analysisRecentList');
     if (!list) return;
-    if (!analysisRecent.length) {
+    let item = null;
+    if (current?.track) {
+        item = {
+            title: `${current.track.title} · ${current.track.artistName}`,
+            status: current.analysis?.status || 'processing',
+            atUtc: current.analysis?.analyzedAtUtc || new Date().toISOString()
+        };
+    } else if (recentItems?.length) {
+        item = recentItems[0];
+    }
+
+    if (!item) {
         list.innerHTML = `
             <li class="analysis-recent-item">
                 <div class="analysis-recent-meta">
@@ -7106,53 +7448,25 @@ function renderAnalysisRecent() {
             </li>`;
         return;
     }
-    const items = [];
-    if (analysisProcessing) {
-        items.push({
-            title: analysisProcessing.title,
-            status: analysisProcessing.status || 'processing',
-            at: analysisProcessing.at
-        });
-    }
-    items.push(...analysisRecent);
 
-    list.innerHTML = items
-        .filter(item => (item.status || '').toLowerCase() !== 'completed')
-        .map(item => {
-            const time = formatTimestamp(item.at);
-            return `
-                <li class="analysis-recent-item">
-                    <div class="analysis-recent-meta">
-                        <span class="analysis-recent-title">${escapeHtml(item.title)}</span>
-                        <span class="analysis-recent-status">${escapeHtml(item.status)}</span>
-                    </div>
-                    <span class="analysis-recent-time">${escapeHtml(time)}</span>
-                </li>`;
-        })
-        .join('');
+    const time = formatTimestamp(item.atUtc || item.at);
+    list.innerHTML = `
+        <li class="analysis-recent-item">
+            <div class="analysis-recent-meta">
+                <span class="analysis-recent-title">${escapeHtml(item.title)}</span>
+                <span class="analysis-recent-status">${escapeHtml(item.status)}</span>
+            </div>
+            <span class="analysis-recent-time">${escapeHtml(time)}</span>
+        </li>`;
 }
 
 async function loadProcessingAnalysis() {
     try {
-        let processing = null;
-        try {
-            processing = await fetchJson('/api/library/analysis/current');
-        } catch {
-            processing = await fetchJson('/api/library/analysis/processing');
-        }
-        if (processing?.track) {
-            analysisProcessing = {
-                title: `${processing.track.title} · ${processing.track.artistName}`,
-                status: processing.analysis?.status || 'processing',
-                at: processing.analysis?.analyzedAtUtc || new Date().toISOString()
-            };
-        } else {
-            analysisProcessing = null;
-        }
+        const runtime = await fetchJson('/api/library/analysis/runtime');
+        applyAnalysisRuntime(runtime);
     } catch {
-        analysisProcessing = null;
+        renderAnalysisRecent([]);
     }
-    renderAnalysisRecent();
 }
 
 function stopLibraryLogsAutoRefresh() {

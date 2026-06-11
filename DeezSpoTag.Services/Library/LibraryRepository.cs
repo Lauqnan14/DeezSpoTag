@@ -3454,10 +3454,21 @@ ORDER BY sort_group, sort_utc DESC;";
         int limit,
         bool includeCompletedStandard = false,
         DateTimeOffset? completedStandardRetryBeforeUtc = null,
+        IReadOnlyList<long>? orderedLibraryIds = null,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
+        var scopedLibraryIds = orderedLibraryIds?
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray() ?? Array.Empty<long>();
+        var libraryScopeSql = scopedLibraryIds.Length > 0
+            ? $" AND f.id IN ({string.Join(", ", scopedLibraryIds.Select((_, index) => $"@libraryId{index}"))})"
+            : string.Empty;
+        var libraryOrderSql = scopedLibraryIds.Length > 0
+            ? "CASE " + string.Join(" ", scopedLibraryIds.Select((_, index) => $"WHEN f.id = @libraryId{index} THEN {index}")) + " ELSE 999999 END,"
+            : string.Empty;
+        var sql = $@"
 SELECT t.id,
        f.library_id,
        f.root_path,
@@ -3470,6 +3481,7 @@ JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 LEFT JOIN track_analysis ta ON ta.track_id = t.id
 WHERE f.enabled = 1
+  {libraryScopeSql}
   AND (
       ta.status IS NULL
       OR ta.status IN ('pending', 'failed', 'error')
@@ -3484,7 +3496,8 @@ WHERE f.enabled = 1
           )
       )
   )
-ORDER BY t.id,
+ORDER BY {libraryOrderSql}
+         t.id,
          CASE
              WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
                   OR lower(coalesce(af.codec, '')) LIKE '%dolby digital plus%'
@@ -3501,6 +3514,10 @@ ORDER BY t.id,
 LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", limit);
+        for (var i = 0; i < scopedLibraryIds.Length; i++)
+        {
+            command.Parameters.AddWithValue($"libraryId{i}", scopedLibraryIds[i]);
+        }
         command.Parameters.AddWithValue("includeCompletedStandard", includeCompletedStandard ? 1 : 0);
         command.Parameters.AddWithValue(
             "completedStandardRetryBeforeUtc",
@@ -3528,6 +3545,18 @@ LIMIT @limit;";
                 await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5)));
         }
         return results;
+    }
+
+    public async Task ResetProcessingTrackAnalysisAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE track_analysis
+SET status = 'pending',
+    error = NULL
+WHERE status = 'processing';";
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<TrackAnalysisInputDto?> GetTrackForAnalysisAsync(long trackId, CancellationToken cancellationToken = default)
@@ -3932,82 +3961,6 @@ LIMIT 1;";
         var analysis = await ReadTrackAnalysisResultDtoAsync(reader, offset: 6, cancellationToken);
 
         return new LatestTrackAnalysisDto(track, analysis);
-    }
-
-    public async Task<LatestTrackAnalysisDto?> GetProcessingTrackAsync(CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-SELECT ta.track_id, ta.library_id
-FROM track_analysis ta
-WHERE ta.status = 'processing'
-ORDER BY ta.track_id
-LIMIT 1;";
-
-        await using var command = new SqliteCommand(sql, connection);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            return null;
-        }
-
-        var trackId = reader.GetInt64(0);
-        var libraryId = await reader.IsDBNullAsync(1, cancellationToken) ? default(long?) : reader.GetInt64(1);
-
-        var summary = await GetTrackSummariesAsync(new List<long> { trackId }, cancellationToken);
-        var track = summary.Count > 0 ? summary[0] : null;
-        if (track is null)
-        {
-            return null;
-        }
-
-        var processingAnalysis = new TrackAnalysisResultDto(
-            trackId,
-            libraryId,
-            "processing",
-            null, // energy
-            null, // rms
-            null, // zero crossing
-            null, // spectral centroid
-            null, // bpm
-            null, // analyzed at
-            null, // error
-            null, // analysis mode
-            null, // analysis version
-            null, // mood tags
-            null, // mood happy
-            null, // mood sad
-            null, // mood relaxed
-            null, // mood aggressive
-            null, // mood party
-            null, // mood acoustic
-            null, // mood electronic
-            null, // valence
-            null, // arousal
-            null, // beats count
-            null, // key
-            null, // key scale
-            null, // key strength
-            null, // loudness
-            null, // dynamic range
-            null, // danceability
-            null, // instrumentalness
-            null, // acousticness
-            null, // speechiness
-            null, // danceability ml
-            null, // essentia genres
-            null, // lastfm tags
-            null, // approachability
-            null, // engagement
-            null, // voice instrumental
-            null, // tonal atonal
-            null, // valence ml
-            null, // arousal ml
-            null, // dynamic complexity
-            null  // loudness ml
-        );
-
-        return new LatestTrackAnalysisDto(track, processingAnalysis);
     }
 
     public async Task<IReadOnlyList<TrackAnalysisResultDto>> GetTrackAnalysisCandidatesAsync(

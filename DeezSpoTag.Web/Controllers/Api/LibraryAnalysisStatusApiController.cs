@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -11,10 +12,14 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class LibraryAnalysisStatusApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;
+    private readonly TrackAnalysisBackgroundService _analysisService;
 
-    public LibraryAnalysisStatusApiController(LibraryRepository repository)
+    public LibraryAnalysisStatusApiController(
+        LibraryRepository repository,
+        TrackAnalysisBackgroundService analysisService)
     {
         _repository = repository;
+        _analysisService = analysisService;
     }
 
     [HttpGet("status")]
@@ -27,7 +32,8 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
     [HttpGet("latest")]
     public async Task<IActionResult> GetLatest(CancellationToken cancellationToken)
     {
-        var latest = await _repository.GetLatestTrackAnalysisAsync(cancellationToken);
+        var runtime = _analysisService.GetRuntimeSnapshot();
+        var latest = runtime.Latest ?? await _repository.GetLatestTrackAnalysisAsync(cancellationToken);
         if (latest is null)
         {
             return NotFound();
@@ -37,25 +43,32 @@ public sealed class LibraryAnalysisStatusApiController : ControllerBase
     }
 
     [HttpGet("current")]
-    public Task<IActionResult> GetCurrent(CancellationToken cancellationToken)
+    public IActionResult GetCurrent()
     {
-        return GetCurrentProcessingResultAsync(cancellationToken);
+        return GetCurrentProcessingResult();
     }
 
     [HttpGet("processing")]
-    public Task<IActionResult> GetProcessing(CancellationToken cancellationToken)
+    public IActionResult GetProcessing()
     {
-        return GetCurrentProcessingResultAsync(cancellationToken);
+        return GetCurrentProcessingResult();
     }
 
-    private async Task<IActionResult> GetCurrentProcessingResultAsync(CancellationToken cancellationToken)
+    private IActionResult GetCurrentProcessingResult()
     {
-        var processing = await _repository.GetProcessingTrackAsync(cancellationToken);
+        var runtime = _analysisService.GetRuntimeSnapshot();
+        var processing = runtime.Current;
         if (processing is null)
         {
             return NotFound();
         }
 
         return Ok(processing);
+    }
+
+    [HttpGet("runtime")]
+    public IActionResult GetRuntime()
+    {
+        return Ok(_analysisService.GetRuntimeSnapshot());
     }
 }

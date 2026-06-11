@@ -31,6 +31,43 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTests
     }
 
     [Fact]
+    public void VibeAnalysisRuntime_IsCancellableAndDoesNotReadStaleProcessingRowsForCurrentTrack()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
+        var controller = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryAnalysisStatusApiController.cs"));
+        var repository = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+
+        Assert.Contains("PauseActiveRun();", service, StringComparison.Ordinal);
+        Assert.Contains("WaitForExitAsync(linked.Token)", service, StringComparison.Ordinal);
+        Assert.Contains("ResetInterruptedProcessingRowsAsync", service, StringComparison.Ordinal);
+        Assert.Contains("GetRuntimeSnapshot()", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetProcessingTrackAsync", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetProcessingTrackAsync", repository, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VibeAnalysisSettings_PersistCustomLibraryFolderOrder()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var settings = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "VibeAnalysisSettingsStore.cs"));
+        var api = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "VibeAnalysisSettingsApiController.cs"));
+        var view = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml"));
+        var repository = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+
+        Assert.Contains("bool UseLibraryOrder", settings, StringComparison.Ordinal);
+        Assert.Contains("IReadOnlyList<long> LibraryOrder", settings, StringComparison.Ordinal);
+        Assert.Contains("request.UseLibraryOrder", api, StringComparison.Ordinal);
+        Assert.Contains("analysis-use-library-order", view, StringComparison.Ordinal);
+        Assert.Contains("analysis-folder-order-edit-toggle", view, StringComparison.Ordinal);
+        Assert.Contains("analysis-folder-order-summary", view, StringComparison.Ordinal);
+        Assert.Contains("analysisFolderOrderExpanded", view, StringComparison.Ordinal);
+        Assert.Contains("analysis-folder-order-list", view, StringComparison.Ordinal);
+        Assert.Contains("f.id IN", repository, StringComparison.Ordinal);
+        Assert.Contains("WHEN f.id = @libraryId", repository, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TrackAnalysisCandidateSelection_PrefersEssentiaDecodableCopiesOverAtmosEac3()
     {
         var repoRoot = ResolveRepoRoot();

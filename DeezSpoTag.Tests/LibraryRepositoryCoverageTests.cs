@@ -1010,10 +1010,10 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.NotNull(explicitTrack);
 
         await _repository.MarkTrackAnalysisProcessingAsync(trackOne, seeded.LibraryId);
-        var processing = await _repository.GetProcessingTrackAsync();
-        Assert.NotNull(processing);
-        Assert.Equal(trackOne, processing!.Track.TrackId);
-        Assert.Equal("processing", processing.Analysis.Status);
+        await _repository.ResetProcessingTrackAnalysisAsync();
+        var resetAnalysis = await _repository.GetTrackAnalysisAsync(trackOne);
+        Assert.NotNull(resetAnalysis);
+        Assert.Equal("pending", resetAnalysis!.Status);
 
         var baseTime = DateTimeOffset.UtcNow.AddMinutes(-2);
         await _repository.UpsertTrackAnalysisAsync(CreateAnalysisResult(trackOne, seeded.LibraryId, baseTime, ["happy"]));

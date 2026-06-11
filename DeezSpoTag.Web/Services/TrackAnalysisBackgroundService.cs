@@ -83,7 +83,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly MoodBucketService _moodBucketService;
     private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _analysisLock = new(1, 1);
+    private readonly object _runtimeLock = new();
+    private readonly List<VibeAnalysisRecentItemDto> _recentAnalyses = new();
     private readonly object _mlCapabilityLock = new();
+    private CancellationTokenSource? _activeRunCancellation;
+    private Task? _manualRunTask;
+    private string _runtimeState = VibeAnalysisRuntimeStates.Idle;
+    private LatestTrackAnalysisDto? _currentAnalysis;
+    private LatestTrackAnalysisDto? _latestAnalysis;
+    private DateTimeOffset? _runtimeUpdatedAtUtc;
     private MlCapability? _mlCapability;
     private DateTimeOffset _mlCapabilityLastCheckedAt = DateTimeOffset.MinValue;
     private DateTimeOffset _mlBootstrapLastAttemptAt = DateTimeOffset.MinValue;
@@ -112,12 +120,172 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         _configuration = configuration;
     }
 
+    public async Task ApplySettingsAsync(VibeAnalysisSettingsDto settings, CancellationToken cancellationToken)
+    {
+        if (settings.Enabled)
+        {
+            return;
+        }
+
+        PauseActiveRun();
+        await Task.CompletedTask;
+    }
+
+    public bool TryStartManualAnalysis(int batchSize)
+    {
+        lock (_runtimeLock)
+        {
+            if (_manualRunTask is { IsCompleted: false })
+            {
+                return false;
+            }
+
+            _manualRunTask = Task.Run(() => AnalyzeNowAsync(Math.Clamp(batchSize, 10, 500), CancellationToken.None, forceWhenDisabled: true));
+            return true;
+        }
+    }
+
+    public VibeAnalysisRuntimeDto GetRuntimeSnapshot()
+    {
+        lock (_runtimeLock)
+        {
+            return new VibeAnalysisRuntimeDto(
+                _runtimeState,
+                string.Equals(_runtimeState, VibeAnalysisRuntimeStates.Running, StringComparison.OrdinalIgnoreCase),
+                _currentAnalysis,
+                _latestAnalysis,
+                _recentAnalyses.ToArray(),
+                _runtimeUpdatedAtUtc);
+        }
+    }
+
+    private void PauseActiveRun()
+    {
+        CancellationTokenSource? active;
+        lock (_runtimeLock)
+        {
+            active = _activeRunCancellation;
+            if (active is null)
+            {
+                _runtimeState = VibeAnalysisRuntimeStates.Paused;
+                _currentAnalysis = null;
+                _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+                return;
+            }
+
+            _runtimeState = VibeAnalysisRuntimeStates.Pausing;
+            _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        active.Cancel();
+    }
+
+    private RuntimeRunScope BeginRuntimeRun(CancellationToken cancellationToken)
+    {
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        lock (_runtimeLock)
+        {
+            _activeRunCancellation = linked;
+            _runtimeState = VibeAnalysisRuntimeStates.Running;
+            _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        return new RuntimeRunScope(this, linked);
+    }
+
+    private void CompleteRuntimeRun(CancellationTokenSource runCancellation)
+    {
+        lock (_runtimeLock)
+        {
+            if (!ReferenceEquals(_activeRunCancellation, runCancellation))
+            {
+                return;
+            }
+
+            _activeRunCancellation = null;
+            _currentAnalysis = null;
+            _runtimeState = runCancellation.IsCancellationRequested
+                ? VibeAnalysisRuntimeStates.Paused
+                : VibeAnalysisRuntimeStates.Idle;
+            _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void SetCurrentAnalysis(TrackAnalysisInputDto track, MixTrackDto? summary)
+    {
+        var current = BuildLatestTrackAnalysisDto(track, summary, "processing", DateTimeOffset.UtcNow, null);
+        lock (_runtimeLock)
+        {
+            _currentAnalysis = current;
+            _runtimeState = VibeAnalysisRuntimeStates.Running;
+            _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void RecordCompletedAnalysis(MixTrackDto? summary, TrackAnalysisResultDto result)
+    {
+        if (!IsAnalysisCompleteStatus(result.Status))
+        {
+            return;
+        }
+
+        var track = summary ?? new MixTrackDto(result.TrackId, $"Track {result.TrackId}", "Unknown", "Unknown", null, null);
+        var latest = new LatestTrackAnalysisDto(track, result);
+        var recent = new VibeAnalysisRecentItemDto(
+            track.TrackId,
+            $"{track.Title} · {track.ArtistName}",
+            result.Status,
+            result.AnalyzedAtUtc ?? DateTimeOffset.UtcNow);
+
+        lock (_runtimeLock)
+        {
+            _latestAnalysis = latest;
+            _recentAnalyses.RemoveAll(item => item.TrackId == track.TrackId);
+            _recentAnalyses.Insert(0, recent);
+            if (_recentAnalyses.Count > 10)
+            {
+                _recentAnalyses.RemoveRange(10, _recentAnalyses.Count - 10);
+            }
+
+            _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private static LatestTrackAnalysisDto BuildLatestTrackAnalysisDto(
+        TrackAnalysisInputDto track,
+        MixTrackDto? summary,
+        string status,
+        DateTimeOffset? analyzedAtUtc,
+        string? error)
+    {
+        var mixTrack = summary ?? new MixTrackDto(track.TrackId, $"Track {track.TrackId}", "Unknown", "Unknown", null, track.DurationMs);
+        var analysis = CreateFailure(track.TrackId, track.LibraryId, status, error ?? string.Empty) with
+        {
+            AnalyzedAtUtc = analyzedAtUtc
+        };
+        return new LatestTrackAnalysisDto(mixTrack, analysis);
+    }
+
+    private async Task ResetInterruptedProcessingRowsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _repository.ResetProcessingTrackAnalysisAsync(cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Failed to reset interrupted vibe analysis processing rows.");
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!BackgroundAutomationPolicy.IsEnabled(_configuration, "VibeAnalysis"))
         {
             return;
         }
+
+        await ResetInterruptedProcessingRowsAsync(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -132,7 +300,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                         settings = await _settingsStore.LoadAsync();
                         if (settings.Enabled)
                         {
-                            await AnalyzeBatchAsync(settings.BatchSize, stopWhenDisabled: true, stoppingToken);
+                            using var run = BeginRuntimeRun(stoppingToken);
+                            await AnalyzeBatchAsync(settings, stopWhenDisabled: true, run.Token);
                         }
                     }
                     finally
@@ -140,6 +309,14 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                         _analysisLock.Release();
                     }
                 }
+            }
+            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            {
+                await ResetInterruptedProcessingRowsAsync(CancellationToken.None);
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Vibe analysis paused."));
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
@@ -168,23 +345,35 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         await _analysisLock.WaitAsync(cancellationToken);
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            using var run = BeginRuntimeRun(cancellationToken);
+            try
             {
-                var settings = await _settingsStore.LoadAsync();
-                if (!forceWhenDisabled && !settings.Enabled)
+                while (!run.Token.IsCancellationRequested)
                 {
-                    break;
-                }
+                    var settings = await _settingsStore.LoadAsync();
+                    if (!forceWhenDisabled && !settings.Enabled)
+                    {
+                        break;
+                    }
 
-                var effectiveBatch = forceWhenDisabled ? batchSize : settings.BatchSize;
-                var processed = await AnalyzeBatchAsync(
-                    Math.Clamp(effectiveBatch, 10, 500),
-                    stopWhenDisabled: !forceWhenDisabled,
-                    cancellationToken);
-                if (processed == 0)
-                {
-                    break;
+                    var effectiveBatch = forceWhenDisabled ? batchSize : settings.BatchSize;
+                    var processed = await AnalyzeBatchAsync(
+                        settings with { BatchSize = Math.Clamp(effectiveBatch, 10, 500) },
+                        stopWhenDisabled: !forceWhenDisabled,
+                        run.Token);
+                    if (processed == 0)
+                    {
+                        break;
+                    }
                 }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                await ResetInterruptedProcessingRowsAsync(CancellationToken.None);
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    "Vibe analysis paused."));
             }
         }
         finally
@@ -203,21 +392,23 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         await _analysisLock.WaitAsync(cancellationToken);
         try
         {
+            using var run = BeginRuntimeRun(cancellationToken);
             var track = await _repository.GetTrackForAnalysisAsync(trackId, cancellationToken);
             if (track is null)
             {
                 return false;
             }
 
-            await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, cancellationToken);
-            var result = AnalyzeTrack(track);
+            var summaries = await _repository.GetTrackSummariesAsync(new List<long> { track.TrackId }, run.Token);
+            var summary = summaries.Count > 0 ? summaries[0] : null;
+            SetCurrentAnalysis(track, summary);
+            await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, run.Token);
+            var result = await AnalyzeTrackAsync(track, null, run.Token);
             if (result.LastfmTags is null)
             {
-                var summaries = await _repository.GetTrackSummariesAsync(new List<long> { track.TrackId }, cancellationToken);
-                var summary = summaries.Count > 0 ? summaries[0] : null;
                 if (summary is not null)
                 {
-                    var tags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, cancellationToken);
+                    var tags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, run.Token);
                     if (tags is not null)
                     {
                         result = result with { LastfmTags = tags };
@@ -225,20 +416,22 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 }
             }
 
-            await _repository.UpsertTrackAnalysisAsync(result, cancellationToken);
+            await _repository.UpsertTrackAnalysisAsync(result, run.Token);
             var isComplete = IsAnalysisCompleteStatus(result.Status);
 
             if (isComplete)
             {
                 try
                 {
-                    await _moodBucketService.AssignTrackToMoodsAsync(track.TrackId, cancellationToken);
+                    await _moodBucketService.AssignTrackToMoodsAsync(track.TrackId, run.Token);
                 }
                 catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
                 {
                     _logger.LogWarning(ex, "Mood bucket assignment failed for track {TrackId}", track.TrackId);
                 }
             }
+
+            RecordCompletedAnalysis(summary, result);
 
             return isComplete;
         }
@@ -248,13 +441,15 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private async Task<int> AnalyzeBatchAsync(int batchSize, bool stopWhenDisabled, CancellationToken cancellationToken)
+    private async Task<int> AnalyzeBatchAsync(VibeAnalysisSettingsDto settings, bool stopWhenDisabled, CancellationToken cancellationToken)
     {
         var includeCompletedStandard = IsEnhancedAnalysisAvailableForRetry();
+        var orderedLibraryIds = settings.UseLibraryOrder ? settings.LibraryOrder : Array.Empty<long>();
         var tracks = await _repository.GetTracksForAnalysisAsync(
-            batchSize,
+            Math.Clamp(settings.BatchSize, 10, 500),
             includeCompletedStandard: includeCompletedStandard,
             completedStandardRetryBeforeUtc: includeCompletedStandard ? DateTimeOffset.UtcNow.Subtract(CompletedStandardEnhancedRetryDelay) : null,
+            orderedLibraryIds: orderedLibraryIds,
             cancellationToken: cancellationToken);
         if (tracks.Count == 0)
         {
@@ -272,7 +467,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         IReadOnlyDictionary<long, BatchPrediction>? batchPredictions = null;
         if (ResolveUseBatchAnalyzer())
         {
-            batchPredictions = TryPredictAnalysisOutputBatch(tracks, cancellationToken);
+            batchPredictions = await TryPredictAnalysisOutputBatchAsync(tracks, cancellationToken);
         }
         var summaries = await _repository.GetTrackSummariesAsync(tracks.Select(t => t.TrackId).ToList(), cancellationToken);
         var summaryMap = summaries.ToDictionary(item => item.TrackId);
@@ -291,6 +486,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
             await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, cancellationToken);
             summaryMap.TryGetValue(track.TrackId, out var summary);
+            SetCurrentAnalysis(track, summary);
             var result = await AnalyzeTrackWithOptionalLastFmAsync(track, summary, batchPredictions, cancellationToken);
             await _repository.UpsertTrackAnalysisAsync(result, cancellationToken);
             processedTracks++;
@@ -298,6 +494,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             {
                 completed++;
                 await AssignTrackMoodBucketsAsync(track.TrackId, cancellationToken);
+                RecordCompletedAnalysis(summary, result);
             }
             else if (IsAnalysisErrorStatus(result.Status))
             {
@@ -393,7 +590,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
         CancellationToken cancellationToken)
     {
-        var result = AnalyzeTrack(track, batchPredictions);
+        var result = await AnalyzeTrackAsync(track, batchPredictions, cancellationToken);
         if (result.LastfmTags is not null || summary is null)
         {
             return result;
@@ -405,16 +602,20 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             : result with { LastfmTags = tags };
     }
 
-    private TrackAnalysisResultDto AnalyzeTrack(
+    private async Task<TrackAnalysisResultDto> AnalyzeTrackAsync(
         TrackAnalysisInputDto track,
-        IReadOnlyDictionary<long, BatchPrediction>? batchPredictions = null)
+        IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
+        CancellationToken cancellationToken)
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!TryLoadTrackSamples(track, out var samples, out var sampleRate, out var failure))
             {
                 return failure!;
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (samples.Length == 0)
             {
@@ -430,7 +631,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 predictionFailure = batchPrediction.FailureReason;
                 if (analysisOutput is null)
                 {
-                    var singleTrackOutput = TryPredictAnalysisOutput(track.FilePath, out var singleTrackFailure);
+                    var (singleTrackOutput, singleTrackFailure) = await TryPredictAnalysisOutputAsync(track.FilePath, cancellationToken);
                     if (singleTrackOutput is not null)
                     {
                         analysisOutput = singleTrackOutput;
@@ -444,7 +645,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
             else
             {
-                analysisOutput = TryPredictAnalysisOutput(track.FilePath, out predictionFailure);
+                (analysisOutput, predictionFailure) = await TryPredictAnalysisOutputAsync(track.FilePath, cancellationToken);
             }
 
             if (analysisOutput is null
@@ -477,11 +678,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return $"{batchFailure}; single-track retry failed: {singleTrackFailure}";
     }
 
-    private Dictionary<long, BatchPrediction> TryPredictAnalysisOutputBatch(
+    private async Task<Dictionary<long, BatchPrediction>> TryPredictAnalysisOutputBatchAsync(
         IReadOnlyList<TrackAnalysisInputDto> tracks,
         CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
+        cancellationToken.ThrowIfCancellationRequested();
         if (tracks.Count == 0)
         {
             return new Dictionary<long, BatchPrediction>();
@@ -502,7 +703,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 return CreateBatchFailureMap(tracks, "Failed to start vibe analyzer batch process.");
             }
 
-            var execution = ExecuteBatchAnalyzerProcess(process, context.BatchTimeout, context.BatchTimeoutSeconds);
+            var execution = await ExecuteBatchAnalyzerProcessAsync(process, context.BatchTimeout, context.BatchTimeoutSeconds, cancellationToken);
             if (!execution.Succeeded)
             {
                 if (execution.TimedOut)
@@ -619,10 +820,25 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return startInfo;
     }
 
-    private static BatchProcessExecution ExecuteBatchAnalyzerProcess(Process process, TimeSpan batchTimeout, int batchTimeoutSeconds)
+    private static async Task<BatchProcessExecution> ExecuteBatchAnalyzerProcessAsync(
+        Process process,
+        TimeSpan batchTimeout,
+        int batchTimeoutSeconds,
+        CancellationToken cancellationToken)
     {
         var externalBatchTimeout = batchTimeout + TimeSpan.FromSeconds(30);
-        if (!process.WaitForExit((int)Math.Clamp(externalBatchTimeout.TotalMilliseconds, 1000, int.MaxValue)))
+        using var timeout = new CancellationTokenSource(externalBatchTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        try
+        {
+            await process.WaitForExitAsync(linked.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            TryTerminate(process);
+            throw;
+        }
+        catch (OperationCanceledException)
         {
             TryTerminate(process);
             return new BatchProcessExecution(
@@ -995,16 +1211,17 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private AnalysisOutput? TryPredictAnalysisOutput(string filePath, out string? failureReason)
+    private async Task<(AnalysisOutput? Output, string? FailureReason)> TryPredictAnalysisOutputAsync(
+        string filePath,
+        CancellationToken cancellationToken)
     {
-        failureReason = null;
+        cancellationToken.ThrowIfCancellationRequested();
         var capability = GetOrProbeMlCapability();
         if (!capability.Available)
         {
             var reason = capability.Reason ?? "Unknown reason.";
             LogMlUnavailable(reason);
-            failureReason = reason;
-            return null;
+            return (null, reason);
         }
 
         var scriptPath = ResolveAnalyzerScriptPath();
@@ -1012,8 +1229,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             var reason = $"Analyzer script missing at {scriptPath}. Set VIBE_ANALYZER_PATH or ensure Tools/vibe_analyzer.py exists.";
             LogMlUnavailable(reason);
-            failureReason = reason;
-            return null;
+            return (null, reason);
         }
 
         var modelsDir = ResolveModelsDirectory();
@@ -1021,8 +1237,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             var reason = $"Models directory missing at {modelsDir}. Set VIBE_ANALYZER_MODELS or place models under Tools/models.";
             LogMlUnavailable(reason);
-            failureReason = reason;
-            return null;
+            return (null, reason);
         }
 
         try
@@ -1042,29 +1257,37 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             using var process = Process.Start(startInfo);
             if (process is null)
             {
-                failureReason = "Failed to start vibe analyzer process.";
-                return null;
+                return (null, "Failed to start vibe analyzer process.");
             }
 
-            if (!process.WaitForExit((int)Math.Clamp(analysisTimeout.TotalMilliseconds, 1000, int.MaxValue)))
+            using var timeout = new CancellationTokenSource(analysisTimeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+            try
+            {
+                await process.WaitForExitAsync(linked.Token);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                TryTerminate(process);
+                throw;
+            }
+            catch (OperationCanceledException)
             {
                 TryTerminate(process);
                 _logger.LogWarning(
                     "Vibe analysis ML timed out for {FilePath} after {TimeoutSeconds}s",
                     filePath,
                     (int)analysisTimeout.TotalSeconds);
-                failureReason = "Vibe analysis ML timed out.";
-                return null;
+                return (null, "Vibe analysis ML timed out.");
             }
 
-            var output = process.StandardOutput.ReadToEnd();
-            var errorOutput = process.StandardError.ReadToEnd();
+            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var errorOutput = await process.StandardError.ReadToEndAsync(cancellationToken);
 
             if (process.ExitCode != 0)
             {
                 _logger.LogWarning("Vibe analysis ML failed for {FilePath}: {Error}", filePath, errorOutput);
-                failureReason = string.IsNullOrWhiteSpace(errorOutput) ? "Vibe analyzer process failed." : errorOutput.Trim();
-                return null;
+                return (null, string.IsNullOrWhiteSpace(errorOutput) ? "Vibe analyzer process failed." : errorOutput.Trim());
             }
 
             if (TryReadAnalyzerFailure(output, out var analyzerFailure))
@@ -1075,24 +1298,21 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     LogMlUnavailable(analyzerFailure.Reason);
                 }
 
-                failureReason = analyzerFailure.Reason;
-                return null;
+                return (null, analyzerFailure.Reason);
             }
 
             var parsed = JsonSerializer.Deserialize<AnalysisOutput>(output, CaseInsensitiveJsonOptions);
             if (parsed is null)
             {
-                failureReason = "Vibe analyzer returned an empty payload.";
-                return null;
+                return (null, "Vibe analyzer returned an empty payload.");
             }
 
-            return parsed;
+            return (parsed, null);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Vibe analysis ML failed for {FilePath}", filePath);
-            failureReason = ex.Message;
-            return null;
+            return (null, ex.Message);
         }
     }
 
@@ -2642,4 +2862,53 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             buffer[k + n / 2] = even[k] - wk * odd[k];
         }
     }
+
+    private sealed class RuntimeRunScope : IDisposable
+    {
+        private readonly TrackAnalysisBackgroundService _owner;
+        private readonly CancellationTokenSource _source;
+        private bool _disposed;
+
+        public RuntimeRunScope(TrackAnalysisBackgroundService owner, CancellationTokenSource source)
+        {
+            _owner = owner;
+            _source = source;
+        }
+
+        public CancellationToken Token => _source.Token;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _owner.CompleteRuntimeRun(_source);
+            _source.Dispose();
+            _disposed = true;
+        }
+    }
 }
+
+public static class VibeAnalysisRuntimeStates
+{
+    public const string Idle = "idle";
+    public const string Running = "running";
+    public const string Pausing = "pausing";
+    public const string Paused = "paused";
+}
+
+public sealed record VibeAnalysisRecentItemDto(
+    long TrackId,
+    string Title,
+    string Status,
+    DateTimeOffset AtUtc);
+
+public sealed record VibeAnalysisRuntimeDto(
+    string State,
+    bool Running,
+    LatestTrackAnalysisDto? Current,
+    LatestTrackAnalysisDto? Latest,
+    IReadOnlyList<VibeAnalysisRecentItemDto> Recent,
+    DateTimeOffset? UpdatedAtUtc);

@@ -54,8 +54,8 @@ public sealed class VibeAnalysisSettingsStore
             }
 
             var json = await File.ReadAllTextAsync(_settingsPath);
-            _cached = JsonSerializer.Deserialize<VibeAnalysisSettingsDto>(json, _jsonOptions)
-                ?? VibeAnalysisSettingsDto.Defaults();
+            _cached = Normalize(JsonSerializer.Deserialize<VibeAnalysisSettingsDto>(json, _jsonOptions)
+                ?? VibeAnalysisSettingsDto.Defaults());
             return _cached;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -75,8 +75,8 @@ public sealed class VibeAnalysisSettingsStore
         await _sync.WaitAsync();
         try
         {
-            _cached = settings;
-            var json = JsonSerializer.Serialize(settings, _jsonOptions);
+            _cached = Normalize(settings);
+            var json = JsonSerializer.Serialize(_cached, _jsonOptions);
             await File.WriteAllTextAsync(_settingsPath, json);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -90,9 +90,27 @@ public sealed class VibeAnalysisSettingsStore
 
         return _cached ?? settings;
     }
+
+    private static VibeAnalysisSettingsDto Normalize(VibeAnalysisSettingsDto settings)
+    {
+        return new VibeAnalysisSettingsDto(
+            settings.Enabled,
+            Math.Clamp(settings.BatchSize, 10, 500),
+            Math.Clamp(settings.IntervalMinutes, 5, 240),
+            settings.UseLibraryOrder,
+            settings.LibraryOrder?
+                .Where(id => id > 0)
+                .Distinct()
+                .ToArray() ?? Array.Empty<long>());
+    }
 }
 
-public sealed record VibeAnalysisSettingsDto(bool Enabled, int BatchSize, int IntervalMinutes)
+public sealed record VibeAnalysisSettingsDto(
+    bool Enabled,
+    int BatchSize,
+    int IntervalMinutes,
+    bool UseLibraryOrder,
+    IReadOnlyList<long> LibraryOrder)
 {
-    public static VibeAnalysisSettingsDto Defaults() => new(false, 50, 30);
+    public static VibeAnalysisSettingsDto Defaults() => new(false, 50, 30, false, Array.Empty<long>());
 }
