@@ -268,7 +268,6 @@ public partial class AutoTagService
     private DateTimeOffset _archivedRunSummariesCacheExpiresUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastArchivedRunPruneUtc = DateTimeOffset.MinValue;
     private static readonly TimeSpan ArchivedRunSummariesCacheTtl = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan ArchivedRunRetentionPeriod = TimeSpan.FromDays(61);
     private static readonly TimeSpan ArchivedRunPruneInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan RunIndexUpdateInterval = TimeSpan.FromSeconds(2);
     private readonly JsonSerializerOptions _jsonOptions = new()
@@ -1341,7 +1340,7 @@ public partial class AutoTagService
         {
             return null;
         }
-        if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ArchivedRunRetentionPeriod)))
+        if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ResolveArchivedRunRetentionPeriod())))
         {
             DeleteArchivedRunFiles(summary.Id);
             PruneExpiredArchivedRuns(force: true);
@@ -5989,7 +5988,7 @@ public partial class AutoTagService
             }
 
             _lastArchivedRunPruneUtc = now;
-            var cutoffUtc = now.Subtract(ArchivedRunRetentionPeriod);
+            var cutoffUtc = now.Subtract(ResolveArchivedRunRetentionPeriod());
             try
             {
                 var summaries = TryLoadRunIndex().ToList();
@@ -6012,26 +6011,50 @@ public partial class AutoTagService
                     }
                 }
 
-                if (expired.Count == 0)
-                {
-                    return;
-                }
-
                 foreach (var summary in expired)
                 {
                     DeleteArchivedRunFiles(summary.Id);
                 }
 
-                lock (_runIndexLock)
+                if (expired.Count > 0)
                 {
-                    PersistRunIndex(retained);
+                    lock (_runIndexLock)
+                    {
+                        PersistRunIndex(retained);
+                    }
                 }
+
+                PruneOrphanedArchivedRunArtifacts(cutoffUtc);
                 InvalidateArchivedRunSummariesCache();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogDebug(ex, "Failed to prune expired AutoTag run history.");
             }
+        }
+    }
+
+    private TimeSpan ResolveArchivedRunRetentionPeriod()
+    {
+        try
+        {
+            var settings = _settingsService.LoadSettings();
+            var days = settings.AutoTagHistoryRetentionDays;
+            if (days < 1 || days > 365)
+            {
+                days = new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings().AutoTagHistoryRetentionDays;
+            }
+
+            return TimeSpan.FromDays(days);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to resolve AutoTag history retention; using default.");
+            }
+
+            return TimeSpan.FromDays(new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings().AutoTagHistoryRetentionDays);
         }
     }
 
@@ -6066,6 +6089,113 @@ public partial class AutoTagService
         TryDeleteFile(Path.Join(_jobsDir, normalizedJobId + ".json"));
         _archiveLocks.TryRemove(normalizedJobId, out _);
         _lastRunIndexUpdateUtc.TryRemove(normalizedJobId, out _);
+    }
+
+    private void PruneOrphanedArchivedRunArtifacts(DateTimeOffset cutoffUtc)
+    {
+        var retainedIds = new HashSet<string>(
+            TryLoadRunIndex()
+                .Select(summary => summary.Id)
+                .Where(static id => !string.IsNullOrWhiteSpace(id))
+                .Select(static id => id!),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var root in EnumerateHistoryRoots())
+        {
+            PruneOrphanedHistoryDirectories(root, retainedIds, cutoffUtc);
+        }
+
+        PruneOrphanedJobSnapshots(retainedIds, cutoffUtc);
+    }
+
+    private void PruneOrphanedHistoryDirectories(string root, HashSet<string> retainedIds, DateTimeOffset cutoffUtc)
+    {
+        try
+        {
+            if (!Directory.Exists(root))
+            {
+                return;
+            }
+
+            foreach (var directory in Directory.EnumerateDirectories(root))
+            {
+                var jobId = Path.GetFileName(directory);
+                if (string.IsNullOrWhiteSpace(jobId)
+                    || _activeJobIds.ContainsKey(jobId)
+                    || retainedIds.Contains(jobId))
+                {
+                    continue;
+                }
+
+                if (GetFileSystemTimestampUtc(directory) < cutoffUtc)
+                {
+                    DeleteArchivedRunFiles(jobId);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to prune orphaned AutoTag history directories from {Root}.", root);
+            }
+        }
+    }
+
+    private void PruneOrphanedJobSnapshots(HashSet<string> retainedIds, DateTimeOffset cutoffUtc)
+    {
+        try
+        {
+            if (!Directory.Exists(_jobsDir))
+            {
+                return;
+            }
+
+            foreach (var jobPath in Directory.EnumerateFiles(_jobsDir, "*.json"))
+            {
+                var jobId = Path.GetFileNameWithoutExtension(jobPath);
+                if (string.IsNullOrWhiteSpace(jobId)
+                    || _activeJobIds.ContainsKey(jobId)
+                    || retainedIds.Contains(jobId))
+                {
+                    continue;
+                }
+
+                if (GetFileSystemTimestampUtc(jobPath) < cutoffUtc)
+                {
+                    TryDeleteFile(jobPath);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to prune orphaned AutoTag job snapshots.");
+            }
+        }
+    }
+
+    private static DateTimeOffset GetFileSystemTimestampUtc(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                return Directory.GetLastWriteTimeUtc(path);
+            }
+
+            if (File.Exists(path))
+            {
+                return File.GetLastWriteTimeUtc(path);
+            }
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // Use a current timestamp when the filesystem cannot provide one so pruning stays conservative.
+        }
+
+        return DateTimeOffset.UtcNow;
     }
 
     private void TryDeleteDirectory(string path)

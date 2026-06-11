@@ -114,6 +114,7 @@ public class DeezSpoTagSettings
     public int RetryDelaySeconds { get; set; } = 3;
     public int RetryDelayIncrease { get; set; } = 5;
     public int RedownloadCooldownMinutes { get; set; } = 720;
+    public int AutoTagHistoryRetentionDays { get; set; } = 7;
 
     // Spotizerr-phoenix conversion settings
     public string ConvertTo { get; set; } = "";

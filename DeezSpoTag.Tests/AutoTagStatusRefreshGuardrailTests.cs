@@ -302,20 +302,22 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
-    public void AutoTagService_PrunesArchivedRunsAfterSixtyOneDays()
+    public void AutoTagService_PrunesArchivedRunsUsingConfiguredRetention()
     {
         var repoRoot = ResolveRepoRoot();
         var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
 
         var source = File.ReadAllText(servicePath);
-        Assert.Contains("ArchivedRunRetentionPeriod = TimeSpan.FromDays(61)", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveArchivedRunRetentionPeriod()", source, StringComparison.Ordinal);
         Assert.Contains("PruneExpiredArchivedRuns(force: true)", source, StringComparison.Ordinal);
         Assert.Contains("GetRunHistoryTimestamp(summary).ToUniversalTime() < cutoffUtc", source, StringComparison.Ordinal);
         Assert.Contains("DeleteArchivedRunFiles(summary.Id)", source, StringComparison.Ordinal);
         Assert.Contains("TryDeleteFile(Path.Join(_jobsDir, normalizedJobId + \".json\"))", source, StringComparison.Ordinal);
+        Assert.Contains("PruneOrphanedArchivedRunArtifacts(cutoffUtc)", source, StringComparison.Ordinal);
+        Assert.Contains("PruneOrphanedJobSnapshots(retainedIds, cutoffUtc)", source, StringComparison.Ordinal);
         Assert.Contains("public AutoTagRunArchive? GetArchivedRun(string id)", source, StringComparison.Ordinal);
-        Assert.Contains("if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ArchivedRunRetentionPeriod)))", source, StringComparison.Ordinal);
+        Assert.Contains("if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ResolveArchivedRunRetentionPeriod())))", source, StringComparison.Ordinal);
         Assert.Contains("public void WarmRunIndexIfMissing()", source, StringComparison.Ordinal);
     }
 

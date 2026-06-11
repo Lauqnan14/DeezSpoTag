@@ -819,6 +819,12 @@ public class DeezSpoTagSettingsService : ISettingsService
             () => settings.RetryDelayIncrease = defaultSettings.RetryDelayIncrease,
             fixes,
             nameof(settings.RetryDelayIncrease));
+
+        ApplyFixIf(
+            settings.AutoTagHistoryRetentionDays < 1 || settings.AutoTagHistoryRetentionDays > 365,
+            () => settings.AutoTagHistoryRetentionDays = defaultSettings.AutoTagHistoryRetentionDays,
+            fixes,
+            nameof(settings.AutoTagHistoryRetentionDays));
     }
 
     private static void NormalizeDownloadSourceSettings(

@@ -1346,6 +1346,14 @@
                 </div>
 
                 <div class="form-row">
+                    <div class="form-group">
+                        <label for="autoTagHistoryRetentionDays">AutoTag history retention (days)</label>
+                        <input type="number" id="autoTagHistoryRetentionDays" min="1" max="365" value="7">
+                        <div class="warning-text">AutoTag job and history files older than this are deleted automatically to prevent the data folder from growing without limit.</div>
+                    </div>
+                </div>
+
+                <div class="form-row">
                     <div class="settings-section settings-section--toggle-style" style="margin-bottom: 0;">
                         <div class="switch-row">
                             <label class="switch-label" for="rememberTabsPreference">Remember last open tab</label>
@@ -3595,6 +3603,7 @@ function loadSettings(settings) {
     setFieldValue('retryDelaySeconds', settings.retryDelaySeconds);
     setFieldValue('retryDelayIncrease', settings.retryDelayIncrease);
     setFieldValue('redownloadCooldownMinutes', settings.redownloadCooldownMinutes ?? 0);
+    setFieldValue('autoTagHistoryRetentionDays', settings.autoTagHistoryRetentionDays ?? 7);
     
     setFieldValue('embeddedArtworkSize', settings.embeddedArtworkSize);
     setCheckboxValue('embedMaxQualityCover', settings.embedMaxQualityCover);
@@ -3939,6 +3948,7 @@ function collectFormData() {
         retryDelaySeconds: getNumber('retryDelaySeconds', 5),
         retryDelayIncrease: getNumber('retryDelayIncrease', 5),
         redownloadCooldownMinutes: getNumber('redownloadCooldownMinutes', baseSettings.redownloadCooldownMinutes ?? 0),
+        autoTagHistoryRetentionDays: getNumber('autoTagHistoryRetentionDays', baseSettings.autoTagHistoryRetentionDays ?? 7),
 
         embeddedArtworkSize: getNumber('embeddedArtworkSize', baseSettings.embeddedArtworkSize ?? 800),
         embedMaxQualityCover: getChecked('embedMaxQualityCover', baseSettings.embedMaxQualityCover ?? true),
