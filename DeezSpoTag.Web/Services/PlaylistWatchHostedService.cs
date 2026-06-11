@@ -289,6 +289,26 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
 
         var schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
+        if (IsStaleActivePlaylistState(schedulerState, settings))
+        {
+            _logger.LogWarning(
+                "Watchlist active playlist state was stale and will be released. source={Source}, sourceId={SourceId}, activeStartedUtc={ActiveStartedUtc}, lastProgressUtc={LastProgressUtc}, zeroQueueStreak={ZeroQueueStreak}",
+                schedulerState?.ActiveSource,
+                schedulerState?.ActiveSourceId,
+                schedulerState?.ActiveStartedUtc,
+                schedulerState?.LastProgressUtc,
+                schedulerState?.ZeroQueueStreak);
+            await SaveSchedulerStateAsync(
+                repository,
+                activeSource: null,
+                activeSourceId: null,
+                activeStartedUtc: null,
+                lastProgressUtc: DateTimeOffset.UtcNow,
+                zeroQueueStreak: 0,
+                stoppingToken);
+            schedulerState = null;
+        }
+
         var activeItem = ResolveActivePlaylistItem(playlistItems, schedulerState);
         if (activeItem == null)
         {
@@ -824,6 +844,31 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             && string.Equals(item.Source, NormalizeSource(state.ActiveSource), StringComparison.OrdinalIgnoreCase)
             && string.Equals(item.Playlist?.SourceId, state.ActiveSourceId, StringComparison.OrdinalIgnoreCase))
             ?? ResolveNextPlaylistItem(playlistItems);
+    }
+
+    private static bool IsStaleActivePlaylistState(
+        WatchlistSchedulerStateDto? state,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    {
+        if (state == null
+            || string.IsNullOrWhiteSpace(state.ActiveSource)
+            || string.IsNullOrWhiteSpace(state.ActiveSourceId))
+        {
+            return false;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var intervalSeconds = Math.Max(1, settings.WatchPollIntervalSeconds);
+        var staleWindow = TimeSpan.FromSeconds(Math.Max(900, intervalSeconds * 3));
+        var progressReference = state.LastProgressUtc ?? state.ActiveStartedUtc;
+        if (progressReference.HasValue && now - progressReference.Value > staleWindow)
+        {
+            return true;
+        }
+
+        return state.ZeroQueueStreak >= 3
+            && state.ActiveStartedUtc.HasValue
+            && now - state.ActiveStartedUtc.Value > TimeSpan.FromSeconds(Math.Max(60, intervalSeconds));
     }
 
     private WatchItem? ResolveNextPlaylistItem(IReadOnlyList<WatchItem> playlistItems)

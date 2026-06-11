@@ -237,6 +237,73 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void PlaylistWatch_UsesSingleQueuePlannerBeforeQueueAdmission()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var dedupeSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadDedupeService.cs"));
+
+        Assert.Contains("var selection = await SelectMissingPlaylistTracksAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("queueOptions,", source, StringComparison.Ordinal);
+        Assert.Contains("GetRequiredService<DownloadDedupeService>()", source, StringComparison.Ordinal);
+        Assert.Contains("DownloadDedupeService.FromDownloadIntent", source, StringComparison.Ordinal);
+        Assert.Contains("preparedIntent", source, StringComparison.Ordinal);
+        Assert.Contains("HandlePreQueueDedupeDecisionAsync", source, StringComparison.Ordinal);
+        Assert.Contains("queue_duplicate", source, StringComparison.Ordinal);
+        Assert.Contains("library_duplicate", source, StringComparison.Ordinal);
+        Assert.Contains("blocklist_match", source, StringComparison.Ordinal);
+        Assert.Contains("TryRecordWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
+        Assert.Contains("public static DownloadDedupeRequest FromDownloadIntent(", dedupeSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatch_DoesNotTreatPartialCachedSnapshotsAsComplete()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+
+        Assert.Contains("cachedCandidatesComplete", source, StringComparison.Ordinal);
+        Assert.Contains("candidates.Count >= liveSnapshot.TrackCount.Value", source, StringComparison.Ordinal);
+        Assert.Contains("IsComplete = cachedCandidatesComplete", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("liveSnapshot = liveSnapshot with { IsComplete = true }", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatch_ActivePlaylistRetentionRequiresProgressAndBudgetStop()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var hostedSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchHostedService.cs"));
+
+        Assert.Contains("if (queueResult.RemainingQueueableCount <= 0)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("if (queueResult.QueuedCount <= 0)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("RunBudget", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("QueueCapacity", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("ResolutionBudget", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("IsStaleActivePlaylistState", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("state.ZeroQueueStreak >= 3", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("Watchlist active playlist state was stale and will be released.", hostedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatch_StatusesRemainSpecificInsteadOfGenericQueueFailures()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+
+        Assert.Contains("ResolveQueueFailureMessage", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveQueueStopStatus", source, StringComparison.Ordinal);
+        Assert.Contains("queue_budget_reached", source, StringComparison.Ordinal);
+        Assert.Contains("queue_capacity_reached", source, StringComparison.Ordinal);
+        Assert.Contains("resolution_budget_reached", source, StringComparison.Ordinal);
+        Assert.Contains("track_queue_deferred", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Playlist reconciled with queue failures.", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistSync_AppliesCurrentArtworkAccordingToPreference()
     {
         var repoRoot = ResolveRepoRoot();

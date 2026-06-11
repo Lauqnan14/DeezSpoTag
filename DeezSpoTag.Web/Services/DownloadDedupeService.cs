@@ -1,6 +1,7 @@
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
 using Microsoft.Extensions.Logging;
 
@@ -88,6 +89,38 @@ public sealed class DownloadDedupeService
             DurationMs = durationMs,
             DestinationFolderId = payload.DestinationFolderId,
             ContentType = payload.ContentType,
+            RequestedAudioVariant = requestedAudioVariant,
+            RequestedLocalQualityRank = requestedLocalQualityRank,
+            BlockRules = blockRules
+        };
+    }
+
+    public static DownloadDedupeRequest FromDownloadIntent(
+        DownloadIntent intent,
+        int? requestedLocalQualityRank = null,
+        string? requestedAudioVariant = null,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+
+        return new DownloadDedupeRequest
+        {
+            Isrc = intent.Isrc,
+            DeezerTrackId = intent.DeezerId,
+            DeezerAlbumId = intent.DeezerAlbumId,
+            DeezerArtistId = intent.DeezerArtistId,
+            SpotifyTrackId = intent.SpotifyId,
+            AppleTrackId = intent.AppleId,
+            TrackTitle = intent.Title,
+            TrackArtist = intent.Artist,
+            TrackPrimaryArtist = NormalizePrimaryArtist(intent.Artist),
+            Album = intent.Album,
+            Genres = intent.Genres,
+            Explicit = intent.Explicit,
+            ReleaseDate = intent.ReleaseDate,
+            DurationMs = intent.DurationMs > 0 ? intent.DurationMs : null,
+            DestinationFolderId = intent.DestinationFolderId,
+            ContentType = intent.ContentType,
             RequestedAudioVariant = requestedAudioVariant,
             RequestedLocalQualityRank = requestedLocalQualityRank,
             BlockRules = blockRules

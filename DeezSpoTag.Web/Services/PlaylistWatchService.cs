@@ -44,7 +44,9 @@ public sealed class PlaylistWatchService
     private readonly record struct PlaylistTrackSelection(
         List<WatchIntentTrack> MissingTracks,
         int IgnoredCount,
-        int LocalCount);
+        int LocalCount,
+        int ClaimedCount,
+        int BlockedCount);
     private readonly record struct QueuedWatchIntentContext(
         DownloadIntentService IntentService,
         QueueWatchOptions Options,
@@ -337,11 +339,14 @@ public sealed class PlaylistWatchService
             if (cachedCandidates is not null)
             {
                 candidates = cachedCandidates;
+                var cachedCandidatesComplete = !liveSnapshot.TrackCount.HasValue
+                    || liveSnapshot.TrackCount.Value <= 0
+                    || candidates.Count >= liveSnapshot.TrackCount.Value;
                 liveSnapshot = liveSnapshot with
                 {
                     Candidates = candidates,
                     TrackCount = liveSnapshot.TrackCount ?? candidates.Count,
-                    IsComplete = true
+                    IsComplete = cachedCandidatesComplete
                 };
                 liveTrackCount = liveSnapshot.TrackCount ?? candidates.Count;
                 await TouchPlaylistWatchStateAsync(
@@ -443,7 +448,7 @@ public sealed class PlaylistWatchService
                 null,
                 QueueStopReason: WatchQueueStopReason.Completed.ToString(),
                 RemainingQueueableTracks: 0,
-                KeepActivePlaylist: true);
+                KeepActivePlaylist: false);
         }
 
         await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
@@ -461,7 +466,27 @@ public sealed class PlaylistWatchService
                 cancellationToken);
         }
 
-        var selection = await SelectMissingPlaylistTracksAsync(source, sourceId, candidates, cancellationToken);
+        var queueOptions = BuildQueueWatchOptions(new QueueWatchOptionsInput
+        {
+            SourceLabel = ResolveSourceLabel(source),
+            WatchlistSource = source,
+            WatchlistPlaylistId = sourceId,
+            PreferredEngine = preference?.PreferredEngine,
+            DownloadVariantMode = preference?.DownloadVariantMode,
+            AtmosDestinationFolderId = preference?.AtmosDestinationFolderId,
+            RuleSet = bypassFolderAndSync
+                ? null
+                : new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules),
+            WatchlistOrigin = PlaylistWatchOrigin
+        });
+
+        var selection = await SelectMissingPlaylistTracksAsync(
+            source,
+            sourceId,
+            candidates,
+            bypassFolderAndSync ? null : preference?.DestinationFolderId,
+            queueOptions,
+            cancellationToken);
         await _libraryRepository.AddPlaylistWatchTracksAsync(
             source,
             sourceId,
@@ -469,6 +494,36 @@ public sealed class PlaylistWatchService
                 .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
                 .ToList(),
             cancellationToken);
+        if (selection.LocalCount > 0)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                selection.LocalCount,
+                "skipped_already_available",
+                cancellationToken);
+        }
+        if (selection.ClaimedCount > 0)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                selection.ClaimedCount,
+                "skipped_already_queued",
+                cancellationToken);
+        }
+        if (selection.BlockedCount > 0)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                selection.BlockedCount,
+                "skipped_blocked",
+                cancellationToken);
+        }
 
         PlaylistSyncResult? syncResult = null;
         if (_playlistSyncService == null)
@@ -533,19 +588,7 @@ public sealed class PlaylistWatchService
         var queueResult = await QueueWatchIntentTracksAsync(
             selection.MissingTracks,
             bypassFolderAndSync ? null : preference?.DestinationFolderId,
-            BuildQueueWatchOptions(new QueueWatchOptionsInput
-            {
-                SourceLabel = ResolveSourceLabel(source),
-                WatchlistSource = source,
-                WatchlistPlaylistId = sourceId,
-                PreferredEngine = preference?.PreferredEngine,
-                DownloadVariantMode = preference?.DownloadVariantMode,
-                AtmosDestinationFolderId = preference?.AtmosDestinationFolderId,
-                RuleSet = bypassFolderAndSync
-                    ? null
-                    : new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules),
-                WatchlistOrigin = PlaylistWatchOrigin
-            }),
+            queueOptions,
             cancellationToken);
         await TouchPlaylistWatchStateAsync(
             source,
@@ -632,8 +675,14 @@ public sealed class PlaylistWatchService
             return false;
         }
 
-        return queueResult.StopReason is WatchQueueStopReason.TrackDeferred
-            or WatchQueueStopReason.SystemicFailure;
+        if (queueResult.QueuedCount <= 0)
+        {
+            return false;
+        }
+
+        return queueResult.StopReason is WatchQueueStopReason.RunBudget
+            or WatchQueueStopReason.QueueCapacity
+            or WatchQueueStopReason.ResolutionBudget;
     }
 
     private async Task<PlaylistSyncResult> SyncPlaylistAsync(
@@ -796,14 +845,21 @@ public sealed class PlaylistWatchService
         string source,
         string sourceId,
         IReadOnlyList<PlaylistTrackCandidate> candidates,
+        long? destinationFolderId,
+        QueueWatchOptions queueOptions,
         CancellationToken cancellationToken)
     {
         var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(source, sourceId, cancellationToken);
         var satisfied = await _libraryRepository.GetSatisfiedPlaylistWatchTrackIdsAsync(source, sourceId, cancellationToken);
         var localTrackIds = await ResolveLocalCandidateIdsAsync(source, candidates, cancellationToken);
+        var dedupeService = _serviceProvider.GetRequiredService<DownloadDedupeService>();
+        var normalizedPreferredEngine = NormalizePreferredEngine(queueOptions.PreferredEngine);
+        var normalizedDownloadVariantMode = NormalizeDownloadVariantMode(queueOptions.DownloadVariantMode);
         var missingTracks = new List<WatchIntentTrack>();
         var ignoredCount = 0;
         var localCount = 0;
+        var claimedCount = 0;
+        var blockedCount = 0;
         foreach (var candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -829,6 +885,38 @@ public sealed class PlaylistWatchService
             var watchTrack = BuildWatchIntentTrackFromCandidate(source, candidate);
             if (watchTrack != null)
             {
+                var preparedIntent = PrepareWatchIntent(
+                    watchTrack.Intent,
+                    watchTrack.TrackId,
+                    queueOptions,
+                    destinationFolderId,
+                    normalizedDownloadVariantMode,
+                    normalizedPreferredEngine);
+                var dedupeDecision = await dedupeService.CheckAsync(
+                    DownloadDedupeService.FromDownloadIntent(
+                        preparedIntent,
+                        blockRules: queueOptions.BlockRules),
+                    cancellationToken);
+                if (!dedupeDecision.Allowed)
+                {
+                    var handled = await HandlePreQueueDedupeDecisionAsync(
+                        source,
+                        sourceId,
+                        watchTrack,
+                        preparedIntent,
+                        queueOptions,
+                        dedupeDecision,
+                        cancellationToken);
+                    localCount += handled.LocalCount;
+                    claimedCount += handled.ClaimedCount;
+                    blockedCount += handled.BlockedCount;
+                    ignoredCount += handled.IgnoredCount;
+                    if (handled.Handled)
+                    {
+                        continue;
+                    }
+                }
+
                 missingTracks.Add(watchTrack);
             }
             else
@@ -838,8 +926,58 @@ public sealed class PlaylistWatchService
             }
         }
 
-        return new PlaylistTrackSelection(missingTracks, ignoredCount, localCount);
+        return new PlaylistTrackSelection(missingTracks, ignoredCount, localCount, claimedCount, blockedCount);
     }
+
+    private readonly record struct PreQueueDedupeHandledResult(
+        bool Handled,
+        int LocalCount,
+        int ClaimedCount,
+        int BlockedCount,
+        int IgnoredCount);
+
+    private async Task<PreQueueDedupeHandledResult> HandlePreQueueDedupeDecisionAsync(
+        string source,
+        string sourceId,
+        WatchIntentTrack track,
+        DownloadIntent intent,
+        QueueWatchOptions queueOptions,
+        DownloadDedupeDecision decision,
+        CancellationToken cancellationToken)
+    {
+        var reasonCode = NormalizeReasonCode(decision.ReasonCode);
+        switch (reasonCode)
+        {
+            case "queue_duplicate":
+            case "queue_insert_ignored":
+                if (!string.IsNullOrWhiteSpace(decision.QueueUuid))
+                {
+                    await TryRecordWatchDownloadClaimsAsync(
+                        queueOptions,
+                        track.TrackId,
+                        new[] { decision.QueueUuid },
+                        intent.DestinationFolderId,
+                        cancellationToken);
+                }
+                return new PreQueueDedupeHandledResult(true, 0, 1, 0, 0);
+
+            case "library_duplicate":
+            case "library_quality_not_higher":
+                await TryMarkWatchTrackCompletedAsync(source, sourceId, track.TrackId, cancellationToken);
+                return new PreQueueDedupeHandledResult(true, 1, 0, 0, 0);
+
+            case "blocklist_match":
+                await TryPersistWatchTrackIgnoreAsync(source, sourceId, track, cancellationToken);
+                await TryMarkWatchTrackCompletedAsync(source, sourceId, track.TrackId, cancellationToken);
+                return new PreQueueDedupeHandledResult(true, 0, 0, 1, 1);
+
+            default:
+                return new PreQueueDedupeHandledResult(false, 0, 0, 0, 0);
+        }
+    }
+
+    private static string NormalizeReasonCode(string? reasonCode)
+        => string.IsNullOrWhiteSpace(reasonCode) ? string.Empty : reasonCode.Trim().ToLowerInvariant();
 
     private async Task<bool> TryHandleKnownPlaylistTrackAsync(
         string source,
@@ -860,14 +998,53 @@ public sealed class PlaylistWatchService
 
     private static string ResolveReconciliationMessage(QueueWatchResult queueResult, bool success)
     {
+        if (queueResult.QueuedCount > 0)
+        {
+            return queueResult.StopReason switch
+            {
+                WatchQueueStopReason.RunBudget => $"Queued {queueResult.QueuedCount} track(s); run budget reached.",
+                WatchQueueStopReason.QueueCapacity => $"Queued {queueResult.QueuedCount} track(s); queue capacity reached.",
+                WatchQueueStopReason.ResolutionBudget => $"Queued {queueResult.QueuedCount} track(s); resolution budget reached.",
+                _ => $"Queued {queueResult.QueuedCount} missing track(s)."
+            };
+        }
+
         if (queueResult.Deferred)
         {
-            return "Playlist queue deferred.";
+            return queueResult.StopReason switch
+            {
+                WatchQueueStopReason.WatchlistDisabled => "Watchlist is disabled.",
+                WatchQueueStopReason.DownloadGate => "Waiting for download/enrichment gate to clear.",
+                WatchQueueStopReason.RunBudget => "Watchlist run budget reached.",
+                WatchQueueStopReason.ResolutionBudget => "Resolution budget reached before more tracks could be queued.",
+                WatchQueueStopReason.TrackDeferred => "Track queueing deferred by download gate.",
+                _ => "Playlist queue deferred."
+            };
+        }
+
+        if (queueResult.CompletedCount > 0 && queueResult.FailedCount == 0)
+        {
+            return "Playlist reconciled; missing tracks were already available, blocked, or claimed.";
         }
 
         return success
             ? "Playlist reconciled."
-            : "Playlist reconciled with queue failures.";
+            : ResolveQueueFailureMessage(queueResult);
+    }
+
+    private static string ResolveQueueFailureMessage(QueueWatchResult queueResult)
+    {
+        if (!string.IsNullOrWhiteSpace(queueResult.FirstFailureMessage))
+        {
+            return queueResult.FirstFailureMessage!;
+        }
+
+        return queueResult.StopReason switch
+        {
+            WatchQueueStopReason.SystemicFailure => "Playlist queue stopped because the source returned a systemic failure.",
+            WatchQueueStopReason.TrackFailures => "Playlist queue stopped because tracks could not be queued.",
+            _ => $"Playlist queue stopped with reason: {queueResult.StopReason}."
+        };
     }
 
     private async Task AddPlaylistWatchHistoryAsync(
@@ -932,12 +1109,12 @@ public sealed class PlaylistWatchService
     {
         if (queueResult.Deferred)
         {
-            return "deferred";
+            return ResolveQueueStopStatus(queueResult.StopReason);
         }
 
         if (queueResult.FailedCount > 0)
         {
-            return FailedStatus;
+            return ResolveQueueStopStatus(queueResult.StopReason);
         }
 
         if (queueResult.QueuedCount > 0)
@@ -952,11 +1129,25 @@ public sealed class PlaylistWatchService
     {
         if (queueResult.Deferred)
         {
-            return "pending";
+            return ResolveQueueStopStatus(queueResult.StopReason);
         }
 
-        return success ? CompletedStatus : FailedStatus;
+        return success ? CompletedStatus : ResolveQueueStopStatus(queueResult.StopReason);
     }
+
+    private static string ResolveQueueStopStatus(WatchQueueStopReason stopReason)
+        => stopReason switch
+        {
+            WatchQueueStopReason.WatchlistDisabled => "watchlist_disabled",
+            WatchQueueStopReason.DownloadGate => "media_sync_deferred_queue_active",
+            WatchQueueStopReason.QueueCapacity => "queue_capacity_reached",
+            WatchQueueStopReason.RunBudget => "queue_budget_reached",
+            WatchQueueStopReason.ResolutionBudget => "resolution_budget_reached",
+            WatchQueueStopReason.TrackDeferred => "track_queue_deferred",
+            WatchQueueStopReason.SystemicFailure => "source_failure",
+            WatchQueueStopReason.TrackFailures => FailedStatus,
+            _ => "deferred"
+        };
 
     [SuppressMessage("Major Code Smell", "S107", Justification = "State touch requires explicit persisted fields to avoid accidental partial updates.")]
     private async Task TouchPlaylistWatchStateAsync(
@@ -2742,18 +2933,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return matchedRule?.DestinationFolderId ?? defaultFolderId;
     }
 
-    private static bool ShouldBlockTrack(DownloadIntent intent, IReadOnlyList<PlaylistTrackBlockRule>? rules)
-    {
-        if (rules is null || rules.Count == 0)
-        {
-            return false;
-        }
-
-        return rules
-            .OrderBy(static r => r.Order)
-            .Any(rule => RuleMatches(intent, rule.ConditionField, rule.ConditionOperator, rule.ConditionValue));
-    }
-
     private static bool RuleMatches(
         DownloadIntent intent,
         string conditionField,
@@ -3329,39 +3508,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             FailedStatus,
             cancellationToken);
         return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: true);
-    }
-
-    private async Task<bool> HandleBlockedWatchIntentAsync(
-        DownloadIntent intent,
-        WatchIntentTrack track,
-        QueueWatchOptions options,
-        CancellationToken cancellationToken)
-    {
-        if (!ShouldBlockTrack(intent, options.BlockRules))
-        {
-            return false;
-        }
-
-        if (_logger.IsEnabled(LogLevel.Debug))
-        {
-            _logger.LogDebug(
-                "{Source} watch skipped blocked track {TrackId} ({Title} - {Artist}).",
-                options.SourceLabel,
-                track.TrackId,
-                intent.Title,
-                intent.Artist);
-        }
-        await TryPersistWatchTrackIgnoreAsync(
-            options.WatchlistSource,
-            options.WatchlistPlaylistId,
-            track,
-            cancellationToken);
-        await TryMarkWatchTrackCompletedAsync(
-            options.WatchlistSource,
-            options.WatchlistPlaylistId,
-            track.TrackId,
-            cancellationToken);
-        return true;
     }
 
     private DownloadIntent PrepareWatchIntent(
