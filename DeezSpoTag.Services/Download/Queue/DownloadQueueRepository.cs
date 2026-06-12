@@ -783,12 +783,8 @@ FROM (
 	UNION ALL
 	SELECT activity_sort_group, " + selectedColumns + @" FROM terminal_items
 )
-ORDER BY activity_sort_group ASC,
-         CASE WHEN activity_sort_group = 0 THEN (queue_order IS NULL) END ASC,
-         CASE WHEN activity_sort_group = 0 THEN queue_order END ASC,
-         CASE WHEN activity_sort_group = 0 THEN created_at END ASC,
-         CASE WHEN activity_sort_group = 1 THEN updated_at END DESC,
-         CASE WHEN activity_sort_group = 1 THEN id END DESC,
+ORDER BY CASE WHEN queue_order IS NULL THEN id ELSE queue_order END ASC,
+         created_at ASC,
          id ASC;";
     }
 

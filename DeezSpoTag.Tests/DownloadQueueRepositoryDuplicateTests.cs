@@ -474,7 +474,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         Assert.DoesNotContain("terminal-old", queueUuids);
         Assert.Equal(4, queueUuids.Count);
         Assert.Equal(
-            ["active-queued-visible", "active-running-visible", "terminal-new", "terminal-middle"],
+            ["terminal-middle", "terminal-new", "active-queued-visible", "active-running-visible"],
             queueUuids);
     }
 
