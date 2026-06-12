@@ -19,6 +19,7 @@ public class LibraryArtistsApiController : ControllerBase
     private readonly ArtistPageCacheRepository _artistPageCache;
     private readonly SpotifyMetadataCacheRepository _spotifyMetadataCache;
     private readonly LastFmArtistImageService _lastFmArtistImageService;
+    private readonly ArtistExternalMetadataBackfillService _artistExternalMetadataBackfillService;
     private readonly ArtistVisualSelectionService _artistVisualSelectionService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<LibraryArtistsApiController> _logger;
@@ -30,6 +31,7 @@ public class LibraryArtistsApiController : ControllerBase
         ArtistPageCacheRepository artistPageCache,
         SpotifyMetadataCacheRepository spotifyMetadataCache,
         LastFmArtistImageService lastFmArtistImageService,
+        ArtistExternalMetadataBackfillService artistExternalMetadataBackfillService,
         ArtistVisualSelectionService artistVisualSelectionService,
         IWebHostEnvironment environment,
         ILogger<LibraryArtistsApiController> logger)
@@ -40,6 +42,7 @@ public class LibraryArtistsApiController : ControllerBase
         _artistPageCache = artistPageCache;
         _spotifyMetadataCache = spotifyMetadataCache;
         _lastFmArtistImageService = lastFmArtistImageService;
+        _artistExternalMetadataBackfillService = artistExternalMetadataBackfillService;
         _artistVisualSelectionService = artistVisualSelectionService;
         _environment = environment;
         _logger = logger;
@@ -93,15 +96,24 @@ public class LibraryArtistsApiController : ControllerBase
     }
 
     [HttpGet("lastfm-visuals")]
-    public async Task<IActionResult> GetLastFmVisuals([FromQuery] string? artistName, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetLastFmVisuals(
+        [FromQuery] string? artistName,
+        [FromQuery] long? artistId,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(artistName))
         {
             return Ok(Array.Empty<object>());
         }
 
+        var results = new List<object>();
+        if (artistId is > 0)
+        {
+            results.AddRange(GetCachedLastFmVisuals(artistId.Value));
+        }
+
         var candidates = await _lastFmArtistImageService.SearchArtistImagesAsync(artistName, 8, cancellationToken);
-        return Ok(candidates.Select(candidate => new
+        results.AddRange(candidates.Select(candidate => new
         {
             source = candidate.Source,
             label = candidate.Label,
@@ -109,6 +121,61 @@ public class LibraryArtistsApiController : ControllerBase
             imageUrl = candidate.Url,
             name = candidate.Label
         }));
+
+        return Ok(results);
+    }
+
+    private IReadOnlyList<object> GetCachedLastFmVisuals(long artistId)
+    {
+        var cacheDir = Path.GetFullPath(Path.Join(
+            AppDataPaths.GetDataRoot(_environment),
+            "library-artist-images",
+            "lastfm",
+            "artists",
+            artistId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        if (!Directory.Exists(cacheDir))
+        {
+            return Array.Empty<object>();
+        }
+
+        var cacheRoot = Path.GetFullPath(Path.Join(AppDataPaths.GetDataRoot(_environment), "library-artist-images", "lastfm"));
+        return Directory.GetFiles(cacheDir, "candidate-*.*", SearchOption.TopDirectoryOnly)
+            .Select(Path.GetFullPath)
+            .Where(path => path.StartsWith(cacheRoot, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Select(path => new
+            {
+                source = "lastfm",
+                label = "Last.fm cached",
+                url = $"/api/library/image?path={Uri.EscapeDataString(path)}&size=640",
+                imageUrl = $"/api/library/image?path={Uri.EscapeDataString(path)}&size=640",
+                path,
+                name = "Last.fm cached"
+            })
+            .Cast<object>()
+            .ToArray();
+    }
+
+    [HttpPost("{id:long}/external-cache/refresh")]
+    public async Task<IActionResult> RefreshExternalArtistCache(long id, CancellationToken cancellationToken)
+    {
+        if (id <= 0)
+        {
+            return BadRequest("ArtistId is required.");
+        }
+
+        var refreshed = await _artistExternalMetadataBackfillService.RefreshArtistAsync(id, cancellationToken);
+        if (!refreshed)
+        {
+            return NotFound("Artist not found.");
+        }
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Artist external cache refresh completed for artist {id}."));
+
+        return Ok(new { refreshed = true });
     }
 
     [HttpPost("{id:long}/visuals")]
@@ -783,6 +850,7 @@ public class LibraryArtistsApiController : ControllerBase
 
         var appleId = request.AppleId.Trim();
         await _repository.UpsertArtistSourceIdAsync(id, "apple", appleId, cancellationToken);
+        await _repository.UpdateArtistAppleBiographyAsync(id, null, DateTimeOffset.MinValue, cancellationToken);
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,

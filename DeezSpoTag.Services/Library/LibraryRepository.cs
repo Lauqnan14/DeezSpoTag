@@ -4955,7 +4955,10 @@ SELECT DISTINCT
        a.id,
        a.name,
        a.preferred_image_path,
-       a.preferred_background_path
+       a.preferred_background_path,
+       a.apple_biography,
+       a.apple_biography_checked_at,
+       a.lastfm_images_checked_at
 FROM artist a
 JOIN album al ON al.artist_id = a.id
 JOIN track t ON t.album_id = al.id
@@ -4984,7 +4987,10 @@ LIMIT @limit OFFSET @offset;";
                 reader.GetString(1),
                 true,
                 await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
-                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3)));
+                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+                await ReadDateTimeOffsetAsync(reader, 5, cancellationToken),
+                await ReadDateTimeOffsetAsync(reader, 6, cancellationToken)));
         }
 
         return new ArtistPageDto(artists, totalCount, safePage, safePageSize);
@@ -5162,7 +5168,10 @@ ORDER BY al.title;";
 SELECT a.id,
        a.name,
        a.preferred_image_path,
-       a.preferred_background_path
+       a.preferred_background_path,
+       a.apple_biography,
+       a.apple_biography_checked_at,
+       a.lastfm_images_checked_at
 FROM artist a
 WHERE a.id = @artistId
   AND EXISTS (
@@ -5184,7 +5193,10 @@ WHERE a.id = @artistId
                 reader.GetInt64(0),
                 reader.GetString(1),
                 await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
-                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3));
+                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+                await ReadDateTimeOffsetAsync(reader, 5, cancellationToken),
+                await ReadDateTimeOffsetAsync(reader, 6, cancellationToken));
         }
 
         return null;
@@ -5194,7 +5206,13 @@ WHERE a.id = @artistId
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT a.id, a.name, a.preferred_image_path, a.preferred_background_path
+SELECT a.id,
+       a.name,
+       a.preferred_image_path,
+       a.preferred_background_path,
+       a.apple_biography,
+       a.apple_biography_checked_at,
+       a.lastfm_images_checked_at
 FROM artist a
 WHERE (a.preferred_image_path IS NULL OR TRIM(a.preferred_image_path) = '')
   AND EXISTS (
@@ -5217,7 +5235,10 @@ ORDER BY name;";
                 reader.GetInt64(0),
                 reader.GetString(1),
                 await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
-                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3)));
+                await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+                await ReadDateTimeOffsetAsync(reader, 5, cancellationToken),
+                await ReadDateTimeOffsetAsync(reader, 6, cancellationToken)));
         }
 
         return artists;
@@ -5249,6 +5270,142 @@ WHERE id = @artistId;";
         command.Parameters.AddWithValue("path", backgroundPath);
         command.Parameters.AddWithValue("artistId", artistId);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdateArtistAppleBiographyAsync(
+        long artistId,
+        string? biography,
+        DateTimeOffset checkedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE artist
+SET apple_biography = @biography,
+    apple_biography_checked_at = @checkedAtUtc,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = @artistId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("biography", string.IsNullOrWhiteSpace(biography) ? DBNull.Value : (object)biography.Trim());
+        command.Parameters.AddWithValue("checkedAtUtc", checkedAtUtc.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task MarkArtistLastFmImagesCheckedAsync(
+        long artistId,
+        DateTimeOffset checkedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE artist
+SET lastfm_images_checked_at = @checkedAtUtc,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = @artistId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("checkedAtUtc", checkedAtUtc.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ArtistExternalMetadataBackfillDto>> GetArtistsForExternalMetadataBackfillAsync(
+        DateTimeOffset staleBeforeUtc,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        var safeLimit = Math.Clamp(limit, 1, 1000);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT
+       a.id,
+       a.name,
+       a.apple_biography,
+       a.apple_biography_checked_at,
+       a.lastfm_images_checked_at,
+       (
+           SELECT source_id
+           FROM artist_source s
+           WHERE s.artist_id = a.id
+             AND s.source = 'apple'
+           LIMIT 1
+       ) AS apple_id
+FROM artist a
+WHERE EXISTS (
+      SELECT 1
+      FROM album al
+      JOIN track t ON t.album_id = al.id
+      JOIN track_local tl ON tl.track_id = t.id
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      JOIN folder f ON f.id = af.folder_id
+      WHERE al.artist_id = a.id
+        AND f.enabled = TRUE
+  )
+  AND (
+      a.apple_biography_checked_at IS NULL
+      OR a.apple_biography_checked_at < @staleBeforeUtc
+      OR a.lastfm_images_checked_at IS NULL
+      OR a.lastfm_images_checked_at < @staleBeforeUtc
+  )
+ORDER BY
+    COALESCE(a.apple_biography_checked_at, ''),
+    COALESCE(a.lastfm_images_checked_at, ''),
+    a.name COLLATE NOCASE
+LIMIT @limit;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("staleBeforeUtc", staleBeforeUtc.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("limit", safeLimit);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var artists = new List<ArtistExternalMetadataBackfillDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            artists.Add(new ArtistExternalMetadataBackfillDto(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+                await ReadDateTimeOffsetAsync(reader, 3, cancellationToken),
+                await ReadDateTimeOffsetAsync(reader, 4, cancellationToken),
+                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5)));
+        }
+
+        return artists;
+    }
+
+    public async Task<IReadOnlyList<string>> GetArtistTrackTitlesAsync(
+        long artistId,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (artistId <= 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var safeLimit = Math.Clamp(limit, 1, 200);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT TRIM(COALESCE(NULLIF(t.tag_title, ''), t.title)) AS title
+FROM album al
+JOIN track t ON t.album_id = al.id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE al.artist_id = @artistId
+  AND f.enabled = TRUE
+  AND TRIM(COALESCE(NULLIF(t.tag_title, ''), t.title)) <> ''
+ORDER BY title COLLATE NOCASE
+LIMIT @limit;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("limit", safeLimit);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var titles = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            titles.Add(reader.GetString(0));
+        }
+
+        return titles;
     }
 
     public async Task<IReadOnlyList<WatchlistArtistDto>> GetWatchlistAsync(CancellationToken cancellationToken = default)

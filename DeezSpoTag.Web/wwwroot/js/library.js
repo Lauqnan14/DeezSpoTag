@@ -4212,8 +4212,10 @@ async function loadAlbums(artistId) {
     initSpotifyAvatarFetch(artistIdValue);
     initSpotifyCacheControls(artistIdValue);
     const storedAppleId = appleIdData?.appleId || null;
-    libraryState.appleExtras.biography = null;
-    libraryState.appleExtras.biographyAppleId = null;
+    libraryState.appleExtras.storedAppleId = storedAppleId || null;
+    libraryState.appleExtras.appleArtistId = storedAppleId || null;
+    libraryState.appleExtras.biography = normalizeArtistBiographyForSync(resolvedArtist?.appleBiography || '') || null;
+    libraryState.appleExtras.biographyAppleId = storedAppleId || null;
     updateArtistBiographySourceControls();
     initAppleLazyLoad(resolvedArtist?.name, storedAppleId);
     loadAppleArtistBiography(storedAppleId);
@@ -4551,18 +4553,25 @@ function initSpotifyCacheControls(artistId) {
         const statusEl = document.getElementById('spotify-cache-status');
         try {
             await fetchJson(`/api/library/spotify-cache/refresh?artistId=${encodeURIComponent(artistId)}`, { method: 'POST' });
-            showToast('Spotify cache refresh queued.', false);
+            await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh`, { method: 'POST' });
+            showToast('Artist source cache refreshed.', false);
             if (statusEl) {
-                statusEl.textContent = 'Spotify refresh: queued';
+                statusEl.textContent = 'Source refresh: completed';
             }
-            // Keep rendering deterministic: read current payload, refresh in background.
             await loadSpotifyArtist(artistId, false, false);
-            setTimeout(() => { void loadSpotifyArtist(artistId, false, false); }, 3500);
-            setTimeout(() => loadSpotifyCacheImages(artistId), 2000);
+            const appleIdData = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/apple-id`);
+            const appleId = appleIdData?.appleId || libraryState.appleExtras?.storedAppleId || libraryState.appleExtras?.appleArtistId || null;
+            libraryState.appleExtras.storedAppleId = appleId || null;
+            libraryState.appleExtras.appleArtistId = appleId || null;
+            libraryState.artistVisuals.externalTerm = null;
+            libraryState.artistVisuals.externalLoading = false;
+            loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId, appleId);
+            await loadAppleArtistBiography(appleId);
+            setTimeout(() => loadSpotifyCacheImages(artistId), 1000);
         } catch (error) {
-            showToast(`Spotify cache refresh failed: ${error?.message || error}`, true);
+            showToast(`Artist source cache refresh failed: ${error?.message || error}`, true);
             if (statusEl) {
-                statusEl.textContent = 'Spotify refresh: failed';
+                statusEl.textContent = 'Source refresh: failed';
             }
         }
     });
@@ -6228,7 +6237,6 @@ globalThis.applySelectedArtistBiographySource = applySelectedArtistBiographySour
 
 async function loadAppleArtistBiography(storedAppleId) {
     const appleId = (storedAppleId || '').toString().trim();
-    libraryState.appleExtras.biography = null;
     libraryState.appleExtras.biographyAppleId = appleId || null;
     updateArtistBiographySourceControls();
 
@@ -6544,13 +6552,19 @@ async function loadLastFmArtistVisuals(artistName, artistId) {
         return;
     }
     try {
-        const payload = await fetchJsonOptional(`/api/library/artists/lastfm-visuals?artistName=${encodeURIComponent(term)}`);
+        const params = new URLSearchParams();
+        params.set('artistName', term);
+        if (artistId) {
+            params.set('artistId', artistId);
+        }
+        const payload = await fetchJsonOptional(`/api/library/artists/lastfm-visuals?${params.toString()}`);
         const candidates = Array.isArray(payload) ? payload : [];
         const images = candidates
             .map(item => ({
                 url: item?.url || item?.imageUrl || '',
                 label: item?.label || 'Last.fm',
-                source: item?.source || 'lastfm'
+                source: item?.source || 'lastfm',
+                path: item?.path || ''
             }))
             .filter(item => item.url);
         libraryState.artistVisuals.lastfmImages = images;
@@ -6665,7 +6679,8 @@ function renderArtistVisualPicker(artistId) {
         items.push({
             url: item.url,
             label: item.label || 'Last.fm',
-            source: item.source || 'lastfm'
+            source: item.source || 'lastfm',
+            path: item.path || ''
         });
     });
 

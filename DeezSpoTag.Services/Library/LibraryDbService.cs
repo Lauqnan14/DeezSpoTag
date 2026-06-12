@@ -144,6 +144,9 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, ArtistTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "metadata_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "preferred_background_path", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistTable, "apple_biography", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistTable, "apple_biography_checked_at", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, ArtistTable, "lastfm_images_checked_at", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_name_nocase", ArtistTable, "name COLLATE NOCASE", unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, AlbumTable, DeezerIdColumn, TextType, cancellationToken);

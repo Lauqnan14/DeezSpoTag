@@ -47,6 +47,7 @@ public sealed class AppleArtistApiController : ControllerBase
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly AppleCatalogVideoAtmosEnricher _appleCatalogVideoAtmosEnricher;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly AppleArtistBiographyService _artistBiographyService;
     private readonly ILogger<AppleArtistApiController> _logger;
 
     private enum ArtistPageMode
@@ -60,12 +61,14 @@ public sealed class AppleArtistApiController : ControllerBase
         DeezSpoTagSettingsService settingsService,
         AppleCatalogVideoAtmosEnricher appleCatalogVideoAtmosEnricher,
         IHttpClientFactory httpClientFactory,
+        AppleArtistBiographyService artistBiographyService,
         ILogger<AppleArtistApiController> logger)
     {
         _catalog = catalog;
         _settingsService = settingsService;
         _appleCatalogVideoAtmosEnricher = appleCatalogVideoAtmosEnricher;
         _httpClientFactory = httpClientFactory;
+        _artistBiographyService = artistBiographyService;
         _logger = logger;
     }
 
@@ -118,27 +121,14 @@ public sealed class AppleArtistApiController : ControllerBase
 
         try
         {
-            var storefront = GetStorefront();
-            using var doc = await _catalog.GetArtistAsync(id, storefront, DefaultLanguage, cancellationToken);
-            var root = doc.RootElement;
-            if (!AppleCatalogJsonHelper.TryGetDataArray(root, out var dataArr)
-                || dataArr.GetArrayLength() == 0)
+            var result = await _artistBiographyService.ResolveByArtistIdAsync(id, null, cancellationToken);
+            return Ok(new
             {
-                return Ok(new { appleId = id, name = string.Empty, image = string.Empty, biography = string.Empty });
-            }
-
-            var item = dataArr[0];
-            var attrs = item.TryGetProperty(AttributesField, out var a) && a.ValueKind == JsonValueKind.Object
-                ? a
-                : default;
-            var name = attrs.ValueKind == JsonValueKind.Object && attrs.TryGetProperty(NameField, out var n)
-                ? n.GetString() ?? string.Empty
-                : string.Empty;
-            var image = attrs.ValueKind == JsonValueKind.Object
-                ? AppleCatalogJsonHelper.ResolveArtwork(attrs)
-                : string.Empty;
-            var biography = await ResolveAppleArtistBiographyAsync(id, name, storefront, attrs, cancellationToken);
-            return Ok(new { appleId = id, name, image, biography = biography ?? string.Empty });
+                appleId = id,
+                name = result?.Name ?? string.Empty,
+                image = result?.Image ?? string.Empty,
+                biography = result?.Biography ?? string.Empty
+            });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

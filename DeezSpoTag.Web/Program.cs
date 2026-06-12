@@ -1436,6 +1436,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.LastFmArtistImageService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ILastFmArtistImageResolver>(sp =>
             sp.GetRequiredService<DeezSpoTag.Web.Services.LastFmArtistImageService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.AppleArtistBiographyService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyRecommendationService>();
@@ -1681,6 +1682,11 @@ public partial class Program
             StartupWorkerCategory.Deferred,
             "Spotify artist metadata queue after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistImageCacheService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistExternalMetadataBackfillService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.ArtistExternalMetadataBackfillService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Artist external metadata backfill after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>(
             services,

@@ -383,8 +383,24 @@ public sealed record LibraryStatsDetailDto(
     IReadOnlyList<LibraryStatsBreakdownItemDto> LyricsTypes);
 public sealed record LibraryClearResultDto(int ArtistsRemoved, int AlbumsRemoved, int TracksRemoved);
 
-public sealed record ArtistDto(long Id, string Name, bool AvailableLocally, string? PreferredImagePath, string? PreferredBackgroundPath);
+public sealed record ArtistDto(
+    long Id,
+    string Name,
+    bool AvailableLocally,
+    string? PreferredImagePath,
+    string? PreferredBackgroundPath,
+    string? AppleBiography = null,
+    DateTimeOffset? AppleBiographyCheckedAt = null,
+    DateTimeOffset? LastFmImagesCheckedAt = null);
 public sealed record ArtistPageDto(IReadOnlyList<ArtistDto> Items, int TotalCount, int Page, int PageSize);
+
+public sealed record ArtistExternalMetadataBackfillDto(
+    long Id,
+    string Name,
+    string? AppleBiography,
+    DateTimeOffset? AppleBiographyCheckedAt,
+    DateTimeOffset? LastFmImagesCheckedAt,
+    string? AppleId);
 
 public sealed record AlbumDto(
     long Id,
@@ -432,7 +448,14 @@ public sealed record ArtistSpotifyMatchSignalDto(
     string? TagArtist,
     string? TagAlbumArtist);
 
-public sealed record ArtistDetailDto(long Id, string Name, string? PreferredImagePath, string? PreferredBackgroundPath);
+public sealed record ArtistDetailDto(
+    long Id,
+    string Name,
+    string? PreferredImagePath,
+    string? PreferredBackgroundPath,
+    string? AppleBiography = null,
+    DateTimeOffset? AppleBiographyCheckedAt = null,
+    DateTimeOffset? LastFmImagesCheckedAt = null);
 
 public sealed record TrackSearchResultDto(
     long TrackId,
