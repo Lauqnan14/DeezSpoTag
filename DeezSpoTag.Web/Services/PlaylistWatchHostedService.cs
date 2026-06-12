@@ -554,6 +554,11 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return PlaylistAdvanceDecision.StopRunClearActive;
         }
 
+        if (result.QueuedTracks <= 0)
+        {
+            return PlaylistAdvanceDecision.StopRunKeepActive;
+        }
+
         if (result.RemainingQueueableTracks <= 0)
         {
             return PlaylistAdvanceDecision.Advance;

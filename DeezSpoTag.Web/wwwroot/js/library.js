@@ -5028,15 +5028,16 @@ function buildArtistPageTrackAvailabilityRequest(track, fallbackId) {
     }
 
     const durationMs = Number(track.durationMs || track.duration || 0);
-    return {
-        id,
-        source: sourceId ? 'spotify' : null,
-        sourceId: sourceId || null,
-        isrc: String(track.isrc || '').trim() || null,
-        trackTitle,
-        artistName,
-        durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : null
-    };
+	    return {
+	        id,
+	        source: sourceId ? 'spotify' : null,
+	        sourceId: sourceId || null,
+	        isrc: String(track.isrc || '').trim() || null,
+	        trackTitle,
+	        artistName,
+	        albumTitle: String(track.albumName || track.album?.name || '').trim() || null,
+	        durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : null
+	    };
 }
 
 function buildSpotifyTopTrackByAlbumId() {
@@ -5086,11 +5087,12 @@ function buildArtistPageDiscographyAvailabilityRequest(album, index, topTrackByA
                 id,
                 source: null,
                 sourceId: null,
-                isrc: null,
-                trackTitle: title,
-                artistName,
-                durationMs: null
-            };
+	                isrc: null,
+	                trackTitle: title,
+	                artistName,
+	                albumTitle: title,
+	                durationMs: null
+	            };
         }
     }
 

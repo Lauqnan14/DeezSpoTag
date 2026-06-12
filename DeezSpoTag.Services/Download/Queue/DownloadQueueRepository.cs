@@ -1687,6 +1687,33 @@ WHERE (
             )
         )
         OR (
+            @qobuzTrackId IS NOT NULL
+            AND @qobuzTrackId <> ''
+            AND json_valid(payload)
+            AND (
+                lower(json_extract(payload, '$.QobuzId')) = lower(@qobuzTrackId)
+                OR lower(json_extract(payload, '$.qobuzId')) = lower(@qobuzTrackId)
+            )
+        )
+        OR (
+            @tidalTrackId IS NOT NULL
+            AND @tidalTrackId <> ''
+            AND json_valid(payload)
+            AND (
+                lower(json_extract(payload, '$.TidalId')) = lower(@tidalTrackId)
+                OR lower(json_extract(payload, '$.tidalId')) = lower(@tidalTrackId)
+            )
+        )
+        OR (
+            @amazonTrackId IS NOT NULL
+            AND @amazonTrackId <> ''
+            AND json_valid(payload)
+            AND (
+                lower(json_extract(payload, '$.AmazonId')) = lower(@amazonTrackId)
+                OR lower(json_extract(payload, '$.amazonId')) = lower(@amazonTrackId)
+            )
+        )
+        OR (
             lower(track_title) = lower(@trackTitle)
         )
     )
@@ -1711,6 +1738,9 @@ ORDER BY
         command.Parameters.AddWithValue("deezerTrackId", NormalizeId(request.DeezerTrackId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("spotifyTrackId", NormalizeId(request.SpotifyTrackId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("appleTrackId", NormalizeId(request.AppleTrackId) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("qobuzTrackId", NormalizeId(request.QobuzTrackId) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("tidalTrackId", NormalizeId(request.TidalTrackId) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("amazonTrackId", NormalizeId(request.AmazonTrackId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("artistName", request.ArtistName);
         command.Parameters.AddWithValue("artistPrimaryName", NormalizeId(request.ArtistPrimaryName) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("trackTitle", request.TrackTitle);
@@ -1762,7 +1792,10 @@ ORDER BY
             return EqualsNormalizedIsrc(request.Isrc, ReadPayloadString(root, "Isrc", "isrc"))
                 || EqualsNormalizedId(request.DeezerTrackId, ReadPayloadString(root, "DeezerId", "deezerId"))
                 || EqualsNormalizedId(request.SpotifyTrackId, ReadPayloadString(root, "SpotifyId", "spotifyId"))
-                || EqualsNormalizedId(request.AppleTrackId, ReadPayloadString(root, "AppleId", "appleId"));
+                || EqualsNormalizedId(request.AppleTrackId, ReadPayloadString(root, "AppleId", "appleId"))
+                || EqualsNormalizedId(request.QobuzTrackId, ReadPayloadString(root, "QobuzId", "qobuzId"))
+                || EqualsNormalizedId(request.TidalTrackId, ReadPayloadString(root, "TidalId", "tidalId"))
+                || EqualsNormalizedId(request.AmazonTrackId, ReadPayloadString(root, "AmazonId", "amazonId"));
         }
         catch (JsonException)
         {
@@ -2779,6 +2812,9 @@ public sealed class DuplicateLookupRequest
     public string? AppleTrackId { get; init; }
     public string? AppleAlbumId { get; init; }
     public string? AppleArtistId { get; init; }
+    public string? QobuzTrackId { get; init; }
+    public string? TidalTrackId { get; init; }
+    public string? AmazonTrackId { get; init; }
     public string ArtistName { get; init; } = string.Empty;
     public string TrackTitle { get; init; } = string.Empty;
     public int? DurationMs { get; init; }

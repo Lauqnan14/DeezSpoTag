@@ -122,9 +122,10 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
             artistPageCache: null!,
             spotifyMetadataCache: null!,
             lastFmArtistImageService: null!,
+            artistExternalMetadataBackfillService: null!,
             artistVisualSelectionService: null!,
-            _environment,
-            NullLogger<LibraryArtistsApiController>.Instance);
+            environment: _environment,
+            logger: NullLogger<LibraryArtistsApiController>.Instance);
     }
 
     private async Task<long> SeedLocalArtistAsync(string artistName)

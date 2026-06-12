@@ -12,6 +12,10 @@ public sealed class DownloadDedupeService
     private const string DeezerPlatform = "deezer";
     private const string SpotifyPlatform = "spotify";
     private const string ApplePlatform = "apple";
+    private const string QobuzPlatform = "qobuz";
+    private const string TidalPlatform = "tidal";
+    private const string AmazonPlatform = "amazon";
+    private const string AmazonMusicPlatform = "amazonmusic";
     private const string IsrcSource = "isrc";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
@@ -26,6 +30,8 @@ public sealed class DownloadDedupeService
         _libraryRepository = libraryRepository;
         _logger = logger;
     }
+
+    public bool IsLibraryConfigured => _libraryRepository.IsConfigured;
 
     public async Task<DownloadDedupeDecision> CheckAsync(
         DownloadDedupeRequest request,
@@ -64,6 +70,25 @@ public sealed class DownloadDedupeService
         return DownloadDedupeDecision.AllowedDecision;
     }
 
+    public async Task<DownloadDedupeDecision> CheckLibraryPresenceAsync(
+        DownloadDedupeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (!_libraryRepository.IsConfigured)
+        {
+            return DownloadDedupeDecision.AllowedDecision;
+        }
+
+        var exists = request.DestinationFolderId.HasValue
+            ? await ExistsLibraryDuplicateInFolderAsync(request, request.DestinationFolderId.Value, cancellationToken)
+            : await ExistsLibraryDuplicateGloballyAsync(request, cancellationToken);
+        return exists
+            ? DownloadDedupeDecision.Rejected("library_duplicate", "Skipped: matching file already exists in library.", "library")
+            : DownloadDedupeDecision.AllowedDecision;
+    }
+
     public static DownloadDedupeRequest FromQueuePayload(
         EngineQueueItemBase payload,
         int? durationMs,
@@ -79,6 +104,9 @@ public sealed class DownloadDedupeService
             DeezerTrackId = payload.DeezerId,
             SpotifyTrackId = payload.SpotifyId,
             AppleTrackId = payload.AppleId,
+            QobuzTrackId = ResolvePayloadSourceId(payload, QobuzPlatform, "QobuzId"),
+            TidalTrackId = ResolvePayloadSourceId(payload, TidalPlatform, "TidalId"),
+            AmazonTrackId = ResolvePayloadSourceId(payload, AmazonPlatform, "AmazonId"),
             TrackTitle = payload.Title,
             TrackArtist = payload.Artist,
             TrackPrimaryArtist = NormalizePrimaryArtist(payload.Artist),
@@ -111,6 +139,9 @@ public sealed class DownloadDedupeService
             DeezerArtistId = intent.DeezerArtistId,
             SpotifyTrackId = intent.SpotifyId,
             AppleTrackId = intent.AppleId,
+            QobuzTrackId = ResolveIntentSourceId(intent, QobuzPlatform),
+            TidalTrackId = ResolveIntentSourceId(intent, TidalPlatform),
+            AmazonTrackId = ResolveIntentSourceId(intent, AmazonPlatform),
             TrackTitle = intent.Title,
             TrackArtist = intent.Artist,
             TrackPrimaryArtist = NormalizePrimaryArtist(intent.Artist),
@@ -217,12 +248,7 @@ public sealed class DownloadDedupeService
             return DownloadDedupeDecision.AllowedDecision;
         }
 
-        var exists = request.DestinationFolderId.HasValue
-            ? await ExistsLibraryDuplicateInFolderAsync(request, request.DestinationFolderId.Value, cancellationToken)
-            : await ExistsLibraryDuplicateGloballyAsync(request, cancellationToken);
-        return exists
-            ? DownloadDedupeDecision.Rejected("library_duplicate", "Skipped: matching file already exists in library.", "library")
-            : DownloadDedupeDecision.AllowedDecision;
+        return await CheckLibraryPresenceAsync(request, cancellationToken);
     }
 
     private async Task<bool> ExistsLibraryDuplicateInFolderAsync(
@@ -343,6 +369,9 @@ public sealed class DownloadDedupeService
             AppleTrackId = request.AppleTrackId,
             AppleAlbumId = request.AppleAlbumId,
             AppleArtistId = request.AppleArtistId,
+            QobuzTrackId = request.QobuzTrackId,
+            TidalTrackId = request.TidalTrackId,
+            AmazonTrackId = request.AmazonTrackId,
             ArtistName = request.TrackArtist,
             TrackTitle = request.TrackTitle,
             DurationMs = request.DurationMs,
@@ -357,6 +386,10 @@ public sealed class DownloadDedupeService
         yield return (DeezerPlatform, request.DeezerTrackId);
         yield return (SpotifyPlatform, request.SpotifyTrackId);
         yield return (ApplePlatform, request.AppleTrackId);
+        yield return (QobuzPlatform, request.QobuzTrackId);
+        yield return (TidalPlatform, request.TidalTrackId);
+        yield return (AmazonPlatform, request.AmazonTrackId);
+        yield return (AmazonMusicPlatform, request.AmazonTrackId);
     }
 
     private static IEnumerable<(string Source, string? AlbumId, string? ArtistId)> BuildAlbumChecks(DownloadDedupeRequest request)
@@ -394,6 +427,144 @@ public sealed class DownloadDedupeService
             ? null
             : primary;
     }
+
+    private static string? ResolvePayloadSourceId(EngineQueueItemBase payload, string source, string propertyName)
+    {
+        return FirstNonEmpty(
+            ReadStringProperty(payload, propertyName),
+            ExtractSourceTrackId(payload.SourceUrl, source),
+            ExtractSourceTrackId(payload.Url, source));
+    }
+
+    private static string? ResolveIntentSourceId(DownloadIntent intent, string source)
+    {
+        return FirstNonEmpty(
+            ExtractSourceTrackId(intent.SourceUrl, source),
+            ExtractSourceTrackId(intent.Url, source));
+    }
+
+    private static string? ReadStringProperty(object instance, string propertyName)
+    {
+        var property = instance.GetType().GetProperty(propertyName);
+        return property?.GetValue(instance) switch
+        {
+            string text when !string.IsNullOrWhiteSpace(text) => text.Trim(),
+            int value when value > 0 => value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            long value when value > 0 => value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => null
+        };
+    }
+
+    private static string? ExtractSourceTrackId(string? value, string source)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var candidate = value.Trim();
+        if (string.Equals(source, QobuzPlatform, StringComparison.OrdinalIgnoreCase)
+            && long.TryParse(candidate, out var qobuzRawId)
+            && qobuzRawId > 0)
+        {
+            return candidate;
+        }
+
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        var host = uri.Host.ToLowerInvariant();
+        if (!SourceHostMatches(host, source))
+        {
+            return null;
+        }
+
+        var queryId = ExtractQueryParameter(uri.Query, "id")
+            ?? ExtractQueryParameter(uri.Query, "track_id")
+            ?? ExtractQueryParameter(uri.Query, "trackId");
+        if (!string.IsNullOrWhiteSpace(queryId))
+        {
+            return queryId;
+        }
+
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Reverse();
+        foreach (var segment in segments)
+        {
+            if (IsSourcePathMarker(segment))
+            {
+                continue;
+            }
+
+            return segment;
+        }
+
+        return null;
+    }
+
+    private static string? ExtractQueryParameter(string query, string name)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return null;
+        }
+
+        var trimmedQuery = query[0] == '?' ? query[1..] : query;
+        foreach (var pair in trimmedQuery.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separatorIndex = pair.IndexOf('=', StringComparison.Ordinal);
+            if (separatorIndex <= 0)
+            {
+                continue;
+            }
+
+            var key = Uri.UnescapeDataString(pair[..separatorIndex]);
+            if (!string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return Uri.UnescapeDataString(pair[(separatorIndex + 1)..]);
+        }
+
+        return null;
+    }
+
+    private static bool SourceHostMatches(string host, string source)
+    {
+        return source.ToLowerInvariant() switch
+        {
+            QobuzPlatform => host.Contains("qobuz", StringComparison.Ordinal),
+            TidalPlatform => host.Contains("tidal", StringComparison.Ordinal),
+            AmazonPlatform => host.Contains("amazon", StringComparison.Ordinal),
+            _ => false
+        };
+    }
+
+    private static bool IsSourcePathMarker(string segment)
+    {
+        return segment.Equals("track", StringComparison.OrdinalIgnoreCase)
+            || segment.Equals("tracks", StringComparison.OrdinalIgnoreCase)
+            || segment.Equals("album", StringComparison.OrdinalIgnoreCase)
+            || segment.Equals("albums", StringComparison.OrdinalIgnoreCase)
+            || segment.Equals("music", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
+    }
 }
 
 public sealed class DownloadDedupeRequest
@@ -408,6 +579,9 @@ public sealed class DownloadDedupeRequest
     public string? AppleTrackId { get; init; }
     public string? AppleAlbumId { get; init; }
     public string? AppleArtistId { get; init; }
+    public string? QobuzTrackId { get; init; }
+    public string? TidalTrackId { get; init; }
+    public string? AmazonTrackId { get; init; }
     public string TrackTitle { get; init; } = string.Empty;
     public string TrackArtist { get; init; } = string.Empty;
     public string? TrackPrimaryArtist { get; init; }

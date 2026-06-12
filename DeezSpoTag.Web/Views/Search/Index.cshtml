@@ -2880,13 +2880,16 @@ async function updateLibraryStatusForTracks(items) {
             item.inLibrary = libraryExistenceCache.get(key) === true;
             continue;
         }
-        const req = {
-            id: key,
-            isrc: item.isrc || '',
-            trackTitle: item.name || '',
-            artistName: item.artist || '',
-            durationMs: resolveSearchItemDurationMs(item) || null
-        };
+	        const req = {
+	            id: key,
+	            source: currentSearchSource || '',
+	            sourceId: item.id || item.sourceId || '',
+	            isrc: item.isrc || '',
+	            trackTitle: item.name || '',
+	            artistName: item.artist || '',
+	            albumTitle: item.album || item.albumTitle || item.albumName || '',
+	            durationMs: resolveSearchItemDurationMs(item) || null
+	        };
         requests.push(req);
     }
 

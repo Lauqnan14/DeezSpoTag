@@ -329,6 +329,10 @@ public sealed class PlaylistWatchService
             && SupportsStrictSnapshotReuse(source)
             && !string.IsNullOrWhiteSpace(currentSnapshotId)
             && string.Equals(existingSnapshotId, currentSnapshotId, StringComparison.Ordinal);
+        if (forceMediaServerSync)
+        {
+            tryUseCachedCandidates = false;
+        }
 
         IReadOnlyList<PlaylistTrackCandidate> candidates;
         if (tryUseCachedCandidates)
@@ -866,7 +870,6 @@ public sealed class PlaylistWatchService
     {
         var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(source, sourceId, cancellationToken);
         var satisfied = await _libraryRepository.GetSatisfiedPlaylistWatchTrackIdsAsync(source, sourceId, cancellationToken);
-        var localTrackIds = await ResolveLocalCandidateIdsAsync(source, candidates, cancellationToken);
         var dedupeService = _serviceProvider.GetRequiredService<DownloadDedupeService>();
         var normalizedPreferredEngine = NormalizePreferredEngine(queueOptions.PreferredEngine);
         var normalizedDownloadVariantMode = NormalizeDownloadVariantMode(queueOptions.DownloadVariantMode);
@@ -884,16 +887,10 @@ public sealed class PlaylistWatchService
                 continue;
             }
 
-            if (await TryHandleKnownPlaylistTrackAsync(source, sourceId, candidate, ignored, localTrackIds, cancellationToken))
+            if (ignored.Contains(candidate.TrackSourceId))
             {
-                if (ignored.Contains(candidate.TrackSourceId))
-                {
-                    ignoredCount++;
-                }
-                else
-                {
-                    localCount++;
-                }
+                await TryMarkWatchTrackCompletedAsync(source, sourceId, candidate.TrackSourceId, cancellationToken);
+                ignoredCount++;
                 continue;
             }
 
@@ -993,23 +990,6 @@ public sealed class PlaylistWatchService
 
     private static string NormalizeReasonCode(string? reasonCode)
         => string.IsNullOrWhiteSpace(reasonCode) ? string.Empty : reasonCode.Trim().ToLowerInvariant();
-
-    private async Task<bool> TryHandleKnownPlaylistTrackAsync(
-        string source,
-        string sourceId,
-        PlaylistTrackCandidate candidate,
-        HashSet<string> ignored,
-        HashSet<string> localTrackIds,
-        CancellationToken cancellationToken)
-    {
-        if (!ignored.Contains(candidate.TrackSourceId) && !localTrackIds.Contains(candidate.TrackSourceId))
-        {
-            return false;
-        }
-
-        await TryMarkWatchTrackCompletedAsync(source, sourceId, candidate.TrackSourceId, cancellationToken);
-        return true;
-    }
 
     private static string ResolveReconciliationMessage(QueueWatchResult queueResult, bool success)
     {
@@ -2747,72 +2727,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             destinationFolderId,
             options,
             cancellationToken);
-    }
-
-    private async Task<HashSet<string>> ResolveLocalCandidateIdsAsync(
-        string source,
-        IReadOnlyCollection<PlaylistTrackCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        var local = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var isrcs = candidates
-            .Select(static candidate => candidate.Isrc)
-            .Where(static isrc => !string.IsNullOrWhiteSpace(isrc))
-            .Cast<string>()
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var byIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync("isrc", isrcs, cancellationToken);
-        foreach (var candidate in candidates.Where(candidate =>
-                     !string.IsNullOrWhiteSpace(candidate.Isrc) && byIsrc.ContainsKey(candidate.Isrc)))
-        {
-            local.Add(candidate.TrackSourceId);
-        }
-
-        await AddLocalMetadataMatchesAsync(candidates, local, cancellationToken);
-
-        var sourceIds = candidates
-            .Where(candidate => !local.Contains(candidate.TrackSourceId))
-            .Select(static candidate => candidate.TrackSourceId)
-            .Where(static id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var bySource = await _libraryRepository.GetTrackIdsBySourceIdsAsync(source, sourceIds, cancellationToken);
-        foreach (var candidate in candidates.Where(candidate => bySource.ContainsKey(candidate.TrackSourceId)))
-        {
-            local.Add(candidate.TrackSourceId);
-        }
-
-        return local;
-    }
-
-    private async Task AddLocalMetadataMatchesAsync(
-        IReadOnlyCollection<PlaylistTrackCandidate> candidates,
-        HashSet<string> local,
-        CancellationToken cancellationToken)
-    {
-        var metadataCandidates = candidates
-            .Where(candidate => !local.Contains(candidate.TrackSourceId))
-            .ToList();
-        if (metadataCandidates.Count == 0)
-        {
-            return;
-        }
-
-        var inputs = metadataCandidates
-            .Select(candidate => new LibraryRepository.LibraryExistenceInput(
-                candidate.Isrc,
-                candidate.Title,
-                candidate.Artist,
-                candidate.DurationMs))
-            .ToList();
-        var matches = await _libraryRepository.ExistsInLibraryAsync(inputs, cancellationToken);
-        for (var i = 0; i < metadataCandidates.Count && i < matches.Count; i++)
-        {
-            if (matches[i])
-            {
-                local.Add(metadataCandidates[i].TrackSourceId);
-            }
-        }
     }
 
     private static WatchIntentTrack? BuildWatchIntentTrackFromCandidate(string source, PlaylistTrackCandidate candidate)

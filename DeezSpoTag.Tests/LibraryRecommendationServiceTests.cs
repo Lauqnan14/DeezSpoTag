@@ -239,7 +239,8 @@ public sealed class LibraryRecommendationServiceTests
                 ShazamDiscoveryService = null!,
                 DeezerClient = null!,
                 DeezerGatewayService = null!,
-                SongLinkResolver = null!
+                SongLinkResolver = null!,
+                DedupeService = null!
             },
             new TestWebHostEnvironment(webRootPath),
             NullLogger<LibraryRecommendationService>.Instance);

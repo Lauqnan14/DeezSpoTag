@@ -1704,8 +1704,9 @@ public partial class Program
                 ShazamDiscoveryService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamDiscoveryService>(),
                 DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
-                SongLinkResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.SongLinkResolver>()
-        });
+                SongLinkResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.SongLinkResolver>(),
+                DedupeService = sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadDedupeService>()
+            });
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>(

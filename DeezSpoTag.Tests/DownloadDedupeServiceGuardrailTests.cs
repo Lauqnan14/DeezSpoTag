@@ -52,6 +52,77 @@ public sealed class DownloadDedupeServiceGuardrailTests
         Assert.Contains("request.Genres", service, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DedupeIdentity_CoversAllDownloadEngines()
+    {
+        var service = ReadSource("DeezSpoTag.Web", "Services", "DownloadDedupeService.cs");
+        var queueRepository = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
+
+        Assert.Contains("QobuzTrackId", service, StringComparison.Ordinal);
+        Assert.Contains("TidalTrackId", service, StringComparison.Ordinal);
+        Assert.Contains("AmazonTrackId", service, StringComparison.Ordinal);
+        Assert.Contains("yield return (QobuzPlatform, request.QobuzTrackId);", service, StringComparison.Ordinal);
+        Assert.Contains("yield return (TidalPlatform, request.TidalTrackId);", service, StringComparison.Ordinal);
+        Assert.Contains("yield return (AmazonPlatform, request.AmazonTrackId);", service, StringComparison.Ordinal);
+        Assert.Contains("ReadPayloadString(root, \"QobuzId\", \"qobuzId\")", queueRepository, StringComparison.Ordinal);
+        Assert.Contains("ReadPayloadString(root, \"TidalId\", \"tidalId\")", queueRepository, StringComparison.Ordinal);
+        Assert.Contains("ReadPayloadString(root, \"AmazonId\", \"amazonId\")", queueRepository, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProviderDedupeIdentity_DoesNotUseGenericQueuePayloadIdAsSourceId()
+    {
+        var service = ReadSource("DeezSpoTag.Web", "Services", "DownloadDedupeService.cs");
+        var resolver = ExtractBetween(
+            service,
+            "private static string? ResolvePayloadSourceId",
+            "private static string? ResolveIntentSourceId");
+
+        Assert.Contains("ReadStringProperty(payload, propertyName)", resolver, StringComparison.Ordinal);
+        Assert.Contains("ExtractSourceTrackId(payload.SourceUrl, source)", resolver, StringComparison.Ordinal);
+        Assert.Contains("ExtractSourceTrackId(payload.Url, source)", resolver, StringComparison.Ordinal);
+        Assert.DoesNotContain("payload.Id", resolver, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryExistsApi_UsesDedupeLibraryPresence()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "LibraryExistsApiController.cs");
+
+        Assert.Contains("DownloadDedupeService _dedupeService", source, StringComparison.Ordinal);
+        Assert.Contains("CheckLibraryPresenceAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IsAppleSource(source)", source, StringComparison.Ordinal);
+        Assert.Contains("IsAmazonSource(source)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExistsInLibraryAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Recommendations_FilterFinalPoolThroughDedupe()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRecommendationService.cs");
+
+        Assert.Contains("DownloadDedupeService DedupeService", source, StringComparison.Ordinal);
+        Assert.Contains("FilterRecommendationCandidatesThroughDedupeAsync", source, StringComparison.Ordinal);
+        Assert.Contains("await _dedupeService.CheckAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Where(track => !libraryIdSet.Contains", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("libraryIdSet.Contains(deezerId)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WatchlistSelection_DoesNotUseParallelLibraryLookup()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
+        var selection = ExtractBetween(
+            source,
+            "private async Task<PlaylistTrackSelection> SelectMissingPlaylistTracksAsync",
+            "private readonly record struct PreQueueDedupeHandledResult");
+
+        Assert.Contains("dedupeService.CheckAsync", selection, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveLocalCandidateIdsAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddLocalMetadataMatchesAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryHandleKnownPlaylistTrackAsync", source, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] relativeParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -67,5 +138,22 @@ public sealed class DownloadDedupeServiceGuardrailTests
         }
 
         throw new FileNotFoundException("Could not locate source file.", Path.Combine(relativeParts));
+    }
+
+    private static string ExtractBetween(string source, string startMarker, string endMarker)
+    {
+        var start = source.IndexOf(startMarker, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            throw new InvalidOperationException($"{startMarker} was not found.");
+        }
+
+        var end = source.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
+        if (end < 0)
+        {
+            throw new InvalidOperationException($"{endMarker} was not found.");
+        }
+
+        return source[start..end];
     }
 }

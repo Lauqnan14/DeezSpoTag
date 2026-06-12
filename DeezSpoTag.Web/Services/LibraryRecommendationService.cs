@@ -28,6 +28,7 @@ public sealed class LibraryRecommendationService
         public DeezerClient DeezerClient { get; init; } = null!;
         public DeezerGatewayService DeezerGatewayService { get; init; } = null!;
         public SongLinkResolver SongLinkResolver { get; init; } = null!;
+        public DownloadDedupeService DedupeService { get; init; } = null!;
     }
 
     public const string RecommendationSource = "recommendations";
@@ -74,6 +75,7 @@ public sealed class LibraryRecommendationService
     private readonly DeezerClient _deezerClient;
     private readonly DeezerGatewayService _deezerGatewayService;
     private readonly SongLinkResolver _songLinkResolver;
+    private readonly DownloadDedupeService _dedupeService;
     private readonly string _recommendationArtworkRootPath;
     private readonly ILogger<LibraryRecommendationService> _logger;
     private readonly CancellationToken _backgroundCancellationToken;
@@ -96,6 +98,7 @@ public sealed class LibraryRecommendationService
         _deezerClient = collaborators.DeezerClient;
         _deezerGatewayService = collaborators.DeezerGatewayService;
         _songLinkResolver = collaborators.SongLinkResolver;
+        _dedupeService = collaborators.DedupeService;
         _recommendationArtworkRootPath = string.IsNullOrWhiteSpace(webHostEnvironment.WebRootPath)
             ? string.Empty
             : Path.Join(webHostEnvironment.WebRootPath, "images", "recommendations");
@@ -1339,7 +1342,6 @@ public sealed class LibraryRecommendationService
                     scope.FolderId,
                     cancellationToken);
                 deezerTracks = (deezerDetail?.Tracks ?? Array.Empty<RecommendationTrackDto>())
-                    .Where(track => !libraryIdSet.Contains(NormalizeId(track.Id)))
                     .Select(track => NormalizeRecommendationTrack(track))
                     .Where(track => !string.IsNullOrWhiteSpace(track.Id))
                     .Where(track => !rejectedTrackIds.Contains(track.Id))
@@ -1366,7 +1368,6 @@ public sealed class LibraryRecommendationService
             shazamTracks = await BuildShazamRecommendationsAsync(
                 scope,
                 dayUtc,
-                libraryIdSet,
                 cancellationToken);
             shazamTracks = shazamTracks
                 .Where(track => !rejectedTrackIds.Contains(NormalizeId(track.Id)))
@@ -1392,6 +1393,7 @@ public sealed class LibraryRecommendationService
             OrderDeterministically(shazamTracks, dayUtc, "shazam"),
             RecommendationPoolLimit,
             dayUtc);
+        merged = await FilterRecommendationCandidatesThroughDedupeAsync(scope, merged, cancellationToken);
         if (merged.Count == 0)
         {
             reasonCodes.Add(EmptyPoolReason);
@@ -1413,6 +1415,49 @@ public sealed class LibraryRecommendationService
                 merged,
                 DateTimeOffset.UtcNow),
             reasonCodes.Distinct(StringComparer.Ordinal).ToList());
+    }
+
+    private async Task<List<RecommendationTrackDto>> FilterRecommendationCandidatesThroughDedupeAsync(
+        RecommendationScope scope,
+        IReadOnlyList<RecommendationTrackDto> candidates,
+        CancellationToken cancellationToken)
+    {
+        var accepted = new List<RecommendationTrackDto>(Math.Min(candidates.Count, RecommendationPoolLimit));
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var decision = await _dedupeService.CheckAsync(
+                BuildRecommendationDedupeRequest(scope, candidate),
+                cancellationToken);
+            if (!decision.Allowed)
+            {
+                continue;
+            }
+
+            accepted.Add(candidate with { TrackPosition = accepted.Count + 1 });
+            if (accepted.Count >= RecommendationPoolLimit)
+            {
+                break;
+            }
+        }
+
+        return accepted;
+    }
+
+    private static DownloadDedupeRequest BuildRecommendationDedupeRequest(
+        RecommendationScope scope,
+        RecommendationTrackDto track)
+    {
+        return new DownloadDedupeRequest
+        {
+            Isrc = track.Isrc,
+            DeezerTrackId = track.Id,
+            TrackTitle = track.Title,
+            TrackArtist = track.Artist.Name,
+            Album = track.Album.Title,
+            DurationMs = track.Duration > 0 ? track.Duration * 1000 : null,
+            DestinationFolderId = scope.FolderId
+        };
     }
 
     private async Task<RecommendationDetailDto?> TryLoadPersistedDailyPoolAsync(
@@ -1555,7 +1600,6 @@ public sealed class LibraryRecommendationService
     private async Task<List<RecommendationTrackDto>> BuildShazamRecommendationsAsync(
         RecommendationScope scope,
         DateOnly dayUtc,
-        HashSet<string> libraryIdSet,
         CancellationToken cancellationToken)
     {
         if (!IsShazamRecommendationAvailable())
@@ -1575,7 +1619,7 @@ public sealed class LibraryRecommendationService
             scope.LibraryId,
             scope.FolderId,
             cancellationToken);
-        return BuildRecommendationsFromShazamCache(orderedSeeds, cacheByTrackId, libraryIdSet, cancellationToken);
+        return BuildRecommendationsFromShazamCache(orderedSeeds, cacheByTrackId, cancellationToken);
     }
 
     private bool IsShazamRecommendationAvailable()
@@ -1644,7 +1688,6 @@ public sealed class LibraryRecommendationService
     private static List<RecommendationTrackDto> BuildRecommendationsFromShazamCache(
         IReadOnlyList<long> orderedSeeds,
         IReadOnlyDictionary<long, ShazamTrackCacheDto> cacheByTrackId,
-        HashSet<string> libraryIdSet,
         CancellationToken cancellationToken)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -1667,7 +1710,7 @@ public sealed class LibraryRecommendationService
 
             foreach (var relatedTrack in cache.RelatedTracks)
             {
-                TryAddShazamRelatedRecommendation(relatedTrack, libraryIdSet, seen, results);
+                TryAddShazamRelatedRecommendation(relatedTrack, seen, results);
                 if (results.Count >= maxResults)
                 {
                     break;
@@ -1715,14 +1758,12 @@ public sealed class LibraryRecommendationService
 
     private static void TryAddShazamRelatedRecommendation(
         RecommendationTrackDto track,
-        HashSet<string> libraryIdSet,
         HashSet<string> seen,
         List<RecommendationTrackDto> results)
     {
         var normalized = NormalizeRecommendationTrack(track);
         var deezerId = NormalizeId(normalized.Id);
         if (string.IsNullOrWhiteSpace(deezerId)
-            || libraryIdSet.Contains(deezerId)
             || !seen.Add(deezerId))
         {
             return;
