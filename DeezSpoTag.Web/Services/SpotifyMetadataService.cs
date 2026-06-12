@@ -2829,14 +2829,12 @@ public sealed class SpotifyMetadataService
         }
 
         var tracks = new List<SpotifyTrackSummary>();
-        foreach (var item in items.EnumerateArray())
+        var resolvedTracks = items
+            .EnumerateArray()
+            .Select(ResolveLibrespotAlbumTrackItem)
+            .Where(track => track.ValueKind == JsonValueKind.Object);
+        foreach (var track in resolvedTracks)
         {
-            var track = ResolveLibrespotAlbumTrackItem(item);
-            if (track.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
             var trackId = TryReadEntityId(track, TrackType);
             if (string.IsNullOrWhiteSpace(trackId))
             {
