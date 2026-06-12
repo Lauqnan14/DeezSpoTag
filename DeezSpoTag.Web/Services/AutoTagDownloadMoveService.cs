@@ -2510,6 +2510,7 @@ public sealed class AutoTagDownloadMoveService
         AddRootFromProperty(roots, rootPath, root, FilePathProperty);
         AddRootFromProperty(roots, rootPath, root, "albumPath");
         AddRootFromProperty(roots, rootPath, root, "extrasPath");
+        AddArtistArtworkFilesFromProperty(files, rootPath, root, "artistPath");
 
         if (TryGetPropertyIgnoreCase(root, FilesProperty, out var filesElement)
             && filesElement.ValueKind == JsonValueKind.Array)
@@ -2524,9 +2525,57 @@ public sealed class AutoTagDownloadMoveService
                 AddFileFromProperty(files, rootPath, fileElement, "path");
                 AddRootFromProperty(roots, rootPath, fileElement, "path");
                 AddRootFromProperty(roots, rootPath, fileElement, "albumPath");
+                AddArtistArtworkFilesFromProperty(files, rootPath, fileElement, "artistPath");
             }
         }
 
+    }
+
+    private static void AddArtistArtworkFilesFromProperty(
+        HashSet<string> files,
+        string rootPath,
+        JsonElement source,
+        string propertyName)
+    {
+        AddArtistArtworkFilesFromRawPath(files, rootPath, ReadStringProperty(source, propertyName));
+    }
+
+    private static void AddArtistArtworkFilesFromRawPath(
+        HashSet<string> files,
+        string rootPath,
+        string? artistPath)
+    {
+        if (string.IsNullOrWhiteSpace(artistPath) || !IsUnderRoot(rootPath, artistPath))
+        {
+            return;
+        }
+
+        var artistIo = DownloadPathResolver.ResolveIoPath(artistPath);
+        if (string.IsNullOrWhiteSpace(artistIo) || !Directory.Exists(artistIo))
+        {
+            return;
+        }
+
+        try
+        {
+            foreach (var artworkPath in Directory.EnumerateFiles(artistIo, "*", SearchOption.TopDirectoryOnly))
+            {
+                if (!DirectoryArtworkSidecarExtensions.Contains(Path.GetExtension(artworkPath)))
+                {
+                    continue;
+                }
+
+                files.Add(DownloadPathResolver.NormalizeDisplayPath(artworkPath));
+            }
+        }
+        catch (IOException)
+        {
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
     }
 
     private static void AddPathsToPayloadMaps(

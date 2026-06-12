@@ -60,6 +60,52 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
     }
 
     [Fact]
+    public void CollectPayloadPaths_AddsArtistArtworkFilesWithoutAddingArtistRoot()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-artist-art-map-{Guid.NewGuid():N}");
+        var rootPath = Path.Combine(tempRoot, "Downs");
+        var artistPath = Path.Combine(rootPath, "Artist");
+        var albumPath = Path.Combine(artistPath, "Album");
+        var sourcePath = Path.Combine(albumPath, "01 - Demo.flac");
+        var artistArtworkPath = Path.Combine(artistPath, "Artist.jpg");
+        Directory.CreateDirectory(albumPath);
+        File.WriteAllText(sourcePath, "audio");
+        File.WriteAllText(artistArtworkPath, "artist-art");
+
+        try
+        {
+            using var document = JsonDocument.Parse(
+                $$"""
+                  {
+                    "filePath": {{JsonSerializer.Serialize(sourcePath)}},
+                    "files": [
+                      {
+                        "path": {{JsonSerializer.Serialize(sourcePath)}},
+                        "albumPath": {{JsonSerializer.Serialize(albumPath)}},
+                        "artistPath": {{JsonSerializer.Serialize(artistPath)}}
+                      }
+                    ]
+                  }
+                  """);
+
+            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var method = GetPrivateStaticMethod("CollectPayloadPaths");
+
+            method.Invoke(null, new object[] { rootPath, document.RootElement, files, roots });
+
+            Assert.Contains(sourcePath, files);
+            Assert.Contains(DownloadPathResolver.NormalizeDisplayPath(artistArtworkPath), files);
+            Assert.Contains(albumPath, roots);
+            Assert.DoesNotContain(artistPath, roots);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
     public void ResolveRoutingFolderId_MatchesYearRule_BeforeDefault()
     {
         var metadata = CreateRoutingMetadata(
