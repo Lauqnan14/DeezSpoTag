@@ -61,7 +61,19 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
             {
                 break;
             }
-            catch (Exception ex)
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
+            }
+            catch (InvalidOperationException ex)
             {
                 _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
             }

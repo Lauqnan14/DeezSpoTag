@@ -139,11 +139,11 @@ public sealed class AppleArtistBiographyService
             return false;
         }
 
-        foreach (var item in data.EnumerateArray())
+        foreach (var attrs in data.EnumerateArray()
+                     .Select(static item => item.TryGetProperty(AttributesField, out var attributes) && attributes.ValueKind == JsonValueKind.Object
+                         ? attributes
+                         : default))
         {
-            var attrs = item.TryGetProperty(AttributesField, out var attributes) && attributes.ValueKind == JsonValueKind.Object
-                ? attributes
-                : default;
             if (attrs.ValueKind != JsonValueKind.Object)
             {
                 continue;
@@ -265,9 +265,11 @@ public sealed class AppleArtistBiographyService
 
     private static string? ResolveAppleArtistPageBiography(string html, string id, string artistName)
     {
-        foreach (var json in EnumerateJsonLdScripts(html))
+        foreach (var decoded in EnumerateJsonLdScripts(html)
+                     .Select(WebUtility.HtmlDecode)
+                     .Where(static decoded => !string.IsNullOrWhiteSpace(decoded))
+                     .Select(static decoded => decoded!))
         {
-            var decoded = WebUtility.HtmlDecode(json);
             try
             {
                 using var doc = JsonDocument.Parse(decoded);

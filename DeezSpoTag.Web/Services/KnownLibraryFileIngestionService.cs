@@ -206,7 +206,7 @@ public sealed class KnownLibraryFileIngestionService
 
     private void TriggerWatchlistAfterLibraryUpdate()
     {
-        if (_settingsService.LoadSettings().WatchEnabled != true)
+        if (!_settingsService.LoadSettings().WatchEnabled)
         {
             return;
         }

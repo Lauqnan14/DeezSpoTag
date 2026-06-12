@@ -3170,16 +3170,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 return;
             }
 
-            foreach (var finalDestinationEntry in root.EnumerateObject())
+            foreach (var finalPath in root.EnumerateObject()
+                         .Where(static finalDestinationEntry => finalDestinationEntry.Value.ValueKind == JsonValueKind.String)
+                         .Select(static finalDestinationEntry => finalDestinationEntry.Value.GetString())
+                         .Where(static finalPath => !string.IsNullOrWhiteSpace(finalPath))
+                         .Select(static finalPath => finalPath!))
             {
-                if (finalDestinationEntry.Value.ValueKind == JsonValueKind.String)
-                {
-                    var finalPath = finalDestinationEntry.Value.GetString();
-                    if (!string.IsNullOrWhiteSpace(finalPath))
-                    {
-                        paths.Add(finalPath);
-                    }
-                }
+                paths.Add(finalPath);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

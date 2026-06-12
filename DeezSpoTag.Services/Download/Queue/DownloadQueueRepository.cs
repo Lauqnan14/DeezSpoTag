@@ -2451,12 +2451,10 @@ LIMIT 1;";
                 return;
             }
 
-            foreach (var property in document.RootElement.EnumerateObject())
+            foreach (var property in document.RootElement.EnumerateObject()
+                         .Where(static property => property.Value.ValueKind == JsonValueKind.String))
             {
-                if (property.Value.ValueKind == JsonValueKind.String)
-                {
-                    AddPath(property.Value.GetString(), target);
-                }
+                AddPath(property.Value.GetString(), target);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

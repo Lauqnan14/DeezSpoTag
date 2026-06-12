@@ -404,15 +404,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             SetCurrentAnalysis(track, summary);
             await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, run.Token);
             var result = await AnalyzeTrackAsync(track, null, run.Token);
-            if (result.LastfmTags is null)
+            if (result.LastfmTags is null && summary is not null)
             {
-                if (summary is not null)
+                var tags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, run.Token);
+                if (tags is not null)
                 {
-                    var tags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, run.Token);
-                    if (tags is not null)
-                    {
-                        result = result with { LastfmTags = tags };
-                    }
+                    result = result with { LastfmTags = tags };
                 }
             }
 

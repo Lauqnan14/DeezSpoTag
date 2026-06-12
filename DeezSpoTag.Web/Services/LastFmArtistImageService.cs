@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Net;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Download;
 
 namespace DeezSpoTag.Web.Services;
@@ -89,7 +90,7 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Last.fm artist image lookup failed for {ArtistName}", normalizedArtist);
+                _logger.LogDebug(ex, "Last.fm artist image lookup failed for {ArtistName}", LogSanitizer.OneLine(normalizedArtist));
             }
             return Array.Empty<LastFmArtistImageCandidate>();
         }

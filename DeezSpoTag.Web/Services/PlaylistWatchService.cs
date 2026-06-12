@@ -558,24 +558,12 @@ public sealed class PlaylistWatchService
                 nextAttemptUtc: null,
                 consecutiveFailures: 0,
                 cancellationToken);
-            if (forceMediaServerSync)
-            {
-                syncResult = await SyncPlaylistAsync(
-                    currentPlaylist,
-                    preference,
-                    candidates,
-                    force: true,
-                    cancellationToken);
-            }
-            else
-            {
-                syncResult = await SyncPlaylistAsync(
-                    currentPlaylist,
-                    preference,
-                    candidates,
-                    force: false,
-                    cancellationToken);
-            }
+            syncResult = await SyncPlaylistAsync(
+                currentPlaylist,
+                preference,
+                candidates,
+                force: forceMediaServerSync,
+                cancellationToken);
             await AddPlaylistWatchHistoryStageAsync(
                 source,
                 sourceId,

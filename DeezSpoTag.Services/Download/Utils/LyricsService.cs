@@ -953,13 +953,13 @@ public class LyricsService
             return null;
         }
 
-        foreach (var response in body.MacroCalls.Values)
+        foreach (var track in body.MacroCalls.Values
+                     .Select(static response => response?.Message?.Body?.Track)
+                     .Where(static track => track != null
+                         && (!string.IsNullOrWhiteSpace(track.TrackName) || !string.IsNullOrWhiteSpace(track.ArtistName)))
+                     .Select(static track => track!))
         {
-            var track = response?.Message?.Body?.Track;
-            if (track != null && (!string.IsNullOrWhiteSpace(track.TrackName) || !string.IsNullOrWhiteSpace(track.ArtistName)))
-            {
-                return track;
-            }
+            return track;
         }
 
         return null;

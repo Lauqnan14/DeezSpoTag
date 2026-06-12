@@ -289,15 +289,18 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
 
         var schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
-        if (IsStaleActivePlaylistState(schedulerState, settings))
+        var staleSchedulerState = IsStaleActivePlaylistState(schedulerState, settings)
+            ? schedulerState
+            : null;
+        if (staleSchedulerState != null)
         {
             _logger.LogWarning(
                 "Watchlist active playlist state was stale and will be released. source={Source}, sourceId={SourceId}, activeStartedUtc={ActiveStartedUtc}, lastProgressUtc={LastProgressUtc}, zeroQueueStreak={ZeroQueueStreak}",
-                schedulerState?.ActiveSource,
-                schedulerState?.ActiveSourceId,
-                schedulerState?.ActiveStartedUtc,
-                schedulerState?.LastProgressUtc,
-                schedulerState?.ZeroQueueStreak);
+                staleSchedulerState.ActiveSource,
+                staleSchedulerState.ActiveSourceId,
+                staleSchedulerState.ActiveStartedUtc,
+                staleSchedulerState.LastProgressUtc,
+                staleSchedulerState.ZeroQueueStreak);
             await SaveSchedulerStateAsync(
                 repository,
                 activeSource: null,

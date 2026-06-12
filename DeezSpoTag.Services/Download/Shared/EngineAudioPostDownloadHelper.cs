@@ -1152,7 +1152,6 @@ public static partial class EngineAudioPostDownloadHelper
         var audioTagger = request.Scope.GetRequiredService<AudioTagger>();
         var lyricsService = request.Scope.GetRequiredService<LyricsService>();
         var spotifyArtworkResolver = request.Scope.GetService<ISpotifyArtworkResolver>();
-        var lastFmArtistImageResolver = request.Scope.GetService<ILastFmArtistImageResolver>();
         var spotifyIdResolver = request.Scope.GetService<ISpotifyIdResolver>();
         var httpClientFactory = request.Scope.GetService<IHttpClientFactory>();
         var appleCatalog = request.Scope.GetService<AppleMusicCatalogService>();

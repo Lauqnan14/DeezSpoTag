@@ -577,16 +577,14 @@ public sealed class PlaylistSyncService
             cancellationToken);
         var selected = new List<SyncTrackSummary>(availableTrackRows.Count);
         var selectedSourceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in availableTrackRows)
+        foreach (var row in availableTrackRows
+                     .Where(row => mapped.TryGetValue(row.LocalTrackId, out var ratingKey)
+                         && !string.IsNullOrWhiteSpace(ratingKey)))
         {
-            if (mapped.TryGetValue(row.LocalTrackId, out var ratingKey)
-                && !string.IsNullOrWhiteSpace(ratingKey))
+            selected.Add(row.Track);
+            if (!string.IsNullOrWhiteSpace(row.Track.SourceTrackId))
             {
-                selected.Add(row.Track);
-                if (!string.IsNullOrWhiteSpace(row.Track.SourceTrackId))
-                {
-                    selectedSourceIds.Add(row.Track.SourceTrackId);
-                }
+                selectedSourceIds.Add(row.Track.SourceTrackId);
             }
         }
 

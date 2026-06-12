@@ -260,8 +260,12 @@ public sealed class DownloadDedupeService
             }
         }
 
-        foreach (var artist in BuildMetadataArtists(request))
+        var metadataArtists = BuildMetadataArtists(request)
+            .Where(static artist => !string.IsNullOrWhiteSpace(artist))
+            .ToArray();
+        for (var index = 0; index < metadataArtists.Length; index++)
         {
+            var artist = metadataArtists[index];
             if (await _libraryRepository.ExistsTrackByMetadataInFolderAsync(
                     request.TrackTitle,
                     artist,
