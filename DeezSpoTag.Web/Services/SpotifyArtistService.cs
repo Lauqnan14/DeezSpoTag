@@ -13,7 +13,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class SpotifyArtistService
 {
-    private const int ArtistCacheSchemaVersion = 9;
+    private const int ArtistCacheSchemaVersion = 10;
     private const string SpotifySource = "spotify";
     private const string AlbumType = "album";
     private const string SingleGroupType = "single";
@@ -695,6 +695,7 @@ public sealed class SpotifyArtistService
             {
                 Isrc = track.Isrc,
                 AlbumId = track.AlbumId,
+                ArtistName = track.Artists,
                 Explicit = track.Explicit,
                 HasLyrics = track.HasLyrics
             })
@@ -3697,6 +3698,7 @@ public sealed record SpotifyTrack(
 {
     public string? Isrc { get; init; }
     public string? AlbumId { get; init; }
+    public string? ArtistName { get; init; }
     public bool? Explicit { get; init; }
     public bool? HasLyrics { get; init; }
 }

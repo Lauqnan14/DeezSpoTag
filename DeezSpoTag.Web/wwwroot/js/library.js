@@ -1849,7 +1849,8 @@ function mapTopTracksFromArtistPage(topTracks) {
                 albumGroup,
                 releaseType: albumType ? albumType.toUpperCase() : '',
                 albumTrackTotal: null,
-                albumId: (album.id || '').toString().trim()
+                albumId: (album.id || '').toString().trim(),
+                artistName: (track.artist?.name || track.artistName || track.artist || '').toString().trim()
             };
         })
         .filter(track => track.id || track.name);
@@ -4870,7 +4871,10 @@ async function markSpotifyTopTracksInLibrary(tracks, artistProfile = null) {
     const requestId = ++spotifyTopTrackMatchRequestId;
 
     try {
-        const localTrackIndex = await ensureLocalTopSongTrackIndexForArtistAsync(artistId);
+        const [localTrackIndex, wholeLibraryMatches] = await Promise.all([
+            ensureLocalTopSongTrackIndexForArtistAsync(artistId),
+            fetchSpotifyTopSongLibraryMatchesAsync(safeTracks)
+        ]);
 
         if (requestId !== spotifyTopTrackMatchRequestId) {
             return;
@@ -4883,7 +4887,7 @@ async function markSpotifyTopTracksInLibrary(tracks, artistProfile = null) {
                 return;
             }
 
-            const inLibrary = isSpotifyTopSongInLocalArtistIndex(track, localTrackIndex);
+            const inLibrary = wholeLibraryMatches.has(trackId) || isSpotifyTopSongInLocalArtistIndex(track, localTrackIndex);
             row.classList.toggle('in-library', inLibrary);
             const badge = row.querySelector('.top-song-item__library-badge');
             if (badge) {
@@ -4893,6 +4897,66 @@ async function markSpotifyTopTracksInLibrary(tracks, artistProfile = null) {
     } catch (error) {
         console.warn('Failed to mark top songs in library.', error);
     }
+}
+
+async function fetchSpotifyTopSongLibraryMatchesAsync(tracks) {
+    const requests = Array.isArray(tracks)
+        ? tracks
+            .map((track, index) => buildSpotifyTopSongLibraryExistenceRequest(track, index))
+            .filter(Boolean)
+        : [];
+    if (requests.length === 0) {
+        return new Set();
+    }
+
+    try {
+        const response = await fetchJson('/api/library/exists', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requests)
+        });
+        const matches = new Set();
+        if (Array.isArray(response)) {
+            response.forEach(item => {
+                if (item?.exists && item?.id) {
+                    matches.add(String(item.id));
+                }
+            });
+        }
+        return matches;
+    } catch (error) {
+        console.warn('Failed to check Spotify top songs against library.', error);
+        return new Set();
+    }
+}
+
+function buildSpotifyTopSongLibraryExistenceRequest(track, index) {
+    if (!track || typeof track !== 'object') {
+        return null;
+    }
+
+    const id = String(track.id || `top-track-${index}`);
+    const trackTitle = String(track.name || track.title || '').trim();
+    const artistName = String(
+        track.artistName
+        || track.artist?.name
+        || track.artist
+        || ''
+    ).trim();
+    if (!trackTitle || !artistName) {
+        return null;
+    }
+
+    const durationMs = Number(track.durationMs || track.duration || 0);
+    return {
+        id,
+        isrc: String(track.isrc || '').trim() || null,
+        trackTitle,
+        artistName,
+        durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.trunc(durationMs) : null
+    };
 }
 
 async function ensureLocalTopSongTrackIndexForArtistAsync(artistId) {

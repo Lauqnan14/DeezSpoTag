@@ -69,10 +69,11 @@ public static class SpotifyArtistPagePayloadMapper
                 release_date = track.ReleaseDate ?? string.Empty,
                 explicit_lyrics = track.Explicit ?? false,
                 has_lyrics = track.HasLyrics ?? false,
+                artistName = track.ArtistName ?? string.Empty,
                 artist = new
                 {
                     id = profile.Id,
-                    name = profile.Name,
+                    name = string.IsNullOrWhiteSpace(track.ArtistName) ? profile.Name : track.ArtistName,
                     source = SpotifySource
                 },
                 album = new
