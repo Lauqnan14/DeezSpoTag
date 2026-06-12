@@ -418,35 +418,7 @@ public sealed class TrackAvailabilityService
         string targetArtist,
         string targetAlbum)
     {
-        var score = 0;
-        var title = NormalizeForMatch(item.Title);
-        var artist = NormalizeForMatch(item.Artist);
-        var album = NormalizeForMatch(item.Album);
-
-        if (!string.IsNullOrWhiteSpace(targetTitle) && title == targetTitle)
-        {
-            score += 5;
-        }
-        else if (!string.IsNullOrWhiteSpace(targetTitle) && ContainsEitherWay(title, targetTitle))
-        {
-            score += 2;
-        }
-
-        if (!string.IsNullOrWhiteSpace(targetArtist) && artist == targetArtist)
-        {
-            score += 4;
-        }
-        else if (!string.IsNullOrWhiteSpace(targetArtist) && ContainsEitherWay(artist, targetArtist))
-        {
-            score += 2;
-        }
-
-        if (!string.IsNullOrWhiteSpace(targetAlbum) && album == targetAlbum)
-        {
-            score += 2;
-        }
-
-        return score;
+        return ScoreCandidateParts(item.Title, item.Artist, item.Album, targetTitle, targetArtist, targetAlbum);
     }
 
     private static bool IsFabricatedAppleIdentity(
@@ -474,6 +446,34 @@ public sealed class TrackAvailabilityService
         var artist = NormalizeForMatch(subtitleParts.ElementAtOrDefault(0));
         var album = NormalizeForMatch(subtitleParts.ElementAtOrDefault(1));
 
+        return ScoreNormalizedCandidateParts(title, artist, album, targetTitle, targetArtist, targetAlbum);
+    }
+
+    private static int ScoreCandidateParts(
+        string? title,
+        string? artist,
+        string? album,
+        string targetTitle,
+        string targetArtist,
+        string targetAlbum)
+    {
+        return ScoreNormalizedCandidateParts(
+            NormalizeForMatch(title),
+            NormalizeForMatch(artist),
+            NormalizeForMatch(album),
+            targetTitle,
+            targetArtist,
+            targetAlbum);
+    }
+
+    private static int ScoreNormalizedCandidateParts(
+        string title,
+        string artist,
+        string album,
+        string targetTitle,
+        string targetArtist,
+        string targetAlbum)
+    {
         var score = 0;
         if (!string.IsNullOrWhiteSpace(targetTitle) && title == targetTitle)
         {

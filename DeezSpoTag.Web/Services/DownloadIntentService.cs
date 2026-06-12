@@ -1714,38 +1714,16 @@ public sealed class DownloadIntentService
     {
         if (string.IsNullOrWhiteSpace(intent.PreferredEngine))
         {
-            intent.PreferredEngine = ResolveManualPreferredEngine(settings);
+            intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);
         }
 
         if (string.IsNullOrWhiteSpace(intent.Quality))
         {
-            intent.Quality = ResolveManualPreferredQuality(settings, intent.PreferredEngine);
+            intent.Quality = ManualDownloadPreferenceResolver.ResolvePreferredQuality(
+                settings,
+                intent.PreferredEngine,
+                DownloadSourceOrder.DeezerFlac);
         }
-    }
-
-    private static string ResolveManualPreferredEngine(DeezSpoTagSettings settings)
-    {
-        if (settings.DownloadEngineOrder?.Enabled == true)
-        {
-            return AutoService;
-        }
-
-        var service = (settings.Service ?? string.Empty).Trim().ToLowerInvariant();
-        return service is AutoService or AmazonPlatform or ApplePlatform or DeezerPlatform or QobuzPlatform or TidalPlatform
-            ? service
-            : AutoService;
-    }
-
-    private static string ResolveManualPreferredQuality(DeezSpoTagSettings settings, string preferredEngine)
-    {
-        return preferredEngine switch
-        {
-            DeezerPlatform => DownloadSourceOrder.ResolveDeezerBitrate(settings, DownloadSourceOrder.DeezerFlac).ToString(),
-            QobuzPlatform => string.IsNullOrWhiteSpace(settings.QobuzQuality) ? string.Empty : settings.QobuzQuality,
-            TidalPlatform => string.IsNullOrWhiteSpace(settings.TidalQuality) ? string.Empty : settings.TidalQuality,
-            ApplePlatform => settings.AppleMusic?.PreferredAudioProfile ?? string.Empty,
-            _ => string.Empty
-        };
     }
 
     private static void NormalizeEnqueueSettings(DeezSpoTagSettings settings)

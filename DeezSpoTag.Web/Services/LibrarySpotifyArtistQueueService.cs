@@ -71,24 +71,14 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             return;
         }
 
-        var enqueued = 0;
-        foreach (var artist in artists)
-        {
-            if (string.IsNullOrWhiteSpace(artist.Name))
-            {
-                continue;
-            }
-
-            if (await ShouldSkipAsync(artist.Id, cancellationToken))
-            {
-                continue;
-            }
-
-            if (TryEnqueue(new QueueItem(artist.Id, artist.Name, 0)))
-            {
-                enqueued++;
-            }
-        }
+        var enqueued = await PersistentArtistQueueStore.EnqueueArtistsAsync(
+            artists,
+            static artist => artist.Id,
+            static artist => artist.Name,
+            async (artist, token) => await ShouldSkipAsync(artist.Id, token),
+            static (artistId, artistName) => new QueueItem(artistId, artistName, 0),
+            TryEnqueue,
+            cancellationToken);
 
         if (enqueued > 0)
         {
@@ -101,6 +91,12 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
 
     public override Task StartAsync(CancellationToken cancellationToken)
     {
+        RestorePersistentQueue();
+        return base.StartAsync(cancellationToken);
+    }
+
+    private void RestorePersistentQueue()
+    {
         PersistentArtistQueueStore.RestoreAndReplaySnapshot(
             _channel,
             _queueItems,
@@ -109,8 +105,6 @@ public sealed class LibrarySpotifyArtistQueueService : BackgroundService
             static item => item.ArtistId,
             static item => !string.IsNullOrWhiteSpace(item.ArtistName),
             _logger);
-
-        return base.StartAsync(cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

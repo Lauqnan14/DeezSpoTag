@@ -249,23 +249,7 @@
                 return null;
             }
 
-            const payload = parsed.payload;
-            if (!payload.matched) {
-                return null;
-            }
-
-            const payloadTrackId = normalizeText(payload?.track?.id || payload?.recognition?.trackId);
-            if (trackId && payloadTrackId && payloadTrackId !== trackId) {
-                return null;
-            }
-
-            const payloadQuery = normalizeText(payload?.query);
-            const effectiveQuery = normalizeText(query || [title, artist].filter(Boolean).join(' '));
-            if (effectiveQuery && payloadQuery && normalizeLoose(payloadQuery) !== normalizeLoose(effectiveQuery)) {
-                return null;
-            }
-
-            return payload;
+            return validateShazamPayload(parsed.payload)?.payload || null;
         } catch {
             return null;
         }
@@ -291,6 +275,24 @@
     };
 
     const applyLogoPayload = (payload) => {
+        const validation = validateShazamPayload(payload);
+        if (!validation) {
+            return null;
+        }
+
+        return {
+            match: payload.track || normalizeRecognitionCard(payload.recognition),
+            effectiveTrackId: validation.trackId,
+            similar: Array.isArray(payload.similar)
+                ? payload.similar
+                : Array.isArray(payload.related) ? payload.related : [],
+            searched: Array.isArray(payload.searchResults)
+                ? payload.searchResults
+                : []
+        };
+    };
+
+    const validateShazamPayload = (payload) => {
         if (!payload?.matched) {
             return null;
         }
@@ -306,16 +308,7 @@
             return null;
         }
 
-        return {
-            match: payload.track || normalizeRecognitionCard(payload.recognition),
-            effectiveTrackId: payloadTrackId,
-            similar: Array.isArray(payload.similar)
-                ? payload.similar
-                : Array.isArray(payload.related) ? payload.related : [],
-            searched: Array.isArray(payload.searchResults)
-                ? payload.searchResults
-                : []
-        };
+        return { payload, trackId: payloadTrackId };
     };
 
     const renderPayload = (match, similar, searched) => {

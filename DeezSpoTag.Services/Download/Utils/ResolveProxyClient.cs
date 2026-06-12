@@ -193,7 +193,7 @@ public sealed partial class ResolveProxyClient
             SourceType = "song"
         };
 
-        return HasAnyResolvedLink(result) ? result : null;
+        return result.HasAnyResolvedLink() ? result : null;
     }
 
     private static bool TryReadSuccess(JsonElement root)
@@ -305,19 +305,6 @@ public sealed partial class ResolveProxyClient
         }
 
         return null;
-    }
-
-    private static bool HasAnyResolvedLink(SongLinkResult result)
-    {
-        return !string.IsNullOrWhiteSpace(result.DeezerId)
-               || !string.IsNullOrWhiteSpace(result.DeezerUrl)
-               || !string.IsNullOrWhiteSpace(result.SpotifyId)
-               || !string.IsNullOrWhiteSpace(result.SpotifyUrl)
-               || !string.IsNullOrWhiteSpace(result.TidalUrl)
-               || !string.IsNullOrWhiteSpace(result.QobuzUrl)
-               || !string.IsNullOrWhiteSpace(result.AppleMusicUrl)
-               || !string.IsNullOrWhiteSpace(result.AmazonUrl)
-               || !string.IsNullOrWhiteSpace(result.YouTubeUrl);
     }
 
     private static readonly Regex s_spotifyTrackRegex = new(

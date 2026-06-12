@@ -4,6 +4,10 @@ namespace DeezSpoTag.Web.Services;
 
 public static class KnownLibraryFilePathSet
 {
+    public sealed record IngestedFilePathComparison(
+        IReadOnlyList<string> IngestedPaths,
+        IReadOnlyList<string> MissingPaths);
+
     public static Dictionary<long, List<string>> NormalizeByFolder(
         IReadOnlyDictionary<long, List<string>> filesByFolder)
     {
@@ -39,6 +43,22 @@ public static class KnownLibraryFilePathSet
 
         var extension = Path.GetExtension(path);
         return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
+    }
+
+    public static IngestedFilePathComparison CompareIngestedPaths(
+        IReadOnlyList<string> existingAudioFiles,
+        IReadOnlyDictionary<string, long> ingested)
+    {
+        var ingestedPaths = existingAudioFiles
+            .Where(path => ingested.ContainsKey(path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var missingPaths = existingAudioFiles
+            .Where(path => !ingested.ContainsKey(path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new IngestedFilePathComparison(ingestedPaths, missingPaths);
     }
 
     private static string? NormalizeFilePath(string? path)

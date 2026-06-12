@@ -553,14 +553,9 @@ public sealed class LibraryScanRunner
         }
 
         var ingested = await _repository.GetTrackIdsByFilePathsAsync(existingAudioFiles, cancellationToken);
-        var ingestedPaths = existingAudioFiles
-            .Where(path => ingested.ContainsKey(path))
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var missingPaths = existingAudioFiles
-            .Where(path => !ingested.ContainsKey(path))
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var comparison = KnownLibraryFilePathSet.CompareIngestedPaths(existingAudioFiles, ingested);
+        var ingestedPaths = comparison.IngestedPaths;
+        var missingPaths = comparison.MissingPaths;
 
         if (missingPaths.Count > 0)
         {

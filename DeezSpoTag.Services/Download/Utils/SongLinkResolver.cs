@@ -333,7 +333,7 @@ public sealed class SongLinkResolver
         metadata = await ResolveNativeDeezerLinkAsync(result, metadata, cancellationToken);
         await ResolveNativePlatformLinksAsync(result, metadata, cancellationToken);
 
-        return HasAnyResolvedLink(result) ? result : null;
+        return result.HasAnyResolvedLink() ? result : null;
     }
 
     private static void ApplyNativeSourceMetadata(SongLinkResult result, TrackMetadata metadata)
@@ -422,19 +422,6 @@ public sealed class SongLinkResolver
         }
     }
 
-    private static bool HasAnyResolvedLink(SongLinkResult result)
-    {
-        return !string.IsNullOrWhiteSpace(result.DeezerId)
-               || !string.IsNullOrWhiteSpace(result.DeezerUrl)
-               || !string.IsNullOrWhiteSpace(result.SpotifyId)
-               || !string.IsNullOrWhiteSpace(result.SpotifyUrl)
-               || !string.IsNullOrWhiteSpace(result.TidalUrl)
-               || !string.IsNullOrWhiteSpace(result.QobuzUrl)
-               || !string.IsNullOrWhiteSpace(result.AppleMusicUrl)
-               || !string.IsNullOrWhiteSpace(result.AmazonUrl)
-               || !string.IsNullOrWhiteSpace(result.YouTubeUrl);
-    }
-
     private async Task<SongLinkResult?> ResolveExternalSongLinkAsync(
         string normalizedUrl,
         string spotifyTrackId,
@@ -479,7 +466,7 @@ public sealed class SongLinkResolver
                 AmazonUrl = amazonUrl
             };
 
-            return HasAnyResolvedLink(result) ? result : null;
+            return result.HasAnyResolvedLink() ? result : null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1971,4 +1958,17 @@ public sealed class SongLinkResult
     public string? SourceType { get; set; }
     public string? SourceTitle { get; set; }
     public string? SourceArtist { get; set; }
+
+    public bool HasAnyResolvedLink()
+    {
+        return !string.IsNullOrWhiteSpace(DeezerId)
+               || !string.IsNullOrWhiteSpace(DeezerUrl)
+               || !string.IsNullOrWhiteSpace(SpotifyId)
+               || !string.IsNullOrWhiteSpace(SpotifyUrl)
+               || !string.IsNullOrWhiteSpace(TidalUrl)
+               || !string.IsNullOrWhiteSpace(QobuzUrl)
+               || !string.IsNullOrWhiteSpace(AppleMusicUrl)
+               || !string.IsNullOrWhiteSpace(AmazonUrl)
+               || !string.IsNullOrWhiteSpace(YouTubeUrl);
+    }
 }

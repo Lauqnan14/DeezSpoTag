@@ -5,6 +5,39 @@ namespace DeezSpoTag.Web.Services;
 
 internal static class PersistentArtistQueueStore
 {
+    public static async Task<int> EnqueueArtistsAsync<TArtist, TItem>(
+        IEnumerable<TArtist> artists,
+        Func<TArtist, long> artistIdSelector,
+        Func<TArtist, string?> artistNameSelector,
+        Func<TArtist, CancellationToken, ValueTask<bool>> shouldSkipAsync,
+        Func<long, string, TItem> itemFactory,
+        Func<TItem, bool> tryEnqueue,
+        CancellationToken cancellationToken)
+    {
+        var enqueued = 0;
+        foreach (var artist in artists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var artistName = artistNameSelector(artist);
+            if (string.IsNullOrWhiteSpace(artistName))
+            {
+                continue;
+            }
+
+            if (await shouldSkipAsync(artist, cancellationToken))
+            {
+                continue;
+            }
+
+            if (tryEnqueue(itemFactory(artistIdSelector(artist), artistName)))
+            {
+                enqueued++;
+            }
+        }
+
+        return enqueued;
+    }
+
     public static bool TryEnqueue<TItem>(
         TItem item,
         Channel<TItem> channel,

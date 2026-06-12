@@ -7343,19 +7343,7 @@ async function saveAnalysisEnabled(enabled) {
     }
     const payload = buildAnalysisPayload(true, enabled);
     try {
-        const response = await activityFetch('/api/library/analysis/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
-        analysisSettingsState.enabled = payload.enabled;
-        analysisSettingsState.batchSize = payload.batchSize;
-        analysisSettingsState.intervalMinutes = payload.intervalMinutes;
-        analysisSettingsState.useLibraryOrder = payload.useLibraryOrder;
-        analysisSettingsState.libraryOrder = payload.libraryOrder;
+        await persistAnalysisSettings(payload);
         updateAnalysisStatusPill();
         notifyActivity(`Vibe analysis ${payload.enabled ? 'enabled' : 'disabled'}.`);
         return true;
@@ -7375,19 +7363,7 @@ async function saveAnalysisSettings(silentSuccess) {
     }
     const payload = buildAnalysisPayload(false);
     try {
-        const response = await activityFetch('/api/library/analysis/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
-        analysisSettingsState.enabled = payload.enabled;
-        analysisSettingsState.batchSize = payload.batchSize;
-        analysisSettingsState.intervalMinutes = payload.intervalMinutes;
-        analysisSettingsState.useLibraryOrder = payload.useLibraryOrder;
-        analysisSettingsState.libraryOrder = payload.libraryOrder;
+        await persistAnalysisSettings(payload);
         if (!silentSuccess) {
             notifyActivity(`Vibe analysis ${payload.enabled ? 'enabled' : 'disabled'}.`);
         }
@@ -7396,6 +7372,22 @@ async function saveAnalysisSettings(silentSuccess) {
         notifyActivity(`Failed to save analysis settings: ${error?.message || error}`, 'error');
         return false;
     }
+}
+
+async function persistAnalysisSettings(payload) {
+    const response = await activityFetch('/api/library/analysis/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+    analysisSettingsState.enabled = payload.enabled;
+    analysisSettingsState.batchSize = payload.batchSize;
+    analysisSettingsState.intervalMinutes = payload.intervalMinutes;
+    analysisSettingsState.useLibraryOrder = payload.useLibraryOrder;
+    analysisSettingsState.libraryOrder = payload.libraryOrder;
 }
 
 	let libraryLogsRefreshTimer = null;

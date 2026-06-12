@@ -109,9 +109,7 @@ public sealed class BoomplayApiController : ControllerBase
 
     private static object MapSearchTrack(BoomplayTrackMetadata track, int index)
     {
-        var trackUrl = !string.IsNullOrWhiteSpace(track.Url)
-            ? track.Url
-            : $"https://www.boomplay.com/songs/{track.Id}";
+        var trackUrl = ResolveTrackUrl(track);
         var genres = track.Genres
             .Where(static genre => !string.IsNullOrWhiteSpace(genre))
             .Select(static genre => genre.Trim())
@@ -122,19 +120,14 @@ public sealed class BoomplayApiController : ControllerBase
         {
             id = track.Id,
             boomplayId = track.Id,
-            title = WebUtility.HtmlDecode(track.Title ?? string.Empty).Trim(),
+            title = DecodeBoomplayText(track.Title),
             duration = track.DurationMs > 0 ? track.DurationMs / 1000 : 0,
             durationMs = track.DurationMs > 0 ? track.DurationMs : 0,
             isrc = track.Isrc,
             track_position = index + 1,
-            artist = new { id = string.Empty, name = WebUtility.HtmlDecode(track.Artist ?? string.Empty).Trim() },
-            albumArtist = WebUtility.HtmlDecode(track.AlbumArtist ?? string.Empty).Trim(),
-            album = new
-            {
-                id = string.Empty,
-                title = WebUtility.HtmlDecode(track.Album ?? string.Empty).Trim(),
-                cover_medium = WebUtility.HtmlDecode(track.CoverUrl ?? string.Empty).Trim()
-            },
+            artist = MapTrackArtist(track),
+            albumArtist = DecodeBoomplayText(track.AlbumArtist),
+            album = MapTrackAlbum(track),
             genres,
             genreSource = GetGenreSource(track, genres),
             releaseDate = track.ReleaseDate ?? string.Empty,
@@ -159,6 +152,25 @@ public sealed class BoomplayApiController : ControllerBase
 
         return genres.Count > 0 ? "html" : "none";
     }
+
+    private static string ResolveTrackUrl(BoomplayTrackMetadata track)
+        => !string.IsNullOrWhiteSpace(track.Url)
+            ? track.Url
+            : $"https://www.boomplay.com/songs/{track.Id}";
+
+    private static string DecodeBoomplayText(string? value)
+        => WebUtility.HtmlDecode(value ?? string.Empty).Trim();
+
+    private static object MapTrackArtist(BoomplayTrackMetadata track)
+        => new { id = string.Empty, name = DecodeBoomplayText(track.Artist) };
+
+    private static object MapTrackAlbum(BoomplayTrackMetadata track)
+        => new
+        {
+            id = string.Empty,
+            title = DecodeBoomplayText(track.Album),
+            cover_medium = DecodeBoomplayText(track.CoverUrl)
+        };
 
     [HttpGet("tracklist")]
     public async Task<IActionResult> GetTracklist(
@@ -581,25 +593,18 @@ public sealed class BoomplayApiController : ControllerBase
         var tracks = playlist.Tracks
             .Select((track, index) =>
             {
-                var trackUrl = !string.IsNullOrWhiteSpace(track.Url)
-                    ? track.Url
-                    : $"https://www.boomplay.com/songs/{track.Id}";
+                var trackUrl = ResolveTrackUrl(track);
                 return new
                 {
                     id = track.Id,
                     boomplayId = track.Id,
-                    title = WebUtility.HtmlDecode(track.Title ?? string.Empty).Trim(),
+                    title = DecodeBoomplayText(track.Title),
                     duration = track.DurationMs > 0 ? track.DurationMs / 1000 : 0,
                     durationMs = track.DurationMs > 0 ? track.DurationMs : 0,
                     isrc = track.Isrc,
                     track_position = index + 1,
-                    artist = new { id = string.Empty, name = WebUtility.HtmlDecode(track.Artist ?? string.Empty).Trim() },
-                    album = new
-                    {
-                        id = string.Empty,
-                        title = WebUtility.HtmlDecode(track.Album ?? string.Empty).Trim(),
-                        cover_medium = WebUtility.HtmlDecode(track.CoverUrl ?? string.Empty).Trim()
-                    },
+                    artist = MapTrackArtist(track),
+                    album = MapTrackAlbum(track),
                     link = trackUrl,
                     sourceUrl = trackUrl
                 };

@@ -673,8 +673,8 @@ namespace DeezSpoTag.Web.Controllers
             DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
             int requestedBitrate)
         {
-            var preferredEngine = ResolveManualPreferredEngine(settings);
-            var quality = ResolveManualPreferredQuality(settings, preferredEngine, requestedBitrate);
+            var preferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);
+            var quality = ManualDownloadPreferenceResolver.ResolvePreferredQuality(settings, preferredEngine, requestedBitrate);
             var queued = new List<Dictionary<string, object>>();
             foreach (var intent in urls.Select(url => new DownloadIntent
                      {
@@ -690,34 +690,6 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             return queued;
-        }
-
-        private static string ResolveManualPreferredEngine(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
-        {
-            if (settings.DownloadEngineOrder?.Enabled == true)
-            {
-                return "auto";
-            }
-
-            var service = (settings.Service ?? string.Empty).Trim().ToLowerInvariant();
-            return service is "auto" or "amazon" or "apple" or DeezerSource or "qobuz" or "tidal"
-                ? service
-                : "auto";
-        }
-
-        private static string ResolveManualPreferredQuality(
-            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-            string preferredEngine,
-            int requestedBitrate)
-        {
-            return preferredEngine switch
-            {
-                DeezerSource => DownloadSourceOrder.ResolveDeezerBitrate(settings, requestedBitrate).ToString(),
-                "qobuz" => string.IsNullOrWhiteSpace(settings.QobuzQuality) ? string.Empty : settings.QobuzQuality,
-                "tidal" => string.IsNullOrWhiteSpace(settings.TidalQuality) ? string.Empty : settings.TidalQuality,
-                "apple" => settings.AppleMusic?.PreferredAudioProfile ?? string.Empty,
-                _ => string.Empty
-            };
         }
 
     }

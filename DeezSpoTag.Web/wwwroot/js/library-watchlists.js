@@ -663,6 +663,28 @@ function createArtistWatchOptionsSection(currentDiscography, latestOnly, selecte
     return artistOptionsSection;
 }
 
+const playlistServerOptions = [
+    { value: 'plex', label: 'Plex' },
+    { value: 'jellyfin', label: 'Jellyfin' },
+    { value: 'none', label: 'No media server (download only)' }
+];
+
+const playlistEngineOptions = [
+    { value: '', label: 'Follow global download source' },
+    { value: 'auto', label: 'Auto (cross-engine fallback)' },
+    { value: 'amazon', label: 'Amazon Music' },
+    { value: 'apple', label: 'Apple Music' },
+    { value: 'deezer', label: 'Deezer' },
+    { value: 'qobuz', label: 'Qobuz' },
+    { value: 'tidal', label: 'Tidal' }
+];
+
+const playlistDownloadModeOptions = [
+    { value: 'standard', label: 'Standard only' },
+    { value: 'dual_quality', label: 'Dual quality (standard + Atmos)' },
+    { value: 'atmos_only', label: 'Atmos only' }
+];
+
 function createPlaylistSettingsSelectSection({
     title,
     selectClass,
@@ -1323,66 +1345,69 @@ async function loadPlaylistWatchlist() {
             });
         });
 
-        container.querySelectorAll('[data-playlist-action="reset-runtime"]').forEach(button => {
-            button.addEventListener('click', async (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                const source = button.dataset.playlistSource;
-                const sourceId = button.dataset.playlistId;
-                if (!source || !sourceId) return;
-                try {
-                    const confirmed = await confirmWithAppUi(
-                        'Reset runtime state for this playlist and trigger a fresh attempt?',
-                        { title: 'Reset Playlist Runtime', okText: 'Reset Runtime' });
-                    if (!confirmed) {
-                        return;
-                    }
-                    button.disabled = true;
+        const bindPlaylistRuntimeAction = ({
+            action,
+            confirmMessage,
+            confirmTitle,
+            okText,
+            endpointSuffix,
+            successMessage,
+            failurePrefix,
+            resolveSuccessMessage
+        }) => {
+            container.querySelectorAll(`[data-playlist-action="${action}"]`).forEach(button => {
+                button.addEventListener('click', async (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const source = button.dataset.playlistSource;
+                    const sourceId = button.dataset.playlistId;
+                    if (!source || !sourceId) return;
                     try {
-                        await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/reset-runtime`, { method: 'POST' });
-                        showToast('Playlist runtime reset.');
-                        await loadPlaylistWatchlist();
+                        const confirmed = await confirmWithAppUi(
+                            confirmMessage,
+                            { title: confirmTitle, okText });
+                        if (!confirmed) {
+                            return;
+                        }
+                        button.disabled = true;
+                        try {
+                            const result = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/${endpointSuffix}`, { method: 'POST' });
+                            showToast(resolveSuccessMessage ? resolveSuccessMessage(result) : successMessage);
+                            await loadPlaylistWatchlist();
+                        } catch (error) {
+                            showToast(`${failurePrefix}: ${error.message}`, true);
+                            button.disabled = false;
+                        }
                     } catch (error) {
-                        showToast(`Playlist runtime reset failed: ${error.message}`, true);
-                        button.disabled = false;
+                        showToast(`Failed to open confirmation dialog: ${error?.message || 'Unknown error'}`, true);
                     }
-                } catch (error) {
-                    showToast(`Failed to open confirmation dialog: ${error?.message || 'Unknown error'}`, true);
-                }
+                });
             });
+        };
+
+        bindPlaylistRuntimeAction({
+            action: 'reset-runtime',
+            confirmMessage: 'Reset runtime state for this playlist and trigger a fresh attempt?',
+            confirmTitle: 'Reset Playlist Runtime',
+            okText: 'Reset Runtime',
+            endpointSuffix: 'reset-runtime',
+            successMessage: 'Playlist runtime reset.',
+            failurePrefix: 'Playlist runtime reset failed'
         });
 
-        container.querySelectorAll('[data-playlist-action="reset-skip"]').forEach(button => {
-            button.addEventListener('click', async (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                const source = button.dataset.playlistSource;
-                const sourceId = button.dataset.playlistId;
-                if (!source || !sourceId) return;
-                try {
-                    const confirmed = await confirmWithAppUi(
-                        'Reset this playlist and move scheduler focus to the next playlist?',
-                        { title: 'Reset and Skip', okText: 'Reset and Skip' });
-                    if (!confirmed) {
-                        return;
-                    }
-                    button.disabled = true;
-                    try {
-                        const result = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/reset-and-skip`, { method: 'POST' });
-                        if (result?.skipped && result?.nextSource && result?.nextSourceId) {
-                            showToast(`Reset done. Active moved to ${result.nextSource}:${result.nextSourceId}.`);
-                        } else {
-                            showToast('Playlist reset done.');
-                        }
-                        await loadPlaylistWatchlist();
-                    } catch (error) {
-                        showToast(`Reset and skip failed: ${error.message}`, true);
-                        button.disabled = false;
-                    }
-                } catch (error) {
-                    showToast(`Failed to open confirmation dialog: ${error?.message || 'Unknown error'}`, true);
+        bindPlaylistRuntimeAction({
+            action: 'reset-skip',
+            confirmMessage: 'Reset this playlist and move scheduler focus to the next playlist?',
+            confirmTitle: 'Reset and Skip',
+            okText: 'Reset and Skip',
+            endpointSuffix: 'reset-and-skip',
+            failurePrefix: 'Reset and skip failed',
+            resolveSuccessMessage: result => {
+                if (result?.skipped && result?.nextSource && result?.nextSourceId) {
+                    return `Reset done. Active moved to ${result.nextSource}:${result.nextSourceId}.`;
                 }
-            });
+                return 'Playlist reset done.';
+            }
         });
 
         container.querySelectorAll('[data-playlist-action="refresh-artwork"]').forEach(button => {
@@ -1993,84 +2018,37 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     atmosFolderSection.appendChild(atmosFolderHint);
     panel.appendChild(atmosFolderSection);
 
-    // Section: Server
-    const serverSection = document.createElement('div');
-    serverSection.className = 'playlist-settings-section';
-    const serverTitle = document.createElement('div');
-    serverTitle.className = 'playlist-settings-section-title';
-    serverTitle.textContent = 'Server';
-    const serverSelect = document.createElement('select');
-    serverSelect.className = 'form-select ps-service-select';
-    serverSelect.id = `ps-service-${source}-${sourceId}`;
-    [
-        { value: 'plex', label: 'Plex' },
-        { value: 'jellyfin', label: 'Jellyfin' },
-        { value: 'none', label: 'No media server (download only)' }
-    ].forEach(({ value, label }) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        serverSelect.appendChild(option);
+    const playlistServer = createPlaylistSettingsSelectSection({
+        title: 'Server',
+        selectClass: 'ps-service-select',
+        selectId: `ps-service-${source}-${sourceId}`,
+        options: playlistServerOptions,
+        value: 'plex',
+        helpText: 'Choose "No media server" to keep downloads without recreating server playlists.'
     });
-    const serverHint = document.createElement('div');
-    serverHint.className = 'playlist-settings-help';
-    serverHint.textContent = 'Choose "No media server" to keep downloads without recreating server playlists.';
-    serverSection.appendChild(serverTitle);
-    serverSection.appendChild(serverSelect);
-    serverSection.appendChild(serverHint);
-    panel.appendChild(serverSection);
+    const serverSelect = playlistServer.select;
+    panel.appendChild(playlistServer.section);
 
-    // Section: Download engine
-    const engineSection = document.createElement('div');
-    engineSection.className = 'playlist-settings-section';
-    const engineTitle = document.createElement('div');
-    engineTitle.className = 'playlist-settings-section-title';
-    engineTitle.textContent = 'Download engine';
-    const engineSelect = document.createElement('select');
-    engineSelect.className = 'form-select ps-engine-select';
-    engineSelect.id = `ps-engine-${source}-${sourceId}`;
-    [
-        { value: '', label: 'Follow global download source' },
-        { value: 'auto', label: 'Auto (cross-engine fallback)' },
-        { value: 'amazon', label: 'Amazon Music' },
-        { value: 'apple', label: 'Apple Music' },
-        { value: 'deezer', label: 'Deezer' },
-        { value: 'qobuz', label: 'Qobuz' },
-        { value: 'tidal', label: 'Tidal' }
-    ].forEach(({ value, label }) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        engineSelect.appendChild(option);
+    const playlistEngine = createPlaylistSettingsSelectSection({
+        title: 'Download engine',
+        selectClass: 'ps-engine-select',
+        selectId: `ps-engine-${source}-${sourceId}`,
+        options: playlistEngineOptions,
+        value: '',
+        helpText: 'Exact-match watchlist mapping pins to Deezer when a Deezer ID/ISRC match is found.'
     });
-    const engineHint = document.createElement('div');
-    engineHint.className = 'playlist-settings-help';
-    engineHint.textContent = 'Exact-match watchlist mapping pins to Deezer when a Deezer ID/ISRC match is found.';
-    engineSection.appendChild(engineTitle);
-    engineSection.appendChild(engineSelect);
-    engineSection.appendChild(engineHint);
-    panel.appendChild(engineSection);
+    const engineSelect = playlistEngine.select;
+    panel.appendChild(playlistEngine.section);
 
-    const downloadModeSection = document.createElement('div');
-    downloadModeSection.className = 'playlist-settings-section';
-    const downloadModeTitle = document.createElement('div');
-    downloadModeTitle.className = 'playlist-settings-section-title';
-    downloadModeTitle.textContent = 'Download mode';
-    const downloadModeSelect = document.createElement('select');
-    downloadModeSelect.className = 'form-select ps-download-mode-select';
-    downloadModeSelect.id = `ps-download-mode-${source}-${sourceId}`;
-    [
-        { value: 'standard', label: 'Standard only' },
-        { value: 'dual_quality', label: 'Dual quality (standard + Atmos)' },
-        { value: 'atmos_only', label: 'Atmos only' }
-    ].forEach(({ value, label }) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        downloadModeSelect.appendChild(option);
+    const playlistDownloadMode = createPlaylistSettingsSelectSection({
+        title: 'Download mode',
+        selectClass: 'ps-download-mode-select',
+        selectId: `ps-download-mode-${source}-${sourceId}`,
+        options: playlistDownloadModeOptions,
+        value: 'standard'
     });
-    downloadModeSection.appendChild(downloadModeTitle);
-    downloadModeSection.appendChild(downloadModeSelect);
+    const downloadModeSection = playlistDownloadMode.section;
+    const downloadModeSelect = playlistDownloadMode.select;
     panel.appendChild(downloadModeSection);
 
     const syncAtmosFolderVisibility = () => {

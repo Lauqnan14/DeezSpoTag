@@ -71,6 +71,16 @@ public partial class Program
         RegexOptions.CultureInvariant);
 
     private static Regex BuildVersionPatternRegex() => s_buildVersionPatternRegex;
+
+    private static FixedWindowRateLimiterOptions CreateFixedWindowLimiterOptions(int permitLimit) => new()
+    {
+        PermitLimit = permitLimit,
+        Window = TimeSpan.FromMinutes(1),
+        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+        QueueLimit = 0,
+        AutoReplenishment = true
+    };
+
     public static async Task Main(string[] args)
     {
         ApplyLocalRuntimeParityEnvironment();
@@ -531,36 +541,15 @@ public partial class Program
             options.AddPolicy("AuthEndpoints", context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? UnknownValue,
-                    factory: _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 8,
-                        Window = TimeSpan.FromMinutes(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                        AutoReplenishment = true
-                    }));
+                    factory: _ => CreateFixedWindowLimiterOptions(8)));
             options.AddPolicy("DefaultApi", context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? UnknownValue,
-                    factory: _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 1000,
-                        Window = TimeSpan.FromMinutes(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                        AutoReplenishment = true
-                    }));
+                    factory: _ => CreateFixedWindowLimiterOptions(1000)));
             options.AddPolicy("SensitiveWrites", context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? UnknownValue,
-                    factory: _ => new FixedWindowRateLimiterOptions
-                    {
-                        PermitLimit = 120,
-                        Window = TimeSpan.FromMinutes(1),
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                        QueueLimit = 0,
-                        AutoReplenishment = true
-                    }));
+                    factory: _ => CreateFixedWindowLimiterOptions(120)));
         });
         services.AddCoverPortingServices();
         services.AddMemoryCache();

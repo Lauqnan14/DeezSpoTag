@@ -66,19 +66,14 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             return;
         }
 
-        var enqueued = 0;
-        foreach (var artist in missing)
-        {
-            if (string.IsNullOrWhiteSpace(artist.Name))
-            {
-                continue;
-            }
-
-            if (TryEnqueue(new QueueItem(artist.Id, artist.Name)))
-            {
-                enqueued++;
-            }
-        }
+        var enqueued = await PersistentArtistQueueStore.EnqueueArtistsAsync(
+            missing,
+            static artist => artist.Id,
+            static artist => artist.Name,
+            static (_, _) => ValueTask.FromResult(false),
+            static (artistId, artistName) => new QueueItem(artistId, artistName),
+            TryEnqueue,
+            cancellationToken);
 
         if (enqueued > 0)
         {
