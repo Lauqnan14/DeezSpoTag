@@ -83,11 +83,13 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly MoodBucketService _moodBucketService;
     private readonly IConfiguration _configuration;
     private readonly SemaphoreSlim _analysisLock = new(1, 1);
+    private readonly SemaphoreSlim _manualRunSignal = new(0, 1);
     private readonly object _runtimeLock = new();
     private readonly List<VibeAnalysisRecentItemDto> _recentAnalyses = new();
     private readonly object _mlCapabilityLock = new();
     private CancellationTokenSource? _activeRunCancellation;
-    private Task? _manualRunTask;
+    private bool _manualRunPending;
+    private int _manualRunBatchSize;
     private string _runtimeState = VibeAnalysisRuntimeStates.Idle;
     private LatestTrackAnalysisDto? _currentAnalysis;
     private LatestTrackAnalysisDto? _latestAnalysis;
@@ -133,16 +135,26 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
     public bool TryStartManualAnalysis(int batchSize)
     {
+        var shouldSignal = false;
         lock (_runtimeLock)
         {
-            if (_manualRunTask is { IsCompleted: false })
+            if (_manualRunPending || _activeRunCancellation is not null || _analysisLock.CurrentCount == 0)
             {
                 return false;
             }
 
-            _manualRunTask = Task.Run(() => AnalyzeNowAsync(Math.Clamp(batchSize, 10, 500), CancellationToken.None, forceWhenDisabled: true));
-            return true;
+            _manualRunBatchSize = Math.Clamp(batchSize, 10, 500);
+            _manualRunPending = true;
+            _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
+            shouldSignal = true;
         }
+
+        if (shouldSignal)
+        {
+            _manualRunSignal.Release();
+        }
+
+        return true;
     }
 
     public VibeAnalysisRuntimeDto GetRuntimeSnapshot()
@@ -291,23 +303,16 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             try
             {
+                if (TryConsumeManualRun(out var manualBatchSize))
+                {
+                    await AnalyzeNowAsync(manualBatchSize, stoppingToken, forceWhenDisabled: true);
+                    continue;
+                }
+
                 var settings = await _settingsStore.LoadAsync();
                 if (settings.Enabled)
                 {
-                    await _analysisLock.WaitAsync(stoppingToken);
-                    try
-                    {
-                        settings = await _settingsStore.LoadAsync();
-                        if (settings.Enabled)
-                        {
-                            using var run = BeginRuntimeRun(stoppingToken);
-                            await AnalyzeBatchAsync(settings, stopWhenDisabled: true, run.Token);
-                        }
-                    }
-                    finally
-                    {
-                        _analysisLock.Release();
-                    }
+                    await RunScheduledAnalysisBatchAsync(stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
@@ -331,13 +336,64 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             {
                 var settings = await _settingsStore.LoadAsync();
                 var delay = TimeSpan.FromMinutes(Math.Clamp(settings.IntervalMinutes, 5, 240));
-                await Task.Delay(delay, stoppingToken);
+                await WaitForNextAnalysisWakeAsync(delay, stoppingToken);
             }
             catch (TaskCanceledException)
             {
                 break;
             }
         }
+    }
+
+    private bool TryConsumeManualRun(out int batchSize)
+    {
+        lock (_runtimeLock)
+        {
+            if (!_manualRunPending)
+            {
+                batchSize = 0;
+                return false;
+            }
+
+            batchSize = _manualRunBatchSize;
+            _manualRunPending = false;
+            _manualRunBatchSize = 0;
+            return true;
+        }
+    }
+
+    private async Task RunScheduledAnalysisBatchAsync(CancellationToken stoppingToken)
+    {
+        await _analysisLock.WaitAsync(stoppingToken);
+        try
+        {
+            var settings = await _settingsStore.LoadAsync();
+            if (settings.Enabled)
+            {
+                using var run = BeginRuntimeRun(stoppingToken);
+                await AnalyzeBatchAsync(settings, stopWhenDisabled: true, run.Token);
+            }
+        }
+        finally
+        {
+            _analysisLock.Release();
+        }
+    }
+
+    private async Task WaitForNextAnalysisWakeAsync(TimeSpan delay, CancellationToken stoppingToken)
+    {
+        using var delayCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var delayTask = Task.Delay(delay, delayCancellation.Token);
+        var manualRunTask = _manualRunSignal.WaitAsync(stoppingToken);
+        var completedTask = await Task.WhenAny(delayTask, manualRunTask);
+        if (completedTask == manualRunTask)
+        {
+            await manualRunTask;
+            await delayCancellation.CancelAsync();
+            return;
+        }
+
+        await delayTask;
     }
 
     public async Task AnalyzeNowAsync(int batchSize, CancellationToken cancellationToken, bool forceWhenDisabled = false)
