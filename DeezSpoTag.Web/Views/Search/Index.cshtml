@@ -129,7 +129,7 @@
     display: block;
 }
 
-.result-image-fallback {
+.result-image-placeholder {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -139,7 +139,7 @@
     color: var(--text-muted);
 }
 
-.result-image img + .result-image-fallback {
+.result-image img + .result-image-placeholder {
     display: none;
 }
 
@@ -676,6 +676,7 @@ const searchModeNormalized = String(searchMode || '').trim().toLowerCase();
 const soundtrackSearchMode = searchModeNormalized === 'soundtrack';
 const soundtrackSearchTypes = new Set(['all', 'album', 'playlist', 'compilation']);
 const searchSources = soundtrackSearchMode ? ['spotify', 'deezer', 'manual'] : ['spotify', 'deezer', 'apple'];
+let sourceTypeSelections = {};
 const soundtrackContextTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextType"]?.ToString() ?? string.Empty));
 const soundtrackContextServerTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextServerType"]?.ToString() ?? string.Empty));
 const soundtrackContextLibraryIdRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextLibraryId"]?.ToString() ?? string.Empty));
@@ -690,10 +691,142 @@ const soundtrackContextTitle = String(soundtrackContextTitleRaw || '').trim();
 const soundtrackContextYear = String(soundtrackContextYearRaw || '').trim();
 const cachedSearchTerms = {};
 currentSearchSource = String(currentSearchSource || 'spotify').trim().toLowerCase();
+const SEARCH_STATE_TTL_MS = 10 * 60 * 1000;
+const SEARCH_STATE_PREFIX = 'deezspotag:search-page:v3:';
+const searchPrefetchKeys = new Set();
+let searchWarmupScheduled = false;
 
 const validSearchTypes = new Set(['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video', 'all', 'compilation']);
 if (!validSearchTypes.has((currentSearchType || '').toLowerCase())) {
     currentSearchType = soundtrackSearchMode ? 'all' : 'track';
+}
+
+function getSearchStateKey() {
+    const payload = {
+        path: window.location.pathname,
+        term: currentSearchTerm || '',
+        mode: searchModeNormalized || '',
+        soundtrackContextType,
+        soundtrackContextServerType,
+        soundtrackContextLibraryId,
+        soundtrackContextItemId,
+        soundtrackContextTitle,
+        soundtrackContextYear
+    };
+    return `${SEARCH_STATE_PREFIX}${encodeURIComponent(JSON.stringify(payload))}`;
+}
+
+function serializeMap(map) {
+    return map instanceof Map ? Array.from(map.entries()) : [];
+}
+
+function restoreMap(map, entries) {
+    if (!(map instanceof Map)) {
+        return;
+    }
+    map.clear();
+    if (!Array.isArray(entries)) {
+        return;
+    }
+    entries.forEach(entry => {
+        if (!Array.isArray(entry) || entry.length < 2) {
+            return;
+        }
+        map.set(entry[0], entry[1]);
+    });
+}
+
+function saveSearchPageState() {
+    if (!currentSearchTerm) {
+        return;
+    }
+
+    try {
+        const state = {
+            savedAt: Date.now(),
+            activeSource: currentSearchSource,
+            activeType: currentSearchType,
+            sourceTypeSelections,
+            cachedResults,
+            cachedSearchTerms: { ...cachedSearchTerms },
+            libraryExistenceEntries: serializeMap(libraryExistenceCache),
+            selectedVideoKeys: Array.from(selectedVideoKeys),
+            showSelectedOnly,
+            appleVideoOffset,
+            appleHasMoreVideos,
+            scrollY: window.scrollY || 0
+        };
+        sessionStorage.setItem(getSearchStateKey(), JSON.stringify(state));
+    } catch (error) {
+        console.warn('Failed to save search page state.', error);
+    }
+}
+
+function restoreSearchPageState() {
+    if (!currentSearchTerm) {
+        return { restored: false, expired: false };
+    }
+
+    try {
+        const raw = sessionStorage.getItem(getSearchStateKey());
+        if (!raw) {
+            return { restored: false, expired: false };
+        }
+
+        const state = JSON.parse(raw);
+        if (!state || typeof state !== 'object') {
+            return { restored: false, expired: false };
+        }
+
+        const activeSource = String(state.activeSource || '').trim().toLowerCase();
+        if (searchSources.includes(activeSource)) {
+            currentSearchSource = activeSource;
+        }
+
+        sourceTypeSelections = state.sourceTypeSelections && typeof state.sourceTypeSelections === 'object'
+            ? state.sourceTypeSelections
+            : {};
+
+        const activeType = String(state.activeType || sourceTypeSelections[currentSearchSource] || currentSearchType || '').trim().toLowerCase();
+        currentSearchType = normalizeTypeForSource(currentSearchSource, activeType);
+        sourceTypeSelections[currentSearchSource] = currentSearchType;
+
+        cachedResults = state.cachedResults && typeof state.cachedResults === 'object' ? state.cachedResults : null;
+        Object.keys(cachedSearchTerms).forEach(key => delete cachedSearchTerms[key]);
+        if (state.cachedSearchTerms && typeof state.cachedSearchTerms === 'object') {
+            Object.assign(cachedSearchTerms, state.cachedSearchTerms);
+        }
+        restoreMap(libraryExistenceCache, state.libraryExistenceEntries);
+
+        selectedVideoKeys.clear();
+        if (Array.isArray(state.selectedVideoKeys)) {
+            state.selectedVideoKeys.forEach(key => {
+                if (key) {
+                    selectedVideoKeys.add(key);
+                }
+            });
+        }
+        showSelectedOnly = state.showSelectedOnly === true;
+        appleVideoOffset = Number(state.appleVideoOffset || 0);
+        appleHasMoreVideos = state.appleHasMoreVideos === true;
+        appleLoadingMore = false;
+
+        updateActiveSource(currentSearchSource);
+
+        const scrollY = Number(state.scrollY || 0);
+        if (Number.isFinite(scrollY) && scrollY > 0) {
+            requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'auto' }));
+        }
+
+        const savedAt = Number(state.savedAt || 0);
+        return {
+            restored: true,
+            expired: !savedAt || (Date.now() - savedAt) > SEARCH_STATE_TTL_MS
+        };
+    } catch (error) {
+        console.warn('Failed to restore search page state.', error);
+        return { restored: false, expired: false };
+    }
 }
 
 function isRememberLastTabEnabled() {
@@ -826,11 +959,12 @@ function parseAppleLink(url) {
     }
 }
 
-async function parseDeezerLink(input) {
+async function parseDeezerLinkDirectly(input) {
     const response = await fetch(`/api/deezer/parse-link?url=${encodeURIComponent(input)}`);
     if (!response.ok) {
-        throw new Error('Link parsing failed.');
+        throw new Error(`Deezer link parse failed (HTTP ${response.status}).`);
     }
+
     const data = await response.json();
     if (data?.error) {
         throw new Error(data.error);
@@ -946,6 +1080,7 @@ function appendSoundtrackContextToParams(params) {
 }
 
 function navigateToTracklist(id, type, source, options = {}) {
+    saveSearchPageState();
     const query = new URLSearchParams();
     query.set('id', String(id || ''));
     query.set('type', String(type || 'track'));
@@ -962,19 +1097,89 @@ function navigateToTracklist(id, type, source, options = {}) {
     window.location.href = `/Tracklist?${query.toString()}`;
 }
 
-function fallbackToDeezerLinkParseOrSearch(input, type) {
-    parseDeezerLink(input)
-        .then((parsed) => {
-            if (parsed.type === 'artist') {
-                window.location.href = `/Artist?id=${encodeURIComponent(parsed.id)}&source=deezer`;
-            } else {
-                navigateToTracklist(parsed.id, parsed.type, 'deezer');
-            }
-        })
-        .catch((error) => {
-            console.error('Link parse failed:', error);
-            performSearch(input, type);
-        });
+function showSearchUrlError(message) {
+    const container = getResultsContainer();
+    if (!container) {
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="error-section">
+            <h3>Unable to open link</h3>
+            <p>${escapeHtml(message)}</p>
+        </div>
+    `;
+    document.getElementById('search-count').textContent = '';
+}
+
+async function routeSearchUrlDirectly(input) {
+    const normalizedInput = String(input || '').trim();
+    if (!isValidURL(normalizedInput)) {
+        return false;
+    }
+
+    const parsedUrl = new URL(normalizedInput);
+    if (isSpotifyHostname(parsedUrl.hostname)) {
+        const response = await fetch(`/api/spotify/metadata?url=${encodeURIComponent(normalizedInput)}`);
+        if (!response.ok) {
+            throw new Error(`Spotify link parse failed (HTTP ${response.status}).`);
+        }
+
+        const data = await response.json();
+        const metadata = data?.metadata;
+        if (!metadata?.id) {
+            throw new Error('Spotify link did not resolve to a supported item.');
+        }
+
+        if (metadata.type === 'artist') {
+            window.location.href = `/Artist?id=${encodeURIComponent(metadata.id)}&source=spotify`;
+            return true;
+        }
+
+        navigateToTracklist(metadata.id, metadata.type || 'track', 'spotify', { externalUrl: normalizedInput });
+        return true;
+    }
+
+    if (parsedUrl.hostname.includes('music.apple.com') || parsedUrl.hostname.includes('itunes.apple.com')) {
+        const appleLink = parseAppleLink(normalizedInput);
+        if (!appleLink) {
+            throw new Error('Apple Music link did not resolve to a supported item.');
+        }
+
+        if (appleLink.type === 'artist') {
+            window.location.href = `/Artist?id=${encodeURIComponent(appleLink.id)}&source=apple`;
+            return true;
+        }
+
+        navigateToTracklist(appleLink.id, appleLink.type, 'apple', { externalUrl: appleLink.url, appleUrl: appleLink.url });
+        return true;
+    }
+
+    if (!shouldUseLinkMap(parsedUrl)) {
+        throw new Error('Unsupported music link.');
+    }
+
+    const response = await fetch(`/api/link-map/deezer?url=${encodeURIComponent(normalizedInput)}`);
+    if (!response.ok) {
+        throw new Error(`Link parser failed (HTTP ${response.status}).`);
+    }
+
+    const mapping = await response.json();
+    if (mapping?.available && mapping?.deezerType && mapping?.deezerId) {
+        if (!redirectToDeezerEntity(mapping.deezerType, mapping.deezerId)) {
+            throw new Error('Mapped Deezer link did not contain a supported item.');
+        }
+        return true;
+    }
+
+    const inferredSource = String(mapping?.source || classifyExternalSource(normalizedInput)).toLowerCase();
+    if (deezerMappedPlaylistSources.has(inferredSource)
+        && isPlaylistLikeExternalLink(parsedUrl, inferredSource)
+        && redirectToExternalPlaylistFlow(inferredSource, normalizedInput)) {
+        return true;
+    }
+
+    throw new Error(mapping?.error || 'Link could not be resolved.');
 }
 
 function getSoundtrackManualElements() {
@@ -1057,7 +1262,7 @@ async function openSoundtrackManualUrl(rawUrl) {
         }
 
         if (host.includes('deezer.com') || host.includes('deezer.page.link')) {
-            const parsed = await parseDeezerLink(inputUrl);
+            const parsed = await parseDeezerLinkDirectly(inputUrl);
             const itemId = String(parsed?.id || '').trim();
             const itemType = String(parsed?.type || '').trim().toLowerCase();
             if (!itemId || !itemType) {
@@ -1110,8 +1315,6 @@ function initializeSoundtrackManualTab() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Set active filter
-    updateActiveFilter(currentSearchType);
     setupInfiniteScroll();
     const urlParams = new URLSearchParams(window.location.search);
     const sourceParam = (urlParams.get('source') || '').toLowerCase();
@@ -1133,99 +1336,30 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     initializeSoundtrackManualTab();
     currentSearchType = normalizeTypeForSource(currentSearchSource, currentSearchType);
-    updateActiveSource(currentSearchSource);
+    sourceTypeSelections[currentSearchSource] = currentSearchType;
+    const restoredState = restoreSearchPageState();
+    if (!restoredState.restored) {
+        updateActiveSource(currentSearchSource);
+    }
     
     // Perform initial search
-    if (currentSearchTerm && currentSearchSource !== 'manual') {
+    if (currentSearchTerm && currentSearchSource !== 'manual' && !restoredState.restored) {
         if (isValidURL(currentSearchTerm)) {
-            const parsedUrl = new URL(currentSearchTerm);
-            if (isSpotifyHostname(parsedUrl.hostname)) {
-                fetch(`/api/spotify/metadata?url=${encodeURIComponent(currentSearchTerm)}`)
-                    .then((resp) => resp.ok ? resp.json() : null)
-                    .then((data) => {
-                        const metadata = data?.metadata;
-                        if (metadata?.id) {
-                            if (metadata.type === 'artist') {
-                                const resolvePromise = (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function')
-                                    ? window.DeezerResolver.resolveTrack(
-                                        { source: 'spotify', url: currentSearchTerm },
-                                        { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
-                                    )
-                                    : Promise.resolve(null);
-                                resolvePromise
-                                    .then((resolved) => {
-                                        if (resolved?.available && resolved?.deezerId) {
-                                            window.location.href = `/Artist?id=${encodeURIComponent(resolved.deezerId)}&source=deezer`;
-                                            return;
-                                        }
-                                        if (metadata.name) {
-                                            window.location.href = `/Search?term=${encodeURIComponent(metadata.name)}&type=artist&source=deezer`;
-                                            return;
-                                        }
-                                        performSearch(currentSearchTerm, currentSearchType);
-                                    })
-                                    .catch((error) => {
-                                        console.error('Spotify artist resolve failed:', error);
-                                        if (metadata.name) {
-                                            window.location.href = `/Search?term=${encodeURIComponent(metadata.name)}&type=artist&source=deezer`;
-                                            return;
-                                        }
-                                        performSearch(currentSearchTerm, currentSearchType);
-                                    });
-                            } else {
-                                navigateToTracklist(metadata.id, metadata.type || 'track', 'spotify');
-                            }
-                            return;
-                        }
-                        performSearch(currentSearchTerm, currentSearchType);
-                    })
-                    .catch((error) => {
-                        console.error('Spotify link parse failed:', error);
-                        performSearch(currentSearchTerm, currentSearchType);
-                    });
-                return;
-            }
-            if (parsedUrl.hostname.includes('music.apple.com') || parsedUrl.hostname.includes('itunes.apple.com')) {
-                const appleLink = parseAppleLink(currentSearchTerm);
-                if (appleLink) {
-                    if (appleLink.type === 'artist') {
-                        window.location.href = `/Artist?id=${encodeURIComponent(appleLink.id)}&source=apple`;
-                    } else {
-                        navigateToTracklist(appleLink.id, appleLink.type, 'apple', { externalUrl: appleLink.url, appleUrl: appleLink.url });
-                    }
-                    return;
-                }
-            }
-            if (shouldUseLinkMap(parsedUrl)) {
-                fetch(`/api/link-map/deezer?url=${encodeURIComponent(currentSearchTerm)}`)
-                    .then((resp) => resp.ok ? resp.json() : null)
-                    .then((mapping) => {
-                        if (mapping?.available && mapping?.deezerType && mapping?.deezerId) {
-                            if (redirectToDeezerEntity(mapping.deezerType, mapping.deezerId)) {
-                                return;
-                            }
-                        }
-
-                        const inferredSource = String(mapping?.source || classifyExternalSource(currentSearchTerm)).toLowerCase();
-                        if (deezerMappedPlaylistSources.has(inferredSource)
-                            && isPlaylistLikeExternalLink(parsedUrl, inferredSource)
-                            && redirectToExternalPlaylistFlow(inferredSource, currentSearchTerm)) {
-                            return;
-                        }
-
-                        fallbackToDeezerLinkParseOrSearch(currentSearchTerm, currentSearchType);
-                    })
-                    .catch((error) => {
-                        console.error('Link-map routing failed:', error);
-                        fallbackToDeezerLinkParseOrSearch(currentSearchTerm, currentSearchType);
-                    });
-                return;
-            }
-
-            fallbackToDeezerLinkParseOrSearch(currentSearchTerm, currentSearchType);
+            routeSearchUrlDirectly(currentSearchTerm)
+                .catch(error => {
+                    console.error('Search URL routing failed:', error);
+                    showSearchUrlError(error?.message || 'Link could not be resolved.');
+                });
         } else {
-            performSearch(currentSearchTerm, currentSearchType);
+            performSearch(currentSearchTerm, currentSearchType, { preferTyped: shouldUseTypedSearch(currentSearchSource, currentSearchType) });
         }
+    } else if (currentSearchTerm && currentSearchSource !== 'manual' && restoredState.expired) {
+        performSearch(currentSearchTerm, currentSearchType, {
+            showLoading: false,
+            preferTyped: shouldUseTypedSearch(currentSearchSource, currentSearchType)
+        });
+    } else if (currentSearchTerm && currentSearchSource !== 'manual' && restoredState.restored) {
+        scheduleSearchWarmup(currentSearchSource, currentSearchTerm);
     }
     
     // Filter click handlers
@@ -1235,19 +1369,37 @@ document.addEventListener('DOMContentLoaded', function() {
             if (this.classList.contains('disabled')) {
                 return;
             }
-            const type = this.dataset.type;
+            const source = String(this.dataset.source || currentSearchSource || '').trim().toLowerCase();
+            if (searchSources.includes(source)) {
+                currentSearchSource = source;
+            }
+            const type = normalizeTypeForSource(currentSearchSource, this.dataset.type);
             currentSearchType = type;
+            sourceTypeSelections[currentSearchSource] = type;
             updateActiveFilter(type);
-            performSearch(currentSearchTerm, type);
+            if (shouldRefetchSourceResults(currentSearchSource, currentSearchTerm, type)) {
+                performSearch(currentSearchTerm, type, { preferTyped: shouldUseTypedSearch(currentSearchSource, type) });
+            } else {
+                saveSearchPageState();
+            }
             
             // Update URL
             const url = new URL(window.location);
+            url.searchParams.set('source', currentSearchSource);
             url.searchParams.set('type', type);
             window.history.pushState({}, '', url);
         });
     });
 
     document.querySelectorAll('.source-btn').forEach(btn => {
+        const warmSource = () => {
+            const source = String(btn.dataset.source || '').trim().toLowerCase();
+            if (source && source !== 'manual') {
+                void prefetchSearchResults(source, currentSearchTerm, getSelectedSearchTypeForSource(source));
+            }
+        };
+        btn.addEventListener('mouseenter', warmSource);
+        btn.addEventListener('focus', warmSource);
         btn.addEventListener('click', function(e) {
             e.preventDefault();
             if (this.classList.contains('disabled')) {
@@ -1256,11 +1408,14 @@ document.addEventListener('DOMContentLoaded', function() {
             currentSearchSource = this.dataset.source;
             updateActiveSource(currentSearchSource);
             persistRememberedSearchSource(currentSearchSource);
-            if (shouldRefetchSourceResults(currentSearchSource, currentSearchTerm)) {
-                performSearch(currentSearchTerm, currentSearchType);
+            if (shouldRefetchSourceResults(currentSearchSource, currentSearchTerm, currentSearchType)) {
+                performSearch(currentSearchTerm, currentSearchType, { preferTyped: shouldUseTypedSearch(currentSearchSource, currentSearchType) });
+            } else {
+                saveSearchPageState();
             }
             const url = new URL(window.location);
             url.searchParams.set('source', currentSearchSource);
+            url.searchParams.set('type', currentSearchType);
             window.history.pushState({}, '', url);
         });
     });
@@ -1268,7 +1423,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const offlineToggle = document.getElementById('offline-search');
     if (offlineToggle) {
         offlineToggle.addEventListener('change', () => {
-            performSearch(currentSearchTerm, currentSearchType);
+            performSearch(currentSearchTerm, currentSearchType, {
+                preferTyped: shouldUseTypedSearch(currentSearchSource, currentSearchType)
+            });
         });
     }
 
@@ -1360,7 +1517,7 @@ function hasAnySourceItems(sourceData, source) {
     return false;
 }
 
-function shouldRefetchSourceResults(source, term) {
+function shouldRefetchSourceResults(source, term, type) {
     if (!term || source === 'manual') {
         return false;
     }
@@ -1378,18 +1535,256 @@ function shouldRefetchSourceResults(source, term) {
         return true;
     }
 
-    // Do not keep reusing a previously empty payload for the same query/source.
-    return !hasAnySourceItems(sourceData, source);
+    const normalizedType = normalizeTypeForSource(source, type);
+    if (!isSourceTypeLoaded(sourceData, source, normalizedType)) {
+        return true;
+    }
+
+    return false;
 }
 
-async function fetchSourceResults(source, term, type) {
+function markSourceTypesLoaded(sourceData, source, types) {
+    if (!sourceData || typeof sourceData !== 'object') {
+        return sourceData;
+    }
+
+    const existing = Array.isArray(sourceData.__loadedTypes) ? sourceData.__loadedTypes : [];
+    const loaded = new Set(existing.map(value => String(value || '').toLowerCase()));
+    (Array.isArray(types) ? types : []).forEach(type => {
+        const normalized = normalizeTypeForSource(source, type);
+        if (normalized) {
+            loaded.add(normalized);
+        }
+    });
+    sourceData.__loadedTypes = Array.from(loaded);
+    return sourceData;
+}
+
+function markBroadSourceResultsLoaded(sourceData, source) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const types = normalizedSource === 'apple'
+        ? ['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video']
+        : soundtrackSearchMode
+            ? ['all', 'album', 'playlist', 'compilation']
+            : ['track', 'album', 'artist', 'playlist'];
+    return markSourceTypesLoaded(sourceData, source, types);
+}
+
+function isSourceTypeLoaded(sourceData, source, type) {
+    const normalizedType = String(type || '').trim().toLowerCase();
+    if (!normalizedType) {
+        return false;
+    }
+
+    if (Array.isArray(sourceData?.__loadedTypes)) {
+        return sourceData.__loadedTypes
+            .map(value => String(value || '').toLowerCase())
+            .includes(normalizedType);
+    }
+
+    return hasAnySourceItems(sourceData, source);
+}
+
+function shouldUseTypedSearch(source, type) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const normalizedType = normalizeTypeForSource(normalizedSource, type);
+    if (!normalizedSource || !normalizedType) {
+        return false;
+    }
+
+    if (soundtrackSearchMode && (normalizedType === 'all' || normalizedType === 'compilation')) {
+        return false;
+    }
+
+    if (normalizedSource === 'spotify') {
+        return ['track', 'album', 'artist', 'playlist'].includes(normalizedType);
+    }
+
+    if (normalizedSource === 'apple') {
+        return ['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video'].includes(normalizedType);
+    }
+
+    return false;
+}
+
+function getSearchFetchKey(source, term, type) {
+    return [
+        String(source || '').trim().toLowerCase(),
+        String(term || '').trim().toLowerCase(),
+        normalizeTypeForSource(source, type)
+    ].join('|');
+}
+
+function getVisibleSearchTypesForSource(source) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    if (!searchSources.includes(normalizedSource) || normalizedSource === 'manual') {
+        return [];
+    }
+
+    const scope = document.getElementById(`search-source-${normalizedSource}`);
+    if (!scope) {
+        return [normalizeTypeForSource(normalizedSource, sourceTypeSelections[normalizedSource] || currentSearchType)];
+    }
+
+    return Array.from(scope.querySelectorAll('.filter-btn[data-type]'))
+        .map(button => normalizeTypeForSource(normalizedSource, button.dataset.type))
+        .filter(Boolean)
+        .filter((type, index, values) => values.indexOf(type) === index);
+}
+
+function getSelectedSearchTypeForSource(source) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    return normalizeTypeForSource(normalizedSource, sourceTypeSelections[normalizedSource] || currentSearchType || 'track');
+}
+
+function scheduleSearchWarmup(source, term) {
+    if (searchWarmupScheduled || !term || isValidURL(term)) {
+        return;
+    }
+
+    searchWarmupScheduled = true;
+    const run = () => {
+        void warmSearchTabs(source, term)
+            .finally(() => {
+                searchWarmupScheduled = false;
+            });
+    };
+
+    if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(run, { timeout: 1500 });
+        return;
+    }
+
+    window.setTimeout(run, 250);
+}
+
+async function warmSearchTabs(activeSource, term) {
+    const normalizedActiveSource = String(activeSource || '').trim().toLowerCase();
+    const sourceOrder = [
+        normalizedActiveSource,
+        ...searchSources.filter(source => source !== normalizedActiveSource && source !== 'manual')
+    ].filter(Boolean);
+
+    for (const source of sourceOrder) {
+        if (source === 'manual') {
+            continue;
+        }
+
+        const selectedType = getSelectedSearchTypeForSource(source);
+        await prefetchSearchResults(source, term, selectedType);
+        if (source === normalizedActiveSource) {
+            const siblingTypes = getVisibleSearchTypesForSource(source)
+                .filter(type => type !== selectedType);
+            for (const type of siblingTypes) {
+                await prefetchSearchResults(source, term, type);
+            }
+        }
+    }
+}
+
+async function prefetchSearchResults(source, term, type) {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const normalizedType = normalizeTypeForSource(normalizedSource, type);
+    if (!term || !searchSources.includes(normalizedSource) || normalizedSource === 'manual') {
+        return;
+    }
+
+    ensureCachedResults();
+    if (!shouldRefetchSourceResults(normalizedSource, term, normalizedType)) {
+        return;
+    }
+
+    const key = getSearchFetchKey(normalizedSource, term, normalizedType);
+    if (searchPrefetchKeys.has(key)) {
+        return;
+    }
+
+    searchPrefetchKeys.add(key);
+    try {
+        const typedOnly = shouldUseTypedSearch(normalizedSource, normalizedType);
+        const sourceData = await fetchSourceResults(normalizedSource, term, normalizedType, { typedOnly });
+        cachedResults[normalizedSource] = mergeSourceResults(
+            cachedResults[normalizedSource],
+            sourceData,
+            normalizedSource,
+            normalizedType,
+            typedOnly);
+
+        if (sourceData?.error) {
+            delete cachedSearchTerms[normalizedSource];
+        } else {
+            cachedSearchTerms[normalizedSource] = term;
+        }
+
+        saveSearchPageState();
+    } catch (error) {
+        console.warn('Search tab prefetch failed:', error);
+    } finally {
+        searchPrefetchKeys.delete(key);
+    }
+}
+
+function mapTypeToSourceResultField(type) {
+    switch (String(type || '').trim().toLowerCase()) {
+        case 'track':
+            return 'tracks';
+        case 'album':
+            return 'albums';
+        case 'artist':
+            return 'artists';
+        case 'playlist':
+            return 'playlists';
+        case 'station':
+            return 'stations';
+        case 'video':
+            return 'videos';
+        case 'atmos':
+            return 'tracks';
+        default:
+            return '';
+    }
+}
+
+function mergeSourceResults(existingData, incomingData, source, type, typedOnly) {
+    if (!typedOnly) {
+        return markBroadSourceResultsLoaded(incomingData, source);
+    }
+
+    const merged = {
+        ...createEmptySourceResults(source),
+        ...(existingData || {})
+    };
+    const normalizedType = normalizeTypeForSource(source, type);
+    if (normalizedType === 'atmos' && source === 'apple') {
+        merged.tracks = incomingData.tracks || [];
+        merged.albums = incomingData.albums || [];
+        markSourceTypesLoaded(merged, source, ['atmos']);
+        return merged;
+    }
+
+    const field = mapTypeToSourceResultField(normalizedType);
+    if (field) {
+        merged[field] = incomingData[field] || incomingData.items || [];
+    }
+    if (source === 'apple' && normalizedType === 'video') {
+        merged.hasMoreVideos = Boolean(incomingData.hasMoreVideos);
+    }
+    markSourceTypesLoaded(merged, source, [normalizedType]);
+    merged.error = incomingData.error || '';
+    return merged;
+}
+
+async function fetchSourceResults(source, term, type, options = {}) {
     const normalizedSource = (source || '').toLowerCase();
     const normalizedType = (type || '').toLowerCase();
+    const typedOnly = options.typedOnly === true;
 
     if (normalizedSource === 'apple') {
         const appleTypes = normalizedType === 'video'
             ? 'music-videos'
-            : (normalizedType === 'atmos' ? 'songs,albums' : '');
+            : (normalizedType === 'atmos'
+                ? 'songs,albums'
+                : (typedOnly ? mapAppleSearchType(normalizedType) : ''));
         const appleUrl = appleTypes
             ? `/api/apple/search?term=${encodeURIComponent(term)}&types=${encodeURIComponent(appleTypes)}`
             : `/api/apple/search?term=${encodeURIComponent(term)}`;
@@ -1408,7 +1803,10 @@ async function fetchSourceResults(source, term, type) {
     }
 
     if (normalizedSource === 'spotify') {
-        const spotifyResponse = await fetch(`/api/spotify/search?query=${encodeURIComponent(term)}&limit=25`);
+        const spotifyUrl = typedOnly
+            ? `/api/spotify/search/type?query=${encodeURIComponent(term)}&type=${encodeURIComponent(normalizedType)}&limit=50`
+            : `/api/spotify/search?query=${encodeURIComponent(term)}&limit=25`;
+        const spotifyResponse = await fetch(spotifyUrl);
         if (!spotifyResponse.ok) {
             throw new Error(`Spotify search failed: HTTP ${spotifyResponse.status}`);
         }
@@ -1421,11 +1819,14 @@ async function fetchSourceResults(source, term, type) {
         }
         return {
             ...createEmptySourceResults('spotify'),
-            ...spotifyData
+            ...(typedOnly ? mapTypedSearchPayload('spotify', normalizedType, spotifyData) : spotifyData)
         };
     }
 
-    const deezerResponse = await fetch(`/api/search?term=${encodeURIComponent(term)}&offline=false`);
+    const deezerUrl = typedOnly
+        ? `/api/deezer/search/type?query=${encodeURIComponent(term)}&type=${encodeURIComponent(normalizedType)}&limit=50`
+        : `/api/search?term=${encodeURIComponent(term)}&offline=false`;
+    const deezerResponse = await fetch(deezerUrl);
     if (!deezerResponse.ok) {
         throw new Error(`Deezer search failed: HTTP ${deezerResponse.status}`);
     }
@@ -1439,7 +1840,39 @@ async function fetchSourceResults(source, term, type) {
     }
     return {
         ...createEmptySourceResults(normalizedSource),
-        ...deezerData
+        ...(typedOnly ? mapTypedSearchPayload(normalizedSource, normalizedType, deezerData) : deezerData)
+    };
+}
+
+function mapAppleSearchType(type) {
+    switch (String(type || '').trim().toLowerCase()) {
+        case 'track':
+            return 'songs';
+        case 'album':
+            return 'albums';
+        case 'artist':
+            return 'artists';
+        case 'playlist':
+            return 'playlists';
+        case 'station':
+            return 'stations';
+        case 'video':
+            return 'music-videos';
+        default:
+            return '';
+    }
+}
+
+function mapTypedSearchPayload(source, type, payload) {
+    if (!payload || typeof payload !== 'object') {
+        return {};
+    }
+    const field = mapTypeToSourceResultField(type);
+    if (!field) {
+        return payload;
+    }
+    return {
+        [field]: Array.isArray(payload.items) ? payload.items : []
     };
 }
 
@@ -1458,7 +1891,7 @@ function enforceAppleOnlySource(type) {
     });
 }
 
-async function performSearch(term, type) {
+async function performSearch(term, type, options = {}) {
     if (!term) return;
     const source = currentSearchSource;
     if (source === 'manual') {
@@ -1467,20 +1900,22 @@ async function performSearch(term, type) {
     }
     const requestId = ++activeSearchRequestId;
     const normalizedType = normalizeTypeForSource(source, type);
+    const typedOnly = options.preferTyped === true && shouldUseTypedSearch(source, normalizedType);
 
     try {
-        // Show loading
-        const container = getResultsContainer();
-        if (container) {
-            container.innerHTML = `
-            <div class="loading-section">
-                <div class="loading-spinner"></div>
-                <p>Searching...</p>
-            </div>
-        `;
+        if (options.showLoading !== false) {
+            const container = getResultsContainer();
+            if (container) {
+                container.innerHTML = `
+                    <div class="loading-section">
+                        <div class="loading-spinner"></div>
+                        <p>Searching...</p>
+                    </div>
+                `;
+            }
         }
 
-        const sourceData = await fetchSourceResults(source, term, normalizedType);
+        const sourceData = await fetchSourceResults(source, term, normalizedType, { typedOnly });
         if (requestId !== activeSearchRequestId) {
             return;
         }
@@ -1494,7 +1929,7 @@ async function performSearch(term, type) {
         }
 
         ensureCachedResults();
-        cachedResults[source] = sourceData;
+        cachedResults[source] = mergeSourceResults(cachedResults[source], sourceData, source, normalizedType, typedOnly);
         if (sourceData?.error) {
             delete cachedSearchTerms[source];
         } else {
@@ -1517,6 +1952,8 @@ async function performSearch(term, type) {
         }
 
         void refreshLibraryExistence([source]);
+        saveSearchPageState();
+        scheduleSearchWarmup(source, term);
         
     } catch (error) {
         if (requestId !== activeSearchRequestId) {
@@ -1615,55 +2052,6 @@ function getResultsForType(type, source) {
     return [];
 }
 
-function dedupeResults(items, type) {
-    const seen = new Set();
-    const results = [];
-
-    for (const item of items) {
-        const key = buildDedupeKey(item, type);
-        if (!key || !seen.has(key)) {
-            if (key) seen.add(key);
-            results.push(item);
-        }
-    }
-
-    return results;
-}
-
-function buildDedupeKey(item, type) {
-    if (!item || !type) return '';
-    const norm = (value) => (value || '').toString().trim().toLowerCase();
-
-    switch (type) {
-        case 'track': {
-            const title = norm(item.name);
-            const artist = norm(item.artist);
-            const album = norm(item.album);
-            return title ? `track:${title}|${artist}|${album}` : '';
-        }
-        case 'album': {
-            const title = norm(item.name);
-            const artist = norm(item.artist);
-            return title ? `album:${title}|${artist}` : '';
-        }
-        case 'artist': {
-            const name = norm(item.name);
-            return name ? `artist:${name}` : '';
-        }
-        case 'playlist': {
-            const title = norm(item.name);
-            const owner = norm(item.owner);
-            return title ? `playlist:${title}|${owner}` : '';
-        }
-        case 'station': {
-            const title = norm(item.name);
-            return title ? `station:${title}` : '';
-        }
-        default:
-            return '';
-    }
-}
-
 function resetInfiniteScrollState(type) {
     if (type !== 'video') {
         appleVideoOffset = 0;
@@ -1749,6 +2137,7 @@ async function loadMoreAppleVideos() {
                 mappedItems.length > 0 ? ` - ${mappedItems.length} results` : ' - No results';
             displayResults(mappedItems, 'video');
         }
+        saveSearchPageState();
     } catch (err) {
         console.warn('Load more videos failed:', err);
     } finally {
@@ -1757,12 +2146,19 @@ async function loadMoreAppleVideos() {
 }
 
 function updateActiveSource(source) {
-    setActiveSourceTab(source);
-    if (source === 'manual') {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    if (searchSources.includes(normalizedSource)) {
+        currentSearchSource = normalizedSource;
+    }
+    setActiveSourceTab(currentSearchSource);
+    if (currentSearchSource === 'manual') {
         document.getElementById('search-count').textContent = '';
+        saveSearchPageState();
         return;
     }
-    currentSearchType = normalizeTypeForSource(source, currentSearchType);
+    const selectedType = sourceTypeSelections[currentSearchSource] || currentSearchType;
+    currentSearchType = normalizeTypeForSource(currentSearchSource, selectedType);
+    sourceTypeSelections[currentSearchSource] = currentSearchType;
     updateActiveFilter(currentSearchType);
     if (cachedResults) {
         const items = getResultsForType(currentSearchType, currentSearchSource);
@@ -1770,6 +2166,7 @@ function updateActiveSource(source) {
             items.length > 0 ? ` - ${items.length} results` : ' - No results';
         displayResults(items, currentSearchType);
     }
+    saveSearchPageState();
 }
 
 function displayResults(results, type) {
@@ -1999,7 +2396,7 @@ function renderResultCard(item, type) {
         <div class="result-card${extraClass}${selectedClass}${isAppleAudioTrackCard ? ' result-card--apple-audio' : ''}"${libKeyAttr} onclick="${clickAction}">
             <div class="result-image ${imageUrl ? '' : 'no-img'}">
                 ${imgHtml}
-                <span class="result-image-fallback">${defaultIcon}</span>
+                <span class="result-image-placeholder">${defaultIcon}</span>
                 ${audioPreviewButton}
             </div>
             <div class="result-title">${escapeHtml(title)}</div>
@@ -2229,12 +2626,14 @@ function toggleVideoSelection(key) {
         displayResults(mappedItems, 'video');
     }
     updateVideoSelectionBar();
+    saveSearchPageState();
 }
 
 function openUnifiedArtist(id, source) {
     if (!id) {
         return;
     }
+    saveSearchPageState();
     window.location.href = `/Artist?id=${encodeURIComponent(id)}&source=${encodeURIComponent(source)}`;
 }
 
@@ -2343,6 +2742,7 @@ async function queueSearchItem(spotifyId, appleId, appleUrl, title, artist, albu
 
 function showAppleResult(url) {
     if (!url) return;
+    saveSearchPageState();
     // Open directly (no modal)
     window.open(url, '_blank', 'noopener');
 }
@@ -2367,6 +2767,7 @@ function openExternalResult(url) {
     if (!url) {
         return;
     }
+    saveSearchPageState();
     window.open(url, '_blank', 'noopener');
 }
 
@@ -2409,27 +2810,13 @@ function normalizeTypeForSource(source, type) {
     return normalizedType || 'track';
 }
 
-function normalizeLibraryResults(data) {
-    if (!data) return;
-    const mark = (list) => {
-        if (!Array.isArray(list)) return;
-        list.forEach(item => {
-            if (item) {
-                item.inLibrary = true;
-            }
-        });
-    };
-    mark(data.tracks);
-    mark(data.albums);
-    mark(data.artists);
-}
-
 function buildLibraryCheckKey(item) {
     if (!item) return '';
-    const isrc = (item.isrc || '').trim();
+    const normalizeKeyValue = (value) => String(value ?? '').trim();
+    const isrc = normalizeKeyValue(item.isrc);
     if (isrc) return `isrc:${isrc.toLowerCase()}`;
-    const title = (item.name || '').trim().toLowerCase();
-    const artist = (item.artist || '').trim().toLowerCase();
+    const title = normalizeKeyValue(item.name).toLowerCase();
+    const artist = normalizeKeyValue(item.artist).toLowerCase();
     const duration = resolveSearchItemDurationMs(item);
     if (!title || !artist) return '';
     return `track:${title}|artist:${artist}|dur:${duration || 0}`;
@@ -2480,6 +2867,7 @@ async function refreshLibraryExistence(sourcesToCheck) {
             });
         }
     }
+    saveSearchPageState();
 }
 
 async function updateLibraryStatusForTracks(items) {
@@ -2623,6 +3011,7 @@ function clearVideoSelection() {
         displayResults(mappedItems, 'video');
     }
     updateVideoSelectionBar();
+    saveSearchPageState();
 }
 
 async function downloadSelectedVideos() {
@@ -2658,6 +3047,7 @@ function toggleViewSelected() {
         displayResults(mappedItems, 'video');
     }
     updateVideoSelectionBar();
+    saveSearchPageState();
 }
 </script>
 }
