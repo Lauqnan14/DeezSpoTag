@@ -101,6 +101,25 @@ public sealed record RecommendationRejectionUpsertInput(
     string? Title,
     string? Artist);
 
+public sealed record RecommendationGenerationStateDto(
+    long LibraryId,
+    long FolderId,
+    string StationId,
+    DateOnly TargetDay,
+    string Status,
+    string? ReasonCode,
+    DateTimeOffset? StartedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    string? LastError,
+    int AttemptCount,
+    DateTimeOffset UpdatedAtUtc);
+
+public sealed record RecommendationGenerationStateKey(
+    long LibraryId,
+    long FolderId,
+    string StationId,
+    DateOnly TargetDay);
+
 public sealed record ShazamTrackCacheDto(
     long TrackId,
     string Status,

@@ -46,6 +46,8 @@ public sealed class LibraryRecommendationService
     private const string BackgroundGenerationFailedReason = "background_generation_failed";
     private const string PersistFailedReason = "persist_failed";
     private const string PersistTimedOutReason = "persist_timed_out";
+    private const string GenerationReasonOnDemand = "on-demand";
+    private const string GenerationReasonManualRebuild = "manual-rebuild";
     private const int PersistedFailureReasonMaxLength = 240;
 
     private const int MaxDailyRecommendations = 50;
@@ -58,7 +60,6 @@ public sealed class LibraryRecommendationService
     private const int ShazamInlineRefreshBudget = 12;
     private const int ShazamBackgroundBatchSize = 120;
     private static readonly TimeSpan ShazamCacheTtl = TimeSpan.FromDays(14);
-    private static readonly TimeSpan DailyPoolBuildFailureTtl = TimeSpan.FromMinutes(10);
     private static readonly HashSet<string> RejectedDerivativeTerms = new(StringComparer.OrdinalIgnoreCase)
     {
         "cover",
@@ -81,8 +82,6 @@ public sealed class LibraryRecommendationService
     private readonly CancellationToken _backgroundCancellationToken;
     private readonly ConcurrentDictionary<string, RecommendationDetailDto> _dailyPoolCache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _backgroundScans = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, byte> _backgroundDailyPoolBuilds = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, RecommendationBuildFailure> _dailyPoolBuildFailures = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RecommendationTrackDto> _deezerRecommendationMetadataCache = new(StringComparer.Ordinal);
 
     public LibraryRecommendationService(
@@ -118,7 +117,6 @@ public sealed class LibraryRecommendationService
         IReadOnlyList<RecommendationTrackDto> Tracks,
         string? StationImageUrl = null);
     private sealed record RecommendationBuildResult(RecommendationDetailDto? Detail, IReadOnlyList<string> ReasonCodes);
-    private sealed record RecommendationBuildFailure(DateTimeOffset RecordedAtUtc, IReadOnlyList<string> ReasonCodes);
     private sealed record PersistDailyPoolResult(bool Success, string? ReasonCode = null)
     {
         public static PersistDailyPoolResult Ok { get; } = new(true);
@@ -628,9 +626,15 @@ public sealed class LibraryRecommendationService
         IReadOnlyDictionary<string, string> artworkAssignments,
         CancellationToken cancellationToken)
     {
-        if (TryGetRecentBuildFailure(scope, dayLocal, out var failureReasons))
+        var state = await _repository.GetRecommendationGenerationStateAsync(
+            scope.LibraryId,
+            scope.FolderId,
+            dayLocal,
+            cancellationToken);
+        var stateReasons = ResolveGenerationStateReasonCodes(state);
+        if (stateReasons.Count > 0)
         {
-            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, failureReasons);
+            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, stateReasons);
         }
 
         var libraryTrackIds = await _repository.GetTrackIdsForLibraryScopeAsync(
@@ -642,23 +646,40 @@ public sealed class LibraryRecommendationService
             return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, ["no_library_tracks"]);
         }
 
-        QueueDailyPoolGeneration(scope, dayLocal, allRecommendationFolders, artworkAssignments);
+        await QueueDailyPoolGenerationAsync(
+            scope,
+            dayLocal,
+            allRecommendationFolders,
+            artworkAssignments,
+            string.Equals(state?.Status, "completed", StringComparison.OrdinalIgnoreCase),
+            cancellationToken);
         return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, [GenerationQueuedReason]);
     }
 
-    private void QueueDailyPoolGeneration(
+    private async Task QueueDailyPoolGenerationAsync(
         RecommendationScope scope,
         DateOnly dayLocal,
         IReadOnlyList<FolderDto> allRecommendationFolders,
-        IReadOnlyDictionary<string, string> artworkAssignments)
+        IReadOnlyDictionary<string, string> artworkAssignments,
+        bool forceReset,
+        CancellationToken cancellationToken)
     {
-        ClearDailyPoolBuildFailure(scope, dayLocal);
+        await _repository.RequestRecommendationGenerationAsync(
+            BuildGenerationStateKey(scope, dayLocal),
+            GenerationReasonOnDemand,
+            forceReset,
+            cancellationToken);
         if (_shazamRecognitionService.IsAvailable)
         {
             StartBackgroundShazamRefresh(scope, explicitTrackIds: null);
         }
 
-        StartBackgroundDailyPoolGeneration(scope, dayLocal, allRecommendationFolders, artworkAssignments);
+        StartBackgroundDailyPoolGeneration(
+            scope,
+            dayLocal,
+            allRecommendationFolders,
+            artworkAssignments,
+            GenerationReasonOnDemand);
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
@@ -753,71 +774,45 @@ public sealed class LibraryRecommendationService
         return "No recommendations are available for this station today.";
     }
 
-    private static string BuildDailyPoolBuildKey(RecommendationScope scope, DateOnly dayLocal)
-        => $"{scope.ScopeKey}:{dayLocal:yyyyMMdd}";
-
-    private bool TryEnterDailyPoolBuild(RecommendationScope scope, DateOnly dayLocal, out string buildKey)
-    {
-        buildKey = BuildDailyPoolBuildKey(scope, dayLocal);
-        return _backgroundDailyPoolBuilds.TryAdd(buildKey, 0);
-    }
-
-    private void ExitDailyPoolBuild(string buildKey)
-    {
-        _backgroundDailyPoolBuilds.TryRemove(buildKey, out _);
-    }
-
-    private bool TryGetRecentBuildFailure(
+    private static RecommendationGenerationStateKey BuildGenerationStateKey(
         RecommendationScope scope,
-        DateOnly dayLocal,
-        out IReadOnlyList<string> reasonCodes)
+        DateOnly dayLocal)
+        => new(scope.LibraryId, scope.FolderId, scope.StationId, dayLocal);
+
+    private static IReadOnlyList<string> ResolveGenerationStateReasonCodes(RecommendationGenerationStateDto? state)
     {
-        reasonCodes = Array.Empty<string>();
-        var buildKey = BuildDailyPoolBuildKey(scope, dayLocal);
-        if (!_dailyPoolBuildFailures.TryGetValue(buildKey, out var failure))
+        if (state is null)
         {
-            return false;
+            return Array.Empty<string>();
         }
 
-        if (DateTimeOffset.UtcNow - failure.RecordedAtUtc <= DailyPoolBuildFailureTtl)
+        if (string.Equals(state.Status, "pending", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(state.Status, "running", StringComparison.OrdinalIgnoreCase))
         {
-            reasonCodes = failure.ReasonCodes.Count > 0
-                ? failure.ReasonCodes
-                : [EmptyPoolReason];
-            return true;
+            return [GenerationQueuedReason];
         }
 
-        _dailyPoolBuildFailures.TryRemove(buildKey, out _);
-        return false;
-    }
+        if (string.Equals(state.Status, "failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return [string.IsNullOrWhiteSpace(state.ReasonCode) ? BackgroundGenerationFailedReason : state.ReasonCode];
+        }
 
-    private void RecordDailyPoolBuildFailure(
-        RecommendationScope scope,
-        DateOnly dayLocal,
-        IReadOnlyList<string> reasonCodes)
-    {
-        _dailyPoolBuildFailures[BuildDailyPoolBuildKey(scope, dayLocal)] = new RecommendationBuildFailure(
-            DateTimeOffset.UtcNow,
-            reasonCodes.Count > 0 ? reasonCodes : [EmptyPoolReason]);
-    }
-
-    private void ClearDailyPoolBuildFailure(RecommendationScope scope, DateOnly dayLocal)
-    {
-        _dailyPoolBuildFailures.TryRemove(BuildDailyPoolBuildKey(scope, dayLocal), out _);
+        return Array.Empty<string>();
     }
 
     private void StartBackgroundDailyPoolGeneration(
         RecommendationScope requestedScope,
         DateOnly dayLocal,
         IReadOnlyList<FolderDto> allRecommendationFolders,
-        IReadOnlyDictionary<string, string> artworkAssignments)
+        IReadOnlyDictionary<string, string> artworkAssignments,
+        string reasonCode)
     {
-        if (!TryEnterDailyPoolBuild(requestedScope, dayLocal, out var key))
-        {
-            return;
-        }
-
-        _ = RunBackgroundDailyPoolGenerationAsync(dayLocal, allRecommendationFolders, artworkAssignments, requestedScope.ScopeKey, key);
+        _ = RunBackgroundDailyPoolGenerationAsync(
+            dayLocal,
+            allRecommendationFolders,
+            artworkAssignments,
+            requestedScope.ScopeKey,
+            reasonCode);
     }
 
     private async Task RunBackgroundDailyPoolGenerationAsync(
@@ -825,13 +820,22 @@ public sealed class LibraryRecommendationService
         IReadOnlyList<FolderDto> allRecommendationFolders,
         IReadOnlyDictionary<string, string> artworkAssignments,
         string requestedScopeKey,
-        string ownershipKey)
+        string reasonCode)
     {
         try
         {
             foreach (var folder in OrderDailyPoolFolders(allRecommendationFolders, requestedScopeKey))
             {
-                await ProcessBackgroundDailyPoolFolderAsync(folder, dayLocal, artworkAssignments, ownershipKey);
+                _backgroundCancellationToken.ThrowIfCancellationRequested();
+                var scope = BuildScope(folder.LibraryId!.Value, folder);
+                var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
+                await RunDailyRecommendationGenerationAsync(
+                    scope,
+                    dayLocal,
+                    stationImageUrl,
+                    reasonCode,
+                    forceReset: false,
+                    _backgroundCancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -839,10 +843,6 @@ public sealed class LibraryRecommendationService
             _logger.LogWarning(
                 ex,
                 "Background recommendation generation failed before all scopes could be processed.");
-        }
-        finally
-        {
-            ExitDailyPoolBuild(ownershipKey);
         }
     }
 
@@ -855,101 +855,9 @@ public sealed class LibraryRecommendationService
             .ThenBy(folder => folder.LibraryId!.Value)
             .ThenBy(folder => folder.DisplayName, StringComparer.OrdinalIgnoreCase);
 
-    private async Task ProcessBackgroundDailyPoolFolderAsync(
-        FolderDto folder,
-        DateOnly dayLocal,
-        IReadOnlyDictionary<string, string> artworkAssignments,
-        string ownershipKey)
-    {
-        var scope = BuildScope(folder.LibraryId!.Value, folder);
-        var scopeBuildKey = BuildDailyPoolBuildKey(scope, dayLocal);
-        if (!string.Equals(scopeBuildKey, ownershipKey, StringComparison.Ordinal)
-            && !TryEnterDailyPoolBuild(scope, dayLocal, out scopeBuildKey))
-        {
-            return;
-        }
-
-        try
-        {
-            await BuildMissingBackgroundDailyPoolAsync(scope, dayLocal, artworkAssignments);
-        }
-        catch (OperationCanceledException) when (_backgroundCancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException ex)
-        {
-            RecordDailyPoolBuildFailure(scope, dayLocal, [BackgroundGenerationFailedReason]);
-            _logger.LogWarning(
-                ex,
-                "Background recommendation generation timed out for scope {ScopeKey}.",
-                scope.ScopeKey);
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            RecordDailyPoolBuildFailure(scope, dayLocal, [BackgroundGenerationFailedReason]);
-            _logger.LogWarning(
-                ex,
-                "Background recommendation generation failed for scope {ScopeKey}.",
-                scope.ScopeKey);
-        }
-        finally
-        {
-            ExitDailyPoolBuild(scopeBuildKey);
-        }
-    }
-
-    private async Task BuildMissingBackgroundDailyPoolAsync(
-        RecommendationScope scope,
-        DateOnly dayLocal,
-        IReadOnlyDictionary<string, string> artworkAssignments)
-    {
-        _backgroundCancellationToken.ThrowIfCancellationRequested();
-        var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
-        var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
-        if (_dailyPoolCache.TryGetValue(cacheKey, out _))
-        {
-            return;
-        }
-
-        var existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, _backgroundCancellationToken);
-        if (existingPool is not null)
-        {
-            _dailyPoolCache[cacheKey] = existingPool;
-            return;
-        }
-
-        if (_shazamRecognitionService.IsAvailable)
-        {
-            StartBackgroundShazamRefresh(scope, explicitTrackIds: null);
-        }
-
-        var buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, _backgroundCancellationToken);
-        if (buildResult.Detail is null)
-        {
-            RecordDailyPoolBuildFailure(scope, dayLocal, buildResult.ReasonCodes);
-            return;
-        }
-
-        var persistResult = await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, _backgroundCancellationToken);
-        if (!persistResult.Success)
-        {
-            RecordDailyPoolBuildFailure(scope, dayLocal, [persistResult.ReasonCode ?? PersistFailedReason]);
-            return;
-        }
-
-        _dailyPoolCache[cacheKey] = buildResult.Detail;
-        ClearDailyPoolBuildFailure(scope, dayLocal);
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Background recommendation pool generated for scope {ScopeKey} ({DayLocal}).",
-                scope.ScopeKey,
-                dayLocal);
-        }
-    }
-
-    public async Task RefreshDailyRecommendationsAsync(CancellationToken cancellationToken = default)
+    public async Task RefreshDailyRecommendationsAsync(
+        string reasonCode = "scheduled",
+        CancellationToken cancellationToken = default)
     {
         if (!_repository.IsConfigured)
         {
@@ -971,7 +879,7 @@ public sealed class LibraryRecommendationService
         foreach (var folder in OrderRefreshRecommendationFolders(allRecommendationFolders))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await RefreshDailyRecommendationFolderAsync(folder, dayLocal, artworkAssignments, cancellationToken);
+            await RefreshDailyRecommendationFolderAsync(folder, dayLocal, artworkAssignments, reasonCode, cancellationToken);
         }
     }
 
@@ -985,12 +893,13 @@ public sealed class LibraryRecommendationService
         FolderDto folder,
         DateOnly dayLocal,
         IReadOnlyDictionary<string, string> artworkAssignments,
+        string reasonCode,
         CancellationToken cancellationToken)
     {
         var scope = BuildScope(folder.LibraryId!.Value, folder);
         try
         {
-            await RefreshDailyRecommendationScopeAsync(scope, dayLocal, artworkAssignments, cancellationToken);
+            await RefreshDailyRecommendationScopeAsync(scope, dayLocal, artworkAssignments, reasonCode, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1018,6 +927,7 @@ public sealed class LibraryRecommendationService
         RecommendationScope scope,
         DateOnly dayLocal,
         IReadOnlyDictionary<string, string> artworkAssignments,
+        string reasonCode,
         CancellationToken cancellationToken)
     {
         var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
@@ -1026,55 +936,139 @@ public sealed class LibraryRecommendationService
         if (existingPool is not null)
         {
             _dailyPoolCache[cacheKey] = existingPool;
+            await _repository.CompleteRecommendationGenerationAsync(
+                BuildGenerationStateKey(scope, dayLocal),
+                cancellationToken);
             return;
         }
 
-        if (!TryEnterDailyPoolBuild(scope, dayLocal, out var buildKey))
+        await RunDailyRecommendationGenerationAsync(
+            scope,
+            dayLocal,
+            stationImageUrl,
+            reasonCode,
+            forceReset: false,
+            cancellationToken);
+    }
+
+    private async Task<bool> RunDailyRecommendationGenerationAsync(
+        RecommendationScope scope,
+        DateOnly dayLocal,
+        string? stationImageUrl,
+        string reasonCode,
+        bool forceReset,
+        CancellationToken cancellationToken)
+    {
+        var stateKey = BuildGenerationStateKey(scope, dayLocal);
+        if (forceReset)
         {
-            return;
+            await _repository.RequestRecommendationGenerationAsync(
+                stateKey,
+                reasonCode,
+                forceReset: true,
+                cancellationToken);
+        }
+
+        if (!await _repository.TryStartRecommendationGenerationAsync(stateKey, reasonCode, cancellationToken))
+        {
+            return false;
+        }
+
+        var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
+        var existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+        if (existingPool is not null && !forceReset)
+        {
+            _dailyPoolCache[cacheKey] = existingPool;
+            await _repository.CompleteRecommendationGenerationAsync(stateKey, cancellationToken);
+            return true;
         }
 
         try
         {
-            await BuildAndPersistDailyRecommendationScopeAsync(scope, dayLocal, stationImageUrl, cacheKey, cancellationToken);
+            if (forceReset)
+            {
+                _dailyPoolCache.TryRemove(cacheKey, out _);
+                await _repository.DeletePlaylistTrackCandidateCacheAsync(
+                    DailyPoolCacheSource,
+                    scope.ScopeKey,
+                    cancellationToken);
+            }
+
+            await RefreshShazamScopeAsync(scope, cancellationToken);
+            var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
+            if (dailyPool.Detail is null)
+            {
+                await FailRecommendationGenerationAsync(stateKey, dailyPool.ReasonCodes, cancellationToken);
+                return false;
+            }
+
+            var persistResult = await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken);
+            if (!persistResult.Success)
+            {
+                await FailRecommendationGenerationAsync(
+                    stateKey,
+                    [persistResult.ReasonCode ?? PersistFailedReason],
+                    cancellationToken);
+                return false;
+            }
+
+            _dailyPoolCache[cacheKey] = dailyPool.Detail;
+            await _repository.CompleteRecommendationGenerationAsync(stateKey, cancellationToken);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Recommendation pool generated for scope {ScopeKey} ({DayLocal}).",
+                    scope.ScopeKey,
+                    dayLocal);
+            }
+
+            return true;
         }
-        finally
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            ExitDailyPoolBuild(buildKey);
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            await _repository.FailRecommendationGenerationAsync(
+                stateKey,
+                BackgroundGenerationFailedReason,
+                ex.Message,
+                CancellationToken.None);
+            _logger.LogWarning(
+                ex,
+                "Recommendation generation timed out for scope {ScopeKey}.",
+                scope.ScopeKey);
+            return false;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            await _repository.FailRecommendationGenerationAsync(
+                stateKey,
+                BackgroundGenerationFailedReason,
+                ex.Message,
+                CancellationToken.None);
+            _logger.LogWarning(
+                ex,
+                "Recommendation generation failed for scope {ScopeKey}.",
+                scope.ScopeKey);
+            return false;
         }
     }
 
-    private async Task BuildAndPersistDailyRecommendationScopeAsync(
-        RecommendationScope scope,
-        DateOnly dayLocal,
-        string? stationImageUrl,
-        string cacheKey,
+    private async Task FailRecommendationGenerationAsync(
+        RecommendationGenerationStateKey stateKey,
+        IReadOnlyList<string> reasonCodes,
         CancellationToken cancellationToken)
     {
-        var existingPool = await TryLoadPersistedDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
-        if (existingPool is not null)
-        {
-            _dailyPoolCache[cacheKey] = existingPool;
-            return;
-        }
-
-        await RefreshShazamScopeAsync(scope, cancellationToken);
-        var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
-        if (dailyPool.Detail is null)
-        {
-            RecordDailyPoolBuildFailure(scope, dayLocal, dailyPool.ReasonCodes);
-            return;
-        }
-
-        var persistResult = await PersistDailyPoolAsync(scope, dayLocal, dailyPool.Detail, cancellationToken);
-        if (!persistResult.Success)
-        {
-            RecordDailyPoolBuildFailure(scope, dayLocal, [persistResult.ReasonCode ?? PersistFailedReason]);
-            return;
-        }
-
-        _dailyPoolCache[cacheKey] = dailyPool.Detail;
-        ClearDailyPoolBuildFailure(scope, dayLocal);
+        var reasons = reasonCodes.Count > 0
+            ? reasonCodes
+            : [EmptyPoolReason];
+        await _repository.FailRecommendationGenerationAsync(
+            stateKey,
+            reasons[0],
+            string.Join(", ", reasons),
+            cancellationToken);
     }
 
     public async Task<bool> TriggerFullLibraryShazamScanAsync(
@@ -1222,45 +1216,30 @@ public sealed class LibraryRecommendationService
         var artworkAssignments = BuildRecommendationArtworkAssignments(allRecommendationFolders, nowLocal);
         var stationImageUrl = ResolveRecommendationArtworkUrl(scope.StationId, artworkAssignments);
 
-        if (!TryEnterDailyPoolBuild(scope, dayLocal, out var buildKey))
-        {
-            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, [GenerationQueuedReason]);
-        }
-
-        RecommendationBuildResult buildResult;
-        try
-        {
-            await RefreshShazamScopeAsync(scope, cancellationToken);
-            buildResult = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
-        }
-        finally
-        {
-            ExitDailyPoolBuild(buildKey);
-        }
-
         var cacheKey = BuildDailyCacheKey(scope.ScopeKey, dayLocal);
-        if (buildResult.Detail is null)
+        _dailyPoolCache.TryRemove(cacheKey, out _);
+        var generated = await RunDailyRecommendationGenerationAsync(
+            scope,
+            dayLocal,
+            stationImageUrl,
+            GenerationReasonManualRebuild,
+            forceReset: true,
+            cancellationToken);
+        if (!generated)
         {
-            _dailyPoolCache.TryRemove(cacheKey, out _);
-            RecordDailyPoolBuildFailure(scope, dayLocal, buildResult.ReasonCodes);
-            await _repository.DeletePlaylistTrackCandidateCacheAsync(
-                DailyPoolCacheSource,
-                scope.ScopeKey,
+            var state = await _repository.GetRecommendationGenerationStateAsync(
+                scope.LibraryId,
+                scope.FolderId,
+                dayLocal,
                 cancellationToken);
-            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, buildResult.ReasonCodes);
+            var reasons = ResolveGenerationStateReasonCodes(state);
+            return CreateUnavailableRecommendationDetail(
+                scope,
+                stationImageUrl,
+                dayLocal,
+                reasons.Count > 0 ? reasons : [GenerationQueuedReason]);
         }
 
-        var persistResult = await PersistDailyPoolAsync(scope, dayLocal, buildResult.Detail, cancellationToken);
-        if (!persistResult.Success)
-        {
-            var reason = persistResult.ReasonCode ?? PersistFailedReason;
-            _dailyPoolCache.TryRemove(cacheKey, out _);
-            RecordDailyPoolBuildFailure(scope, dayLocal, [reason]);
-            return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, [reason]);
-        }
-
-        _dailyPoolCache[cacheKey] = buildResult.Detail;
-        ClearDailyPoolBuildFailure(scope, dayLocal);
         return await GetRecommendationsAsync(libraryId, scope.StationId, scope.FolderId, limit, cancellationToken);
     }
 

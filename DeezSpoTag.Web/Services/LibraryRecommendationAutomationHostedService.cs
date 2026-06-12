@@ -70,7 +70,7 @@ public sealed class LibraryRecommendationAutomationHostedService : BackgroundSer
             {
                 _logger.LogInformation("Refreshing library recommendations ({Reason}).", reason);
             }
-            await _recommendationService.RefreshDailyRecommendationsAsync(cancellationToken);
+            await _recommendationService.RefreshDailyRecommendationsAsync(reason, cancellationToken);
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Library recommendations refreshed ({Reason}).", reason);

@@ -72,11 +72,17 @@ public sealed class RecommendationImplementationContractTests
             source,
             "public async Task<RecommendationDetailDto?> RebuildRecommendationsAsync",
             "public async Task<RecommendationDetailDto?> RejectRecommendationTrackAsync");
+        var coordinator = ExtractBetween(
+            source,
+            "private async Task<bool> RunDailyRecommendationGenerationAsync",
+            "private async Task FailRecommendationGenerationAsync");
 
         Assert.Contains("_dailyPoolCache.TryRemove(cacheKey, out _)", method, StringComparison.Ordinal);
-        Assert.Contains("DeletePlaylistTrackCandidateCacheAsync", method, StringComparison.Ordinal);
-        Assert.Contains("DailyPoolCacheSource", method, StringComparison.Ordinal);
-        Assert.Contains("scope.ScopeKey", method, StringComparison.Ordinal);
+        Assert.Contains("RunDailyRecommendationGenerationAsync", method, StringComparison.Ordinal);
+        Assert.Contains("forceReset: true", method, StringComparison.Ordinal);
+        Assert.Contains("DeletePlaylistTrackCandidateCacheAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("DailyPoolCacheSource", coordinator, StringComparison.Ordinal);
+        Assert.Contains("scope.ScopeKey", coordinator, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -93,16 +99,30 @@ public sealed class RecommendationImplementationContractTests
     }
 
     [Fact]
-    public void BackgroundDailyPoolFolder_DoesNotAbortRunOnNonShutdownTimeout()
+    public void RecommendationGeneration_UsesPersistentStateAndNoInMemoryBuildAuthority()
     {
         var source = ReadRecommendationServiceSource();
-        var method = ExtractBetween(
-            source,
-            "private async Task ProcessBackgroundDailyPoolFolderAsync",
-            "private async Task BuildMissingBackgroundDailyPoolAsync");
 
-        Assert.Contains("catch (OperationCanceledException) when (_backgroundCancellationToken.IsCancellationRequested)", method, StringComparison.Ordinal);
-        Assert.Contains("Background recommendation generation timed out", method, StringComparison.Ordinal);
+        Assert.Contains("RequestRecommendationGenerationAsync", source, StringComparison.Ordinal);
+        Assert.Contains("TryStartRecommendationGenerationAsync", source, StringComparison.Ordinal);
+        Assert.Contains("CompleteRecommendationGenerationAsync", source, StringComparison.Ordinal);
+        Assert.Contains("FailRecommendationGenerationAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_backgroundDailyPoolBuilds", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_dailyPoolBuildFailures", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryEnterDailyPoolBuild", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RecordDailyPoolBuildFailure", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RecommendationAutomation_PassesRefreshReasonIntoService()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindRepoRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "LibraryRecommendationAutomationHostedService.cs"));
+
+        Assert.Contains("_recommendationService.RefreshDailyRecommendationsAsync(reason, cancellationToken)", source, StringComparison.Ordinal);
     }
 
     private static string ReadRecommendationServiceSource()

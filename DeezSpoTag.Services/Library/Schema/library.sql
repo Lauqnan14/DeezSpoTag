@@ -456,6 +456,24 @@ CREATE INDEX IF NOT EXISTS idx_recommendation_rejection_library
 CREATE INDEX IF NOT EXISTS idx_recommendation_rejection_rejected
     ON recommendation_rejection (rejected_at_utc);
 
+CREATE TABLE IF NOT EXISTS recommendation_generation_state (
+    library_id BIGINT NOT NULL,
+    folder_id BIGINT NOT NULL,
+    station_id TEXT NOT NULL,
+    target_day TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason_code TEXT,
+    started_at_utc TEXT,
+    completed_at_utc TEXT,
+    last_error TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (library_id, folder_id, target_day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_generation_state_status
+    ON recommendation_generation_state (status, target_day, updated_at_utc);
+
 CREATE TABLE IF NOT EXISTS playlist_watch_track (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,

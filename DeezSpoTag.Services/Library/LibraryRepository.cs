@@ -6730,6 +6730,259 @@ WHERE library_id = @libraryId
         return long.TryParse(trimmed, out _) ? trimmed : string.Empty;
     }
 
+    public async Task<RecommendationGenerationStateDto?> GetRecommendationGenerationStateAsync(
+        long libraryId,
+        long folderId,
+        DateOnly targetDay,
+        CancellationToken cancellationToken = default)
+    {
+        if (libraryId <= 0 || folderId <= 0)
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT library_id,
+       folder_id,
+       station_id,
+       target_day,
+       status,
+       reason_code,
+       started_at_utc,
+       completed_at_utc,
+       last_error,
+       attempt_count,
+       updated_at_utc
+FROM recommendation_generation_state
+WHERE library_id = @libraryId
+  AND folder_id = @folderId
+  AND target_day = @targetDay
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
+        command.Parameters.AddWithValue("targetDay", FormatRecommendationTargetDay(targetDay));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? await ReadRecommendationGenerationStateAsync(reader, cancellationToken)
+            : null;
+    }
+
+    public async Task RequestRecommendationGenerationAsync(
+        RecommendationGenerationStateKey key,
+        string reasonCode,
+        bool forceReset = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidRecommendationGenerationKey(key))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var sql = forceReset
+            ? @"
+INSERT INTO recommendation_generation_state (
+    library_id,
+    folder_id,
+    station_id,
+    target_day,
+    status,
+    reason_code,
+    started_at_utc,
+    completed_at_utc,
+    last_error,
+    attempt_count,
+    updated_at_utc)
+VALUES (
+    @libraryId,
+    @folderId,
+    @stationId,
+    @targetDay,
+    'pending',
+    @reasonCode,
+    NULL,
+    NULL,
+    NULL,
+    0,
+    @updatedAtUtc)
+ON CONFLICT(library_id, folder_id, target_day) DO UPDATE SET
+    station_id = excluded.station_id,
+    status = 'pending',
+    reason_code = excluded.reason_code,
+    started_at_utc = NULL,
+    completed_at_utc = NULL,
+    last_error = NULL,
+    attempt_count = 0,
+    updated_at_utc = excluded.updated_at_utc;"
+            : @"
+INSERT INTO recommendation_generation_state (
+    library_id,
+    folder_id,
+    station_id,
+    target_day,
+    status,
+    reason_code,
+    updated_at_utc)
+VALUES (
+    @libraryId,
+    @folderId,
+    @stationId,
+    @targetDay,
+    'pending',
+    @reasonCode,
+    @updatedAtUtc)
+ON CONFLICT(library_id, folder_id, target_day) DO UPDATE SET
+    station_id = excluded.station_id,
+    status = CASE
+        WHEN recommendation_generation_state.status = 'completed' THEN recommendation_generation_state.status
+        WHEN recommendation_generation_state.status = 'running' THEN recommendation_generation_state.status
+        ELSE 'pending'
+    END,
+    reason_code = CASE
+        WHEN recommendation_generation_state.status = 'completed' THEN recommendation_generation_state.reason_code
+        ELSE excluded.reason_code
+    END,
+    updated_at_utc = excluded.updated_at_utc;";
+        await using var command = new SqliteCommand(sql, connection);
+        AddRecommendationGenerationKeyParameters(command, key);
+        command.Parameters.AddWithValue("reasonCode", NormalizeRecommendationGenerationText(reasonCode) ?? "requested");
+        command.Parameters.AddWithValue("updatedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> TryStartRecommendationGenerationAsync(
+        RecommendationGenerationStateKey key,
+        string reasonCode,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidRecommendationGenerationKey(key))
+        {
+            return false;
+        }
+
+        await RequestRecommendationGenerationAsync(key, reasonCode, forceReset: false, cancellationToken);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE recommendation_generation_state
+SET status = 'running',
+    reason_code = @reasonCode,
+    started_at_utc = @startedAtUtc,
+    completed_at_utc = NULL,
+    last_error = NULL,
+    attempt_count = attempt_count + 1,
+    updated_at_utc = @startedAtUtc
+WHERE library_id = @libraryId
+  AND folder_id = @folderId
+  AND target_day = @targetDay
+  AND status IN ('pending', 'failed');";
+        await using var command = new SqliteCommand(sql, connection);
+        AddRecommendationGenerationKeyParameters(command, key);
+        command.Parameters.AddWithValue("reasonCode", NormalizeRecommendationGenerationText(reasonCode) ?? "running");
+        command.Parameters.AddWithValue("startedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task CompleteRecommendationGenerationAsync(
+        RecommendationGenerationStateKey key,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidRecommendationGenerationKey(key))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE recommendation_generation_state
+SET status = 'completed',
+    reason_code = NULL,
+    completed_at_utc = @completedAtUtc,
+    last_error = NULL,
+    updated_at_utc = @completedAtUtc
+WHERE library_id = @libraryId
+  AND folder_id = @folderId
+  AND target_day = @targetDay;";
+        await using var command = new SqliteCommand(sql, connection);
+        AddRecommendationGenerationKeyParameters(command, key);
+        command.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task FailRecommendationGenerationAsync(
+        RecommendationGenerationStateKey key,
+        string reasonCode,
+        string? error,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidRecommendationGenerationKey(key))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE recommendation_generation_state
+SET status = 'failed',
+    reason_code = @reasonCode,
+    completed_at_utc = @completedAtUtc,
+    last_error = @lastError,
+    updated_at_utc = @completedAtUtc
+WHERE library_id = @libraryId
+  AND folder_id = @folderId
+  AND target_day = @targetDay;";
+        await using var command = new SqliteCommand(sql, connection);
+        AddRecommendationGenerationKeyParameters(command, key);
+        command.Parameters.AddWithValue("reasonCode", NormalizeRecommendationGenerationText(reasonCode) ?? "failed");
+        command.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("lastError", (object?)NormalizeRecommendationGenerationText(error) ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<RecommendationGenerationStateDto> ReadRecommendationGenerationStateAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+    {
+        return new RecommendationGenerationStateDto(
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            reader.GetString(2),
+            DateOnly.ParseExact(reader.GetString(3), "yyyy-MM-dd", CultureInfo.InvariantCulture),
+            reader.GetString(4),
+            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+            await reader.IsDBNullAsync(6, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(6)),
+            await reader.IsDBNullAsync(7, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(7)),
+            await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
+            reader.GetInt32(9),
+            await reader.IsDBNullAsync(10, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(10)));
+    }
+
+    private static bool IsValidRecommendationGenerationKey(RecommendationGenerationStateKey key)
+        => key.LibraryId > 0
+           && key.FolderId > 0
+           && !string.IsNullOrWhiteSpace(key.StationId);
+
+    private static void AddRecommendationGenerationKeyParameters(
+        SqliteCommand command,
+        RecommendationGenerationStateKey key)
+    {
+        command.Parameters.AddWithValue(LibraryIdField, key.LibraryId);
+        command.Parameters.AddWithValue(FolderIdParameter, key.FolderId);
+        command.Parameters.AddWithValue("stationId", key.StationId.Trim());
+        command.Parameters.AddWithValue("targetDay", FormatRecommendationTargetDay(key.TargetDay));
+    }
+
+    private static string FormatRecommendationTargetDay(DateOnly targetDay)
+        => targetDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    private static string? NormalizeRecommendationGenerationText(string? value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        return normalized is { Length: > 512 } ? normalized[..512] : normalized;
+    }
+
     public async Task<HashSet<string>> GetPlaylistWatchTrackIdsAsync(
         string source,
         string sourceId,
