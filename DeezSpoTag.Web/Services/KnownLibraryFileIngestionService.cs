@@ -184,6 +184,12 @@ public sealed class KnownLibraryFileIngestionService
     private async Task PublishLibraryUpdatedAsync(long? folderId, CancellationToken cancellationToken)
     {
         var stats = await _repository.GetLibraryStatsAsync(cancellationToken);
+        await _configStore.SaveLastScanInfoAsync(new LibraryConfigStore.LastScanInfo(
+            DateTimeOffset.UtcNow,
+            stats.TotalArtists,
+            stats.TotalAlbums,
+            stats.TotalTracks));
+
         var syncService = _serviceProvider.GetService<CrossDeviceSyncService>();
         if (syncService is not null)
         {
