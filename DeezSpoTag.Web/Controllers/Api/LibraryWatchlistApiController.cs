@@ -16,8 +16,6 @@ public class LibraryWatchlistApiController : ControllerBase
     private const string AppleSource = "apple";
     private const string DeezerSource = "deezer";
     private const string AddWatchlistFailedMessage = "Failed to add watchlist entry.";
-    private const string ExplicitField = "explicit";
-
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly ArtistWatchService _artistWatchService;
@@ -59,7 +57,7 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpGet("spotify/{spotifyId}")]
     public async Task<IActionResult> GetSpotifyStatus(string spotifyId, CancellationToken cancellationToken)
     {
-        var normalizedSpotifyId = NormalizeSpotifyId(spotifyId);
+        var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(spotifyId);
         if (string.IsNullOrWhiteSpace(normalizedSpotifyId))
         {
             return BadRequest("Spotify ID is required.");
@@ -86,7 +84,7 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpGet("apple/{appleId}")]
     public async Task<IActionResult> GetAppleStatus(string appleId, CancellationToken cancellationToken)
     {
-        var normalizedAppleId = NormalizeIncomingId(appleId);
+        var normalizedAppleId = WatchlistPreferenceNormalizer.IncomingId(appleId);
         if (string.IsNullOrWhiteSpace(normalizedAppleId))
         {
             return BadRequest("Apple ID is required.");
@@ -105,7 +103,7 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpGet("deezer/{deezerId}")]
     public async Task<IActionResult> GetDeezerStatus(string deezerId, CancellationToken cancellationToken)
     {
-        var normalizedDeezerId = NormalizeIncomingId(deezerId);
+        var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(deezerId);
         if (string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
             return BadRequest("Deezer ID is required.");
@@ -166,9 +164,9 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpPost("spotify")]
     public async Task<IActionResult> AddSpotify([FromBody] SpotifyWatchlistRequest request, CancellationToken cancellationToken)
     {
-        var normalizedSpotifyId = NormalizeSpotifyId(request?.SpotifyId);
-        var normalizedArtistName = NormalizeIncomingText(request?.ArtistName);
-        var normalizedDeezerId = NormalizeIncomingId(request?.DeezerId);
+        var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(request?.SpotifyId);
+        var normalizedArtistName = WatchlistPreferenceNormalizer.IncomingText(request?.ArtistName);
+        var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(request?.DeezerId);
         if (request is null || string.IsNullOrWhiteSpace(normalizedSpotifyId) || string.IsNullOrWhiteSpace(normalizedArtistName))
         {
             return BadRequest("Spotify ID and artist name are required.");
@@ -192,10 +190,10 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpPost("apple")]
     public async Task<IActionResult> AddApple([FromBody] AppleWatchlistRequest request, CancellationToken cancellationToken)
     {
-        var normalizedAppleId = NormalizeIncomingId(request?.AppleId);
-        var normalizedArtistName = NormalizeIncomingText(request?.ArtistName);
-        var normalizedSpotifyId = NormalizeSpotifyId(request?.SpotifyId);
-        var normalizedDeezerId = NormalizeIncomingId(request?.DeezerId);
+        var normalizedAppleId = WatchlistPreferenceNormalizer.IncomingId(request?.AppleId);
+        var normalizedArtistName = WatchlistPreferenceNormalizer.IncomingText(request?.ArtistName);
+        var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(request?.SpotifyId);
+        var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(request?.DeezerId);
         if (request is null || string.IsNullOrWhiteSpace(normalizedAppleId) || string.IsNullOrWhiteSpace(normalizedArtistName))
         {
             return BadRequest("Apple ID and artist name are required.");
@@ -238,9 +236,9 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpPost("deezer")]
     public async Task<IActionResult> AddDeezer([FromBody] DeezerWatchlistRequest request, CancellationToken cancellationToken)
     {
-        var normalizedDeezerId = NormalizeIncomingId(request?.DeezerId);
-        var normalizedArtistName = NormalizeIncomingText(request?.ArtistName);
-        var normalizedSpotifyId = NormalizeSpotifyId(request?.SpotifyId);
+        var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(request?.DeezerId);
+        var normalizedArtistName = WatchlistPreferenceNormalizer.IncomingText(request?.ArtistName);
+        var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(request?.SpotifyId);
         if (request is null || string.IsNullOrWhiteSpace(normalizedDeezerId) || string.IsNullOrWhiteSpace(normalizedArtistName))
         {
             return BadRequest("Deezer ID and artist name are required.");
@@ -322,15 +320,15 @@ public class LibraryWatchlistApiController : ControllerBase
             }
         }
 
-        var preferredEngine = NormalizePreferredEngine(request.PreferredEngine);
-        var downloadVariantMode = NormalizeDownloadVariantMode(request.DownloadVariantMode);
-        var topSongsSyncMode = NormalizeTopSongsSyncMode(request.TopSongsSyncMode);
-        var routingRules = NormalizeRoutingRules(request.RoutingRules);
+        var preferredEngine = WatchlistPreferenceNormalizer.PreferredEngine(request.PreferredEngine);
+        var downloadVariantMode = WatchlistPreferenceNormalizer.DownloadVariantMode(request.DownloadVariantMode);
+        var topSongsSyncMode = WatchlistPreferenceNormalizer.TopSongsSyncMode(request.TopSongsSyncMode);
+        var routingRules = WatchlistPreferenceNormalizer.RoutingRules(request.RoutingRules);
         if (routingRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
         {
             return BadRequest("Routing destination folder was not found or is disabled.");
         }
-        var blockRules = NormalizeBlockRules(request.BlockRules);
+        var blockRules = WatchlistPreferenceNormalizer.BlockRules(request.BlockRules);
 
         var updated = await _repository.UpdateWatchlistPreferencesAsync(
             new LibraryRepository.ArtistWatchPreferenceUpdateInput(
@@ -372,7 +370,7 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpDelete("spotify/{spotifyId}")]
     public async Task<IActionResult> RemoveSpotify(string spotifyId, CancellationToken cancellationToken)
     {
-        var normalizedSpotifyId = NormalizeSpotifyId(spotifyId);
+        var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(spotifyId);
         if (string.IsNullOrWhiteSpace(normalizedSpotifyId))
         {
             return BadRequest("Spotify ID is required.");
@@ -399,7 +397,7 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpDelete("apple/{appleId}")]
     public async Task<IActionResult> RemoveApple(string appleId, CancellationToken cancellationToken)
     {
-        var normalizedAppleId = NormalizeIncomingId(appleId);
+        var normalizedAppleId = WatchlistPreferenceNormalizer.IncomingId(appleId);
         if (string.IsNullOrWhiteSpace(normalizedAppleId))
         {
             return BadRequest("Apple ID is required.");
@@ -418,7 +416,7 @@ public class LibraryWatchlistApiController : ControllerBase
     [HttpDelete("deezer/{deezerId}")]
     public async Task<IActionResult> RemoveDeezer(string deezerId, CancellationToken cancellationToken)
     {
-        var normalizedDeezerId = NormalizeIncomingId(deezerId);
+        var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(deezerId);
         if (string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
             return BadRequest("Deezer ID is required.");
@@ -599,121 +597,4 @@ public class LibraryWatchlistApiController : ControllerBase
         return value;
     }
 
-    private static string? NormalizeIncomingId(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
-    private static string? NormalizeSpotifyId(string? value)
-    {
-        var normalized = NormalizeIncomingId(value);
-        return string.IsNullOrWhiteSpace(normalized)
-            ? null
-            : normalized.ToLowerInvariant();
-    }
-
-    private static string? NormalizeIncomingText(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
-    private static string? NormalizePreferredEngine(string? value)
-    {
-        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
-        return normalized switch
-        {
-            "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal" => normalized,
-            _ => null
-        };
-    }
-
-    private static string? NormalizeDownloadVariantMode(string? value)
-    {
-        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
-        return normalized switch
-        {
-            "dual_quality" or "atmos_only" => normalized,
-            "standard" => "standard",
-            _ => null
-        };
-    }
-
-    private static string NormalizeTopSongsSyncMode(string? value)
-    {
-        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
-        return normalized == "append" ? "append" : "mirror";
-    }
-
-    private static List<PlaylistTrackRoutingRule>? NormalizeRoutingRules(IReadOnlyList<PlaylistTrackRoutingRule>? rules)
-    {
-        if (rules == null || rules.Count == 0)
-        {
-            return null;
-        }
-
-        return rules
-            .Where(static rule => rule.DestinationFolderId > 0)
-            .Select(static (rule, index) =>
-            {
-                var field = NormalizeRoutingField(rule.ConditionField);
-                return rule with
-                {
-                    ConditionField = field,
-                    ConditionOperator = NormalizeRoutingOperator(field, rule.ConditionOperator),
-                    ConditionValue = rule.ConditionValue?.Trim() ?? string.Empty,
-                    Order = index
-                };
-            })
-            .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
-                    || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
-            .ToList();
-    }
-
-    private static List<PlaylistTrackBlockRule>? NormalizeBlockRules(IReadOnlyList<PlaylistTrackBlockRule>? rules)
-    {
-        if (rules == null || rules.Count == 0)
-        {
-            return null;
-        }
-
-        return rules
-            .Select(static (rule, index) =>
-            {
-                var field = NormalizeRoutingField(rule.ConditionField);
-                return rule with
-                {
-                    ConditionField = field,
-                    ConditionOperator = NormalizeRoutingOperator(field, rule.ConditionOperator),
-                    ConditionValue = rule.ConditionValue?.Trim() ?? string.Empty,
-                    Order = index
-                };
-            })
-            .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
-                    || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
-            .ToList();
-    }
-
-    private static string NormalizeRoutingField(string? value)
-    {
-        var normalized = value?.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "artist" or "title" or "album" or "genre" or "year" or ExplicitField => normalized,
-            _ => string.Empty
-        };
-    }
-
-    private static string NormalizeRoutingOperator(string? field, string? value)
-    {
-        var normalized = value?.Trim().ToLowerInvariant();
-        if (string.Equals(field, ExplicitField, StringComparison.OrdinalIgnoreCase))
-        {
-            return normalized == "is_false" ? "is_false" : "is_true";
-        }
-
-        if (string.Equals(field, "year", StringComparison.OrdinalIgnoreCase))
-        {
-            return normalized is "gte" or "lte" ? normalized : "equals";
-        }
-
-        return normalized is "equals" or "starts_with" ? normalized : "contains";
-    }
 }

@@ -663,6 +663,43 @@ function createArtistWatchOptionsSection(currentDiscography, latestOnly, selecte
     return artistOptionsSection;
 }
 
+function createPlaylistSettingsSelectSection({
+    title,
+    selectClass,
+    selectId,
+    options,
+    value,
+    helpText
+}) {
+    const section = document.createElement('div');
+    section.className = 'playlist-settings-section';
+    const titleElement = document.createElement('div');
+    titleElement.className = 'playlist-settings-section-title';
+    titleElement.textContent = title;
+    const select = document.createElement('select');
+    select.className = `form-select ${selectClass}`;
+    if (selectId) {
+        select.id = selectId;
+    }
+
+    options.forEach(optionConfig => {
+        const valueText = Array.isArray(optionConfig) ? optionConfig[0] : optionConfig.value;
+        const labelText = Array.isArray(optionConfig) ? optionConfig[1] : optionConfig.label;
+        select.appendChild(new Option(labelText, valueText));
+    });
+    select.value = value;
+    section.appendChild(titleElement);
+    section.appendChild(select);
+    if (helpText) {
+        const hint = document.createElement('div');
+        hint.className = 'playlist-settings-help';
+        hint.textContent = helpText;
+        section.appendChild(hint);
+    }
+
+    return { section, select };
+}
+
 async function openArtistSettingsPanel({
     artistId,
     artistName,
@@ -738,14 +775,10 @@ async function openArtistSettingsPanel({
     atmosFolderSection.appendChild(atmosFolderHint);
     panel.appendChild(atmosFolderSection);
 
-    const engineSection = document.createElement('div');
-    engineSection.className = 'playlist-settings-section';
-    const engineTitle = document.createElement('div');
-    engineTitle.className = 'playlist-settings-section-title';
-    engineTitle.textContent = 'Download engine';
-    const engineSelect = document.createElement('select');
-    engineSelect.className = 'form-select ps-engine-select';
-    [
+    const artistEngine = createPlaylistSettingsSelectSection({
+        title: 'Download engine',
+        selectClass: 'ps-engine-select',
+        options: [
         ['', 'Follow global download source'],
         ['auto', 'Auto'],
         ['amazon', 'Amazon'],
@@ -753,36 +786,25 @@ async function openArtistSettingsPanel({
         ['deezer', 'Deezer'],
         ['qobuz', 'Qobuz'],
         ['tidal', 'Tidal']
-    ].forEach(([value, label]) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        engineSelect.appendChild(option);
+        ],
+        value: String(currentPreferredEngine || '').toLowerCase(),
+        helpText: 'Overrides the global source only for this watched artist.'
     });
-    engineSelect.value = String(currentPreferredEngine || '').toLowerCase();
-    const engineHint = document.createElement('div');
-    engineHint.className = 'playlist-settings-help';
-    engineHint.textContent = 'Overrides the global source only for this watched artist.';
-    engineSection.appendChild(engineTitle);
-    engineSection.appendChild(engineSelect);
-    engineSection.appendChild(engineHint);
-    panel.appendChild(engineSection);
+    const engineSelect = artistEngine.select;
+    panel.appendChild(artistEngine.section);
 
-    const downloadModeSection = document.createElement('div');
-    downloadModeSection.className = 'playlist-settings-section';
-    const downloadModeTitle = document.createElement('div');
-    downloadModeTitle.className = 'playlist-settings-section-title';
-    downloadModeTitle.textContent = 'Download mode';
-    const downloadModeSelect = document.createElement('select');
-    downloadModeSelect.className = 'form-select ps-download-mode-select';
-    [
+    const artistDownloadMode = createPlaylistSettingsSelectSection({
+        title: 'Download mode',
+        selectClass: 'ps-download-mode-select',
+        options: [
         ['standard', 'Standard only'],
         ['dual_quality', 'Dual quality (standard + Atmos)'],
         ['atmos_only', 'Atmos only']
-    ].forEach(([value, label]) => {
-        downloadModeSelect.appendChild(new Option(label, value));
+        ],
+        value: String(currentDownloadMode || 'standard').toLowerCase()
     });
-    downloadModeSelect.value = String(currentDownloadMode || 'standard').toLowerCase();
+    const downloadModeSection = artistDownloadMode.section;
+    const downloadModeSelect = artistDownloadMode.select;
     const syncAtmosFolderVisibility = () => {
         const selectedMode = String(downloadModeSelect.value || 'standard').toLowerCase();
         const shouldShowAtmosFolder = selectedMode === 'dual_quality' || selectedMode === 'atmos_only';
@@ -2730,57 +2752,61 @@ function collectPlaylistSettingsValues(panel) {
 }
 
 function collectPlaylistRoutingRules(rulesList) {
-    const rules = [];
-    rulesList.querySelectorAll('.routing-rule-row').forEach((row, idx) => {
-        const field = row.querySelector('.rr-field')?.value || 'artist';
-        const explicitValue = row.querySelector('.rr-value-explicit')?.value || 'is_true';
-        let operator = row.querySelector('.rr-operator')?.value || 'contains';
-        if (field === 'explicit') {
-            operator = explicitValue === 'is_false' ? 'is_false' : 'is_true';
-        }
-        const value = field === 'explicit'
-            ? ''
-            : (row.querySelector('.rr-value-choice')?.value || '').trim();
-        const ruleFolder = row.querySelector('.rr-folder')?.value;
-        if (!ruleFolder || (field !== 'explicit' && !value)) {
-            return;
-        }
-
-        rules.push({
-            conditionField: field,
-            conditionOperator: operator,
-            conditionValue: value,
-            destinationFolderId: Number(ruleFolder),
-            order: idx
-        });
+    return collectPlaylistRuleRows(rulesList, {
+        rowSelector: '.routing-rule-row',
+        fieldSelector: '.rr-field',
+        operatorSelector: '.rr-operator',
+        explicitSelector: '.rr-value-explicit',
+        valueSelector: '.rr-value-choice',
+        folderSelector: '.rr-folder',
+        requireFolder: true
     });
-    return rules;
 }
 
 function collectPlaylistBlockRules(blockRulesList) {
-    const blockRules = [];
-    blockRulesList.querySelectorAll('.block-rule-row').forEach((row, idx) => {
-        const field = row.querySelector('.br-field')?.value || 'artist';
-        const explicitValue = row.querySelector('.br-value-explicit')?.value || 'is_true';
-        let operator = row.querySelector('.br-operator')?.value || 'contains';
+    return collectPlaylistRuleRows(blockRulesList, {
+        rowSelector: '.block-rule-row',
+        fieldSelector: '.br-field',
+        operatorSelector: '.br-operator',
+        explicitSelector: '.br-value-explicit',
+        valueSelector: '.br-value-choice',
+        requireFolder: false
+    });
+}
+
+function collectPlaylistRuleRows(container, options) {
+    const rules = [];
+    container.querySelectorAll(options.rowSelector).forEach((row, idx) => {
+        const field = row.querySelector(options.fieldSelector)?.value || 'artist';
+        const explicitValue = row.querySelector(options.explicitSelector)?.value || 'is_true';
+        let operator = row.querySelector(options.operatorSelector)?.value || 'contains';
         if (field === 'explicit') {
             operator = explicitValue === 'is_false' ? 'is_false' : 'is_true';
         }
+
         const value = field === 'explicit'
             ? ''
-            : (row.querySelector('.br-value-choice')?.value || '').trim();
-        if (field !== 'explicit' && !value) {
+            : (row.querySelector(options.valueSelector)?.value || '').trim();
+        const ruleFolder = options.folderSelector
+            ? row.querySelector(options.folderSelector)?.value
+            : '';
+        if ((options.requireFolder && !ruleFolder) || (field !== 'explicit' && !value)) {
             return;
         }
 
-        blockRules.push({
+        const rule = {
             conditionField: field,
             conditionOperator: operator,
             conditionValue: value,
             order: idx
-        });
+        };
+        if (options.requireFolder) {
+            rule.destinationFolderId = Number(ruleFolder);
+        }
+
+        rules.push(rule);
     });
-    return blockRules;
+    return rules;
 }
 
 function getStoredPreferences(key) {

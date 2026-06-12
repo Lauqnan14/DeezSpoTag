@@ -720,11 +720,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         if (ex is InvalidOperationException invalidOperation)
         {
-            var message = invalidOperation.Message;
-            return message.Contains("Qobuz download failed", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("duration", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("identity validation failed", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("output file is missing", StringComparison.OrdinalIgnoreCase);
+            return ExceptionMessageContainsAny(
+                invalidOperation,
+                "Qobuz download failed",
+                "duration",
+                "identity validation failed",
+                "output file is missing");
         }
 
         return false;
@@ -1251,20 +1252,27 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         if (ex is InvalidOperationException invalidOperation)
         {
-            var message = invalidOperation.Message;
-            return message.Contains("HTTP 408", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("HTTP 500", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("HTTP 502", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("HTTP 503", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("HTTP 504", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("timed out", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("service unavailable", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("upstream fetch failed", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("empty response", StringComparison.OrdinalIgnoreCase);
+            return ExceptionMessageContainsAny(
+                invalidOperation,
+                "HTTP 408",
+                "HTTP 429",
+                "HTTP 500",
+                "HTTP 502",
+                "HTTP 503",
+                "HTTP 504",
+                "timed out",
+                "service unavailable",
+                "upstream fetch failed",
+                "empty response");
         }
 
         return false;
+    }
+
+    private static bool ExceptionMessageContainsAny(Exception ex, params string[] fragments)
+    {
+        var message = ex.Message;
+        return fragments.Any(fragment => message.Contains(fragment, StringComparison.OrdinalIgnoreCase));
     }
 
     private ProviderCandidate[] BuildProviders(long trackId, string qualityCode)

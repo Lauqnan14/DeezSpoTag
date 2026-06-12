@@ -248,32 +248,15 @@ public sealed class AppleTracklistApiController : ControllerBase
 
     private static List<object> BuildRelationshipTracks(JsonElement relationships, int startPosition)
     {
-        var tracks = new List<object>();
         if (!relationships.TryGetProperty(TracksField, out var tracksRel)
             || tracksRel.ValueKind != JsonValueKind.Object
             || !tracksRel.TryGetProperty(DataField, out var tracksData)
             || tracksData.ValueKind != JsonValueKind.Array)
         {
-            return tracks;
+            return [];
         }
 
-        var position = Math.Max(startPosition, 1);
-        foreach (var track in tracksData.EnumerateArray())
-        {
-            if (!track.TryGetProperty(AttributesField, out var trackAttributes)
-                || trackAttributes.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            var title = trackAttributes.TryGetProperty(NameField, out var titleElement) ? titleElement.GetString() ?? "" : "";
-            var artistName = trackAttributes.TryGetProperty(ArtistNameField, out var artistElement) ? artistElement.GetString() ?? "" : "";
-            var albumName = trackAttributes.TryGetProperty(AlbumNameField, out var albumElement) ? albumElement.GetString() ?? "" : "";
-            tracks.Add(BuildTrackEntry(track, trackAttributes, title, artistName, albumName, position));
-            position++;
-        }
-
-        return tracks;
+        return BuildTrackObjectsFromDataArray(tracksData, startPosition);
     }
 
     private static List<object> BuildTrackObjectsFromDataArray(JsonElement dataArray, int startPosition)

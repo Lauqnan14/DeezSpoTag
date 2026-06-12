@@ -1,6 +1,5 @@
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -227,7 +226,7 @@ public sealed class LibraryScanRunner
         bool skipSpotifyFetch,
         CancellationToken cancellationToken)
     {
-        var pending = NormalizeChangedFilesByFolder(changedFilesByFolder);
+        var pending = KnownLibraryFilePathSet.NormalizeByFolder(changedFilesByFolder);
         if (pending.Count == 0)
         {
             AddInfoLog("Targeted library ingestion verification skipped (no changed files).");
@@ -243,7 +242,7 @@ public sealed class LibraryScanRunner
         bool skipSpotifyFetch,
         CancellationToken cancellationToken)
     {
-        var pending = NormalizeChangedFilesByFolder(changedFilesByFolder);
+        var pending = KnownLibraryFilePathSet.NormalizeByFolder(changedFilesByFolder);
         if (pending.Count == 0)
         {
             AddInfoLog("Targeted library scan skipped (no changed files).");
@@ -546,7 +545,7 @@ public sealed class LibraryScanRunner
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var existingAudioFiles = requested
-            .Where(IsExistingAudioFile)
+            .Where(KnownLibraryFilePathSet.IsExistingAudioFile)
             .ToList();
         if (existingAudioFiles.Count == 0 || !_repository.IsConfigured)
         {
@@ -577,17 +576,6 @@ public sealed class LibraryScanRunner
             existingAudioFiles.Count,
             ingestedPaths,
             missingPaths);
-    }
-
-    private static bool IsExistingAudioFile(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            return false;
-        }
-
-        var extension = Path.GetExtension(path);
-        return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
     }
 
     private async Task RunChangedFilesBatchAsync(
@@ -752,55 +740,6 @@ public sealed class LibraryScanRunner
             }
 
             _pendingChangedFileScanRequiresSpotifyFetch |= !skipSpotifyFetch;
-        }
-    }
-
-    private static Dictionary<long, List<string>> NormalizeChangedFilesByFolder(
-        IReadOnlyDictionary<long, List<string>> changedFilesByFolder)
-    {
-        var normalized = new Dictionary<long, List<string>>();
-        foreach (var (folderId, paths) in changedFilesByFolder)
-        {
-            if (folderId <= 0 || paths.Count == 0)
-            {
-                continue;
-            }
-
-            var normalizedPaths = paths
-                .Select(NormalizeChangedFilePath)
-                .Where(static path => !string.IsNullOrWhiteSpace(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (normalizedPaths.Count > 0)
-            {
-                normalized[folderId] = normalizedPaths!;
-            }
-        }
-
-        return normalized;
-    }
-
-    private static string? NormalizeChangedFilePath(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(path);
-        if (string.IsNullOrWhiteSpace(ioPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            return Path.GetFullPath(ioPath);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return DownloadPathResolver.NormalizeDisplayPath(ioPath);
         }
     }
 

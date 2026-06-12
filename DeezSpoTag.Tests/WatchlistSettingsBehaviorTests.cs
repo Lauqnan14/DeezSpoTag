@@ -199,8 +199,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("RoutingRules", artistWatchSource, StringComparison.Ordinal);
         Assert.Contains("preferred_engine", repoSource, StringComparison.Ordinal);
         Assert.Contains("routing_rules_json", repoSource, StringComparison.Ordinal);
-        Assert.Contains("NormalizePreferredEngine", artistControllerSource, StringComparison.Ordinal);
-        Assert.Contains("NormalizeRoutingRules", artistControllerSource, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPreferenceNormalizer.PreferredEngine", artistControllerSource, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPreferenceNormalizer.RoutingRules", artistControllerSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -341,11 +341,11 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         Assert.Contains("GetValidFolderIdsAsync", source, StringComparison.Ordinal);
         Assert.Contains("ValidatePlaylistPreferenceRequest", source, StringComparison.Ordinal);
-        Assert.Contains("NormalizePreferredEngine", source, StringComparison.Ordinal);
-        Assert.Contains("NormalizeDownloadVariantMode", source, StringComparison.Ordinal);
-        Assert.Contains("NormalizeSyncMode", source, StringComparison.Ordinal);
-        Assert.Contains("NormalizeRoutingRules", source, StringComparison.Ordinal);
-        Assert.Contains("NormalizeBlockRules", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPreferenceNormalizer.PreferredEngine", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPreferenceNormalizer.DownloadVariantMode", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPreferenceNormalizer.SyncMode", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPreferenceNormalizer.RoutingRules", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPreferenceNormalizer.BlockRules", source, StringComparison.Ordinal);
         Assert.Contains("ApplyRoutingRulesGlobally", source, StringComparison.Ordinal);
         Assert.Contains("routing-rules/apply-globally", source, StringComparison.Ordinal);
         Assert.Contains("SaveGlobalRoutingTemplateAsync", source, StringComparison.Ordinal);

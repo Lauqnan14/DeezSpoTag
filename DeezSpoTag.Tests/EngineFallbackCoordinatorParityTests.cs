@@ -306,9 +306,7 @@ public sealed class EngineFallbackCoordinatorParityTests
         var coordinator = new EngineFallbackCoordinator(
             queueRepository: null!,
             settingsService: null!,
-            songLinkResolver: null!,
             deezerIsrcResolver: null!,
-            appleCatalogService: null!,
             fallbackSearchService: null!,
             activityLog: new NullActivityLogWriter(),
             optionalServices: new EngineFallbackCoordinator.OptionalServices
@@ -343,38 +341,6 @@ public sealed class EngineFallbackCoordinatorParityTests
         string userCountry,
         bool fallbackSearchEnabled)
     {
-        var coordinatorType = typeof(EngineFallbackCoordinator);
-        var requestType = coordinatorType.GetNestedType("SourceResolutionRequest", BindingFlags.NonPublic);
-        Assert.NotNull(requestType);
-
-        var request = Activator.CreateInstance(
-            requestType!,
-            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
-            binder: null,
-            args:
-            [
-                engine,
-                sourceUrl,
-                spotifyId,
-                appleId,
-                isrc,
-                string.Empty,
-                string.Empty,
-                string.Empty,
-                null,
-                deezerId,
-                "us",
-                "en-US",
-                null,
-                userCountry,
-                fallbackSearchEnabled
-            ],
-            culture: null);
-        Assert.NotNull(request);
-
-        var method = coordinatorType.GetMethod("TryBuildAppleFallbackUrlAsync", BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(method);
-
         var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
         var songLinkResolver = new SongLinkResolver(new SongLinkResolver.Dependencies
         {
@@ -390,20 +356,26 @@ public sealed class EngineFallbackCoordinatorParityTests
             songLinkResolver,
             appleCatalogService,
             NullLogger<EngineFallbackSearchService>.Instance);
-        var coordinator = new EngineFallbackCoordinator(
-            queueRepository: null!,
-            settingsService,
-            songLinkResolver,
-            new DeezerIsrcResolver(
-                deezerApi: null!,
-                NullLogger<DeezerIsrcResolver>.Instance),
-            appleCatalogService,
-            fallbackSearchService,
-            new NullActivityLogWriter());
 
-        var task = method!.Invoke(coordinator, [request, CancellationToken.None]) as Task<string?>;
-        Assert.NotNull(task);
-        return await task!;
+        var result = await fallbackSearchService.ResolveAsync(
+            new EngineFallbackSearchRequest(
+                engine,
+                sourceUrl,
+                spotifyId,
+                appleId,
+                isrc,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                null,
+                deezerId,
+                "us",
+                "en-US",
+                null,
+                userCountry,
+                fallbackSearchEnabled),
+            CancellationToken.None);
+        return result.ResolvedUrl;
     }
 
     private sealed class StubHttpClientFactory : IHttpClientFactory

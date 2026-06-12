@@ -21,7 +21,6 @@ public class SpotifyCacheApiController : ControllerBase
     private readonly IServiceProvider _serviceProvider;
     private readonly LibraryRepository _libraryRepository;
     private readonly LibraryConfigStore _configStore;
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ArtistVisualSelectionService _artistVisualSelectionService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<SpotifyCacheApiController> _logger;
@@ -30,7 +29,6 @@ public class SpotifyCacheApiController : ControllerBase
         IServiceProvider serviceProvider,
         LibraryRepository libraryRepository,
         LibraryConfigStore configStore,
-        IHttpClientFactory httpClientFactory,
         ArtistVisualSelectionService artistVisualSelectionService,
         IWebHostEnvironment environment,
         ILogger<SpotifyCacheApiController> logger)
@@ -38,7 +36,6 @@ public class SpotifyCacheApiController : ControllerBase
         _serviceProvider = serviceProvider;
         _libraryRepository = libraryRepository;
         _configStore = configStore;
-        _httpClientFactory = httpClientFactory;
         _artistVisualSelectionService = artistVisualSelectionService;
         _environment = environment;
         _logger = logger;
@@ -302,7 +299,7 @@ public class SpotifyCacheApiController : ControllerBase
         };
     }
 
-    private async Task<ResolvedVisualSelection?> ResolveDefaultPushVisualAsync(
+    private async Task<ResolvedArtistVisualSelection?> ResolveDefaultPushVisualAsync(
         long artistId,
         string slot,
         string? preferredPath,
@@ -311,13 +308,13 @@ public class SpotifyCacheApiController : ControllerBase
         var preferredLocalPath = NormalizeExistingFilePath(preferredPath);
         if (!string.IsNullOrWhiteSpace(preferredLocalPath))
         {
-            return new ResolvedVisualSelection(preferredLocalPath, null);
+            return new ResolvedArtistVisualSelection(preferredLocalPath, null);
         }
 
         var slotPath = ResolveManagedSlotPath(artistId, slot);
         if (!string.IsNullOrWhiteSpace(slotPath))
         {
-            return new ResolvedVisualSelection(slotPath, null);
+            return new ResolvedArtistVisualSelection(slotPath, null);
         }
 
         var spotifySourceId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
@@ -343,7 +340,7 @@ public class SpotifyCacheApiController : ControllerBase
                 return null;
             }
 
-            return new ResolvedVisualSelection(Path.GetFullPath(cacheMatch), null);
+            return new ResolvedArtistVisualSelection(Path.GetFullPath(cacheMatch), null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -411,10 +408,10 @@ public class SpotifyCacheApiController : ControllerBase
             SpotifySource));
 
         var avatarVisual = includeAvatar
-            ? ResolveVisualSelection(managedVisualRoot, request.AvatarImagePath, request.AvatarVisualUrl)
+            ? ArtistVisualSelectionService.ResolveVisualSelection(managedVisualRoot, request.AvatarImagePath, request.AvatarVisualUrl)
             : null;
         var backgroundVisual = includeBackground
-            ? ResolveVisualSelection(managedVisualRoot, request.BackgroundImagePath, request.BackgroundVisualUrl)
+            ? ArtistVisualSelectionService.ResolveVisualSelection(managedVisualRoot, request.BackgroundImagePath, request.BackgroundVisualUrl)
             : null;
         var biography = includeBio ? (request.Biography ?? string.Empty).Trim() : null;
 
@@ -468,10 +465,10 @@ public class SpotifyCacheApiController : ControllerBase
         return new MaterializedPushVisuals(avatarVisual, backgroundVisual);
     }
 
-    private async Task<ResolvedVisualSelection?> MaterializeVisualAsync(
+    private async Task<ResolvedArtistVisualSelection?> MaterializeVisualAsync(
         long artistId,
         string slot,
-        ResolvedVisualSelection? visual,
+        ResolvedArtistVisualSelection? visual,
         List<string> warnings,
         CancellationToken cancellationToken)
     {
@@ -480,7 +477,7 @@ public class SpotifyCacheApiController : ControllerBase
             return null;
         }
 
-        var materialized = await EnsureVisualStoredAsync(artistId, slot, visual, cancellationToken);
+        var materialized = await _artistVisualSelectionService.StoreVisualAsync(artistId, SpotifySource, slot, visual, cancellationToken);
         if (!string.IsNullOrWhiteSpace(materialized.Warning))
         {
             warnings.Add(materialized.Warning);
@@ -849,7 +846,7 @@ public class SpotifyCacheApiController : ControllerBase
         });
     }
 
-    private string? ResolvePlexImageUrl(ResolvedVisualSelection visual, bool asPoster)
+    private string? ResolvePlexImageUrl(ResolvedArtistVisualSelection visual, bool asPoster)
     {
         if (!string.IsNullOrWhiteSpace(visual.RemoteUrl))
         {
@@ -864,224 +861,6 @@ public class SpotifyCacheApiController : ControllerBase
         return null;
     }
 
-    private static ResolvedVisualSelection? ResolveVisualSelection(string cacheRoot, string? explicitLocalPath, string? visualUrl)
-    {
-        var localPath = TryResolveLocalVisualPath(cacheRoot, explicitLocalPath, visualUrl);
-        if (!string.IsNullOrWhiteSpace(localPath))
-        {
-            return new ResolvedVisualSelection(localPath, null);
-        }
-
-        var urlValue = (visualUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(urlValue))
-        {
-            return null;
-        }
-
-        if (Uri.TryCreate(urlValue, UriKind.Absolute, out var uri)
-            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-        {
-            return new ResolvedVisualSelection(null, urlValue);
-        }
-
-        return null;
-    }
-
-    private static string? TryResolveLocalVisualPath(string allowedRoot, string? explicitLocalPath, string? visualUrl)
-    {
-        var localPath = ValidateCachePath(explicitLocalPath, allowedRoot);
-        if (!string.IsNullOrWhiteSpace(localPath))
-        {
-            return localPath;
-        }
-
-        var urlValue = (visualUrl ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(urlValue))
-        {
-            return null;
-        }
-
-        var extractedPath = TryExtractPathFromLibraryImageUrl(urlValue);
-        return ValidateCachePath(extractedPath, allowedRoot);
-    }
-
-    private static string? ValidateCachePath(string? candidatePath, string cacheRoot)
-    {
-        var value = (candidatePath ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        try
-        {
-            var fullPath = Path.GetFullPath(value);
-            if (!IsPathWithinRoot(fullPath, cacheRoot))
-            {
-                return null;
-            }
-
-            return System.IO.File.Exists(fullPath) ? fullPath : null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return null;
-        }
-    }
-
-    private static bool IsPathWithinRoot(string path, string root)
-    {
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            return false;
-        }
-
-        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var normalizedPath = Path.GetFullPath(path);
-        var relative = Path.GetRelativePath(normalizedRoot, normalizedPath);
-
-        return !relative.StartsWith("..", StringComparison.Ordinal)
-               && !Path.IsPathRooted(relative);
-    }
-
-    private static string? TryExtractPathFromLibraryImageUrl(string value)
-    {
-        var trimmed = (value ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(trimmed))
-        {
-            return null;
-        }
-
-        var queryIndex = trimmed.IndexOf('?');
-        if (queryIndex < 0)
-        {
-            return null;
-        }
-
-        var endpoint = trimmed[..queryIndex];
-        if (endpoint.IndexOf("/api/library/image", StringComparison.OrdinalIgnoreCase) < 0)
-        {
-            return null;
-        }
-
-        var query = trimmed[(queryIndex + 1)..];
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return null;
-        }
-
-        var segments = query.Split('&', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var segment in segments)
-        {
-            var equalsIndex = segment.IndexOf('=');
-            var rawKey = equalsIndex >= 0 ? segment[..equalsIndex] : segment;
-            var key = Uri.UnescapeDataString(rawKey.Replace('+', ' '));
-            if (!string.Equals(key, "path", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var rawValue = equalsIndex >= 0 ? segment[(equalsIndex + 1)..] : string.Empty;
-            var decoded = Uri.UnescapeDataString(rawValue.Replace('+', ' ')).Trim();
-            return string.IsNullOrWhiteSpace(decoded) ? null : decoded;
-        }
-
-        return null;
-    }
-
-    private async Task<MaterializedVisual> EnsureVisualStoredAsync(long artistId, string slot, ResolvedVisualSelection? selection, CancellationToken cancellationToken)
-    {
-        if (selection is null)
-        {
-            return new MaterializedVisual(null, null);
-        }
-
-        var visualDir = Path.Join(AppDataPaths.GetDataRoot(_environment), LibraryArtistImagesPath, SpotifySource, "artists", artistId.ToString());
-        Directory.CreateDirectory(visualDir);
-
-        if (!string.IsNullOrWhiteSpace(selection.LocalPath))
-        {
-            var sourcePath = selection.LocalPath!;
-            if (System.IO.File.Exists(sourcePath))
-            {
-                var extension = ImageFileExtensionResolver.NormalizeStandardImageExtension(Path.GetExtension(sourcePath));
-                var targetPath = Path.Join(visualDir, $"{slot}{extension}");
-                DeleteVisualSlotFiles(visualDir, slot, targetPath);
-
-                if (!string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase))
-                {
-                    System.IO.File.Copy(sourcePath, targetPath, true);
-                }
-
-                return new MaterializedVisual(new ResolvedVisualSelection(targetPath, null), null);
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(selection.RemoteUrl))
-        {
-            try
-            {
-                var client = _httpClientFactory.CreateClient();
-                using var response = await client.GetAsync(selection.RemoteUrl, cancellationToken);
-                if (!response.IsSuccessStatusCode)
-                {
-                    return new MaterializedVisual(
-                        selection,
-                        $"Failed to download {slot} visual ({(int)response.StatusCode}); used remote source where possible.");
-                }
-
-                var extension = ImageFileExtensionResolver.ResolveStandardImageExtension(
-                    response.Content.Headers.ContentType?.MediaType,
-                    selection.RemoteUrl);
-                var targetPath = Path.Join(visualDir, $"{slot}{extension}");
-                DeleteVisualSlotFiles(visualDir, slot, targetPath);
-
-                await using var sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                await using var targetStream = System.IO.File.Create(targetPath);
-                await sourceStream.CopyToAsync(targetStream, cancellationToken);
-
-                return new MaterializedVisual(new ResolvedVisualSelection(targetPath, null), null);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Failed to materialize {Slot} visual for artist {ArtistId}", slot, artistId);
-                return new MaterializedVisual(selection, $"Failed to download {slot} visual; used remote source where possible.");
-            }
-        }
-
-        return new MaterializedVisual(selection, null);
-    }
-
-    private static void DeleteVisualSlotFiles(string directory, string slot, string keepPath)
-    {
-        if (!Directory.Exists(directory))
-        {
-            return;
-        }
-
-        var files = Directory.GetFiles(directory, $"{slot}.*", SearchOption.TopDirectoryOnly);
-        foreach (var file in files)
-        {
-            if (string.Equals(Path.GetFullPath(file), Path.GetFullPath(keepPath), StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            try
-            {
-                System.IO.File.Delete(file);
-            }
-            catch (IOException ex)
-            {
-                System.Diagnostics.Trace.TraceWarning("Failed to remove stale {0} visual file '{1}': {2}", slot, file, ex.Message);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                System.Diagnostics.Trace.TraceWarning("Access denied removing stale {0} visual file '{1}': {2}", slot, file, ex.Message);
-            }
-        }
-    }
-
     private sealed record RefreshArtist(long Id, string Name);
     private sealed record PreparedPushRequest(
         long ArtistId,
@@ -1091,11 +870,11 @@ public class SpotifyCacheApiController : ControllerBase
         string? Target,
         int? RenewIntervalDays,
         string? Biography,
-        ResolvedVisualSelection? AvatarVisual,
-        ResolvedVisualSelection? BackgroundVisual);
+        ResolvedArtistVisualSelection? AvatarVisual,
+        ResolvedArtistVisualSelection? BackgroundVisual);
     private sealed record MaterializedPushVisuals(
-        ResolvedVisualSelection? AvatarVisual,
-        ResolvedVisualSelection? BackgroundVisual);
+        ResolvedArtistVisualSelection? AvatarVisual,
+        ResolvedArtistVisualSelection? BackgroundVisual);
     private sealed record PushTarget(bool IncludePlex, bool IncludeJellyfin);
     private sealed record PushExecutionContext(
         string ArtistName,
@@ -1135,6 +914,3 @@ public sealed class SpotifyCacheVisualRequest
     public string? BackgroundImagePath { get; set; }
     public string? BackgroundVisualUrl { get; set; }
 }
-
-internal sealed record ResolvedVisualSelection(string? LocalPath, string? RemoteUrl);
-internal sealed record MaterializedVisual(ResolvedVisualSelection? Selection, string? Warning);

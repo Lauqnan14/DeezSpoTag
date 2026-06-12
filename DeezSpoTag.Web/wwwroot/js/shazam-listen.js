@@ -827,27 +827,31 @@
         return { response, payload };
     };
 
+    const notifyShazamApiFailure = (payload, status) => {
+        const reason = payload?.reason;
+        const detail = extractShazamApiError(payload);
+        setState('error');
+
+        if (reason === 'recognizer_unavailable') {
+            notify(detail || 'Shazam recognizer is unavailable on the server.', 'error');
+        } else if (reason === 'recognizer_error') {
+            notify(detail || 'Shazam recognizer failed while processing this sample.', 'error');
+        } else if (detail?.toLowerCase().includes('request body too large')) {
+            notify('Selected audio file is too large for upload. Choose a smaller clip or use microphone capture.', 'error');
+        } else {
+            notify(detail || `Shazam lookup failed (${status}).`, 'error');
+        }
+
+        globalThis.setTimeout(() => setState('idle'), 2200);
+    };
+
     const runRecognitionFromBlob = async (audioBlob, filename, options = {}) => {
         setState('searching');
 
         try {
             const { response, payload } = await performRecognitionRequest(audioBlob, filename, options);
             if (!response.ok) {
-                const reason = payload?.reason;
-                const detail = extractShazamApiError(payload);
-                setState('error');
-
-                if (reason === 'recognizer_unavailable') {
-                    notify(detail || 'Shazam recognizer is unavailable on the server.', 'error');
-                } else if (reason === 'recognizer_error') {
-                    notify(detail || 'Shazam recognizer failed while processing this sample.', 'error');
-                } else if (detail?.toLowerCase().includes('request body too large')) {
-                    notify('Selected audio file is too large for upload. Choose a smaller clip or use microphone capture.', 'error');
-                } else {
-                    notify(detail || `Shazam lookup failed (${response.status}).`, 'error');
-                }
-
-                globalThis.setTimeout(() => setState('idle'), 2200);
+                notifyShazamApiFailure(payload, response.status);
                 return;
             }
 
@@ -918,21 +922,7 @@
         }
 
         if (!response.ok) {
-            const reason = payload?.reason;
-            const detail = extractShazamApiError(payload);
-            setState('error');
-
-            if (reason === 'recognizer_unavailable') {
-                notify(detail || 'Shazam recognizer is unavailable on the server.', 'error');
-            } else if (reason === 'recognizer_error') {
-                notify(detail || 'Shazam recognizer failed while processing this sample.', 'error');
-            } else if (detail?.toLowerCase().includes('request body too large')) {
-                notify('Selected audio file is too large for upload. Choose a smaller clip or use microphone capture.', 'error');
-            } else {
-                notify(detail || `Shazam lookup failed (${response.status}).`, 'error');
-            }
-
-            globalThis.setTimeout(() => setState('idle'), 2200);
+            notifyShazamApiFailure(payload, response.status);
             return false;
         }
 

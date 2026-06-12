@@ -82,11 +82,9 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         var fallbackCoordinator = new EngineFallbackCoordinator(
             _queueRepository,
             _settingsService,
-            songLinkResolver,
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
-            appleCatalogService,
             fallbackSearchService,
             new NullActivityLogWriter());
 
@@ -250,11 +248,9 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         var fallbackCoordinator = new EngineFallbackCoordinator(
             _queueRepository,
             _settingsService,
-            songLinkResolver,
             new DeezerIsrcResolver(
                 deezerApi: null!,
                 NullLogger<DeezerIsrcResolver>.Instance),
-            appleCatalogService,
             fallbackSearchService,
             new NullActivityLogWriter());
 

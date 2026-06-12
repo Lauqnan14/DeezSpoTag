@@ -933,24 +933,7 @@ WHERE queue_uuid = @queueUuid
 
     private static void BindCurrentIdentityParameters(SqliteCommand command, DownloadQueueItem item)
     {
-        command.Parameters.AddWithValue("@queueUuid", item.QueueUuid);
-        command.Parameters.AddWithValue("@engine", item.Engine);
-        command.Parameters.AddWithValue("@artistName", item.ArtistName);
-        command.Parameters.AddWithValue("@trackTitle", item.TrackTitle);
-        command.Parameters.AddWithValue("@isrc", (object?)NormalizeIsrc(item.Isrc) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@deezerTrackId", (object?)NormalizeId(item.DeezerTrackId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@deezerAlbumId", (object?)NormalizeId(item.DeezerAlbumId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@deezerArtistId", (object?)NormalizeId(item.DeezerArtistId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@spotifyTrackId", (object?)NormalizeId(item.SpotifyTrackId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@spotifyAlbumId", (object?)NormalizeId(item.SpotifyAlbumId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@spotifyArtistId", (object?)NormalizeId(item.SpotifyArtistId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@appleTrackId", (object?)NormalizeId(item.AppleTrackId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@appleAlbumId", (object?)NormalizeId(item.AppleAlbumId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@appleArtistId", (object?)NormalizeId(item.AppleArtistId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("@durationMs", (object?)item.DurationMs ?? DBNull.Value);
-        command.Parameters.AddWithValue("@destinationFolderId", (object?)item.DestinationFolderId ?? DBNull.Value);
-        command.Parameters.AddWithValue("@qualityRank", (object?)item.QualityRank ?? DBNull.Value);
-        command.Parameters.AddWithValue("@contentType", (object?)NormalizeId(item.ContentType) ?? DBNull.Value);
+        BindQueueIdentityParameters(command, item, "@");
         command.Parameters.AddWithValue("@payload", (object?)item.PayloadJson ?? DBNull.Value);
     }
 
@@ -2597,25 +2580,8 @@ LIMIT 1;";
 
     private static void BindCommonParameters(SqliteCommand command, DownloadQueueItem item)
     {
-        command.Parameters.AddWithValue("queueUuid", item.QueueUuid);
-        command.Parameters.AddWithValue("engine", item.Engine);
-        command.Parameters.AddWithValue("artistName", item.ArtistName);
-        command.Parameters.AddWithValue("trackTitle", item.TrackTitle);
-        command.Parameters.AddWithValue("isrc", (object?)NormalizeIsrc(item.Isrc) ?? DBNull.Value);
-        command.Parameters.AddWithValue("deezerTrackId", (object?)NormalizeId(item.DeezerTrackId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("deezerAlbumId", (object?)NormalizeId(item.DeezerAlbumId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("deezerArtistId", (object?)NormalizeId(item.DeezerArtistId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("spotifyTrackId", (object?)NormalizeId(item.SpotifyTrackId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("spotifyAlbumId", (object?)NormalizeId(item.SpotifyAlbumId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("spotifyArtistId", (object?)NormalizeId(item.SpotifyArtistId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("appleTrackId", (object?)NormalizeId(item.AppleTrackId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("appleAlbumId", (object?)NormalizeId(item.AppleAlbumId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("appleArtistId", (object?)NormalizeId(item.AppleArtistId) ?? DBNull.Value);
-        command.Parameters.AddWithValue("durationMs", (object?)item.DurationMs ?? DBNull.Value);
-        command.Parameters.AddWithValue("destinationFolderId", (object?)item.DestinationFolderId ?? DBNull.Value);
-        command.Parameters.AddWithValue("qualityRank", (object?)item.QualityRank ?? DBNull.Value);
+        BindQueueIdentityParameters(command, item, string.Empty);
         command.Parameters.AddWithValue("queueOrder", (object?)item.QueueOrder ?? DBNull.Value);
-        command.Parameters.AddWithValue("contentType", (object?)NormalizeId(item.ContentType) ?? DBNull.Value);
         command.Parameters.AddWithValue("moveStatus", ResolveInitialMoveStatus(item));
         command.Parameters.AddWithValue("enrichmentStatus", ResolveInitialEnrichmentStatus(item));
         command.Parameters.AddWithValue("status", item.Status);
@@ -2624,6 +2590,28 @@ LIMIT 1;";
         command.Parameters.AddWithValue("downloaded", (object?)item.Downloaded ?? DBNull.Value);
         command.Parameters.AddWithValue("failed", (object?)item.Failed ?? DBNull.Value);
         command.Parameters.AddWithValue("error", (object?)item.Error ?? DBNull.Value);
+    }
+
+    private static void BindQueueIdentityParameters(SqliteCommand command, DownloadQueueItem item, string prefix)
+    {
+        command.Parameters.AddWithValue(prefix + "queueUuid", item.QueueUuid);
+        command.Parameters.AddWithValue(prefix + "engine", item.Engine);
+        command.Parameters.AddWithValue(prefix + "artistName", item.ArtistName);
+        command.Parameters.AddWithValue(prefix + "trackTitle", item.TrackTitle);
+        command.Parameters.AddWithValue(prefix + "isrc", (object?)NormalizeIsrc(item.Isrc) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "deezerTrackId", (object?)NormalizeId(item.DeezerTrackId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "deezerAlbumId", (object?)NormalizeId(item.DeezerAlbumId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "deezerArtistId", (object?)NormalizeId(item.DeezerArtistId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "spotifyTrackId", (object?)NormalizeId(item.SpotifyTrackId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "spotifyAlbumId", (object?)NormalizeId(item.SpotifyAlbumId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "spotifyArtistId", (object?)NormalizeId(item.SpotifyArtistId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "appleTrackId", (object?)NormalizeId(item.AppleTrackId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "appleAlbumId", (object?)NormalizeId(item.AppleAlbumId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "appleArtistId", (object?)NormalizeId(item.AppleArtistId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "durationMs", (object?)item.DurationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "destinationFolderId", (object?)item.DestinationFolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "qualityRank", (object?)item.QualityRank ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "contentType", (object?)NormalizeId(item.ContentType) ?? DBNull.Value);
     }
 
     private static async Task<int> GetNextQueueOrderAsync(

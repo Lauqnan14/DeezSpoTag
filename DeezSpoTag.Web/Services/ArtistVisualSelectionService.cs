@@ -50,14 +50,14 @@ public sealed class ArtistVisualSelectionService
         }
 
         var warnings = new List<string>();
-        var avatarMaterialized = await EnsureVisualStoredAsync(artistId, "avatar", avatarVisual, cancellationToken);
+        var avatarMaterialized = await StoreVisualAsync(artistId, SelectedSource, "avatar", avatarVisual, cancellationToken);
         avatarVisual = avatarMaterialized.Selection;
         if (!string.IsNullOrWhiteSpace(avatarMaterialized.Warning))
         {
             warnings.Add(avatarMaterialized.Warning);
         }
 
-        var backgroundMaterialized = await EnsureVisualStoredAsync(artistId, "background", backgroundVisual, cancellationToken);
+        var backgroundMaterialized = await StoreVisualAsync(artistId, SelectedSource, "background", backgroundVisual, cancellationToken);
         backgroundVisual = backgroundMaterialized.Selection;
         if (!string.IsNullOrWhiteSpace(backgroundMaterialized.Warning))
         {
@@ -77,7 +77,7 @@ public sealed class ArtistVisualSelectionService
         return ArtistVisualSelectionResult.Ok(avatarVisual?.LocalPath, backgroundVisual?.LocalPath, warnings);
     }
 
-    private static ResolvedArtistVisualSelection? ResolveVisualSelection(
+    public static ResolvedArtistVisualSelection? ResolveVisualSelection(
         string cacheRoot,
         string? explicitLocalPath,
         string? visualUrl)
@@ -205,8 +205,9 @@ public sealed class ArtistVisualSelectionService
         return null;
     }
 
-    private async Task<MaterializedArtistVisual> EnsureVisualStoredAsync(
+    public async Task<MaterializedArtistVisual> StoreVisualAsync(
         long artistId,
+        string source,
         string slot,
         ResolvedArtistVisualSelection? selection,
         CancellationToken cancellationToken)
@@ -219,7 +220,7 @@ public sealed class ArtistVisualSelectionService
         var visualDir = Path.Join(
             AppDataPaths.GetDataRoot(_environment),
             LibraryArtistImagesPath,
-            SelectedSource,
+            source,
             "artists",
             artistId.ToString());
         Directory.CreateDirectory(visualDir);
@@ -334,5 +335,5 @@ public sealed record ArtistVisualSelectionResult(
         => new(false, StatusCodes.Status404NotFound, error, null, null, Array.Empty<string>());
 }
 
-internal sealed record ResolvedArtistVisualSelection(string? LocalPath, string? RemoteUrl);
-internal sealed record MaterializedArtistVisual(ResolvedArtistVisualSelection? Selection, string? Warning);
+public sealed record ResolvedArtistVisualSelection(string? LocalPath, string? RemoteUrl);
+public sealed record MaterializedArtistVisual(ResolvedArtistVisualSelection? Selection, string? Warning);

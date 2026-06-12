@@ -59,6 +59,32 @@ public sealed class EngineFallbackSearchService
         _tidalDownloadService = tidalDownloadService;
     }
 
+    public async Task<string?> ResolveSpotifyIdAsync(
+        string sourceUrl,
+        string deezerId,
+        string userCountry,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            var sourceSongLink = await _songLinkResolver.ResolveByUrlAsync(sourceUrl, userCountry, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(sourceSongLink?.SpotifyId))
+            {
+                return sourceSongLink.SpotifyId;
+            }
+        }
+
+        var normalizedDeezerId = NormalizeDeezerTrackId(deezerId);
+        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
+        {
+            return null;
+        }
+
+        var deezerUrl = $"https://www.deezer.com/track/{normalizedDeezerId}";
+        var deezerSongLink = await _songLinkResolver.ResolveByUrlAsync(deezerUrl, userCountry, cancellationToken);
+        return deezerSongLink?.SpotifyId;
+    }
+
     public async Task<EngineFallbackSearchResult> ResolveAsync(
         EngineFallbackSearchRequest request,
         CancellationToken cancellationToken)

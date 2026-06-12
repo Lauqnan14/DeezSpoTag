@@ -3318,36 +3318,12 @@ LIMIT 1;";
         int? durationMs = null,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(artistName) || string.IsNullOrWhiteSpace(trackTitle))
-        {
-            return null;
-        }
-
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = $@"
-SELECT al.id
-FROM track t
-JOIN album al ON al.id = t.album_id
-JOIN artist ar ON ar.id = al.artist_id
-JOIN track_local tl ON tl.track_id = t.id
-LEFT JOIN audio_file af ON af.id = tl.audio_file_id
-WHERE LOWER(ar.name) = LOWER(@artistName)
-  AND LOWER(t.title) = LOWER(@trackTitle)
-  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
-ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
-LIMIT 1;";
-
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistName", artistName);
-        command.Parameters.AddWithValue("trackTitle", trackTitle);
-        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        if (result is null || result == DBNull.Value)
-        {
-            return null;
-        }
-
-        return Convert.ToInt64(result);
+        return await QueryLocalTrackMetadataIdAsync(
+            LocalTrackMetadataIdKind.Album,
+            artistName,
+            trackTitle,
+            durationMs,
+            cancellationToken);
     }
 
     public async Task<long?> GetLocalTrackIdByTrackMetadataAsync(
@@ -3356,6 +3332,27 @@ LIMIT 1;";
         int? durationMs = null,
         CancellationToken cancellationToken = default)
     {
+        return await QueryLocalTrackMetadataIdAsync(
+            LocalTrackMetadataIdKind.Track,
+            artistName,
+            trackTitle,
+            durationMs,
+            cancellationToken);
+    }
+
+    private enum LocalTrackMetadataIdKind
+    {
+        Album,
+        Track
+    }
+
+    private async Task<long?> QueryLocalTrackMetadataIdAsync(
+        LocalTrackMetadataIdKind idKind,
+        string artistName,
+        string trackTitle,
+        int? durationMs,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(artistName) || string.IsNullOrWhiteSpace(trackTitle))
         {
             return null;
@@ -3363,7 +3360,8 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = $@"
-SELECT t.id
+SELECT al.id,
+       t.id
 FROM track t
 JOIN album al ON al.id = t.album_id
 JOIN artist ar ON ar.id = al.artist_id
@@ -3379,13 +3377,16 @@ LIMIT 1;";
         command.Parameters.AddWithValue("artistName", artistName);
         command.Parameters.AddWithValue("trackTitle", trackTitle);
         command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        if (result is null || result == DBNull.Value)
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
         {
             return null;
         }
 
-        return Convert.ToInt64(result);
+        var ordinal = idKind == LocalTrackMetadataIdKind.Album ? 0 : 1;
+        return await reader.IsDBNullAsync(ordinal, cancellationToken)
+            ? null
+            : reader.GetInt64(ordinal);
     }
 
     public async Task<IReadOnlyDictionary<string, long>> GetTrackIdsByPlexRatingKeysAsync(
@@ -7571,7 +7572,6 @@ RETURNING id, created_at;";
         int offset,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT id,
        source,
@@ -7586,28 +7586,11 @@ SELECT id,
 FROM watchlist_history
 ORDER BY created_at DESC
 LIMIT @limit OFFSET @offset;";
+        await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", limit);
         command.Parameters.AddWithValue("offset", offset);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var items = new List<WatchlistHistoryDto>();
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseUtcDateTimeOffsetInvariant(reader.GetString(9));
-            items.Add(new WatchlistHistoryDto(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                reader.GetString(4),
-                reader.GetString(5),
-                reader.GetInt32(6),
-                reader.GetString(7),
-                await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
-                created));
-        }
-
-        return items;
+        return await ReadWatchlistHistoryAsync(command, cancellationToken);
     }
 
     public async Task<IReadOnlyList<WatchlistHistoryDto>> GetWatchlistHistorySinceAsync(
@@ -7615,7 +7598,6 @@ LIMIT @limit OFFSET @offset;";
         int limit,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT id,
        source,
@@ -7631,9 +7613,17 @@ FROM watchlist_history
 WHERE id > @sinceId
 ORDER BY id DESC
 LIMIT @limit;";
+        await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("sinceId", Math.Max(0, sinceId));
         command.Parameters.AddWithValue("limit", limit);
+        return await ReadWatchlistHistoryAsync(command, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<WatchlistHistoryDto>> ReadWatchlistHistoryAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var items = new List<WatchlistHistoryDto>();
         while (await reader.ReadAsync(cancellationToken))

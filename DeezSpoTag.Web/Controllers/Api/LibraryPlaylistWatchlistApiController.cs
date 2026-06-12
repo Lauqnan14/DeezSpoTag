@@ -16,7 +16,6 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class LibraryPlaylistWatchlistApiController : ControllerBase
 {
-    private const string ExplicitField = "explicit";
     private const string GlobalRoutingTemplateSource = "global";
     private const string GlobalRoutingTemplateSourceId = "__playlist_routing_rules_template__";
     private readonly LibraryRepository _repository;
@@ -81,7 +80,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var scheduler = await _repository.GetWatchlistSchedulerStateAsync("playlist", cancellationToken);
         var playlists = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var sources = playlists
-            .Select(item => NormalizePlaylistSource(item.Source))
+            .Select(item => WatchlistPreferenceNormalizer.PlaylistSource(item.Source))
             .Where(source => !string.IsNullOrWhiteSpace(source))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(source => source, StringComparer.OrdinalIgnoreCase)
@@ -158,7 +157,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var watching = await _repository.IsPlaylistWatchlistedAsync(normalizedSource, sourceId, cancellationToken);
         return Ok(new { watching });
     }
@@ -181,7 +180,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(request.Source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(request.Source);
         var added = await _repository.AddPlaylistWatchlistAsync(
             normalizedSource,
             request.SourceId,
@@ -252,7 +251,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var item = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
         return item is null ? Ok(new { }) : Ok(item);
     }
@@ -301,30 +300,30 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return null;
         }
 
-        var normalizedSource = NormalizePlaylistSource(request.Source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(request.Source);
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, request.SourceId, cancellationToken);
         var normalizedArtwork = NormalizeArtworkPreference(
             request.ReuseSavedArtwork ?? existing?.ReuseSavedArtwork ?? false);
         var routingRules = request.RoutingRules == null
             ? existing?.RoutingRules
-            : NormalizeRoutingRules(request.RoutingRules);
+            : WatchlistPreferenceNormalizer.RoutingRules(request.RoutingRules);
         var blockRules = request.BlockRules == null
             ? existing?.IgnoreRules
-            : NormalizeBlockRules(request.BlockRules);
+            : WatchlistPreferenceNormalizer.BlockRules(request.BlockRules);
 
         return await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
                 normalizedSource,
                 request.SourceId,
                 request.FolderId,
-                NormalizeIncomingText(request.Service),
-                NormalizePreferredEngine(request.PreferredEngine),
+                WatchlistPreferenceNormalizer.IncomingText(request.Service),
+                WatchlistPreferenceNormalizer.PreferredEngine(request.PreferredEngine),
                 string.IsNullOrWhiteSpace(request.DownloadVariantMode)
                     ? existing?.DownloadVariantMode
-                    : NormalizeDownloadVariantMode(request.DownloadVariantMode),
+                    : WatchlistPreferenceNormalizer.DownloadVariantMode(request.DownloadVariantMode),
                 string.IsNullOrWhiteSpace(request.SyncMode)
                     ? existing?.SyncMode
-                    : NormalizeSyncMode(request.SyncMode),
+                    : WatchlistPreferenceNormalizer.SyncMode(request.SyncMode),
                 normalizedArtwork.UpdateArtwork,
                 normalizedArtwork.ReuseSavedArtwork,
                 routingRules,
@@ -341,7 +340,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var removed = await _repository.RemovePlaylistWatchlistAsync(normalizedSource, sourceId, cancellationToken);
         return Ok(new { removed });
     }
@@ -407,7 +406,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var distinctSources = watchlist
-            .Select(item => NormalizePlaylistSource(item.Source))
+            .Select(item => WatchlistPreferenceNormalizer.PlaylistSource(item.Source))
             .Where(source => !string.IsNullOrWhiteSpace(source))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -500,7 +499,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         await ResetSourceCircuitAsync(item.Source, cancellationToken);
         _playlistWatchHostedService?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
 
-        var normalizedSource = NormalizePlaylistSource(item.Source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(item.Source);
         var currentIndex = -1;
         for (var index = 0; index < watchlist.Count; index++)
         {
@@ -656,7 +655,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 && !string.IsNullOrWhiteSpace(selection.SourceId))
             .Select(selection => new
             {
-                Source = NormalizePlaylistSource(selection.Source),
+                Source = WatchlistPreferenceNormalizer.PlaylistSource(selection.Source),
                 SourceId = selection.SourceId.Trim()
             })
             .Distinct()
@@ -758,7 +757,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     [HttpGet("{source}/{sourceId}/visual")]
     public IActionResult GetVisual(string source, string sourceId, [FromQuery] string? file = null)
     {
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var visual = string.IsNullOrWhiteSpace(file)
             ? _playlistVisualService.GetStoredVisual(normalizedSource, sourceId)
             : _playlistVisualService.GetStoredVisuals(normalizedSource, sourceId)
@@ -779,7 +778,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     [HttpGet("{source}/{sourceId}/visuals")]
     public IActionResult GetVisuals(string source, string sourceId)
     {
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var items = _playlistVisualService.GetStoredVisuals(normalizedSource, sourceId)
             .Select(item => new
             {
@@ -801,7 +800,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return BadRequest("FileName is required.");
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var updated = _playlistVisualService.SetActiveVisual(normalizedSource, sourceId, request.FileName);
         if (!updated)
         {
@@ -838,7 +837,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var pref = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
         return Ok(pref?.RoutingRules ?? Array.Empty<PlaylistTrackRoutingRule>());
     }
@@ -851,7 +850,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedRules = NormalizeRoutingRules(rules);
+        var normalizedRules = WatchlistPreferenceNormalizer.RoutingRules(rules);
         var validFolderIds = await GetValidFolderIdsAsync(cancellationToken);
         if (normalizedRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
         {
@@ -877,7 +876,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedRules = NormalizeRoutingRules(rules);
+        var normalizedRules = WatchlistPreferenceNormalizer.RoutingRules(rules);
         var validFolderIds = await GetValidFolderIdsAsync(cancellationToken);
         if (normalizedRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
         {
@@ -890,7 +889,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         foreach (var item in watchlist)
         {
             var existing = await _repository.GetPlaylistWatchPreferenceAsync(
-                NormalizePlaylistSource(item.Source),
+                WatchlistPreferenceNormalizer.PlaylistSource(item.Source),
                 item.SourceId,
                 cancellationToken);
             var applicableRules = FilterGlobalRoutingRulesForPreference(normalizedRules, existing);
@@ -1003,7 +1002,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var pref = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
         return Ok(pref?.IgnoreRules ?? Array.Empty<PlaylistTrackBlockRule>());
     }
@@ -1016,7 +1015,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedRules = NormalizeBlockRules(rules);
+        var normalizedRules = WatchlistPreferenceNormalizer.BlockRules(rules);
         await UpsertWatchPreferenceRulesAsync(source, sourceId, routingRules: null, normalizedRules, cancellationToken);
 
         return Ok(new { saved = normalizedRules?.Count ?? 0 });
@@ -1035,7 +1034,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return BadRequest("Playlist source id is required.");
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
             normalizedSource,
             sourceId,
@@ -1053,7 +1052,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var ignored = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(normalizedSource, sourceId, cancellationToken);
         return Ok(ignored);
     }
@@ -1066,7 +1065,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var ignored = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(normalizedSource, sourceId, cancellationToken);
         if (ignored.Count == 0)
         {
@@ -1130,7 +1129,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         await _repository.AddPlaylistWatchIgnoredTracksAsync(
-            NormalizePlaylistSource(source),
+            WatchlistPreferenceNormalizer.PlaylistSource(source),
             sourceId,
             new List<PlaylistWatchIgnoreInsert> { new(request.TrackSourceId, request.Isrc) },
             cancellationToken);
@@ -1151,7 +1150,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var removed = await _repository.RemovePlaylistWatchIgnoredTrackAsync(NormalizePlaylistSource(source), sourceId, trackSourceId, cancellationToken);
+        var removed = await _repository.RemovePlaylistWatchIgnoredTrackAsync(WatchlistPreferenceNormalizer.PlaylistSource(source), sourceId, trackSourceId, cancellationToken);
         return Ok(new { removed });
     }
 
@@ -1162,7 +1161,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
     private async Task<PlaylistWatchlistDto?> FindWatchlistItemAsync(string source, string sourceId, CancellationToken cancellationToken)
     {
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         return items.FirstOrDefault(entry =>
             string.Equals(entry.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
@@ -1174,7 +1173,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var preference = await _repository.GetPlaylistWatchPreferenceAsync(
-            NormalizePlaylistSource(item.Source),
+            WatchlistPreferenceNormalizer.PlaylistSource(item.Source),
             item.SourceId,
             cancellationToken);
         return await _playlistSyncService.SyncPlaylistArtworkOnlyAsync(
@@ -1191,7 +1190,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         CancellationToken cancellationToken,
         bool replaceRoutingRules = false)
     {
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var existing = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
         var normalizedArtwork = NormalizeArtworkPreference(
             existing?.ReuseSavedArtwork ?? false);
@@ -1217,7 +1216,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string sourceId,
         CancellationToken cancellationToken)
     {
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var state = await _repository.GetPlaylistWatchStateAsync(normalizedSource, sourceId, cancellationToken);
         await _repository.UpsertPlaylistWatchStateAsync(
             new LibraryRepository.PlaylistWatchStateUpsertInput(
@@ -1237,7 +1236,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
     private async Task ResetSourceCircuitAsync(string source, CancellationToken cancellationToken)
     {
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         await _repository.UpsertWatchlistSourceCircuitStateAsync(
             new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
                 WatchType: "playlist",
@@ -1285,7 +1284,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return "Atmos destination folder was not found or is disabled.";
         }
 
-        var routingRules = NormalizeRoutingRules(request.RoutingRules);
+        var routingRules = WatchlistPreferenceNormalizer.RoutingRules(request.RoutingRules);
         if (routingRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
         {
             return "Routing destination folder was not found or is disabled.";
@@ -1294,25 +1293,12 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return null;
     }
 
-    private static string? NormalizeIncomingText(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
-    private static string? NormalizePreferredEngine(string? value)
-    {
-        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
-        return normalized switch
-        {
-            "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal" => normalized,
-            _ => null
-        };
-    }
-
     private async Task SetPlaylistWatchSchedulerFocusAsync(
         string source,
         string sourceId,
         CancellationToken cancellationToken)
     {
-        var normalizedSource = NormalizePlaylistSource(source);
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         if (string.IsNullOrWhiteSpace(normalizedSource) || string.IsNullOrWhiteSpace(sourceId))
         {
             return;
@@ -1327,116 +1313,5 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 LastProgressUtc: null,
                 ZeroQueueStreak: 0),
             cancellationToken);
-    }
-
-    private static string? NormalizeDownloadVariantMode(string? value)
-    {
-        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
-        return normalized switch
-        {
-            "dual_quality" or "atmos_only" => normalized,
-            "standard" => "standard",
-            _ => null
-        };
-    }
-
-    private static string? NormalizeSyncMode(string? value)
-    {
-        var normalized = NormalizeIncomingText(value)?.ToLowerInvariant();
-        return normalized switch
-        {
-            "append" or "mirror" => normalized,
-            _ => null
-        };
-    }
-
-    private static List<PlaylistTrackRoutingRule>? NormalizeRoutingRules(List<PlaylistTrackRoutingRule>? rules)
-    {
-        if (rules == null || rules.Count == 0)
-        {
-            return null;
-        }
-
-        return rules
-            .Where(static rule => rule.DestinationFolderId > 0)
-            .Select(static (rule, index) =>
-            {
-                var field = NormalizeRoutingField(rule.ConditionField);
-                return rule with
-                {
-                    ConditionField = field,
-                    ConditionOperator = NormalizeRoutingOperator(field, rule.ConditionOperator),
-                    ConditionValue = rule.ConditionValue?.Trim() ?? string.Empty,
-                    Order = index
-                };
-            })
-            .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
-                    || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
-            .ToList();
-    }
-
-    private static List<PlaylistTrackBlockRule>? NormalizeBlockRules(List<PlaylistTrackBlockRule>? rules)
-    {
-        if (rules == null || rules.Count == 0)
-        {
-            return null;
-        }
-
-        return rules
-            .Select(static (rule, index) =>
-            {
-                var field = NormalizeRoutingField(rule.ConditionField);
-                return rule with
-                {
-                    ConditionField = field,
-                    ConditionOperator = NormalizeRoutingOperator(field, rule.ConditionOperator),
-                    ConditionValue = rule.ConditionValue?.Trim() ?? string.Empty,
-                    Order = index
-                };
-            })
-            .Where(static rule => !string.IsNullOrWhiteSpace(rule.ConditionField)
-                && (string.Equals(rule.ConditionField, ExplicitField, StringComparison.OrdinalIgnoreCase)
-                    || !string.IsNullOrWhiteSpace(rule.ConditionValue)))
-            .ToList();
-    }
-
-    private static string NormalizeRoutingField(string? value)
-    {
-        var normalized = value?.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "artist" or "title" or "album" or "genre" or "year" or ExplicitField => normalized,
-            _ => string.Empty
-        };
-    }
-
-    private static string NormalizeRoutingOperator(string? field, string? value)
-    {
-        var normalized = value?.Trim().ToLowerInvariant();
-        if (string.Equals(field, ExplicitField, StringComparison.OrdinalIgnoreCase))
-        {
-            return normalized == "is_false" ? "is_false" : "is_true";
-        }
-
-        if (string.Equals(field, "year", StringComparison.OrdinalIgnoreCase))
-        {
-            return normalized is "gte" or "lte" ? normalized : "equals";
-        }
-
-        return normalized is "equals" or "starts_with" ? normalized : "contains";
-    }
-
-    private static string NormalizePlaylistSource(string? source)
-    {
-        var normalized = source?.Trim().ToLowerInvariant() ?? string.Empty;
-        return normalized switch
-        {
-            "smarttracks" => "smarttracklist",
-            "recommendation" => "recommendations",
-            "itunes" => "apple",
-            "applemusic" => "apple",
-            _ => string.IsNullOrWhiteSpace(normalized) ? "deezer" : normalized
-        };
     }
 }

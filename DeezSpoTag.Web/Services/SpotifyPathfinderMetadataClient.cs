@@ -2290,57 +2290,43 @@ public sealed class SpotifyPathfinderMetadataClient
 
     public async Task<List<SpotifyArtistSearchCandidate>> SearchArtistsAsync(string query, int limit, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return new List<SpotifyArtistSearchCandidate>();
-        }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
-        if (context is null)
-        {
-            return new List<SpotifyArtistSearchCandidate>();
-        }
-        string trimmedQuery = query.Trim();
-        int resolvedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 50);
-        PersistedQueryOverride persisted = GetPersistedQuery(SearchSuggestionsOperationName, 1, SearchSuggestionsHashFallback);
-        IReadOnlyList<Dictionary<string, object?>> variableCandidates = BuildSearchSuggestionVariableCandidates(trimmedQuery, resolvedLimit, context, persisted.VariablesJson);
-        foreach (var payload in variableCandidates.Select((Dictionary<string, object?> variables) => new
-        {
-            operationName = SearchSuggestionsOperationName,
-            variables = variables,
-            extensions = new
-            {
-                persistedQuery = new
-                {
-                    version = persisted.Version,
-                    sha256Hash = persisted.Sha256Hash
-                }
-            }
-        }))
-        {
-            using JsonDocument? doc = await QueryAsync(context, payload, cancellationToken);
-            if (doc is not null)
-            {
-                List<SpotifyArtistSearchCandidate> artists = ParseSearchSuggestionArtists(doc.RootElement, resolvedLimit);
-                if (artists.Count > 0)
-                {
-                    return await EnrichSearchSuggestionArtistsAsync(context, artists, cancellationToken);
-                }
-            }
-        }
-        return new List<SpotifyArtistSearchCandidate>();
+        var result = await SearchSuggestionsAsync(
+            query,
+            limit,
+            ParseSearchSuggestionArtists,
+            cancellationToken);
+        return result.Context is null
+            ? result.Items
+            : await EnrichSearchSuggestionArtistsAsync(result.Context, result.Items, cancellationToken);
     }
 
     public async Task<List<SpotifyPlaylistSearchCandidate>> SearchPlaylistsAsync(string query, int limit, CancellationToken cancellationToken)
     {
+        var result = await SearchSuggestionsAsync(
+            query,
+            limit,
+            ParseSearchSuggestionPlaylists,
+            cancellationToken);
+        return result.Items;
+    }
+
+    private async Task<SearchSuggestionResult<T>> SearchSuggestionsAsync<T>(
+        string query,
+        int limit,
+        Func<JsonElement, int, List<T>> parser,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(query))
         {
-            return new List<SpotifyPlaylistSearchCandidate>();
+            return new SearchSuggestionResult<T>(null, new List<T>());
         }
+
         PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
         if (context is null)
         {
-            return new List<SpotifyPlaylistSearchCandidate>();
+            return new SearchSuggestionResult<T>(null, new List<T>());
         }
+
         string trimmedQuery = query.Trim();
         int resolvedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 50);
         PersistedQueryOverride persisted = GetPersistedQuery(SearchSuggestionsOperationName, 1, SearchSuggestionsHashFallback);
@@ -2362,15 +2348,18 @@ public sealed class SpotifyPathfinderMetadataClient
             using JsonDocument? doc = await QueryAsync(context, payload, cancellationToken);
             if (doc is not null)
             {
-                List<SpotifyPlaylistSearchCandidate> playlists = ParseSearchSuggestionPlaylists(doc.RootElement, resolvedLimit);
-                if (playlists.Count > 0)
+                List<T> items = parser(doc.RootElement, resolvedLimit);
+                if (items.Count > 0)
                 {
-                    return playlists;
+                    return new SearchSuggestionResult<T>(context, items);
                 }
             }
         }
-        return new List<SpotifyPlaylistSearchCandidate>();
+
+        return new SearchSuggestionResult<T>(context, new List<T>());
     }
+
+    private sealed record SearchSuggestionResult<T>(PathfinderAuthContext? Context, List<T> Items);
 
     private async Task<List<SpotifyArtistSearchCandidate>> EnrichSearchSuggestionArtistsAsync(
         PathfinderAuthContext context,

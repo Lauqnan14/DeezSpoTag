@@ -60,7 +60,6 @@ public class ActivitiesController : Controller
         SkippedStatus
     ];
     private static readonly string[] CanceledActivityStatuses = [CanceledStatus, CancelledStatus];
-    private static readonly string[] FailedActivityStatuses = [FailedStatus, ErrorStatus];
     private readonly ILogger<ActivitiesController> _logger;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadQueueRepository _queueRepository;
@@ -237,49 +236,36 @@ public class ActivitiesController : Controller
 
     [HttpPost]
     public async Task<IActionResult> ClearCompleted()
-    {
-        try
-        {
-            var hidden = await _queueRepository.MarkActivitiesClearedByStatusesAsync(
-                CompletedActivityStatuses,
-                HttpContext.RequestAborted);
-            var deleted = await _queueRepository.DeleteClearableByStatusesAsync(
-                CompletedActivityStatuses,
-                HttpContext.RequestAborted);
-            if (hidden > 0 || deleted > 0)
-            {
-                _deezspotagListener.SendRemovedFinishedDownloads();
-            }
-
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Cleared completed downloads (removed={Deleted})", deleted);
-            }
-            return Json(new
-            {
-                success = true,
-                message = hidden > 0 || deleted > 0 ? "Completed downloads cleared" : "No completed downloads to clear",
-                deleted,
-                hidden
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Error clearing completed downloads");
-            return ErrorJson("Failed to clear completed downloads.");
-        }
-    }
+        => await ClearByStatusesAsync(
+            CompletedActivityStatuses,
+            "completed",
+            "Completed downloads cleared",
+            "No completed downloads to clear",
+            "Failed to clear completed downloads.");
 
     [HttpPost]
     public async Task<IActionResult> ClearCanceled()
+        => await ClearByStatusesAsync(
+            CanceledActivityStatuses,
+            "canceled",
+            "Canceled downloads cleared",
+            "No canceled downloads to clear",
+            "Failed to clear canceled downloads.");
+
+    private async Task<IActionResult> ClearByStatusesAsync(
+        IReadOnlyCollection<string> statuses,
+        string logLabel,
+        string successMessage,
+        string emptyMessage,
+        string errorMessage)
     {
         try
         {
             var hidden = await _queueRepository.MarkActivitiesClearedByStatusesAsync(
-                CanceledActivityStatuses,
+                statuses,
                 HttpContext.RequestAborted);
             var deleted = await _queueRepository.DeleteClearableByStatusesAsync(
-                CanceledActivityStatuses,
+                statuses,
                 HttpContext.RequestAborted);
             if (hidden > 0 || deleted > 0)
             {
@@ -288,20 +274,20 @@ public class ActivitiesController : Controller
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Cleared canceled downloads (removed={Deleted})", deleted);
+                _logger.LogInformation("Cleared {LogLabel} downloads (removed={Deleted})", logLabel, deleted);
             }
             return Json(new
             {
                 success = true,
-                message = hidden > 0 || deleted > 0 ? "Canceled downloads cleared" : "No canceled downloads to clear",
+                message = hidden > 0 || deleted > 0 ? successMessage : emptyMessage,
                 deleted,
                 hidden
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Error clearing canceled downloads");
-            return ErrorJson("Failed to clear canceled downloads.");
+            _logger.LogError(ex, "Error clearing {LogLabel} downloads", logLabel);
+            return ErrorJson(errorMessage);
         }
     }
 

@@ -1,4 +1,3 @@
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 
@@ -42,7 +41,7 @@ public sealed class KnownLibraryFileIngestionService
         IReadOnlyDictionary<long, List<string>> filesByFolder,
         CancellationToken cancellationToken)
     {
-        var pending = NormalizeFilesByFolder(filesByFolder);
+        var pending = KnownLibraryFilePathSet.NormalizeByFolder(filesByFolder);
         if (pending.Count == 0)
         {
             AddInfoLog("Known-file library ingestion skipped (no changed files).");
@@ -54,7 +53,7 @@ public sealed class KnownLibraryFileIngestionService
             AddInfoLog("Known-file library ingestion skipped (library repository is not configured).");
             return new KnownFileIngestionSummary(
                 pending.Sum(pair => pair.Value.Count),
-                pending.SelectMany(pair => pair.Value).Count(IsExistingAudioFile),
+                pending.SelectMany(pair => pair.Value).Count(KnownLibraryFilePathSet.IsExistingAudioFile),
                 [],
                 []);
         }
@@ -70,7 +69,7 @@ public sealed class KnownLibraryFileIngestionService
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var existingAudioFiles = requestedFiles
-            .Where(IsExistingAudioFile)
+            .Where(KnownLibraryFilePathSet.IsExistingAudioFile)
             .ToList();
 
         var ingestedFolderIds = new HashSet<long>();
@@ -84,7 +83,7 @@ public sealed class KnownLibraryFileIngestionService
             }
 
             var folderAudioFiles = filePaths
-                .Where(IsExistingAudioFile)
+                .Where(KnownLibraryFilePathSet.IsExistingAudioFile)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -133,14 +132,14 @@ public sealed class KnownLibraryFileIngestionService
         IReadOnlyDictionary<long, List<string>> filesByFolder,
         CancellationToken cancellationToken)
     {
-        var pending = NormalizeFilesByFolder(filesByFolder);
+        var pending = KnownLibraryFilePathSet.NormalizeByFolder(filesByFolder);
         var requestedFiles = pending
             .SelectMany(pair => pair.Value)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var existingAudioFiles = requestedFiles
-            .Where(IsExistingAudioFile)
+            .Where(KnownLibraryFilePathSet.IsExistingAudioFile)
             .ToList();
         return await VerifyIngestedAsync(requestedFiles, existingAudioFiles, cancellationToken);
     }
@@ -242,63 +241,4 @@ public sealed class KnownLibraryFileIngestionService
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(DateTimeOffset.UtcNow, "warn", message));
     }
 
-    private static Dictionary<long, List<string>> NormalizeFilesByFolder(
-        IReadOnlyDictionary<long, List<string>> filesByFolder)
-    {
-        var normalized = new Dictionary<long, List<string>>();
-        foreach (var (folderId, paths) in filesByFolder)
-        {
-            if (folderId <= 0 || paths.Count == 0)
-            {
-                continue;
-            }
-
-            var normalizedPaths = paths
-                .Select(NormalizeFilePath)
-                .Where(static path => !string.IsNullOrWhiteSpace(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (normalizedPaths.Count > 0)
-            {
-                normalized[folderId] = normalizedPaths!;
-            }
-        }
-
-        return normalized;
-    }
-
-    private static string? NormalizeFilePath(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(path);
-        if (string.IsNullOrWhiteSpace(ioPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            return Path.GetFullPath(ioPath);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return DownloadPathResolver.NormalizeDisplayPath(ioPath);
-        }
-    }
-
-    private static bool IsExistingAudioFile(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            return false;
-        }
-
-        var extension = Path.GetExtension(path);
-        return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
-    }
 }
