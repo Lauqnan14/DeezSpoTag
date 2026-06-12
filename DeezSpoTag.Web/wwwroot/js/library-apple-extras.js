@@ -1140,11 +1140,19 @@ async function cancelLibraryScan() {
 function bindBootstrapScanActions(elements) {
     bindLibraryAction(elements.refreshButton, async () => {
         await runLocalScan(false, true);
-        await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+        if (typeof hasScopedLibraryIndexControls === 'function' && hasScopedLibraryIndexControls()) {
+            await refreshScopedLibraryIndexData({ includeSettings: true });
+        } else {
+            await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+        }
     });
     bindLibraryAction(elements.scanButton, async () => {
         await runLocalScan(false, false);
-        await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+        if (typeof hasScopedLibraryIndexControls === 'function' && hasScopedLibraryIndexControls()) {
+            await refreshScopedLibraryIndexData({ includeSettings: true });
+        } else {
+            await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+        }
     });
     bindLibraryAction(elements.cancelScanButton, cancelLibraryScan);
     bindLibraryAction(elements.refreshImagesButton, async () => {
@@ -1153,7 +1161,11 @@ function bindBootstrapScanActions(elements) {
         }
         bumpImageCacheKey();
         await runLocalScan(true);
-        await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+        if (typeof hasScopedLibraryIndexControls === 'function' && hasScopedLibraryIndexControls()) {
+            await refreshScopedLibraryIndexData({ includeSettings: true });
+        } else {
+            await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+        }
     });
     bindLibraryAction(elements.cleanupButton, cleanupMissingLibraryFiles);
     bindLibraryAction(elements.clearButton, clearLibraryData);

@@ -23,7 +23,6 @@ const libraryState = {
     localArtistIndex: new Map(),
     allArtists: [],
     filteredArtists: [],
-    artistFolders: new Map(),
     artistFolderScopeId: null,
     artistSearchQuery: '',
     artistSortKey: 'name-asc',
@@ -3542,6 +3541,11 @@ async function loadArtists() {
     libraryState.artistLoadAbortController = abortController;
     const params = new URLSearchParams();
     const selectedFolderId = getSelectedLibraryViewFolderId();
+    const previousScopeId = libraryState.artistFolderScopeId;
+    const scopeChanged = String(previousScopeId ?? '') !== String(selectedFolderId ?? '');
+    if (scopeChanged) {
+        clearArtistGridForScopedLoad();
+    }
     params.set('availability', 'local');
     if (selectedFolderId !== null) {
         params.set('folderId', String(selectedFolderId));
@@ -3572,10 +3576,22 @@ async function loadArtists() {
 
     libraryState.allArtists = collected;
     libraryState.filteredArtists = collected;
-    libraryState.artistFolders.clear();
     libraryState.artistFolderScopeId = selectedFolderId;
     updateLibraryResultsMeta(collected.length, collected.length);
     renderArtistGrid(collected);
+}
+
+function clearArtistGridForScopedLoad() {
+    const container = document.getElementById('artistsGrid');
+    if (!container) {
+        return;
+    }
+    clearArtistGridVirtualization();
+    container.classList.remove('artist-grid-windowed');
+    container.style.position = '';
+    container.style.height = '';
+    container.innerHTML = '<p class="library-empty-note">Loading artists...</p>';
+    renderAlphaJumpNavigation(document.getElementById('libraryLetterNav'), new Map());
 }
 
 async function fetchArtistsPagePayload(baseParams, page, pageSize, abortController) {
@@ -9378,7 +9394,11 @@ function bindFolderCombinedToggle(wrapper, folder, canEnableAutoTag) {
         try {
             await applyCombinedFolderToggleState(folder, enabled, previousLibraryEnabled);
 
-            await Promise.all([loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+            if (hasScopedLibraryIndexControls()) {
+                await refreshScopedLibraryIndexData();
+            } else {
+                await Promise.all([loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+            }
         } catch (error) {
             folder.enabled = previousLibraryEnabled;
             folder.autoTagEnabled = previousAutoTagEnabled;
@@ -10356,18 +10376,22 @@ async function setFolderEnabled(id, enabled, options = {}) {
             convertBitrate: folder.convertBitrate ?? null
         })
     });
-    const refreshTasks = [];
-    if (shouldReload) {
-        refreshTasks.push(loadFolders());
-    }
-    if (shouldRefreshArtists) {
-        refreshTasks.push(loadArtists());
-    }
-    if (shouldRefreshScanStatus) {
-        refreshTasks.push(loadLibraryScanStatus());
-    }
-    if (refreshTasks.length > 0) {
-        await Promise.all(refreshTasks);
+    if (shouldReload || shouldRefreshArtists || shouldRefreshScanStatus) {
+        if (hasScopedLibraryIndexControls() && shouldReload && shouldRefreshArtists) {
+            await refreshScopedLibraryIndexData({ includeScanStatus: shouldRefreshScanStatus });
+        } else {
+            const refreshTasks = [];
+            if (shouldReload) {
+                refreshTasks.push(loadFolders());
+            }
+            if (shouldRefreshArtists) {
+                refreshTasks.push(loadArtists());
+            }
+            if (shouldRefreshScanStatus) {
+                refreshTasks.push(loadLibraryScanStatus());
+            }
+            await Promise.all(refreshTasks);
+        }
     }
     emitAutoTagProfileLibrarySettingsChanged('folder-enabled');
 }
@@ -10539,33 +10563,6 @@ function populateAlbumDestinationOptions() {
     }
 }
 
-async function getArtistFolders(artistId) {
-    if (libraryState.artistFolders.has(artistId)) {
-        return libraryState.artistFolders.get(artistId);
-    }
-    try {
-        const albums = await fetchJson(buildLibraryScopedUrl(`/api/library/artists/${artistId}/albums`));
-        const folderSet = new Set();
-        (albums || []).forEach(album => {
-            (album.localFolders || []).forEach(folderName => {
-                const normalizedName = String(folderName || '').trim().toLocaleLowerCase();
-                if (!normalizedName) {
-                    return;
-                }
-                (libraryState.folders || [])
-                    .filter(folder => String(folder.displayName || '').trim().toLocaleLowerCase() === normalizedName)
-                    .forEach(folder => folderSet.add(String(folder.id)));
-            });
-        });
-        libraryState.artistFolders.set(artistId, folderSet);
-        return folderSet;
-    } catch {
-        const empty = new Set();
-        libraryState.artistFolders.set(artistId, empty);
-        return empty;
-    }
-}
-
 function updateLibraryResultsMeta(totalCount, filteredCount) {
     const meta = document.getElementById('libraryResultsMeta');
     if (!meta) {
@@ -10610,47 +10607,23 @@ function compareArtistsBySort(a, b, sortKey) {
 }
 
 async function applyLibraryViewFilter(requestId = null) {
-    const viewSelect = document.getElementById('libraryViewSelect');
     const allArtists = Array.isArray(libraryState.allArtists) ? libraryState.allArtists : [];
     const normalizedQuery = (libraryState.artistSearchQuery || '').trim().toLocaleLowerCase();
     const sortKey = libraryState.artistSortKey || 'name-asc';
-    let filteredByView = allArtists;
 
     const isStaleRequest = () => requestId !== null && requestId !== libraryState.artistLoadRequestId;
 
-    if (!viewSelect) {
-        if (isStaleRequest()) {
-            return;
-        }
-        const filtered = allArtists
-            .filter(artist => !normalizedQuery || (artist.name || '').toLocaleLowerCase().includes(normalizedQuery))
-            .sort((a, b) => compareArtistsBySort(a, b, sortKey));
-        libraryState.filteredArtists = filtered;
-        updateLibraryResultsMeta(allArtists.length, filtered.length);
-        renderArtistGrid(filtered);
-        return;
-    }
-
-    const selected = (viewSelect.value || '').trim();
     const selectedFolderId = getSelectedLibraryViewFolderId();
     const selectedMatchesLoadedScope = String(libraryState.artistFolderScopeId ?? '') === String(selectedFolderId ?? '');
-    if (selected && selected !== 'main' && !selectedMatchesLoadedScope) {
-        const folderLookups = await Promise.all(allArtists.map(async artist => {
-            const folders = await getArtistFolders(artist.id);
-            return { artist, folders };
-        }));
-        if (isStaleRequest()) {
-            return;
-        }
-        filteredByView = folderLookups
-            .filter(entry => entry.folders?.has(selected))
-            .map(entry => entry.artist);
+    if (!selectedMatchesLoadedScope) {
+        await loadArtists();
+        return;
     }
 
     if (isStaleRequest()) {
         return;
     }
-    const filtered = filteredByView
+    const filtered = allArtists
         .filter(artist => !normalizedQuery || (artist.name || '').toLocaleLowerCase().includes(normalizedQuery))
         .sort((a, b) => compareArtistsBySort(a, b, sortKey));
 
@@ -10728,6 +10701,27 @@ function shouldInitializeLibraryForCurrentPage(targets) {
     );
 }
 
+function hasScopedLibraryIndexControls() {
+    return !!document.getElementById('artistsGrid')
+        && !!document.getElementById('libraryViewSelect');
+}
+
+async function refreshScopedLibraryIndexData(options = {}) {
+    const includeSettings = options.includeSettings === true;
+    const includeScanStatus = options.includeScanStatus !== false;
+    const prerequisiteTasks = [loadFolders()];
+    if (includeSettings) {
+        prerequisiteTasks.push(loadLibrarySettings());
+    }
+    await Promise.all(prerequisiteTasks);
+
+    const scopedTasks = [loadArtists()];
+    if (includeScanStatus) {
+        scopedTasks.push(loadLibraryScanStatus());
+    }
+    await Promise.all(scopedTasks);
+}
+
 function bindIndexActionsDropdown() {
     globalThis.DeezSpoTagLibraryInteractions?.bindIndexActionsDropdown?.();
 }
@@ -10741,11 +10735,13 @@ function bindGlobalLibraryInteractionHandlers() {
     });
 }
 
-function queueStandardInitialLoadTasks(targets, tasks) {
-    if (targets.shouldLoadArtists) {
+function queueStandardInitialLoadTasks(targets, tasks, options = {}) {
+    const skipArtists = options.skipArtists === true;
+    const skipScanStatus = options.skipScanStatus === true;
+    if (targets.shouldLoadArtists && !skipArtists) {
         tasks.push(loadArtists());
     }
-    if (targets.shouldLoadScanStatus) {
+    if (targets.shouldLoadScanStatus && !skipScanStatus) {
         tasks.push(loadLibraryScanStatus());
     }
     if (targets.shouldLoadArtistAlbums) {
@@ -10845,6 +10841,11 @@ function queueFolderAndDownloadLoadTasks(targets, tasks) {
 }
 
 async function runInitialLibraryLoads(targets) {
+    if (targets.shouldLoadArtists && targets.shouldLoadViewFolders) {
+        await runInitialScopedLibraryIndexLoads(targets);
+        return;
+    }
+
     const tasks = [];
     if (targets.shouldLoadSettings) {
         tasks.push(loadLibrarySettings());
@@ -10853,6 +10854,34 @@ async function runInitialLibraryLoads(targets) {
     queueStandardInitialLoadTasks(targets, tasks);
     if (tasks.length) {
         await Promise.all(tasks);
+    }
+}
+
+async function runInitialScopedLibraryIndexLoads(targets) {
+    const prerequisiteTasks = [loadFolders()];
+    if (targets.shouldLoadSettings) {
+        prerequisiteTasks.push(loadLibrarySettings());
+    }
+    if (targets.shouldLoadDownload) {
+        prerequisiteTasks.push(loadDownloadLocation());
+    }
+    if (prerequisiteTasks.length) {
+        await Promise.all(prerequisiteTasks);
+    }
+
+    const scopedTasks = [];
+    if (targets.shouldLoadArtists) {
+        scopedTasks.push(loadArtists());
+    }
+    if (targets.shouldLoadScanStatus) {
+        scopedTasks.push(loadLibraryScanStatus());
+    }
+    queueStandardInitialLoadTasks(targets, scopedTasks, {
+        skipArtists: true,
+        skipScanStatus: true
+    });
+    if (scopedTasks.length) {
+        await Promise.all(scopedTasks);
     }
 }
 
@@ -10886,7 +10915,7 @@ function bindLibraryFilterEvents(viewSelect, searchInput, sortSelect) {
         viewSelect.addEventListener('change', async () => {
             setStoredLibraryViewSelection(viewSelect.value || 'main');
             syncLibraryScopeInLocationBar(viewSelect.value || 'main');
-            await loadArtists();
+            await Promise.all([loadArtists(), loadLibraryScanStatus()]);
         });
     }
     if (searchInput) {
