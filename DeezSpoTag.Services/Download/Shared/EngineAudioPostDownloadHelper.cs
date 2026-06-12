@@ -1,5 +1,6 @@
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
@@ -28,6 +29,9 @@ public static partial class EngineAudioPostDownloadHelper
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
     private const string AppleSource = "apple";
+    private const string QobuzSource = "qobuz";
+    private const string TidalSource = "tidal";
+    private const string AmazonSource = "amazon";
     private const string MzStaticHost = "mzstatic.com";
     private const string UnknownArtist = "Unknown Artist";
     private const string CompletedStatus = "completed";
@@ -326,6 +330,8 @@ public static partial class EngineAudioPostDownloadHelper
             return false;
         }
 
+        var originalTrack = TrackMetadataSnapshot.Capture(request.Track);
+        var originalPayload = PayloadSourceIdentitySnapshot.Capture(request.Payload);
         ApplyResolvedTagSourceIdentity(request.Track, request.Payload, source);
         await TryHydrateResolvedTagSourceIdentityAsync(
             request.Track,
@@ -338,12 +344,26 @@ public static partial class EngineAudioPostDownloadHelper
         try
         {
             await resolver.ResolveTrackAsync(request.Track, request.Settings, request.CancellationToken);
+            if (!IsResolvedMetadataCompatible(originalTrack, request.Payload, request.Track))
+            {
+                originalTrack.Restore(request.Track);
+                originalPayload.Restore(request.Payload);
+                request.Logger.LogWarning(
+                    "{Engine} profile metadata source {Source} rejected for track {TrackId}: resolved identity does not match requested queue identity.",
+                    request.EngineName,
+                    source,
+                    request.Track.Id);
+                return false;
+            }
+
             ApplyResolvedTagSourceIdentity(request.Track, request.Payload, source);
             request.Track.ApplySettings(request.Settings);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            originalTrack.Restore(request.Track);
+            originalPayload.Restore(request.Payload);
             request.Logger.LogWarning(
                 ex,
                 "{Engine} profile metadata resolver failed for source {Source} and track {TrackId}",
@@ -430,10 +450,10 @@ public static partial class EngineAudioPostDownloadHelper
             payload.DeezerId,
             track.Urls.GetValueOrDefault(DeezerTrackIdKey),
             track.Urls.GetValueOrDefault("deezer_id"),
-            track.Urls.GetValueOrDefault("deezer"),
-            ExtractTrailingId(payload.SourceUrl),
-            ExtractTrailingId(payload.Url),
-            ExtractTrailingId(track.DownloadURL)));
+            ExtractSourceTrackId(track.Urls.GetValueOrDefault("deezer"), DeezerSource),
+            ExtractSourceTrackId(payload.SourceUrl, DeezerSource, allowRawId: false),
+            ExtractSourceTrackId(payload.Url, DeezerSource, allowRawId: false),
+            ExtractSourceTrackId(track.DownloadURL, DeezerSource, allowRawId: false)));
     }
 
     private static async Task<string?> ResolveDeezerIdFromLookupAsync(
@@ -542,7 +562,13 @@ public static partial class EngineAudioPostDownloadHelper
             return numeric.ToString();
         }
 
-        var fromUrl = ExtractTrailingId(candidate);
+        if (candidate.StartsWith("deezer:track:", StringComparison.OrdinalIgnoreCase))
+        {
+            var rawId = candidate["deezer:track:".Length..].Trim();
+            return long.TryParse(rawId, out numeric) && numeric > 0 ? numeric.ToString() : null;
+        }
+
+        var fromUrl = ExtractSourceTrackId(candidate, DeezerSource, allowRawId: false);
         if (long.TryParse(fromUrl, out numeric) && numeric > 0)
         {
             return numeric.ToString();
@@ -591,27 +617,91 @@ public static partial class EngineAudioPostDownloadHelper
         return source switch
         {
             DeezerSource => FirstNonEmpty(
-                payload.DeezerId,
-                track.Urls.GetValueOrDefault(DeezerTrackIdKey),
-                track.Urls.GetValueOrDefault("deezer_id"),
-                ExtractTrailingId(track.Urls.GetValueOrDefault(DeezerSource))),
+                NormalizeDeezerId(payload.DeezerId),
+                NormalizeDeezerId(track.Urls.GetValueOrDefault(DeezerTrackIdKey)),
+                NormalizeDeezerId(track.Urls.GetValueOrDefault("deezer_id")),
+                NormalizeDeezerId(ExtractSourceTrackId(track.Urls.GetValueOrDefault(DeezerSource), DeezerSource))),
             SpotifySource => FirstNonEmpty(
                 payload.SpotifyId,
                 track.Urls.GetValueOrDefault("spotify_track_id"),
                 track.Urls.GetValueOrDefault("spotify_id"),
-                ExtractTrailingId(track.Urls.GetValueOrDefault(SpotifySource))),
+                ExtractSourceTrackId(track.Urls.GetValueOrDefault(SpotifySource), SpotifySource)),
             AppleSource => FirstNonEmpty(
                 payload.AppleId,
                 track.Urls.GetValueOrDefault("apple_track_id"),
                 track.Urls.GetValueOrDefault("apple_id"),
-                ExtractTrailingId(track.Urls.GetValueOrDefault(AppleSource))),
+                ExtractSourceTrackId(track.Urls.GetValueOrDefault(AppleSource), AppleSource)),
+            QobuzSource => FirstNonEmpty(
+                ReadStringProperty(payload, "QobuzId"),
+                ReadStringProperty(payload, "QobuzTrackId"),
+                track.Urls.GetValueOrDefault("qobuz_track_id"),
+                track.Urls.GetValueOrDefault("qobuz_id"),
+                ExtractSourceTrackId(track.Urls.GetValueOrDefault(QobuzSource), QobuzSource)),
+            TidalSource => FirstNonEmpty(
+                ReadStringProperty(payload, "TidalId"),
+                ReadStringProperty(payload, "TidalTrackId"),
+                track.Urls.GetValueOrDefault("tidal_track_id"),
+                track.Urls.GetValueOrDefault("tidal_id"),
+                ExtractSourceTrackId(track.Urls.GetValueOrDefault(TidalSource), TidalSource)),
+            AmazonSource => FirstNonEmpty(
+                ReadStringProperty(payload, "AmazonId"),
+                ReadStringProperty(payload, "AmazonTrackId"),
+                track.Urls.GetValueOrDefault("amazon_track_id"),
+                track.Urls.GetValueOrDefault("amazon_id"),
+                ExtractSourceTrackId(track.Urls.GetValueOrDefault(AmazonSource), AmazonSource)),
             _ => FirstNonEmpty(
                 ReadStringProperty(payload, $"{source}Id"),
                 ReadStringProperty(payload, $"{source}TrackId"),
                 track.Urls.GetValueOrDefault($"{source}_track_id"),
                 track.Urls.GetValueOrDefault($"{source}_id"),
-                ExtractTrailingId(track.Urls.GetValueOrDefault(source)))
+                ExtractSourceTrackId(track.Urls.GetValueOrDefault(source), source))
         };
+    }
+
+    private static bool IsResolvedMetadataCompatible(
+        TrackMetadataSnapshot original,
+        EngineQueueItemBase payload,
+        Track resolved)
+    {
+        var expectedTitle = FirstNonEmpty(payload.Title, original.Title);
+        var resolvedTitle = FirstNonEmpty(resolved.Title, original.Title);
+        if (!string.IsNullOrWhiteSpace(expectedTitle)
+            && !string.IsNullOrWhiteSpace(resolvedTitle)
+            && !TrackTitleMatcher.TitlesMatch(expectedTitle, resolvedTitle))
+        {
+            return false;
+        }
+
+        var expectedArtist = FirstNonEmpty(payload.Artist, original.Artist);
+        var resolvedArtist = FirstNonEmpty(resolved.MainArtist?.Name, resolved.ArtistString, resolved.ArtistsString);
+        if (!string.IsNullOrWhiteSpace(expectedArtist)
+            && !string.IsNullOrWhiteSpace(resolvedArtist)
+            && !TrackTitleMatcher.ArtistsMatch(expectedArtist, resolvedArtist))
+        {
+            return false;
+        }
+
+        var expectedIsrc = FirstNonEmpty(payload.Isrc, original.Isrc);
+        if (!string.IsNullOrWhiteSpace(expectedIsrc)
+            && !string.IsNullOrWhiteSpace(resolved.ISRC)
+            && !string.Equals(expectedIsrc.Trim(), resolved.ISRC.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var expectedDurationMs = original.DurationSeconds > 0
+            ? original.DurationSeconds * 1000
+            : payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : 0;
+        if (expectedDurationMs > 0 && resolved.Duration > 0)
+        {
+            var resolvedDurationMs = resolved.Duration * 1000;
+            if (Math.Abs(expectedDurationMs - resolvedDurationMs) > 10_000)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string? ReadStringProperty(object instance, string propertyName)
@@ -620,6 +710,132 @@ public static partial class EngineAudioPostDownloadHelper
             propertyName,
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
         return property?.GetValue(instance) as string;
+    }
+
+    private static void WriteStringProperty(object instance, string propertyName, string? value)
+    {
+        var property = instance.GetType().GetProperty(
+            propertyName,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+        if (property?.CanWrite == true && property.PropertyType == typeof(string))
+        {
+            property.SetValue(instance, value ?? string.Empty);
+        }
+    }
+
+    private static string? ExtractSourceTrackId(string? value, string source, bool allowRawId = true)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var candidate = value.Trim();
+        if (allowRawId && !LooksLikeUrlOrUri(candidate))
+        {
+            return candidate;
+        }
+
+        var sourcePrefix = $"{source}:track:";
+        if (candidate.StartsWith(sourcePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var rawId = candidate[sourcePrefix.Length..].Trim();
+            return string.IsNullOrWhiteSpace(rawId) ? null : rawId;
+        }
+
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+            || !IsTrustedSourceHost(uri.Host, source))
+        {
+            return null;
+        }
+
+        if (string.Equals(source, SpotifySource, StringComparison.OrdinalIgnoreCase))
+        {
+            return ExtractSegmentAfter(uri, "track");
+        }
+
+        if (string.Equals(source, AppleSource, StringComparison.OrdinalIgnoreCase))
+        {
+            var appleTrackId = ExtractQueryValue(uri.Query, "i");
+            if (!string.IsNullOrWhiteSpace(appleTrackId))
+            {
+                return appleTrackId;
+            }
+        }
+
+        return ExtractTrailingId(uri.GetLeftPart(UriPartial.Path));
+    }
+
+    private static bool LooksLikeUrlOrUri(string value)
+    {
+        return value.Contains("://", StringComparison.Ordinal)
+            || value.Contains('.', StringComparison.Ordinal)
+            || value.Contains(':', StringComparison.Ordinal);
+    }
+
+    private static bool IsTrustedSourceHost(string host, string source)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return false;
+        }
+
+        var normalizedHost = host.Trim().TrimEnd('.').ToLowerInvariant();
+        return source.ToLowerInvariant() switch
+        {
+            DeezerSource => HostMatches(normalizedHost, "deezer.com"),
+            SpotifySource => HostMatches(normalizedHost, "spotify.com"),
+            AppleSource => HostMatches(normalizedHost, "music.apple.com") || HostMatches(normalizedHost, "itunes.apple.com"),
+            QobuzSource => HostMatches(normalizedHost, "qobuz.com"),
+            TidalSource => HostMatches(normalizedHost, "tidal.com"),
+            AmazonSource => HostMatches(normalizedHost, "amazon.com") || HostMatches(normalizedHost, "music.amazon.com"),
+            _ => false
+        };
+    }
+
+    private static bool HostMatches(string host, string expectedRoot)
+    {
+        return string.Equals(host, expectedRoot, StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith($".{expectedRoot}", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ExtractSegmentAfter(Uri uri, string segmentName)
+    {
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (string.Equals(segments[i], segmentName, StringComparison.OrdinalIgnoreCase))
+            {
+                return segments[i + 1];
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractQueryValue(string query, string key)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return null;
+        }
+
+        var trimmed = query.TrimStart('?');
+        foreach (var pair in trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separator = pair.IndexOf('=', StringComparison.Ordinal);
+            var name = separator >= 0 ? pair[..separator] : pair;
+            if (!string.Equals(Uri.UnescapeDataString(name), key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = separator >= 0 ? pair[(separator + 1)..] : string.Empty;
+            return string.IsNullOrWhiteSpace(value) ? null : Uri.UnescapeDataString(value);
+        }
+
+        return null;
     }
 
     private static string? ExtractTrailingId(string? value)
@@ -645,6 +861,95 @@ public static partial class EngineAudioPostDownloadHelper
     private static string? FirstNonEmpty(params string?[] values)
     {
         return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+    }
+
+    private sealed record TrackMetadataSnapshot(
+        string? Title,
+        string? Artist,
+        string? ArtistString,
+        string? ArtistsString,
+        string? AlbumTitle,
+        string? Isrc,
+        int DurationSeconds,
+        string? Source,
+        string? SourceId,
+        IReadOnlyDictionary<string, string> Urls)
+    {
+        public static TrackMetadataSnapshot Capture(Track track)
+        {
+            return new TrackMetadataSnapshot(
+                track.Title,
+                FirstNonEmpty(track.MainArtist?.Name, track.ArtistString, track.ArtistsString),
+                track.ArtistString,
+                track.ArtistsString,
+                track.Album?.Title,
+                track.ISRC,
+                track.Duration,
+                track.Source,
+                track.SourceId,
+                new Dictionary<string, string>(track.Urls, StringComparer.OrdinalIgnoreCase));
+        }
+
+        public void Restore(Track track)
+        {
+            track.Title = Title ?? string.Empty;
+            track.ISRC = Isrc ?? string.Empty;
+            track.Duration = DurationSeconds;
+            track.ArtistString = ArtistString ?? string.Empty;
+            track.ArtistsString = ArtistsString ?? string.Empty;
+            track.Source = Source ?? string.Empty;
+            track.SourceId = SourceId ?? string.Empty;
+            track.Urls = new Dictionary<string, string>(Urls, StringComparer.OrdinalIgnoreCase);
+
+            if (!string.IsNullOrWhiteSpace(Artist))
+            {
+                track.MainArtist = new Artist("0", Artist);
+                track.Artists = new List<string> { Artist };
+                track.Artist["Main"] = new List<string> { Artist };
+            }
+
+            if (track.Album != null)
+            {
+                track.Album.Title = AlbumTitle ?? string.Empty;
+            }
+            else if (!string.IsNullOrWhiteSpace(AlbumTitle))
+            {
+                track.Album = new Album("0", AlbumTitle);
+            }
+        }
+    }
+
+    private sealed record PayloadSourceIdentitySnapshot(IReadOnlyDictionary<string, string?> Values)
+    {
+        private static readonly string[] SourceIdentityProperties =
+        [
+            "DeezerId",
+            "SpotifyId",
+            "AppleId",
+            "QobuzId",
+            "QobuzTrackId",
+            "TidalId",
+            "TidalTrackId",
+            "AmazonId",
+            "AmazonTrackId"
+        ];
+
+        public static PayloadSourceIdentitySnapshot Capture(EngineQueueItemBase payload)
+        {
+            return new PayloadSourceIdentitySnapshot(SourceIdentityProperties
+                .ToDictionary(
+                    static propertyName => propertyName,
+                    propertyName => ReadStringProperty(payload, propertyName),
+                    StringComparer.OrdinalIgnoreCase));
+        }
+
+        public void Restore(EngineQueueItemBase payload)
+        {
+            foreach (var entry in Values)
+            {
+                WriteStringProperty(payload, entry.Key, entry.Value);
+            }
+        }
     }
 
     private static string ResolveFilenameStem(string filename)
