@@ -2,6 +2,7 @@ using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
+using System.Net;
 using System.Text.Json;
 using System.Linq;
 using Microsoft.AspNetCore.Authorization;
@@ -33,11 +34,19 @@ public sealed class AppleArtistApiController : ControllerBase
     private const string HasAtmosField = "hasAtmos";
     private const string AtmosDetectionField = "atmosDetection";
     private const string AudioTraitsField = "audioTraits";
+    private const string EditorialNotesField = "editorialNotes";
+    private const string StandardField = "standard";
+    private const string ShortField = "short";
     private const string CatalogDetection = "catalog";
     private const string UnavailableDetection = "unavailable";
+    private const string JsonLdScriptType = "application/ld+json";
+    private const string MusicGroupType = "MusicGroup";
+    private const string DescriptionField = "description";
+    private const string TypeJsonField = "@type";
     private readonly AppleMusicCatalogService _catalog;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly AppleCatalogVideoAtmosEnricher _appleCatalogVideoAtmosEnricher;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<AppleArtistApiController> _logger;
 
     private enum ArtistPageMode
@@ -50,11 +59,13 @@ public sealed class AppleArtistApiController : ControllerBase
         AppleMusicCatalogService catalog,
         DeezSpoTagSettingsService settingsService,
         AppleCatalogVideoAtmosEnricher appleCatalogVideoAtmosEnricher,
+        IHttpClientFactory httpClientFactory,
         ILogger<AppleArtistApiController> logger)
     {
         _catalog = catalog;
         _settingsService = settingsService;
         _appleCatalogVideoAtmosEnricher = appleCatalogVideoAtmosEnricher;
+        _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
 
@@ -107,25 +118,242 @@ public sealed class AppleArtistApiController : ControllerBase
 
         try
         {
-            using var doc = await _catalog.GetArtistAsync(id, GetStorefront(), DefaultLanguage, cancellationToken);
+            var storefront = GetStorefront();
+            using var doc = await _catalog.GetArtistAsync(id, storefront, DefaultLanguage, cancellationToken);
             var root = doc.RootElement;
             if (!AppleCatalogJsonHelper.TryGetDataArray(root, out var dataArr)
                 || dataArr.GetArrayLength() == 0)
             {
-                return Ok(new { appleId = id, name = string.Empty, image = string.Empty });
+                return Ok(new { appleId = id, name = string.Empty, image = string.Empty, biography = string.Empty });
             }
 
             var item = dataArr[0];
-            var attrs = item.TryGetProperty(AttributesField, out var a) ? a : default;
-            var name = attrs.TryGetProperty(NameField, out var n) ? n.GetString() ?? string.Empty : string.Empty;
-            var image = AppleCatalogJsonHelper.ResolveArtwork(attrs);
-            return Ok(new { appleId = id, name, image });
+            var attrs = item.TryGetProperty(AttributesField, out var a) && a.ValueKind == JsonValueKind.Object
+                ? a
+                : default;
+            var name = attrs.ValueKind == JsonValueKind.Object && attrs.TryGetProperty(NameField, out var n)
+                ? n.GetString() ?? string.Empty
+                : string.Empty;
+            var image = attrs.ValueKind == JsonValueKind.Object
+                ? AppleCatalogJsonHelper.ResolveArtwork(attrs)
+                : string.Empty;
+            var biography = await ResolveAppleArtistBiographyAsync(id, name, storefront, attrs, cancellationToken);
+            return Ok(new { appleId = id, name, image, biography = biography ?? string.Empty });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Apple artist info fetch failed for Id");
             return StatusCode(500, new { error = "Apple artist info failed." });
         }
+    }
+
+    private async Task<string?> ResolveAppleArtistBiographyAsync(
+        string id,
+        string artistName,
+        string storefront,
+        JsonElement attributes,
+        CancellationToken cancellationToken)
+    {
+        var editorialNotes = ResolveEditorialNotes(attributes);
+        if (!string.IsNullOrWhiteSpace(editorialNotes))
+        {
+            return editorialNotes;
+        }
+
+        return await ResolveAppleArtistPageBiographyAsync(id, artistName, storefront, cancellationToken);
+    }
+
+    private async Task<string?> ResolveAppleArtistPageBiographyAsync(
+        string id,
+        string artistName,
+        string storefront,
+        CancellationToken cancellationToken)
+    {
+        var url = BuildAppleArtistPageUrl(id, storefront);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 AppleWebKit/537.36 Chrome/125 Safari/537.36");
+            request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+
+            var client = _httpClientFactory.CreateClient();
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug("Apple artist biography page returned HTTP {StatusCode} for artist Id", (int)response.StatusCode);
+                return null;
+            }
+
+            var html = await response.Content.ReadAsStringAsync(cancellationToken);
+            return ResolveAppleArtistPageBiography(html, id, artistName);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Apple artist biography page fetch failed for artist Id");
+            return null;
+        }
+    }
+
+    private static string BuildAppleArtistPageUrl(string id, string storefront)
+    {
+        var normalizedStorefront = string.IsNullOrWhiteSpace(storefront) ? DefaultStorefront : storefront.Trim();
+        return $"https://music.apple.com/{Uri.EscapeDataString(normalizedStorefront)}/artist/{Uri.EscapeDataString(id)}";
+    }
+
+    private static string? ResolveAppleArtistPageBiography(string html, string id, string artistName)
+    {
+        foreach (var json in EnumerateJsonLdScripts(html))
+        {
+            var decoded = WebUtility.HtmlDecode(json);
+            try
+            {
+                using var doc = JsonDocument.Parse(decoded);
+                var resolvedDescription = ResolveMusicGroupDescription(doc.RootElement, id, artistName);
+                if (!string.IsNullOrWhiteSpace(resolvedDescription))
+                {
+                    return resolvedDescription;
+                }
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateJsonLdScripts(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            yield break;
+        }
+
+        var searchIndex = 0;
+        while (searchIndex < html.Length)
+        {
+            var scriptStart = html.IndexOf("<script", searchIndex, StringComparison.OrdinalIgnoreCase);
+            if (scriptStart < 0)
+            {
+                yield break;
+            }
+
+            var openEnd = html.IndexOf('>', scriptStart);
+            if (openEnd < 0)
+            {
+                yield break;
+            }
+
+            var openTag = html[scriptStart..openEnd];
+            var closeStart = html.IndexOf("</script>", openEnd + 1, StringComparison.OrdinalIgnoreCase);
+            if (closeStart < 0)
+            {
+                yield break;
+            }
+
+            searchIndex = closeStart + "</script>".Length;
+            if (openTag.IndexOf(JsonLdScriptType, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                continue;
+            }
+
+            yield return html[(openEnd + 1)..closeStart].Trim();
+        }
+    }
+
+    private static string? ResolveMusicGroupDescription(JsonElement root, string id, string artistName)
+    {
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in root.EnumerateArray())
+            {
+                var itemDescription = ResolveMusicGroupDescription(item, id, artistName);
+                if (!string.IsNullOrWhiteSpace(itemDescription))
+                {
+                    return itemDescription;
+                }
+            }
+
+            return null;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object
+            || !JsonStringEquals(root, TypeJsonField, MusicGroupType)
+            || !ArtistPageMatches(root, id, artistName))
+        {
+            return null;
+        }
+
+        return TryGetNonEmptyString(root, DescriptionField, out var description)
+            ? NormalizeBiography(description)
+            : null;
+    }
+
+    private static bool ArtistPageMatches(JsonElement root, string id, string artistName)
+    {
+        if (TryGetNonEmptyString(root, "url", out var url)
+            && url.Contains($"/{id}", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!TryGetNonEmptyString(root, NameField, out var name))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(artistName)
+            && name.Equals(artistName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool JsonStringEquals(JsonElement root, string propertyName, string expected)
+    {
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+            && string.Equals(property.GetString(), expected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeBiography(string value)
+    {
+        return value
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Trim();
+    }
+
+    private static string? ResolveEditorialNotes(JsonElement attributes)
+    {
+        if (attributes.ValueKind != JsonValueKind.Object
+            || !attributes.TryGetProperty(EditorialNotesField, out var notes)
+            || notes.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (TryGetNonEmptyString(notes, StandardField, out var standard))
+        {
+            return standard;
+        }
+
+        return TryGetNonEmptyString(notes, ShortField, out var shortNote)
+            ? shortNote
+            : null;
+    }
+
+    private static bool TryGetNonEmptyString(JsonElement obj, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (obj.ValueKind != JsonValueKind.Object
+            || !obj.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = property.GetString()?.Trim() ?? string.Empty;
+        return value.Length > 0;
     }
 
     [HttpGet("albums")]

@@ -252,7 +252,7 @@ function setSpotifyArtistStats(artist) {
     }
 }
 
-function setSpotifyArtistBiography(biography) {
+function setArtistBiographyText(biography, sourceLabel = 'Spotify') {
     const bioEl = document.getElementById('artistBiography');
     if (!bioEl) {
         return;
@@ -260,7 +260,8 @@ function setSpotifyArtistBiography(biography) {
 
     const biographyText = normalizeSpotifyBiographyText(biography);
     const hasBiography = biographyText && !/^n\/?a$/i.test(biographyText);
-    bioEl.textContent = hasBiography ? biographyText : 'Biography unavailable from Spotify.';
+    const sourceName = (sourceLabel || 'selected source').toString().trim() || 'selected source';
+    bioEl.textContent = hasBiography ? biographyText : `Biography unavailable from ${sourceName}.`;
     const bioPanel = document.getElementById('spotifyBioPanel');
     if (bioPanel) {
         bioPanel.style.display = 'block';
@@ -270,10 +271,16 @@ function setSpotifyArtistBiography(biography) {
     updateArtistBiographyToggle(true);
 }
 
+function setSpotifyArtistBiography(biography) {
+    setArtistBiographyText(biography, 'Spotify');
+}
+
 globalThis.refreshArtistBiographyClamp = function refreshArtistBiographyClamp(forceCollapse = false) {
     initializeArtistBiographyToggle();
     updateArtistBiographyToggle(forceCollapse);
 };
+
+globalThis.setArtistBiographyText = setArtistBiographyText;
 
 function applySpotifyArtistProfile(artist) {
     if (!artist) {
@@ -284,7 +291,11 @@ function applySpotifyArtistProfile(artist) {
     setSpotifyArtistLinkState(artist);
     setSpotifyArtistGenres(artist.genres);
     setSpotifyArtistStats(artist);
-    setSpotifyArtistBiography(artist.biography);
+    if (typeof globalThis.applySelectedArtistBiographySource === 'function') {
+        globalThis.applySelectedArtistBiographySource();
+    } else {
+        setSpotifyArtistBiography(artist.biography);
+    }
 
     const bestImage = selectImage(artist.images, 'large');
     const avatarImage = selectImage(artist.images, 'medium') || bestImage;

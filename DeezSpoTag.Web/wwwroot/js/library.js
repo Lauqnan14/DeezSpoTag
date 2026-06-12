@@ -75,6 +75,8 @@ const libraryState = {
         term: '',
         appleArtistId: null,
         storedAppleId: null,
+        biography: null,
+        biographyAppleId: null,
         atmos: [],
         localTrackVariantIndex: null,
         localTrackVariantArtistId: null,
@@ -4210,7 +4212,11 @@ async function loadAlbums(artistId) {
     initSpotifyAvatarFetch(artistIdValue);
     initSpotifyCacheControls(artistIdValue);
     const storedAppleId = appleIdData?.appleId || null;
+    libraryState.appleExtras.biography = null;
+    libraryState.appleExtras.biographyAppleId = null;
+    updateArtistBiographySourceControls();
     initAppleLazyLoad(resolvedArtist?.name, storedAppleId);
+    loadAppleArtistBiography(storedAppleId);
     initAppleIdEditor(artistIdValue);
 }
 
@@ -4519,6 +4525,7 @@ function initSpotifyCacheControls(artistId) {
     const resetMatchButton = document.getElementById('spotify-match-reset-button');
     const pushButton = document.getElementById('spotify-cache-push-button');
     const targetSelect = document.getElementById('spotify-cache-push-target');
+    const biographySourceSelect = document.getElementById('artist-biography-source');
     const cachePanel = document.getElementById('spotify-cache-panel');
 
     if (!refreshButton || !resetMatchButton || !pushButton || !targetSelect || !cachePanel) {
@@ -4531,6 +4538,13 @@ function initSpotifyCacheControls(artistId) {
     refreshButton.dataset.bound = 'true';
     resetMatchButton.dataset.bound = 'true';
     pushButton.dataset.bound = 'true';
+    if (biographySourceSelect && biographySourceSelect.dataset.bound !== 'true') {
+        biographySourceSelect.dataset.bound = 'true';
+        biographySourceSelect.addEventListener('change', () => {
+            applySelectedArtistBiographySource();
+        });
+    }
+    updateArtistBiographySourceControls();
 
     refreshButton.addEventListener('click', async () => {
         cachePanel.classList.add('is-open');
@@ -5946,9 +5960,13 @@ function initAppleIdEditor(artistIdValue) {
             });
             libraryState.appleExtras.storedAppleId = trimmed;
             libraryState.appleExtras.appleArtistId = trimmed;
+            libraryState.appleExtras.biography = null;
+            libraryState.appleExtras.biographyAppleId = null;
+            updateArtistBiographySourceControls();
             // Re-fetch Apple content with the new ID
             libraryState.appleExtras.initialized = false;
             initAppleArtistExtras(libraryState.appleExtras.term, trimmed);
+            loadAppleArtistBiography(trimmed);
             // Refresh the visual picker with the correct artist image
             libraryState.artistVisuals.appleImages = [];
             libraryState.artistVisuals.externalTerm = '';
@@ -6153,10 +6171,96 @@ function applyStoredArtistBackgroundVisual(artistId, prefs) {
     probe.src = savedUrl;
 }
 
+function normalizeArtistBiographyForSync(value) {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    if (!raw) {
+        return '';
+    }
+
+    const temp = document.createElement('div');
+    temp.innerHTML = raw;
+    return (temp.textContent || '').replaceAll(/[\s\u00A0]+/g, ' ').trim();
+}
+
+function getSelectedArtistBiographySource() {
+    const selected = (document.getElementById('artist-biography-source')?.value || 'spotify').toString().trim().toLowerCase();
+    return selected === 'apple' ? 'apple' : 'spotify';
+}
+
+function getArtistBiographySourceLabel(source) {
+    return source === 'apple' ? 'Apple Music' : 'Spotify';
+}
+
+function getArtistBiographyBySource(source) {
+    if (source === 'apple') {
+        return normalizeArtistBiographyForSync(libraryState.appleExtras?.biography || '');
+    }
+
+    return normalizeArtistBiographyForSync(libraryState.currentSpotifyArtist?.biography || '');
+}
+
+function updateArtistBiographySourceControls() {
+    const select = document.getElementById('artist-biography-source');
+    if (!select) {
+        return;
+    }
+
+    const appleOption = select.querySelector('option[value="apple"]');
+    const hasAppleBiography = !!getArtistBiographyBySource('apple');
+    if (appleOption) {
+        appleOption.disabled = !hasAppleBiography;
+    }
+    if (select.value === 'apple' && !hasAppleBiography) {
+        select.value = 'spotify';
+    }
+}
+
+function applySelectedArtistBiographySource() {
+    updateArtistBiographySourceControls();
+    const source = getSelectedArtistBiographySource();
+    const biography = getArtistBiographyBySource(source);
+    if (typeof globalThis.setArtistBiographyText === 'function') {
+        globalThis.setArtistBiographyText(biography, getArtistBiographySourceLabel(source));
+    }
+}
+
+globalThis.applySelectedArtistBiographySource = applySelectedArtistBiographySource;
+
+async function loadAppleArtistBiography(storedAppleId) {
+    const appleId = (storedAppleId || '').toString().trim();
+    libraryState.appleExtras.biography = null;
+    libraryState.appleExtras.biographyAppleId = appleId || null;
+    updateArtistBiographySourceControls();
+
+    if (!appleId) {
+        return;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/apple/artist?id=${encodeURIComponent(appleId)}`);
+        if ((libraryState.appleExtras.biographyAppleId || '') !== appleId) {
+            return;
+        }
+
+        libraryState.appleExtras.biography = normalizeArtistBiographyForSync(data?.biography || '') || null;
+        updateArtistBiographySourceControls();
+        if (getSelectedArtistBiographySource() === 'apple') {
+            applySelectedArtistBiographySource();
+        }
+    } catch (error) {
+        if ((libraryState.appleExtras.biographyAppleId || '') === appleId) {
+            libraryState.appleExtras.biography = null;
+            updateArtistBiographySourceControls();
+        }
+        console.warn('Apple artist biography failed.', error);
+    }
+}
+
 function getSpotifySyncSelectionState(artistId) {
     const requestedAvatar = document.getElementById('sync-include-avatar')?.checked ?? true;
     const requestedBackground = document.getElementById('sync-include-background')?.checked ?? true;
     const includeBio = document.getElementById('sync-include-bio')?.checked ?? true;
+    const biographySource = getSelectedArtistBiographySource();
     const prefs = loadArtistVisualPrefs(artistId) || {};
     const serverAvatarPath = (libraryState.artistVisuals?.preferredAvatarPath || '').toString().trim();
     const serverBackgroundPath = (libraryState.artistVisuals?.preferredBackgroundPath || '').toString().trim();
@@ -6199,7 +6303,7 @@ function getSpotifySyncSelectionState(artistId) {
         backgroundImagePath,
         backgroundVisualUrl: backgroundVisualUrl || null,
         biography: includeBio
-            ? (libraryState.currentSpotifyArtist?.biography || '').toString().trim() || null
+            ? getArtistBiographyBySource(biographySource) || null
             : null
     };
 }
@@ -6343,6 +6447,12 @@ async function loadAppleArtistVisuals(artistName, artistId, storedAppleId) {
     if (storedAppleId) {
         try {
             const data = await fetchJsonOptional(`/api/apple/artist?id=${encodeURIComponent(storedAppleId)}`);
+            libraryState.appleExtras.biographyAppleId = storedAppleId;
+            libraryState.appleExtras.biography = normalizeArtistBiographyForSync(data?.biography || '') || null;
+            updateArtistBiographySourceControls();
+            if (getSelectedArtistBiographySource() === 'apple') {
+                applySelectedArtistBiographySource();
+            }
             if (data?.image) {
                 libraryState.artistVisuals.appleImages = [{
                     url: data.image,
