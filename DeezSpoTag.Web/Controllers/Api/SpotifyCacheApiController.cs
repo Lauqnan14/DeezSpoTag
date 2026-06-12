@@ -22,6 +22,7 @@ public class SpotifyCacheApiController : ControllerBase
     private readonly LibraryRepository _libraryRepository;
     private readonly LibraryConfigStore _configStore;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ArtistVisualSelectionService _artistVisualSelectionService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<SpotifyCacheApiController> _logger;
 
@@ -30,6 +31,7 @@ public class SpotifyCacheApiController : ControllerBase
         LibraryRepository libraryRepository,
         LibraryConfigStore configStore,
         IHttpClientFactory httpClientFactory,
+        ArtistVisualSelectionService artistVisualSelectionService,
         IWebHostEnvironment environment,
         ILogger<SpotifyCacheApiController> logger)
     {
@@ -37,6 +39,7 @@ public class SpotifyCacheApiController : ControllerBase
         _libraryRepository = libraryRepository;
         _configStore = configStore;
         _httpClientFactory = httpClientFactory;
+        _artistVisualSelectionService = artistVisualSelectionService;
         _environment = environment;
         _logger = logger;
     }
@@ -821,54 +824,28 @@ public class SpotifyCacheApiController : ControllerBase
             return BadRequest("ArtistId is required.");
         }
 
-        var artistId = request.ArtistId.Value;
-
-        if (!_libraryRepository.IsConfigured)
-        {
-            return BadRequest("Library DB not configured.");
-        }
-
-        var cacheRoot = Path.GetFullPath(Path.Join(AppDataPaths.GetDataRoot(_environment), LibraryArtistImagesPath, SpotifySource));
-        var avatarVisual = ResolveVisualSelection(cacheRoot, request.AvatarImagePath, request.AvatarVisualUrl);
-        var backgroundVisual = ResolveVisualSelection(cacheRoot, request.BackgroundImagePath, request.BackgroundVisualUrl);
-
-        if (avatarVisual is null && backgroundVisual is null)
-        {
-            return BadRequest("Set artist avatar or background first.");
-        }
-
-        var artist = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
-        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
-        {
-            return NotFound("Artist not found.");
-        }
-
-        var warnings = new List<string>();
-        var avatarMaterialized = await EnsureVisualStoredAsync(artistId, "avatar", avatarVisual, cancellationToken);
-        avatarVisual = avatarMaterialized.Selection;
-        if (!string.IsNullOrWhiteSpace(avatarMaterialized.Warning))
-        {
-            warnings.Add(avatarMaterialized.Warning);
-        }
-
-        var backgroundMaterialized = await EnsureVisualStoredAsync(artistId, "background", backgroundVisual, cancellationToken);
-        backgroundVisual = backgroundMaterialized.Selection;
-        if (!string.IsNullOrWhiteSpace(backgroundMaterialized.Warning))
-        {
-            warnings.Add(backgroundMaterialized.Warning);
-        }
-
-        await PersistArtistVisualPathsAsync(
-            artistId,
-            new MaterializedPushVisuals(avatarVisual, backgroundVisual),
+        var result = await _artistVisualSelectionService.SaveAsync(
+            request.ArtistId.Value,
+            new ArtistVisualSelectionRequest
+            {
+                AvatarImagePath = request.AvatarImagePath,
+                AvatarVisualUrl = request.AvatarVisualUrl,
+                BackgroundImagePath = request.BackgroundImagePath,
+                BackgroundVisualUrl = request.BackgroundVisualUrl
+            },
             cancellationToken);
+
+        if (!result.Success)
+        {
+            return StatusCode(result.StatusCode, result.Error);
+        }
 
         return Ok(new
         {
             stored = true,
-            avatarPath = avatarVisual?.LocalPath,
-            backgroundPath = backgroundVisual?.LocalPath,
-            warnings
+            avatarPath = result.AvatarPath,
+            backgroundPath = result.BackgroundPath,
+            warnings = result.Warnings
         });
     }
 

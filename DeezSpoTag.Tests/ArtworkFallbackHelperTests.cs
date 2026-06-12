@@ -44,6 +44,48 @@ public sealed class ArtworkFallbackHelperTests
     }
 
     [Fact]
+    public void AlbumArtworkOrder_DoesNotIncludeLastFm()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtworkFallbackEnabled = true,
+            ArtworkFallbackOrder = "lastfm,apple,deezer"
+        };
+
+        var order = ArtworkFallbackHelper.ResolveOrder(settings);
+
+        Assert.Equal(["apple", "deezer"], order);
+    }
+
+    [Fact]
+    public void ArtistArtworkOrder_AllowsLastFm()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtistArtworkFallbackEnabled = true,
+            ArtistArtworkFallbackOrder = "last.fm,spotify,apple"
+        };
+
+        var order = ArtworkFallbackHelper.ResolveArtistOrder(settings);
+
+        Assert.Equal(["lastfm", "spotify", "apple"], order);
+    }
+
+    [Fact]
+    public void LibraryArtistImageQueueOrder_IncludesConfiguredLastFm()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtistArtworkFallbackEnabled = true,
+            ArtistArtworkFallbackOrder = "lastfm,spotify,apple"
+        };
+
+        var order = LibraryArtistImageQueueService.ResolveArtistArtworkOrder(settings);
+
+        Assert.Equal(["lastfm", "spotify", "apple"], order);
+    }
+
+    [Fact]
     public void ShouldRejectAlbumArtworkCandidate_AllowsTrailingSingleSuffix()
     {
         var rejected = ArtworkFallbackHelper.ShouldRejectAlbumArtworkCandidate(

@@ -57,6 +57,7 @@ const libraryState = {
         spotifyImages: [],
         appleImages: [],
         deezerImages: [],
+        lastfmImages: [],
         preferredAvatarPath: null,
         preferredBackgroundPath: null,
         backgroundApplyId: 0,
@@ -6004,7 +6005,7 @@ async function persistArtistVisualSelection(artistId, action, url, path) {
     }
 
     try {
-        const result = await fetchJson('/api/library/spotify-cache/visuals', {
+        const result = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/visuals`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -6293,7 +6294,8 @@ function isAppManagedArtistVisualPath(path, artistId) {
     }
 
     const normalized = value.replaceAll('\\', '/').toLowerCase();
-    return normalized.includes(`/library-artist-images/spotify/artists/${numericArtistId}/`);
+    return normalized.includes(`/library-artist-images/selected/artists/${numericArtistId}/`)
+        || normalized.includes(`/library-artist-images/spotify/artists/${numericArtistId}/`);
 }
 
 function resolveManagedArtistVisualPath(artistId, preferredPath, serverPath) {
@@ -6426,6 +6428,28 @@ async function loadDeezerArtistVisuals(artistName, artistId) {
     }
 }
 
+async function loadLastFmArtistVisuals(artistName, artistId) {
+    const term = (artistName || '').trim();
+    if (!term) {
+        return;
+    }
+    try {
+        const payload = await fetchJsonOptional(`/api/library/artists/lastfm-visuals?artistName=${encodeURIComponent(term)}`);
+        const candidates = Array.isArray(payload) ? payload : [];
+        const images = candidates
+            .map(item => ({
+                url: item?.url || item?.imageUrl || '',
+                label: item?.label || 'Last.fm',
+                source: item?.source || 'lastfm'
+            }))
+            .filter(item => item.url);
+        libraryState.artistVisuals.lastfmImages = images;
+        renderArtistVisualPicker(artistId);
+    } catch (error) {
+        console.warn('Last.fm artist visuals failed.', error);
+    }
+}
+
 function loadExternalArtistVisuals(artistName, artistId, storedAppleId) {
     const term = (artistName || '').trim();
     if (!term) {
@@ -6437,7 +6461,7 @@ function loadExternalArtistVisuals(artistName, artistId, storedAppleId) {
         if (visuals.externalLoading) {
             return;
         }
-        if (visuals.appleImages.length > 0 || visuals.deezerImages.length > 0) {
+        if (visuals.appleImages.length > 0 || visuals.deezerImages.length > 0 || visuals.lastfmImages.length > 0) {
             renderArtistVisualPicker(artistId);
             return;
         }
@@ -6447,11 +6471,13 @@ function loadExternalArtistVisuals(artistName, artistId, storedAppleId) {
     visuals.externalLoading = true;
     visuals.appleImages = [];
     visuals.deezerImages = [];
+    visuals.lastfmImages = [];
     renderArtistVisualPicker(artistId);
 
     Promise.allSettled([
         loadAppleArtistVisuals(term, artistId, storedAppleId || null),
-        loadDeezerArtistVisuals(term, artistId)
+        loadDeezerArtistVisuals(term, artistId),
+        loadLastFmArtistVisuals(term, artistId)
     ]).finally(() => {
         visuals.externalLoading = false;
     });
@@ -6474,6 +6500,9 @@ function renderArtistVisualPicker(artistId) {
         : [];
     const deezerImages = Array.isArray(libraryState.artistVisuals.deezerImages)
         ? libraryState.artistVisuals.deezerImages
+        : [];
+    const lastfmImages = Array.isArray(libraryState.artistVisuals.lastfmImages)
+        ? libraryState.artistVisuals.lastfmImages
         : [];
 
     const items = [];
@@ -6517,6 +6546,16 @@ function renderArtistVisualPicker(artistId) {
             url: item.url,
             label: item.label || 'Deezer',
             source: item.source || 'deezer'
+        });
+    });
+    lastfmImages.forEach(item => {
+        if (!item?.url) {
+            return;
+        }
+        items.push({
+            url: item.url,
+            label: item.label || 'Last.fm',
+            source: item.source || 'lastfm'
         });
     });
 

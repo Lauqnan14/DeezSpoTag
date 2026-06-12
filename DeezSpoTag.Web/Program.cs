@@ -1433,6 +1433,10 @@ public partial class Program
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.QobuzMetadataResolver>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.DeezerMetadataResolver>();
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyArtworkResolver, DeezSpoTag.Web.Services.SpotifyArtworkResolver>();
+        services.AddSingleton<DeezSpoTag.Web.Services.LastFmArtistImageService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.ILastFmArtistImageResolver>(sp =>
+            sp.GetRequiredService<DeezSpoTag.Web.Services.LastFmArtistImageService>());
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyRecommendationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ITidalAccessTokenProvider, DeezSpoTag.Web.Services.TidalAccessTokenProvider>();

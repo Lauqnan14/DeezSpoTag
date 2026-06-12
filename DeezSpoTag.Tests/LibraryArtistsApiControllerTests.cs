@@ -121,6 +121,8 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
             spotifyArtistService: null!,
             artistPageCache: null!,
             spotifyMetadataCache: null!,
+            lastFmArtistImageService: null!,
+            artistVisualSelectionService: null!,
             _environment,
             NullLogger<LibraryArtistsApiController>.Instance);
     }

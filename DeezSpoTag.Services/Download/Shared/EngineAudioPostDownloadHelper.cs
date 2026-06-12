@@ -192,6 +192,7 @@ public static partial class EngineAudioPostDownloadHelper
         ImageDownloader ImageDownloader,
         EnhancedPathTemplateProcessor PathProcessor,
         ISpotifyArtworkResolver? SpotifyArtworkResolver,
+        ILastFmArtistImageResolver? LastFmArtistImageResolver,
         ISpotifyIdResolver? SpotifyIdResolver,
         IHttpClientFactory? HttpClientFactory,
         AppleMusicCatalogService? AppleCatalog,
@@ -846,6 +847,7 @@ public static partial class EngineAudioPostDownloadHelper
         var audioTagger = request.Scope.GetRequiredService<AudioTagger>();
         var lyricsService = request.Scope.GetRequiredService<LyricsService>();
         var spotifyArtworkResolver = request.Scope.GetService<ISpotifyArtworkResolver>();
+        var lastFmArtistImageResolver = request.Scope.GetService<ILastFmArtistImageResolver>();
         var spotifyIdResolver = request.Scope.GetService<ISpotifyIdResolver>();
         var httpClientFactory = request.Scope.GetService<IHttpClientFactory>();
         var appleCatalog = request.Scope.GetService<AppleMusicCatalogService>();
@@ -1627,6 +1629,7 @@ public static partial class EngineAudioPostDownloadHelper
         var imageDownloader = provider.GetRequiredService<ImageDownloader>();
         var pathProcessor = provider.GetRequiredService<EnhancedPathTemplateProcessor>();
         var spotifyArtworkResolver = provider.GetService<ISpotifyArtworkResolver>();
+        var lastFmArtistImageResolver = provider.GetService<ILastFmArtistImageResolver>();
         var spotifyIdResolver = provider.GetService<ISpotifyIdResolver>();
         var httpClientFactory = provider.GetService<IHttpClientFactory>();
         var appleCatalog = provider.GetService<AppleMusicCatalogService>();
@@ -1635,6 +1638,7 @@ public static partial class EngineAudioPostDownloadHelper
             imageDownloader,
             pathProcessor,
             spotifyArtworkResolver,
+            lastFmArtistImageResolver,
             spotifyIdResolver,
             httpClientFactory,
             appleCatalog,
@@ -1856,6 +1860,7 @@ public static partial class EngineAudioPostDownloadHelper
                 settings,
                 runtime.DeezerApiClient,
                 runtime.SpotifyArtworkResolver,
+                runtime.LastFmArtistImageResolver,
                 execution.Request.Payload.AppleId,
                 execution.Request.Payload.DeezerId,
                 execution.Request.Payload.SpotifyId,

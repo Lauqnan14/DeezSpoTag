@@ -18,6 +18,8 @@ public class LibraryArtistsApiController : ControllerBase
     private readonly DeezSpoTag.Web.Services.SpotifyArtistService _spotifyArtistService;
     private readonly ArtistPageCacheRepository _artistPageCache;
     private readonly SpotifyMetadataCacheRepository _spotifyMetadataCache;
+    private readonly LastFmArtistImageService _lastFmArtistImageService;
+    private readonly ArtistVisualSelectionService _artistVisualSelectionService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<LibraryArtistsApiController> _logger;
 
@@ -27,6 +29,8 @@ public class LibraryArtistsApiController : ControllerBase
         DeezSpoTag.Web.Services.SpotifyArtistService spotifyArtistService,
         ArtistPageCacheRepository artistPageCache,
         SpotifyMetadataCacheRepository spotifyMetadataCache,
+        LastFmArtistImageService lastFmArtistImageService,
+        ArtistVisualSelectionService artistVisualSelectionService,
         IWebHostEnvironment environment,
         ILogger<LibraryArtistsApiController> logger)
     {
@@ -35,6 +39,8 @@ public class LibraryArtistsApiController : ControllerBase
         _spotifyArtistService = spotifyArtistService;
         _artistPageCache = artistPageCache;
         _spotifyMetadataCache = spotifyMetadataCache;
+        _lastFmArtistImageService = lastFmArtistImageService;
+        _artistVisualSelectionService = artistVisualSelectionService;
         _environment = environment;
         _logger = logger;
     }
@@ -84,6 +90,51 @@ public class LibraryArtistsApiController : ControllerBase
 
         var dbArtists = await _repository.GetArtistsAsync(availability, folderId, cancellationToken);
         return Ok(dbArtists);
+    }
+
+    [HttpGet("lastfm-visuals")]
+    public async Task<IActionResult> GetLastFmVisuals([FromQuery] string? artistName, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            return Ok(Array.Empty<object>());
+        }
+
+        var candidates = await _lastFmArtistImageService.SearchArtistImagesAsync(artistName, 8, cancellationToken);
+        return Ok(candidates.Select(candidate => new
+        {
+            source = candidate.Source,
+            label = candidate.Label,
+            url = candidate.Url,
+            imageUrl = candidate.Url,
+            name = candidate.Label
+        }));
+    }
+
+    [HttpPost("{id:long}/visuals")]
+    public async Task<IActionResult> SaveVisuals(
+        long id,
+        [FromBody] ArtistVisualSelectionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (id <= 0)
+        {
+            return BadRequest("ArtistId is required.");
+        }
+
+        var result = await _artistVisualSelectionService.SaveAsync(id, request ?? new ArtistVisualSelectionRequest(), cancellationToken);
+        if (!result.Success)
+        {
+            return StatusCode(result.StatusCode, result.Error);
+        }
+
+        return Ok(new
+        {
+            stored = true,
+            avatarPath = result.AvatarPath,
+            backgroundPath = result.BackgroundPath,
+            warnings = result.Warnings
+        });
     }
 
     [HttpGet("{id:long}/albums")]

@@ -18,10 +18,12 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
     private const string SpotifyPlatform = "spotify";
     private const string DeezerPlatform = "deezer";
     private const string ApplePlatform = "apple";
+    private const string LastFmPlatform = "lastfm";
     private const string MetadataSourceAuto = "auto";
     private const string MetadataSourceSpotify = SpotifyPlatform;
     private const string MetadataSourceDeezer = DeezerPlatform;
     private const string MetadataSourceApple = ApplePlatform;
+    private const string MetadataSourceLastFm = LastFmPlatform;
     private const string PlexTarget = "plex";
     private const string JellyfinTarget = "jellyfin";
     private const string BothTargets = "both";
@@ -35,6 +37,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
     private readonly JellyfinApiClient _jellyfinClient;
     private readonly DeezerClient _deezerClient;
     private readonly AppleMusicCatalogService _appleMusicCatalogService;
+    private readonly LastFmArtistImageService _lastFmArtistImageService;
     private readonly LibraryConfigStore _configStore;
     private readonly IWebHostEnvironment _environment;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -62,6 +65,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         _jellyfinClient = serviceProvider.GetRequiredService<JellyfinApiClient>();
         _deezerClient = serviceProvider.GetRequiredService<DeezerClient>();
         _appleMusicCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
+        _lastFmArtistImageService = serviceProvider.GetRequiredService<LastFmArtistImageService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _environment = environment;
         _httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
@@ -686,6 +690,11 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             return null;
         }
 
+        if (!await TryCollectLastFmMetadataAsync(normalizedSource, artistName, candidates, cancellationToken))
+        {
+            return null;
+        }
+
         return new ResolvedArtistMetadata(spotify.Biography, candidates);
     }
 
@@ -856,6 +865,36 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         }
 
         return ArtworkCandidate.FromRemote(appleImage!, $"apple:{appleImage}", MetadataSourceApple);
+    }
+
+    private async Task<bool> TryCollectLastFmMetadataAsync(
+        string normalizedSource,
+        string artistName,
+        List<ArtworkCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceLastFm))
+        {
+            return true;
+        }
+
+        var images = await _lastFmArtistImageService.SearchArtistImagesAsync(artistName, 8, cancellationToken);
+        var added = 0;
+        foreach (var image in images)
+        {
+            if (string.IsNullOrWhiteSpace(image.Url))
+            {
+                continue;
+            }
+
+            candidates.Add(ArtworkCandidate.FromRemote(
+                image.Url,
+                $"lastfm:{image.Url}",
+                MetadataSourceLastFm));
+            added++;
+        }
+
+        return normalizedSource != MetadataSourceLastFm || added > 0 || candidates.Count > 0;
     }
 
     private async Task<PreparedVisuals> PrepareVisualsAsync(
@@ -1591,6 +1630,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             MetadataSourceSpotify => MetadataSourceSpotify,
             MetadataSourceDeezer => MetadataSourceDeezer,
             MetadataSourceApple => MetadataSourceApple,
+            MetadataSourceLastFm => MetadataSourceLastFm,
             _ => MetadataSourceAuto
         };
     }

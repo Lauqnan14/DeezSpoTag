@@ -252,13 +252,16 @@
     );
     const DEFAULT_LYRICS_TYPE_SELECTION = "lyrics,syllable-lyrics,unsynced-lyrics";
     const DEFAULT_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
+    const DEFAULT_ARTIST_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
     const DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify", "lrclib", "musixmatch"]);
     const ARTWORK_SOURCE_ORDER = [...DEFAULT_ARTWORK_SOURCE_ORDER];
+    const ARTIST_ARTWORK_SOURCE_ORDER = ["apple", "deezer", "spotify", "lastfm"];
     const LYRICS_SOURCE_ORDER = [...DEFAULT_LYRICS_SOURCE_ORDER];
     const SOURCE_LABELS = new Map([
         ["apple", "Apple Music"],
         ["deezer", "Deezer"],
         ["spotify", "Spotify"],
+        ["lastfm", "Last.fm"],
         ["lrclib", "LRCLIB"],
         ["musixmatch", "Musixmatch"],
         ["shazam", "Shazam"],
@@ -268,6 +271,7 @@
         apple: Object.freeze(["itunes", "applemusic", "apple"]),
         deezer: Object.freeze(["deezer"]),
         spotify: Object.freeze(["spotify"]),
+        lastfm: Object.freeze(["lastfm"]),
         lrclib: Object.freeze(["lrclib", "lrcget", "lrc-get", "lrc_get"]),
         musixmatch: Object.freeze(["musixmatch"]),
         shazam: Object.freeze(["shazam"]),
@@ -470,7 +474,9 @@
         }
 
         const tokens = getPlatformCapabilityTokenSet(platform);
-        const requiredKeys = capabilityType === "artwork" ? ARTWORK_CAPABILITY_KEYS : LYRICS_CAPABILITY_KEYS;
+        const requiredKeys = capabilityType === "artwork" || capabilityType === "artistArtwork"
+            ? ARTWORK_CAPABILITY_KEYS
+            : LYRICS_CAPABILITY_KEYS;
         return requiredKeys.some((key) => tokens.has(key));
     }
 
@@ -499,6 +505,11 @@
 
             const enabledMappedIds = mappedIds.filter((id) => enabledPlatforms.has(normalizePlatformId(id)));
             if (enabledMappedIds.length === 0) {
+                return;
+            }
+
+            if (capabilityType === "artistArtwork" && providerKey === "lastfm") {
+                available.push(providerKey);
                 return;
             }
 
@@ -612,6 +623,7 @@
         const hasPlatformMetadata = Array.isArray(state.platforms) && state.platforms.length > 0;
         if (!hasPlatformMetadata) {
             updateOrder(ARTWORK_SOURCE_ORDER, DEFAULT_ARTWORK_SOURCE_ORDER);
+            updateOrder(ARTIST_ARTWORK_SOURCE_ORDER, ["apple", "deezer", "spotify", "lastfm"]);
             updateOrder(LYRICS_SOURCE_ORDER, DEFAULT_LYRICS_SOURCE_ORDER);
             return;
         }
@@ -644,6 +656,7 @@
             ARTWORK_SOURCE_ORDER,
             artworkOrder.length > 0 ? artworkOrder : DEFAULT_ARTWORK_SOURCE_ORDER
         );
+        updateOrder(ARTIST_ARTWORK_SOURCE_ORDER, ["apple", "deezer", "spotify", "lastfm"]);
         updateOrder(LYRICS_SOURCE_ORDER, DEFAULT_LYRICS_SOURCE_ORDER);
     }
 
@@ -5240,9 +5253,9 @@
             inputId: "artistArtworkFallbackOrder",
             syncStateKey: "syncArtistArtworkFallbackOrder",
             defaultSelectId: "artistArtworkDefaultSource",
-            allowedOrder: ARTWORK_SOURCE_ORDER,
+            allowedOrder: ARTIST_ARTWORK_SOURCE_ORDER,
             sourceToggleContainerId: "artistArtworkFallbackSources",
-            capabilityType: "artwork"
+            capabilityType: "artistArtwork"
         });
     }
 
@@ -5577,7 +5590,7 @@
         applyFieldCheckedWhenBoolean("artworkFallbackEnabled", technical.artworkFallbackEnabled);
         applyFieldValueIfPresent("artworkFallbackOrder", technical.artworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","));
         applyFieldCheckedWhenBoolean("artistArtworkFallbackEnabled", technical.artistArtworkFallbackEnabled);
-        applyFieldValueIfPresent("artistArtworkFallbackOrder", technical.artistArtworkFallbackOrder || ARTWORK_SOURCE_ORDER.join(","));
+        applyFieldValueIfPresent("artistArtworkFallbackOrder", technical.artistArtworkFallbackOrder || DEFAULT_ARTIST_ARTWORK_SOURCE_ORDER.join(","));
 
         if (state.syncLyricsFallbackOrder) {
             state.syncLyricsFallbackOrder();
@@ -5596,7 +5609,7 @@
         syncDefaultSourceSelectFromOrder(
             "artistArtworkDefaultSource",
             technical.artistArtworkFallbackOrder ?? technical.artworkFallbackOrder,
-            ARTWORK_SOURCE_ORDER
+            ARTIST_ARTWORK_SOURCE_ORDER
         );
         updateEmbedLyricsFormatVisibility();
 
@@ -5659,9 +5672,9 @@
             defaultSourceId: "artistArtworkDefaultSource",
             fallbackOrderValue: getValue(
                 "artistArtworkFallbackOrder",
-                settings.artistArtworkFallbackOrder ?? settings.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(",")
+                settings.artistArtworkFallbackOrder ?? settings.artworkFallbackOrder ?? DEFAULT_ARTIST_ARTWORK_SOURCE_ORDER.join(",")
             ),
-            allowedOrder: ARTWORK_SOURCE_ORDER
+            allowedOrder: ARTIST_ARTWORK_SOURCE_ORDER
         });
         const tags = settings.tags ? { ...settings.tags } : {};
         tags.coverDescriptionUTF8 = getChecked("coverDescriptionUTF8", tags.coverDescriptionUTF8 ?? false);
@@ -5718,9 +5731,9 @@
             defaultSourceId: "artistArtworkDefaultSource",
             fallbackOrderValue: getValue(
                 "artistArtworkFallbackOrder",
-                technical.artistArtworkFallbackOrder ?? technical.artworkFallbackOrder ?? ARTWORK_SOURCE_ORDER.join(",")
+                technical.artistArtworkFallbackOrder ?? technical.artworkFallbackOrder ?? DEFAULT_ARTIST_ARTWORK_SOURCE_ORDER.join(",")
             ),
-            allowedOrder: ARTWORK_SOURCE_ORDER
+            allowedOrder: ARTIST_ARTWORK_SOURCE_ORDER
         });
 
         return technical;

@@ -17,6 +17,7 @@ public static class ArtworkFallbackHelper
     private const string AppleProvider = "apple";
     private const string DeezerProvider = "deezer";
     private const string SpotifyProvider = "spotify";
+    private const string LastFmProvider = "lastfm";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex AppleTrackUrlRegex = new(
         @"music\.apple\.com\/[^\/]+\/(?:song|album)\/[^\/]+\/(?<id>\d+)",
@@ -27,6 +28,11 @@ public static class ArtworkFallbackHelper
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         RegexTimeout);
     private static readonly string[] DefaultArtworkOrder = [AppleProvider, DeezerProvider, SpotifyProvider];
+    private static readonly string[] DefaultArtistArtworkOrder = [AppleProvider, DeezerProvider, SpotifyProvider];
+    private static readonly HashSet<string> AlbumArtworkProviders = new(DefaultArtworkOrder, StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> ArtistArtworkProviders = new(
+        [AppleProvider, DeezerProvider, SpotifyProvider, LastFmProvider],
+        StringComparer.OrdinalIgnoreCase);
     private static readonly string[] CompilationAlbumMarkers =
     {
         "greatest hits",
@@ -53,7 +59,9 @@ public static class ArtworkFallbackHelper
         var artistOrder = string.IsNullOrWhiteSpace(settings.ArtistArtworkFallbackOrder)
             ? settings.ArtworkFallbackOrder
             : settings.ArtistArtworkFallbackOrder;
-        return ResolveOrderInternal(settings.ArtistArtworkFallbackEnabled, artistOrder);
+        return ResolveArtistOrderInternal(
+            settings.ArtistArtworkFallbackEnabled,
+            artistOrder);
     }
 
     public sealed record AppleCoverLookupRequest(
@@ -239,11 +247,40 @@ public static class ArtworkFallbackHelper
 
     private static List<string> ResolveOrderInternal(bool enabled, string? orderSetting)
     {
-        return ProviderOrderResolver.Resolve(
+        var resolved = ProviderOrderResolver.Resolve(
             enabled,
             orderSetting,
             DefaultArtworkOrder,
             NormalizeArtworkProviderToken);
+        return FilterProviderOrder(resolved, AlbumArtworkProviders, DefaultArtworkOrder, enabled);
+    }
+
+    private static List<string> ResolveArtistOrderInternal(bool enabled, string? orderSetting)
+    {
+        var resolved = ProviderOrderResolver.Resolve(
+            enabled,
+            orderSetting,
+            DefaultArtistArtworkOrder,
+            NormalizeArtworkProviderToken);
+        return FilterProviderOrder(resolved, ArtistArtworkProviders, DefaultArtistArtworkOrder, enabled);
+    }
+
+    private static List<string> FilterProviderOrder(
+        IReadOnlyList<string> providers,
+        HashSet<string> allowedProviders,
+        IReadOnlyList<string> defaultProviders,
+        bool enabled)
+    {
+        var filtered = providers
+            .Where(provider => allowedProviders.Contains(provider))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (filtered.Count == 0)
+        {
+            filtered.AddRange(defaultProviders);
+        }
+
+        return enabled ? filtered : new List<string> { filtered[0] };
     }
 
     private static List<string> EnforceSpotifyArtworkLastResortOnly(IReadOnlyList<string> providers)
@@ -282,6 +319,10 @@ public static class ArtworkFallbackHelper
             "apple-music" => AppleProvider,
             "apple_music" => AppleProvider,
             "apple music" => AppleProvider,
+            "last.fm" => LastFmProvider,
+            "last-fm" => LastFmProvider,
+            "last_fm" => LastFmProvider,
+            "last fm" => LastFmProvider,
             _ => normalized
         };
     }

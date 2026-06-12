@@ -49,6 +49,7 @@ public static class DownloadEngineArtworkHelper
         DeezSpoTagSettings Settings,
         DeezerClient? DeezerClient,
         ISpotifyArtworkResolver? SpotifyArtworkResolver,
+        ILastFmArtistImageResolver? LastFmArtistImageResolver,
         string? AppleId,
         string? DeezerId,
         string? SpotifyId,
@@ -315,6 +316,11 @@ public static class DownloadEngineArtworkHelper
             return TryResolveSpotifyArtistImageAsync(request, cancellationToken);
         }
 
+        if (string.Equals(source, "lastfm", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryResolveLastFmArtistImageAsync(request, cancellationToken);
+        }
+
         return Task.FromResult<string?>(null);
     }
 
@@ -361,6 +367,18 @@ public static class DownloadEngineArtworkHelper
         }
 
         return null;
+    }
+
+    private static async Task<string?> TryResolveLastFmArtistImageAsync(
+        ArtistImageResolveRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.LastFmArtistImageResolver == null || string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        return await request.LastFmArtistImageResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
     }
 
     public static async Task<bool> SaveArtistArtworkAsync(

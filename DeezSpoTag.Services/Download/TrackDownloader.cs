@@ -50,6 +50,7 @@ public class TrackDownloader
     private readonly Utils.LyricsService _lyricsService;
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
+    private readonly ILastFmArtistImageResolver? _lastFmArtistImageResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly IDownloadTagSettingsResolver _tagSettingsResolver;
     private readonly IPostDownloadTaskScheduler _postDownloadTaskScheduler;
@@ -127,6 +128,7 @@ public class TrackDownloader
         public string? DeezerTrackId { get; init; }
         public string? SpotifyId { get; init; }
         public DeezerClient? DeezerClient { get; init; }
+        public ILastFmArtistImageResolver? LastFmArtistImageResolver { get; init; }
     }
 
     private sealed class ArtistResolutionState
@@ -247,6 +249,7 @@ public class TrackDownloader
         _lyricsService = serviceProvider.GetRequiredService<Utils.LyricsService>();
         _spotifyIdResolver = serviceProvider.GetRequiredService<ISpotifyIdResolver>();
         _spotifyArtworkResolver = serviceProvider.GetRequiredService<ISpotifyArtworkResolver>();
+        _lastFmArtistImageResolver = serviceProvider.GetService<ILastFmArtistImageResolver>();
         _appleCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
         _tagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
         _postDownloadTaskScheduler = serviceProvider.GetRequiredService<IPostDownloadTaskScheduler>();
@@ -983,7 +986,8 @@ public class TrackDownloader
                 AppleTrackId = appleTrackId,
                 DeezerTrackId = deezerTrackId,
                 SpotifyId = spotifyId,
-                DeezerClient = deezerClient
+                DeezerClient = deezerClient,
+                LastFmArtistImageResolver = _lastFmArtistImageResolver
             },
             cancellationToken);
 
@@ -1324,6 +1328,7 @@ public class TrackDownloader
                 "apple" => await TryHandleAppleArtistSourceAsync(request, state, cancellationToken),
                 DeezerSource => await TryHandleDeezerArtistSourceAsync(request, state, cancellationToken),
                 "spotify" => await TryHandleSpotifyArtistSourceAsync(request, state, cancellationToken),
+                "lastfm" => await TryHandleLastFmArtistSourceAsync(request, state, cancellationToken),
                 _ => false
             };
 
@@ -1414,6 +1419,28 @@ public class TrackDownloader
         }
 
         state.ResolvedArtistUrl = state.SpotifyArtistUrl;
+        return true;
+    }
+
+    private static async Task<bool> TryHandleLastFmArtistSourceAsync(
+        ArtistResolutionRequest request,
+        ArtistResolutionState state,
+        CancellationToken cancellationToken)
+    {
+        if (request.LastFmArtistImageResolver == null || string.IsNullOrWhiteSpace(request.Track.MainArtist?.Name))
+        {
+            return false;
+        }
+
+        var lastFmArtistUrl = await request.LastFmArtistImageResolver.ResolveArtistImageByNameAsync(
+            request.Track.MainArtist.Name,
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(lastFmArtistUrl))
+        {
+            return false;
+        }
+
+        state.ResolvedArtistUrl = lastFmArtistUrl;
         return true;
     }
 

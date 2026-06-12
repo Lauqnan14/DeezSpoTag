@@ -119,6 +119,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         public required AppleMusicCatalogService? AppleCatalog { get; init; }
         public required DeezerClient? DeezerClient { get; init; }
         public required ISpotifyArtworkResolver? SpotifyArtworkResolver { get; init; }
+        public required ILastFmArtistImageResolver? LastFmArtistImageResolver { get; init; }
         public required IHttpClientFactory? HttpClientFactory { get; init; }
         public required Func<string> GetArtworkStatus { get; init; }
         public required Func<string> GetLyricsStatus { get; init; }
@@ -158,6 +159,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         AppleMusicCatalogService? AppleCatalog,
         DeezerClient? DeezerClient,
         ISpotifyArtworkResolver? SpotifyArtworkResolver,
+        ILastFmArtistImageResolver? LastFmArtistImageResolver,
         IHttpClientFactory? HttpClientFactory);
 
     private sealed class QueueInitializationContext
@@ -1383,6 +1385,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             var imageDownloader = provider.GetRequiredService<ImageDownloader>();
             var pathProcessor = provider.GetRequiredService<EnhancedPathTemplateProcessor>();
             var spotifyArtworkResolver = provider.GetService<ISpotifyArtworkResolver>();
+            var lastFmArtistImageResolver = provider.GetService<ILastFmArtistImageResolver>();
             var spotifyIdResolver = provider.GetService<ISpotifyIdResolver>();
             var httpClientFactory = provider.GetService<IHttpClientFactory>();
             var appleCatalog = provider.GetService<AppleMusicCatalogService>();
@@ -1411,6 +1414,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                     AppleCatalog = appleCatalog,
                     DeezerClient = deezerClient,
                     SpotifyArtworkResolver = spotifyArtworkResolver,
+                    LastFmArtistImageResolver = lastFmArtistImageResolver,
                     HttpClientFactory = httpClientFactory,
                     GetArtworkStatus = () => runState.ArtworkStatus,
                     GetLyricsStatus = () => runState.LyricsStatus,
@@ -1545,6 +1549,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                         context.AppleCatalog,
                         context.DeezerClient,
                         context.SpotifyArtworkResolver,
+                        context.LastFmArtistImageResolver,
                         context.HttpClientFactory),
                     token);
                 if (!artistSaved)
@@ -1759,6 +1764,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 context.Settings,
                 context.DeezerClient,
                 context.SpotifyArtworkResolver,
+                context.LastFmArtistImageResolver,
                 context.Payload.AppleId,
                 context.Payload.DeezerId,
                 context.Payload.SpotifyId,

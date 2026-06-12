@@ -17,6 +17,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private readonly DeezerArtistImageService _imageService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
+    private readonly ILastFmArtistImageResolver _lastFmArtistImageResolver;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<LibraryArtistImageQueueService> _logger;
     private readonly Channel<QueueItem> _channel = Channel.CreateUnbounded<QueueItem>();
@@ -32,6 +33,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         DeezerArtistImageService imageService,
         AppleMusicCatalogService appleCatalogService,
         ISpotifyArtworkResolver spotifyArtworkResolver,
+        ILastFmArtistImageResolver lastFmArtistImageResolver,
         DeezSpoTagSettingsService settingsService,
         IWebHostEnvironment environment,
         ILogger<LibraryArtistImageQueueService> logger)
@@ -41,6 +43,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         _imageService = imageService;
         _appleCatalogService = appleCatalogService;
         _spotifyArtworkResolver = spotifyArtworkResolver;
+        _lastFmArtistImageResolver = lastFmArtistImageResolver;
         _settingsService = settingsService;
         _logger = logger;
         _dataRoot = AppDataPaths.GetDataRoot(environment);
@@ -157,6 +160,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
                 "spotify" => await TryResolveSpotifyImagePathAsync(item, cancellationToken),
                 "deezer" => await TryResolveDeezerImagePathAsync(item, cancellationToken),
                 "apple" => await TryResolveAppleImagePathAsync(item, cancellationToken),
+                "lastfm" => await TryResolveLastFmImagePathAsync(item, cancellationToken),
                 _ => null
             };
 
@@ -171,7 +175,7 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
 
     internal static IReadOnlyList<string> ResolveArtistArtworkOrder(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
         => ArtworkFallbackHelper.ResolveArtistOrder(settings)
-            .Where(static source => source is "spotify" or "deezer" or "apple")
+            .Where(static source => source is "spotify" or "deezer" or "apple" or "lastfm")
             .ToArray();
 
     private async Task<string?> TryResolveAppleImagePathAsync(QueueItem item, CancellationToken cancellationToken)
@@ -200,6 +204,17 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         }
 
         return await DownloadImageAsync(item.ArtistId, spotifyUrl, cancellationToken);
+    }
+
+    private async Task<string?> TryResolveLastFmImagePathAsync(QueueItem item, CancellationToken cancellationToken)
+    {
+        var lastFmUrl = await _lastFmArtistImageResolver.ResolveArtistImageByNameAsync(item.ArtistName, cancellationToken);
+        if (string.IsNullOrWhiteSpace(lastFmUrl))
+        {
+            return null;
+        }
+
+        return await DownloadImageAsync(item.ArtistId, lastFmUrl, cancellationToken, "lastfm");
     }
 
     private bool TryEnqueue(QueueItem item)
@@ -263,7 +278,11 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         }
     }
 
-    private async Task<string?> DownloadImageAsync(long artistId, string imageUrl, CancellationToken cancellationToken)
+    private async Task<string?> DownloadImageAsync(
+        long artistId,
+        string imageUrl,
+        CancellationToken cancellationToken,
+        string? source = null)
     {
         if (string.IsNullOrWhiteSpace(imageUrl))
         {
@@ -276,10 +295,13 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             return null;
         }
 
-        Directory.CreateDirectory(ImageCacheDir);
+        var cacheDir = string.IsNullOrWhiteSpace(source)
+            ? ImageCacheDir
+            : Path.Join(ImageCacheDir, source.Trim().ToLowerInvariant());
+        Directory.CreateDirectory(cacheDir);
         var extension = ResolveExtension(response.Content.Headers.ContentType?.MediaType);
         var fileName = $"{artistId}{extension}";
-        var targetPath = Path.Join(ImageCacheDir, fileName);
+        var targetPath = Path.Join(cacheDir, fileName);
         await using var targetStream = File.Create(targetPath);
         await response.Content.CopyToAsync(targetStream, cancellationToken);
         return targetPath;
