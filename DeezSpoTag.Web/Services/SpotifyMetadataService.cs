@@ -31,6 +31,9 @@ public sealed class SpotifyMetadataService
         int? TrackNumber,
         int? DiscNumber,
         bool? ExplicitFlag);
+    private sealed record ParsedLibrespotAlbum(
+        SpotifyAlbumSummary Album,
+        List<SpotifyTrackSummary> Tracks);
     private sealed record ResolvedSpotifyAccounts(
         SpotifyUserAccount? UserAccount,
         SpotifyAccount? PlatformAccount);
@@ -210,6 +213,37 @@ public sealed class SpotifyMetadataService
         ParsedSpotifyUrl parsed,
         CancellationToken cancellationToken)
     {
+        if (string.Equals(parsed.Type, AlbumType, StringComparison.OrdinalIgnoreCase))
+        {
+            var fallbackAlbum = await TryFetchAlbumFallbackWithLibrespotAsync(parsed.Id, includeTracks: true, cancellationToken);
+            if (fallbackAlbum is null)
+            {
+                return null;
+            }
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Spotify album metadata fallback used: source=librespot albumId={AlbumId}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(parsed.Id));
+            }
+
+            return new SpotifyUrlMetadata(
+                AlbumType,
+                fallbackAlbum.Album.Id,
+                fallbackAlbum.Album.Name,
+                fallbackAlbum.Album.SourceUrl,
+                fallbackAlbum.Album.ImageUrl,
+                fallbackAlbum.Album.Artists,
+                fallbackAlbum.Album.TotalTracks ?? fallbackAlbum.Tracks.Count,
+                null,
+                fallbackAlbum.Tracks,
+                new List<SpotifyAlbumSummary> { fallbackAlbum.Album },
+                null,
+                null,
+                null);
+        }
+
         if (!string.Equals(parsed.Type, TrackType, StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -1636,7 +1670,13 @@ public sealed class SpotifyMetadataService
         }
 
         var pathfinderTracks = await _pathfinderMetadataClient.FetchAlbumTracksAsync(albumId, cancellationToken);
-        return pathfinderTracks ?? new List<SpotifyTrackSummary>();
+        if (pathfinderTracks is { Count: > 0 })
+        {
+            return pathfinderTracks;
+        }
+
+        var fallbackAlbum = await TryFetchAlbumFallbackWithLibrespotAsync(albumId, includeTracks: true, cancellationToken);
+        return fallbackAlbum?.Tracks ?? new List<SpotifyTrackSummary>();
     }
 
     public async Task<List<SpotifyTrackSummary>> HydrateTrackDetailsWithBlobAsync(
@@ -1880,6 +1920,15 @@ public sealed class SpotifyMetadataService
         string albumId,
         CancellationToken cancellationToken)
     {
+        var parsed = await TryFetchAlbumFallbackWithLibrespotAsync(albumId, includeTracks: false, cancellationToken);
+        return parsed?.Album;
+    }
+
+    private async Task<ParsedLibrespotAlbum?> TryFetchAlbumFallbackWithLibrespotAsync(
+        string albumId,
+        bool includeTracks,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(albumId))
         {
             return null;
@@ -1891,7 +1940,7 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        var result = await _blobService.GetLibrespotAlbumAsync(blobPath, albumId, includeTracks: false, cancellationToken);
+        var result = await _blobService.GetLibrespotAlbumAsync(blobPath, albumId, includeTracks, cancellationToken);
         if (string.IsNullOrWhiteSpace(result.PayloadJson))
         {
             return null;
@@ -2748,7 +2797,7 @@ public sealed class SpotifyMetadataService
         return parsed.Count == 0 ? null : parsed;
     }
 
-    private static SpotifyAlbumSummary? ParseLibrespotAlbum(string albumId, string payloadJson)
+    private static ParsedLibrespotAlbum? ParseLibrespotAlbum(string albumId, string payloadJson)
     {
         try
         {
@@ -2762,12 +2811,124 @@ public sealed class SpotifyMetadataService
             var sourceUrl = ResolveAlbumSourceUrl(root, resolvedAlbumId);
             var imageUrl = ResolveAlbumImageUrl(root);
             var copyrights = ParseCopyrights(root, "copyrights");
-            return BuildLibrespotAlbumSummary(root, resolvedAlbumId, sourceUrl, imageUrl, copyrights);
+            var album = BuildLibrespotAlbumSummary(root, resolvedAlbumId, sourceUrl, imageUrl, copyrights);
+            var tracks = ParseLibrespotAlbumTracks(root, album);
+            return new ParsedLibrespotAlbum(album, tracks);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return null;
         }
+    }
+
+    private static List<SpotifyTrackSummary> ParseLibrespotAlbumTracks(JsonElement root, SpotifyAlbumSummary album)
+    {
+        if (!TryResolveLibrespotAlbumTrackItems(root, out var items))
+        {
+            return new List<SpotifyTrackSummary>();
+        }
+
+        var tracks = new List<SpotifyTrackSummary>();
+        foreach (var item in items.EnumerateArray())
+        {
+            var track = ResolveLibrespotAlbumTrackItem(item);
+            if (track.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var trackId = TryReadEntityId(track, TrackType);
+            if (string.IsNullOrWhiteSpace(trackId))
+            {
+                continue;
+            }
+
+            var name = TryReadJsonStringProperty(track, "name");
+            var artists = track.TryGetProperty("artists", out var artistsProp)
+                ? ParseArtistContributors(artistsProp)
+                : new ParsedArtistContributors(null, null);
+            var isrc = TryReadExternalIsrc(track, "external_ids", "isrc") ??
+                       TryReadExternalIsrc(track, "external_id", "type", "id");
+            var durationElement = track.TryGetProperty("duration_ms", out var durationMsProp)
+                ? durationMsProp
+                : default;
+            var numbers = durationElement.ValueKind == JsonValueKind.Number
+                ? ParseTrackNumbers(track, durationElement, "track_number")
+                : ParseTrackNumbers(track, "duration", "number");
+            var sourceUrl = TryGetString(track, "external_urls", "spotify") ??
+                            $"https://open.spotify.com/track/{trackId}";
+
+            tracks.Add(new SpotifyTrackSummary(
+                trackId,
+                name ?? string.Empty,
+                artists.Artists ?? album.Artists,
+                album.Name,
+                numbers.DurationMs,
+                sourceUrl,
+                album.ImageUrl,
+                isrc,
+                album.ReleaseDate,
+                numbers.TrackNumber,
+                numbers.DiscNumber,
+                album.TotalTracks,
+                numbers.ExplicitFlag)
+            {
+                AlbumId = album.Id,
+                AlbumArtist = album.Artists,
+                ArtistIds = artists.ArtistIds,
+                Label = album.Label,
+                Genres = album.Genres,
+                Popularity = ReadInt(track, PopularityKey),
+                PreviewUrl = TryReadJsonStringProperty(track, "preview_url"),
+                HasLyrics = TryReadBoolean(track, "has_lyrics"),
+                AvailableMarkets = album.AvailableMarkets,
+                ReleaseDatePrecision = album.ReleaseDatePrecision,
+                Copyrights = album.Copyrights,
+                CopyrightText = album.CopyrightText
+            });
+        }
+
+        return tracks;
+    }
+
+    private static bool TryResolveLibrespotAlbumTrackItems(JsonElement root, out JsonElement items)
+    {
+        items = default;
+        if (!root.TryGetProperty("tracks", out var tracksProp))
+        {
+            return false;
+        }
+
+        if (tracksProp.ValueKind == JsonValueKind.Array)
+        {
+            items = tracksProp;
+            return true;
+        }
+
+        if (tracksProp.ValueKind == JsonValueKind.Object &&
+            tracksProp.TryGetProperty("items", out var itemsProp) &&
+            itemsProp.ValueKind == JsonValueKind.Array)
+        {
+            items = itemsProp;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static JsonElement ResolveLibrespotAlbumTrackItem(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            return default;
+        }
+
+        if (item.TryGetProperty("track", out var trackProp) && trackProp.ValueKind == JsonValueKind.Object)
+        {
+            return trackProp;
+        }
+
+        return item;
     }
 
     private static bool TryResolveEntityId(JsonElement item, string fallbackId, out string id)

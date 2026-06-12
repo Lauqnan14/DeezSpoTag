@@ -4461,13 +4461,13 @@ public sealed class SpotifyPathfinderMetadataClient
                 break;
             }
             CaptureUnion(ref albumUnion, currentUnion.Value);
-            List<JsonElement> itemList = ExtractClonedItems(currentUnion.Value, TracksV2Key, ItemsKey);
+            List<JsonElement> itemList = ExtractAlbumTrackItems(currentUnion.Value);
             if (itemList.Count == 0)
             {
                 break;
             }
             allItems.AddRange(itemList);
-            if (!ShouldContinueAlbumUnionQuery(allItems.Count, itemList.Count, TryGetInt(currentUnion.Value, TracksV2Key, TotalCountKey)))
+            if (!ShouldContinueAlbumUnionQuery(allItems.Count, itemList.Count, ResolveAlbumTrackTotal(currentUnion.Value)))
             {
                 break;
             }
@@ -4478,7 +4478,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private async Task<JsonElement?> QueryAlbumUnionPageAsync(PathfinderAuthContext context, string albumId, int offset, CancellationToken cancellationToken)
     {
-        PersistedQueryOverride persisted = GetPersistedQuery(GetAlbumOperationName, 1, "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10");
+        PersistedQueryOverride persisted = GetPersistedQuery(GetAlbumOperationName, 1, GetAlbumHashDefault);
         var payload = new
         {
             variables = new
@@ -4592,6 +4592,48 @@ public sealed class SpotifyPathfinderMetadataClient
         return items.HasValue && items.Value.ValueKind == JsonValueKind.Array
             ? items.Value.EnumerateArray().Select(item => item.Clone()).ToList()
             : new List<JsonElement>();
+    }
+
+    private static List<JsonElement> ExtractAlbumTrackItems(JsonElement albumUnion)
+    {
+        foreach (var items in EnumerateAlbumTrackItemArrays(albumUnion))
+        {
+            var cloned = items.EnumerateArray().Select(item => item.Clone()).ToList();
+            if (cloned.Count > 0)
+            {
+                return cloned;
+            }
+        }
+
+        return new List<JsonElement>();
+    }
+
+    private static IEnumerable<JsonElement> EnumerateAlbumTrackItemArrays(JsonElement albumUnion)
+    {
+        JsonElement? tracksV2Items = GetArray(albumUnion, TracksV2Key, ItemsKey);
+        if (tracksV2Items.HasValue)
+        {
+            yield return tracksV2Items.Value;
+        }
+
+        JsonElement? tracksItems = GetArray(albumUnion, TracksKey, ItemsKey);
+        if (tracksItems.HasValue)
+        {
+            yield return tracksItems.Value;
+        }
+
+        JsonElement? trackListItems = GetArray(albumUnion, "trackList", ItemsKey);
+        if (trackListItems.HasValue)
+        {
+            yield return trackListItems.Value;
+        }
+    }
+
+    private static int? ResolveAlbumTrackTotal(JsonElement albumUnion)
+    {
+        return TryGetInt(albumUnion, TracksV2Key, TotalCountKey)
+            ?? TryGetInt(albumUnion, TracksKey, TotalCountKey)
+            ?? TryGetInt(albumUnion, "trackList", TotalCountKey);
     }
 
     private static bool ShouldContinuePlaylistUnionQuery(int? maxItems, int itemCount, int pageCount, int? totalCount)
@@ -5597,15 +5639,15 @@ public sealed class SpotifyPathfinderMetadataClient
         IReadOnlyList<string>? genres = ExtractStringArray(albumUnion, GenresKey);
         string? defaultCoverUrl = ExtractCoverUrl(albumUnion, CoverArtKey);
         string? releaseDate = TryGetString(albumUnion, "date", IsoStringKey) ?? TryGetString(albumUnion, "date", "year") ?? TryGetString(albumUnion, ReleaseDateKey) ?? TryGetString(albumUnion, ReleaseDateSnakeKey) ?? ExtractYearFromDate(albumUnion);
-        int? trackTotal = TryGetInt(albumUnion, TracksV2Key, TotalCountKey);
-        List<JsonElement> items = ResolveTrackItems(trackItems, albumUnion, TracksV2Key, ItemsKey);
+        int? trackTotal = ResolveAlbumTrackTotal(albumUnion);
+        List<JsonElement> items = ResolveAlbumTrackItems(trackItems, albumUnion);
         if (items.Count == 0)
         {
             return list;
         }
         foreach (JsonElement value in items
-            .Select(item2 => TryGetNested(item2, out var value) ? value : default)
-            .Where(value => value.ValueKind != JsonValueKind.Undefined))
+            .Select(ResolveAlbumTrackData)
+            .Where(value => value.ValueKind == JsonValueKind.Object))
         {
             string? text2 = ExtractIdFromUri(TryGetString(value, "uri")) ?? TryGetString(value, "id");
             if (!string.IsNullOrWhiteSpace(text2))
@@ -5632,6 +5674,46 @@ public sealed class SpotifyPathfinderMetadataClient
             }
         }
         return list;
+    }
+
+    private static List<JsonElement> ResolveAlbumTrackItems(List<JsonElement>? trackItems, JsonElement albumUnion)
+    {
+        if (trackItems is not null)
+        {
+            return trackItems;
+        }
+
+        return ExtractAlbumTrackItems(albumUnion);
+    }
+
+    private static JsonElement ResolveAlbumTrackData(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            return default;
+        }
+
+        if (TryGetNested(item, out var value, ItemV2Key, DataKey))
+        {
+            return value;
+        }
+
+        if (TryGetNested(item, out value, "item", DataKey))
+        {
+            return value;
+        }
+
+        if (TryGetNested(item, out value, TrackType))
+        {
+            return value;
+        }
+
+        if (TryGetNested(item, out value, TrackUnionKey))
+        {
+            return value;
+        }
+
+        return item;
     }
 
     private static List<SpotifyTrackSummary> ParsePlaylistTracks(JsonElement playlistUnion, List<JsonElement>? trackItems)
