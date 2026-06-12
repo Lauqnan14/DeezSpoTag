@@ -90,11 +90,11 @@ const libraryState = {
         initialized: false,
         scrollBound: false
     },
-    localTopSongTrackIndex: null,
-    localTopSongTrackArtistId: null,
-    localTopSongTrackIndexPromise: null,
     currentSpotifyTopTracks: [],
     currentSpotifyTopTrackArtistProfile: null,
+    currentArtistPageAvailability: new Set(),
+    artistPageAvailabilityPromise: null,
+    artistPageAvailabilityToken: 0,
     libraryUpdateRefreshPromise: null,
     libraryUpdatedHandlerBound: false,
     folderSaveInProgress: false,
@@ -4148,9 +4148,6 @@ async function loadAlbums(artistId) {
     }
     libraryState.deezerAlbumIndex.clear();
     libraryState.artistDataReady.local = false;
-    libraryState.localTopSongTrackIndex = null;
-    libraryState.localTopSongTrackArtistId = null;
-    libraryState.localTopSongTrackIndexPromise = null;
     libraryState.appleExtras.localTrackVariantIndex = null;
     libraryState.appleExtras.localTrackVariantArtistId = null;
     libraryState.appleExtras.localTrackVariantIndexPromise = null;
@@ -4198,8 +4195,14 @@ async function loadAlbums(artistId) {
 
     libraryState.localAlbums = available;
     libraryState.artistDataReady.local = true;
+    invalidateArtistPageAvailability();
     tryRenderDiscography();
     refreshSpotifyTopTrackLibraryMarkers();
+    if (Array.isArray(libraryState.spotifyAlbums) && libraryState.spotifyAlbums.length > 0) {
+        resolveArtistPageAvailabilityAsync().catch(error => {
+            console.warn('Failed to refresh artist page availability after local album load.', error);
+        });
+    }
 
     if (!cachedUnavailable) {
         fetchJsonOptional(`/api/library/artists/${artistIdValue}/unavailable`)
@@ -4388,6 +4391,7 @@ function prepareSpotifyArtistRenderPayload(payloadForRender) {
 
 function renderSpotifyArtistPayload(artistId, payloadForRender, effectiveAlbums, topTracks, preserveExistingAlbums) {
     setSpotifyCacheStatus(preserveExistingAlbums ? 'Spotify refresh: loaded (preserved)' : 'Spotify refresh: loaded');
+    invalidateArtistPageAvailability();
     libraryState.spotifyAlbums = effectiveAlbums;
 
     if (payloadForRender.artist) {
@@ -4867,14 +4871,10 @@ async function markSpotifyTopTracksInLibrary(tracks, artistProfile = null) {
         return;
     }
 
-    const artistId = getCurrentLibraryArtistId();
     const requestId = ++spotifyTopTrackMatchRequestId;
 
     try {
-        const [localTrackIndex, wholeLibraryMatches] = await Promise.all([
-            ensureLocalTopSongTrackIndexForArtistAsync(artistId),
-            fetchSpotifyTopSongLibraryMatchesAsync(safeTracks)
-        ]);
+        const wholeLibraryMatches = await resolveArtistPageAvailabilityAsync();
 
         if (requestId !== spotifyTopTrackMatchRequestId) {
             return;
@@ -4887,7 +4887,7 @@ async function markSpotifyTopTracksInLibrary(tracks, artistProfile = null) {
                 return;
             }
 
-            const inLibrary = wholeLibraryMatches.has(trackId) || isSpotifyTopSongInLocalArtistIndex(track, localTrackIndex);
+            const inLibrary = wholeLibraryMatches.has(trackId);
             row.classList.toggle('in-library', inLibrary);
             const badge = row.querySelector('.top-song-item__library-badge');
             if (badge) {
@@ -4899,17 +4899,18 @@ async function markSpotifyTopTracksInLibrary(tracks, artistProfile = null) {
     }
 }
 
-async function fetchSpotifyTopSongLibraryMatchesAsync(tracks) {
-    const requests = Array.isArray(tracks)
-        ? tracks
-            .map((track, index) => buildSpotifyTopSongLibraryExistenceRequest(track, index))
-            .filter(Boolean)
-        : [];
+async function resolveArtistPageAvailabilityAsync() {
+    const token = libraryState.artistPageAvailabilityToken;
+    if (libraryState.artistPageAvailabilityPromise) {
+        return libraryState.artistPageAvailabilityPromise;
+    }
+
+    const requests = buildArtistPageAvailabilityRequests();
     if (requests.length === 0) {
         return new Set();
     }
 
-    try {
+    libraryState.artistPageAvailabilityPromise = (async () => {
         const response = await fetchJson('/api/library/exists', {
             method: 'POST',
             headers: {
@@ -4925,19 +4926,80 @@ async function fetchSpotifyTopSongLibraryMatchesAsync(tracks) {
                 }
             });
         }
+        if (token === libraryState.artistPageAvailabilityToken) {
+            libraryState.currentArtistPageAvailability = matches;
+            refreshDiscographyAvailabilityFromResolvedMatches();
+        }
         return matches;
+    })();
+
+    try {
+        return await libraryState.artistPageAvailabilityPromise;
     } catch (error) {
-        console.warn('Failed to check Spotify top songs against library.', error);
+        console.warn('Failed to check artist page items against library.', error);
         return new Set();
+    } finally {
+        if (token === libraryState.artistPageAvailabilityToken) {
+            libraryState.artistPageAvailabilityPromise = null;
+        }
     }
 }
 
-function buildSpotifyTopSongLibraryExistenceRequest(track, index) {
+function refreshDiscographyAvailabilityFromResolvedMatches() {
+    if (!libraryState.artistDataReady.local || !document.getElementById('discographyGrid')) {
+        return;
+    }
+
+    buildDiscography(libraryState.localAlbums, libraryState.spotifyAlbums || []);
+    renderDiscography();
+}
+
+function invalidateArtistPageAvailability() {
+    libraryState.currentArtistPageAvailability = new Set();
+    libraryState.artistPageAvailabilityPromise = null;
+    libraryState.artistPageAvailabilityToken += 1;
+}
+
+function buildArtistPageAvailabilityRequests() {
+    const requests = [];
+    const seen = new Set();
+
+    (Array.isArray(libraryState.currentSpotifyTopTracks) ? libraryState.currentSpotifyTopTracks : [])
+        .slice(0, 9)
+        .forEach((track, index) => {
+            addArtistPageAvailabilityRequest(
+                requests,
+                seen,
+                buildArtistPageTrackAvailabilityRequest(track, `spotify-top-${index}`));
+        });
+
+    const topTrackByAlbumId = buildSpotifyTopTrackByAlbumId();
+    (Array.isArray(libraryState.spotifyAlbums) ? libraryState.spotifyAlbums : [])
+        .forEach((album, index) => {
+            addArtistPageAvailabilityRequest(
+                requests,
+                seen,
+                buildArtistPageDiscographyAvailabilityRequest(album, index, topTrackByAlbumId));
+        });
+
+    return requests;
+}
+
+function addArtistPageAvailabilityRequest(requests, seen, request) {
+    if (!request?.id || seen.has(request.id)) {
+        return;
+    }
+    seen.add(request.id);
+    requests.push(request);
+}
+
+function buildArtistPageTrackAvailabilityRequest(track, fallbackId) {
     if (!track || typeof track !== 'object') {
         return null;
     }
 
-    const id = String(track.id || `top-track-${index}`);
+    const sourceId = String(track.id || extractSpotifyTopTrackIdFromUrl(track.sourceUrl || '') || '').trim();
+    const id = String(sourceId || fallbackId || '').trim();
     const trackTitle = String(track.name || track.title || '').trim();
     const artistName = String(
         track.artistName
@@ -4952,6 +5014,8 @@ function buildSpotifyTopSongLibraryExistenceRequest(track, index) {
     const durationMs = Number(track.durationMs || track.duration || 0);
     return {
         id,
+        source: sourceId ? 'spotify' : null,
+        sourceId: sourceId || null,
         isrc: String(track.isrc || '').trim() || null,
         trackTitle,
         artistName,
@@ -4959,285 +5023,71 @@ function buildSpotifyTopSongLibraryExistenceRequest(track, index) {
     };
 }
 
-async function ensureLocalTopSongTrackIndexForArtistAsync(artistId) {
-    const normalizedArtistId = String(artistId || '').trim();
-    if (!normalizedArtistId) {
-        return new Map();
-    }
-
-    if (libraryState.localTopSongTrackArtistId === normalizedArtistId && libraryState.localTopSongTrackIndex instanceof Map) {
-        return libraryState.localTopSongTrackIndex;
-    }
-
-    if (libraryState.localTopSongTrackArtistId === normalizedArtistId && libraryState.localTopSongTrackIndexPromise) {
-        return libraryState.localTopSongTrackIndexPromise;
-    }
-
-    libraryState.localTopSongTrackArtistId = normalizedArtistId;
-    libraryState.localTopSongTrackIndex = null;
-    libraryState.localTopSongTrackIndexPromise = (async () => {
-        const index = {
-            titleBuckets: new Map(),
-            spotifyIds: new Set(),
-            deezerIds: new Set(),
-            appleIds: new Set(),
-            isrcs: new Set()
-        };
-        const localAlbums = Array.isArray(libraryState.localAlbums) ? libraryState.localAlbums : [];
-        const albumCandidates = localAlbums
-            .filter(album => album && Number(album.id) > 0)
-            .map(album => Number(album.id));
-
-        for (const albumId of albumCandidates) {
-            let tracks;
-            try {
-                tracks = await fetchJsonOptional(`/api/library/albums/${albumId}/tracks`);
-            } catch {
-                continue;
+function buildSpotifyTopTrackByAlbumId() {
+    const tracksByAlbumId = new Map();
+    (Array.isArray(libraryState.currentSpotifyTopTracks) ? libraryState.currentSpotifyTopTracks : [])
+        .forEach(track => {
+            const albumId = String(track?.albumId || '').trim();
+            if (albumId && !tracksByAlbumId.has(albumId)) {
+                tracksByAlbumId.set(albumId, track);
             }
-
-            if (!Array.isArray(tracks) || tracks.length === 0) {
-                continue;
-            }
-
-            tracks.forEach(track => {
-                if (!toBoolish(track?.availableLocally)) {
-                    return;
-                }
-
-                addNormalizedTopSongId(index.spotifyIds, track?.spotifyTrackId);
-                addNormalizedTopSongId(index.deezerIds, track?.deezerTrackId);
-                addNormalizedTopSongId(index.appleIds, track?.appleTrackId);
-                addNormalizedTopSongId(index.isrcs, track?.isrc);
-
-                buildTopSongTitleKeys(track?.title || '').forEach(titleKey => {
-                    const bucket = index.titleBuckets.get(titleKey) || [];
-                    bucket.push({
-                        durationMs: Number(track?.durationMs || 0) > 0 ? Number(track.durationMs) : null
-                    });
-                    index.titleBuckets.set(titleKey, bucket);
-                });
-            });
-        }
-
-        libraryState.localTopSongTrackIndex = index;
-        return index;
-    })();
-
-    try {
-        return await libraryState.localTopSongTrackIndexPromise;
-    } finally {
-        libraryState.localTopSongTrackIndexPromise = null;
-    }
+        });
+    return tracksByAlbumId;
 }
 
-function isSpotifyTopSongInLocalArtistIndex(track, index) {
-    if (!index) {
-        return false;
+function buildArtistPageDiscographyAvailabilityRequest(album, index, topTrackByAlbumId) {
+    if (!album || typeof album !== 'object') {
+        return null;
     }
 
-    if (index instanceof Map) {
-        return isSpotifyTopSongInLocalTitleBuckets(track, index);
-    }
-
-    const spotifyId = normalizeTopSongSourceId(track?.id || extractSpotifyTopTrackIdFromUrl(track?.sourceUrl || ''));
-    if (spotifyId && index.spotifyIds instanceof Set && index.spotifyIds.has(spotifyId)) {
-        return true;
-    }
-
-    const deezerId = normalizeTopSongSourceId(track?.deezerId || track?.deezerTrackId);
-    if (deezerId && index.deezerIds instanceof Set && index.deezerIds.has(deezerId)) {
-        return true;
-    }
-
-    const appleId = normalizeTopSongSourceId(track?.appleId || track?.appleTrackId);
-    if (appleId && index.appleIds instanceof Set && index.appleIds.has(appleId)) {
-        return true;
-    }
-
-    const isrc = normalizeTopSongSourceId(track?.isrc);
-    if (isrc && index.isrcs instanceof Set && index.isrcs.has(isrc)) {
-        return true;
-    }
-
-    return isSpotifyTopSongInLocalTitleBuckets(track, index.titleBuckets);
-}
-
-function isSpotifyTopSongInLocalTitleBuckets(track, titleBuckets) {
-    if (!(titleBuckets instanceof Map) || titleBuckets.size === 0) {
-        return false;
-    }
-
-    const titleKeys = buildTopSongTitleKeys(track?.name || '');
-    if (titleKeys.size === 0) {
-        return false;
-    }
-
-    const candidates = [];
-    titleKeys.forEach(titleKey => {
-        const bucket = titleBuckets.get(titleKey);
-        if (Array.isArray(bucket)) {
-            candidates.push(...bucket);
-        }
-    });
-    if (!Array.isArray(candidates) || candidates.length === 0) {
-        return false;
-    }
-
-    const targetDurationMs = Number(track?.durationMs || 0) > 0 ? Number(track.durationMs) : null;
-    if (!targetDurationMs) {
-        return true;
-    }
-
-    return candidates.some(candidate => {
-        const candidateDurationMs = Number(candidate?.durationMs || 0) > 0 ? Number(candidate.durationMs) : null;
-        if (!candidateDurationMs) {
-            return true;
-        }
-        return Math.abs(candidateDurationMs - targetDurationMs) <= 2000;
-    });
-}
-
-function buildTopSongTitleKeys(value) {
-    const keys = new Set();
-    const original = String(value || '').trim();
-    const primary = normalizeTopSongMatchTitle(original);
-    if (primary) {
-        keys.add(primary);
-    }
-
-    const withoutFeaturedArtists = stripFeaturedArtistTitleQualifier(original);
-    const stripped = normalizeTopSongMatchTitle(withoutFeaturedArtists);
-    if (stripped) {
-        keys.add(stripped);
-    }
-
-    return keys;
-}
-
-function normalizeTopSongMatchTitle(value) {
-    return normalizeAlbumTitle(value || '');
-}
-
-function stripFeaturedArtistTitleQualifier(value) {
-    let title = String(value || '');
-    title = stripFeaturedBracketQualifier(title);
-
-    const dashIndex = title.indexOf(' - ');
-    if (dashIndex >= 0 && containsFeatureToken(title.slice(dashIndex + 3))) {
-        title = title.slice(0, dashIndex);
-    }
-
-    const featureIndex = findFeatureTokenIndex(title);
-    if (featureIndex >= 0) {
-        title = title.slice(0, featureIndex);
-    }
-
-    return title.trim();
-}
-
-function stripFeaturedBracketQualifier(value) {
-    let output = '';
-    let index = 0;
-    while (index < value.length) {
-        const openIndex = findNextBracketOpen(value, index);
-        if (openIndex < 0) {
-            output += value.slice(index);
-            break;
-        }
-
-        const closeIndex = findMatchingBracketClose(value, openIndex);
-        if (closeIndex < 0) {
-            output += value.slice(index);
-            break;
-        }
-
-        const inner = value.slice(openIndex + 1, closeIndex);
-        output += value.slice(index, openIndex);
-        if (containsFeatureToken(inner)) {
-            output += ' ';
-        } else {
-            output += value.slice(openIndex, closeIndex + 1);
-        }
-        index = closeIndex + 1;
-    }
-
-    return output;
-}
-
-function findNextBracketOpen(value, startIndex) {
-    const paren = value.indexOf('(', startIndex);
-    const square = value.indexOf('[', startIndex);
-    const brace = value.indexOf('{', startIndex);
-    return [paren, square, brace]
-        .filter(index => index >= 0)
-        .sort((left, right) => left - right)[0] ?? -1;
-}
-
-function findMatchingBracketClose(value, openIndex) {
-    const opener = value[openIndex];
-    let closer = '}';
-    if (opener === '(') {
-        closer = ')';
-    } else if (opener === '[') {
-        closer = ']';
-    }
-    return value.indexOf(closer, openIndex + 1);
-}
-
-function containsFeatureToken(value) {
-    return findFeatureTokenIndex(value) >= 0;
-}
-
-function findFeatureTokenIndex(value) {
-    const lower = String(value || '').toLowerCase();
-    for (const token of ['featuring', 'feat', 'ft']) {
-        const index = findWordTokenIndex(lower, token);
-        if (index >= 0) {
-            return index;
+    const albumId = String(album.id || '').trim();
+    const matchedTrack = albumId && topTrackByAlbumId instanceof Map
+        ? topTrackByAlbumId.get(albumId)
+        : null;
+    if (matchedTrack) {
+        const request = buildArtistPageTrackAvailabilityRequest(matchedTrack, `spotify-album-track-${index}`);
+        if (request) {
+            return {
+                ...request,
+                id: buildArtistPageDiscographyAvailabilityId(album)
+            };
         }
     }
 
-    return -1;
-}
-
-function findWordTokenIndex(value, token) {
-    let index = value.indexOf(token);
-    while (index >= 0) {
-        const before = index === 0 ? '' : value[index - 1];
-        const afterIndex = index + token.length;
-        const after = afterIndex >= value.length ? '' : value[afterIndex];
-        const afterDot = after === '.' ? (value[afterIndex + 1] || '') : after;
-        if (!isAsciiLetterOrDigit(before) && !isAsciiLetterOrDigit(afterDot)) {
-            return index;
+    const totalTracks = Number(album.totalTracks || 0);
+    if (Number.isFinite(totalTracks) && totalTracks === 1) {
+        const title = String(album.name || album.title || '').trim();
+        const artistName = String(
+            album.artistName
+            || album.artist
+            || libraryState.currentSpotifyArtist?.name
+            || libraryState.currentLocalArtistName
+            || ''
+        ).trim();
+        const id = buildArtistPageDiscographyAvailabilityId(album);
+        if (id && title && artistName) {
+            return {
+                id,
+                source: null,
+                sourceId: null,
+                isrc: null,
+                trackTitle: title,
+                artistName,
+                durationMs: null
+            };
         }
-
-        index = value.indexOf(token, index + token.length);
     }
 
-    return -1;
+    return null;
 }
 
-function isAsciiLetterOrDigit(value) {
-    if (!value) {
-        return false;
+function buildArtistPageDiscographyAvailabilityId(album) {
+    const sourceId = String(album?.id || extractSpotifyAlbumIdFromUrl(album?.sourceUrl || '') || '').trim();
+    if (sourceId) {
+        return `spotify-album:${sourceId}`;
     }
-
-    const code = value.codePointAt(0);
-    return (code >= 48 && code <= 57)
-        || (code >= 65 && code <= 90)
-        || (code >= 97 && code <= 122);
-}
-
-function addNormalizedTopSongId(set, value) {
-    const normalized = normalizeTopSongSourceId(value);
-    if (normalized) {
-        set.add(normalized);
-    }
-}
-
-function normalizeTopSongSourceId(value) {
-    return String(value || '').trim().toLowerCase();
+    const titleKey = normalizeAlbumTitle(album?.name || album?.title || '');
+    return titleKey ? `spotify-album-title:${titleKey}` : '';
 }
 
 function scheduleSpotifyTopTrackPreviewWarmup() {
@@ -6997,6 +6847,7 @@ function buildDiscography(localAlbums, spotifyAlbums) {
     const merged = [];
     const seen = new Set();
     const spotifyByTitle = new Map();
+    const availability = libraryState.currentArtistPageAvailability;
 
     (spotifyAlbums || []).forEach(album => {
         const key = normalizeAlbumTitle(album.name || album.title);
@@ -7096,8 +6947,13 @@ function buildDiscography(localAlbums, spotifyAlbums) {
         if (key) {
             seen.add(key);
         }
+        const availabilityId = buildArtistPageDiscographyAvailabilityId(album);
+        const existsInLibrary = availability instanceof Set && availabilityId
+            ? availability.has(availabilityId)
+            : false;
         const discographySection = normalizeDiscographySection(album.discographySection, album.albumGroup, album.releaseType, album.totalTracks || 0);
         const isPopular = Boolean(album.isPopular) || (album.discographySection === 'popular');
+        const totalTracks = album.totalTracks || 0;
         merged.push({
             id: album.id,
             title: album.name || album.title || '',
@@ -7107,22 +6963,22 @@ function buildDiscography(localAlbums, spotifyAlbums) {
             coverUrl: null,
             sourceUrl: album.sourceUrl || '',
             deezerId: album.deezerId || null,
-            totalTracks: album.totalTracks || 0,
+            totalTracks,
             albumGroup: album.albumGroup || '',
             releaseType: album.releaseType || '',
             discographySection,
             category: normalizeDiscographyCategory(album.albumGroup, album.releaseType, album.totalTracks || 0),
             isPopular,
-            inLibrary: false,
-            hasStereoVariant: false,
+            inLibrary: existsInLibrary,
+            hasStereoVariant: existsInLibrary,
             hasAtmosVariant: false,
-            stereoInLibrary: false,
+            stereoInLibrary: existsInLibrary,
             atmosInLibrary: false,
-            isStereoComplete: false,
-            missingForDownload: true,
+            isStereoComplete: existsInLibrary,
+            missingForDownload: !existsInLibrary,
             localId: null,
-            localTrackCount: 0,
-            localStereoTrackCount: 0,
+            localTrackCount: existsInLibrary ? totalTracks : 0,
+            localStereoTrackCount: existsInLibrary ? totalTracks : 0,
             localAtmosTrackCount: 0
         });
     });

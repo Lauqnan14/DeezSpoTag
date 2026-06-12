@@ -20,6 +20,8 @@ public class LibraryExistsApiController : ControllerBase
 
     public sealed record LibraryExistenceRequest(
         string Id,
+        string? Source,
+        string? SourceId,
         string? Isrc,
         string? TrackTitle,
         string? ArtistName,
@@ -43,7 +45,9 @@ public class LibraryExistsApiController : ControllerBase
                 item.Isrc,
                 item.TrackTitle,
                 item.ArtistName,
-                item.DurationMs))
+                item.DurationMs,
+                item.Source,
+                item.SourceId))
             .ToList();
 
         var results = await _repository.ExistsInLibraryAsync(inputs, cancellationToken);

@@ -8493,7 +8493,13 @@ SELECT f.root_path, af.relative_path, af.path
         return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
     }
 
-    public sealed record LibraryExistenceInput(string? Isrc, string? TrackTitle, string? ArtistName, int? DurationMs);
+    public sealed record LibraryExistenceInput(
+        string? Isrc,
+        string? TrackTitle,
+        string? ArtistName,
+        int? DurationMs,
+        string? Source = null,
+        string? SourceId = null);
 
     private sealed record LocalTrackMetadataCandidate(
         long TrackId,
@@ -8608,6 +8614,17 @@ SELECT EXISTS(
     JOIN track_local tl ON tl.track_id = t.id
     LEFT JOIN track_source ts ON ts.track_id = t.id AND ts.source = 'isrc'
     WHERE (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
+	);";
+        const string sourceSql = @"
+SELECT EXISTS(
+    SELECT 1
+    FROM track_source ts
+    JOIN track_local tl ON tl.track_id = ts.track_id
+    WHERE LOWER(ts.source) = LOWER(@source)
+      AND (
+          LOWER(ts.source_id) = LOWER(@sourceId)
+          OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(@sourceId) || ';') > 0
+      )
 );";
         const string trackSql = $@"
 SELECT ar.name,
@@ -8623,6 +8640,9 @@ LIMIT 100;";
 
         await using var isrcCommand = new SqliteCommand(isrcSql, connection);
         isrcCommand.Parameters.AddWithValue("isrc", string.Empty);
+        await using var sourceCommand = new SqliteCommand(sourceSql, connection);
+        sourceCommand.Parameters.AddWithValue(SourceField, string.Empty);
+        sourceCommand.Parameters.AddWithValue(SourceIdField, string.Empty);
         await using var trackCommand = new SqliteCommand(trackSql, connection);
         trackCommand.Parameters.AddWithValue(ArtistSearchParameter, string.Empty);
         trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
@@ -8634,6 +8654,7 @@ LIMIT 100;";
             results[i] = await ExistsInLibraryAsync(
                 inputs[i],
                 isrcCommand,
+                sourceCommand,
                 trackCommand,
                 cancellationToken);
         }
@@ -8664,6 +8685,21 @@ SELECT EXISTS(
     WHERE f.library_id = @libraryId
       AND (@folderId IS NULL OR f.id = @folderId)
       AND (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
+	);";
+        const string sourceSql = @"
+SELECT EXISTS(
+    SELECT 1
+    FROM track_source ts
+    JOIN track_local tl ON tl.track_id = ts.track_id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.library_id = @libraryId
+      AND (@folderId IS NULL OR f.id = @folderId)
+      AND LOWER(ts.source) = LOWER(@source)
+      AND (
+          LOWER(ts.source_id) = LOWER(@sourceId)
+          OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(@sourceId) || ';') > 0
+      )
 );";
         const string trackSql = $@"
 SELECT ar.name,
@@ -8686,6 +8722,12 @@ LIMIT 100;";
         isrcCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
         isrcCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
 
+        await using var sourceCommand = new SqliteCommand(sourceSql, connection);
+        sourceCommand.Parameters.AddWithValue(SourceField, string.Empty);
+        sourceCommand.Parameters.AddWithValue(SourceIdField, string.Empty);
+        sourceCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
+        sourceCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+
         await using var trackCommand = new SqliteCommand(trackSql, connection);
         trackCommand.Parameters.AddWithValue(ArtistSearchParameter, string.Empty);
         trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
@@ -8699,6 +8741,7 @@ LIMIT 100;";
             results[i] = await ExistsInLibraryAsync(
                 inputs[i],
                 isrcCommand,
+                sourceCommand,
                 trackCommand,
                 cancellationToken);
         }
@@ -8709,10 +8752,16 @@ LIMIT 100;";
     private static async Task<bool> ExistsInLibraryAsync(
         LibraryExistenceInput input,
         SqliteCommand isrcCommand,
+        SqliteCommand sourceCommand,
         SqliteCommand trackCommand,
         CancellationToken cancellationToken)
     {
         if (await ExistsByIsrcAsync(isrcCommand, input.Isrc, cancellationToken))
+        {
+            return true;
+        }
+
+        if (await ExistsBySourceAsync(sourceCommand, input.Source, input.SourceId, cancellationToken))
         {
             return true;
         }
@@ -8740,6 +8789,28 @@ LIMIT 100;";
 
         isrcCommand.Parameters["isrc"]!.Value = normalizedIsrc;
         var result = await isrcCommand.ExecuteScalarAsync(cancellationToken);
+        return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
+    }
+
+    private static async Task<bool> ExistsBySourceAsync(
+        SqliteCommand sourceCommand,
+        string? source,
+        string? sourceId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSource = source?.Trim();
+        var normalizedSourceId = sourceId?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedSource)
+            || string.IsNullOrWhiteSpace(normalizedSourceId)
+            || normalizedSource.Length > 64
+            || normalizedSourceId.Length > 256)
+        {
+            return false;
+        }
+
+        sourceCommand.Parameters[SourceField]!.Value = normalizedSource;
+        sourceCommand.Parameters[SourceIdField]!.Value = normalizedSourceId;
+        var result = await sourceCommand.ExecuteScalarAsync(cancellationToken);
         return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
     }
 
