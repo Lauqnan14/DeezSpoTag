@@ -1020,14 +1020,9 @@ public class ActivitiesController : Controller
 
     private static string? FindPrimaryLyricPath(string baseName, string extension, List<string> searchDirs)
     {
-        foreach (var lyricIo in searchDirs
+        return searchDirs
             .Select(searchDir => Path.Join(searchDir, baseName + extension))
-            .Where(System.IO.File.Exists))
-        {
-            return lyricIo;
-        }
-
-        return null;
+            .FirstOrDefault(System.IO.File.Exists);
     }
 
     private static void AttachLyricsByTitle(

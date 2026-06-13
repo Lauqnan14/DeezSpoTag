@@ -24,7 +24,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     private const string FailedStatus = "failed";
     private const string CompletedStatus = "completed";
     private const string NoLyricsStatus = "no-lyrics";
-    private const string RunningStatus = "running";
     private const string PausedStatus = "paused";
     private const string CanceledStatus = "canceled";
     private const string CancelledStatus = "cancelled";

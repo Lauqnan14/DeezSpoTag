@@ -503,26 +503,16 @@ public sealed class SpotifyFavoritesService
 
     private static string? TryGetStringFromCandidates(IEnumerable<JsonElement> candidates, params string[] path)
     {
-        foreach (var value in candidates
+        return candidates
             .Select(candidate => TryGetString(candidate, path))
-            .Where(value => !string.IsNullOrWhiteSpace(value)))
-        {
-            return value;
-        }
-
-        return null;
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private static string? TryGetStringAtFromCandidates(IEnumerable<JsonElement> candidates, params object[] path)
     {
-        foreach (var value in candidates
+        return candidates
             .Select(candidate => TryGetStringAt(candidate, path))
-            .Where(value => !string.IsNullOrWhiteSpace(value)))
-        {
-            return value;
-        }
-
-        return null;
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private static string? TryGetString(JsonElement element, params string[] path)

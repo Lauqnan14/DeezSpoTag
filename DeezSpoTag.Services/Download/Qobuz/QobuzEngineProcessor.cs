@@ -27,7 +27,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private const string CompletedStatus = "completed";
     private const string CancelledStatus = "cancelled";
     private const string CanceledStatus = "canceled";
-    private const string RunningStatus = "running";
     private const string InvalidPayloadMessage = "Invalid payload";
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
     private const string UpdateQueueEvent = "updateQueue";

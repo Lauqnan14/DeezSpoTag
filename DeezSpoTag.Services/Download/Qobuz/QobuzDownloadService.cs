@@ -324,51 +324,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
     }
 
-    private async Task<string> ResolveEffectiveSelectedQualityAsync(
-        DownloadUrlResolution resolution,
-        CancellationToken cancellationToken)
-    {
-        var selected = NormalizeQobuzQualityCode(resolution.SelectedQuality);
-        if (!ShouldProbeStreamBitDepth(selected) || string.IsNullOrWhiteSpace(resolution.Url))
-        {
-            return selected;
-        }
-
-        var probed = await TryProbeStreamQualityCodeAsync(resolution.Url!, cancellationToken);
-        if (string.IsNullOrWhiteSpace(probed))
-        {
-            return selected;
-        }
-
-        var normalizedProbed = NormalizeQobuzQualityCode(probed);
-        if (!string.Equals(normalizedProbed, selected, StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogInformation(
-                "Qobuz stream probe adjusted selected quality from {Selected} to {Probed}",
-                selected,
-                normalizedProbed);
-        }
-
-        return normalizedProbed;
-    }
-
-    private static bool ShouldProbeStreamBitDepth(string qualityCode)
-        => string.Equals(qualityCode, "7", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(qualityCode, "27", StringComparison.OrdinalIgnoreCase);
-
-    private async Task<string?> TryProbeStreamQualityCodeAsync(
-        string downloadUrl,
-        CancellationToken cancellationToken)
-    {
-        var probe = await TryProbeFlacStreamInfoAsync(downloadUrl, cancellationToken);
-        if (probe == null)
-        {
-            return null;
-        }
-
-        return MapQobuzQualityFromProbe(probe.Value.BitsPerSample, probe.Value.SampleRate);
-    }
-
     private async Task<FlacStreamProbeResult?> TryProbeFlacStreamInfoAsync(
         string downloadUrl,
         CancellationToken cancellationToken)
@@ -1673,18 +1628,13 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static bool TryReadProviderUrl(JsonElement element, out string? url)
     {
-        foreach (var providerUrl in ProviderUrlPropertyNames
+        url = ProviderUrlPropertyNames
             .Select(propertyName => element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
                 ? property.GetString()
                 : null)
-            .Where(static providerUrl => !string.IsNullOrWhiteSpace(providerUrl)))
-        {
-            url = providerUrl;
-            return true;
-        }
+            .FirstOrDefault(static providerUrl => !string.IsNullOrWhiteSpace(providerUrl));
 
-        url = null;
-        return false;
+        return !string.IsNullOrWhiteSpace(url);
     }
 
     private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
@@ -1822,12 +1772,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static string? FirstNonEmpty(params string?[] values)
     {
-        foreach (var value in values.Where(static value => !string.IsNullOrWhiteSpace(value)))
-        {
-            return value;
-        }
-
-        return null;
+        return values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
     }
 
     private sealed record AudioIdentityGuardResult(bool Success, string Message)

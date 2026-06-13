@@ -542,7 +542,8 @@ public sealed class SpotifyRecommendationService
 
     private static bool TryGetNestedAny(JsonElement element, out JsonElement value, params string[][] paths)
     {
-        foreach (var path in paths.Where(path => TryGetNested(element, out _, path)))
+        var path = paths.FirstOrDefault(path => TryGetNested(element, out _, path));
+        if (path is not null)
         {
             TryGetNested(element, out value, path);
             return true;

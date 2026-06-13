@@ -32,6 +32,7 @@ Environment fallbacks:
   SONAR_COVERAGE_EXCLUSIONS
   SONAR_KEEP_LOCAL_SCAN_STATE
   SONAR_ALLOW_HIGH_MEMORY_PRESSURE
+  SONAR_ALLOW_EXCLUSION_OVERRIDE
   SONAR_ENFORCE_GUARDRAILS
 
 Example:
@@ -59,6 +60,7 @@ sonar_include_coverage="${SONAR_INCLUDE_COVERAGE:-true}"
 sonar_coverage_exclusions="${SONAR_COVERAGE_EXCLUSIONS:-**/DeezSpoTag.Tests/**,**/DeezSpoTag.CoverPortTests/**,**/Tools/**,**/References/**,**/bin/**,**/obj/**}"
 sonar_keep_local_scan_state="${SONAR_KEEP_LOCAL_SCAN_STATE:-false}"
 sonar_allow_high_memory_pressure="${SONAR_ALLOW_HIGH_MEMORY_PRESSURE:-false}"
+sonar_allow_exclusion_override="${SONAR_ALLOW_EXCLUSION_OVERRIDE:-false}"
 sonar_enforce_guardrails="${SONAR_ENFORCE_GUARDRAILS:-true}"
 coverage_dir="${ROOT_DIR}/.sonar-coverage"
 coverage_opencover_reports_path="${coverage_dir}/**/coverage.opencover.xml"
@@ -207,6 +209,32 @@ while [[ $# -gt 0 ]]; do
       exit 2
       ;;
   esac
+done
+
+is_sonar_exclusion_override_arg() {
+  case "$1" in
+    /d:sonar.exclusions=*|/d:sonar.cpd.exclusions=*|-d:sonar.exclusions=*|-d:sonar.cpd.exclusions=*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+for begin_arg in "${extra_begin_args[@]}"; do
+  if is_sonar_exclusion_override_arg "$begin_arg"; then
+    if [[ "$sonar_allow_exclusion_override" == "true" ]]; then
+      echo "WARNING: overriding configured Sonar exclusion list by explicit consent." >&2
+      echo "WARNING: this can reintroduce generated/vendor/build output into analysis." >&2
+      continue
+    fi
+
+    echo "Refusing to override configured Sonar exclusion list: $begin_arg" >&2
+    echo "The exclusion list is authoritative and must not be changed without explicit consent." >&2
+    echo "Set SONAR_ALLOW_EXCLUSION_OVERRIDE=true only after explicit approval." >&2
+    exit 2
+  fi
 done
 
 default_sonar_exclusions_csv="$(IFS=,; echo "${default_sonar_exclusions[*]}")"
@@ -470,8 +498,12 @@ echo "Include coverage: $sonar_include_coverage"
 echo "Coverage exclusions: $sonar_coverage_exclusions"
 echo "Keep local scan state: $sonar_keep_local_scan_state"
 echo "Allow high memory pressure: $sonar_allow_high_memory_pressure"
+echo "Allow exclusion override: $sonar_allow_exclusion_override"
 echo "Enforce guardrails: $sonar_enforce_guardrails"
 echo "Entry point : ./scan.sh"
+echo "Configured Sonar exclusions are authoritative. Do not override them without explicit consent."
+echo "Sonar exclusions: $sonar_exclusions"
+echo "Sonar CPD exclusions: $sonar_cpd_exclusions"
 
 check_sonar_server
 check_system_resources

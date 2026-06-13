@@ -335,9 +335,16 @@ public sealed class QobuzTrackResolver
 
         var hasStrictTitle = StrictTitlesMatch(expectedTitle, bestTrack.Title);
         var hasStrictArtist = StrictArtistsMatch(expectedArtist, GetTrackArtist(bestTrack));
-        var accepted = !string.IsNullOrWhiteSpace(expectedIsrc)
-            ? bestScore >= (hasStrictTitle ? 11 : 8) && hasStrictArtist
-            : HasAuthoritativeMetadataMatch(bestTrack, expectedTitle, expectedArtist, expectedAlbum, expectedDurationSec, bestScore);
+        var accepted = IsAcceptedResolvedTrack(
+            bestTrack,
+            expectedIsrc,
+            expectedTitle,
+            expectedArtist,
+            expectedAlbum,
+            expectedDurationSec,
+            bestScore,
+            hasStrictTitle,
+            hasStrictArtist);
         if (!accepted)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -390,6 +397,25 @@ public sealed class QobuzTrackResolver
         }
 
         return score >= 14;
+    }
+
+    private static bool IsAcceptedResolvedTrack(
+        QobuzTrack candidate,
+        string? expectedIsrc,
+        string? expectedTitle,
+        string? expectedArtist,
+        string? expectedAlbum,
+        int expectedDurationSec,
+        int bestScore,
+        bool hasStrictTitle,
+        bool hasStrictArtist)
+    {
+        if (!string.IsNullOrWhiteSpace(expectedIsrc))
+        {
+            return bestScore >= (hasStrictTitle ? 11 : 8) && hasStrictArtist;
+        }
+
+        return HasAuthoritativeMetadataMatch(candidate, expectedTitle, expectedArtist, expectedAlbum, expectedDurationSec, bestScore);
     }
 
     private static QobuzTrackResolution BuildResolution(QobuzTrack track, string source, int score)
@@ -655,7 +681,8 @@ public sealed class QobuzTrackResolver
         var normalizedExpected = NormalizeStrictComparableTitle(expected);
         var normalizedActual = NormalizeStrictComparableTitle(actual);
         return !string.IsNullOrWhiteSpace(normalizedExpected)
-            && normalizedExpected == normalizedActual;
+            && !string.IsNullOrWhiteSpace(normalizedActual)
+            && string.Equals(normalizedExpected, normalizedActual, StringComparison.Ordinal);
     }
 
     private static string NormalizeStrictComparableTitle(string? value)

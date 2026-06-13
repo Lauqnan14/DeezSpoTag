@@ -2694,17 +2694,12 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        foreach (var imageUrl in imagesProp
-                     .EnumerateArray()
-                     .Select(image => image.TryGetProperty("file_id", out var fileIdProp) ? fileIdProp.GetString() : null)
-                     .Where(fileId => !string.IsNullOrWhiteSpace(fileId))
-                     .Select(BuildImageUrlFromPicture)
-                     .Where(imageUrl => !string.IsNullOrWhiteSpace(imageUrl)))
-        {
-            return imageUrl;
-        }
-
-        return null;
+        return imagesProp
+            .EnumerateArray()
+            .Select(image => image.TryGetProperty("file_id", out var fileIdProp) ? fileIdProp.GetString() : null)
+            .Where(fileId => !string.IsNullOrWhiteSpace(fileId))
+            .Select(BuildImageUrlFromPicture)
+            .FirstOrDefault(imageUrl => !string.IsNullOrWhiteSpace(imageUrl));
     }
 
     private static readonly Regex SpotifyTrackUrlRegex = new(
@@ -2955,14 +2950,9 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        foreach (var url in images.EnumerateArray()
+        return images.EnumerateArray()
             .Select(image => TryReadJsonStringProperty(image, "url"))
-            .Where(url => !string.IsNullOrWhiteSpace(url)))
-        {
-            return url;
-        }
-
-        return null;
+            .FirstOrDefault(url => !string.IsNullOrWhiteSpace(url));
     }
 
     private static SpotifyAlbumSummary BuildLibrespotAlbumSummary(
@@ -3232,17 +3222,12 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        foreach (var text in values.EnumerateArray()
+        return values.EnumerateArray()
             .Where(static entry => entry.ValueKind == JsonValueKind.Object
                 && entry.TryGetProperty("text", out var textProp)
                 && textProp.ValueKind == JsonValueKind.String)
             .Select(static entry => entry.GetProperty("text").GetString())
-            .Where(static text => !string.IsNullOrWhiteSpace(text)))
-        {
-            return text;
-        }
-
-        return null;
+            .FirstOrDefault(static text => !string.IsNullOrWhiteSpace(text));
     }
 
     private static List<SpotifyRelatedArtist>? ParseLibrespotRelatedArtists(JsonElement item)
@@ -3350,14 +3335,9 @@ public sealed class SpotifyMetadataService
 
     private static string? TryReadImageUrlFromArray(JsonElement imageArray)
     {
-        foreach (var imageUrl in imageArray.EnumerateArray()
+        return imageArray.EnumerateArray()
             .Select(TryReadImageUrlFromObject)
-            .Where(imageUrl => !string.IsNullOrWhiteSpace(imageUrl)))
-        {
-            return imageUrl;
-        }
-
-        return null;
+            .FirstOrDefault(imageUrl => !string.IsNullOrWhiteSpace(imageUrl));
     }
 
     private static string? TryReadImageUrlFromObject(JsonElement item)

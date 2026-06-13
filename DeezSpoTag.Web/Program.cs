@@ -66,11 +66,11 @@ public partial class Program
         "text/javascript",
         "application/manifest+json"
     };
-    private static readonly Regex s_buildVersionPatternRegex = new(
+    [GeneratedRegex(
         @"^v?(?<core>\d+\.\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?$",
-        RegexOptions.CultureInvariant);
-
-    private static Regex BuildVersionPatternRegex() => s_buildVersionPatternRegex;
+        RegexOptions.CultureInvariant,
+        250)]
+    private static partial Regex BuildVersionPatternRegex();
 
     private static FixedWindowRateLimiterOptions CreateFixedWindowLimiterOptions(int permitLimit) => new()
     {

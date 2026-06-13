@@ -270,22 +270,36 @@ public sealed class AppleArtistBiographyService
                      .Where(static decoded => !string.IsNullOrWhiteSpace(decoded))
                      .Select(static decoded => decoded!))
         {
-            try
+            if (!TryParseJsonDocument(decoded, out var doc))
             {
-                using var doc = JsonDocument.Parse(decoded);
+                continue;
+            }
+
+            using (doc)
+            {
                 var resolvedDescription = ResolveMusicGroupDescription(doc.RootElement, id, artistName);
                 if (!string.IsNullOrWhiteSpace(resolvedDescription))
                 {
                     return resolvedDescription;
                 }
             }
-            catch (JsonException)
-            {
-                continue;
-            }
         }
 
         return null;
+    }
+
+    private static bool TryParseJsonDocument(string json, out JsonDocument document)
+    {
+        try
+        {
+            document = JsonDocument.Parse(json);
+            return true;
+        }
+        catch (JsonException)
+        {
+            document = null!;
+            return false;
+        }
     }
 
     private static IEnumerable<string> EnumerateJsonLdScripts(string html)

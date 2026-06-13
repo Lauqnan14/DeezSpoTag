@@ -39,7 +39,6 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
     private const string EngineName = "deezer";
     private const string FailedStatus = "failed";
     private const string CompletedStatus = "completed";
-    private const string RunningStatus = "running";
     private const string PausedStatus = "paused";
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
@@ -2426,17 +2425,17 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         public long SpeedWindowBytes;
     }
 
-    private static readonly Regex s_hearThisDownloadHrefRegex = new(
+    [GeneratedRegex(
         "href\\s*=\\s*[\"'](?<url>[^\"']*/download/\\?[^\"'<>\r\n]+)[\"']",
-        RegexOptions.IgnoreCase);
+        RegexOptions.IgnoreCase,
+        250)]
+    private static partial Regex HearThisDownloadHrefRegex();
 
-    private static readonly Regex s_hearThisEscapedDownloadUrlRegex = new(
+    [GeneratedRegex(
         "https?:\\\\/\\\\/[^\"'\\s]+/download/\\?[^\"'\\s]+",
-        RegexOptions.IgnoreCase);
-
-    private static Regex HearThisDownloadHrefRegex() => s_hearThisDownloadHrefRegex;
-
-    private static Regex HearThisEscapedDownloadUrlRegex() => s_hearThisEscapedDownloadUrlRegex;
+        RegexOptions.IgnoreCase,
+        250)]
+    private static partial Regex HearThisEscapedDownloadUrlRegex();
 
     private static void UpdatePayloadFiles(DeezerQueueItem payload, string outputPath)
     {

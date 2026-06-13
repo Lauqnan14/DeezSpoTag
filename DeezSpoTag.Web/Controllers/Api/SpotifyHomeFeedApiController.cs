@@ -43,6 +43,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private const string TitleKey = "title";
     private const string TransformedLabelKey = "transformedLabel";
     private const string CardRepresentationKey = "cardRepresentation";
+    private static readonly string[] BrowseRootKeys = ["browseV2", "browse", "browseAll", "browseStart"];
     private const string SubtitleKey = "subtitle";
     private const string TotalKey = "total";
     private const string FollowersKey = "followers";
@@ -569,9 +570,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             return Ok(new
             {
                 success = true,
-                items = result.ContainsFullList
-                    ? (all ? result.Items.ToList() : result.Items.Skip(offset).Take(limit).ToList())
-                    : result.Items,
+                items = ResolveBrowseItems(result, all, offset, limit),
                 offset = all ? 0 : offset,
                 limit = all ? result.Items.Count : limit,
                 total = result.Total,
@@ -583,6 +582,22 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             _logger.LogWarning(ex, "Spotify browse category fetch failed.");
             return StatusCode(502, new { success = false, error = "Spotify browse category failed." });
         }
+    }
+
+    private static IReadOnlyList<object> ResolveBrowseItems(
+        BrowseCategoryPlaylistsResult result,
+        bool all,
+        int offset,
+        int limit)
+    {
+        if (!result.ContainsFullList)
+        {
+            return result.Items;
+        }
+
+        return all
+            ? result.Items.ToList()
+            : result.Items.Skip(offset).Take(limit).ToList();
     }
 
     public sealed record SpotifyBrowseBatchRequest(
@@ -2328,11 +2343,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private static bool TryResolveBrowseData(JsonElement dataElement, out JsonElement browseData)
     {
         browseData = default;
-        foreach (var resolvedBrowseData in new[] { "browseV2", "browse", "browseAll", "browseStart" }
+        var resolvedBrowseData = BrowseRootKeys
             .Select(key => TryResolveNamedBrowseData(dataElement, key, out var resolved) ? resolved : (JsonElement?)null)
-            .Where(static resolved => resolved.HasValue))
+            .FirstOrDefault(static resolved => resolved.HasValue);
+        if (resolvedBrowseData.HasValue)
         {
-            browseData = resolvedBrowseData!.Value;
+            browseData = resolvedBrowseData.Value;
             return true;
         }
 

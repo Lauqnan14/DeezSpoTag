@@ -880,16 +880,16 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
 
         var images = await _lastFmArtistImageService.SearchArtistImagesAsync(artistName, 8, cancellationToken);
         var added = 0;
-        foreach (var image in images)
+        foreach (var imageUrl in images.Select(image => image.Url))
         {
-            if (string.IsNullOrWhiteSpace(image.Url))
+            if (string.IsNullOrWhiteSpace(imageUrl))
             {
                 continue;
             }
 
             candidates.Add(ArtworkCandidate.FromRemote(
-                image.Url,
-                $"lastfm:{image.Url}",
+                imageUrl,
+                $"lastfm:{imageUrl}",
                 MetadataSourceLastFm));
             added++;
         }

@@ -158,7 +158,7 @@ public sealed class DownloadDedupeService
         };
     }
 
-    private DownloadDedupeDecision CheckPlaylistBlockRules(DownloadDedupeRequest request)
+    private static DownloadDedupeDecision CheckPlaylistBlockRules(DownloadDedupeRequest request)
     {
         var matchedRule = PlaylistTrackBlockRuleMatcher.FindMatch(
             request.TrackTitle,

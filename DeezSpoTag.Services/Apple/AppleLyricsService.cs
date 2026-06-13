@@ -29,9 +29,10 @@ public sealed class AppleLyricsService
     private const string AppleMusicScheme = "https";
     private const string AppleMusicHost = "music.apple.com";
     private const string AppleMusicCatalogApiHost = "amp-api.music.apple.com";
+    private const string AppleSource = "apple";
     private const string MediaUserTokenHeader = "Media-User-Token";
     private const string UserAgentHeader = "User-Agent";
-    private static readonly string[] AppleIdKeys = ["apple_track_id", "apple_id", "appleid", "apple"];
+    private static readonly string[] AppleIdKeys = ["apple_track_id", "apple_id", "appleid", AppleSource];
     private static readonly string[] AppleUrlKeys = ["apple_url", "source_url"];
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex LrcLineRegex = CreateRegex(@"^\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\](.*)$", RegexOptions.Compiled);
@@ -39,8 +40,6 @@ public sealed class AppleLyricsService
     private static readonly Regex AppleQueryIdRegex = CreateRegex(@"(?:[?&]i=)(?<id>\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static Regex CreateRegex(string pattern, RegexOptions options)
         => new(pattern, options, RegexTimeout);
-    private static string ReplaceWithTimeout(string input, string pattern, string replacement, RegexOptions options = RegexOptions.None)
-        => Regex.Replace(input, pattern, replacement, options, RegexTimeout);
     private static readonly (int Start, int End)[] CjkCodeRanges = new[]
     {
         (0x1100, 0x11FF),
@@ -181,7 +180,7 @@ public sealed class AppleLyricsService
             return null;
         }
 
-        if (string.Equals(track.Source, "apple", StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(track.Source, AppleSource, StringComparison.OrdinalIgnoreCase)
             && TryNormalizeAppleId(track.SourceId, out var directAppleId))
         {
             return directAppleId;
@@ -203,7 +202,7 @@ public sealed class AppleLyricsService
             return null;
         }
 
-        var fromId = TryResolveAppleIdFromKeySet(urls, AppleIdKeys, key => !key.Equals("apple", StringComparison.OrdinalIgnoreCase));
+        var fromId = TryResolveAppleIdFromKeySet(urls, AppleIdKeys, key => !key.Equals(AppleSource, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrWhiteSpace(fromId))
         {
             return fromId;
@@ -936,7 +935,7 @@ public sealed class AppleLyricsService
         return LyricsIdentityValidator.ValidateSearchCandidate(
             track,
             new LyricsCandidateIdentity(
-                "apple",
+                AppleSource,
                 appleId,
                 title,
                 artist,

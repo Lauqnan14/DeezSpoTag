@@ -577,36 +577,41 @@ public sealed class PlaylistSyncService
             cancellationToken);
         var selected = new List<SyncTrackSummary>(availableTrackRows.Count);
         var selectedSourceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in availableTrackRows
-                     .Where(row => mapped.TryGetValue(row.LocalTrackId, out var ratingKey)
-                         && !string.IsNullOrWhiteSpace(ratingKey)))
-        {
-            selected.Add(row.Track);
-            if (!string.IsNullOrWhiteSpace(row.Track.SourceTrackId))
-            {
-                selectedSourceIds.Add(row.Track.SourceTrackId);
-            }
-        }
+        AddSelectedTracks(
+            selected,
+            selectedSourceIds,
+            availableTrackRows.Where(row => mapped.TryGetValue(row.LocalTrackId, out var ratingKey)
+                && !string.IsNullOrWhiteSpace(ratingKey)));
 
         if (!allowLiveLookup || liveLookupTrackSourceIds == null || liveLookupTrackSourceIds.Count == 0)
         {
             return selected;
         }
 
-        foreach (var row in availableTrackRows)
-        {
-            if (string.IsNullOrWhiteSpace(row.Track.SourceTrackId)
-                || selectedSourceIds.Contains(row.Track.SourceTrackId)
-                || !liveLookupTrackSourceIds.Contains(row.Track.SourceTrackId))
-            {
-                continue;
-            }
-
-            selected.Add(row.Track);
-            selectedSourceIds.Add(row.Track.SourceTrackId);
-        }
+        AddSelectedTracks(
+            selected,
+            selectedSourceIds,
+            availableTrackRows.Where(row => !string.IsNullOrWhiteSpace(row.Track.SourceTrackId)
+                && !selectedSourceIds.Contains(row.Track.SourceTrackId)
+                && liveLookupTrackSourceIds.Contains(row.Track.SourceTrackId)));
 
         return selected;
+    }
+
+    private static void AddSelectedTracks(
+        ICollection<SyncTrackSummary> selected,
+        ISet<string> selectedSourceIds,
+        IEnumerable<(SyncTrackSummary Track, long LocalTrackId)> rows)
+    {
+        var trackRows = rows.ToList();
+        foreach (var track in trackRows.Select(row => row.Track))
+        {
+            selected.Add(track);
+            if (!string.IsNullOrWhiteSpace(track.SourceTrackId))
+            {
+                selectedSourceIds.Add(track.SourceTrackId);
+            }
+        }
     }
 
     public async Task<PlaylistSyncResult> SyncPlaylistArtworkOnlyAsync(
@@ -1449,24 +1454,6 @@ public sealed class PlaylistSyncService
                 rule.ConditionValue));
     }
 
-    private static bool RuleMatches(
-        SyncTrackSummary track,
-        string conditionField,
-        string conditionOperator,
-        string conditionValue)
-    {
-        return (conditionField ?? string.Empty).Trim().ToLowerInvariant() switch
-        {
-            "artist" => EvalStringCondition(track.Artists, conditionOperator, conditionValue),
-            "title" => EvalStringCondition(track.Name, conditionOperator, conditionValue),
-            "album" => EvalStringCondition(track.Album, conditionOperator, conditionValue),
-            "genre" => EvalGenreCondition(track.Genres, conditionOperator, conditionValue),
-            "explicit" => conditionOperator == "is_true" ? (track.Explicit == true) : (track.Explicit != true),
-            "year" => EvalYearCondition(track.ReleaseDate, conditionOperator, conditionValue),
-            _ => false
-        };
-    }
-
     private static bool EvalStringCondition(string? value, string? op, string? conditionValue)
     {
         var candidate = (value ?? string.Empty).Trim();
@@ -1482,41 +1469,6 @@ public sealed class PlaylistSyncService
             "equals" => string.Equals(candidate, rule, StringComparison.OrdinalIgnoreCase),
             "starts_with" => candidate.StartsWith(rule, StringComparison.OrdinalIgnoreCase),
             _ => false
-        };
-    }
-
-    private static bool EvalGenreCondition(IReadOnlyList<string>? genres, string? op, string? conditionValue)
-    {
-        if (genres is null || genres.Count == 0)
-        {
-            return false;
-        }
-
-        var normalizedCondition = (conditionValue ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(normalizedCondition))
-        {
-            return false;
-        }
-
-        return genres
-            .Where(static genre => !string.IsNullOrWhiteSpace(genre))
-            .Select(static genre => genre.Trim())
-            .Any(genre => EvalStringCondition(genre, op, normalizedCondition));
-    }
-
-    private static bool EvalYearCondition(string? releaseDate, string? op, string? conditionValue)
-    {
-        if (!TryParseReleaseYear(releaseDate, out var trackYear)
-            || !int.TryParse((conditionValue ?? string.Empty).Trim(), out var ruleYear))
-        {
-            return false;
-        }
-
-        return (op ?? string.Empty).Trim().ToLowerInvariant() switch
-        {
-            "gte" => trackYear >= ruleYear,
-            "lte" => trackYear <= ruleYear,
-            _ => trackYear == ruleYear
         };
     }
 

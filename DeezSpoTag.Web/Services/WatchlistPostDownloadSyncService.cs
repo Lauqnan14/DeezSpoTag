@@ -361,36 +361,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         return request with { DestinationFolderId = destinationFolderId };
     }
 
-    private bool HandleNotReady(
-        SyncRequest request,
-        int attempt,
-        PlaylistSyncService.PlaylistTrackSyncReadiness readiness)
-    {
-        if (readiness.Terminal)
-        {
-            _logger.LogWarning(
-                "Watchlist playlist sync stopped for {Source}:{PlaylistId} after finalized track {TrackId}: {Message}",
-                request.Source,
-                request.PlaylistId,
-                request.TrackId,
-                readiness.Message);
-            return true;
-        }
-
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Watchlist playlist sync waiting for readiness for {Source}:{PlaylistId} after finalized track {TrackId} (attempt {Attempt}): {Message}",
-                request.Source,
-                request.PlaylistId,
-                request.TrackId,
-                attempt,
-                readiness.Message);
-        }
-
-        return false;
-    }
-
     private void LogSyncCompleted(SyncRequest request, int attempt, int syncedTracks)
     {
         if (!_logger.IsEnabled(LogLevel.Information))

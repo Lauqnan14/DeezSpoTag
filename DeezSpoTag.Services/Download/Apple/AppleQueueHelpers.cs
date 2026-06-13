@@ -16,6 +16,8 @@ namespace DeezSpoTag.Services.Download.Apple;
 
 public static class AppleQueueHelpers
 {
+    private static readonly string[] ArtworkSearchBuckets = ["songs", "albums"];
+
     public sealed class AppleCatalogCoverLookup
     {
         public string? AppleId { get; init; }
@@ -290,9 +292,10 @@ public static class AppleQueueHelpers
     private static bool TryExtractArtworkFromSearch(System.Text.Json.JsonElement results, string? artist, string? album, int size, out string? url)
     {
         url = null;
-        foreach (var candidateUrl in new[] { "songs", "albums" }
+        var candidateUrl = ArtworkSearchBuckets
             .Select(key => TryExtractArtworkFromSearchBucket(results, key, artist, album, size, out var bucketUrl) ? bucketUrl : null)
-            .Where(static bucketUrl => !string.IsNullOrWhiteSpace(bucketUrl)))
+            .FirstOrDefault(static bucketUrl => !string.IsNullOrWhiteSpace(bucketUrl));
+        if (!string.IsNullOrWhiteSpace(candidateUrl))
         {
             url = candidateUrl;
             return true;

@@ -3463,29 +3463,31 @@ ORDER BY sort_group, sort_utc DESC;";
             .Where(id => id > 0)
             .Distinct()
             .ToArray() ?? Array.Empty<long>();
-        var libraryScopeSql = scopedLibraryIds.Length > 0
-            ? $" AND f.id IN ({string.Join(", ", scopedLibraryIds.Select((_, index) => $"@libraryId{index}"))})"
-            : string.Empty;
-        var libraryOrderSql = scopedLibraryIds.Length > 0
-            ? "CASE " + string.Join(" ", scopedLibraryIds.Select((_, index) => $"WHEN f.id = @libraryId{index} THEN {index}")) + " ELSE 999999 END,"
-            : string.Empty;
-        var sql = $@"
-SELECT t.id,
-       f.library_id,
-       f.root_path,
+        await CreateLibraryScopeTableAsync(connection, scopedLibraryIds, cancellationToken);
+        const string sql = @"
+	SELECT t.id,
+	       f.library_id,
+	       f.root_path,
        af.relative_path,
        af.path,
        t.duration_ms
 FROM track t
 JOIN track_local tl ON tl.track_id = t.id
-JOIN audio_file af ON af.id = tl.audio_file_id
-JOIN folder f ON f.id = af.folder_id
-LEFT JOIN track_analysis ta ON ta.track_id = t.id
-WHERE f.enabled = 1
-  {libraryScopeSql}
-  AND (
-      ta.status IS NULL
-      OR ta.status IN ('pending', 'failed', 'error')
+	JOIN audio_file af ON af.id = tl.audio_file_id
+	JOIN folder f ON f.id = af.folder_id
+	LEFT JOIN track_analysis ta ON ta.track_id = t.id
+	WHERE f.enabled = 1
+	  AND (
+	      NOT EXISTS (SELECT 1 FROM temp_analysis_library_scope)
+	      OR EXISTS (
+	          SELECT 1
+	          FROM temp_analysis_library_scope scope
+	          WHERE scope.library_id = f.id
+	      )
+	  )
+	  AND (
+	      ta.status IS NULL
+	      OR ta.status IN ('pending', 'failed', 'error')
       OR (
           @includeCompletedStandard = 1
           AND ta.status IN ('complete', 'completed')
@@ -3494,13 +3496,15 @@ WHERE f.enabled = 1
               @completedStandardRetryBeforeUtc IS NULL
               OR ta.analyzed_at_utc IS NULL
               OR ta.analyzed_at_utc <= @completedStandardRetryBeforeUtc
-          )
-      )
-  )
-ORDER BY {libraryOrderSql}
-         t.id,
-         CASE
-             WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
+	          )
+	      )
+	  )
+	ORDER BY COALESCE(
+	         (SELECT scope.sort_order FROM temp_analysis_library_scope scope WHERE scope.library_id = f.id),
+	         999999),
+	         t.id,
+	         CASE
+	             WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
                   OR lower(coalesce(af.codec, '')) LIKE '%dolby digital plus%'
                   OR lower(coalesce(af.audio_variant, '')) LIKE '%atmos%'
              THEN 2
@@ -3510,15 +3514,11 @@ ORDER BY {libraryOrderSql}
              ELSE 0
          END,
          af.quality_rank DESC NULLS LAST,
-         af.size DESC,
-         af.id DESC
-LIMIT @limit;";
+	         af.size DESC,
+	         af.id DESC
+	LIMIT @limit;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", limit);
-        for (var i = 0; i < scopedLibraryIds.Length; i++)
-        {
-            command.Parameters.AddWithValue($"libraryId{i}", scopedLibraryIds[i]);
-        }
         command.Parameters.AddWithValue("includeCompletedStandard", includeCompletedStandard ? 1 : 0);
         command.Parameters.AddWithValue(
             "completedStandardRetryBeforeUtc",
@@ -3546,6 +3546,41 @@ LIMIT @limit;";
                 await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5)));
         }
         return results;
+    }
+
+    private static async Task CreateLibraryScopeTableAsync(
+        SqliteConnection connection,
+        IReadOnlyList<long> scopedLibraryIds,
+        CancellationToken cancellationToken)
+    {
+        const string createSql = @"
+CREATE TEMP TABLE IF NOT EXISTS temp_analysis_library_scope (
+    library_id INTEGER PRIMARY KEY,
+    sort_order INTEGER NOT NULL
+);
+DELETE FROM temp_analysis_library_scope;";
+        await using (var createCommand = new SqliteCommand(createSql, connection))
+        {
+            await createCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (scopedLibraryIds.Count == 0)
+        {
+            return;
+        }
+
+        const string insertSql = @"
+INSERT OR REPLACE INTO temp_analysis_library_scope (library_id, sort_order)
+VALUES (@libraryId, @sortOrder);";
+        await using var insertCommand = new SqliteCommand(insertSql, connection);
+        var libraryIdParameter = insertCommand.Parameters.Add("libraryId", SqliteType.Integer);
+        var sortOrderParameter = insertCommand.Parameters.Add("sortOrder", SqliteType.Integer);
+        for (var index = 0; index < scopedLibraryIds.Count; index++)
+        {
+            libraryIdParameter.Value = scopedLibraryIds[index];
+            sortOrderParameter.Value = index;
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     public async Task ResetProcessingTrackAnalysisAsync(CancellationToken cancellationToken = default)
@@ -7202,29 +7237,30 @@ LIMIT 1;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var genreClause = normalizedGenres.Count == 0
-            ? string.Empty
-            : $" OR (field = 'genre' AND normalized_value IN ({string.Join(", ", normalizedGenres.Select((_, index) => $"@genre{index}"))}))";
-        var sql = $@"
-SELECT field, value
-FROM download_blocklist
-WHERE is_enabled = 1
-  AND (
-      (field = 'track' AND normalized_value = @track)
-      OR (field = 'artist' AND normalized_value = @artist)
-      OR (field = 'album' AND normalized_value = @album)
-      {genreClause}
-  )
-ORDER BY id
-LIMIT 1;";
+        await CreateBlocklistGenreScopeTableAsync(connection, normalizedGenres, cancellationToken);
+        const string sql = @"
+	SELECT field, value
+	FROM download_blocklist
+	WHERE is_enabled = 1
+	  AND (
+	      (field = 'track' AND normalized_value = @track)
+	      OR (field = 'artist' AND normalized_value = @artist)
+	      OR (field = 'album' AND normalized_value = @album)
+	      OR (
+	          field = 'genre'
+	          AND EXISTS (
+	              SELECT 1
+	              FROM temp_blocklist_genre_scope genre
+	              WHERE genre.normalized_value = download_blocklist.normalized_value
+	          )
+	      )
+	  )
+	ORDER BY id
+	LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("track", (object?)normalizedTrack ?? DBNull.Value);
         command.Parameters.AddWithValue(ArtistParameter, (object?)normalizedArtist ?? DBNull.Value);
         command.Parameters.AddWithValue("album", (object?)normalizedAlbum ?? DBNull.Value);
-        for (var i = 0; i < normalizedGenres.Count; i++)
-        {
-            command.Parameters.AddWithValue($"genre{i}", normalizedGenres[i]);
-        }
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -7241,6 +7277,38 @@ LIMIT 1;";
         string? albumTitle,
         CancellationToken cancellationToken = default)
         => FindMatchingDownloadBlocklistAsync(trackTitle, artistName, albumTitle, null, cancellationToken);
+
+    private static async Task CreateBlocklistGenreScopeTableAsync(
+        SqliteConnection connection,
+        IReadOnlyList<string> normalizedGenres,
+        CancellationToken cancellationToken)
+    {
+        const string createSql = @"
+CREATE TEMP TABLE IF NOT EXISTS temp_blocklist_genre_scope (
+    normalized_value TEXT PRIMARY KEY
+);
+DELETE FROM temp_blocklist_genre_scope;";
+        await using (var createCommand = new SqliteCommand(createSql, connection))
+        {
+            await createCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (normalizedGenres.Count == 0)
+        {
+            return;
+        }
+
+        const string insertSql = @"
+INSERT OR IGNORE INTO temp_blocklist_genre_scope (normalized_value)
+VALUES (@normalizedValue);";
+        await using var insertCommand = new SqliteCommand(insertSql, connection);
+        var genreParameter = insertCommand.Parameters.Add("normalizedValue", SqliteType.Text);
+        foreach (var normalizedGenre in normalizedGenres)
+        {
+            genreParameter.Value = normalizedGenre;
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
 
     public async Task AddPlaylistWatchTracksAsync(
         string source,

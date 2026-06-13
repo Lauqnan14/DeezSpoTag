@@ -9,6 +9,15 @@ namespace DeezSpoTag.Services.Download.Utils;
 
 public sealed class LrclibLyricsService
 {
+    private sealed record LrclibLookupVariant(
+        Track Track,
+        string Title,
+        string Artist,
+        string Album,
+        int DurationSeconds,
+        int HintedDuration,
+        LrclibRequestOptions Options);
+
     public sealed class LrclibRequestOptions
     {
         public int DurationToleranceSeconds { get; init; } = 10;
@@ -48,7 +57,9 @@ public sealed class LrclibLyricsService
         var duration = ResolveHintedDuration(track, effectiveOptions);
 
         var album = track.Album?.Title ?? string.Empty;
-        var resolved = await TryResolveWithVariantAsync(track, title, artist, album, track.Duration, duration, effectiveOptions, cancellationToken);
+        var resolved = await TryResolveWithVariantAsync(
+            new LrclibLookupVariant(track, title, artist, album, track.Duration, duration, effectiveOptions),
+            cancellationToken);
         if (resolved != null)
         {
             return resolved;
@@ -59,13 +70,7 @@ public sealed class LrclibLyricsService
         {
             var simplifiedTrack = CloneTrackForLyricsLookup(track, simplifiedTitle);
             var simplifiedResolved = await TryResolveWithVariantAsync(
-                simplifiedTrack,
-                simplifiedTitle,
-                artist,
-                album,
-                track.Duration,
-                duration,
-                effectiveOptions,
+                new LrclibLookupVariant(simplifiedTrack, simplifiedTitle, artist, album, track.Duration, duration, effectiveOptions),
                 cancellationToken);
             if (simplifiedResolved != null)
             {
@@ -87,19 +92,22 @@ public sealed class LrclibLyricsService
         => options.UseDurationHint && track.Duration > 0 ? track.Duration : 0;
 
     private async Task<LyricsBase?> TryResolveWithVariantAsync(
-        Track track,
-        string title,
-        string artist,
-        string album,
-        int durationSeconds,
-        int hintedDuration,
-        LrclibRequestOptions options,
+        LrclibLookupVariant request,
         CancellationToken cancellationToken)
     {
-        var exact = await FetchLyricsWithMetadataAsync(title, artist, album, hintedDuration, cancellationToken);
+        var exact = await FetchLyricsWithMetadataAsync(
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.HintedDuration,
+            cancellationToken);
         if (HasLyricsText(exact))
         {
-            var validation = ValidateCandidate(track, exact, requireArtist: true, options.DurationToleranceSeconds);
+            var validation = ValidateCandidate(
+                request.Track,
+                exact,
+                requireArtist: true,
+                request.Options.DurationToleranceSeconds);
             if (validation.IsMatch)
             {
                 return ConvertToLyrics(exact);
@@ -107,17 +115,24 @@ public sealed class LrclibLyricsService
 
             _logger.LogInformation(
                 "Rejected LRCLIB exact lyrics candidate for {Title} by {Artist}: {Reason}",
-                title,
-                artist,
+                request.Title,
+                request.Artist,
                 validation.Reason);
         }
 
-        if (!options.SearchFallback)
+        if (!request.Options.SearchFallback)
         {
             return null;
         }
 
-        var search = await FetchLyricsFromSearchAsync(track, title, artist, album, durationSeconds, options, cancellationToken);
+        var search = await FetchLyricsFromSearchAsync(
+            request.Track,
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.DurationSeconds,
+            request.Options,
+            cancellationToken);
         return search.IsLoaded() ? search : null;
     }
 
@@ -149,13 +164,11 @@ public sealed class LrclibLyricsService
         var builder = new UriBuilder("https", "lrclib.net")
         {
             Path = "/api/search",
-            Query = string.Join("&", new[]
-            {
+            Query = string.Join("&",
                 $"track_name={Uri.EscapeDataString(trackName)}",
                 $"artist_name={Uri.EscapeDataString(artistName)}",
                 $"album_name={Uri.EscapeDataString(albumName)}",
-                $"q={Uri.EscapeDataString(query)}"
-            })
+                $"q={Uri.EscapeDataString(query)}")
         };
 
         try

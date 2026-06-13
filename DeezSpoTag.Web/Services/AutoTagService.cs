@@ -259,7 +259,6 @@ public partial class AutoTagService
     private readonly string _lastJobPath;
     private readonly string _runIndexPath;
     private readonly bool _disableAutoMove;
-    private readonly TimeSpan _organizerCooldown = TimeSpan.FromSeconds(15);
     private readonly ConcurrentDictionary<string, object> _archiveLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _archivedRunSummariesCacheLock = new();
     private readonly object _archivedRunPruneLock = new();
@@ -525,10 +524,11 @@ public partial class AutoTagService
             return true;
         }
 
-        foreach (var activeJobId in _activeJobIds.Keys.Where(activeJobId =>
+        var activeJobId = _activeJobIds.Keys.FirstOrDefault(activeJobId =>
             _jobs.TryGetValue(activeJobId, out var activeJob)
             && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
-            && IsEnhancementRunIntent(activeJob.RunIntent)))
+            && IsEnhancementRunIntent(activeJob.RunIntent));
+        if (!string.IsNullOrWhiteSpace(activeJobId))
         {
             jobId = activeJobId;
             return true;
@@ -3455,84 +3455,6 @@ public partial class AutoTagService
         }
     }
 
-    private async Task OrganizeJobAsync(AutoTagJob job, string rootPath, string configPath, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (job.Status is not AutoTagLiterals.CompletedStatus and not AutoTagLiterals.FailedStatus)
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (status {Status})", job.Id, job.Status);
-            }
-            return;
-        }
-
-        if (ShouldSkipOrganizerForMultiQualityStaging(rootPath))
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (multi-quality staging root).", job.Id);
-            }
-            AppendLog(job, "organizer skipped: multi-quality staging root");
-            return;
-        }
-
-        if (_disableAutoMove)
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (disabled).", job.Id);
-            }
-            AppendLog(job, "organizer skipped: disabled");
-            return;
-        }
-
-        if (!await WaitForOrganizerCooldownAsync(_organizerCooldown, cancellationToken))
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("AutoTag job {JobId}: organizer skipped (downloads active).", job.Id);
-            }
-            AppendLog(job, "organizer skipped: downloads active");
-            return;
-        }
-
-        try
-        {
-            _logger.LogInformation("AutoTag job JobId: organizer started for RootPath");
-            AppendLog(job, "organizer started");
-            var organizerOptions = await LoadOrganizerOptionsAsync(job, configPath);
-            await _libraryOrganizer.OrganizePathAsync(rootPath, organizerOptions, message => AppendLog(job, message), cancellationToken);
-            _logger.LogInformation("AutoTag job JobId: organizer finished for RootPath");
-            AppendLog(job, "organizer finished");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "AutoTag job {JobId}: library organizer failed.", job.Id);
-            AppendLog(job, $"organizer failed: {ex.Message}");
-        }
-    }
-
-    private static bool ShouldSkipOrganizerForMultiQualityStaging(string rootPath)
-    {
-        if (string.IsNullOrWhiteSpace(rootPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var normalized = Path.GetFullPath(rootPath);
-            var stereo = Path.Join(normalized, "Stereo");
-            var atmos = Path.Join(normalized, "Atmos");
-            return Directory.Exists(stereo) || Directory.Exists(atmos);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-    }
-
     private static AutoTagOrganizerOptions LoadOrganizerOptions(string configPath)
     {
         try
@@ -3969,36 +3891,6 @@ public partial class AutoTagService
             return value;
         }
         return false;
-    }
-
-    private async Task<bool> WaitForOrganizerCooldownAsync(TimeSpan cooldown, CancellationToken cancellationToken)
-    {
-        var deadline = DateTimeOffset.UtcNow + cooldown;
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
-            {
-                return false;
-            }
-
-            var remaining = deadline - DateTimeOffset.UtcNow;
-            var delay = remaining > TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : remaining;
-            if (delay <= TimeSpan.Zero)
-            {
-                break;
-            }
-
-            try
-            {
-                await Task.Delay(delay, cancellationToken);
-            }
-            catch (TaskCanceledException)
-            {
-                return false;
-            }
-        }
-
-        return !await _queueRepository.HasActiveDownloadsAsync(cancellationToken);
     }
 
     private static string SanitizeConfigJson(string configJson)
@@ -6891,14 +6783,9 @@ public partial class AutoTagService
             return null;
         }
 
-        foreach (var candidate in EnumerateHistoryRoots()
+        return EnumerateHistoryRoots()
             .Select(root => Path.Join(root, jobId, fileName))
-            .Where(File.Exists))
-        {
-            return candidate;
-        }
-
-        return null;
+            .FirstOrDefault(File.Exists);
     }
 
     private IEnumerable<string> EnumerateRunFileCandidates(string jobId, string fileName)

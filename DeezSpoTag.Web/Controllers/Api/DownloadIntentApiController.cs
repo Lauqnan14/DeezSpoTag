@@ -15,16 +15,13 @@ public sealed class DownloadIntentApiController : ControllerBase
     private static readonly string[] InternalErrorReasonCodes = { "download_enqueue_internal_error" };
 
     private readonly DownloadIntentService _intentService;
-    private readonly IDownloadIntentBackgroundQueue _backgroundQueue;
     private readonly ILogger<DownloadIntentApiController> _logger;
 
     public DownloadIntentApiController(
         DownloadIntentService intentService,
-        IDownloadIntentBackgroundQueue backgroundQueue,
         ILogger<DownloadIntentApiController> logger)
     {
         _intentService = intentService;
-        _backgroundQueue = backgroundQueue;
         _logger = logger;
     }
 

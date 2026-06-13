@@ -53,14 +53,9 @@ public static class DownloadTagSourceHelper
             return NormalizeResolvedDownloadTagSource(normalizedStoredSource);
         }
 
-        foreach (var resolved in engineCandidates
+        return engineCandidates
             .Select(NormalizeResolvedDownloadTagSource)
-            .Where(resolved => !string.IsNullOrWhiteSpace(resolved)))
-        {
-            return resolved;
-        }
-
-        return null;
+            .FirstOrDefault(resolved => !string.IsNullOrWhiteSpace(resolved));
     }
 
     private static string? NormalizeStoredSourceOrNull(string? source)

@@ -206,14 +206,9 @@ public sealed partial class ShazamDiscoveryService
         candidates.Add(Path.Join(baseDir, ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
         candidates.Add(Path.Join(baseDir, "..", "..", "..", "..", ToolsDirectory, ShazamPortDirectory, DiscoverScriptName));
 
-        foreach (var full in candidates
+        return candidates
             .Select(Path.GetFullPath)
-            .Where(File.Exists))
-        {
-            return full;
-        }
-
-        return null;
+            .FirstOrDefault(File.Exists);
     }
 
     private async Task<JsonDocument?> RunPortedDiscoverAsync(
@@ -702,14 +697,11 @@ public sealed partial class ShazamDiscoveryService
     {
         if (TryGetArray(track, "artists", out var artists))
         {
-                foreach (var name in artists.EnumerateArray()
-                    .Select(artist => FirstNonEmpty(
-                        TryGetString(artist, "name"),
-                        TryGetNestedString(artist, AttributesPropertyName, "name")))
-                    .Where(name => !string.IsNullOrWhiteSpace(name)))
-                {
-                    return name;
-                }
+            return artists.EnumerateArray()
+                .Select(artist => FirstNonEmpty(
+                    TryGetString(artist, "name"),
+                    TryGetNestedString(artist, AttributesPropertyName, "name")))
+                .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
         }
 
         return null;

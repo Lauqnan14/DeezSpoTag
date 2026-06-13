@@ -23,6 +23,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private const string PausedStatus = "paused";
     private const string PendingStatus = "pending";
     private const string CompletedStatus = "completed";
+    private const string UpdateQueueEvent = "updateQueue";
     private readonly ILogger<DeezSpoTagApp> _logger;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
     private readonly IServiceProvider _serviceProvider;
@@ -431,7 +432,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         {
             await _queueRepository.UpdateStatusAsync(uuid, CanceledStatus);
             await UpdateWatchlistTrackStatusAsync(queueItem?.PayloadJson ?? string.Empty, CanceledStatus, CancellationToken.None);
-            Listener?.Send("updateQueue", new { uuid, status = CanceledStatus });
+            Listener?.Send(UpdateQueueEvent, new { uuid, status = CanceledStatus });
             Listener?.Send("cancellingCurrentItem", uuid);
             DeezSpoTagSpeedTracker.Clear(uuid);
             return;
@@ -458,7 +459,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
 
         await _queueRepository.UpdateStatusAsync(uuid, PausedStatus);
-        Listener?.Send("updateQueue", new { uuid, status = PausedStatus });
+        Listener?.Send(UpdateQueueEvent, new { uuid, status = PausedStatus });
         DeezSpoTagSpeedTracker.Clear(uuid);
     }
 
@@ -520,7 +521,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
 
         await UpdateWatchlistTrackStatusAsync(queueItem.PayloadJson ?? string.Empty, "queued", cancellationToken);
-        Listener?.Send("updateQueue", new
+        Listener?.Send(UpdateQueueEvent, new
         {
             uuid,
             status = "inQueue",
@@ -905,7 +906,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             }
 
             await _queueRepository.UpdateStatusAsync(activeQueueUuid, PausedStatus);
-            Listener?.Send("updateQueue", new { uuid = activeQueueUuid, status = PausedStatus });
+            Listener?.Send(UpdateQueueEvent, new { uuid = activeQueueUuid, status = PausedStatus });
             DeezSpoTagSpeedTracker.Clear(activeQueueUuid);
         }
 

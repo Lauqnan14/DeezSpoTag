@@ -92,6 +92,7 @@ public sealed class AutoTagDownloadMoveService
     private static readonly string[] WatchlistPlaylistIdPropertyNames = ["watchlistPlaylistId", "watchlist_playlist", "WatchlistPlaylistId"];
     private static readonly string[] SourceIdsWatchlistSourcePropertyNames = ["watchlist_source", "watchlistSource", "WatchlistSource"];
     private static readonly string[] SourceIdsWatchlistPlaylistIdPropertyNames = ["watchlist_playlist", "watchlistPlaylistId", "WatchlistPlaylistId"];
+    private static readonly string[] ConversionBucketNames = ["Atmos", "Stereo"];
     private static readonly char[] GenreSeparators = [';', ',', '/'];
 
     private sealed record ResidualMoveContext(
@@ -591,17 +592,12 @@ public sealed class AutoTagDownloadMoveService
             return null;
         }
 
-        foreach (var ioPath in files
+        return files
             .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
             .Select(DownloadPathResolver.ResolveIoPath)
-            .Where(ioPath => !string.IsNullOrWhiteSpace(ioPath)
+            .FirstOrDefault(ioPath => !string.IsNullOrWhiteSpace(ioPath)
                 && IsAudioExtension(ioPath)
-                && IOFile.Exists(ioPath)))
-        {
-            return ioPath;
-        }
-
-        return null;
+                && IOFile.Exists(ioPath));
     }
 
     private (IReadOnlyList<string> Genres, int? ReleaseYear) ReadRoutingTagMetadata(string audioFilePath)
@@ -682,11 +678,12 @@ public sealed class AutoTagDownloadMoveService
 
     private static bool TryReadStringProperty(JsonElement source, IReadOnlyList<string> propertyNames, out string value)
     {
-        foreach (var resolved in propertyNames
+        var resolved = propertyNames
             .Select(propertyName => ReadStringProperty(source, propertyName))
-            .Where(resolved => !string.IsNullOrWhiteSpace(resolved)))
+            .FirstOrDefault(resolved => !string.IsNullOrWhiteSpace(resolved));
+        if (!string.IsNullOrWhiteSpace(resolved))
         {
-            value = resolved!.Trim();
+            value = resolved.Trim();
             return true;
         }
 
@@ -2444,7 +2441,7 @@ public sealed class AutoTagDownloadMoveService
             return protectedDirectories;
         }
 
-        foreach (var bucketPath in new[] { "Atmos", "Stereo" }
+        foreach (var bucketPath in ConversionBucketNames
             .Select(bucket => Path.Join(rootIo, bucket))
             .Where(Directory.Exists))
         {

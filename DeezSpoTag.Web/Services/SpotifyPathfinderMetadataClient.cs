@@ -3451,14 +3451,10 @@ public sealed class SpotifyPathfinderMetadataClient
     private static bool TryParseSearchSuggestionTrack(JsonElement element, out SpotifyTrackSummary? summary)
     {
         summary = null;
-        foreach (var parsed in EnumerateSearchSuggestionTrackCandidates(element)
+        summary = EnumerateSearchSuggestionTrackCandidates(element)
             .Select(ParseTrackSummary)
-            .Where(static parsed => parsed is not null && IsTrackSummaryUsable(parsed)))
-        {
-            summary = parsed!;
-            return true;
-        }
-        return false;
+            .FirstOrDefault(static parsed => parsed is not null && IsTrackSummaryUsable(parsed));
+        return summary is not null;
     }
 
     private static IEnumerable<JsonElement> EnumerateSearchSuggestionTrackCandidates(JsonElement element)
@@ -5494,11 +5490,12 @@ public sealed class SpotifyPathfinderMetadataClient
     private static bool TryGetPathfinderFeatureValue(JsonElement node, string key, out JsonElement value)
     {
         string value2 = NormalizePathfinderFeatureKey(key);
-        foreach (var candidateValue in EnumeratePathfinderFeatureContainers(node)
+        var candidateValue = EnumeratePathfinderFeatureContainers(node)
             .Select(item => TryGetPathfinderFeatureValueFromContainer(item, value2, out var resolvedValue) ? resolvedValue : (JsonElement?)null)
-            .Where(static resolvedValue => resolvedValue.HasValue))
+            .FirstOrDefault(static resolvedValue => resolvedValue.HasValue);
+        if (candidateValue.HasValue)
         {
-            value = candidateValue!.Value;
+            value = candidateValue.Value;
             return true;
         }
         value = default(JsonElement);
@@ -6077,8 +6074,9 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static SpotifyTrackSummary? TryParsePlaylistItemTrack(JsonElement item, out JsonElement trackData)
     {
-        foreach (JsonElement item2 in EnumeratePlaylistTrackCandidates(item)
-            .Where(item2 => TryParsePlaylistTrackCandidate(item2, out _)))
+        var item2 = EnumeratePlaylistTrackCandidates(item)
+            .FirstOrDefault(item2 => TryParsePlaylistTrackCandidate(item2, out _));
+        if (item2.ValueKind != JsonValueKind.Undefined)
         {
             var spotifyTrackSummary = TryParsePlaylistTrackCandidate(item2, out var parsed) ? parsed : null;
             trackData = item2;
@@ -6268,13 +6266,9 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static string? ExtractDirectImageUrlFromArray(JsonElement node)
     {
-        foreach (var image in node.EnumerateArray()
+        return node.EnumerateArray()
             .Select(ExtractDirectImageUrl)
-            .Where(static image => !string.IsNullOrWhiteSpace(image)))
-        {
-            return image;
-        }
-        return null;
+            .FirstOrDefault(static image => !string.IsNullOrWhiteSpace(image));
     }
 
     private static string? ExtractDirectImageUrlFromObject(JsonElement node)
@@ -6291,14 +6285,9 @@ public sealed class SpotifyPathfinderMetadataClient
             return sourceUrl;
         }
 
-        foreach (var nested in node.EnumerateObject()
+        return node.EnumerateObject()
             .Select(property => ExtractDirectImageUrl(property.Value))
-            .Where(static nested => !string.IsNullOrWhiteSpace(nested)))
-        {
-            return nested;
-        }
-
-        return null;
+            .FirstOrDefault(static nested => !string.IsNullOrWhiteSpace(nested));
     }
 
     private static string? TryExtractDirectImageUrlCandidate(JsonElement node)
@@ -6544,14 +6533,9 @@ public sealed class SpotifyPathfinderMetadataClient
             }
         }
 
-        foreach (var parsed in EnumerateNestedReleaseCandidates(item)
+        return EnumerateNestedReleaseCandidates(item)
             .Select(ParseRelease)
-            .Where(static parsed => parsed is not null))
-        {
-            return parsed;
-        }
-
-        return null;
+            .FirstOrDefault(static parsed => parsed is not null);
     }
 
     private static IEnumerable<JsonElement> EnumerateNestedReleaseCandidates(JsonElement item)

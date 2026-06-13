@@ -163,7 +163,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static readonly TimeSpan StagingGateLogThrottle = TimeSpan.FromMinutes(1);
     private const string WarningLogLevel = "warning";
     private const string ErrorLogLevel = "error";
-    private const string EnrichmentStatusPending = "pending";
     private const string EnrichmentStatusRunning = "running";
     private const string EnrichmentStatusCompleted = "completed";
     private const string EnrichmentStatusFailed = "failed";

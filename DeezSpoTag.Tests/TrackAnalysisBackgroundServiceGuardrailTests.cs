@@ -63,8 +63,9 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTests
         Assert.Contains("analysis-folder-order-summary", view, StringComparison.Ordinal);
         Assert.Contains("analysisFolderOrderExpanded", view, StringComparison.Ordinal);
         Assert.Contains("analysis-folder-order-list", view, StringComparison.Ordinal);
-        Assert.Contains("f.id IN", repository, StringComparison.Ordinal);
-        Assert.Contains("WHEN f.id = @libraryId", repository, StringComparison.Ordinal);
+        Assert.Contains("temp_analysis_library_scope", repository, StringComparison.Ordinal);
+        Assert.Contains("CreateLibraryScopeTableAsync", repository, StringComparison.Ordinal);
+        Assert.Contains("scope.sort_order", repository, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -2616,14 +2616,11 @@ public sealed class LibraryRecommendationService
     private static string TryGetQueryValueFromAbsoluteUri(Uri uri, string parameterName)
     {
         var query = uri.Query.TrimStart('?');
-        foreach (var parts in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        var parts = query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(pair => pair.Split('=', 2, StringSplitOptions.TrimEntries))
-            .Where(parts => string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase)))
-        {
-            return parts.Length == 2 ? parts[1] : string.Empty;
-        }
+            .FirstOrDefault(parts => string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase));
 
-        return string.Empty;
+        return parts is { Length: 2 } ? parts[1] : string.Empty;
     }
 
     private static string TryGetQueryValueFromRawText(string value, string parameterName)
@@ -3816,9 +3813,10 @@ public sealed class LibraryRecommendationService
         }
 
         var query = uri.Query.TrimStart('?');
-        foreach (var parts in query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        var parts = query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(pair => pair.Split('=', 2, StringSplitOptions.TrimEntries))
-            .Where(parts => parts.Length == 2 && string.Equals(parts[0], "i", StringComparison.OrdinalIgnoreCase)))
+            .FirstOrDefault(parts => parts.Length == 2 && string.Equals(parts[0], "i", StringComparison.OrdinalIgnoreCase));
+        if (parts is { Length: 2 })
         {
             return NormalizeId(Uri.UnescapeDataString(parts[1]));
         }

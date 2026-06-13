@@ -1532,20 +1532,7 @@ function tryOpenPendingPlaylistSettings(playlistPrefs) {
     }
 }
 
-async function openPlaylistMergePanel(items) {
-    if (!Array.isArray(items) || items.length < 2) {
-        showToast('Add at least two monitored playlists before merging.', true);
-        return;
-    }
-
-    if (!globalThis.DeezSpoTag?.ui?.showModal) {
-        showToast('Merge panel unavailable.', true);
-        return;
-    }
-
-    const panel = document.createElement('div');
-    panel.className = 'playlist-settings-panel watchlist-playlist-settings';
-
+function buildMergeSourceSection(items) {
     const sourceSection = document.createElement('div');
     sourceSection.className = 'playlist-settings-section';
     sourceSection.innerHTML = '<div class="playlist-settings-section-title">Playlists to merge</div>';
@@ -1575,61 +1562,79 @@ async function openPlaylistMergePanel(items) {
         sourceList.appendChild(row);
     });
     sourceSection.appendChild(sourceList);
+    return { sourceSection, sourceList };
+}
+
+function buildMergeTextSection(title, element, hintText) {
+    const section = document.createElement('div');
+    section.className = 'playlist-settings-section';
+    section.innerHTML = `<div class="playlist-settings-section-title">${title}</div>`;
+    section.appendChild(element);
+    if (hintText) {
+        const hint = document.createElement('div');
+        hint.className = 'playlist-settings-section-label';
+        hint.textContent = hintText;
+        section.appendChild(hint);
+    }
+    return section;
+}
+
+function buildMergeTargetRow(label, checked) {
+    const row = document.createElement('label');
+    row.className = 'merge-target-row';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'form-check-input';
+    checkbox.checked = checked;
+    const text = document.createElement('div');
+    text.className = 'merge-target-label';
+    text.textContent = label;
+    row.appendChild(checkbox);
+    row.appendChild(text);
+    return { row, checkbox };
+}
+
+async function openPlaylistMergePanel(items) {
+    if (!Array.isArray(items) || items.length < 2) {
+        showToast('Add at least two monitored playlists before merging.', true);
+        return;
+    }
+
+    if (!globalThis.DeezSpoTag?.ui?.showModal) {
+        showToast('Merge panel unavailable.', true);
+        return;
+    }
+
+    const panel = document.createElement('div');
+    panel.className = 'playlist-settings-panel watchlist-playlist-settings';
+
+    const { sourceSection, sourceList } = buildMergeSourceSection(items);
     panel.appendChild(sourceSection);
 
-    const nameSection = document.createElement('div');
-    nameSection.className = 'playlist-settings-section';
-    nameSection.innerHTML = '<div class="playlist-settings-section-title">Merged playlist name</div>';
     const nameInput = document.createElement('input');
     nameInput.className = 'form-control';
     nameInput.type = 'text';
     nameInput.maxLength = 200;
     nameInput.value = 'Merged Monitored Playlist';
-    nameSection.appendChild(nameInput);
-    panel.appendChild(nameSection);
+    panel.appendChild(buildMergeTextSection('Merged playlist name', nameInput));
 
-    const descriptionSection = document.createElement('div');
-    descriptionSection.className = 'playlist-settings-section';
-    descriptionSection.innerHTML = '<div class="playlist-settings-section-title">Description</div>';
     const descriptionInput = document.createElement('textarea');
     descriptionInput.className = 'form-control';
     descriptionInput.rows = 3;
     descriptionInput.placeholder = 'Write a custom description for the merged playlist.';
-    descriptionSection.appendChild(descriptionInput);
-    const descriptionHint = document.createElement('div');
-    descriptionHint.className = 'playlist-settings-section-label';
-    descriptionHint.textContent = 'Source attribution will include your DeezSpoTag username.';
-    descriptionSection.appendChild(descriptionHint);
-    panel.appendChild(descriptionSection);
+    panel.appendChild(buildMergeTextSection(
+        'Description',
+        descriptionInput,
+        'Source attribution will include your DeezSpoTag username.'));
 
     const targetSection = document.createElement('div');
     targetSection.className = 'playlist-settings-section';
     targetSection.innerHTML = '<div class="playlist-settings-section-title">Sync targets</div>';
     const targetList = document.createElement('div');
     targetList.className = 'routing-rules-list merge-target-list';
-    const plexRow = document.createElement('label');
-    plexRow.className = 'merge-target-row';
-    const plexCheck = document.createElement('input');
-    plexCheck.type = 'checkbox';
-    plexCheck.className = 'form-check-input';
-    plexCheck.checked = true;
-    const plexText = document.createElement('div');
-    plexText.className = 'merge-target-label';
-    plexText.textContent = 'Plex';
-    plexRow.appendChild(plexCheck);
-    plexRow.appendChild(plexText);
+    const { row: plexRow, checkbox: plexCheck } = buildMergeTargetRow('Plex', true);
+    const { row: jellyfinRow, checkbox: jellyfinCheck } = buildMergeTargetRow('Jellyfin', false);
     targetList.appendChild(plexRow);
-    const jellyfinRow = document.createElement('label');
-    jellyfinRow.className = 'merge-target-row';
-    const jellyfinCheck = document.createElement('input');
-    jellyfinCheck.type = 'checkbox';
-    jellyfinCheck.className = 'form-check-input';
-    jellyfinCheck.checked = false;
-    const jellyfinText = document.createElement('div');
-    jellyfinText.className = 'merge-target-label';
-    jellyfinText.textContent = 'Jellyfin';
-    jellyfinRow.appendChild(jellyfinCheck);
-    jellyfinRow.appendChild(jellyfinText);
     targetList.appendChild(jellyfinRow);
     targetSection.appendChild(targetList);
     panel.appendChild(targetSection);
@@ -1721,16 +1726,16 @@ async function openPlaylistMergePanel(items) {
         plexExistingSelect.disabled = !allowPlex;
         jellyfinExistingSelect.disabled = !allowJellyfin;
 
-        if (!allowPlex) {
-            plexExistingSelect.value = '';
-        } else {
+        if (allowPlex) {
             await loadTargetPlaylistOptions('plex', plexExistingSelect);
+        } else {
+            plexExistingSelect.value = '';
         }
 
-        if (!allowJellyfin) {
-            jellyfinExistingSelect.value = '';
-        } else {
+        if (allowJellyfin) {
             await loadTargetPlaylistOptions('jellyfin', jellyfinExistingSelect);
+        } else {
+            jellyfinExistingSelect.value = '';
         }
     }
 
@@ -2026,7 +2031,6 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         value: 'plex',
         helpText: 'Choose "No media server" to keep downloads without recreating server playlists.'
     });
-    const serverSelect = playlistServer.select;
     panel.appendChild(playlistServer.section);
 
     const playlistEngine = createPlaylistSettingsSelectSection({

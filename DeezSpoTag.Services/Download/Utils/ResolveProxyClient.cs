@@ -240,15 +240,11 @@ public sealed partial class ResolveProxyClient
             return null;
         }
 
-        foreach (var url in value.EnumerateArray().Select(static item => item.ValueKind == JsonValueKind.String
-            ? NormalizeUrl(item.GetString())
-            : null)
-            .Where(url => !string.IsNullOrWhiteSpace(url)))
-        {
-            return url;
-        }
-
-        return null;
+        return value.EnumerateArray()
+            .Select(static item => item.ValueKind == JsonValueKind.String
+                ? NormalizeUrl(item.GetString())
+                : null)
+            .FirstOrDefault(url => !string.IsNullOrWhiteSpace(url));
     }
 
     private static string? NormalizeUrl(string? value)
@@ -297,14 +293,11 @@ public sealed partial class ResolveProxyClient
         }
 
         var query = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var parts in query
+        var parts = query
             .Select(static pair => pair.Split('=', 2))
-            .Where(parts => parts.Length == 2 && string.Equals(parts[0], "v", StringComparison.OrdinalIgnoreCase)))
-        {
-            return Uri.UnescapeDataString(parts[1]);
-        }
+            .FirstOrDefault(parts => parts.Length == 2 && string.Equals(parts[0], "v", StringComparison.OrdinalIgnoreCase));
 
-        return null;
+        return parts is null ? null : Uri.UnescapeDataString(parts[1]);
     }
 
     private static readonly Regex s_spotifyTrackRegex = new(

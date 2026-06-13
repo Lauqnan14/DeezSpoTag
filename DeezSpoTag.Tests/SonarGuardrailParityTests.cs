@@ -210,6 +210,27 @@ public sealed class SonarGuardrailParityTests
         Assert.DoesNotContain("ResolveCoverUrlWithFallbackAsync(", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void SonarScan_ProtectsConfiguredExclusionsFromAccidentalOverride()
+    {
+        var root = FindRepoRoot();
+        var scanPath = Path.Combine(root, "scripts", "scan.sh");
+        Assert.True(File.Exists(scanPath), $"File not found: {scanPath}");
+
+        var source = File.ReadAllText(scanPath);
+        Assert.Contains("SONAR_ALLOW_EXCLUSION_OVERRIDE", source, StringComparison.Ordinal);
+        Assert.Contains("Refusing to override configured Sonar exclusion list", source, StringComparison.Ordinal);
+        Assert.Contains("Configured Sonar exclusions are authoritative", source, StringComparison.Ordinal);
+        Assert.Contains("**/.venv/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/site-packages/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/lib/python*/site-packages/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/lib64/python*/site-packages/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/build/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/Data/apple-wrapper/**", source, StringComparison.Ordinal);
+        Assert.Contains("**/*_pb2.py", source, StringComparison.Ordinal);
+        Assert.Contains("**/*_pb2.pyi", source, StringComparison.Ordinal);
+    }
+
     private static string FindRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

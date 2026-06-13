@@ -1718,14 +1718,9 @@ public sealed class LocalLibraryScanner
 
     private static string? ResolveFfprobePath()
     {
-        foreach (var resolved in GetFfprobeCandidates()
+        return GetFfprobeCandidates()
             .Select(candidate => TryResolveFfprobeCandidate(candidate, out var resolved) ? resolved : null)
-            .Where(resolved => !string.IsNullOrWhiteSpace(resolved)))
-        {
-            return resolved;
-        }
-
-        return null;
+            .FirstOrDefault(resolved => !string.IsNullOrWhiteSpace(resolved));
     }
 
     private static string[] GetFfprobeCandidates()

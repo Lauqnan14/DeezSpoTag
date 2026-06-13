@@ -361,24 +361,6 @@ public static class DownloadSourceOrder
         return false;
     }
 
-    private static List<string> BuildAutoSources(
-        bool includeDeezer,
-        Func<DownloadProfile, bool>? profileFilter = null)
-    {
-        var sources = new List<string>();
-        foreach (var profile in AutoPriority)
-        {
-            if (!ShouldIncludeProfile(includeDeezer, profile, profileFilter))
-            {
-                continue;
-            }
-
-            sources.Add(EncodeAutoSource(profile.Source, profile.Quality));
-        }
-
-        return sources;
-    }
-
     private static List<string> BuildConfiguredAutoSources(
         DeezSpoTagSettings settings,
         bool includeDeezer,

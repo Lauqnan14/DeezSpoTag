@@ -455,16 +455,18 @@ public sealed class LrclibMatcher
             return lines;
         }
 
-        foreach (var parsedLine in syncedLyrics.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+        var parsedLines = syncedLyrics.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(raw => raw.Trim())
-            .Where(line => !string.IsNullOrWhiteSpace(line))
-            .Select(line => new { Line = line, Match = LrcLineRegex.Match(line) })
-            .Where(parsedLine => parsedLine.Match.Success))
+            .Where(static line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => LrcLineRegex.Match(line))
+            .Where(static match => match.Success);
+
+        foreach (var match in parsedLines)
         {
-            var minutesRaw = parsedLine.Match.Groups[1].Value;
-            var secondsRaw = parsedLine.Match.Groups[2].Value;
-            var fractionRaw = parsedLine.Match.Groups[3].Value;
-            var text = parsedLine.Match.Groups[4].Value.Trim();
+            var minutesRaw = match.Groups[1].Value;
+            var secondsRaw = match.Groups[2].Value;
+            var fractionRaw = match.Groups[3].Value;
+            var text = match.Groups[4].Value.Trim();
             if (string.IsNullOrWhiteSpace(text))
             {
                 continue;

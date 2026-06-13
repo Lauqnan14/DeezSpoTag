@@ -3656,11 +3656,7 @@ public sealed class DownloadIntentService
     private static string? BootstrapIntentDeezerIdentity(DownloadIntent intent, string sourceUrl, bool isPodcastIntent, ref string normalizedSourceUrl)
     {
         var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
-        intent.DeezerId = !string.IsNullOrWhiteSpace(normalizedExistingDeezerId)
-            ? normalizedExistingDeezerId
-            : isPodcastIntent
-                ? TryExtractDeezerEpisodeId(sourceUrl) ?? string.Empty
-                : TryExtractDeezerTrackId(sourceUrl) ?? string.Empty;
+        intent.DeezerId = ResolveBootstrapDeezerId(normalizedExistingDeezerId, sourceUrl, isPodcastIntent);
 
         var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
         if (string.IsNullOrWhiteSpace(normalizedSourceUrl) && !string.IsNullOrWhiteSpace(normalizedDeezerId))
@@ -3671,6 +3667,18 @@ public sealed class DownloadIntentService
         }
 
         return normalizedDeezerId;
+    }
+
+    private static string ResolveBootstrapDeezerId(string? normalizedExistingDeezerId, string sourceUrl, bool isPodcastIntent)
+    {
+        if (!string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
+        {
+            return normalizedExistingDeezerId;
+        }
+
+        return isPodcastIntent
+            ? TryExtractDeezerEpisodeId(sourceUrl) ?? string.Empty
+            : TryExtractDeezerTrackId(sourceUrl) ?? string.Empty;
     }
 
     private static (string Engine, string? SourceUrl, string Message, string MappingSource)? TryResolveDirectIntentSource(
@@ -5085,7 +5093,7 @@ public sealed class DownloadIntentService
             : DownloadSourceOrder.DecodeAutoSource(autoSources[0]).Source;
     }
 
-    private EngineQueueItemBase BuildVisiblePreResolutionPayload(
+    private static EngineQueueItemBase BuildVisiblePreResolutionPayload(
         DownloadIntent intent,
         DeezSpoTagSettings settings,
         string engine,
@@ -6248,23 +6256,6 @@ public sealed class DownloadIntentService
         // Atmos secondary should still be attempted even when stereo primary
         // fails/skips, because the variants are independent routes.
         return !decision.Success;
-    }
-
-    private static void SetPayloadId<TPayload>(TPayload payload, string queueUuid)
-    {
-        if (EqualityComparer<TPayload>.Default.Equals(payload, default!) || string.IsNullOrWhiteSpace(queueUuid))
-        {
-            return;
-        }
-
-        var payloadObject = (object)payload!;
-        var idProperty = payloadObject.GetType().GetProperty("Id");
-        if (idProperty is null || !idProperty.CanWrite)
-        {
-            return;
-        }
-
-        idProperty.SetValue(payloadObject, queueUuid);
     }
 
     private static void ApplySourceSettingsSnapshot<TPayload>(TPayload payload, DeezSpoTagSettings settings)

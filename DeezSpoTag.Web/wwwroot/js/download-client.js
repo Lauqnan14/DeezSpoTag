@@ -185,7 +185,7 @@ DeezSpoTag.DownloadClient = {
                 return false;
             }
 
-            if (select.closest('[hidden], .d-none, [aria-hidden=\"true\"]')) {
+            if (select.closest('[hidden], .d-none, [aria-hidden="true"]')) {
                 return false;
             }
 

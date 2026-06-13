@@ -20,7 +20,6 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     private const string MetadataDescriptionKey = "description";
     private const string MetadataImageKey = "image";
     private const int DefaultPageSize = 100;
-
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly ILogger<ExternalPlaylistTracklistApiController> _logger;
@@ -852,7 +851,9 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             try
             {
                 using var doc = JsonDocument.Parse(json);
-                foreach (var candidate in EnumerateJsonNodes(doc.RootElement).Where(candidate => IsJsonNodeType(candidate, expectedType)))
+                var candidate = EnumerateJsonNodes(doc.RootElement)
+                    .FirstOrDefault(candidate => IsJsonNodeType(candidate, expectedType));
+                if (candidate.ValueKind != JsonValueKind.Undefined)
                 {
                     return candidate.Clone();
                 }
@@ -1490,15 +1491,15 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         };
     }
 
-    private static readonly Regex s_isoDurationRegex = new(
+    [GeneratedRegex(
         @"^PT(?:(?<h>\d+)H)?(?:(?<m>\d+)M)?(?:(?<s>\d+(?:\.\d+)?)S)?$",
-        RegexOptions.IgnoreCase);
+        RegexOptions.IgnoreCase,
+        250)]
+    private static partial Regex IsoDurationRegex();
 
-    private static readonly Regex s_qobuzPlaylistIdRegex = new(
+    [GeneratedRegex(
         @"/playlists?/[^/]+/([^/?#]+)",
-        RegexOptions.IgnoreCase);
-
-    private static Regex IsoDurationRegex() => s_isoDurationRegex;
-
-    private static Regex QobuzPlaylistIdRegex() => s_qobuzPlaylistIdRegex;
+        RegexOptions.IgnoreCase,
+        250)]
+    private static partial Regex QobuzPlaylistIdRegex();
 }

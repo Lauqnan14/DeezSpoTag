@@ -205,13 +205,13 @@ public static class TaggingProfileCanonicalizer
         var trackTemplate = ReadNonBlankString(data, trackKey);
         if (string.IsNullOrWhiteSpace(trackTemplate))
         {
-            foreach (var legacyTemplate in LegacyTemplateKeys
+            var legacyTemplate = LegacyTemplateKeys
                 .Select(legacyKeyName => ReadNonBlankString(data, ResolveKey(data, legacyKeyName)))
-                .Where(legacyTemplate => !string.IsNullOrWhiteSpace(legacyTemplate)))
+                .FirstOrDefault(legacyTemplate => !string.IsNullOrWhiteSpace(legacyTemplate));
+            if (!string.IsNullOrWhiteSpace(legacyTemplate))
             {
-                data[TracknameTemplateKey] = JsonSerializer.SerializeToElement(legacyTemplate!.Trim());
+                data[TracknameTemplateKey] = JsonSerializer.SerializeToElement(legacyTemplate.Trim());
                 changed = true;
-                break;
             }
         }
 

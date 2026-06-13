@@ -39,7 +39,6 @@ public static partial class EngineAudioPostDownloadHelper
     private const string FetchingStatus = "fetching";
     private const string SkippedStatus = "skipped";
     private const string NoLyricsStatus = "no-lyrics";
-    private const string RunningStatus = "running";
     private const string CompletedStatusName = "completed";
     private const string CancelledStatus = "cancelled";
     private const string PausedStatus = "paused";
@@ -47,9 +46,13 @@ public static partial class EngineAudioPostDownloadHelper
     private const string UpdateQueueEvent = "updateQueue";
     private const string DeezerTrackIdKey = "deezer_track_id";
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
-    private static readonly Regex LrcTimestampRegex = new(
+    private static readonly Regex LrcTimestampRegex = LrcTimestampPatternRegex();
+
+    [GeneratedRegex(
         @"^\[(?<m>\d{1,3}):(?<s>\d{2})(?:\.(?<f>\d{1,3}))?\]",
-        RegexOptions.CultureInvariant);
+        RegexOptions.CultureInvariant,
+        250)]
+    private static partial Regex LrcTimestampPatternRegex();
     private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".flac",
@@ -689,9 +692,7 @@ public static partial class EngineAudioPostDownloadHelper
             return false;
         }
 
-        var expectedDurationMs = original.DurationSeconds > 0
-            ? original.DurationSeconds * 1000
-            : payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : 0;
+        var expectedDurationMs = ResolveExpectedDurationMilliseconds(original, payload);
         if (expectedDurationMs > 0 && resolved.Duration > 0)
         {
             var resolvedDurationMs = resolved.Duration * 1000;
@@ -702,6 +703,16 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         return true;
+    }
+
+    private static double ResolveExpectedDurationMilliseconds(TrackMetadataSnapshot original, EngineQueueItemBase payload)
+    {
+        if (original.DurationSeconds > 0)
+        {
+            return original.DurationSeconds * 1000;
+        }
+
+        return payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : 0;
     }
 
     private static string? ReadStringProperty(object instance, string propertyName)
@@ -2336,7 +2347,7 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
-        gateState.Cancellation.Cancel();
+        await gateState.Cancellation.CancelAsync();
         try
         {
             await gateState.Completion.Task.WaitAsync(timeout, cancellationToken);

@@ -953,16 +953,10 @@ public class LyricsService
             return null;
         }
 
-        foreach (var track in body.MacroCalls.Values
-                     .Select(static response => response?.Message?.Body?.Track)
-                     .Where(static track => track != null
-                         && (!string.IsNullOrWhiteSpace(track.TrackName) || !string.IsNullOrWhiteSpace(track.ArtistName)))
-                     .Select(static track => track!))
-        {
-            return track;
-        }
-
-        return null;
+        return body.MacroCalls.Values
+            .Select(static response => response?.Message?.Body?.Track)
+            .FirstOrDefault(static track => track != null
+                && (!string.IsNullOrWhiteSpace(track.TrackName) || !string.IsNullOrWhiteSpace(track.ArtistName)));
     }
 
     private sealed class MusixmatchMacroCallsBody

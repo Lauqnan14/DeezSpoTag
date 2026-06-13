@@ -11,6 +11,10 @@ public sealed class DownloadSourceOrderFallbackParityTests
 {
     private static readonly string[] ExpectedDeezerQualityFallback = { "deezer|3", "deezer|1" };
     private static readonly string[] ExpectedQobuzStrictQuality = { "qobuz|6" };
+    private static readonly string[] ExpectedCustomQualityOrder = { "apple|ALAC", "qobuz|6", "tidal|LOSSLESS" };
+    private static readonly string[] ExpectedAppleOnlyOrder = { "apple|ALAC", "apple|AAC" };
+    private static readonly string[] ExpectedQobuzLosslessOrder = { "qobuz|6" };
+    private static readonly string[] ExpectedDirectAppleOrder = { "apple|ALAC", "qobuz|6" };
     private static readonly string[] ExpectedDefaultOrder =
     {
         "qobuz|27",
@@ -81,7 +85,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
 
         var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
 
-        Assert.Equal(new[] { "apple|ALAC", "qobuz|6", "tidal|LOSSLESS" }, sources);
+        Assert.Equal(ExpectedCustomQualityOrder, sources);
     }
 
     [Fact]
@@ -96,7 +100,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
 
         var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
 
-        Assert.Equal(new[] { "apple|ALAC", "apple|AAC" }, sources);
+        Assert.Equal(ExpectedAppleOnlyOrder, sources);
     }
 
     [Fact]
@@ -111,7 +115,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
 
         var sources = DownloadSourceOrder.ResolveEngineQualitySources(settings, "qobuz", "27", strict: false);
 
-        Assert.Equal(new[] { "qobuz|6" }, sources);
+        Assert.Equal(ExpectedQobuzLosslessOrder, sources);
     }
 
     [Fact]
@@ -126,7 +130,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
 
         var state = EngineDownloadControllerCommon.ResolveAutoSourceState(settings, includeDeezer: true, "apple", "ALAC");
 
-        Assert.Equal(new[] { "apple|ALAC", "qobuz|6" }, state.AutoSources);
+        Assert.Equal(ExpectedDirectAppleOrder, state.AutoSources);
         Assert.Equal(0, state.AutoIndex);
         Assert.Equal("ALAC", state.ResolvedQuality);
     }

@@ -3226,11 +3226,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         if (stopReason == WatchQueueStopReason.None)
         {
-            stopReason = systemicFailureCount > 0
-                ? WatchQueueStopReason.SystemicFailure
-                : (failedCount > 0 && queuedCount == 0
-                    ? WatchQueueStopReason.TrackFailures
-                    : WatchQueueStopReason.Completed);
+            stopReason = ResolveCompletedStopReason(systemicFailureCount, failedCount, queuedCount);
         }
 
         return new QueueWatchResult(
@@ -3244,6 +3240,21 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             FirstFailureMessage: firstFailureMessage,
             StopReason: stopReason,
             RemainingQueueableCount: Math.Max(0, trackList.Count - attemptedCount));
+    }
+
+    private static WatchQueueStopReason ResolveCompletedStopReason(
+        int systemicFailureCount,
+        int failedCount,
+        int queuedCount)
+    {
+        if (systemicFailureCount > 0)
+        {
+            return WatchQueueStopReason.SystemicFailure;
+        }
+
+        return failedCount > 0 && queuedCount == 0
+            ? WatchQueueStopReason.TrackFailures
+            : WatchQueueStopReason.Completed;
     }
 
     private async Task<WatchQueueCapacity?> TryResolveWatchQueueCapacityAsync(
@@ -4185,13 +4196,10 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
     private static string? GetJsonStringFromObject(JsonElement value)
     {
-        foreach (var candidate in JsonStringObjectPropertyNames
+        var candidate = JsonStringObjectPropertyNames
             .Select(propertyName => value.TryGetProperty(propertyName, out var candidate) ? candidate : default)
-            .Where(candidate => candidate.ValueKind == JsonValueKind.String))
-        {
-            return candidate.GetString();
-        }
-        return null;
+            .FirstOrDefault(candidate => candidate.ValueKind == JsonValueKind.String);
+        return candidate.ValueKind == JsonValueKind.String ? candidate.GetString() : null;
     }
 
     private static int? GetJsonInt(JsonElement element, string propertyName)

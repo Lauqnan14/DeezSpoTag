@@ -902,8 +902,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 FailureReason: $"Vibe analyzer batch timed out after {batchTimeoutSeconds}s.");
         }
 
-        var output = process.StandardOutput.ReadToEnd();
-        var errorOutput = process.StandardError.ReadToEnd();
+        var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorOutput = await process.StandardError.ReadToEndAsync(cancellationToken);
         if (process.ExitCode != 0)
         {
             var failureReason = string.IsNullOrWhiteSpace(errorOutput)
@@ -1324,10 +1324,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 TryTerminate(process);
                 throw;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
                 TryTerminate(process);
                 _logger.LogWarning(
+                    ex,
                     "Vibe analysis ML timed out for {FilePath} after {TimeoutSeconds}s",
                     filePath,
                     (int)analysisTimeout.TotalSeconds);
@@ -2020,14 +2021,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return null;
         }
 
-        foreach (var sitePackages in Directory.GetDirectories(linuxLibRoot, "python*")
+        return Directory.GetDirectories(linuxLibRoot, "python*")
             .Select(pythonDir => Path.Join(pythonDir, "site-packages"))
-            .Where(Directory.Exists))
-        {
-            return sitePackages;
-        }
-
-        return null;
+            .FirstOrDefault(Directory.Exists);
     }
 
     private void LogMlUnavailable(string reason)
@@ -2150,14 +2146,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             Path.Join(Directory.GetCurrentDirectory(), "DeezSpoTag.Web", ToolsDirectoryName, VibeAnalyzerScriptFileName)
         };
 
-        foreach (var resolvedCandidate in candidates
+        return candidates
             .Select(TryResolveExistingFilePath)
-            .Where(resolvedCandidate => !string.IsNullOrWhiteSpace(resolvedCandidate)))
-        {
-            return resolvedCandidate;
-        }
-
-        return null;
+            .FirstOrDefault(resolvedCandidate => !string.IsNullOrWhiteSpace(resolvedCandidate));
     }
 
     private static string? ResolveModelsDirectory()

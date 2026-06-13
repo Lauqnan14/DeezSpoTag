@@ -98,7 +98,7 @@ public sealed class QueueSourceSettingsSnapshot
 
     private static DownloadEngineOrderSettings? ReadDownloadEngineOrder(JsonObject obj)
     {
-        var node = obj["DownloadEngineOrder"] ?? obj["downloadEngineOrder"];
+        var node = obj[nameof(DownloadEngineOrder)] ?? obj["downloadEngineOrder"];
         if (node == null)
         {
             return null;

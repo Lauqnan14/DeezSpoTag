@@ -84,14 +84,9 @@ public sealed class DeezerArtistImageService
 
     private static string? ExtractImageUrl(JsonElement artist)
     {
-        foreach (var value in DeezerImageProperties
+        return DeezerImageProperties
             .Select(propertyName => TryGetAllowedImageUrl(artist, propertyName, out var value) ? value : null)
-            .Where(value => !string.IsNullOrWhiteSpace(value)))
-        {
-            return value;
-        }
-
-        return null;
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private static bool TryGetAllowedImageUrl(JsonElement artist, string propertyName, out string? value)

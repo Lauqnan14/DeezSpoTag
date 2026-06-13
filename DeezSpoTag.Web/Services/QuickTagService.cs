@@ -1533,7 +1533,8 @@ public sealed class QuickTagService
         out List<string> values,
         params string[] keys)
     {
-        foreach (var key in keys.Where(tags.ContainsKey))
+        var key = keys.FirstOrDefault(tags.ContainsKey);
+        if (!string.IsNullOrWhiteSpace(key))
         {
             values = tags[key];
             return true;

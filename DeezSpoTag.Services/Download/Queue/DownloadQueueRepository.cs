@@ -35,12 +35,13 @@ public sealed class DownloadQueueRepository
     private const string MoveStatusRunning = "running";
     private const string MoveStatusMoved = "moved";
     private const string MoveStatusBlocked = "blocked";
-    private const string MoveStatusFailed = "failed";
+    private const string StatusFailed = "failed";
+    private const string MoveStatusFailed = StatusFailed;
     private const string MoveStatusNotRequired = "not_required";
     private const string EnrichmentStatusPending = "pending";
     private const string EnrichmentStatusRunning = "running";
     private const string EnrichmentStatusCompleted = "completed";
-    private const string EnrichmentStatusFailed = "failed";
+    private const string EnrichmentStatusFailed = StatusFailed;
     private const string EnrichmentStatusCanceled = "canceled";
     private const string EnrichmentStatusInterrupted = "interrupted";
     private const string EnrichmentStatusNotRequired = "not_required";
@@ -849,7 +850,7 @@ SET payload = @payload,
     engine = COALESCE(@engine, engine),
     status = COALESCE(@status, status),
     error = CASE
-        WHEN @status = 'failed' THEN COALESCE(@error, error)
+        WHEN @status = '" + StatusFailed + @"' THEN COALESCE(@error, error)
         WHEN @status = 'queued' THEN NULL
         ELSE error
     END,
@@ -907,7 +908,7 @@ SET payload = @payload,
     content_type = COALESCE(NULLIF(@contentType, ''), content_type),
     status = COALESCE(@status, status),
     error = CASE
-        WHEN @status = 'failed' THEN COALESCE(@error, error)
+        WHEN @status = '" + StatusFailed + @"' THEN COALESCE(@error, error)
         WHEN @status = 'queued' THEN NULL
         ELSE error
     END,
@@ -1056,20 +1057,21 @@ WHERE queue_uuid = @queueUuid;";
             return map;
         }
 
-        var placeholders = normalized.Select((_, index) => $"@queueUuid{index}").ToArray();
-        var sql = $@"
-SELECT queue_uuid, enrichment_status
-FROM download_task
-WHERE queue_uuid IN ({string.Join(", ", placeholders)});";
+        const string sql = @"
+	SELECT queue_uuid, enrichment_status
+	FROM download_task
+	WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
-        for (var index = 0; index < normalized.Count; index++)
+        var queueUuidParameter = command.Parameters.Add("queueUuid", SqliteType.Text);
+        foreach (var normalizedQueueUuid in normalized)
         {
-            command.Parameters.AddWithValue($"queueUuid{index}", normalized[index]);
-        }
+            queueUuidParameter.Value = normalizedQueueUuid;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                continue;
+            }
 
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
             var queueUuid = GetNullableString(reader, 0);
             if (string.IsNullOrWhiteSpace(queueUuid))
             {
@@ -1510,7 +1512,7 @@ WHERE lower(status) IN ('failed', 'error', 'canceled', 'cancelled');";
 
         foreach (var queueUuid in queueUuids.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            await TryCleanupStagingForTerminalStatusAsync(connection, queueUuid, "failed", cancellationToken);
+            await TryCleanupStagingForTerminalStatusAsync(connection, queueUuid, StatusFailed, cancellationToken);
         }
     }
 
@@ -2748,7 +2750,7 @@ WHERE queue_order IS NOT NULL;";
         return IsCompletedStatus(item.Status) ? MoveStatusNotRequired : DBNull.Value;
     }
 
-    private static object ResolveInitialEnrichmentStatus(DownloadQueueItem item)
+    private static string ResolveInitialEnrichmentStatus(DownloadQueueItem item)
     {
         var normalized = NormalizeEnrichmentStatus(item.EnrichmentStatus);
         if (!string.IsNullOrWhiteSpace(normalized))
@@ -2756,12 +2758,9 @@ WHERE queue_order IS NOT NULL;";
             return normalized;
         }
 
-        if (item.DestinationFolderId.HasValue)
-        {
-            return IsCompletedStatus(item.Status) ? EnrichmentStatusPending : EnrichmentStatusPending;
-        }
-
-        return EnrichmentStatusNotRequired;
+        return item.DestinationFolderId.HasValue
+            ? EnrichmentStatusPending
+            : EnrichmentStatusNotRequired;
     }
 
     private static string NormalizeEnrichmentStatus(string? status)

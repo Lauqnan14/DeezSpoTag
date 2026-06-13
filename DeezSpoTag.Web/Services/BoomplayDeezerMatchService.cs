@@ -171,11 +171,19 @@ public sealed class BoomplayDeezerMatchService
             Artist = Normalize(request.Artist) ?? Normalize(track?.Artist),
             Album = Normalize(request.Album) ?? Normalize(track?.Album),
             Isrc = Normalize(request.Isrc) ?? Normalize(track?.Isrc),
-            DurationMs = request.DurationMs is > 0
-                ? request.DurationMs
-                : (track?.DurationMs is > 0 ? track.DurationMs : null),
+            DurationMs = ResolveDurationMs(request, track),
             Track = track
         };
+    }
+
+    private static int? ResolveDurationMs(BoomplayDeezerMatchRequest request, BoomplayTrackMetadata? track)
+    {
+        if (request.DurationMs is > 0)
+        {
+            return request.DurationMs;
+        }
+
+        return track?.DurationMs is > 0 ? track.DurationMs : null;
     }
 
     private async Task EnrichBoomplayMetadataAsync(BoomplayMatchContext context, CancellationToken cancellationToken)

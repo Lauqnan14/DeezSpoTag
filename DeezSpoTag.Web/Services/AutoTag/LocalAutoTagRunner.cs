@@ -5152,14 +5152,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
         var preferredExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp" };
 
-        foreach (var candidate in preferredNames
+        return preferredNames
             .SelectMany(name => preferredExtensions.Select(ext => Path.Join(directory, name + ext)))
-            .Where(IOFile.Exists))
-        {
-            return candidate;
-        }
-
-        return null;
+            .FirstOrDefault(IOFile.Exists);
     }
 
     private async Task<string?> DownloadCoverAsync(string url, CancellationToken token)
@@ -7459,14 +7454,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static int? ResolveFirstPositiveInt(AutoTagTrack track, params string[] keys)
     {
-        foreach (var parsed in ResolveOtherValues(track, keys)
+        return ResolveOtherValues(track, keys)
             .Select(raw => int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : (int?)null)
-            .Where(parsed => parsed > 0))
-        {
-            return parsed;
-        }
-
-        return null;
+            .FirstOrDefault(parsed => parsed > 0);
     }
 
     private static string ResolveComposerRawName(string extension)

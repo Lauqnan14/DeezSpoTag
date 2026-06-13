@@ -186,13 +186,11 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
     private static Uri BuildArtistInfoUri(string artistName, string apiKey)
     {
         var query = string.Join('&',
-        [
             "method=artist.getinfo",
             $"artist={Uri.EscapeDataString(artistName)}",
             $"api_key={Uri.EscapeDataString(apiKey)}",
             "format=json",
-            "autocorrect=1"
-        ]);
+            "autocorrect=1");
         return new Uri($"https://ws.audioscrobbler.com/2.0/?{query}");
     }
 

@@ -599,10 +599,11 @@ public sealed class WatchlistFinalizationService
 
     private static bool TryReadStringProperty(JsonElement source, IReadOnlyList<string> propertyNames, out string value)
     {
-        foreach (var property in propertyNames
+        var property = propertyNames
             .Select(propertyName => TryGetPropertyIgnoreCase(source, propertyName, out var property) ? property : default)
-            .Where(property => property.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(property.GetString())))
+            .FirstOrDefault(property => property.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(property.GetString()));
+        if (property.ValueKind == JsonValueKind.String)
         {
             value = property.GetString()!.Trim();
             return true;

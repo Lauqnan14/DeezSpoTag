@@ -16,7 +16,6 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
     private readonly LibraryRepository _repository;
     private readonly AppleArtistBiographyService _appleBiographyService;
     private readonly LastFmArtistImageService _lastFmArtistImageService;
-    private readonly IWebHostEnvironment _environment;
     private readonly ILogger<ArtistExternalMetadataBackfillService> _logger;
     private readonly string _cacheRoot;
 
@@ -30,7 +29,6 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
         _repository = repository;
         _appleBiographyService = appleBiographyService;
         _lastFmArtistImageService = lastFmArtistImageService;
-        _environment = environment;
         _logger = logger;
         _cacheRoot = Path.Join(AppDataPaths.GetDataRoot(environment), "library-artist-images", "lastfm", "artists");
     }
