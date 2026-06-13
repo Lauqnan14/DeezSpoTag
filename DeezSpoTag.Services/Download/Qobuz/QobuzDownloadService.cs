@@ -7,7 +7,6 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Security.Cryptography;
 using IOFile = System.IO.File;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Download.Shared.Utils;
@@ -466,16 +465,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         int SampleRate,
         double DurationSeconds);
 
-    private static string MapQobuzQualityFromProbe(int bitsPerSample, int sampleRate)
-    {
-        if (bitsPerSample >= 24)
-        {
-            return sampleRate >= 96000 ? "27" : "7";
-        }
-
-        return "6";
-    }
-
     private static long? TryExtractTrackId(string trackUrl)
     {
         if (string.IsNullOrWhiteSpace(trackUrl))
@@ -587,51 +576,21 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             var providers = BuildOrderedProviders(trackId, qualityCode);
             foreach (var provider in providers)
             {
-                if (IsProviderCoolingDown(provider.Name))
+                var attempt = await TryDownloadWithProviderAsync(
+                    provider,
+                    trackId,
+                    qualityCode,
+                    request,
+                    outputPath,
+                    cancellationToken);
+                if (attempt.Succeeded)
                 {
-                    continue;
-                }
-
-                var downloadUrl = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
-                if (string.IsNullOrWhiteSpace(downloadUrl))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    request.Quality = qualityCode;
-                    await NotifySelectedQualityAsync(request, qualityCode);
-                    await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
-                    {
-                        DownloadUrl = downloadUrl,
-                        OutputPath = outputPath,
-                        Request = request
-                    }, cancellationToken);
-                    MarkPreferredProvider(provider.Name);
                     return;
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    lastFailure = ex;
-                    DownloadFileUtilities.TryDeleteFile(outputPath);
-                    ClearPreferredProvider(provider.Name);
-                    if (IsProviderStreamFailure(ex))
-                    {
-                        _logger.LogWarning(
-                            ex,
-                            "Qobuz provider {Provider} stream failed for track {TrackId} quality {Quality}; trying next provider.",
-                            DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.Name),
-                            trackId,
-                            DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
-                        continue;
-                    }
 
-                    throw;
+                if (attempt.Failure != null)
+                {
+                    lastFailure = attempt.Failure;
                 }
             }
         }
@@ -642,6 +601,63 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         throw new InvalidOperationException(DownloadUrlUnavailableMessage);
+    }
+
+    private sealed record ProviderDownloadAttempt(bool Succeeded, Exception? Failure);
+
+    private async Task<ProviderDownloadAttempt> TryDownloadWithProviderAsync(
+        ProviderCandidate provider,
+        long trackId,
+        string qualityCode,
+        QobuzDownloadRequest request,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        if (IsProviderCoolingDown(provider.Name))
+        {
+            return new ProviderDownloadAttempt(false, null);
+        }
+
+        var downloadUrl = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
+        if (string.IsNullOrWhiteSpace(downloadUrl))
+        {
+            return new ProviderDownloadAttempt(false, null);
+        }
+
+        try
+        {
+            request.Quality = qualityCode;
+            await NotifySelectedQualityAsync(request, qualityCode);
+            await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
+            {
+                DownloadUrl = downloadUrl,
+                OutputPath = outputPath,
+                Request = request
+            }, cancellationToken);
+            MarkPreferredProvider(provider.Name);
+            return new ProviderDownloadAttempt(true, null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            DownloadFileUtilities.TryDeleteFile(outputPath);
+            ClearPreferredProvider(provider.Name);
+            if (!IsProviderStreamFailure(ex))
+            {
+                throw;
+            }
+
+            _logger.LogWarning(
+                ex,
+                "Qobuz provider {Provider} stream failed for track {TrackId} quality {Quality}; trying next provider.",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.Name),
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
+            return new ProviderDownloadAttempt(false, ex);
+        }
     }
 
     private ProviderCandidate[] BuildOrderedProviders(long trackId, string qualityCode)
@@ -1394,11 +1410,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
     private static string ComputeMd5Hex(string input)
-    {
-        var bytes = Encoding.UTF8.GetBytes(input);
-        var hash = MD5.HashData(bytes);
-        return Convert.ToHexString(hash).ToLowerInvariant();
-    }
+        => QobuzOfficialSignature.ComputeProtocolDigestHex(input);
 
     private async Task<string?> TryGetSquidStreamUrlAsync(
         string squidBase,

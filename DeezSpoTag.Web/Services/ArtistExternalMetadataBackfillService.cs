@@ -8,6 +8,7 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
     private const int BatchSize = 50;
     private const int TrackEvidenceLimit = 25;
     private const int LastFmCandidateLimit = 8;
+    private const string BackfillCycleFailedMessage = "Artist external metadata backfill cycle failed.";
     private static readonly TimeSpan RefreshAge = TimeSpan.FromDays(7);
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CycleDelay = TimeSpan.FromMinutes(30);
@@ -61,19 +62,19 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
+                _logger.LogWarning(ex, BackfillCycleFailedMessage);
             }
             catch (IOException ex)
             {
-                _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
+                _logger.LogWarning(ex, BackfillCycleFailedMessage);
             }
             catch (UnauthorizedAccessException ex)
             {
-                _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
+                _logger.LogWarning(ex, BackfillCycleFailedMessage);
             }
             catch (InvalidOperationException ex)
             {
-                _logger.LogWarning(ex, "Artist external metadata backfill cycle failed.");
+                _logger.LogWarning(ex, BackfillCycleFailedMessage);
             }
 
             try
@@ -155,7 +156,11 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Apple biography backfill failed for artist {ArtistId}", artist.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Apple biography backfill failed for artist {ArtistId}", artist.Id);
+            }
+
             await _repository.UpdateArtistAppleBiographyAsync(artist.Id, null, now, cancellationToken);
         }
     }
@@ -176,7 +181,11 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Last.fm image backfill failed for artist {ArtistId}", artist.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Last.fm image backfill failed for artist {ArtistId}", artist.Id);
+            }
+
             await _repository.MarkArtistLastFmImagesCheckedAsync(artist.Id, now, cancellationToken);
         }
     }
@@ -229,7 +238,10 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogDebug(ex, "Failed to cache Last.fm artist image candidate for artist {ArtistId}", artistId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Failed to cache Last.fm artist image candidate for artist {ArtistId}", artistId);
+                }
             }
         }
     }

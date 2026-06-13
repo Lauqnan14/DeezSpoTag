@@ -1594,6 +1594,117 @@ function buildMergeTargetRow(label, checked) {
     return { row, checkbox };
 }
 
+function createMergeTargetPlaylistLoader() {
+    const cache = new Map();
+    return async function loadTargetPlaylistOptions(target, selectElement) {
+        const normalizedTarget = String(target || '').trim().toLowerCase();
+        if (!normalizedTarget) {
+            return;
+        }
+
+        if (!cache.has(normalizedTarget)) {
+            const items = await fetchJson(`/api/library/playlists/merge-target-playlists?target=${encodeURIComponent(normalizedTarget)}`);
+            cache.set(normalizedTarget, Array.isArray(items) ? items : []);
+        }
+
+        const options = cache.get(normalizedTarget) || [];
+        const defaultLabel = normalizedTarget === 'plex'
+            ? 'Select existing Plex playlist'
+            : 'Select existing Jellyfin playlist';
+        selectElement.innerHTML = `<option value="">${defaultLabel}</option>`;
+        options.forEach(item => appendMergeTargetPlaylistOption(selectElement, item));
+    };
+}
+
+function appendMergeTargetPlaylistOption(selectElement, item) {
+    const option = document.createElement('option');
+    option.value = String(item.id || '').trim();
+    if (!option.value) {
+        return;
+    }
+
+    const count = Number.isFinite(Number(item.trackCount)) ? ` (${Number(item.trackCount)} tracks)` : '';
+    option.textContent = `${String(item.name || option.value)}${count}`;
+    selectElement.appendChild(option);
+}
+
+async function refreshExistingTargetPlaylistControls(controls, loadTargetPlaylistOptions) {
+    const useExisting = controls.useExistingCheck.checked;
+    const allowPlex = useExisting && controls.plexCheck.checked;
+    const allowJellyfin = useExisting && controls.jellyfinCheck.checked;
+
+    controls.plexExistingSelect.hidden = !allowPlex;
+    controls.jellyfinExistingSelect.hidden = !allowJellyfin;
+    controls.plexExistingSelect.disabled = !allowPlex;
+    controls.jellyfinExistingSelect.disabled = !allowJellyfin;
+
+    await refreshMergeTargetSelect('plex', allowPlex, controls.plexExistingSelect, loadTargetPlaylistOptions);
+    await refreshMergeTargetSelect('jellyfin', allowJellyfin, controls.jellyfinExistingSelect, loadTargetPlaylistOptions);
+}
+
+async function refreshMergeTargetSelect(target, enabled, selectElement, loadTargetPlaylistOptions) {
+    if (enabled) {
+        await loadTargetPlaylistOptions(target, selectElement);
+        return;
+    }
+
+    selectElement.value = '';
+}
+
+function collectSelectedMergePlaylists(sourceList) {
+    return Array.from(sourceList.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(input => ({
+            source: String(input.dataset.mergeSource || '').trim(),
+            sourceId: String(input.dataset.mergeSourceId || '').trim()
+        }))
+        .filter(item => item.source && item.sourceId);
+}
+
+function validateMergeSelection(selectedPlaylists, controls) {
+    if (selectedPlaylists.length < 2) {
+        showToast('Select at least two monitored playlists to merge.', true);
+        return false;
+    }
+
+    if (!controls.plexCheck.checked && !controls.jellyfinCheck.checked) {
+        showToast('Select at least one merge target (Plex or Jellyfin).', true);
+        return false;
+    }
+
+    if (!controls.useExistingCheck.checked) {
+        return true;
+    }
+
+    if (controls.plexCheck.checked && !controls.plexExistingSelect.value) {
+        showToast('Select an existing Plex playlist.', true);
+        return false;
+    }
+
+    if (controls.jellyfinCheck.checked && !controls.jellyfinExistingSelect.value) {
+        showToast('Select an existing Jellyfin playlist.', true);
+        return false;
+    }
+
+    return true;
+}
+
+function buildMergePayload(selectedPlaylists, inputs, controls) {
+    return {
+        playlists: selectedPlaylists,
+        name: String(inputs.nameInput.value || '').trim(),
+        description: String(inputs.descriptionInput.value || '').trim(),
+        syncMode: inputs.syncModeSelect.value || 'mirror',
+        syncToPlex: controls.plexCheck.checked,
+        syncToJellyfin: controls.jellyfinCheck.checked,
+        existingPlexPlaylistId: controls.useExistingCheck.checked && controls.plexCheck.checked
+            ? String(controls.plexExistingSelect.value || '').trim()
+            : null,
+        existingJellyfinPlaylistId: controls.useExistingCheck.checked && controls.jellyfinCheck.checked
+            ? String(controls.jellyfinExistingSelect.value || '').trim()
+            : null
+    };
+}
+
 async function openPlaylistMergePanel(items) {
     if (!Array.isArray(items) || items.length < 2) {
         showToast('Add at least two monitored playlists before merging.', true);
@@ -1687,72 +1798,29 @@ async function openPlaylistMergePanel(items) {
     syncModeSection.appendChild(syncModeSelect);
     panel.appendChild(syncModeSection);
 
-    const mergeTargetPlaylistsCache = new Map();
-    async function loadTargetPlaylistOptions(target, selectElement) {
-        const normalizedTarget = String(target || '').trim().toLowerCase();
-        if (!normalizedTarget) {
-            return;
-        }
-
-        if (!mergeTargetPlaylistsCache.has(normalizedTarget)) {
-            const items = await fetchJson(`/api/library/playlists/merge-target-playlists?target=${encodeURIComponent(normalizedTarget)}`);
-            mergeTargetPlaylistsCache.set(normalizedTarget, Array.isArray(items) ? items : []);
-        }
-
-        const options = mergeTargetPlaylistsCache.get(normalizedTarget) || [];
-        const defaultLabel = normalizedTarget === 'plex'
-            ? 'Select existing Plex playlist'
-            : 'Select existing Jellyfin playlist';
-        selectElement.innerHTML = `<option value="">${defaultLabel}</option>`;
-        options.forEach(item => {
-            const option = document.createElement('option');
-            option.value = String(item.id || '').trim();
-            if (!option.value) {
-                return;
-            }
-            const count = Number.isFinite(Number(item.trackCount)) ? ` (${Number(item.trackCount)} tracks)` : '';
-            option.textContent = `${String(item.name || option.value)}${count}`;
-            selectElement.appendChild(option);
-        });
-    }
-
-    async function refreshExistingTargetPlaylistControls() {
-        const useExisting = useExistingCheck.checked;
-        const allowPlex = useExisting && plexCheck.checked;
-        const allowJellyfin = useExisting && jellyfinCheck.checked;
-
-        plexExistingSelect.hidden = !allowPlex;
-        jellyfinExistingSelect.hidden = !allowJellyfin;
-        plexExistingSelect.disabled = !allowPlex;
-        jellyfinExistingSelect.disabled = !allowJellyfin;
-
-        if (allowPlex) {
-            await loadTargetPlaylistOptions('plex', plexExistingSelect);
-        } else {
-            plexExistingSelect.value = '';
-        }
-
-        if (allowJellyfin) {
-            await loadTargetPlaylistOptions('jellyfin', jellyfinExistingSelect);
-        } else {
-            jellyfinExistingSelect.value = '';
-        }
-    }
+    const mergeControls = {
+        useExistingCheck,
+        plexCheck,
+        jellyfinCheck,
+        plexExistingSelect,
+        jellyfinExistingSelect
+    };
+    const loadTargetPlaylistOptions = createMergeTargetPlaylistLoader();
 
     useExistingCheck.addEventListener('change', async () => {
         try {
-            await refreshExistingTargetPlaylistControls();
+            await refreshExistingTargetPlaylistControls(mergeControls, loadTargetPlaylistOptions);
         } catch (error) {
             showToast(`Failed to load target playlists: ${error?.message || 'Unknown error'}`, true);
             useExistingCheck.checked = false;
-            await refreshExistingTargetPlaylistControls();
+            await refreshExistingTargetPlaylistControls(mergeControls, loadTargetPlaylistOptions);
         }
     });
     plexCheck.addEventListener('change', () => {
-        void refreshExistingTargetPlaylistControls();
+        void refreshExistingTargetPlaylistControls(mergeControls, loadTargetPlaylistOptions);
     });
     jellyfinCheck.addEventListener('change', () => {
-        void refreshExistingTargetPlaylistControls();
+        void refreshExistingTargetPlaylistControls(mergeControls, loadTargetPlaylistOptions);
     });
 
     const confirmed = await globalThis.DeezSpoTag.ui.showModal({
@@ -1770,47 +1838,15 @@ async function openPlaylistMergePanel(items) {
         return;
     }
 
-    const selectedPlaylists = Array.from(sourceList.querySelectorAll('input[type="checkbox"]:checked'))
-        .map(input => ({
-            source: String(input.dataset.mergeSource || '').trim(),
-            sourceId: String(input.dataset.mergeSourceId || '').trim()
-        }))
-        .filter(item => item.source && item.sourceId);
-    if (selectedPlaylists.length < 2) {
-        showToast('Select at least two monitored playlists to merge.', true);
+    const selectedPlaylists = collectSelectedMergePlaylists(sourceList);
+    if (!validateMergeSelection(selectedPlaylists, mergeControls)) {
         return;
     }
 
-    if (!plexCheck.checked && !jellyfinCheck.checked) {
-        showToast('Select at least one merge target (Plex or Jellyfin).', true);
-        return;
-    }
-
-    if (useExistingCheck.checked) {
-        if (plexCheck.checked && !plexExistingSelect.value) {
-            showToast('Select an existing Plex playlist.', true);
-            return;
-        }
-        if (jellyfinCheck.checked && !jellyfinExistingSelect.value) {
-            showToast('Select an existing Jellyfin playlist.', true);
-            return;
-        }
-    }
-
-    const payload = {
-        playlists: selectedPlaylists,
-        name: String(nameInput.value || '').trim(),
-        description: String(descriptionInput.value || '').trim(),
-        syncMode: syncModeSelect.value || 'mirror',
-        syncToPlex: plexCheck.checked,
-        syncToJellyfin: jellyfinCheck.checked,
-        existingPlexPlaylistId: useExistingCheck.checked && plexCheck.checked
-            ? String(plexExistingSelect.value || '').trim()
-            : null,
-        existingJellyfinPlaylistId: useExistingCheck.checked && jellyfinCheck.checked
-            ? String(jellyfinExistingSelect.value || '').trim()
-            : null
-    };
+    const payload = buildMergePayload(
+        selectedPlaylists,
+        { nameInput, descriptionInput, syncModeSelect },
+        mergeControls);
 
     try {
         const result = await fetchJson('/api/library/playlists/merge-sync', {

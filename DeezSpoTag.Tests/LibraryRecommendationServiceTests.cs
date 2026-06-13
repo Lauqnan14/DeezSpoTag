@@ -36,6 +36,7 @@ public sealed class LibraryRecommendationServiceTests
     private static readonly MethodInfo CreateUnavailableRecommendationDetailMethod = typeof(LibraryRecommendationService).GetMethod(
         "CreateUnavailableRecommendationDetail",
         BindingFlags.NonPublic | BindingFlags.Static)!;
+    private static readonly string[] GenerationQueuedReasonCodes = ["generation_queued"];
 
     [Fact]
     public void MergeRotating_UsesRecommendationPoolLimit()
@@ -181,7 +182,7 @@ public sealed class LibraryRecommendationServiceTests
         var scope = Activator.CreateInstance(scopeType, 1L, 2L, "Main", "daily-rotation:l1:f2", "l1:f2");
         var detail = (RecommendationDetailDto)CreateUnavailableRecommendationDetailMethod.Invoke(
             null,
-            [scope!, "/images/recommendations/V1/Sunday.jpg", new DateOnly(2026, 5, 24), new List<string> { "generation_queued" }])!;
+            [scope!, "/images/recommendations/V1/Sunday.jpg", new DateOnly(2026, 5, 24), GenerationQueuedReasonCodes])!;
 
         Assert.Equal("generating", detail.Status);
         Assert.Equal("generating", detail.Station.Status);

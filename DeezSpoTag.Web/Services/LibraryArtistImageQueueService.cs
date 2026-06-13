@@ -28,25 +28,18 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private string ImageCacheDir => Path.Join(_dataRoot, "library-artist-images");
 
     public LibraryArtistImageQueueService(
-        LibraryRepository repository,
-        LibraryConfigStore configStore,
-        DeezerArtistImageService imageService,
-        AppleMusicCatalogService appleCatalogService,
-        ISpotifyArtworkResolver spotifyArtworkResolver,
-        ILastFmArtistImageResolver lastFmArtistImageResolver,
-        DeezSpoTagSettingsService settingsService,
-        IWebHostEnvironment environment,
+        LibraryArtistImageQueueDependencies dependencies,
         ILogger<LibraryArtistImageQueueService> logger)
     {
-        _repository = repository;
-        _configStore = configStore;
-        _imageService = imageService;
-        _appleCatalogService = appleCatalogService;
-        _spotifyArtworkResolver = spotifyArtworkResolver;
-        _lastFmArtistImageResolver = lastFmArtistImageResolver;
-        _settingsService = settingsService;
+        _repository = dependencies.Repository;
+        _configStore = dependencies.ConfigStore;
+        _imageService = dependencies.Providers.ImageService;
+        _appleCatalogService = dependencies.Providers.AppleCatalogService;
+        _spotifyArtworkResolver = dependencies.Providers.SpotifyArtworkResolver;
+        _lastFmArtistImageResolver = dependencies.Providers.LastFmArtistImageResolver;
+        _settingsService = dependencies.SettingsService;
         _logger = logger;
-        _dataRoot = AppDataPaths.GetDataRoot(environment);
+        _dataRoot = AppDataPaths.GetDataRoot(dependencies.Environment);
     }
 
     public async Task EnqueueMissingAsync(CancellationToken cancellationToken)

@@ -249,25 +249,12 @@ public sealed class LibraryScanRunner
             return;
         }
 
-        var absorbedByFullScan = false;
-        Task? absorbedByCurrentScan = null;
-        var ownsDrain = false;
-        Task? waitForDrain = null;
-        lock (_scanLock)
+        var fullScanAbsorption = TryAbsorbChangedFilesIntoFullScan(pending);
+        if (fullScanAbsorption.Absorbed)
         {
-            if (_pendingFullScan is not null)
+            if (fullScanAbsorption.WaitTask is not null)
             {
-                AddInfoLog($"Targeted library scan absorbed by full library scan ({pending.Sum(pair => pair.Value.Count)} file(s)).");
-                absorbedByFullScan = true;
-                absorbedByCurrentScan = _activeScanCompletion?.Task;
-            }
-        }
-
-        if (absorbedByFullScan)
-        {
-            if (absorbedByCurrentScan is not null)
-            {
-                await absorbedByCurrentScan.WaitAsync(cancellationToken);
+                await fullScanAbsorption.WaitTask.WaitAsync(cancellationToken);
             }
 
             await WaitForScheduledScansIdleAsync(cancellationToken);
@@ -298,47 +285,72 @@ public sealed class LibraryScanRunner
             return;
         }
 
-        lock (_changedFileScanLock)
-        {
-            foreach (var (folderId, paths) in pending)
-            {
-                if (!_pendingChangedFileScans.TryGetValue(folderId, out var existing))
-                {
-                    existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    _pendingChangedFileScans[folderId] = existing;
-                }
+        var drain = EnqueueChangedFileScanDrain(pending, skipSpotifyFetch);
 
-                foreach (var path in paths)
-                {
-                    existing.Add(path);
-                }
-            }
-
-            _pendingChangedFileScanRequiresSpotifyFetch |= !skipSpotifyFetch;
-            if (!_changedFileScanDrainRunning)
-            {
-                _changedFileScanDrainRunning = true;
-                _changedFileScanDrainCompletion = new TaskCompletionSource<object?>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                ownsDrain = true;
-            }
-            else
-            {
-                waitForDrain = _changedFileScanDrainCompletion?.Task;
-            }
-        }
-
-        if (!ownsDrain)
+        if (!drain.OwnsDrain)
         {
             AddInfoLog($"Targeted library scan merged into pending queue ({pending.Sum(pair => pair.Value.Count)} file(s)).");
-            if (waitForDrain != null)
+            if (drain.WaitTask != null)
             {
-                await waitForDrain.WaitAsync(cancellationToken);
+                await drain.WaitTask.WaitAsync(cancellationToken);
             }
             return;
         }
 
         await DrainChangedFileScansAsync(cancellationToken);
+    }
+
+    private sealed record FullScanAbsorption(bool Absorbed, Task? WaitTask);
+
+    private FullScanAbsorption TryAbsorbChangedFilesIntoFullScan(Dictionary<long, List<string>> pending)
+    {
+        lock (_scanLock)
+        {
+            if (_pendingFullScan is null)
+            {
+                return new FullScanAbsorption(false, null);
+            }
+
+            AddInfoLog($"Targeted library scan absorbed by full library scan ({pending.Sum(pair => pair.Value.Count)} file(s)).");
+            return new FullScanAbsorption(true, _activeScanCompletion?.Task);
+        }
+    }
+
+    private sealed record ChangedFileDrainState(bool OwnsDrain, Task? WaitTask);
+
+    private ChangedFileDrainState EnqueueChangedFileScanDrain(Dictionary<long, List<string>> pending, bool skipSpotifyFetch)
+    {
+        lock (_changedFileScanLock)
+        {
+            AddPendingChangedFileScans(pending);
+            _pendingChangedFileScanRequiresSpotifyFetch |= !skipSpotifyFetch;
+            if (_changedFileScanDrainRunning)
+            {
+                return new ChangedFileDrainState(false, _changedFileScanDrainCompletion?.Task);
+            }
+
+            _changedFileScanDrainRunning = true;
+            _changedFileScanDrainCompletion = new TaskCompletionSource<object?>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            return new ChangedFileDrainState(true, null);
+        }
+    }
+
+    private void AddPendingChangedFileScans(Dictionary<long, List<string>> pending)
+    {
+        foreach (var (folderId, paths) in pending)
+        {
+            if (!_pendingChangedFileScans.TryGetValue(folderId, out var existing))
+            {
+                existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                _pendingChangedFileScans[folderId] = existing;
+            }
+
+            foreach (var path in paths)
+            {
+                existing.Add(path);
+            }
+        }
     }
 
     public async Task RunAsync(

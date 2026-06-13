@@ -632,7 +632,7 @@ public sealed class LibraryRecommendationService
             dayLocal,
             cancellationToken);
         var stateReasons = ResolveGenerationStateReasonCodes(state);
-        if (stateReasons.Count > 0)
+        if (stateReasons.Length > 0)
         {
             return CreateUnavailableRecommendationDetail(scope, stationImageUrl, dayLocal, stateReasons);
         }
@@ -714,9 +714,9 @@ public sealed class LibraryRecommendationService
         RecommendationScope scope,
         string? stationImageUrl,
         DateOnly dayLocal,
-        IReadOnlyList<string> reasonCodes)
+        string[] reasonCodes)
     {
-        var reasons = reasonCodes.Count > 0
+        var reasons = reasonCodes.Length > 0
             ? reasonCodes
             : [EmptyPoolReason];
         var message = BuildRecommendationUnavailableMessage(reasons);
@@ -779,7 +779,7 @@ public sealed class LibraryRecommendationService
         DateOnly dayLocal)
         => new(scope.LibraryId, scope.FolderId, scope.StationId, dayLocal);
 
-    private static IReadOnlyList<string> ResolveGenerationStateReasonCodes(RecommendationGenerationStateDto? state)
+    private static string[] ResolveGenerationStateReasonCodes(RecommendationGenerationStateDto? state)
     {
         if (state is null)
         {
@@ -1237,7 +1237,7 @@ public sealed class LibraryRecommendationService
                 scope,
                 stationImageUrl,
                 dayLocal,
-                reasons.Count > 0 ? reasons : [GenerationQueuedReason]);
+                reasons.Length > 0 ? reasons : [GenerationQueuedReason]);
         }
 
         return await GetRecommendationsAsync(libraryId, scope.StationId, scope.FolderId, limit, cancellationToken);
@@ -1398,7 +1398,7 @@ public sealed class LibraryRecommendationService
 
     private async Task<List<RecommendationTrackDto>> FilterRecommendationCandidatesThroughDedupeAsync(
         RecommendationScope scope,
-        IReadOnlyList<RecommendationTrackDto> candidates,
+        List<RecommendationTrackDto> candidates,
         CancellationToken cancellationToken)
     {
         var accepted = new List<RecommendationTrackDto>(Math.Min(candidates.Count, RecommendationPoolLimit));

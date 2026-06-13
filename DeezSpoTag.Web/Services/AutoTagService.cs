@@ -53,6 +53,7 @@ internal static class AutoTagLiterals
     internal const string FollowDownloadEngineSource = "engine";
     internal const string DeezerSource = "deezer";
     internal const string SpotifySource = "spotify";
+    internal const string JsonFileSearchPattern = "*.json";
     internal const string PlatformsKey = "platforms";
     internal const string OverwriteKey = "overwrite";
     internal const string CustomKey = "custom";
@@ -989,7 +990,7 @@ public partial class AutoTagService
         string normalizedRunIntent,
         string? normalizedProfileId)
     {
-        return Directory.EnumerateFiles(_jobsDir, "*.json")
+        return Directory.EnumerateFiles(_jobsDir, AutoTagLiterals.JsonFileSearchPattern)
             .Select(TryLoadResumeScopeJob)
             .Where(job => job is not null
                 && IsResumeScopeMatch(job, normalizedPath, normalizedRunIntent, normalizedProfileId))
@@ -6043,7 +6044,7 @@ public partial class AutoTagService
                 return;
             }
 
-            foreach (var jobPath in Directory.EnumerateFiles(_jobsDir, "*.json"))
+            foreach (var jobPath in Directory.EnumerateFiles(_jobsDir, AutoTagLiterals.JsonFileSearchPattern))
             {
                 var jobId = Path.GetFileNameWithoutExtension(jobPath);
                 if (string.IsNullOrWhiteSpace(jobId)
@@ -6815,7 +6816,7 @@ public partial class AutoTagService
                 return;
             }
 
-            foreach (var jobId in Directory.EnumerateFiles(_jobsDir, "*.json")
+            foreach (var jobId in Directory.EnumerateFiles(_jobsDir, AutoTagLiterals.JsonFileSearchPattern)
                 .Select(Path.GetFileNameWithoutExtension)
                 .Where(jobId => !string.IsNullOrWhiteSpace(jobId)))
             {
@@ -7118,7 +7119,7 @@ public partial class AutoTagService
             return;
         }
 
-        foreach (var path in Directory.EnumerateFiles(_jobsDir, "*.json").OrderByDescending(File.GetLastWriteTimeUtc).ToList())
+        foreach (var path in Directory.EnumerateFiles(_jobsDir, AutoTagLiterals.JsonFileSearchPattern).OrderByDescending(File.GetLastWriteTimeUtc).ToList())
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!_activeJobIds.IsEmpty)

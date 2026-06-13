@@ -683,8 +683,8 @@ public sealed class DownloadStagingCleanupService
 
     private static void AddFileArrayCandidates(
         JsonElement root,
-        ISet<string> filePaths,
-        ISet<string> directoryPaths)
+        HashSet<string> filePaths,
+        HashSet<string> directoryPaths)
     {
         foreach (var propertyName in FileArrayProperties)
         {
@@ -695,36 +695,50 @@ public sealed class DownloadStagingCleanupService
 
             foreach (var file in files.EnumerateArray())
             {
-                if (file.ValueKind != JsonValueKind.Object)
-                {
-                    if (file.ValueKind == JsonValueKind.String)
-                    {
-                        var rawPath = file.GetString();
-                        if (!string.IsNullOrWhiteSpace(rawPath))
-                        {
-                            filePaths.Add(rawPath);
-                        }
-                    }
-
-                    continue;
-                }
-
-                foreach (var pathPropertyName in FileObjectPathProperties)
-                {
-                    AddStringProperty(file, pathPropertyName, filePaths);
-                }
-
-                foreach (var directoryPropertyName in FileObjectDirectoryProperties)
-                {
-                    AddStringProperty(file, directoryPropertyName, directoryPaths);
-                }
+                AddFileArrayCandidate(file, filePaths, directoryPaths);
             }
+        }
+    }
+
+    private static void AddFileArrayCandidate(
+        JsonElement file,
+        HashSet<string> filePaths,
+        HashSet<string> directoryPaths)
+    {
+        if (file.ValueKind == JsonValueKind.String)
+        {
+            AddStringValue(file, filePaths);
+            return;
+        }
+
+        if (file.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        foreach (var pathPropertyName in FileObjectPathProperties)
+        {
+            AddStringProperty(file, pathPropertyName, filePaths);
+        }
+
+        foreach (var directoryPropertyName in FileObjectDirectoryProperties)
+        {
+            AddStringProperty(file, directoryPropertyName, directoryPaths);
+        }
+    }
+
+    private static void AddStringValue(JsonElement element, HashSet<string> values)
+    {
+        var rawValue = element.GetString();
+        if (!string.IsNullOrWhiteSpace(rawValue))
+        {
+            values.Add(rawValue);
         }
     }
 
     private static void AddSiblingDirectoryCandidates(
         IEnumerable<string> filePaths,
-        ISet<string> directoryPaths)
+        HashSet<string> directoryPaths)
     {
         foreach (var directory in filePaths
             .Select(DownloadPathResolver.ResolveIoPath)

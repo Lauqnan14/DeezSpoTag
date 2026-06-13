@@ -28,22 +28,16 @@ public sealed class AmazonDownloadApiController : ControllerBase
     private readonly ILogger<AmazonDownloadApiController> _logger;
 
     public AmazonDownloadApiController(
-        DownloadQueueRepository queueRepository,
-        DeezSpoTagSettingsService settingsService,
-        DownloadOrchestrationService orchestrationService,
-        IDeezSpoTagListener deezspotagListener,
-        ISpotifyIdResolver spotifyIdResolver,
-        DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
-        DownloadDedupeService dedupeService,
+        DownloadControllerServices services,
         ILogger<AmazonDownloadApiController> logger)
     {
-        _queueRepository = queueRepository;
-        _settingsService = settingsService;
-        _orchestrationService = orchestrationService;
-        _deezspotagListener = deezspotagListener;
-        _spotifyIdResolver = spotifyIdResolver;
-        _libraryRepository = libraryRepository;
-        _dedupeService = dedupeService;
+        _queueRepository = services.QueueRepository;
+        _settingsService = services.SettingsService;
+        _orchestrationService = services.OrchestrationService;
+        _deezspotagListener = services.DeezSpoTagListener;
+        _spotifyIdResolver = services.SpotifyIdResolver;
+        _libraryRepository = services.LibraryRepository;
+        _dedupeService = services.DedupeService;
         _logger = logger;
     }
 

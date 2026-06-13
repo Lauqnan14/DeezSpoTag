@@ -318,59 +318,15 @@ public sealed class BoomplayApiController : ControllerBase
                 .Take(limit)
                 .ToList();
 
-            var hintTracks = pageIds
-                .Select(pageId =>
-                {
-                    playlist.TrackHints.TryGetValue(pageId, out var hint);
-                    return BuildFallbackTrack(pageId, hint);
-                })
-                .ToArray();
+            var page = await MaterializePlaylistTrackPageAsync(playlist, pageIds, cancellationToken);
 
-            var hasUsableHints = pageIds.Count > 0
-                && pageIds.All(pageId =>
-                    playlist.TrackHints.TryGetValue(pageId, out var hint)
-                    && hint != null
-                    && !IsBlankOrPlaceholder(hint.Title)
-                    && !IsBlankOrPlaceholder(hint.Artist));
-            var fastHintEligible = hasUsableHints;
-
-            BoomplayTrackMetadata[] tracks;
-            var missingCount = 0;
-            if (fastHintEligible)
-            {
-                tracks = hintTracks;
-            }
-            else
-            {
-                var fetchedTracks = pageIds.Count == 0
-                    ? Array.Empty<BoomplayTrackMetadata>()
-                    : (await _boomplayMetadataService.GetSongsAsync(pageIds, cancellationToken)).ToArray();
-                var tracksById = fetchedTracks
-                    .Where(static track => !string.IsNullOrWhiteSpace(track.Id))
-                    .GroupBy(static track => track.Id, StringComparer.Ordinal)
-                    .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
-                tracks = pageIds
-                    .Select(id =>
-                    {
-                        playlist.TrackHints.TryGetValue(id, out var hint);
-                        if (tracksById.TryGetValue(id, out var track))
-                        {
-                            return ApplyPlaylistHint(track, hint);
-                        }
-
-                        return BuildFallbackTrack(id, hint);
-                    })
-                    .ToArray();
-                missingCount = pageIds.Count(pageId => !tracksById.ContainsKey(pageId));
-            }
-
-            if (missingCount > 0)
+            if (page.MissingCount > 0)
             {
                 _logger.LogWarning("Boomplay staged tracks missing metadata for MissingCount/PageCount tracks for Type:Id at offset Offset");
             }
             var nextOffset = Math.Min(total, offset + pageIds.Count);
             var deezerMap = resolveDeezer
-                ? await ResolveDeezerIdsForTracksAsync(tracks, cancellationToken)
+                ? await ResolveDeezerIdsForTracksAsync(page.Tracks, cancellationToken)
                 : new Dictionary<string, BoomplayDeezerMatchResult>(StringComparer.Ordinal);
 
             return Ok(new
@@ -380,7 +336,7 @@ public sealed class BoomplayApiController : ControllerBase
                 nextOffset,
                 total,
                 hasMore = nextOffset < total,
-                tracks = MapPlaylistTracksPage(tracks, offset, deezerMap)
+                tracks = MapPlaylistTracksPage(page.Tracks, offset, deezerMap)
             });
         }
         catch (OperationCanceledException)
@@ -392,6 +348,60 @@ public sealed class BoomplayApiController : ControllerBase
             _logger.LogError(ex, "Boomplay staged tracks fetch failed for Type:Id offset=Offset limit=Limit");
             return StatusCode(500, new { available = false, error = "Failed to load Boomplay playlist tracks." });
         }
+    }
+
+    private sealed record BoomplayTrackPage(BoomplayTrackMetadata[] Tracks, int MissingCount);
+
+    private async Task<BoomplayTrackPage> MaterializePlaylistTrackPageAsync(
+        BoomplayPlaylistMetadata playlist,
+        List<string> pageIds,
+        CancellationToken cancellationToken)
+    {
+        if (CanUsePlaylistTrackHints(playlist, pageIds))
+        {
+            return new BoomplayTrackPage(BuildHintTracks(playlist, pageIds), 0);
+        }
+
+        var fetchedTracks = pageIds.Count == 0
+            ? Array.Empty<BoomplayTrackMetadata>()
+            : (await _boomplayMetadataService.GetSongsAsync(pageIds, cancellationToken)).ToArray();
+        var tracksById = fetchedTracks
+            .Where(static track => !string.IsNullOrWhiteSpace(track.Id))
+            .GroupBy(static track => track.Id, StringComparer.Ordinal)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
+        var tracks = pageIds
+            .Select(id => BuildPlaylistTrackFromFetchOrHint(playlist, tracksById, id))
+            .ToArray();
+        var missingCount = pageIds.Count(pageId => !tracksById.ContainsKey(pageId));
+        return new BoomplayTrackPage(tracks, missingCount);
+    }
+
+    private static bool CanUsePlaylistTrackHints(BoomplayPlaylistMetadata playlist, List<string> pageIds)
+        => pageIds.Count > 0
+           && pageIds.All(pageId =>
+               playlist.TrackHints.TryGetValue(pageId, out var hint)
+               && hint != null
+               && !IsBlankOrPlaceholder(hint.Title)
+               && !IsBlankOrPlaceholder(hint.Artist));
+
+    private static BoomplayTrackMetadata[] BuildHintTracks(BoomplayPlaylistMetadata playlist, IEnumerable<string> pageIds)
+        => pageIds
+            .Select(pageId =>
+            {
+                playlist.TrackHints.TryGetValue(pageId, out var hint);
+                return BuildFallbackTrack(pageId, hint);
+            })
+            .ToArray();
+
+    private static BoomplayTrackMetadata BuildPlaylistTrackFromFetchOrHint(
+        BoomplayPlaylistMetadata playlist,
+        Dictionary<string, BoomplayTrackMetadata> tracksById,
+        string id)
+    {
+        playlist.TrackHints.TryGetValue(id, out var hint);
+        return tracksById.TryGetValue(id, out var track)
+            ? ApplyPlaylistHint(track, hint)
+            : BuildFallbackTrack(id, hint);
     }
 
     private static BoomplayTrackMetadata BuildFallbackTrack(string id, BoomplayTrackHint? hint = null)
@@ -698,7 +708,7 @@ public sealed class BoomplayApiController : ControllerBase
     private static List<object> MapPlaylistTracksPage(
         IReadOnlyList<BoomplayTrackMetadata> tracks,
         int offset,
-        IReadOnlyDictionary<string, BoomplayDeezerMatchResult>? deezerMap = null)
+        Dictionary<string, BoomplayDeezerMatchResult>? deezerMap = null)
     {
         return tracks.Select((track, index) =>
         {

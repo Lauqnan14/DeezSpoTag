@@ -335,7 +335,7 @@ public sealed class QobuzTrackResolver
 
         var hasStrictTitle = StrictTitlesMatch(expectedTitle, bestTrack.Title);
         var hasStrictArtist = StrictArtistsMatch(expectedArtist, GetTrackArtist(bestTrack));
-        var accepted = IsAcceptedResolvedTrack(
+        var accepted = IsAcceptedResolvedTrack(new QobuzTrackAcceptanceInput(
             bestTrack,
             expectedIsrc,
             expectedTitle,
@@ -344,7 +344,7 @@ public sealed class QobuzTrackResolver
             expectedDurationSec,
             bestScore,
             hasStrictTitle,
-            hasStrictArtist);
+            hasStrictArtist));
         if (!accepted)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -399,23 +399,31 @@ public sealed class QobuzTrackResolver
         return score >= 14;
     }
 
-    private static bool IsAcceptedResolvedTrack(
-        QobuzTrack candidate,
-        string? expectedIsrc,
-        string? expectedTitle,
-        string? expectedArtist,
-        string? expectedAlbum,
-        int expectedDurationSec,
-        int bestScore,
-        bool hasStrictTitle,
-        bool hasStrictArtist)
+    private sealed record QobuzTrackAcceptanceInput(
+        QobuzTrack Candidate,
+        string? ExpectedIsrc,
+        string? ExpectedTitle,
+        string? ExpectedArtist,
+        string? ExpectedAlbum,
+        int ExpectedDurationSec,
+        int BestScore,
+        bool HasStrictTitle,
+        bool HasStrictArtist);
+
+    private static bool IsAcceptedResolvedTrack(QobuzTrackAcceptanceInput input)
     {
-        if (!string.IsNullOrWhiteSpace(expectedIsrc))
+        if (!string.IsNullOrWhiteSpace(input.ExpectedIsrc))
         {
-            return bestScore >= (hasStrictTitle ? 11 : 8) && hasStrictArtist;
+            return input.BestScore >= (input.HasStrictTitle ? 11 : 8) && input.HasStrictArtist;
         }
 
-        return HasAuthoritativeMetadataMatch(candidate, expectedTitle, expectedArtist, expectedAlbum, expectedDurationSec, bestScore);
+        return HasAuthoritativeMetadataMatch(
+            input.Candidate,
+            input.ExpectedTitle,
+            input.ExpectedArtist,
+            input.ExpectedAlbum,
+            input.ExpectedDurationSec,
+            input.BestScore);
     }
 
     private static QobuzTrackResolution BuildResolution(QobuzTrack track, string source, int score)

@@ -459,14 +459,15 @@ public sealed class LrclibMatcher
             .Select(raw => raw.Trim())
             .Where(static line => !string.IsNullOrWhiteSpace(line))
             .Select(line => LrcLineRegex.Match(line))
-            .Where(static match => match.Success);
+            .Where(static match => match.Success)
+            .Select(static match => match.Groups);
 
-        foreach (var match in parsedLines)
+        foreach (var groups in parsedLines)
         {
-            var minutesRaw = match.Groups[1].Value;
-            var secondsRaw = match.Groups[2].Value;
-            var fractionRaw = match.Groups[3].Value;
-            var text = match.Groups[4].Value.Trim();
+            var minutesRaw = groups[1].Value;
+            var secondsRaw = groups[2].Value;
+            var fractionRaw = groups[3].Value;
+            var text = groups[4].Value.Trim();
             if (string.IsNullOrWhiteSpace(text))
             {
                 continue;

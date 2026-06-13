@@ -1819,157 +1819,208 @@ namespace DeezSpoTag.Web.Controllers
                 return NotFound("Track not found");
             }
 
-            if (trackDoc.RootElement.TryGetProperty(AlbumType, out var albumElement)
-                && albumElement.TryGetProperty("id", out var albumIdElement))
+            var albumTracklist = await TryGetDeezerAlbumTracklistFromTrackAlbumAsync(
+                httpClient,
+                trackDoc.RootElement,
+                id);
+            if (albumTracklist != null)
             {
-                var albumId = albumIdElement.GetInt64().ToString();
-                var gatewayAlbumTracklist = await TryGetGatewayAlbumTracklistAsync(albumId);
-                if (gatewayAlbumTracklist is OkObjectResult)
-                {
-                    return gatewayAlbumTracklist;
-                }
-
-                var albumResponse = await httpClient.GetAsync($"https://api.deezer.com/album/{albumId}");
-                if (albumResponse.IsSuccessStatusCode)
-                {
-                    var albumContent = await albumResponse.Content.ReadAsStringAsync();
-                    var albumTracksResponse = await httpClient.GetAsync($"https://api.deezer.com/album/{albumId}/tracks");
-                    if (albumTracksResponse.IsSuccessStatusCode)
-                    {
-                        var albumTracksContent = await albumTracksResponse.Content.ReadAsStringAsync();
-                        using var albumDoc = JsonDocument.Parse(albumContent);
-                        using var albumTracksDoc = JsonDocument.Parse(albumTracksContent);
-                        var albumRoot = albumDoc.RootElement;
-                        var tracksRoot = albumTracksDoc.RootElement;
-                        if (tracksRoot.TryGetProperty(DataField, out var tracksData)
-                            && tracksData.ValueKind == JsonValueKind.Array)
-                        {
-                            var albumTitle = ReadString(albumRoot, TitleField);
-                            var coverBig = ReadString(albumRoot, CoverBigField);
-                            var coverXl = ReadString(albumRoot, CoverXlField);
-                            var artistObj = albumRoot.TryGetProperty(ArtistType, out var albumArtist)
-                                && albumArtist.ValueKind == JsonValueKind.Object
-                                ? new
-                                {
-                                    id = ReadString(albumArtist, "id"),
-                                    name = ReadString(albumArtist, NameField)
-                                }
-                                : new { id = string.Empty, name = string.Empty };
-
-                            var tracks = new List<object>();
-                            var position = 0;
-                            foreach (var track in tracksData.EnumerateArray())
-                            {
-                                position += 1;
-                                var trackArtist = track.TryGetProperty(ArtistType, out var artistToken)
-                                    && artistToken.ValueKind == JsonValueKind.Object
-                                    ? new
-                                    {
-                                        id = ReadString(artistToken, "id"),
-                                        name = ReadString(artistToken, NameField)
-                                    }
-                                    : new { id = string.Empty, name = string.Empty };
-                                var duration = ReadInt(track, DurationField);
-                                tracks.Add(new
-                                {
-                                    id = ReadString(track, "id"),
-                                    title = ReadString(track, TitleField),
-                                    duration,
-                                    durationMs = Math.Max(0, duration) * 1000L,
-                                    isrc = ReadString(track, "isrc"),
-                                    track_position = ReadInt(track, "track_position", position),
-                                    stream_track_id = ReadString(track, "id"),
-                                    track_token = string.Empty,
-                                    md5_origin = string.Empty,
-                                    media_version = string.Empty,
-                                    fallback_id = string.Empty,
-                                    artist = trackArtist,
-                                    album = new
-                                    {
-                                        id = albumId,
-                                        title = albumTitle,
-                                        cover_medium = coverBig
-                                    }
-                                });
-                            }
-
-                            return Ok(new
-                            {
-                                id = albumId,
-                                title = albumTitle,
-                                artist = artistObj,
-                                cover_xl = coverXl,
-                                cover_big = coverBig,
-                                nb_tracks = tracks.Count,
-                                tracks,
-                                selected_track_id = id
-                            });
-                        }
-                    }
-                }
+                return albumTracklist;
             }
 
             if (trackDoc.RootElement.ValueKind == JsonValueKind.Object)
             {
-                var root = trackDoc.RootElement;
-                var duration = ReadInt(root, DurationField);
-                var artistObj = root.TryGetProperty(ArtistType, out var artistToken)
-                    && artistToken.ValueKind == JsonValueKind.Object
-                    ? new
-                    {
-                        id = ReadString(artistToken, "id"),
-                        name = ReadString(artistToken, NameField)
-                    }
-                    : new { id = string.Empty, name = string.Empty };
-                var albumObj = root.TryGetProperty(AlbumType, out var albumToken)
-                    && albumToken.ValueKind == JsonValueKind.Object
-                    ? new
-                    {
-                        id = ReadString(albumToken, "id"),
-                        title = ReadString(albumToken, TitleField),
-                        cover_medium = ReadString(albumToken, CoverMediumField)
-                    }
-                    : new { id = string.Empty, title = string.Empty, cover_medium = string.Empty };
-                var coverXl = root.TryGetProperty(AlbumType, out var albumCoverToken) && albumCoverToken.ValueKind == JsonValueKind.Object
-                    ? ReadString(albumCoverToken, CoverXlField)
-                    : string.Empty;
-                var coverBig = root.TryGetProperty(AlbumType, out var albumCoverBigToken) && albumCoverBigToken.ValueKind == JsonValueKind.Object
-                    ? ReadString(albumCoverBigToken, CoverBigField)
-                    : string.Empty;
-
-                return Ok(new
-                {
-                    id = ReadString(root, "id"),
-                    title = ReadString(root, TitleField),
-                    artist = artistObj,
-                    cover_xl = coverXl,
-                    cover_big = coverBig,
-                    nb_tracks = 1,
-                    tracks = new[]
-                    {
-                        new
-                        {
-                            id = ReadString(root, "id"),
-                            title = ReadString(root, TitleField),
-                            duration,
-                            durationMs = Math.Max(0, duration) * 1000L,
-                            isrc = ReadString(root, "isrc"),
-                            track_position = ReadInt(root, "track_position", 1),
-                            stream_track_id = ReadString(root, "id"),
-                            track_token = string.Empty,
-                            md5_origin = string.Empty,
-                            media_version = string.Empty,
-                            fallback_id = string.Empty,
-                            artist = artistObj,
-                            album = albumObj
-                        }
-                    },
-                    selected_track_id = id
-                });
+                return BuildDeezerSingleTrackTracklistResult(trackDoc.RootElement, id);
             }
 
             return Content(trackContent, ApplicationJsonContentType);
         }
+
+        private OkObjectResult BuildDeezerSingleTrackTracklistResult(JsonElement root, string selectedTrackId)
+        {
+            var duration = ReadInt(root, DurationField);
+            var artistObj = BuildDeezerArtistObject(root);
+            var albumObj = BuildDeezerAlbumObject(root);
+            return Ok(new
+            {
+                id = ReadString(root, "id"),
+                title = ReadString(root, TitleField),
+                artist = artistObj,
+                cover_xl = ReadDeezerAlbumString(root, CoverXlField),
+                cover_big = ReadDeezerAlbumString(root, CoverBigField),
+                nb_tracks = 1,
+                tracks = new[]
+                {
+                    new
+                    {
+                        id = ReadString(root, "id"),
+                        title = ReadString(root, TitleField),
+                        duration,
+                        durationMs = Math.Max(0, duration) * 1000L,
+                        isrc = ReadString(root, "isrc"),
+                        track_position = ReadInt(root, "track_position", 1),
+                        stream_track_id = ReadString(root, "id"),
+                        track_token = string.Empty,
+                        md5_origin = string.Empty,
+                        media_version = string.Empty,
+                        fallback_id = string.Empty,
+                        artist = artistObj,
+                        album = albumObj
+                    }
+                },
+                selected_track_id = selectedTrackId
+            });
+        }
+
+        private async Task<IActionResult?> TryGetDeezerAlbumTracklistFromTrackAlbumAsync(
+            HttpClient httpClient,
+            JsonElement trackRoot,
+            string selectedTrackId)
+        {
+            if (!TryReadDeezerAlbumId(trackRoot, out var albumId))
+            {
+                return null;
+            }
+
+            var gatewayAlbumTracklist = await TryGetGatewayAlbumTracklistAsync(albumId);
+            if (gatewayAlbumTracklist is OkObjectResult)
+            {
+                return gatewayAlbumTracklist;
+            }
+
+            var albumResponse = await httpClient.GetAsync($"https://api.deezer.com/album/{albumId}");
+            var albumTracksResponse = await httpClient.GetAsync($"https://api.deezer.com/album/{albumId}/tracks");
+            if (!albumResponse.IsSuccessStatusCode || !albumTracksResponse.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var albumContent = await albumResponse.Content.ReadAsStringAsync();
+            var albumTracksContent = await albumTracksResponse.Content.ReadAsStringAsync();
+            using var albumDoc = JsonDocument.Parse(albumContent);
+            using var albumTracksDoc = JsonDocument.Parse(albumTracksContent);
+            return BuildDeezerAlbumTracklistResult(
+                albumId,
+                selectedTrackId,
+                albumDoc.RootElement,
+                albumTracksDoc.RootElement);
+        }
+
+        private static bool TryReadDeezerAlbumId(JsonElement trackRoot, out string albumId)
+        {
+            if (trackRoot.TryGetProperty(AlbumType, out var albumElement)
+                && albumElement.TryGetProperty("id", out var albumIdElement))
+            {
+                albumId = albumIdElement.GetInt64().ToString();
+                return true;
+            }
+
+            albumId = string.Empty;
+            return false;
+        }
+
+        private OkObjectResult? BuildDeezerAlbumTracklistResult(
+            string albumId,
+            string selectedTrackId,
+            JsonElement albumRoot,
+            JsonElement tracksRoot)
+        {
+            if (!tracksRoot.TryGetProperty(DataField, out var tracksData)
+                || tracksData.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var albumTitle = ReadString(albumRoot, TitleField);
+            var coverBig = ReadString(albumRoot, CoverBigField);
+            var tracks = BuildDeezerAlbumTrackRows(tracksData, albumId, albumTitle, coverBig);
+            return Ok(new
+            {
+                id = albumId,
+                title = albumTitle,
+                artist = BuildDeezerArtistObject(albumRoot),
+                cover_xl = ReadString(albumRoot, CoverXlField),
+                cover_big = coverBig,
+                nb_tracks = tracks.Count,
+                tracks,
+                selected_track_id = selectedTrackId
+            });
+        }
+
+        private static List<object> BuildDeezerAlbumTrackRows(
+            JsonElement tracksData,
+            string albumId,
+            string albumTitle,
+            string coverBig)
+        {
+            var tracks = new List<object>();
+            var position = 0;
+            foreach (var track in tracksData.EnumerateArray())
+            {
+                position += 1;
+                tracks.Add(BuildDeezerAlbumTrackRow(track, albumId, albumTitle, coverBig, position));
+            }
+
+            return tracks;
+        }
+
+        private static object BuildDeezerAlbumTrackRow(
+            JsonElement track,
+            string albumId,
+            string albumTitle,
+            string coverBig,
+            int position)
+        {
+            var duration = ReadInt(track, DurationField);
+            return new
+            {
+                id = ReadString(track, "id"),
+                title = ReadString(track, TitleField),
+                duration,
+                durationMs = Math.Max(0, duration) * 1000L,
+                isrc = ReadString(track, "isrc"),
+                track_position = ReadInt(track, "track_position", position),
+                stream_track_id = ReadString(track, "id"),
+                track_token = string.Empty,
+                md5_origin = string.Empty,
+                media_version = string.Empty,
+                fallback_id = string.Empty,
+                artist = BuildDeezerArtistObject(track),
+                album = new
+                {
+                    id = albumId,
+                    title = albumTitle,
+                    cover_medium = coverBig
+                }
+            };
+        }
+
+        private static object BuildDeezerArtistObject(JsonElement root)
+            => root.TryGetProperty(ArtistType, out var artistToken)
+               && artistToken.ValueKind == JsonValueKind.Object
+                ? new
+                {
+                    id = ReadString(artistToken, "id"),
+                    name = ReadString(artistToken, NameField)
+                }
+                : new { id = string.Empty, name = string.Empty };
+
+        private static object BuildDeezerAlbumObject(JsonElement root)
+            => root.TryGetProperty(AlbumType, out var albumToken)
+               && albumToken.ValueKind == JsonValueKind.Object
+                ? new
+                {
+                    id = ReadString(albumToken, "id"),
+                    title = ReadString(albumToken, TitleField),
+                    cover_medium = ReadString(albumToken, CoverMediumField)
+                }
+                : new { id = string.Empty, title = string.Empty, cover_medium = string.Empty };
+
+        private static string ReadDeezerAlbumString(JsonElement root, string propertyName)
+            => root.TryGetProperty(AlbumType, out var albumToken)
+               && albumToken.ValueKind == JsonValueKind.Object
+                ? ReadString(albumToken, propertyName)
+                : string.Empty;
 
         private static string ReadString(JsonElement element, string propertyName)
         {

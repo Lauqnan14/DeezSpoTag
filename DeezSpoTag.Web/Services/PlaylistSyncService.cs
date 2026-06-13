@@ -494,15 +494,10 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed("No eligible tracks after blocked/ignored filtering.");
         }
 
-        var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
-        foreach (var track in eligibleTracks)
-        {
-            var localTrackId = await ResolveLocalTrackIdAsync(playlist.Source, track, cancellationToken);
-            if (localTrackId.HasValue)
-            {
-                availableTrackRows.Add((track, localTrackId.Value));
-            }
-        }
+        var availableTrackRows = await ResolveAvailableTrackRowsAsync(
+            playlist.Source,
+            eligibleTracks,
+            cancellationToken);
 
         if (availableTrackRows.Count == 0)
         {
@@ -562,6 +557,24 @@ public sealed class PlaylistSyncService
         };
     }
 
+    private async Task<List<(SyncTrackSummary Track, long LocalTrackId)>> ResolveAvailableTrackRowsAsync(
+        string source,
+        IReadOnlyList<SyncTrackSummary> eligibleTracks,
+        CancellationToken cancellationToken)
+    {
+        var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
+        foreach (var track in eligibleTracks)
+        {
+            var localTrackId = await ResolveLocalTrackIdAsync(source, track, cancellationToken);
+            if (localTrackId.HasValue)
+            {
+                availableTrackRows.Add((track, localTrackId.Value));
+            }
+        }
+
+        return availableTrackRows;
+    }
+
     private async Task<List<SyncTrackSummary>> SelectPlexTracksVisibleForAvailableSyncAsync(
         IReadOnlyList<(SyncTrackSummary Track, long LocalTrackId)> availableTrackRows,
         bool allowLiveLookup,
@@ -600,7 +613,7 @@ public sealed class PlaylistSyncService
 
     private static void AddSelectedTracks(
         ICollection<SyncTrackSummary> selected,
-        ISet<string> selectedSourceIds,
+        HashSet<string> selectedSourceIds,
         IEnumerable<(SyncTrackSummary Track, long LocalTrackId)> rows)
     {
         var trackRows = rows.ToList();
@@ -1443,33 +1456,16 @@ public sealed class PlaylistSyncService
 
         return rules.Any(rule =>
             PlaylistTrackBlockRuleMatcher.RuleMatches(
-                track.Name,
-                track.Artists,
-                track.Album,
-                track.Genres,
-                track.Explicit,
-                track.ReleaseDate,
+                new PlaylistTrackBlockRuleMatcher.TrackRuleMatchInput(
+                    track.Name,
+                    track.Artists,
+                    track.Album,
+                    track.Genres,
+                    track.Explicit,
+                    track.ReleaseDate),
                 rule.ConditionField,
                 rule.ConditionOperator,
                 rule.ConditionValue));
-    }
-
-    private static bool EvalStringCondition(string? value, string? op, string? conditionValue)
-    {
-        var candidate = (value ?? string.Empty).Trim();
-        var rule = (conditionValue ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(rule))
-        {
-            return false;
-        }
-
-        return (op ?? string.Empty).Trim().ToLowerInvariant() switch
-        {
-            "contains" => candidate.Contains(rule, StringComparison.OrdinalIgnoreCase),
-            "equals" => string.Equals(candidate, rule, StringComparison.OrdinalIgnoreCase),
-            "starts_with" => candidate.StartsWith(rule, StringComparison.OrdinalIgnoreCase),
-            _ => false
-        };
     }
 
     private static bool TryParseReleaseYear(string? releaseDate, out int year)

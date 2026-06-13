@@ -328,14 +328,14 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
-        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: false, cancellationToken, blockRules);
+        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: false, blockRules, cancellationToken);
 
     public Task<DownloadIntentResult> EnqueueManualAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
-        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: true, cancellationToken, blockRules);
+        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: true, blockRules, cancellationToken);
 
     public async Task<DownloadIntentResult> EnqueueManualVisibleAsync(
         DownloadIntent intent,
@@ -443,14 +443,13 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         bool preferIsrcOnly,
         bool allowManualQueueDuringEnrichment,
-        CancellationToken cancellationToken,
-        IReadOnlyList<PlaylistTrackBlockRule>? blockRules)
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
+        CancellationToken cancellationToken)
     {
         var resolution = await TryPrepareEnqueueResolutionAsync(
             intent,
             preferIsrcOnly,
             allowManualQueueDuringEnrichment,
-            blockRules,
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -591,7 +590,6 @@ public sealed class DownloadIntentService
             intent,
             preferIsrcOnly: false,
             allowManualQueueDuringEnrichment: false,
-            blockRules: null,
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -949,7 +947,6 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         bool preferIsrcOnly,
         bool allowManualQueueDuringEnrichment,
-        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         CancellationToken cancellationToken)
     {
         var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment, cancellationToken);

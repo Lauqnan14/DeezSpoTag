@@ -1418,6 +1418,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayDeezerMatchService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.DownloadControllerServices>();
         services.AddScoped<DeezSpoTag.Web.Services.LinkMapping.DeezerLinkMappingService>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.QobuzMetadataResolver>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.DeezerMetadataResolver>();
@@ -1427,6 +1428,9 @@ public partial class Program
             sp.GetRequiredService<DeezSpoTag.Web.Services.LastFmArtistImageService>());
         services.AddSingleton<DeezSpoTag.Web.Services.AppleArtistBiographyService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistMetadataServices>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistImageProviderServices>();
+        services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueDependencies>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyRecommendationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ITidalAccessTokenProvider, DeezSpoTag.Web.Services.TidalAccessTokenProvider>();

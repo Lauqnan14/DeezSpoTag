@@ -211,13 +211,14 @@ namespace DeezSpoTag.Web.Controllers.Api
             foreach (var intent in resolvedIntents.Intents)
             {
                 await EnqueueResolvedIntentAsync(
-                    intent,
-                    isBatch,
-                    forceImmediateNoIsrc,
-                    request.QueueInBackground,
-                    request.DestinationFolderId,
-                    request.Settings,
-                    accumulator,
+                    new ResolvedIntentEnqueueRequest(
+                        intent,
+                        isBatch,
+                        forceImmediateNoIsrc,
+                        request.QueueInBackground,
+                        request.DestinationFolderId,
+                        request.Settings,
+                        accumulator),
                     cancellationToken);
             }
         }
@@ -394,57 +395,74 @@ namespace DeezSpoTag.Web.Controllers.Api
             return fallbackIntent;
         }
 
+        private sealed record ResolvedIntentEnqueueRequest(
+            DownloadIntent Intent,
+            bool IsBatch,
+            bool ForceImmediateNoIsrc,
+            bool QueueInBackground,
+            long? DestinationFolderId,
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings Settings,
+            AddWithSettingsAccumulator Accumulator);
+
         private async Task EnqueueResolvedIntentAsync(
-            DownloadIntent intent,
-            bool isBatch,
-            bool forceImmediateNoIsrc,
-            bool queueInBackground,
-            long? destinationFolderId,
-            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-            AddWithSettingsAccumulator accumulator,
+            ResolvedIntentEnqueueRequest request,
             CancellationToken cancellationToken)
         {
-            intent.DestinationFolderId ??= destinationFolderId;
-            ApplyManualDownloadPreferenceIfMissing(intent, settings);
+            var intent = request.Intent;
+            intent.DestinationFolderId ??= request.DestinationFolderId;
+            ApplyManualDownloadPreferenceIfMissing(intent, request.Settings);
             var requiresAutoTagProfile = RequiresAutoTagDefaults(intent.ContentType, intent.SourceUrl);
 
-            if (queueInBackground)
+            if (TryDeferIntent(request, allowBatchNoIsrcDeferral: false))
             {
-                // queueInBackground must remain non-blocking and resilient to upstream throttling.
-                // Persist the intent for background processing instead of forcing synchronous resolution here.
-                if (_backgroundQueue.Enqueue(intent))
-                {
-                    accumulator.Deferred++;
-                    if (!string.IsNullOrWhiteSpace(intent.PreferredEngine))
-                    {
-                        accumulator.Engine = intent.PreferredEngine;
-                    }
-                }
-                else
-                {
-                    accumulator.Skipped++;
-                    accumulator.SetLastErrorIfEmpty("Background queue is full. Please retry.");
-                }
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(intent.Isrc) && isBatch && !forceImmediateNoIsrc)
+            if (string.IsNullOrWhiteSpace(intent.Isrc) && request.IsBatch && !request.ForceImmediateNoIsrc)
             {
-                if (_backgroundQueue.Enqueue(intent))
-                {
-                    accumulator.Deferred++;
-                }
-                else
-                {
-                    accumulator.Skipped++;
-                }
+                TryDeferIntent(request, allowBatchNoIsrcDeferral: true);
                 return;
             }
 
             var result = await _intentService.EnqueueManualAsync(
                 intent,
                 cancellationToken,
-                preferIsrcOnly: isBatch && !forceImmediateNoIsrc);
+                preferIsrcOnly: request.IsBatch && !request.ForceImmediateNoIsrc);
+            ApplyEnqueueResult(result, request.Accumulator, requiresAutoTagProfile);
+        }
+
+        private bool TryDeferIntent(ResolvedIntentEnqueueRequest request, bool allowBatchNoIsrcDeferral)
+        {
+            if (!request.QueueInBackground && !allowBatchNoIsrcDeferral)
+            {
+                return false;
+            }
+
+            if (_backgroundQueue.Enqueue(request.Intent))
+            {
+                request.Accumulator.Deferred++;
+                if (request.QueueInBackground && !string.IsNullOrWhiteSpace(request.Intent.PreferredEngine))
+                {
+                    request.Accumulator.Engine = request.Intent.PreferredEngine;
+                }
+
+                return true;
+            }
+
+            request.Accumulator.Skipped++;
+            if (request.QueueInBackground)
+            {
+                request.Accumulator.SetLastErrorIfEmpty("Background queue is full. Please retry.");
+            }
+
+            return true;
+        }
+
+        private static void ApplyEnqueueResult(
+            DownloadIntentResult result,
+            AddWithSettingsAccumulator accumulator,
+            bool requiresAutoTagProfile)
+        {
             if (!string.IsNullOrWhiteSpace(result.Engine))
             {
                 accumulator.Engine = result.Engine;

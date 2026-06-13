@@ -131,10 +131,7 @@ public sealed class AppleArtistBiographyService
 
     private static bool AppleSongSearchHasExactTrack(JsonElement root, string normalizedArtistName, string normalizedTrackTitle)
     {
-        if (!root.TryGetProperty("results", out var results)
-            || !results.TryGetProperty("songs", out var songs)
-            || !songs.TryGetProperty("data", out var data)
-            || data.ValueKind != JsonValueKind.Array)
+        if (!TryGetAppleSongsData(root, out var data))
         {
             return false;
         }
@@ -149,20 +146,34 @@ public sealed class AppleArtistBiographyService
                 continue;
             }
 
-            var artistName = attrs.TryGetProperty("artistName", out var artistElement)
-                ? NormalizeArtistName(artistElement.GetString())
-                : string.Empty;
-            var trackName = attrs.TryGetProperty(NameField, out var nameElement)
-                ? NormalizeTrackTitle(nameElement.GetString())
-                : string.Empty;
-            if (string.Equals(artistName, normalizedArtistName, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(trackName, normalizedTrackTitle, StringComparison.OrdinalIgnoreCase))
+            if (AppleSongAttributesMatch(attrs, normalizedArtistName, normalizedTrackTitle))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private static bool TryGetAppleSongsData(JsonElement root, out JsonElement data)
+    {
+        data = default;
+        return root.TryGetProperty("results", out var results)
+               && results.TryGetProperty("songs", out var songs)
+               && songs.TryGetProperty("data", out data)
+               && data.ValueKind == JsonValueKind.Array;
+    }
+
+    private static bool AppleSongAttributesMatch(JsonElement attrs, string normalizedArtistName, string normalizedTrackTitle)
+    {
+        var artistName = attrs.TryGetProperty("artistName", out var artistElement)
+            ? NormalizeArtistName(artistElement.GetString())
+            : string.Empty;
+        var trackName = attrs.TryGetProperty(NameField, out var nameElement)
+            ? NormalizeTrackTitle(nameElement.GetString())
+            : string.Empty;
+        return string.Equals(artistName, normalizedArtistName, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(trackName, normalizedTrackTitle, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<string?> ResolveAppleArtistBiographyAsync(
@@ -199,7 +210,11 @@ public sealed class AppleArtistBiographyService
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Apple artist biography page returned HTTP {StatusCode} for artist Id", (int)response.StatusCode);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Apple artist biography page returned HTTP {StatusCode} for artist Id", (int)response.StatusCode);
+                }
+
                 return null;
             }
 

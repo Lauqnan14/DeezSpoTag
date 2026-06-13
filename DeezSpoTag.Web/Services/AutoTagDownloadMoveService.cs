@@ -2553,25 +2553,30 @@ public sealed class AutoTagDownloadMoveService
             return;
         }
 
+        foreach (var artworkPath in TryEnumerateTopLevelArtistSidecars(artistIo))
+        {
+            if (!DirectoryArtworkSidecarExtensions.Contains(Path.GetExtension(artworkPath)))
+            {
+                continue;
+            }
+
+            files.Add(DownloadPathResolver.NormalizeDisplayPath(artworkPath));
+        }
+    }
+
+    private static string[] TryEnumerateTopLevelArtistSidecars(string artistIo)
+    {
         try
         {
-            foreach (var artworkPath in Directory.EnumerateFiles(artistIo, "*", SearchOption.TopDirectoryOnly))
-            {
-                if (!DirectoryArtworkSidecarExtensions.Contains(Path.GetExtension(artworkPath)))
-                {
-                    continue;
-                }
-
-                files.Add(DownloadPathResolver.NormalizeDisplayPath(artworkPath));
-            }
+            return Directory.EnumerateFiles(artistIo, "*", SearchOption.TopDirectoryOnly).ToArray();
         }
         catch (IOException)
         {
-            return;
+            return [];
         }
         catch (UnauthorizedAccessException)
         {
-            return;
+            return [];
         }
     }
 

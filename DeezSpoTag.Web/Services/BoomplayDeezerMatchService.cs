@@ -523,13 +523,15 @@ public sealed class BoomplayDeezerMatchService
             return null;
         }
 
-        var plausible = await IsPlausibleCandidateAsync(
-            deezerId,
+        var source = new DeezerCandidateSource(
             title,
             artist,
             context.Album,
             context.Isrc,
-            context.DurationMs,
+            context.DurationMs);
+        var plausible = await IsPlausibleCandidateAsync(
+            deezerId,
+            source,
             validationTrackCache,
             cancellationToken);
         return plausible ? deezerId : null;
@@ -537,15 +539,10 @@ public sealed class BoomplayDeezerMatchService
 
     private Task<bool> IsPlausibleCandidateAsync(
         string deezerId,
-        string? sourceTitle,
-        string? sourceArtist,
-        string? sourceAlbum,
-        string? sourceIsrc,
-        int? sourceDurationMs,
+        DeezerCandidateSource source,
         ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
         CancellationToken cancellationToken)
     {
-        var source = new DeezerCandidateSource(sourceTitle, sourceArtist, sourceAlbum, sourceIsrc, sourceDurationMs);
         return DeezerCandidateMatchHelper.IsPlausibleCandidateAsync(
             deezerId,
             source,
@@ -579,11 +576,7 @@ public sealed class BoomplayDeezerMatchService
             new DeezerFallbackSearchHandlers(
                 (candidateId, token) => IsPlausibleCandidateAsync(
                     candidateId,
-                    source.SourceTitle,
-                    source.SourceArtist,
-                    source.SourceAlbum,
-                    source.SourceIsrc,
-                    source.SourceDurationMs,
+                    source,
                     validationTrackCache,
                     token),
                 (candidateId, album, token) => GetAlbumMatchScoreAsync(candidateId, album, validationTrackCache, token),
@@ -654,7 +647,10 @@ public sealed class BoomplayDeezerMatchService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed hydrating Deezer metadata for Boomplay match {DeezerId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(deezerId));
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed hydrating Deezer metadata for Boomplay match {DeezerId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(deezerId));
+            }
         }
 
         return new BoomplayDeezerMatchResult(deezerId, title, artist, album, coverMedium, durationSeconds);

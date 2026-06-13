@@ -37,10 +37,12 @@ public sealed class QobuzResolutionGuardrailTests
     public void QobuzDirectEnqueue_UsesSingleDedupeService()
     {
         var controller = ReadSource("DeezSpoTag.Web/Controllers/Api/QobuzDownloadApiController.cs");
+        var controllerServices = ReadSource("DeezSpoTag.Web/Services/DownloadControllerServices.cs");
         var helper = ReadSource("DeezSpoTag.Web/Controllers/Api/DownloadQueueEnqueueHelper.cs");
 
-        Assert.Contains("DownloadDedupeService dedupeService", controller, StringComparison.Ordinal);
-        Assert.Contains("_dedupeService", controller, StringComparison.Ordinal);
+        Assert.Contains("DownloadControllerServices services", controller, StringComparison.Ordinal);
+        Assert.Contains("_dedupeService = services.DedupeService", controller, StringComparison.Ordinal);
+        Assert.Contains("DownloadDedupeService DedupeService", controllerServices, StringComparison.Ordinal);
         Assert.Contains("await dedupeService.CheckAsync", helper, StringComparison.Ordinal);
         Assert.DoesNotContain("RequeueAsync(existing.QueueUuid", helper, StringComparison.Ordinal);
     }

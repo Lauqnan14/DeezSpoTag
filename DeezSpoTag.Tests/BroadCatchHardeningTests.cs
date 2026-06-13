@@ -95,11 +95,10 @@ public sealed partial class BroadCatchHardeningTests
             source);
     }
 
-    private static readonly Regex s_downloadStagingGateScanFailureRegex = new(
+    [GeneratedRegex(
         @"catch\s*\(Exception ex\)\s*when\s*\(DeezSpoTag\.Core\.Diagnostics\.ExpectedExceptionPolicy\.IsRecoverable\(ex\)\)\s*\{\s*LogStagingEnhancementScanBypass\(ex,.*?\);\s*return false;",
-        RegexOptions.Singleline);
-
-    private static Regex DownloadStagingGateScanFailureRegex() => s_downloadStagingGateScanFailureRegex;
+        RegexOptions.Singleline)]
+    private static partial Regex DownloadStagingGateScanFailureRegex();
 
     private static string GetRepositoryRoot()
     {

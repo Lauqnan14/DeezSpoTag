@@ -283,7 +283,7 @@ public static class ArtworkFallbackHelper
         return enabled ? filtered : new List<string> { filtered[0] };
     }
 
-    private static List<string> EnforceSpotifyArtworkLastResortOnly(IReadOnlyList<string> providers)
+    private static List<string> EnforceSpotifyArtworkLastResortOnly(List<string> providers)
     {
         if (providers.Count == 0)
         {

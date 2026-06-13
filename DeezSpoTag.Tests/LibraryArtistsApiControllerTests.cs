@@ -69,11 +69,11 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
     [Fact]
     public async Task UpdateSpotifyId_ReturnsNotFound_WhenArtistDoesNotExist()
     {
-        var controller = CreateController();
+        var controller = CreateSourceMetadataController();
 
         var result = await controller.UpdateSpotifyId(
             id: 999_999,
-            new LibraryArtistsApiController.SpotifyIdUpdateRequest("0du5cEVh5yTK9QJze8zA0C"),
+            new LibraryArtistSourceMetadataApiController.SpotifyIdUpdateRequest("0du5cEVh5yTK9QJze8zA0C"),
             CancellationToken.None);
 
         Assert.IsType<NotFoundResult>(result);
@@ -83,11 +83,11 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
     public async Task UpdateSpotifyId_ReturnsBadRequest_WhenSpotifyIdIsInvalid()
     {
         var artistId = await SeedLocalArtistAsync("Jayz");
-        var controller = CreateController();
+        var controller = CreateSourceMetadataController();
 
         var result = await controller.UpdateSpotifyId(
             artistId,
-            new LibraryArtistsApiController.SpotifyIdUpdateRequest("not-a-valid-spotify-id"),
+            new LibraryArtistSourceMetadataApiController.SpotifyIdUpdateRequest("not-a-valid-spotify-id"),
             CancellationToken.None);
 
         var badRequest = Assert.IsType<BadRequestObjectResult>(result);
@@ -98,12 +98,12 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
     public async Task UpdateSpotifyId_PersistsSpotifyId_WhenRequestIsValid()
     {
         var artistId = await SeedLocalArtistAsync("2 Pac");
-        var controller = CreateController();
+        var controller = CreateSourceMetadataController();
         const string spotifyId = "1ZwdS5xdxEREPySFridCfh";
 
         var result = await controller.UpdateSpotifyId(
             artistId,
-            new LibraryArtistsApiController.SpotifyIdUpdateRequest(spotifyId),
+            new LibraryArtistSourceMetadataApiController.SpotifyIdUpdateRequest(spotifyId),
             CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -113,19 +113,22 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
         Assert.Equal(spotifyId, persisted);
     }
 
-    private LibraryArtistsApiController CreateController()
+    private LibraryArtistSourceMetadataApiController CreateSourceMetadataController()
     {
-        return new LibraryArtistsApiController(
-            _repository,
-            _configStore,
+        var metadataServices = new LibraryArtistMetadataServices(
             spotifyArtistService: null!,
             artistPageCache: null!,
             spotifyMetadataCache: null!,
             lastFmArtistImageService: null!,
             artistExternalMetadataBackfillService: null!,
             artistVisualSelectionService: null!,
-            environment: _environment,
-            logger: NullLogger<LibraryArtistsApiController>.Instance);
+            environment: _environment);
+
+        return new LibraryArtistSourceMetadataApiController(
+            _repository,
+            _configStore,
+            metadataServices,
+            logger: NullLogger<LibraryArtistSourceMetadataApiController>.Instance);
     }
 
     private async Task<long> SeedLocalArtistAsync(string artistName)

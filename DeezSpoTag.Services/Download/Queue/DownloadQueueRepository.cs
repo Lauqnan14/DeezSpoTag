@@ -45,6 +45,8 @@ public sealed class DownloadQueueRepository
     private const string EnrichmentStatusCanceled = "canceled";
     private const string EnrichmentStatusInterrupted = "interrupted";
     private const string EnrichmentStatusNotRequired = "not_required";
+    private const string CompletedQueueStatusSqlCondition = "lower(status) IN ('completed', 'complete')";
+    private const string UpdateDownloadTaskSqlPrefix = "\nUPDATE " + DownloadTaskTable;
     private readonly string _connectionString;
     private readonly DownloadStagingCleanupService? _stagingCleanupService;
     private readonly ILogger<DownloadQueueRepository> _logger;
@@ -135,18 +137,21 @@ SELECT CASE
         var currentStatus = await GetStatusAsync(connection, queueUuid, cancellationToken);
         if (IsCanceledStatus(currentStatus) && origin != QueueRequeueOrigin.Manual)
         {
-            _logger.LogInformation(
-                "Blocked non-manual requeue for cancelled item {QueueUuid} (origin={Origin})",
-                LogSanitizer.OneLine(queueUuid),
-                origin);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Blocked non-manual requeue for cancelled item {QueueUuid} (origin={Origin})",
+                    LogSanitizer.OneLine(queueUuid),
+                    origin);
+            }
+
             return false;
         }
 
         var queueOrder = requeueToFront
             ? await GetFrontQueueOrderAsync(connection, newestFirst, cancellationToken)
             : await GetNextQueueOrderAsync(connection, cancellationToken);
-        const string sql = @"
-UPDATE " + DownloadTaskTable + @"
+        const string sql = UpdateDownloadTaskSqlPrefix + @"
 SET status = 'queued',
     error = NULL,
     progress = 0,
@@ -1173,23 +1178,23 @@ WHERE queue_uuid = @queueUuid;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-UPDATE download_task
-SET quality_rank = @qualityRank,
-    content_type = COALESCE(@contentType, content_type),
-    destination_folder_id = @destinationFolderId,
-    move_status = CASE
-        WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusPending + @"'
-        WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusNotRequired + @"'
-        ELSE move_status
-    END,
-    enrichment_status = CASE
-        WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusPending + @"'
-        WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusNotRequired + @"'
-        ELSE enrichment_status
-    END,
-    updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+        string sql = @$"
+	UPDATE download_task
+	SET quality_rank = @qualityRank,
+	    content_type = COALESCE(@contentType, content_type),
+	    destination_folder_id = @destinationFolderId,
+	    move_status = CASE
+	        WHEN @destinationFolderId IS NOT NULL AND {CompletedQueueStatusSqlCondition} THEN '{MoveStatusPending}'
+	        WHEN @destinationFolderId IS NULL AND {CompletedQueueStatusSqlCondition} THEN '{MoveStatusNotRequired}'
+	        ELSE move_status
+	    END,
+	    enrichment_status = CASE
+	        WHEN @destinationFolderId IS NOT NULL AND {CompletedQueueStatusSqlCondition} THEN '{EnrichmentStatusPending}'
+	        WHEN @destinationFolderId IS NULL AND {CompletedQueueStatusSqlCondition} THEN '{EnrichmentStatusNotRequired}'
+	        ELSE enrichment_status
+	    END,
+	    updated_at = CURRENT_TIMESTAMP
+	WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("qualityRank", (object?)qualityRank ?? DBNull.Value);
         command.Parameters.AddWithValue("contentType", NormalizeId(contentType) ?? (object)DBNull.Value);
@@ -1205,9 +1210,9 @@ WHERE queue_uuid = @queueUuid;";
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, item.PayloadJson);
-        const string sql = @"
-UPDATE download_task
-SET engine = @engine,
+        string sql = @$"
+	UPDATE download_task
+	SET engine = @engine,
     artist_name = @artistName,
     track_title = @trackTitle,
     isrc = @isrc,
@@ -1228,19 +1233,19 @@ SET engine = @engine,
     final_destinations_json = NULL,
     lyrics_status = @lyricsStatus,
     staging_cleanup_status = NULL,
-    staging_cleanup_error = NULL,
-    staging_cleanup_at = NULL,
-    activities_cleared_at = NULL,
-    move_status = CASE
-        WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusPending + @"'
-        WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + MoveStatusNotRequired + @"'
-        ELSE move_status
-    END,
-    enrichment_status = CASE
-        WHEN @destinationFolderId IS NOT NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusPending + @"'
-        WHEN @destinationFolderId IS NULL AND lower(status) IN ('completed', 'complete') THEN '" + EnrichmentStatusNotRequired + @"'
-        ELSE enrichment_status
-    END,
+	    staging_cleanup_error = NULL,
+	    staging_cleanup_at = NULL,
+	    activities_cleared_at = NULL,
+	    move_status = CASE
+	        WHEN @destinationFolderId IS NOT NULL AND {CompletedQueueStatusSqlCondition} THEN '{MoveStatusPending}'
+	        WHEN @destinationFolderId IS NULL AND {CompletedQueueStatusSqlCondition} THEN '{MoveStatusNotRequired}'
+	        ELSE move_status
+	    END,
+	    enrichment_status = CASE
+	        WHEN @destinationFolderId IS NOT NULL AND {CompletedQueueStatusSqlCondition} THEN '{EnrichmentStatusPending}'
+	        WHEN @destinationFolderId IS NULL AND {CompletedQueueStatusSqlCondition} THEN '{EnrichmentStatusNotRequired}'
+	        ELSE enrichment_status
+	    END,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
@@ -2074,8 +2079,7 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        const string sql = @"
-UPDATE " + DownloadTaskTable + @"
+        const string sql = UpdateDownloadTaskSqlPrefix + @"
 SET isrc = CASE
         WHEN NULLIF(trim(COALESCE(isrc, '')), '') IS NULL THEN upper(NULLIF(trim(COALESCE(json_extract(payload, '$.Isrc'), json_extract(payload, '$.isrc'), '')), ''))
         ELSE isrc
@@ -2157,8 +2161,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_download_task_queue_uuid ON " + DownloadTa
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        const string sql = @"
-UPDATE " + DownloadTaskTable + @"
+        const string sql = UpdateDownloadTaskSqlPrefix + @"
 SET content_type = 'atmos',
     updated_at = CURRENT_TIMESTAMP
 WHERE lower(COALESCE(engine, '')) = 'apple'
@@ -2178,40 +2181,39 @@ WHERE lower(COALESCE(engine, '')) = 'apple'
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        const string sql = @"
-UPDATE " + DownloadTaskTable + @"
+        const string sql = UpdateDownloadTaskSqlPrefix + @"
 SET deezer_track_id = NULL
 WHERE lower(trim(COALESCE(deezer_track_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET deezer_album_id = NULL
 WHERE lower(trim(COALESCE(deezer_album_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET deezer_artist_id = NULL
 WHERE lower(trim(COALESCE(deezer_artist_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET spotify_track_id = NULL
 WHERE lower(trim(COALESCE(spotify_track_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET spotify_album_id = NULL
 WHERE lower(trim(COALESCE(spotify_album_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET spotify_artist_id = NULL
 WHERE lower(trim(COALESCE(spotify_artist_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET apple_track_id = NULL
 WHERE lower(trim(COALESCE(apple_track_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET apple_album_id = NULL
 WHERE lower(trim(COALESCE(apple_album_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');
 
-UPDATE download_task
+UPDATE " + DownloadTaskTable + @"
 SET apple_artist_id = NULL
 WHERE lower(trim(COALESCE(apple_artist_id, ''))) IN ('0', '-', 'unknown', 'n/a', 'none', 'null', 'nil');";
 

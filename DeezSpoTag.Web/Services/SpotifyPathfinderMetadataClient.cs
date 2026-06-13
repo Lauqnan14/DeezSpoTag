@@ -6899,63 +6899,64 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        if (value.ValueKind == JsonValueKind.Number)
+        return value.ValueKind switch
         {
-            if (value.TryGetInt32(out var int32Value))
-            {
-                return int32Value;
-            }
-
-            if (value.TryGetInt64(out var int64Value)
-                && int64Value <= int.MaxValue
-                && int64Value >= int.MinValue)
-            {
-                return (int)int64Value;
-            }
-
-            if (value.TryGetDouble(out var doubleValue)
-                && !double.IsNaN(doubleValue)
-                && !double.IsInfinity(doubleValue)
-                && doubleValue <= int.MaxValue
-                && doubleValue >= int.MinValue)
-            {
-                return (int)Math.Round(doubleValue, MidpointRounding.AwayFromZero);
-            }
-        }
-
-        if (value.ValueKind == JsonValueKind.String)
-        {
-            var raw = value.GetString();
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return null;
-            }
-
-            raw = raw.Trim();
-            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedInt))
-            {
-                return parsedInt;
-            }
-
-            if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedLong)
-                && parsedLong <= int.MaxValue
-                && parsedLong >= int.MinValue)
-            {
-                return (int)parsedLong;
-            }
-
-            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedDouble)
-                && !double.IsNaN(parsedDouble)
-                && !double.IsInfinity(parsedDouble)
-                && parsedDouble <= int.MaxValue
-                && parsedDouble >= int.MinValue)
-            {
-                return (int)Math.Round(parsedDouble, MidpointRounding.AwayFromZero);
-            }
-        }
-
-        return null;
+            JsonValueKind.Number => TryGetNumberAsInt(value),
+            JsonValueKind.String => TryParseStringAsInt(value.GetString()),
+            _ => null
+        };
     }
+
+    private static int? TryGetNumberAsInt(JsonElement value)
+    {
+        if (value.TryGetInt32(out var int32Value))
+        {
+            return int32Value;
+        }
+
+        if (value.TryGetInt64(out var int64Value) && IsInt32Range(int64Value))
+        {
+            return (int)int64Value;
+        }
+
+        return value.TryGetDouble(out var doubleValue) && IsFiniteInt32Range(doubleValue)
+            ? (int)Math.Round(doubleValue, MidpointRounding.AwayFromZero)
+            : null;
+    }
+
+    private static int? TryParseStringAsInt(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        raw = raw.Trim();
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedInt))
+        {
+            return parsedInt;
+        }
+
+        if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedLong)
+            && IsInt32Range(parsedLong))
+        {
+            return (int)parsedLong;
+        }
+
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedDouble)
+               && IsFiniteInt32Range(parsedDouble)
+            ? (int)Math.Round(parsedDouble, MidpointRounding.AwayFromZero)
+            : null;
+    }
+
+    private static bool IsInt32Range(long value)
+        => value <= int.MaxValue && value >= int.MinValue;
+
+    private static bool IsFiniteInt32Range(double value)
+        => !double.IsNaN(value)
+           && !double.IsInfinity(value)
+           && value <= int.MaxValue
+           && value >= int.MinValue;
 
     private static int? ResolveTrackDurationMs(JsonElement track)
     {

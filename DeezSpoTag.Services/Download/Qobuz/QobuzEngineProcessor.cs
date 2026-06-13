@@ -547,13 +547,17 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
             var message =
                 $"Qobuz catalog max quality is {selectedQuality}, below current plan step {requestedQuality}; advancing global source plan.";
-            _logger.LogInformation(
-                "Qobuz catalog quality below current global plan step for {QueueUuid}: requested={RequestedQuality} catalog={CatalogQuality} max={BitDepth}-bit/{SampleRate}kHz",
-                queueUuid,
-                requestedQuality,
-                selectedQuality,
-                signal.Value.BitDepth,
-                signal.Value.SampleRate);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Qobuz catalog quality below current global plan step for {QueueUuid}: requested={RequestedQuality} catalog={CatalogQuality} max={BitDepth}-bit/{SampleRate}kHz",
+                    queueUuid,
+                    requestedQuality,
+                    selectedQuality,
+                    signal.Value.BitDepth,
+                    signal.Value.SampleRate);
+            }
+
             return QobuzQualityDecisionResult.Skip(message);
         }
 
@@ -565,7 +569,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             : "catalog_quality_lower_than_requested";
 
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-        if (lowersRequestedQuality)
+        if (lowersRequestedQuality && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Qobuz catalog quality selected {SelectedQuality} instead of requested {RequestedQuality} for {QueueUuid}: max={BitDepth}-bit/{SampleRate}kHz",
@@ -855,75 +859,106 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         Exception ex,
         CancellationToken stoppingToken)
     {
-        if (ex is QobuzCatalogQualityBelowPlanStepException)
-        {
-            _logger.LogInformation(ex, "Qobuz plan step skipped for {QueueUuid}", next.QueueUuid);
-        }
-        else
-        {
-            _logger.LogError(ex, "Qobuz download failed for {QueueUuid}", next.QueueUuid);
-        }
+        LogFailure(next.QueueUuid, ex);
 
-        if (payload != null && !stoppingToken.IsCancellationRequested)
+        if (payload != null
+            && !stoppingToken.IsCancellationRequested
+            && await TryAdvanceFallbackAfterFailureAsync(next.QueueUuid, next.Engine, payload, ex, stoppingToken))
         {
-            await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
-                next.QueueUuid,
-                PrefetchCancelDrainTimeout,
-                CancellationToken.None);
-            var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
-            var failureKind = IsRateLimitFailure(ex) ? "throttled" : "failed";
-            if (ex is not QobuzCatalogQualityBelowPlanStepException)
-            {
-                _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
-            }
-
-            var advanced = await _fallbackCoordinator.TryAdvanceAsync(
-                next.QueueUuid,
-                next.Engine,
-                payload,
-                stoppingToken);
-            if (advanced)
-            {
-                _activityLog.Info($"Fallback advanced: {next.QueueUuid} -> {payload.Engine} (auto_index={payload.AutoIndex})");
-                if (!payload.FallbackQueuedExternally)
-                {
-                    _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
-                }
-
-                return;
-            }
+            return;
         }
 
         if (IsRateLimitFailure(ex))
         {
-            await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
-                next.QueueUuid,
-                PrefetchCancelDrainTimeout,
-                CancellationToken.None);
-            var quality = payload == null || string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
-            _activityLog.Warn($"Download throttled (engine={EngineName} quality={quality}): {next.QueueUuid} {ex.Message}");
-            await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, ex.Message, cancellationToken: CancellationToken.None);
-            if (payload != null)
-            {
-                await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, FailedStatus, _serviceProvider, CancellationToken.None);
-            }
-
-            _retryScheduler.ScheduleRetry(next.QueueUuid, EngineName, ex.Message);
+            await MarkRateLimitFailureAsync(next.QueueUuid, payload, ex);
             return;
         }
 
+        await MarkFinalFailureAsync(next.QueueUuid, payload, ex);
+    }
+
+    private void LogFailure(string queueUuid, Exception ex)
+    {
+        if (ex is QobuzCatalogQualityBelowPlanStepException)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(ex, "Qobuz plan step skipped for {QueueUuid}", queueUuid);
+            }
+        }
+        else
+        {
+            _logger.LogError(ex, "Qobuz download failed for {QueueUuid}", queueUuid);
+        }
+    }
+
+    private async Task<bool> TryAdvanceFallbackAfterFailureAsync(
+        string queueUuid,
+        string engine,
+        QobuzQueueItem payload,
+        Exception ex,
+        CancellationToken cancellationToken)
+    {
         await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
-            next.QueueUuid,
+            queueUuid,
             PrefetchCancelDrainTimeout,
             CancellationToken.None);
-        await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, ex.Message, cancellationToken: CancellationToken.None);
+        var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
+        var failureKind = IsRateLimitFailure(ex) ? "throttled" : "failed";
+        if (ex is not QobuzCatalogQualityBelowPlanStepException)
+        {
+            _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {queueUuid} {ex.Message}");
+        }
+
+        var advanced = await _fallbackCoordinator.TryAdvanceAsync(
+            queueUuid,
+            engine,
+            payload,
+            cancellationToken);
+        if (!advanced)
+        {
+            return false;
+        }
+
+        _activityLog.Info($"Fallback advanced: {queueUuid} -> {payload.Engine} (auto_index={payload.AutoIndex})");
+        if (!payload.FallbackQueuedExternally)
+        {
+            _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
+        }
+
+        return true;
+    }
+
+    private async Task MarkRateLimitFailureAsync(string queueUuid, QobuzQueueItem? payload, Exception ex)
+    {
+        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+            queueUuid,
+            PrefetchCancelDrainTimeout,
+            CancellationToken.None);
+        var quality = payload == null || string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
+        _activityLog.Warn($"Download throttled (engine={EngineName} quality={quality}): {queueUuid} {ex.Message}");
+        await MarkQueueFailedAsync(queueUuid, payload, ex.Message);
+        _retryScheduler.ScheduleRetry(queueUuid, EngineName, ex.Message);
+    }
+
+    private async Task MarkFinalFailureAsync(string queueUuid, QobuzQueueItem? payload, Exception ex)
+    {
+        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+            queueUuid,
+            PrefetchCancelDrainTimeout,
+            CancellationToken.None);
+        await MarkQueueFailedAsync(queueUuid, payload, ex.Message);
+        _activityLog.Error($"Download failed (engine={EngineName}): {queueUuid} {ex.Message}");
+        _retryScheduler.ScheduleRetry(queueUuid, EngineName, ex.Message);
+    }
+
+    private async Task MarkQueueFailedAsync(string queueUuid, QobuzQueueItem? payload, string error)
+    {
+        await _queueRepository.UpdateStatusAsync(queueUuid, FailedStatus, error, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
             await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, FailedStatus, _serviceProvider, CancellationToken.None);
         }
-
-        _activityLog.Error($"Download failed (engine={EngineName}): {next.QueueUuid} {ex.Message}");
-        _retryScheduler.ScheduleRetry(next.QueueUuid, EngineName, ex.Message);
     }
 
     private static bool IsRateLimitFailure(Exception exception)

@@ -169,6 +169,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private const string EnrichmentStatusCanceled = "canceled";
     private const string EnrichmentStatusInterrupted = "interrupted";
     private const string EnrichmentStatusNotRequired = "not_required";
+    private const string QueueStatusQueued = "queued";
+    private const string QueueStatusInQueue = "inqueue";
+    private const string QueueStatusRetrying = "retrying";
+    private const string QueueStatusDownloading = "downloading";
+    private const string QueueStatusComplete = "complete";
+    private const string QueueStatusCancelled = "cancelled";
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
     private const string FolderContentAtmos = "atmos";
@@ -508,14 +514,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var normalizedStatus = stateChanged.Status.Trim().ToLowerInvariant();
-        if (normalizedStatus is "queued" or "inqueue" or "running" or "retrying" or "downloading")
+        if (normalizedStatus is QueueStatusQueued or QueueStatusInQueue or AutoTagLiterals.RunningStatus or QueueStatusRetrying or QueueStatusDownloading)
         {
             _queueIdleSince = null;
             SignalWake(resetIdleCountdown: true);
             return;
         }
 
-        if (normalizedStatus is "completed" or "complete" or "failed" or "canceled" or "cancelled")
+        if (normalizedStatus is AutoTagLiterals.CompletedStatus or QueueStatusComplete or AutoTagLiterals.FailedStatus or AutoTagLiterals.CanceledStatus or QueueStatusCancelled)
         {
             SignalWake();
         }
@@ -1202,7 +1208,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task<bool> IngestMovedFilesBeforeWatchlistFinalizationAsync(
         PipelineWorkGroup group,
-        IReadOnlyList<string> changedFilePaths,
+        List<string> changedFilePaths,
         CancellationToken cancellationToken)
     {
         var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
@@ -1437,7 +1443,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         destinationFolderId = 0;
         candidatePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!sourceDestinationFolderId.HasValue
-            || !string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase)
             || string.IsNullOrWhiteSpace(queueUuid)
             || !queueUuidSet.Contains(queueUuid))
         {
@@ -1941,7 +1947,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             $"Automation: enhancement ({sourceLabel}) finished for {target.RootPath} (status={enhancementJob?.Status ?? "skipped"})."));
 
         if (enhancementJob != null
-            && (string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(enhancementJob.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(enhancementJob.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(enhancementJob.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase))
             && _enhancementPauseRequested)
@@ -1955,7 +1961,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
         var attempted = enhancementJob != null
-            && !string.Equals(enhancementJob.Status, "canceled", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(enhancementJob.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(enhancementJob.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(enhancementJob.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase);
         return new EnhancementTargetRunResult(attempted, false);
@@ -2567,7 +2573,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
         var completedItems = await RecoverMissingDestinationFoldersAsync(
             queueItems
-                .Where(item => string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase))
+                .Where(item => string.Equals(item.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(item => item.UpdatedAt)
                 .ThenByDescending(item => item.Id)
                 .ToList(),
@@ -3570,6 +3576,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var job = _autoTagService.GetJob(jobId);
-        return string.Equals(job?.Status, "running", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(job?.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase);
     }
 }

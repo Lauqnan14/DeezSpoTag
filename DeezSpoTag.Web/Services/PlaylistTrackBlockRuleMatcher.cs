@@ -5,6 +5,19 @@ namespace DeezSpoTag.Web.Services;
 
 internal static class PlaylistTrackBlockRuleMatcher
 {
+    public sealed record TrackRuleMatchInput(
+        string? Title,
+        string? Artist,
+        string? Album,
+        IReadOnlyList<string>? Genres,
+        bool? IsExplicit,
+        string? ReleaseDate);
+
+    private sealed record RuleCondition(
+        string? Field,
+        string? Operator,
+        string? Value);
+
     public static PlaylistTrackBlockRule? FindMatch(
         DownloadIntent intent,
         IReadOnlyList<PlaylistTrackBlockRule>? rules)
@@ -17,15 +30,14 @@ internal static class PlaylistTrackBlockRuleMatcher
         return rules
             .OrderBy(static rule => rule.Order)
             .FirstOrDefault(rule => RuleMatches(
+                new TrackRuleMatchInput(
                 intent.Title,
                 intent.Artist,
                 intent.Album,
                 intent.Genres,
                 intent.Explicit,
-                intent.ReleaseDate,
-                rule.ConditionField,
-                rule.ConditionOperator,
-                rule.ConditionValue));
+                intent.ReleaseDate),
+                new RuleCondition(rule.ConditionField, rule.ConditionOperator, rule.ConditionValue)));
     }
 
     public static PlaylistTrackBlockRule? FindMatch(
@@ -45,36 +57,29 @@ internal static class PlaylistTrackBlockRuleMatcher
         return rules
             .OrderBy(static rule => rule.Order)
             .FirstOrDefault(rule => RuleMatches(
+                new TrackRuleMatchInput(
                 title,
                 artist,
                 album,
                 genres,
                 isExplicit,
-                releaseDate,
-                rule.ConditionField,
-                rule.ConditionOperator,
-                rule.ConditionValue));
+                releaseDate),
+                new RuleCondition(rule.ConditionField, rule.ConditionOperator, rule.ConditionValue)));
     }
 
-    public static bool RuleMatches(
-        string? title,
-        string? artist,
-        string? album,
-        IReadOnlyList<string>? genres,
-        bool? isExplicit,
-        string? releaseDate,
-        string? conditionField,
-        string? conditionOperator,
-        string? conditionValue)
+    public static bool RuleMatches(TrackRuleMatchInput track, string? conditionField, string? conditionOperator, string? conditionValue)
+        => RuleMatches(track, new RuleCondition(conditionField, conditionOperator, conditionValue));
+
+    private static bool RuleMatches(TrackRuleMatchInput track, RuleCondition condition)
     {
-        return Normalize(conditionField) switch
+        return Normalize(condition.Field) switch
         {
-            "artist" => EvalStringCondition(artist, conditionOperator, conditionValue),
-            "title" => EvalStringCondition(title, conditionOperator, conditionValue),
-            "album" => EvalStringCondition(album, conditionOperator, conditionValue),
-            "genre" => EvalGenreCondition(genres, conditionOperator, conditionValue),
-            "explicit" => Normalize(conditionOperator) == "is_true" ? isExplicit == true : isExplicit != true,
-            "year" => EvalYearCondition(releaseDate, conditionOperator, conditionValue),
+            "artist" => EvalStringCondition(track.Artist, condition.Operator, condition.Value),
+            "title" => EvalStringCondition(track.Title, condition.Operator, condition.Value),
+            "album" => EvalStringCondition(track.Album, condition.Operator, condition.Value),
+            "genre" => EvalGenreCondition(track.Genres, condition.Operator, condition.Value),
+            "explicit" => Normalize(condition.Operator) == "is_true" ? track.IsExplicit == true : track.IsExplicit != true,
+            "year" => EvalYearCondition(track.ReleaseDate, condition.Operator, condition.Value),
             _ => false
         };
     }

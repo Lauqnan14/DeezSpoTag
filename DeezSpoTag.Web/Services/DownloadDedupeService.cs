@@ -399,7 +399,7 @@ public sealed class DownloadDedupeService
         yield return (ApplePlatform, request.AppleAlbumId, request.AppleArtistId);
     }
 
-    private static IReadOnlyList<string> BuildMetadataArtists(DownloadDedupeRequest request)
+    private static List<string> BuildMetadataArtists(DownloadDedupeRequest request)
         => new[]
         {
             request.TrackArtist,

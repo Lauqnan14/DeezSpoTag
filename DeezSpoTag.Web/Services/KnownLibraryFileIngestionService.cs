@@ -145,8 +145,8 @@ public sealed class KnownLibraryFileIngestionService
     }
 
     private async Task<KnownFileIngestionSummary> VerifyIngestedAsync(
-        IReadOnlyList<string> requestedFiles,
-        IReadOnlyList<string> existingAudioFiles,
+        List<string> requestedFiles,
+        List<string> existingAudioFiles,
         CancellationToken cancellationToken)
     {
         if (existingAudioFiles.Count == 0)

@@ -18,6 +18,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 {
     private const string GlobalRoutingTemplateSource = "global";
     private const string GlobalRoutingTemplateSourceId = "__playlist_routing_rules_template__";
+    private const string PlaylistWatchType = "playlist";
+    private const string PlaylistWatchlistEntryNotFoundMessage = "Playlist watchlist entry not found.";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly PlaylistWatchService _playlistWatchService;
@@ -77,7 +79,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var scheduler = await _repository.GetWatchlistSchedulerStateAsync("playlist", cancellationToken);
+        var scheduler = await _repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
         var playlists = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var sources = playlists
             .Select(item => WatchlistPreferenceNormalizer.PlaylistSource(item.Source))
@@ -90,7 +92,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         foreach (var source in sources)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var circuit = await _repository.GetWatchlistSourceCircuitStateAsync("playlist", source, cancellationToken);
+            var circuit = await _repository.GetWatchlistSourceCircuitStateAsync(PlaylistWatchType, source, cancellationToken);
             if (circuit == null)
             {
                 continue;
@@ -375,7 +377,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var item = await FindWatchlistItemAsync(source, sourceId, cancellationToken);
         if (item == null)
         {
-            return NotFound("Playlist watchlist entry not found.");
+            return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
         await SetPlaylistWatchSchedulerFocusAsync(item.Source, item.SourceId, cancellationToken);
@@ -420,7 +422,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         await _repository.UpsertWatchlistSchedulerStateAsync(
             new LibraryRepository.WatchlistSchedulerStateUpsertInput(
-                WatchType: "playlist",
+                WatchType: PlaylistWatchType,
                 ActiveSource: null,
                 ActiveSourceId: null,
                 ActiveStartedUtc: null,
@@ -454,7 +456,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var item = await FindWatchlistItemAsync(source, sourceId, cancellationToken);
         if (item == null)
         {
-            return NotFound("Playlist watchlist entry not found.");
+            return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
         await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
@@ -486,7 +488,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var item = await FindWatchlistItemAsync(source, sourceId, cancellationToken);
         if (item == null)
         {
-            return NotFound("Playlist watchlist entry not found.");
+            return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
         var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
@@ -531,7 +533,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         {
             await _repository.UpsertWatchlistSchedulerStateAsync(
                 new LibraryRepository.WatchlistSchedulerStateUpsertInput(
-                    WatchType: "playlist",
+                    WatchType: PlaylistWatchType,
                     ActiveSource: null,
                     ActiveSourceId: null,
                     ActiveStartedUtc: null,
@@ -566,7 +568,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var item = await FindWatchlistItemAsync(source, sourceId, cancellationToken);
         if (item == null)
         {
-            return NotFound("Playlist watchlist entry not found.");
+            return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
         await SetPlaylistWatchSchedulerFocusAsync(item.Source, item.SourceId, cancellationToken);
@@ -742,7 +744,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var item = await FindWatchlistItemAsync(source, sourceId, cancellationToken);
         if (item == null)
         {
-            return NotFound("Playlist watchlist entry not found.");
+            return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
         await _playlistWatchService.CheckPlaylistWatchItemAsync(
@@ -1239,7 +1241,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         await _repository.UpsertWatchlistSourceCircuitStateAsync(
             new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
-                WatchType: "playlist",
+                WatchType: PlaylistWatchType,
                 Source: normalizedSource,
                 IsOpen: false,
                 OpenUntilUtc: null,
@@ -1306,7 +1308,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         await _repository.UpsertWatchlistSchedulerStateAsync(
             new LibraryRepository.WatchlistSchedulerStateUpsertInput(
-                WatchType: "playlist",
+                WatchType: PlaylistWatchType,
                 ActiveSource: normalizedSource,
                 ActiveSourceId: sourceId.Trim(),
                 ActiveStartedUtc: DateTimeOffset.UtcNow,

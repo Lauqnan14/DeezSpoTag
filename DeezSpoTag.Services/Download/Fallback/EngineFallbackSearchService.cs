@@ -336,7 +336,10 @@ public sealed class EngineFallbackSearchService
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
-                _logger.LogDebug(ex, "Apple fallback search failed for {Term}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(term));
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Apple fallback search failed for {Term}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(term));
+                }
             }
         }
 
@@ -393,9 +396,7 @@ public sealed class EngineFallbackSearchService
             ? parsedDuration
             : 0;
 
-        if (!string.IsNullOrWhiteSpace(request.Isrc)
-            && !string.IsNullOrWhiteSpace(isrc)
-            && !string.Equals(request.Isrc.Trim(), isrc.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (HasConflictingIsrc(request.Isrc, isrc))
         {
             return 0;
         }
@@ -411,35 +412,46 @@ public sealed class EngineFallbackSearchService
         score += 60;
         score += 30;
         score += ScoreTextMatch(request.Album, album, 15);
-        if (!string.IsNullOrWhiteSpace(request.Isrc)
-            && !string.IsNullOrWhiteSpace(isrc)
-            && string.Equals(request.Isrc.Trim(), isrc.Trim(), StringComparison.OrdinalIgnoreCase))
+        score += ScoreMatchingIsrc(request.Isrc, isrc);
+        var durationScore = ScoreDuration(request.DurationMs, durationInMillis);
+        if (durationScore.Rejected)
         {
-            score += 50;
+            return 0;
         }
 
-        if (request.DurationMs.HasValue && request.DurationMs.Value > 0 && durationInMillis > 0)
-        {
-            var diff = Math.Abs(request.DurationMs.Value - durationInMillis);
-            if (diff <= 2000)
-            {
-                score += 10;
-            }
-            else if (diff <= 5000)
-            {
-                score += 6;
-            }
-            else if (diff <= 10000)
-            {
-                score += 3;
-            }
-            else if (diff > 20000)
-            {
-                return 0;
-            }
-        }
+        score += durationScore.Score;
 
         return score;
+    }
+
+    private static bool HasConflictingIsrc(string? expectedIsrc, string? candidateIsrc)
+        => !string.IsNullOrWhiteSpace(expectedIsrc)
+           && !string.IsNullOrWhiteSpace(candidateIsrc)
+           && !string.Equals(expectedIsrc.Trim(), candidateIsrc.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static int ScoreMatchingIsrc(string? expectedIsrc, string? candidateIsrc)
+        => !string.IsNullOrWhiteSpace(expectedIsrc)
+           && !string.IsNullOrWhiteSpace(candidateIsrc)
+           && string.Equals(expectedIsrc.Trim(), candidateIsrc.Trim(), StringComparison.OrdinalIgnoreCase)
+            ? 50
+            : 0;
+
+    private static (int Score, bool Rejected) ScoreDuration(int? expectedDurationMs, int candidateDurationMs)
+    {
+        if (!expectedDurationMs.HasValue || expectedDurationMs.Value <= 0 || candidateDurationMs <= 0)
+        {
+            return (0, false);
+        }
+
+        var diff = Math.Abs(expectedDurationMs.Value - candidateDurationMs);
+        return diff switch
+        {
+            <= 2000 => (10, false),
+            <= 5000 => (6, false),
+            <= 10000 => (3, false),
+            > 20000 => (0, true),
+            _ => (0, false)
+        };
     }
 
     private async Task<SongLinkResult?> ResolveSongLinkFromDeezerAsync(

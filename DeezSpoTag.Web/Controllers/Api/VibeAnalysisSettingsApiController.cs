@@ -44,7 +44,7 @@ public sealed class VibeAnalysisSettingsApiController : ControllerBase
         return Ok(saved);
     }
 
-    private static IReadOnlyList<long> NormalizeLibraryOrder(IEnumerable<long>? libraryOrder)
+    private static long[] NormalizeLibraryOrder(IEnumerable<long>? libraryOrder)
     {
         if (libraryOrder is null)
         {

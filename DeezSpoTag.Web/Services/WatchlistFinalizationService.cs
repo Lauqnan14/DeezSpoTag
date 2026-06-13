@@ -10,6 +10,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class WatchlistFinalizationService
 {
+    private const string AppleSource = "apple";
     private static readonly string[] WatchlistSourcePropertyNames = ["watchlistSource", "watchlist_source", "WatchlistSource"];
     private static readonly string[] WatchlistPlaylistIdPropertyNames = ["watchlistPlaylistId", "watchlist_playlist", "WatchlistPlaylistId"];
     private static readonly string[] WatchlistTrackIdPropertyNames = ["watchlistTrackId", "watchlist_track", "WatchlistTrackId"];
@@ -239,62 +240,89 @@ public sealed class WatchlistFinalizationService
         foreach (var playlist in playlists)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(playlist.Source)
-                || string.IsNullOrWhiteSpace(playlist.SourceId))
-            {
-                continue;
-            }
-
-            IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> candidates;
-            try
-            {
-                candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
-                    playlist.Source,
-                    playlist.SourceId,
-                    cancellationToken);
-            }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(
-                        ex,
-                        "Watchlist finalization candidate refresh failed for {Source}:{PlaylistId}.",
-                        playlist.Source,
-                        playlist.SourceId);
-                }
-                continue;
-            }
-
-            if (candidates.Count == 0)
-            {
-                continue;
-            }
-
-            var destinationFolderId = item.DestinationFolderId;
-            var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
-                playlist.Source,
-                playlist.SourceId,
-                cancellationToken);
-            destinationFolderId ??= preference?.DestinationFolderId;
-
-            var normalizedSource = NormalizeSource(playlist.Source);
-            foreach (var candidate in candidates)
-            {
-                if (!IsIdentityMatch(normalizedSource, candidate, identity))
-                {
-                    continue;
-                }
-
-                results.Add(new WatchlistFinalizedNotification(
-                    normalizedSource,
-                    playlist.SourceId,
-                    candidate.TrackSourceId,
-                    destinationFolderId));
-            }
+            results.AddRange(await ResolveCrossPlaylistMatchesForPlaylistAsync(
+                playlist,
+                item.DestinationFolderId,
+                identity,
+                cancellationToken));
         }
 
         return results;
+    }
+
+    private async Task<List<WatchlistFinalizedNotification>> ResolveCrossPlaylistMatchesForPlaylistAsync(
+        PlaylistWatchlistDto playlist,
+        long? queueDestinationFolderId,
+        FinalizedTrackIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(playlist.Source) || string.IsNullOrWhiteSpace(playlist.SourceId))
+        {
+            return [];
+        }
+
+        var candidates = await TryGetPlaylistTrackCandidatesAsync(playlist, cancellationToken);
+        if (candidates.Count == 0)
+        {
+            return [];
+        }
+
+        var destinationFolderId = await ResolveFinalizedDestinationFolderIdAsync(
+            playlist,
+            queueDestinationFolderId,
+            cancellationToken);
+        var normalizedSource = NormalizeSource(playlist.Source);
+        return candidates
+            .Where(candidate => IsIdentityMatch(normalizedSource, candidate, identity))
+            .Select(candidate => new WatchlistFinalizedNotification(
+                normalizedSource,
+                playlist.SourceId,
+                candidate.TrackSourceId,
+                destinationFolderId))
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>> TryGetPlaylistTrackCandidatesAsync(
+        PlaylistWatchlistDto playlist,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
+                playlist.Source,
+                playlist.SourceId,
+                cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Watchlist finalization candidate refresh failed for {Source}:{PlaylistId}.",
+                    playlist.Source,
+                    playlist.SourceId);
+            }
+
+            return [];
+        }
+    }
+
+    private async Task<long?> ResolveFinalizedDestinationFolderIdAsync(
+        PlaylistWatchlistDto playlist,
+        long? queueDestinationFolderId,
+        CancellationToken cancellationToken)
+    {
+        if (queueDestinationFolderId.HasValue)
+        {
+            return queueDestinationFolderId;
+        }
+
+        var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+            playlist.Source,
+            playlist.SourceId,
+            cancellationToken);
+        return preference?.DestinationFolderId;
     }
 
     private async Task MarkWatchTracksCompletedAsync(
@@ -383,7 +411,7 @@ public sealed class WatchlistFinalizationService
                 {
                     sourceIdsSpotify = ReadSourceIdAlias(sourceIds, "spotify", "spotify_id", "spotifyTrackId");
                     sourceIdsDeezer = ReadSourceIdAlias(sourceIds, "deezer", "deezer_id", "deezerTrackId");
-                    sourceIdsApple = ReadSourceIdAlias(sourceIds, "apple", "apple_id", "appleTrackId", "itunes");
+                    sourceIdsApple = ReadSourceIdAlias(sourceIds, AppleSource, "apple_id", "appleTrackId", "itunes");
                     sourceIdsBoomplay = ReadSourceIdAlias(sourceIds, "boomplay", "boomplay_id");
                     sourceIdsQobuz = ReadSourceIdAlias(sourceIds, "qobuz", "qobuz_id");
                     sourceIdsTidal = ReadSourceIdAlias(sourceIds, "tidal", "tidal_id");
@@ -473,8 +501,8 @@ public sealed class WatchlistFinalizationService
         {
             "smarttracks" => "smarttracklist",
             "recommendation" => "recommendations",
-            "itunes" => "apple",
-            "applemusic" => "apple",
+            "itunes" => AppleSource,
+            "applemusic" => AppleSource,
             _ => normalized
         };
     }
@@ -663,7 +691,7 @@ public sealed class WatchlistFinalizationService
             {
                 "spotify" => SpotifyTrackId,
                 "deezer" => DeezerTrackId,
-                "apple" => AppleTrackId,
+                AppleSource => AppleTrackId,
                 "boomplay" => BoomplayTrackId,
                 "qobuz" => QobuzTrackId,
                 "tidal" => TidalTrackId,

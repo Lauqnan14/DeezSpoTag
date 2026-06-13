@@ -538,18 +538,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
             if (!refresh && TryGetFreshBrowseCategoryPlaylistsCache(resolvedId, browseCacheTtl, out var cachedPlaylists))
             {
-                var slice = all
-                    ? cachedPlaylists.Items.ToList()
-                    : cachedPlaylists.Items.Skip(offset).Take(limit).ToList();
-                return Ok(new
-                {
-                    success = true,
-                    items = slice,
-                    offset = all ? 0 : offset,
-                    limit = all ? slice.Count : limit,
-                    total = cachedPlaylists.Total,
-                    cached = true
-                });
+                return Ok(BuildCachedBrowseCategoryResponse(cachedPlaylists.Items, cachedPlaylists.Total, all, offset, limit));
             }
 
             offset = Math.Max(offset, 0);
@@ -567,15 +556,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
                 BrowseCategoryCache[resolvedId] = (DateTimeOffset.UtcNow, result.Items[0]);
             }
 
-            return Ok(new
-            {
-                success = true,
-                items = ResolveBrowseItems(result, all, offset, limit),
-                offset = all ? 0 : offset,
-                limit = all ? result.Items.Count : limit,
-                total = result.Total,
-                cached = result.Cached
-            });
+            return Ok(BuildBrowseCategoryResponse(result, all, offset, limit, result.Cached));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -598,6 +579,46 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return all
             ? result.Items.ToList()
             : result.Items.Skip(offset).Take(limit).ToList();
+    }
+
+    private static object BuildBrowseCategoryResponse(
+        BrowseCategoryPlaylistsResult result,
+        bool all,
+        int offset,
+        int limit,
+        bool cached)
+    {
+        var items = ResolveBrowseItems(result, all, offset, limit);
+        return new
+        {
+            success = true,
+            items,
+            offset = all ? 0 : offset,
+            limit = all ? items.Count : limit,
+            total = result.Total,
+            cached
+        };
+    }
+
+    private static object BuildCachedBrowseCategoryResponse(
+        IReadOnlyList<object> cachedItems,
+        int total,
+        bool all,
+        int offset,
+        int limit)
+    {
+        var items = all
+            ? cachedItems.ToList()
+            : cachedItems.Skip(offset).Take(limit).ToList();
+        return new
+        {
+            success = true,
+            items,
+            offset = all ? 0 : offset,
+            limit = all ? items.Count : limit,
+            total,
+            cached = true
+        };
     }
 
     public sealed record SpotifyBrowseBatchRequest(

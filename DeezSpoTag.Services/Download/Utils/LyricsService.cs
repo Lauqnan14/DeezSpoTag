@@ -470,10 +470,14 @@ public class LyricsService
         var validation = ValidateMusixmatchPayload(track, body);
         if (!validation.IsMatch)
         {
-            _logger.LogInformation(
-                "Rejected Musixmatch lyrics candidate for track {TrackId}: {Reason}",
-                track.Id,
-                validation.Reason);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Rejected Musixmatch lyrics candidate for track {TrackId}: {Reason}",
+                    track.Id,
+                    validation.Reason);
+            }
+
             return LyricsNew.CreateError($"Musixmatch lyrics identity rejected: {validation.Reason}");
         }
 
@@ -1088,55 +1092,16 @@ public class LyricsService
 
         try
         {
-            SongLinkResult? songLink = null;
-            var userCountry = string.IsNullOrWhiteSpace(settings.DeezerCountry) ? null : settings.DeezerCountry;
-
-            if (!string.IsNullOrWhiteSpace(track.DownloadURL))
-            {
-                songLink = await _songLinkResolver.ResolveByUrlAsync(track.DownloadURL, userCountry, cancellationToken);
-            }
-
-            if (songLink == null
-                && string.Equals(track.Source, SpotifyProvider, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(track.SourceId))
-            {
-                songLink = await _songLinkResolver.ResolveSpotifyTrackAsync(track.SourceId, cancellationToken);
-            }
-
-            if (songLink == null
-                && track.Urls != null
-                && track.Urls.TryGetValue(SpotifyUrlKey, out var spotifyUrl)
-                && !string.IsNullOrWhiteSpace(spotifyUrl))
-            {
-                songLink = await _songLinkResolver.ResolveByUrlAsync(spotifyUrl, userCountry, cancellationToken);
-            }
+            var songLink = await ResolveSongLinkForDeezerLyricsAsync(track, settings, cancellationToken);
 
             if (songLink != null)
             {
-                var validation = LyricsIdentityValidator.ValidateResolvedMapping(
-                    track,
-                    DeezerProvider,
-                    songLink.SourceTitle,
-                    songLink.SourceArtist,
-                    songLink.Isrc);
-                if (!validation.IsMatch)
+                if (!IsValidSongLinkLyricsMapping(track, DeezerProvider, songLink))
                 {
-                    _logger.LogInformation(
-                        "Rejected SongLink Deezer lyrics mapping for track {TrackId}: {Reason}",
-                        track.Id,
-                        validation.Reason);
                     return null;
                 }
 
-                if (TrackIdNormalization.TryNormalizeDeezerTrackId(songLink.DeezerId, out var deezerTrackId))
-                {
-                    return deezerTrackId;
-                }
-
-                if (TrackIdNormalization.TryNormalizeDeezerTrackId(songLink.DeezerUrl, out deezerTrackId))
-                {
-                    return deezerTrackId;
-                }
+                return TryReadDeezerTrackId(songLink);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1147,6 +1112,39 @@ public class LyricsService
         }
 
         return null;
+    }
+
+    private async Task<SongLinkResult?> ResolveSongLinkForDeezerLyricsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var userCountry = string.IsNullOrWhiteSpace(settings.DeezerCountry) ? null : settings.DeezerCountry;
+        var songLink = await ResolveSongLinkFromPrimaryUrlAsync(track, userCountry, cancellationToken);
+        if (songLink != null)
+        {
+            return songLink;
+        }
+
+        if (string.Equals(track.Source, SpotifyProvider, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(track.SourceId))
+        {
+            return await _songLinkResolver!.ResolveSpotifyTrackAsync(track.SourceId, cancellationToken);
+        }
+
+        return await ResolveSongLinkFromUrlAliasAsync(track, SpotifyUrlKey, userCountry, cancellationToken);
+    }
+
+    private static string? TryReadDeezerTrackId(SongLinkResult songLink)
+    {
+        if (TrackIdNormalization.TryNormalizeDeezerTrackId(songLink.DeezerId, out var deezerTrackId))
+        {
+            return deezerTrackId;
+        }
+
+        return TrackIdNormalization.TryNormalizeDeezerTrackId(songLink.DeezerUrl, out deezerTrackId)
+            ? deezerTrackId
+            : null;
     }
 
     private async Task<string?> TryResolveDeezerTrackIdByIsrcAsync(Track track)
@@ -1249,59 +1247,109 @@ public class LyricsService
             return null;
         }
 
-        SongLinkResult? songLink = null;
-        var userCountry = string.IsNullOrWhiteSpace(settings.DeezerCountry) ? null : settings.DeezerCountry;
-
-        if (!string.IsNullOrWhiteSpace(track.DownloadURL))
-        {
-            songLink = await _songLinkResolver.ResolveByUrlAsync(track.DownloadURL, userCountry, cancellationToken);
-        }
-
-        if (songLink == null
-            && string.Equals(track.Source, DeezerProvider, StringComparison.OrdinalIgnoreCase)
-            && (TrackIdNormalization.TryNormalizeDeezerTrackId(track.SourceId, out var deezerTrackId)
-                || TrackIdNormalization.TryNormalizeDeezerTrackId(track.Id, out deezerTrackId)))
-        {
-            songLink = await _songLinkResolver.ResolveByDeezerTrackIdAsync(deezerTrackId!, cancellationToken);
-        }
-
-        if (songLink == null
-            && track.Urls != null
-            && track.Urls.TryGetValue(DeezerUrlKey, out var deezerUrl)
-            && !string.IsNullOrWhiteSpace(deezerUrl))
-        {
-            songLink = await _songLinkResolver.ResolveByUrlAsync(deezerUrl, userCountry, cancellationToken);
-        }
+        var songLink = await ResolveSongLinkForSpotifyLyricsAsync(track, settings, cancellationToken);
 
         if (songLink != null)
         {
-            var validation = LyricsIdentityValidator.ValidateResolvedMapping(
-                track,
-                SpotifyProvider,
-                songLink.SourceTitle,
-                songLink.SourceArtist,
-                songLink.Isrc);
-            if (!validation.IsMatch)
+            if (!IsValidSongLinkLyricsMapping(track, SpotifyProvider, songLink))
             {
-                _logger.LogInformation(
-                    "Rejected SongLink Spotify lyrics mapping for track {TrackId}: {Reason}",
-                    track.Id,
-                    validation.Reason);
                 return null;
             }
 
-            if (TrackIdNormalization.TryNormalizeSpotifyTrackId(songLink.SpotifyId, out var spotifyTrackId))
-            {
-                return spotifyTrackId;
-            }
-
-            if (TrackIdNormalization.TryNormalizeSpotifyTrackId(songLink.SpotifyUrl, out spotifyTrackId))
-            {
-                return spotifyTrackId;
-            }
+            return TryReadSpotifyTrackId(songLink);
         }
 
         return null;
+    }
+
+    private async Task<SongLinkResult?> ResolveSongLinkForSpotifyLyricsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var userCountry = string.IsNullOrWhiteSpace(settings.DeezerCountry) ? null : settings.DeezerCountry;
+        var songLink = await ResolveSongLinkFromPrimaryUrlAsync(track, userCountry, cancellationToken);
+        if (songLink != null)
+        {
+            return songLink;
+        }
+
+        if (TryResolveSourceDeezerTrackId(track, out var deezerTrackId))
+        {
+            return await _songLinkResolver!.ResolveByDeezerTrackIdAsync(deezerTrackId, cancellationToken);
+        }
+
+        return await ResolveSongLinkFromUrlAliasAsync(track, DeezerUrlKey, userCountry, cancellationToken);
+    }
+
+    private static bool TryResolveSourceDeezerTrackId(Track track, out string deezerTrackId)
+    {
+        if (string.Equals(track.Source, DeezerProvider, StringComparison.OrdinalIgnoreCase)
+            && (TrackIdNormalization.TryNormalizeDeezerTrackId(track.SourceId, out var sourceId)
+                || TrackIdNormalization.TryNormalizeDeezerTrackId(track.Id, out sourceId)))
+        {
+            deezerTrackId = sourceId!;
+            return true;
+        }
+
+        deezerTrackId = string.Empty;
+        return false;
+    }
+
+    private static string? TryReadSpotifyTrackId(SongLinkResult songLink)
+    {
+        if (TrackIdNormalization.TryNormalizeSpotifyTrackId(songLink.SpotifyId, out var spotifyTrackId))
+        {
+            return spotifyTrackId;
+        }
+
+        return TrackIdNormalization.TryNormalizeSpotifyTrackId(songLink.SpotifyUrl, out spotifyTrackId)
+            ? spotifyTrackId
+            : null;
+    }
+
+    private async Task<SongLinkResult?> ResolveSongLinkFromPrimaryUrlAsync(
+        Track track,
+        string? userCountry,
+        CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(track.DownloadURL)
+            ? null
+            : await _songLinkResolver!.ResolveByUrlAsync(track.DownloadURL, userCountry, cancellationToken);
+
+    private async Task<SongLinkResult?> ResolveSongLinkFromUrlAliasAsync(
+        Track track,
+        string urlKey,
+        string? userCountry,
+        CancellationToken cancellationToken)
+        => track.Urls != null
+            && track.Urls.TryGetValue(urlKey, out var url)
+            && !string.IsNullOrWhiteSpace(url)
+                ? await _songLinkResolver!.ResolveByUrlAsync(url, userCountry, cancellationToken)
+                : null;
+
+    private bool IsValidSongLinkLyricsMapping(Track track, string targetProvider, SongLinkResult songLink)
+    {
+        var validation = LyricsIdentityValidator.ValidateResolvedMapping(
+            track,
+            targetProvider,
+            songLink.SourceTitle,
+            songLink.SourceArtist,
+            songLink.Isrc);
+        if (validation.IsMatch)
+        {
+            return true;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Rejected SongLink {Provider} lyrics mapping for track {TrackId}: {Reason}",
+                targetProvider,
+                track.Id,
+                validation.Reason);
+        }
+
+        return false;
     }
 
     private async Task<SpotifyAuthContext?> ResolveSpotifyAuthContextAsync(CancellationToken cancellationToken)

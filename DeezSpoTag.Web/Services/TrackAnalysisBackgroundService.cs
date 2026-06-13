@@ -14,6 +14,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private const string EnhancedAnalysisMode = "enhanced";
     private const string EnhancedAnalysisVersion = "musicnn-1";
     private const string FailedAnalysisStatus = "failed";
+    private const string CompletedAnalysisStatus = "completed";
+    private const string UnknownTrackMetadata = "Unknown";
     private const string VibeModelsDirectoryEnvironmentVariable = "VIBE_ANALYZER_MODELS";
     private const string VibePythonEnvironmentVariable = "VIBE_ANALYZER_PYTHON";
     private const string VibePathEnvironmentVariable = "VIBE_ANALYZER_PATH";
@@ -241,7 +243,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return;
         }
 
-        var track = summary ?? new MixTrackDto(result.TrackId, $"Track {result.TrackId}", "Unknown", "Unknown", null, null);
+        var track = summary ?? new MixTrackDto(result.TrackId, $"Track {result.TrackId}", UnknownTrackMetadata, UnknownTrackMetadata, null, null);
         var latest = new LatestTrackAnalysisDto(track, result);
         var recent = new VibeAnalysisRecentItemDto(
             track.TrackId,
@@ -270,7 +272,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         DateTimeOffset? analyzedAtUtc,
         string? error)
     {
-        var mixTrack = summary ?? new MixTrackDto(track.TrackId, $"Track {track.TrackId}", "Unknown", "Unknown", null, track.DurationMs);
+        var mixTrack = summary ?? new MixTrackDto(track.TrackId, $"Track {track.TrackId}", UnknownTrackMetadata, UnknownTrackMetadata, null, track.DurationMs);
         var analysis = CreateFailure(track.TrackId, track.LibraryId, status, error ?? string.Empty) with
         {
             AnalyzedAtUtc = analyzedAtUtc
@@ -460,29 +462,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             SetCurrentAnalysis(track, summary);
             await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, run.Token);
             var result = await AnalyzeTrackAsync(track, null, run.Token);
-            if (result.LastfmTags is null && summary is not null)
-            {
-                var tags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, run.Token);
-                if (tags is not null)
-                {
-                    result = result with { LastfmTags = tags };
-                }
-            }
+            result = await AttachLastFmTagsIfMissingAsync(result, summary, run.Token);
 
             await _repository.UpsertTrackAnalysisAsync(result, run.Token);
             var isComplete = IsAnalysisCompleteStatus(result.Status);
-
-            if (isComplete)
-            {
-                try
-                {
-                    await _moodBucketService.AssignTrackToMoodsAsync(track.TrackId, run.Token);
-                }
-                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-                {
-                    _logger.LogWarning(ex, "Mood bucket assignment failed for track {TrackId}", track.TrackId);
-                }
-            }
+            await AssignMoodBucketsIfCompleteAsync(track.TrackId, isComplete, run.Token);
 
             RecordCompletedAnalysis(summary, result);
 
@@ -491,6 +475,28 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         finally
         {
             _analysisLock.Release();
+        }
+    }
+
+    private async Task<TrackAnalysisResultDto> AttachLastFmTagsIfMissingAsync(
+        TrackAnalysisResultDto result,
+        MixTrackDto? summary,
+        CancellationToken cancellationToken)
+    {
+        if (result.LastfmTags is not null || summary is null)
+        {
+            return result;
+        }
+
+        var tags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, cancellationToken);
+        return tags is null ? result : result with { LastfmTags = tags };
+    }
+
+    private async Task AssignMoodBucketsIfCompleteAsync(long trackId, bool isComplete, CancellationToken cancellationToken)
+    {
+        if (isComplete)
+        {
+            await AssignTrackMoodBucketsAsync(trackId, cancellationToken);
         }
     }
 
@@ -537,22 +543,17 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                 break;
             }
 
-            await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, cancellationToken);
             summaryMap.TryGetValue(track.TrackId, out var summary);
-            SetCurrentAnalysis(track, summary);
-            var result = await AnalyzeTrackWithOptionalLastFmAsync(track, summary, batchPredictions, cancellationToken);
-            await _repository.UpsertTrackAnalysisAsync(result, cancellationToken);
+            var outcome = await AnalyzeBatchTrackAsync(track, summary, batchPredictions, cancellationToken);
             processedTracks++;
-            if (IsAnalysisCompleteStatus(result.Status))
+            if (outcome.Completed)
             {
                 completed++;
-                await AssignTrackMoodBucketsAsync(track.TrackId, cancellationToken);
-                RecordCompletedAnalysis(summary, result);
             }
-            else if (IsAnalysisErrorStatus(result.Status))
+            else if (outcome.Error != null)
             {
                 errors++;
-                RecordErrorBucket(errorBuckets, result.Error);
+                RecordErrorBucket(errorBuckets, outcome.Error);
             }
         }
 
@@ -561,23 +562,55 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             "info",
             $"Vibe analysis completed (ok={completed}, errors={errors})."));
 
-        if (errors > 0)
-        {
-            if (errorBuckets.Count == 0)
-            {
-                errorBuckets["Unknown error"] = errors;
-            }
-            var topReasons = errorBuckets
-                .OrderByDescending(item => item.Value)
-                .Take(3)
-                .Select(item => $"{item.Key} ({item.Value})");
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Vibe analysis errors: {string.Join(", ", topReasons)}"));
-        }
+        LogBatchErrors(errors, errorBuckets);
 
         return processedTracks;
+    }
+
+    private sealed record BatchAnalysisOutcome(bool Completed, string? Error);
+
+    private async Task<BatchAnalysisOutcome> AnalyzeBatchTrackAsync(
+        TrackAnalysisInputDto track,
+        MixTrackDto? summary,
+        IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
+        CancellationToken cancellationToken)
+    {
+        await _repository.MarkTrackAnalysisProcessingAsync(track.TrackId, track.LibraryId, cancellationToken);
+        SetCurrentAnalysis(track, summary);
+        var result = await AnalyzeTrackWithOptionalLastFmAsync(track, summary, batchPredictions, cancellationToken);
+        await _repository.UpsertTrackAnalysisAsync(result, cancellationToken);
+        if (IsAnalysisCompleteStatus(result.Status))
+        {
+            await AssignTrackMoodBucketsAsync(track.TrackId, cancellationToken);
+            RecordCompletedAnalysis(summary, result);
+            return new BatchAnalysisOutcome(true, null);
+        }
+
+        return IsAnalysisErrorStatus(result.Status)
+            ? new BatchAnalysisOutcome(false, result.Error)
+            : new BatchAnalysisOutcome(false, null);
+    }
+
+    private void LogBatchErrors(int errors, Dictionary<string, int> errorBuckets)
+    {
+        if (errors <= 0)
+        {
+            return;
+        }
+
+        if (errorBuckets.Count == 0)
+        {
+            errorBuckets["Unknown error"] = errors;
+        }
+
+        var topReasons = errorBuckets
+            .OrderByDescending(item => item.Value)
+            .Take(3)
+            .Select(item => $"{item.Key} ({item.Value})");
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Vibe analysis errors: {string.Join(", ", topReasons)}"));
     }
 
     private bool IsEnhancedAnalysisAvailableForRetry()
@@ -610,7 +643,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private static bool IsAnalysisCompleteStatus(string? status)
     {
         return string.Equals(status, "complete", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase);
+               || string.Equals(status, CompletedAnalysisStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsAnalysisErrorStatus(string? status)
@@ -644,15 +677,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         CancellationToken cancellationToken)
     {
         var result = await AnalyzeTrackAsync(track, batchPredictions, cancellationToken);
-        if (result.LastfmTags is not null || summary is null)
-        {
-            return result;
-        }
-
-        var tags = await _lastFmTagService.GetTrackTagsAsync(summary.ArtistName, summary.Title, cancellationToken);
-        return tags is null
-            ? result
-            : result with { LastfmTags = tags };
+        return await AttachLastFmTagsIfMissingAsync(result, summary, cancellationToken);
     }
 
     private async Task<TrackAnalysisResultDto> AnalyzeTrackAsync(
@@ -666,56 +691,29 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             foreach (var candidatePath in EnumerateAnalysisCandidatePaths(track))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var candidateTrack = track with { FilePath = candidatePath };
-                if (!TryLoadTrackSamples(candidateTrack, out var samples, out var sampleRate, out var failure))
+                var candidate = TryPrepareAnalysisCandidate(track, candidatePath);
+                if (candidate.Error is not null)
                 {
-                    candidateErrors.Add(FormatAnalysisCandidateError(candidatePath, failure?.Error));
+                    candidateErrors.Add(candidate.Error);
                     continue;
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
-
-                if (samples.Length == 0)
-                {
-                    candidateErrors.Add(FormatAnalysisCandidateError(candidatePath, "No audio samples."));
-                    continue;
-                }
-
-                var metrics = CalculateTrackSignalMetrics(samples, sampleRate, candidateTrack.DurationMs);
-                AnalysisOutput? analysisOutput;
-                string? predictionFailure;
-                if (PathMatchesPrimaryAnalysisCandidate(track, candidatePath)
-                    && batchPredictions is not null
-                    && batchPredictions.TryGetValue(track.TrackId, out var batchPrediction))
-                {
-                    analysisOutput = batchPrediction.Output;
-                    predictionFailure = batchPrediction.FailureReason;
-                    if (analysisOutput is null)
-                    {
-                        var (singleTrackOutput, singleTrackFailure) = await TryPredictAnalysisOutputAsync(candidateTrack.FilePath, cancellationToken);
-                        if (singleTrackOutput is not null)
-                        {
-                            analysisOutput = singleTrackOutput;
-                            predictionFailure = null;
-                        }
-                        else
-                        {
-                            predictionFailure = CombinePredictionFailures(predictionFailure, singleTrackFailure);
-                        }
-                    }
-                }
-                else
-                {
-                    (analysisOutput, predictionFailure) = await TryPredictAnalysisOutputAsync(candidateTrack.FilePath, cancellationToken);
-                }
+                var metrics = CalculateTrackSignalMetrics(candidate.Samples, candidate.SampleRate, candidate.Track.DurationMs);
+                var (analysisOutput, predictionFailure) = await ResolveAnalysisOutputAsync(
+                    track,
+                    candidatePath,
+                    candidate.Track,
+                    batchPredictions,
+                    cancellationToken);
 
                 if (analysisOutput is null
                     && !string.IsNullOrWhiteSpace(predictionFailure))
                 {
-                    _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", candidateTrack.FilePath, predictionFailure);
+                    _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", candidate.Track.FilePath, predictionFailure);
                 }
 
-                return CreateCompletedAnalysisResult(candidateTrack, metrics, analysisOutput);
+                return CreateCompletedAnalysisResult(candidate.Track, metrics, analysisOutput);
             }
 
             return CreateFailure(
@@ -732,6 +730,69 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
+    private sealed record AnalysisCandidate(
+        TrackAnalysisInputDto Track,
+        float[] Samples,
+        int SampleRate,
+        string? Error);
+
+    private static AnalysisCandidate TryPrepareAnalysisCandidate(TrackAnalysisInputDto track, string candidatePath)
+    {
+        var candidateTrack = track with { FilePath = candidatePath };
+        if (!TryLoadTrackSamples(candidateTrack, out var samples, out var sampleRate, out var failure))
+        {
+            return new AnalysisCandidate(candidateTrack, Array.Empty<float>(), 0, FormatAnalysisCandidateError(candidatePath, failure?.Error));
+        }
+
+        if (samples.Length == 0)
+        {
+            return new AnalysisCandidate(candidateTrack, samples, sampleRate, FormatAnalysisCandidateError(candidatePath, "No audio samples."));
+        }
+
+        return new AnalysisCandidate(candidateTrack, samples, sampleRate, null);
+    }
+
+    private async Task<(AnalysisOutput? Output, string? FailureReason)> ResolveAnalysisOutputAsync(
+        TrackAnalysisInputDto originalTrack,
+        string candidatePath,
+        TrackAnalysisInputDto candidateTrack,
+        IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
+        CancellationToken cancellationToken)
+    {
+        if (!TryUseBatchPrediction(originalTrack, candidatePath, batchPredictions, out var batchPrediction))
+        {
+            return await TryPredictAnalysisOutputAsync(candidateTrack.FilePath, cancellationToken);
+        }
+
+        if (batchPrediction.Output is not null)
+        {
+            return (batchPrediction.Output, batchPrediction.FailureReason);
+        }
+
+        var (singleTrackOutput, singleTrackFailure) = await TryPredictAnalysisOutputAsync(candidateTrack.FilePath, cancellationToken);
+        return singleTrackOutput is not null
+            ? (singleTrackOutput, null)
+            : (null, CombinePredictionFailures(batchPrediction.FailureReason, singleTrackFailure));
+    }
+
+    private static bool TryUseBatchPrediction(
+        TrackAnalysisInputDto track,
+        string candidatePath,
+        IReadOnlyDictionary<long, BatchPrediction>? batchPredictions,
+        out BatchPrediction batchPrediction)
+    {
+        batchPrediction = default!;
+        if (!PathMatchesPrimaryAnalysisCandidate(track, candidatePath)
+            || batchPredictions is null
+            || !batchPredictions.TryGetValue(track.TrackId, out var prediction))
+        {
+            return false;
+        }
+
+        batchPrediction = prediction;
+        return true;
+    }
+
     private static IEnumerable<string> EnumerateAnalysisCandidatePaths(TrackAnalysisInputDto track)
     {
         var seen = new HashSet<string>(OperatingSystem.IsWindows()
@@ -742,12 +803,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             yield return track.FilePath;
         }
 
-        foreach (var alternatePath in track.AlternateFilePaths ?? Array.Empty<string>())
+        foreach (var alternatePath in (track.AlternateFilePaths ?? Array.Empty<string>())
+            .Where(alternatePath => !string.IsNullOrWhiteSpace(alternatePath) && seen.Add(alternatePath)))
         {
-            if (!string.IsNullOrWhiteSpace(alternatePath) && seen.Add(alternatePath))
-            {
-                yield return alternatePath;
-            }
+            yield return alternatePath;
         }
     }
 
@@ -1170,7 +1229,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         return new TrackAnalysisResultDto(
             track.TrackId,
             track.LibraryId,
-            "completed",
+            CompletedAnalysisStatus,
             metrics.Energy,
             metrics.Rms,
             metrics.ZeroCrossing,
@@ -1273,15 +1332,19 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return Array.Empty<string>();
         }
 
-        var tags = new List<string>();
-        AddMoodTag(tags, "happy", moodScores.Happy);
-        AddMoodTag(tags, "sad", moodScores.Sad);
-        AddMoodTag(tags, "relaxed", moodScores.Relaxed);
-        AddMoodTag(tags, "aggressive", moodScores.Aggressive);
-        AddMoodTag(tags, "party", moodScores.Party);
-        AddMoodTag(tags, "acoustic", moodScores.Acoustic);
-        AddMoodTag(tags, "electronic", moodScores.Electronic);
-        return tags.ToArray();
+        return new (string Mood, double? Score)[]
+            {
+                ("happy", moodScores.Happy),
+                ("sad", moodScores.Sad),
+                ("relaxed", moodScores.Relaxed),
+                ("aggressive", moodScores.Aggressive),
+                ("party", moodScores.Party),
+                ("acoustic", moodScores.Acoustic),
+                ("electronic", moodScores.Electronic)
+            }
+            .Where(static item => item.Score >= 0.6)
+            .Select(static item => item.Mood)
+            .ToArray();
     }
 
     private static string[] NormalizeMoodTags(IReadOnlyList<string>? moodTags)
@@ -1298,46 +1361,16 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             .ToArray();
     }
 
-    private static void AddMoodTag(List<string> tags, string mood, double? score)
-    {
-        if (score is null)
-        {
-            return;
-        }
-
-        if (score >= 0.6)
-        {
-            tags.Add(mood);
-        }
-    }
-
     private async Task<(AnalysisOutput? Output, string? FailureReason)> TryPredictAnalysisOutputAsync(
         string filePath,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var capability = GetOrProbeMlCapability();
-        if (!capability.Available)
+        var context = ResolveAnalyzerExecutionContext();
+        if (context.FailureReason != null)
         {
-            var reason = capability.Reason ?? "Unknown reason.";
-            LogMlUnavailable(reason);
-            return (null, reason);
-        }
-
-        var scriptPath = ResolveAnalyzerScriptPath();
-        if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
-        {
-            var reason = $"Analyzer script missing at {scriptPath}. Set VIBE_ANALYZER_PATH or ensure Tools/vibe_analyzer.py exists.";
-            LogMlUnavailable(reason);
-            return (null, reason);
-        }
-
-        var modelsDir = ResolveModelsDirectory();
-        if (string.IsNullOrWhiteSpace(modelsDir) || !Directory.Exists(modelsDir))
-        {
-            var reason = $"Models directory missing at {modelsDir}. Set VIBE_ANALYZER_MODELS or place models under Tools/models.";
-            LogMlUnavailable(reason);
-            return (null, reason);
+            LogMlUnavailable(context.FailureReason);
+            return (null, context.FailureReason);
         }
 
         try
@@ -1346,7 +1379,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             var startInfo = new ProcessStartInfo
             {
                 FileName = ResolvePythonExecutable(),
-                Arguments = $"\"{scriptPath}\" --file \"{filePath}\" --models \"{modelsDir}\"",
+                Arguments = $"\"{context.ScriptPath}\" --file \"{filePath}\" --models \"{context.ModelsDir}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -1415,6 +1448,40 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             _logger.LogWarning(ex, "Vibe analysis ML failed for {FilePath}", filePath);
             return (null, ex.Message);
         }
+    }
+
+    private sealed record AnalyzerExecutionContext(
+        string? ScriptPath,
+        string? ModelsDir,
+        string? FailureReason);
+
+    private AnalyzerExecutionContext ResolveAnalyzerExecutionContext()
+    {
+        var capability = GetOrProbeMlCapability();
+        if (!capability.Available)
+        {
+            return new AnalyzerExecutionContext(null, null, capability.Reason ?? "Unknown reason.");
+        }
+
+        var scriptPath = ResolveAnalyzerScriptPath();
+        if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
+        {
+            return new AnalyzerExecutionContext(
+                null,
+                null,
+                $"Analyzer script missing at {scriptPath}. Set VIBE_ANALYZER_PATH or ensure Tools/vibe_analyzer.py exists.");
+        }
+
+        var modelsDir = ResolveModelsDirectory();
+        if (string.IsNullOrWhiteSpace(modelsDir) || !Directory.Exists(modelsDir))
+        {
+            return new AnalyzerExecutionContext(
+                null,
+                null,
+                $"Models directory missing at {modelsDir}. Set VIBE_ANALYZER_MODELS or place models under Tools/models.");
+        }
+
+        return new AnalyzerExecutionContext(scriptPath, modelsDir, null);
     }
 
     private static TimeSpan ResolveAnalyzerTimeout()

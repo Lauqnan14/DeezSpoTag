@@ -113,11 +113,14 @@ public sealed class LrclibLyricsService
                 return ConvertToLyrics(exact);
             }
 
-            _logger.LogInformation(
-                "Rejected LRCLIB exact lyrics candidate for {Title} by {Artist}: {Reason}",
-                request.Title,
-                request.Artist,
-                validation.Reason);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Rejected LRCLIB exact lyrics candidate for {Title} by {Artist}: {Reason}",
+                    request.Title,
+                    request.Artist,
+                    validation.Reason);
+            }
         }
 
         if (!request.Options.SearchFallback)

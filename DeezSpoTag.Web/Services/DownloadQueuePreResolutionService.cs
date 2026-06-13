@@ -11,6 +11,8 @@ namespace DeezSpoTag.Web.Services;
 public sealed class DownloadQueuePreResolutionService : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+    private const string QueuedStatus = "queued";
+    private const string FailedStatus = "failed";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadOrchestrationService _orchestrationService;
@@ -124,7 +126,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
                 await _queueRepository.TryUpdateQueuedIdentityIfCurrentAsync(
                     BuildIdentityUpdateItem(item, resolvedPayload.ToJsonString(), result.Engine),
                     resolvingPayloadJson,
-                    status: "queued",
+                    status: QueuedStatus,
                     error: null,
                     cancellationToken: cancellationToken);
                 return;
@@ -138,7 +140,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
                     await _queueRepository.TryUpdateQueuedIdentityIfCurrentAsync(
                         BuildIdentityUpdateItem(item, resolvedPayload.ToJsonString(), result.Engine),
                         resolvingPayloadJson,
-                        status: "queued",
+                        status: QueuedStatus,
                         error: null,
                         cancellationToken: cancellationToken);
                     return;
@@ -155,7 +157,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
             await _queueRepository.TryUpdateQueuedIdentityIfCurrentAsync(
                 BuildIdentityUpdateItem(item, finalPayloadJson, result.Engine),
                 resolvingPayloadJson,
-                string.IsNullOrWhiteSpace(result.Error) ? "queued" : "failed",
+                string.IsNullOrWhiteSpace(result.Error) ? QueuedStatus : FailedStatus,
                 result.Error,
                 cancellationToken);
         }
@@ -175,7 +177,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
                 await _queueRepository.TryUpdateQueuedIdentityIfCurrentAsync(
                     BuildIdentityUpdateItem(item, deferredPayload.ToJsonString(), item.Engine),
                     resolvingPayloadJson,
-                    status: "queued",
+                    status: QueuedStatus,
                     error: null,
                     cancellationToken: CancellationToken.None);
                 return;
@@ -194,7 +196,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
                 await _queueRepository.TryUpdateQueuedIdentityIfCurrentAsync(
                     BuildIdentityUpdateItem(item, failedPayload.ToJsonString(), item.Engine),
                     resolvingPayloadJson,
-                    status: "queued",
+                    status: QueuedStatus,
                     error: null,
                     cancellationToken: CancellationToken.None);
                 return;

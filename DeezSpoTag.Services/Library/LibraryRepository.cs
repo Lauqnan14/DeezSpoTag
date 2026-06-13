@@ -3567,7 +3567,7 @@ ORDER BY selected_tracks.library_sort_order,
 
     private static async Task CreateLibraryScopeTableAsync(
         SqliteConnection connection,
-        IReadOnlyList<long> scopedLibraryIds,
+        long[] scopedLibraryIds,
         CancellationToken cancellationToken)
     {
         const string createSql = @"
@@ -3581,7 +3581,7 @@ DELETE FROM temp_analysis_library_scope;";
             await createCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        if (scopedLibraryIds.Count == 0)
+        if (scopedLibraryIds.Length == 0)
         {
             return;
         }
@@ -3592,7 +3592,7 @@ VALUES (@libraryId, @sortOrder);";
         await using var insertCommand = new SqliteCommand(insertSql, connection);
         var libraryIdParameter = insertCommand.Parameters.Add("libraryId", SqliteType.Integer);
         var sortOrderParameter = insertCommand.Parameters.Add("sortOrder", SqliteType.Integer);
-        for (var index = 0; index < scopedLibraryIds.Count; index++)
+        for (var index = 0; index < scopedLibraryIds.Length; index++)
         {
             libraryIdParameter.Value = scopedLibraryIds[index];
             sortOrderParameter.Value = index;
@@ -4347,7 +4347,7 @@ LIMIT @limit;";
 
     private static void AddAlternateAnalysisPath(
         List<TrackAnalysisInputDto> results,
-        IReadOnlyDictionary<long, List<string>> alternatePathsByTrackId,
+        Dictionary<long, List<string>> alternatePathsByTrackId,
         long trackId,
         int existingIndex,
         string filePath)
@@ -4364,23 +4364,6 @@ LIMIT @limit;";
         {
             AlternateFilePaths = alternates.ToArray()
         };
-    }
-
-    private static async Task<TrackAnalysisInputDto?> ReadTrackAnalysisInputAsync(
-        SqliteDataReader reader,
-        CancellationToken cancellationToken)
-    {
-        var filePath = await ReadAudioFilePathAsync(reader, 2, 3, 4, cancellationToken);
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return null;
-        }
-
-        return new TrackAnalysisInputDto(
-            reader.GetInt64(0),
-            await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetInt64(1),
-            filePath,
-            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5));
     }
 
     private static async Task<TrackAudioInfoDto?> ReadTrackAudioInfoAsync(
@@ -4407,33 +4390,35 @@ LIMIT @limit;";
     {
         var updateArtwork = await reader.IsDBNullAsync(8, cancellationToken) || reader.GetInt32(8) != 0;
         var reuseSavedArtwork = !await reader.IsDBNullAsync(9, cancellationToken) && reader.GetInt32(9) != 0;
-        var created = await reader.IsDBNullAsync(10, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(10));
-        var updated = await reader.IsDBNullAsync(11, cancellationToken) ? created : ParseDateTimeOffsetInvariant(reader.GetString(11));
-        var rulesJson = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
+        var created = ParseDateTimeOffsetOrDefault(await ReadNullableStringAsync(reader, 10, cancellationToken), DateTimeOffset.MinValue);
+        var updated = ParseDateTimeOffsetOrDefault(await ReadNullableStringAsync(reader, 11, cancellationToken), created);
+        var rulesJson = await ReadNullableStringAsync(reader, 12, cancellationToken);
         var rules = rulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackRoutingRule>>(rulesJson);
-        var ignoreRulesJson = await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13);
+        var ignoreRulesJson = await ReadNullableStringAsync(reader, 13, cancellationToken);
         var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
-        var plexPlaylistId = await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetString(14);
-        var jellyfinPlaylistId = await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetString(15);
-        var atmosDestinationFolderId = await reader.IsDBNullAsync(3, cancellationToken) ? null : (long?)reader.GetInt64(3);
+        var plexPlaylistId = await ReadNullableStringAsync(reader, 14, cancellationToken);
+        var jellyfinPlaylistId = await ReadNullableStringAsync(reader, 15, cancellationToken);
         return new PlaylistWatchPreferenceDto(
             reader.GetString(0),
             reader.GetString(1),
-            await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetInt64(2),
-            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
-            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
-            await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7),
+            await ReadNullableInt64Async(reader, 2, cancellationToken),
+            await ReadNullableStringAsync(reader, 4, cancellationToken),
+            await ReadNullableStringAsync(reader, 5, cancellationToken),
+            await ReadNullableStringAsync(reader, 6, cancellationToken),
+            await ReadNullableStringAsync(reader, 7, cancellationToken),
             updateArtwork,
             reuseSavedArtwork,
             created,
             updated,
             rules,
             ignoreRules,
-            atmosDestinationFolderId,
+            await ReadNullableInt64Async(reader, 3, cancellationToken),
             plexPlaylistId,
             jellyfinPlaylistId);
     }
+
+    private static DateTimeOffset ParseDateTimeOffsetOrDefault(string? value, DateTimeOffset defaultValue)
+        => string.IsNullOrWhiteSpace(value) ? defaultValue : ParseDateTimeOffsetInvariant(value);
 
     private async Task<HashSet<string>> QueryPlaylistWatchTrackSourceIdsAsync(
         string sql,
@@ -7366,7 +7351,7 @@ LIMIT 1;";
 
     private static async Task CreateBlocklistGenreScopeTableAsync(
         SqliteConnection connection,
-        IReadOnlyList<string> normalizedGenres,
+        List<string> normalizedGenres,
         CancellationToken cancellationToken)
     {
         const string createSql = @"
