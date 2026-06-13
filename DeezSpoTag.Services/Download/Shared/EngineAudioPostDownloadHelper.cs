@@ -709,10 +709,10 @@ public static partial class EngineAudioPostDownloadHelper
     {
         if (original.DurationSeconds > 0)
         {
-            return original.DurationSeconds * 1000;
+            return (double)original.DurationSeconds * 1000;
         }
 
-        return payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : 0;
+        return payload.DurationSeconds > 0 ? (double)payload.DurationSeconds * 1000 : 0;
     }
 
     private static string? ReadStringProperty(object instance, string propertyName)
