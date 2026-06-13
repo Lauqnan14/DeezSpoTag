@@ -25,6 +25,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     private readonly PlaylistWatchService _playlistWatchService;
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly PlaylistVisualService _playlistVisualService;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
     private readonly PlaylistWatchHostedService? _playlistWatchHostedService;
 
@@ -34,6 +35,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         PlaylistWatchService playlistWatchService,
         PlaylistSyncService playlistSyncService,
         PlaylistVisualService playlistVisualService,
+        AutoTagProfileResolutionService profileResolutionService,
         WatchlistFinalizationService? watchlistFinalizationService = null,
         PlaylistWatchHostedService? playlistWatchHostedService = null)
     {
@@ -42,6 +44,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         _playlistWatchService = playlistWatchService;
         _playlistSyncService = playlistSyncService;
         _playlistVisualService = playlistVisualService;
+        _profileResolutionService = profileResolutionService;
         _watchlistFinalizationService = watchlistFinalizationService;
         _playlistWatchHostedService = playlistWatchHostedService;
     }
@@ -1264,7 +1267,24 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
     private async Task<HashSet<long>> GetValidFolderIdsAsync(CancellationToken cancellationToken)
     {
-        return await _repository.GetWatchlistEligibleDestinationFolderIdsAsync(cancellationToken);
+        var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        return state.FoldersById.Values
+            .Where(folder => IsWatchlistMusicDestinationFolder(folder)
+                && AutoTagProfileResolutionService.ResolveFolderProfile(state, folder.Id, folder.AutoTagProfileId) != null)
+            .Select(folder => folder.Id)
+            .ToHashSet();
+    }
+
+    private static bool IsWatchlistMusicDestinationFolder(FolderDto folder)
+    {
+        if (!folder.Enabled || string.IsNullOrWhiteSpace(folder.RootPath))
+        {
+            return false;
+        }
+
+        var desiredQuality = folder.DesiredQuality?.Trim().ToLowerInvariant() ?? string.Empty;
+        return !desiredQuality.Contains("video", StringComparison.Ordinal)
+            && !desiredQuality.Contains("podcast", StringComparison.Ordinal);
     }
 
     private static string? ValidatePlaylistPreferenceRequest(

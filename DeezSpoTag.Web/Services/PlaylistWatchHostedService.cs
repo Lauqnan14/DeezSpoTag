@@ -208,7 +208,8 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return;
         }
 
-        await TryRepairWatchlistDestinationIntegrityAsync(repository, stoppingToken);
+        var profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
+        await TryRepairWatchlistDestinationIntegrityAsync(repository, profileResolutionService, stoppingToken);
         var playlistItems = BuildPlaylistWatchItems(await repository.GetPlaylistWatchlistAsync(stoppingToken));
         var artistItems = BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken));
         var allItems = BuildCombinedWatchItems(playlistItems, artistItems);
@@ -242,6 +243,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
     private async Task TryRepairWatchlistDestinationIntegrityAsync(
         LibraryRepository repository,
+        AutoTagProfileResolutionService profileResolutionService,
         CancellationToken stoppingToken)
     {
         if ((DateTimeOffset.UtcNow - _lastDestinationRepairUtc) < TimeSpan.FromSeconds(1))
@@ -249,7 +251,8 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return;
         }
 
-        var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(stoppingToken);
+        var validFolderIds = await ResolveWatchlistDestinationFolderIdsAsync(profileResolutionService, stoppingToken);
+        var repairResult = await repository.RepairWatchlistDestinationEligibilityAsync(validFolderIds, stoppingToken);
         _lastDestinationRepairUtc = DateTimeOffset.UtcNow;
         if ((repairResult.PlaylistPreferencesUpdated <= 0 && repairResult.ArtistPreferencesUpdated <= 0)
             || !_logger.IsEnabled(LogLevel.Information))
@@ -261,6 +264,30 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             "Watchlist destination integrity repair applied: playlistPreferencesUpdated={PlaylistUpdated}, artistPreferencesUpdated={ArtistUpdated}",
             repairResult.PlaylistPreferencesUpdated,
             repairResult.ArtistPreferencesUpdated);
+    }
+
+    private static async Task<HashSet<long>> ResolveWatchlistDestinationFolderIdsAsync(
+        AutoTagProfileResolutionService profileResolutionService,
+        CancellationToken cancellationToken)
+    {
+        var state = await profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        return state.FoldersById.Values
+            .Where(folder => IsWatchlistMusicDestinationFolder(folder)
+                && AutoTagProfileResolutionService.ResolveFolderProfile(state, folder.Id, folder.AutoTagProfileId) != null)
+            .Select(folder => folder.Id)
+            .ToHashSet();
+    }
+
+    private static bool IsWatchlistMusicDestinationFolder(FolderDto folder)
+    {
+        if (!folder.Enabled || string.IsNullOrWhiteSpace(folder.RootPath))
+        {
+            return false;
+        }
+
+        var desiredQuality = folder.DesiredQuality?.Trim().ToLowerInvariant() ?? string.Empty;
+        return !desiredQuality.Contains("video", StringComparison.Ordinal)
+            && !desiredQuality.Contains("podcast", StringComparison.Ordinal);
     }
 
     private static List<WatchItem> BuildCombinedWatchItems(

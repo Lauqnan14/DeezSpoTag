@@ -70,6 +70,27 @@ public sealed class DownloadDedupeServiceGuardrailTests
     }
 
     [Fact]
+    public void DownloadIntentService_ForwardsAllEngineIdentitiesToDedupe()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadIntentService.cs");
+        var requestBuilder = ExtractBetween(
+            source,
+            "private static DownloadDedupeRequest BuildDedupeRequest",
+            "private static void PopulateStandardQueuePayload");
+        var payloadIdentity = ExtractBetween(
+            source,
+            "private static PayloadIdentity BuildPayloadIdentity",
+            "private static string? ResolvePayloadArtistId");
+
+        Assert.Contains("QobuzTrackId = context.Identity.QobuzTrackId", requestBuilder, StringComparison.Ordinal);
+        Assert.Contains("TidalTrackId = context.Identity.TidalTrackId", requestBuilder, StringComparison.Ordinal);
+        Assert.Contains("AmazonTrackId = context.Identity.AmazonTrackId", requestBuilder, StringComparison.Ordinal);
+        Assert.Contains("TryGetPayloadString(payload, \"QobuzId\")", payloadIdentity, StringComparison.Ordinal);
+        Assert.Contains("TryGetPayloadString(payload, \"TidalId\")", payloadIdentity, StringComparison.Ordinal);
+        Assert.Contains("TryGetPayloadString(payload, \"AmazonId\")", payloadIdentity, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ProviderDedupeIdentity_DoesNotUseGenericQueuePayloadIdAsSourceId()
     {
         var service = ReadSource("DeezSpoTag.Web", "Services", "DownloadDedupeService.cs");

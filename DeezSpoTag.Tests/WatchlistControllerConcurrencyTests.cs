@@ -75,7 +75,8 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
         var controller = new LibraryWatchlistApiController(
             _repository,
             _configStore,
-            artistWatchService: null!);
+            artistWatchService: null!,
+            profileResolutionService: CreateProfileResolutionService());
 
         var addTasks = Enumerable.Range(0, 24)
             .Select(index => controller.AddSpotify(
@@ -115,7 +116,8 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
             _configStore,
             playlistWatchService: null!,
             playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService);
+            playlistVisualService: _playlistVisualService,
+            profileResolutionService: CreateProfileResolutionService());
 
         var addTasks = Enumerable.Range(0, 30)
             .Select(index => controller.Add(
@@ -150,6 +152,16 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
         var statusAfterRemove = await controller.GetStatus("spotify", "pl-race", CancellationToken.None);
         var removeStatusOk = Assert.IsType<OkObjectResult>(statusAfterRemove);
         Assert.Contains("\"watching\":false", System.Text.Json.JsonSerializer.Serialize(removeStatusOk.Value), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private AutoTagProfileResolutionService CreateProfileResolutionService()
+    {
+        var environment = new StubWebHostEnvironment(_tempRoot);
+        return new AutoTagProfileResolutionService(
+            new TaggingProfileService(environment, NullLogger<TaggingProfileService>.Instance),
+            new AutoTagDefaultsStore(environment, NullLogger<AutoTagDefaultsStore>.Instance),
+            _repository,
+            NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment

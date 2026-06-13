@@ -867,14 +867,16 @@ DeezSpoTag.DownloadClient = {
         }
 
         const reasonCodes = this.getReasonCodes(result);
-        const message = this.resolveApiMessage(result, 'Item already queued');
+        const message = this.resolveApiMessage(result, 'Item was not queued.');
         if (this.isSkipReason(reasonCodes, message)) {
-            notify(message, 'info');
+            notify(this.resolveSkipToastMessage(reasonCodes, message), 'warning');
             this.logDownloadEvent('info', message);
             this.removePendingQueueIfNeeded(url, bitrate, destinationId, options);
             return {
-                success: true,
-                alreadyQueued: true,
+                success: false,
+                skipped: true,
+                skipCategory: this.classifySkipReason(reasonCodes, message),
+                errorMessage: message,
                 reasonCodes,
                 linkType: result.engine || intentContext.preferredEngine || sourceService
             };
@@ -1166,19 +1168,20 @@ DeezSpoTag.DownloadClient = {
         if (deferredResult) return deferredResult;
 
         const reasonCodes = this.getReasonCodes(result);
-        const message = this.resolveApiMessage(result, 'Item already queued');
+        const message = this.resolveApiMessage(result, 'Item was not queued.');
         if (this.isSkipReason(reasonCodes, message)) {
-            const skipResult = this.handleAlreadyQueuedResult(
-                { alreadyQueued: true, message },
-                {
-                    url: context.url,
-                    bitrate: context.bitrate,
-                    destinationFolderId: context.destinationId,
-                    options: context.options,
-                    notificationType: 'info',
-                    linkType: preferredLinkType
-                });
-            return { ...skipResult, reasonCodes };
+            const resolvedMessage = this.resolveSkipToastMessage(reasonCodes, message);
+            context.notify(resolvedMessage, 'warning');
+            this.logDownloadEvent('info', message);
+            this.removePendingQueueIfNeeded(context.url, context.bitrate, context.destinationId, context.options);
+            return {
+                success: false,
+                skipped: true,
+                skipCategory: this.classifySkipReason(reasonCodes, message),
+                errorMessage: message,
+                reasonCodes,
+                linkType: preferredLinkType
+            };
         }
 
         throw this.buildResultError(result, 'Failed to add to queue');
@@ -1373,19 +1376,20 @@ DeezSpoTag.DownloadClient = {
         if (deferredResult) return deferredResult;
 
         const reasonCodes = this.getReasonCodes(result);
-        const message = this.resolveApiMessage(result, 'Item already queued');
+        const message = this.resolveApiMessage(result, 'Item was not queued.');
         if (this.isSkipReason(reasonCodes, message)) {
-            const skipResult = this.handleAlreadyQueuedResult(
-                { alreadyQueued: true, message },
-                {
-                    url: context.url,
-                    bitrate: context.bitrate,
-                    destinationFolderId: context.destinationId,
-                    options: context.options,
-                    notificationType: 'info',
-                    linkType: result.engine || 'spotify'
-                });
-            return { ...skipResult, reasonCodes };
+            const resolvedMessage = this.resolveSkipToastMessage(reasonCodes, message);
+            context.notify(resolvedMessage, 'warning');
+            this.logDownloadEvent('info', message);
+            this.removePendingQueueIfNeeded(context.url, context.bitrate, context.destinationId, context.options);
+            return {
+                success: false,
+                skipped: true,
+                skipCategory: this.classifySkipReason(reasonCodes, message),
+                errorMessage: message,
+                reasonCodes,
+                linkType: result.engine || 'spotify'
+            };
         }
 
         throw this.buildResultError(result, 'Failed to add to queue');
@@ -1457,7 +1461,7 @@ DeezSpoTag.DownloadClient = {
         console.error('Error adding to download queue:', error);
         const isSkip = error?.skipLike === true;
         if (isSkip) {
-            notify(errorMessage, 'warning');
+            notify(this.resolveSkipToastMessage(error?.reasonCodes || [], errorMessage), 'warning');
             this.logDownloadEvent('warning', `skipped: ${errorMessage}`);
         } else {
             notify(`Failed to add to queue: ${errorMessage}`, 'error');
@@ -1473,6 +1477,8 @@ DeezSpoTag.DownloadClient = {
         }
         return {
             success: false,
+            skipped: isSkip,
+            skipCategory: isSkip ? this.classifySkipReason(error?.reasonCodes || [], errorMessage) : '',
             errorMessage,
             reasonCodes: Array.isArray(error?.reasonCodes) ? error.reasonCodes : []
         };
@@ -1557,6 +1563,7 @@ DeezSpoTag.DownloadClient = {
             deferred: 0,
             failed: 0,
             alreadyQueued: 0,
+            skipped: 0,
             inputDuplicates,
             reasonCounts: {},
             errors: []
@@ -1609,6 +1616,11 @@ DeezSpoTag.DownloadClient = {
             this.mergeBatchReasonCounts(results, outcome);
             return;
         }
+        if (outcome?.skipped) {
+            results.skipped++;
+            this.mergeBatchReasonCounts(results, outcome);
+            return;
+        }
         if (outcome?.deferred) {
             results.deferred++;
             return;
@@ -1654,30 +1666,38 @@ DeezSpoTag.DownloadClient = {
             return;
         }
 
-        if (results.alreadyQueued > 0 && results.failed === 0) {
-            this.showNotification(this.buildAlreadyQueuedBatchMessage(results), 'warning');
+        if ((results.alreadyQueued > 0 || results.skipped > 0) && results.failed === 0) {
+            this.showNotification(this.buildSkippedBatchQueueMessage(results), 'warning');
             return;
         }
 
         this.showNotification(this.buildFailedBatchQueueMessage(results), 'error');
     },
     getBatchQueueToastType(results) {
-        return results.failed > 0 || results.alreadyQueued > 0 || results.deferred > 0 ? 'warning' : 'success';
+        return results.failed > 0 || results.alreadyQueued > 0 || results.skipped > 0 || results.deferred > 0 ? 'warning' : 'success';
     },
     buildSuccessfulBatchQueueMessage(results) {
         const duplicateSummary = this.buildDuplicateInputSummary(results.inputDuplicates);
         const deferredSummary = results.deferred > 0 ? ` (${results.deferred} deferred)` : '';
         const alreadyQueuedSummary = results.alreadyQueued > 0 ? ` (${results.alreadyQueued} already queued)` : '';
+        const skippedSummary = results.skipped > 0 ? ` (${results.skipped} skipped)` : '';
         const failedSummary = results.failed > 0 ? ` (${results.failed} failed)` : '';
-        return `Successfully added ${results.success} items to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${failedSummary}`;
+        return `Successfully added ${results.success} items to queue${duplicateSummary}${deferredSummary}${alreadyQueuedSummary}${skippedSummary}${failedSummary}`;
     },
     buildDeferredBatchQueueMessage(results) {
         return `Queued ${results.deferred} item(s) for background intent resolution. They will appear after matching.`;
     },
-    buildAlreadyQueuedBatchMessage(results) {
+    buildSkippedBatchQueueMessage(results) {
         const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
         const duplicateSummary = results.inputDuplicates > 0 ? ` and ${results.inputDuplicates} duplicate input(s)` : '';
-        return `All ${results.alreadyQueued} items were already queued${duplicateSummary}${reasonSummary}`;
+        const parts = [];
+        if (results.alreadyQueued > 0) {
+            parts.push(`${results.alreadyQueued} already in queue`);
+        }
+        if (results.skipped > 0) {
+            parts.push(`${results.skipped} skipped`);
+        }
+        return `No new queue items added: ${parts.join(', ')}${duplicateSummary}${reasonSummary}`;
     },
     buildFailedBatchQueueMessage(results) {
         const reasonSummary = this.formatBatchReasonSummary(results.reasonCounts);
@@ -1697,7 +1717,10 @@ DeezSpoTag.DownloadClient = {
         sortedEntries.sort((a, b) => b[1] - a[1]);
         const summary = sortedEntries
             .slice(0, 3)
-            .map(([reason, count]) => `${reason} (${count})`)
+            .map(([reason, count]) => {
+                const label = this.reasonCodeToMessage(reason) || String(reason || '').replaceAll('_', ' ');
+                return `${label} (${count})`;
+            })
             .join(', ');
         return summary ? ` [${summary}]` : '';
     },
@@ -1984,6 +2007,7 @@ DeezSpoTag.DownloadClient = {
             library_quality_not_higher: 'Requested quality is not higher than your local file.',
             queue_duplicate: 'Matching track is already in the download queue.',
             queue_insert_ignored: 'Track was skipped because a matching queued item already exists.',
+            blocklist_match: 'Track is blocked by your Media Management blocklist.',
             destination_invalid: 'Destination folder is invalid.',
             invalid_payload: 'Download payload is invalid.'
         };
@@ -2027,10 +2051,43 @@ DeezSpoTag.DownloadClient = {
             'library_duplicate',
             'library_quality_not_higher',
             'queue_duplicate',
-            'queue_insert_ignored'
+            'queue_insert_ignored',
+            'blocklist_match'
         ]);
         return reasonCodes.some((code) => skipCodes.has(String(code || '').toLowerCase()))
-            || /(^|\s)skipped:|not higher than|already exists in library|already in queue|currently downloading/i.test(String(message || ''));
+            || /(^|\s)skipped:|not higher than|already exists in library|already in queue|currently downloading|blocklist|blocked/i.test(String(message || ''));
+    },
+    classifySkipReason(reasonCodes, message) {
+        const normalizedCodes = Array.isArray(reasonCodes)
+            ? reasonCodes.map((code) => String(code || '').trim().toLowerCase()).filter(Boolean)
+            : [];
+        if (normalizedCodes.includes('blocklist_match') || /blocklist|blocked/i.test(String(message || ''))) {
+            return 'blocked';
+        }
+        if (normalizedCodes.includes('library_duplicate')
+            || normalizedCodes.includes('library_quality_not_higher')
+            || /already exists in (your )?library|local file/i.test(String(message || ''))) {
+            return 'library';
+        }
+        if (normalizedCodes.includes('queue_duplicate')
+            || normalizedCodes.includes('queue_insert_ignored')
+            || /already (queued|in queue)|currently downloading/i.test(String(message || ''))) {
+            return 'queue';
+        }
+        return 'skipped';
+    },
+    resolveSkipToastMessage(reasonCodes, message) {
+        const category = this.classifySkipReason(reasonCodes, message);
+        if (category === 'blocked') {
+            return 'Not queued: this item is blocked by your Media Management blocklist.';
+        }
+        if (category === 'library') {
+            return 'Not queued: this item is already in your library.';
+        }
+        if (category === 'queue') {
+            return 'Not queued: this item is already in the download queue.';
+        }
+        return message || 'Not queued: this item was skipped.';
     },
     buildResultError(result, fallbackMessage) {
         const reasonCodes = this.getReasonCodes(result);

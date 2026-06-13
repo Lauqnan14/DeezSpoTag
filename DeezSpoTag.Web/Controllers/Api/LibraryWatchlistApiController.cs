@@ -19,15 +19,18 @@ public class LibraryWatchlistApiController : ControllerBase
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly ArtistWatchService _artistWatchService;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
 
     public LibraryWatchlistApiController(
         LibraryRepository repository,
         LibraryConfigStore configStore,
-        ArtistWatchService artistWatchService)
+        ArtistWatchService artistWatchService,
+        AutoTagProfileResolutionService profileResolutionService)
     {
         _repository = repository;
         _configStore = configStore;
         _artistWatchService = artistWatchService;
+        _profileResolutionService = profileResolutionService;
     }
 
     [HttpGet]
@@ -298,7 +301,7 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var validFolderIds = await _repository.GetWatchlistEligibleDestinationFolderIdsAsync(cancellationToken);
+        var validFolderIds = await GetValidFolderIdsAsync(cancellationToken);
 
         if (request.DestinationFolderId is long folderId && !validFolderIds.Contains(folderId))
         {
@@ -472,6 +475,28 @@ public class LibraryWatchlistApiController : ControllerBase
     private ObjectResult DatabaseNotConfigured()
     {
         return StatusCode(503, new { error = "Library DB not configured." });
+    }
+
+    private async Task<HashSet<long>> GetValidFolderIdsAsync(CancellationToken cancellationToken)
+    {
+        var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        return state.FoldersById.Values
+            .Where(folder => IsWatchlistMusicDestinationFolder(folder)
+                && AutoTagProfileResolutionService.ResolveFolderProfile(state, folder.Id, folder.AutoTagProfileId) != null)
+            .Select(folder => folder.Id)
+            .ToHashSet();
+    }
+
+    private static bool IsWatchlistMusicDestinationFolder(FolderDto folder)
+    {
+        if (!folder.Enabled || string.IsNullOrWhiteSpace(folder.RootPath))
+        {
+            return false;
+        }
+
+        var desiredQuality = folder.DesiredQuality?.Trim().ToLowerInvariant() ?? string.Empty;
+        return !desiredQuality.Contains("video", StringComparison.Ordinal)
+            && !desiredQuality.Contains("podcast", StringComparison.Ordinal);
     }
 
     private IActionResult CreateAddedResponse(string artistName, object? addedEntry)

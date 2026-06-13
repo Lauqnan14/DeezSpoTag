@@ -77,7 +77,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             _configStore,
             playlistWatchService: null!,
             playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService);
+            playlistVisualService: _playlistVisualService,
+            profileResolutionService: CreateProfileResolutionService());
 
         var addResultOne = await controller.Add(
             new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
@@ -142,7 +143,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             _configStore,
             playlistWatchService: null!,
             playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService);
+            playlistVisualService: _playlistVisualService,
+            profileResolutionService: CreateProfileResolutionService());
 
         var result = await controller.Add(
             new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
@@ -166,7 +168,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             _configStore,
             playlistWatchService: null!,
             playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService);
+            playlistVisualService: _playlistVisualService,
+            profileResolutionService: CreateProfileResolutionService());
 
         var applyResult = await controller.ApplyRoutingRulesGlobally(
             "spotify",
@@ -210,7 +213,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             _configStore,
             playlistWatchService: null!,
             playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService);
+            playlistVisualService: _playlistVisualService,
+            profileResolutionService: CreateProfileResolutionService());
 
         var applyResult = await controller.ApplyRoutingRulesGlobally(
             "spotify",
@@ -264,7 +268,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         var controller = new LibraryWatchlistApiController(
             _repository,
             _configStore,
-            artistWatchService: null!);
+            artistWatchService: null!,
+            profileResolutionService: CreateProfileResolutionService());
 
         var addResult = await controller.AddSpotify(
             new LibraryWatchlistApiController.SpotifyWatchlistRequest(
@@ -302,7 +307,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         var controller = new LibraryWatchlistApiController(
             _repository,
             _configStore,
-            artistWatchService: null!);
+            artistWatchService: null!,
+            profileResolutionService: CreateProfileResolutionService());
 
         var result = await controller.Add(
             new LibraryWatchlistApiController.WatchlistRequest(
@@ -331,6 +337,16 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         var enabled = await _repository.UpdateFolderAutoTagEnabledAsync(folder.Id, true);
         Assert.NotNull(enabled);
         return enabled!;
+    }
+
+    private AutoTagProfileResolutionService CreateProfileResolutionService()
+    {
+        var environment = new StubWebHostEnvironment(_tempRoot);
+        return new AutoTagProfileResolutionService(
+            new TaggingProfileService(environment, NullLogger<TaggingProfileService>.Instance),
+            new AutoTagDefaultsStore(environment, NullLogger<AutoTagDefaultsStore>.Instance),
+            _repository,
+            NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment

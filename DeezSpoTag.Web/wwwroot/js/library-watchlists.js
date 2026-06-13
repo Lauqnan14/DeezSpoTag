@@ -68,7 +68,7 @@ async function loadWatchlist() {
     try {
         if (!Array.isArray(libraryState.folders) || !libraryState.folders.length) {
             try {
-                const folders = await fetchJson('/api/library/folders?downloadOnly=true');
+                const folders = await fetchJson('/api/library/folders?downloadOnly=true&contentType=music');
                 libraryState.folders = Array.isArray(folders)
                     ? folders.map(normalizeFolderConversionState)
                     : [];
@@ -1122,7 +1122,7 @@ async function loadPlaylistWatchlist() {
     try {
         if (!Array.isArray(libraryState.folders) || !libraryState.folders.length) {
             try {
-                const folders = await fetchJson('/api/library/folders?downloadOnly=true');
+                const folders = await fetchJson('/api/library/folders?downloadOnly=true&contentType=music');
                 libraryState.folders = Array.isArray(folders)
                     ? folders.map(normalizeFolderConversionState)
                     : [];
@@ -1870,7 +1870,7 @@ async function openPlaylistMergePanel(items) {
 async function ensurePlaylistSettingsFoldersLoaded() {
     if (!Array.isArray(libraryState.folders) || libraryState.folders.length === 0) {
         try {
-            const folders = await fetchJson('/api/library/folders?downloadOnly=true');
+            const folders = await fetchJson('/api/library/folders?downloadOnly=true&contentType=music');
             libraryState.folders = Array.isArray(folders)
                 ? folders.map(normalizeFolderConversionState)
                 : [];
@@ -2920,26 +2920,8 @@ async function hydrateSinglePlaylistPreference(source, sourceId) {
 }
 
 async function hydratePlaylistPreferences() {
-    const localPrefs = getStoredPreferences('playlistWatchlist');
     const serverPrefs = await fetchPlaylistPreferences();
-    const serverPrefMap = normalizePlaylistPreferenceMap(serverPrefs);
-    const merged = { ...localPrefs };
-    Object.entries(serverPrefMap).forEach(([key, item]) => {
-        merged[key] = {
-            ...merged[key],
-            folderId: item.folderId || '',
-            atmosFolderId: item.atmosFolderId == null || item.atmosFolderId === ''
-                ? (merged[key]?.atmosFolderId || '')
-                : String(item.atmosFolderId),
-            service: item.service || merged[key]?.service || 'plex',
-            preferredEngine: item.preferredEngine || merged[key]?.preferredEngine || '',
-            downloadVariantMode: item.downloadVariantMode || merged[key]?.downloadVariantMode || 'standard',
-            syncMode: item.syncMode || merged[key]?.syncMode || 'mirror',
-            updateArtwork: item.updateArtwork !== false,
-            reuseSavedArtwork: item.reuseSavedArtwork === true
-        };
-    });
-    return merged;
+    return normalizePlaylistPreferenceMap(serverPrefs);
 }
 
 function storePlaylistPreference(source, sourceId, updates) {
@@ -2950,15 +2932,13 @@ function storePlaylistPreference(source, sourceId, updates) {
 }
 
 async function persistPlaylistPreference(container, source, sourceId) {
-    const key = `${source}:${sourceId}`;
-    const existingPrefs = getStoredPreferences('playlistWatchlist');
     const folderSelect = container.querySelector(`[data-playlist-folder="${source}"][data-playlist-id="${sourceId}"]`);
     const atmosFolderSelect = container.querySelector(`[data-playlist-atmos-folder="${source}"][data-playlist-id="${sourceId}"]`);
     const serviceSelect = container.querySelector(`[data-playlist-service="${source}"][data-playlist-id="${sourceId}"]`);
     const engineSelect = container.querySelector(`[data-playlist-engine="${source}"][data-playlist-id="${sourceId}"]`);
     const downloadModeSelect = container.querySelector(`[data-playlist-download-mode="${source}"][data-playlist-id="${sourceId}"]`);
     const folderId = folderSelect?.value || null;
-    const atmosFolderId = atmosFolderSelect?.value ?? (existingPrefs[key]?.atmosFolderId || '');
+    const atmosFolderId = atmosFolderSelect?.value || '';
     const service = serviceSelect?.value || 'plex';
     const preferredEngine = engineSelect?.value || '';
     const downloadVariantMode = downloadModeSelect?.value || 'standard';

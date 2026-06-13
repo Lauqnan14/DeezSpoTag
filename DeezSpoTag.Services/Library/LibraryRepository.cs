@@ -1626,20 +1626,12 @@ INSERT INTO quality_scan_action_log (
         return folders;
     }
 
-    public async Task<HashSet<long>> GetWatchlistEligibleDestinationFolderIdsAsync(CancellationToken cancellationToken = default)
-    {
-        var folders = await GetFoldersAsync(cancellationToken);
-        return folders
-            .Where(IsWatchlistEligibleDestinationFolder)
-            .Select(folder => folder.Id)
-            .ToHashSet();
-    }
-
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Destination integrity repair intentionally evaluates playlist and artist preference paths in a single transactional workflow.")]
     public async Task<(int PlaylistPreferencesUpdated, int ArtistPreferencesUpdated)> RepairWatchlistDestinationEligibilityAsync(
+        HashSet<long> validFolderIds,
         CancellationToken cancellationToken = default)
     {
-        var validFolderIds = await GetWatchlistEligibleDestinationFolderIdsAsync(cancellationToken);
+        ArgumentNullException.ThrowIfNull(validFolderIds);
         var playlistUpdated = 0;
         var artistUpdated = 0;
 
@@ -10377,22 +10369,6 @@ WHERE source = @source
 
     private static string BuildAlbumKey(string artistName, string albumTitle)
         => $"{artistName}|{albumTitle}";
-
-    private static bool IsWatchlistEligibleDestinationFolder(FolderDto folder)
-    {
-        if (!folder.Enabled || string.IsNullOrWhiteSpace(folder.RootPath))
-        {
-            return false;
-        }
-
-        var contentType = ResolveFolderContentType(folder.DesiredQuality);
-        if (contentType is FolderContentVideo or FolderContentPodcast)
-        {
-            return true;
-        }
-
-        return folder.AutoTagEnabled && !string.IsNullOrWhiteSpace(folder.AutoTagProfileId);
-    }
 
     private static string ResolveFolderContentType(string? desiredQuality)
     {

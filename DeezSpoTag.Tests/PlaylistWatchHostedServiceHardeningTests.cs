@@ -113,6 +113,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         services.AddSingleton(_repository);
         services.AddSingleton(playlistWatchService);
         services.AddSingleton(artistWatchService);
+        services.AddSingleton(CreateProfileResolutionService());
         _provider = services.BuildServiceProvider();
     }
 
@@ -197,7 +198,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _configStore,
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
-            _playlistVisualService);
+            _playlistVisualService,
+            CreateProfileResolutionService());
 
         var total = 220;
         for (var index = 0; index < total; index++)
@@ -314,7 +316,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _configStore,
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
-            _playlistVisualService);
+            _playlistVisualService,
+            CreateProfileResolutionService());
 
         var rejected = await apiController.GetAll(CancellationToken.None, refreshFromSource: true);
         var badRequest = Assert.IsType<BadRequestObjectResult>(rejected);
@@ -337,7 +340,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _configStore,
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
-            _playlistVisualService);
+            _playlistVisualService,
+            CreateProfileResolutionService());
 
         var result = await apiController.TriggerAll(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -380,7 +384,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _configStore,
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
-            _playlistVisualService);
+            _playlistVisualService,
+            CreateProfileResolutionService());
 
         var result = await controller.GetWatchRuntime(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -465,6 +470,16 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         return field!.GetValue(instance)!;
+    }
+
+    private AutoTagProfileResolutionService CreateProfileResolutionService()
+    {
+        var environment = new StubWebHostEnvironment(_tempRoot);
+        return new AutoTagProfileResolutionService(
+            new TaggingProfileService(environment, NullLogger<TaggingProfileService>.Instance),
+            new AutoTagDefaultsStore(environment, NullLogger<AutoTagDefaultsStore>.Instance),
+            _repository,
+            NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment
