@@ -662,57 +662,104 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     {
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!TryLoadTrackSamples(track, out var samples, out var sampleRate, out var failure))
+            var candidateErrors = new List<string>();
+            foreach (var candidatePath in EnumerateAnalysisCandidatePaths(track))
             {
-                return failure!;
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (samples.Length == 0)
-            {
-                return CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, "No audio samples.");
-            }
-
-            var metrics = CalculateTrackSignalMetrics(samples, sampleRate, track.DurationMs);
-            AnalysisOutput? analysisOutput;
-            string? predictionFailure;
-            if (batchPredictions is not null && batchPredictions.TryGetValue(track.TrackId, out var batchPrediction))
-            {
-                analysisOutput = batchPrediction.Output;
-                predictionFailure = batchPrediction.FailureReason;
-                if (analysisOutput is null)
+                cancellationToken.ThrowIfCancellationRequested();
+                var candidateTrack = track with { FilePath = candidatePath };
+                if (!TryLoadTrackSamples(candidateTrack, out var samples, out var sampleRate, out var failure))
                 {
-                    var (singleTrackOutput, singleTrackFailure) = await TryPredictAnalysisOutputAsync(track.FilePath, cancellationToken);
-                    if (singleTrackOutput is not null)
+                    candidateErrors.Add(FormatAnalysisCandidateError(candidatePath, failure?.Error));
+                    continue;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (samples.Length == 0)
+                {
+                    candidateErrors.Add(FormatAnalysisCandidateError(candidatePath, "No audio samples."));
+                    continue;
+                }
+
+                var metrics = CalculateTrackSignalMetrics(samples, sampleRate, candidateTrack.DurationMs);
+                AnalysisOutput? analysisOutput;
+                string? predictionFailure;
+                if (PathMatchesPrimaryAnalysisCandidate(track, candidatePath)
+                    && batchPredictions is not null
+                    && batchPredictions.TryGetValue(track.TrackId, out var batchPrediction))
+                {
+                    analysisOutput = batchPrediction.Output;
+                    predictionFailure = batchPrediction.FailureReason;
+                    if (analysisOutput is null)
                     {
-                        analysisOutput = singleTrackOutput;
-                        predictionFailure = null;
-                    }
-                    else
-                    {
-                        predictionFailure = CombinePredictionFailures(predictionFailure, singleTrackFailure);
+                        var (singleTrackOutput, singleTrackFailure) = await TryPredictAnalysisOutputAsync(candidateTrack.FilePath, cancellationToken);
+                        if (singleTrackOutput is not null)
+                        {
+                            analysisOutput = singleTrackOutput;
+                            predictionFailure = null;
+                        }
+                        else
+                        {
+                            predictionFailure = CombinePredictionFailures(predictionFailure, singleTrackFailure);
+                        }
                     }
                 }
-            }
-            else
-            {
-                (analysisOutput, predictionFailure) = await TryPredictAnalysisOutputAsync(track.FilePath, cancellationToken);
+                else
+                {
+                    (analysisOutput, predictionFailure) = await TryPredictAnalysisOutputAsync(candidateTrack.FilePath, cancellationToken);
+                }
+
+                if (analysisOutput is null
+                    && !string.IsNullOrWhiteSpace(predictionFailure))
+                {
+                    _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", candidateTrack.FilePath, predictionFailure);
+                }
+
+                return CreateCompletedAnalysisResult(candidateTrack, metrics, analysisOutput);
             }
 
-            if (analysisOutput is null
-                && !string.IsNullOrWhiteSpace(predictionFailure))
-            {
-                _logger.LogWarning("Vibe analyzer fallback to standard for {FilePath}: {Reason}", track.FilePath, predictionFailure);
-            }
-
-            return CreateCompletedAnalysisResult(track, metrics, analysisOutput);
+            return CreateFailure(
+                track.TrackId,
+                track.LibraryId,
+                FailedAnalysisStatus,
+                candidateErrors.Count == 0
+                    ? "No usable audio candidates."
+                    : $"No usable audio candidates: {string.Join(" | ", candidateErrors)}");
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, ex.Message);
         }
+    }
+
+    private static IEnumerable<string> EnumerateAnalysisCandidatePaths(TrackAnalysisInputDto track)
+    {
+        var seen = new HashSet<string>(OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(track.FilePath) && seen.Add(track.FilePath))
+        {
+            yield return track.FilePath;
+        }
+
+        foreach (var alternatePath in track.AlternateFilePaths ?? Array.Empty<string>())
+        {
+            if (!string.IsNullOrWhiteSpace(alternatePath) && seen.Add(alternatePath))
+            {
+                yield return alternatePath;
+            }
+        }
+    }
+
+    private static bool PathMatchesPrimaryAnalysisCandidate(TrackAnalysisInputDto track, string candidatePath)
+        => string.Equals(track.FilePath, candidatePath, OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal);
+
+    private static string FormatAnalysisCandidateError(string candidatePath, string? error)
+    {
+        var reason = string.IsNullOrWhiteSpace(error) ? "unknown decode failure" : error.Trim();
+        return $"{candidatePath}: {reason}";
     }
 
     private static string? CombinePredictionFailures(string? batchFailure, string? singleTrackFailure)

@@ -3465,58 +3465,91 @@ ORDER BY sort_group, sort_utc DESC;";
             .ToArray() ?? Array.Empty<long>();
         await CreateLibraryScopeTableAsync(connection, scopedLibraryIds, cancellationToken);
         const string sql = @"
-	SELECT t.id,
-	       f.library_id,
-	       f.root_path,
-       af.relative_path,
-       af.path,
-       t.duration_ms
-FROM track t
-JOIN track_local tl ON tl.track_id = t.id
-	JOIN audio_file af ON af.id = tl.audio_file_id
-	JOIN folder f ON f.id = af.folder_id
-	LEFT JOIN track_analysis ta ON ta.track_id = t.id
-	WHERE f.enabled = 1
-	  AND (
-	      NOT EXISTS (SELECT 1 FROM temp_analysis_library_scope)
-	      OR EXISTS (
-	          SELECT 1
-	          FROM temp_analysis_library_scope scope
-	          WHERE scope.library_id = f.id
-	      )
-	  )
-	  AND (
-	      ta.status IS NULL
-	      OR ta.status IN ('pending', 'failed', 'error')
-      OR (
-          @includeCompletedStandard = 1
-          AND ta.status IN ('complete', 'completed')
-          AND lower(coalesce(ta.analysis_mode, '')) = 'standard'
-          AND (
-              @completedStandardRetryBeforeUtc IS NULL
-              OR ta.analyzed_at_utc IS NULL
-              OR ta.analyzed_at_utc <= @completedStandardRetryBeforeUtc
-	          )
-	      )
-	  )
-	ORDER BY COALESCE(
-	         (SELECT scope.sort_order FROM temp_analysis_library_scope scope WHERE scope.library_id = f.id),
-	         999999),
-	         t.id,
-	         CASE
-	             WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
-                  OR lower(coalesce(af.codec, '')) LIKE '%dolby digital plus%'
-                  OR lower(coalesce(af.audio_variant, '')) LIKE '%atmos%'
-             THEN 2
-             WHEN lower(coalesce(af.codec, '')) LIKE '%opus%'
-                  OR lower(coalesce(af.extension, '')) = '.opus'
-             THEN 1
-             ELSE 0
-         END,
-         af.quality_rank DESC NULLS LAST,
-	         af.size DESC,
-	         af.id DESC
-	LIMIT @limit;";
+WITH candidate_files AS (
+    SELECT t.id,
+           f.library_id,
+           f.root_path,
+           af.relative_path,
+           af.path,
+           t.duration_ms,
+           COALESCE(
+               (SELECT scope.sort_order FROM temp_analysis_library_scope scope WHERE scope.library_id = f.id),
+               999999) AS library_sort_order,
+           CASE
+               WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
+                    OR lower(coalesce(af.codec, '')) LIKE '%dolby digital plus%'
+                    OR lower(coalesce(af.audio_variant, '')) LIKE '%atmos%'
+               THEN 2
+               WHEN lower(coalesce(af.codec, '')) LIKE '%opus%'
+                    OR lower(coalesce(af.extension, '')) = '.opus'
+               THEN 1
+               ELSE 0
+           END AS variant_sort_order,
+           af.quality_rank,
+           af.size,
+           af.id AS audio_file_id
+    FROM track t
+    JOIN track_local tl ON tl.track_id = t.id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    LEFT JOIN track_analysis ta ON ta.track_id = t.id
+    WHERE f.enabled = 1
+      AND (
+          NOT EXISTS (SELECT 1 FROM temp_analysis_library_scope)
+          OR EXISTS (
+              SELECT 1
+              FROM temp_analysis_library_scope scope
+              WHERE scope.library_id = f.id
+          )
+      )
+      AND (
+          ta.status IS NULL
+          OR ta.status IN ('pending', 'failed', 'error')
+          OR (
+              @includeCompletedStandard = 1
+              AND ta.status IN ('complete', 'completed')
+              AND lower(coalesce(ta.analysis_mode, '')) = 'standard'
+              AND (
+                  @completedStandardRetryBeforeUtc IS NULL
+                  OR ta.analyzed_at_utc IS NULL
+                  OR ta.analyzed_at_utc <= @completedStandardRetryBeforeUtc
+              )
+          )
+      )
+),
+ranked_primary AS (
+    SELECT id,
+           library_sort_order,
+           ROW_NUMBER() OVER (
+               PARTITION BY id
+               ORDER BY variant_sort_order,
+                        quality_rank DESC NULLS LAST,
+                        size DESC,
+                        audio_file_id DESC
+           ) AS variant_rank
+    FROM candidate_files
+),
+selected_tracks AS (
+    SELECT id, library_sort_order
+    FROM ranked_primary
+    WHERE variant_rank = 1
+    ORDER BY library_sort_order, id
+    LIMIT @limit
+)
+SELECT candidate_files.id,
+       candidate_files.library_id,
+       candidate_files.root_path,
+       candidate_files.relative_path,
+       candidate_files.path,
+       candidate_files.duration_ms
+FROM candidate_files
+JOIN selected_tracks ON selected_tracks.id = candidate_files.id
+ORDER BY selected_tracks.library_sort_order,
+         candidate_files.id,
+         candidate_files.variant_sort_order,
+         candidate_files.quality_rank DESC NULLS LAST,
+         candidate_files.size DESC,
+         candidate_files.audio_file_id DESC;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("limit", limit);
         command.Parameters.AddWithValue("includeCompletedStandard", includeCompletedStandard ? 1 : 0);
@@ -3524,29 +3557,13 @@ JOIN track_local tl ON tl.track_id = t.id
             "completedStandardRetryBeforeUtc",
             completedStandardRetryBeforeUtc?.ToString("O") ?? (object)DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var results = new List<TrackAnalysisInputDto>();
-        var seenTrackIds = new HashSet<long>();
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var trackId = reader.GetInt64(0);
-            if (!seenTrackIds.Add(trackId))
-            {
-                continue;
-            }
-
-            var filePath = await ReadAudioFilePathAsync(reader, 2, 3, 4, cancellationToken);
-            if (string.IsNullOrWhiteSpace(filePath))
-            {
-                continue;
-            }
-            results.Add(new TrackAnalysisInputDto(
-                trackId,
-                await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetInt64(1),
-                filePath,
-                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5)));
-        }
-        return results;
+        return await ReadTrackAnalysisInputsAsync(reader, cancellationToken);
     }
+
+    private static bool PathEquals(string left, string right)
+        => string.Equals(left, right, OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal);
 
     private static async Task CreateLibraryScopeTableAsync(
         SqliteConnection connection,
@@ -3622,9 +3639,9 @@ ORDER BY f.enabled DESC,
          END,
          af.quality_rank DESC NULLS LAST,
          af.size DESC,
-         af.id DESC
-LIMIT 1;";
-        return await QuerySingleTrackAsync(sql, trackId, ReadTrackAnalysisInputAsync, cancellationToken);
+         af.id DESC;";
+        var tracks = await QueryTrackAnalysisInputsAsync(sql, trackId, cancellationToken);
+        return tracks.Count == 0 ? null : tracks[0];
     }
 
     public async Task MarkTrackAnalysisProcessingAsync(long trackId, long? libraryId, CancellationToken cancellationToken = default)
@@ -4278,6 +4295,75 @@ LIMIT @limit;";
         }
 
         return await mapAsync(reader, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<TrackAnalysisInputDto>> QueryTrackAnalysisInputsAsync(
+        string sql,
+        long trackId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(TrackIdField, trackId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await ReadTrackAnalysisInputsAsync(reader, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<TrackAnalysisInputDto>> ReadTrackAnalysisInputsAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<TrackAnalysisInputDto>();
+        var resultIndexesByTrackId = new Dictionary<long, int>();
+        var alternatePathsByTrackId = new Dictionary<long, List<string>>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var trackId = reader.GetInt64(0);
+            var filePath = await ReadAudioFilePathAsync(reader, 2, 3, 4, cancellationToken);
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                continue;
+            }
+
+            if (resultIndexesByTrackId.TryGetValue(trackId, out var existingIndex))
+            {
+                AddAlternateAnalysisPath(results, alternatePathsByTrackId, trackId, existingIndex, filePath);
+                continue;
+            }
+
+            var alternatePaths = new List<string>();
+            alternatePathsByTrackId[trackId] = alternatePaths;
+            resultIndexesByTrackId[trackId] = results.Count;
+            results.Add(new TrackAnalysisInputDto(
+                trackId,
+                await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetInt64(1),
+                filePath,
+                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5),
+                alternatePaths));
+        }
+
+        return results;
+    }
+
+    private static void AddAlternateAnalysisPath(
+        List<TrackAnalysisInputDto> results,
+        IReadOnlyDictionary<long, List<string>> alternatePathsByTrackId,
+        long trackId,
+        int existingIndex,
+        string filePath)
+    {
+        var alternates = alternatePathsByTrackId[trackId];
+        if (PathEquals(results[existingIndex].FilePath, filePath)
+            || alternates.Any(path => PathEquals(path, filePath)))
+        {
+            return;
+        }
+
+        alternates.Add(filePath);
+        results[existingIndex] = results[existingIndex] with
+        {
+            AlternateFilePaths = alternates.ToArray()
+        };
     }
 
     private static async Task<TrackAnalysisInputDto?> ReadTrackAnalysisInputAsync(

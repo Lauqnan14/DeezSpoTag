@@ -148,7 +148,8 @@ public sealed record TrackAnalysisInputDto(
     long TrackId,
     long? LibraryId,
     string FilePath,
-    int? DurationMs);
+    int? DurationMs,
+    IReadOnlyList<string>? AlternateFilePaths = null);
 
 public sealed record TrackAnalysisResultDto(
     long TrackId,
