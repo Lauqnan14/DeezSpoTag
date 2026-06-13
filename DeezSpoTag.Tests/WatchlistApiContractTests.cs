@@ -268,7 +268,6 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         var controller = new LibraryWatchlistApiController(
             _repository,
             _configStore,
-            artistWatchService: null!,
             profileResolutionService: CreateProfileResolutionService());
 
         var addResult = await controller.AddSpotify(
@@ -307,7 +306,6 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         var controller = new LibraryWatchlistApiController(
             _repository,
             _configStore,
-            artistWatchService: null!,
             profileResolutionService: CreateProfileResolutionService());
 
         var result = await controller.Add(

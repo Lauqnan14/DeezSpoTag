@@ -370,6 +370,30 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("Artist watchlist preference request is required.", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DirectWatchlistTriggers_UseHostedSchedulerInsteadOfDirectQueueing()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var playlistController = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryPlaylistWatchlistApiController.cs"));
+        var artistController = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryWatchlistApiController.cs"));
+
+        Assert.DoesNotContain("CheckPlaylistWatchItemAsync", playlistController, StringComparison.Ordinal);
+        Assert.DoesNotContain("CheckArtistWatchItemAsync", artistController, StringComparison.Ordinal);
+        Assert.Contains("_playlistWatchHostedService.TriggerRunOnceAsync", playlistController, StringComparison.Ordinal);
+        Assert.Contains("_playlistWatchHostedService.TriggerRunOnceAsync", artistController, StringComparison.Ordinal);
+        Assert.Contains("RefreshPlaylistMetadataOnlyAsync", playlistController, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         _configScope.Dispose();

@@ -6,11 +6,12 @@ namespace DeezSpoTag.Tests;
 public sealed class WatchlistRunQueueBudgetServiceTests
 {
     [Fact]
-    public void GetRemaining_WhenNoRunActive_IsUnlimited()
+    public void GetRemaining_WhenNoRunActive_DeniesWatchlistQueueing()
     {
         var service = new WatchlistRunQueueBudgetService();
 
-        Assert.Equal(int.MaxValue, service.GetRemaining());
+        Assert.Equal(0, service.GetRemaining());
+        Assert.Equal(0, service.Consume(1));
     }
 
     [Fact]
@@ -24,7 +25,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
         Assert.Equal(3, service.GetRemaining());
 
         service.EndRun(token);
-        Assert.Equal(int.MaxValue, service.GetRemaining());
+        Assert.Equal(0, service.GetRemaining());
     }
 
     [Fact]
@@ -38,4 +39,5 @@ public sealed class WatchlistRunQueueBudgetServiceTests
 
         Assert.Equal(6, service.GetRemaining());
     }
+
 }

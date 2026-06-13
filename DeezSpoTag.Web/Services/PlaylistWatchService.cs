@@ -180,19 +180,6 @@ public sealed class PlaylistWatchService
         _logger = logger;
     }
 
-    public Task CheckPlaylistWatchItemAsync(
-        PlaylistWatchlistDto playlist,
-        CancellationToken cancellationToken,
-        bool forceMediaServerSync = false)
-    {
-        if (playlist == null)
-        {
-            return Task.CompletedTask;
-        }
-
-        return CheckPlaylistAsync(playlist, cancellationToken, forceMediaServerSync);
-    }
-
     public sealed record PlaylistTrackCandidate(
         string TrackSourceId,
         string? Isrc,
@@ -2164,40 +2151,6 @@ public sealed class PlaylistWatchService
         }
 
         return normalized;
-    }
-
-    private async Task CheckPlaylistAsync(
-        PlaylistWatchlistDto playlist,
-        CancellationToken cancellationToken,
-        bool forceMediaServerSync = false)
-    {
-        try
-        {
-            await ReconcilePlaylistAsync(
-                playlist,
-                cancellationToken,
-                forceMediaServerSync);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            var source = NormalizeWatchSource(playlist.Source);
-            var sourceId = (playlist.SourceId ?? string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(sourceId))
-            {
-                await TouchPlaylistWatchStateAsync(
-                    source,
-                    sourceId,
-                    playlist.TrackCount ?? 0,
-                    playlist.SnapshotId,
-                    FailedStatus,
-                    ex.Message,
-                    nextAttemptUtc: null,
-                    consecutiveFailures: null,
-                    cancellationToken);
-            }
-
-            throw;
-        }
     }
 
     private async Task<IReadOnlyList<PlaylistTrackBlockRule>> GetGlobalPlaylistBlockRulesAsync(CancellationToken cancellationToken)

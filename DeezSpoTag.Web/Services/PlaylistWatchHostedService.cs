@@ -108,7 +108,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     }
 
     public Task TriggerRunOnceAsync(CancellationToken cancellationToken = default)
-        => RunOnceAsync(cancellationToken);
+        => RunTriggeredOnceAsync(cancellationToken);
 
     public void ResetPlaylistRuntimeState(string source, string sourceId)
     {
@@ -151,6 +151,17 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return;
         }
 
+        await ExecuteLockedRunAsync(stoppingToken);
+    }
+
+    private async Task RunTriggeredOnceAsync(CancellationToken cancellationToken)
+    {
+        await _runLock.WaitAsync(cancellationToken);
+        await ExecuteLockedRunAsync(cancellationToken);
+    }
+
+    private async Task ExecuteLockedRunAsync(CancellationToken stoppingToken)
+    {
         try
         {
             await RunOneWatchCycleAsync(stoppingToken);

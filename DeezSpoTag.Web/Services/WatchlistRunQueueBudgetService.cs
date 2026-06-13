@@ -3,9 +3,10 @@ namespace DeezSpoTag.Web.Services;
 public sealed class WatchlistRunQueueBudgetService
 {
     private readonly object _gate = new();
+    private readonly AsyncLocal<long> _executionGeneration = new();
     private long _generation;
     private long _activeGeneration;
-    private int _remaining = int.MaxValue;
+    private int _remaining;
 
     public long BeginRun(int queueBudget)
     {
@@ -13,6 +14,7 @@ public sealed class WatchlistRunQueueBudgetService
         {
             _generation++;
             _activeGeneration = _generation;
+            _executionGeneration.Value = _activeGeneration;
             _remaining = Math.Max(0, queueBudget);
             return _activeGeneration;
         }
@@ -28,7 +30,8 @@ public sealed class WatchlistRunQueueBudgetService
             }
 
             _activeGeneration = 0;
-            _remaining = int.MaxValue;
+            _executionGeneration.Value = 0;
+            _remaining = 0;
         }
     }
 
@@ -36,7 +39,9 @@ public sealed class WatchlistRunQueueBudgetService
     {
         lock (_gate)
         {
-            return _activeGeneration == 0 ? int.MaxValue : _remaining;
+            return _activeGeneration == 0 || _executionGeneration.Value != _activeGeneration
+                ? 0
+                : _remaining;
         }
     }
 
@@ -49,9 +54,9 @@ public sealed class WatchlistRunQueueBudgetService
 
         lock (_gate)
         {
-            if (_activeGeneration == 0)
+            if (_activeGeneration == 0 || _executionGeneration.Value != _activeGeneration)
             {
-                return queuedCount;
+                return 0;
             }
 
             var consumed = Math.Min(_remaining, queuedCount);

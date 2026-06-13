@@ -211,12 +211,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             "info",
             $"Playlist watchlist added: {request.Name}."));
 
-        if (_playlistWatchService != null)
+        if (_playlistWatchHostedService != null)
         {
-            await _playlistWatchService.ReconcilePlaylistAsync(
-                added,
-                CancellationToken.None,
-                forceMediaServerSync: false);
+            await SetPlaylistWatchSchedulerFocusAsync(added.Source, added.SourceId, cancellationToken);
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
         }
 
         return Ok(added);
@@ -384,11 +382,13 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         await SetPlaylistWatchSchedulerFocusAsync(item.Source, item.SourceId, cancellationToken);
-        await _playlistWatchService.CheckPlaylistWatchItemAsync(
-            item,
-            cancellationToken,
-            forceMediaServerSync: false);
-        return Ok(new { triggered = 1 });
+        var triggered = _playlistWatchHostedService != null;
+        if (_playlistWatchHostedService != null)
+        {
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+        }
+
+        return Ok(new { triggered = triggered ? 1 : 0 });
     }
 
     [HttpPost("reset-runtime")]
@@ -750,11 +750,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
-        await _playlistWatchService.CheckPlaylistWatchItemAsync(
-            item,
-            cancellationToken,
-            forceMediaServerSync: false);
-        var refreshedItem = await FindWatchlistItemAsync(source, sourceId, cancellationToken) ?? item;
+        var refreshedItem = await _playlistWatchService.RefreshPlaylistMetadataOnlyAsync(item, cancellationToken);
         var artworkSync = await SyncArtworkForWatchlistItemAsync(refreshedItem, cancellationToken);
         return Ok(new { refreshed = true, artworkSync });
     }

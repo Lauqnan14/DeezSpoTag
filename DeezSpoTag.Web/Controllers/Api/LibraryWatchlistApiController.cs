@@ -18,19 +18,19 @@ public class LibraryWatchlistApiController : ControllerBase
     private const string AddWatchlistFailedMessage = "Failed to add watchlist entry.";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
-    private readonly ArtistWatchService _artistWatchService;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly PlaylistWatchHostedService? _playlistWatchHostedService;
 
     public LibraryWatchlistApiController(
         LibraryRepository repository,
         LibraryConfigStore configStore,
-        ArtistWatchService artistWatchService,
-        AutoTagProfileResolutionService profileResolutionService)
+        AutoTagProfileResolutionService profileResolutionService,
+        PlaylistWatchHostedService? playlistWatchHostedService = null)
     {
         _repository = repository;
         _configStore = configStore;
-        _artistWatchService = artistWatchService;
         _profileResolutionService = profileResolutionService;
+        _playlistWatchHostedService = playlistWatchHostedService;
     }
 
     [HttpGet]
@@ -444,13 +444,13 @@ public class LibraryWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetWatchlistAsync(cancellationToken);
-        foreach (var item in items)
+        var queued = _playlistWatchHostedService != null;
+        if (_playlistWatchHostedService != null)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await _artistWatchService.CheckArtistWatchItemAsync(item, cancellationToken);
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
         }
 
-        return Ok(new { triggered = items.Count });
+        return Ok(new { triggered = queued ? items.Count : 0 });
     }
 
     [HttpPost("trigger-check/{artistId:long}")]
@@ -468,8 +468,13 @@ public class LibraryWatchlistApiController : ControllerBase
             return NotFound("Artist watchlist entry not found.");
         }
 
-        await _artistWatchService.CheckArtistWatchItemAsync(item, cancellationToken);
-        return Ok(new { triggered = 1 });
+        var triggered = _playlistWatchHostedService != null;
+        if (_playlistWatchHostedService != null)
+        {
+            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+        }
+
+        return Ok(new { triggered = triggered ? 1 : 0 });
     }
 
     private ObjectResult DatabaseNotConfigured()

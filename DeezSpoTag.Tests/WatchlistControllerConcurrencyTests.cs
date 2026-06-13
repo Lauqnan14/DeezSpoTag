@@ -75,7 +75,6 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
         var controller = new LibraryWatchlistApiController(
             _repository,
             _configStore,
-            artistWatchService: null!,
             profileResolutionService: CreateProfileResolutionService());
 
         var addTasks = Enumerable.Range(0, 24)
