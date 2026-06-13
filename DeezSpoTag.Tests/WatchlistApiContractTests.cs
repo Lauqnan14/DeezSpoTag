@@ -319,6 +319,19 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
 
     private async Task<FolderDto> AddEligibleFolderAsync(string displayName, string rootPath)
     {
+        var profileId = $"{displayName}-profile";
+        var environment = new StubWebHostEnvironment(_tempRoot);
+        var profileService = new TaggingProfileService(
+            environment,
+            NullLogger<TaggingProfileService>.Instance);
+        var profiles = await profileService.LoadAsync();
+        profiles.Add(new DeezSpoTag.Core.Models.Settings.TaggingProfile
+        {
+            Id = profileId,
+            Name = displayName
+        });
+        await profileService.SaveAsync(profiles);
+
         var folder = await _repository.AddFolderAsync(
             new LibraryRepository.FolderUpsertInput(
                 RootPath: rootPath,
@@ -330,7 +343,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
                 ConvertFormat: null,
                 ConvertBitrate: null));
 
-        var activated = await _repository.UpdateFolderProfileAsync(folder.Id, $"{displayName}-profile");
+        var activated = await _repository.UpdateFolderProfileAsync(folder.Id, profileId);
         Assert.NotNull(activated);
         var enabled = await _repository.UpdateFolderAutoTagEnabledAsync(folder.Id, true);
         Assert.NotNull(enabled);
