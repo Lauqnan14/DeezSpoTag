@@ -4,9 +4,47 @@ function normalizeSpotifyBiographyText(biography) {
         return '';
     }
 
-    const temp = document.createElement('div');
-    temp.innerHTML = biographyRaw;
-    return (temp.textContent || '').replaceAll(/[\s\u00A0]+/g, ' ').trim();
+    return decodeBiographyEntities(stripBiographyTags(biographyRaw))
+        .replaceAll(/[\s\u00A0]+/g, ' ')
+        .trim();
+}
+
+function stripBiographyTags(value) {
+    return value.replaceAll(/<[^>]*>/g, ' ');
+}
+
+function decodeBiographyEntities(value) {
+    const namedEntities = new Map([
+        ['amp', '&'],
+        ['apos', "'"],
+        ['gt', '>'],
+        ['lt', '<'],
+        ['nbsp', ' '],
+        ['quot', '"']
+    ]);
+
+    return value.replaceAll(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]+);/gi, (match, entity) => {
+        const normalized = entity.toLowerCase();
+        if (namedEntities.has(normalized)) {
+            return namedEntities.get(normalized);
+        }
+
+        const numericValue = normalized.startsWith('#x')
+            ? Number.parseInt(normalized.slice(2), 16)
+            : normalized.startsWith('#')
+                ? Number.parseInt(normalized.slice(1), 10)
+                : Number.NaN;
+
+        if (!Number.isFinite(numericValue) || numericValue <= 0 || numericValue > 0x10ffff) {
+            return match;
+        }
+
+        try {
+            return String.fromCodePoint(numericValue);
+        } catch {
+            return match;
+        }
+    });
 }
 
 const ARTIST_BIO_CLAMP_CLASS = 'bio-text--clamped';
