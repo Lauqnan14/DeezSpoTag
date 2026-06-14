@@ -2181,7 +2181,6 @@ public partial class AutoTagService
             job.ResumeFromJobId = null;
             SaveJob(job);
             AppendActivityLog(job.Id, "autotag skipped: no runnable download enrichment stage configured");
-            NotifyCompleted(job);
             return true;
         }
 
@@ -2193,7 +2192,6 @@ public partial class AutoTagService
         job.ResumeFromJobId = null;
         SaveJob(job);
         AppendActivityLog(job.Id, "autotag failed: no stages configured");
-        NotifyCompleted(job);
         return true;
     }
 
@@ -3443,6 +3441,10 @@ public partial class AutoTagService
 
     private void NotifyCompleted(AutoTagJob job)
     {
+        _activeJobStages.TryRemove(job.Id, out _);
+        _activeJobIds.TryRemove(job.Id, out _);
+        _jobCancellationSources.TryRemove(job.Id, out _);
+
         try
         {
             JobCompleted?.Invoke(job);

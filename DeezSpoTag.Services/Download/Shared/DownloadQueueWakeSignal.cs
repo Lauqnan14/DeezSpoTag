@@ -2,42 +2,25 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 public sealed class DownloadQueueWakeSignal
 {
-    private readonly object _lock = new();
-    private TaskCompletionSource _nextWake = CreateWakeSource();
+    private readonly SemaphoreSlim _pendingWake = new(0, 1);
 
     public void Pulse()
     {
-        TaskCompletionSource wake;
-        lock (_lock)
+        if (_pendingWake.CurrentCount == 0)
         {
-            wake = _nextWake;
-            _nextWake = CreateWakeSource();
+            try
+            {
+                _pendingWake.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // Another producer published a coalesced wake concurrently.
+            }
         }
-
-        wake.TrySetResult();
     }
 
-    public Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    public async Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
-        Task waitTask;
-        lock (_lock)
-        {
-            waitTask = _nextWake.Task;
-        }
-
-        return WaitCoreAsync(waitTask, timeout, cancellationToken);
+        await _pendingWake.WaitAsync(timeout, cancellationToken);
     }
-
-    private static async Task WaitCoreAsync(Task waitTask, TimeSpan timeout, CancellationToken cancellationToken)
-    {
-        var delayTask = Task.Delay(timeout, cancellationToken);
-        var completed = await Task.WhenAny(waitTask, delayTask);
-        if (completed == delayTask)
-        {
-            await delayTask;
-        }
-    }
-
-    private static TaskCompletionSource CreateWakeSource()
-        => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

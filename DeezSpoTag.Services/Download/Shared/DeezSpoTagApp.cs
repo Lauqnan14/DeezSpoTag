@@ -257,8 +257,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
     }
 
-    private Task<bool> CanStartQueueItemAsync(CancellationToken cancellationToken)
-        => _executionGate.CanStartDownloadAsync(cancellationToken);
+    private async Task<bool> CanStartQueueItemAsync(CancellationToken cancellationToken)
+        => (await _executionGate.EvaluateDownloadExecutionAsync(cancellationToken)).Allowed;
 
     private static int ResolveQueueWorkerConcurrency(DeezSpoTagSettings settings)
     {

@@ -100,12 +100,14 @@ public static class DeezSpoTagServiceExtensions
 /// </summary>
 public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.BackgroundService
 {
+    private static readonly TimeSpan RecoveryPollInterval = TimeSpan.FromMinutes(1);
     private readonly ILogger<DeezSpoTagQueueBackgroundService> _logger;
     private readonly DeezSpoTagApp _deezSpoTagApp;
     private readonly DownloadQueueRecoveryService _recoveryService;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly IDownloadQueueExecutionGate _executionGate;
     private readonly DownloadQueueWakeSignal _queueWakeSignal;
+    private string? _lastGateReasonCode;
 
     public DeezSpoTagQueueBackgroundService(
         DeezSpoTagApp deezSpoTagApp,
@@ -129,19 +131,19 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
             "DeezSpoTag",
             async token =>
             {
-                if (_workCoordinator.IsStartupGraceActive)
-                {
-                    return;
-                }
+                await _workCoordinator.WaitForStartupGraceAsync(token);
 
-                if (!await _executionGate.CanStartDownloadAsync(token))
+                var gateDecision = await _executionGate.EvaluateDownloadExecutionAsync(token);
+                if (!gateDecision.Allowed)
                 {
+                    LogGateTransition(gateDecision, queuedCount: null);
                     return;
                 }
 
                 await _recoveryService.RecoverStaleRunningTasksAsync(token);
 
                 var queuedCount = await _deezSpoTagApp.GetQueuedCountAsync();
+                LogGateTransition(gateDecision, queuedCount);
                 if (queuedCount > 0)
                 {
                     if (_logger.IsEnabled(LogLevel.Debug))
@@ -158,9 +160,36 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
                 }
             },
             _logger,
-            TimeSpan.FromSeconds(10),
+            RecoveryPollInterval,
             _queueWakeSignal,
             stoppingToken);
+    }
+
+    private void LogGateTransition(DownloadQueueExecutionDecision decision, int? queuedCount)
+    {
+        if (string.Equals(_lastGateReasonCode, decision.ReasonCode, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var previousReasonCode = _lastGateReasonCode;
+        _lastGateReasonCode = decision.ReasonCode;
+        if (!decision.Allowed)
+        {
+            _logger.LogInformation(
+                "Download queue gate closed. reason={ReasonCode}, message={Message}",
+                decision.ReasonCode,
+                decision.Message);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(previousReasonCode))
+        {
+            _logger.LogInformation(
+                "Download queue gate opened. previousReason={PreviousReasonCode}, queued={QueuedCount}",
+                previousReasonCode,
+                queuedCount ?? 0);
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

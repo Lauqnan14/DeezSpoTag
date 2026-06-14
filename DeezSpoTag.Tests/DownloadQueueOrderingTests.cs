@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -64,7 +65,23 @@ public sealed class DownloadQueueOrderingTests
         Assert.Equal(1, count);
     }
 
-    private static TestContext CreateContext()
+    [Fact]
+    public async Task EnqueueAsync_PublishesWakeAfterSuccessfulCommit()
+    {
+        var wakeSignal = new DownloadQueueWakeSignal();
+        await using var context = CreateContext(wakeSignal);
+
+        var inserted = await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("queue-wake"),
+            CancellationToken.None);
+
+        Assert.NotNull(inserted);
+        var startedAt = DateTimeOffset.UtcNow;
+        await wakeSignal.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None);
+        Assert.True(DateTimeOffset.UtcNow - startedAt < TimeSpan.FromSeconds(1));
+    }
+
+    private static TestContext CreateContext(DownloadQueueWakeSignal? wakeSignal = null)
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-queue-order-tests-" + Path.GetRandomFileName());
         Directory.CreateDirectory(tempRoot);
@@ -78,7 +95,10 @@ public sealed class DownloadQueueOrderingTests
             })
             .Build();
 
-        var queueRepository = new DownloadQueueRepository(config, NullLogger<DownloadQueueRepository>.Instance);
+        var queueRepository = new DownloadQueueRepository(
+            config,
+            NullLogger<DownloadQueueRepository>.Instance,
+            queueWakeSignal: wakeSignal);
         return new TestContext(tempRoot, queueRepository);
     }
 

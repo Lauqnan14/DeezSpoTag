@@ -113,7 +113,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return IsInterruptibleEnhancementTrigger(job.Trigger);
     }
     private sealed record EnhancementExecutionResult(List<EnhancementTarget> AttemptedTargets, bool PausedForEnrichment);
-    public sealed record DownloadGateDecision(bool Allowed, string Message, bool EnhancementPaused);
     private sealed class EnhancementScheduleState
     {
         public Dictionary<string, DateTimeOffset> LastRunByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -270,6 +269,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _processedCompletionPath = Path.Join(autoTagDataDir, "processed-completions.json");
         _orchestrationStatePath = Path.Join(autoTagDataDir, "download-orchestration-state.json");
         DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
+        _autoTagService.JobCompleted += OnAutoTagJobCompleted;
         LoadOrchestrationRuntimeState();
     }
 
@@ -312,6 +312,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     {
         SaveOrchestrationRuntimeState();
         DownloadQueueRepository.QueueStateChanged -= OnQueueStateChanged;
+        _autoTagService.JobCompleted -= OnAutoTagJobCompleted;
         base.Dispose();
     }
 
@@ -418,19 +419,17 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    public Task<DownloadGateDecision> EvaluateDownloadGateAsync(CancellationToken cancellationToken = default)
+    public Task<DownloadQueueExecutionDecision> EvaluateDownloadGateAsync(CancellationToken cancellationToken = default)
         => EvaluateDownloadGateAsync(allowManualQueueDuringEnrichment: false, cancellationToken);
 
-    public Task<DownloadGateDecision> EvaluateManualQueueGateAsync(CancellationToken cancellationToken = default)
+    public Task<DownloadQueueExecutionDecision> EvaluateManualQueueGateAsync(CancellationToken cancellationToken = default)
         => EvaluateDownloadGateAsync(allowManualQueueDuringEnrichment: true, cancellationToken);
 
-    public async Task<bool> CanStartDownloadAsync(CancellationToken cancellationToken = default)
-    {
-        var decision = await EvaluateDownloadGateAsync(cancellationToken);
-        return decision.Allowed;
-    }
+    public Task<DownloadQueueExecutionDecision> EvaluateDownloadExecutionAsync(
+        CancellationToken cancellationToken = default)
+        => EvaluateDownloadGateAsync(cancellationToken);
 
-    private async Task<DownloadGateDecision> EvaluateDownloadGateAsync(
+    private async Task<DownloadQueueExecutionDecision> EvaluateDownloadGateAsync(
         bool allowManualQueueDuringEnrichment,
         CancellationToken cancellationToken)
     {
@@ -439,14 +438,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             return allowManualQueueDuringEnrichment
                 ? AllowDownloads()
-                : DenyDownloads("Downloads waiting for post-enrichment finalization to finish.");
+                : DenyDownloads("post_download_finalization", "Downloads waiting for post-enrichment finalization to finish.");
         }
 
         if (_autoTagService.TryGetRunningEnrichmentJobId(out _))
         {
             return allowManualQueueDuringEnrichment
                 ? AllowDownloads()
-                : DenyDownloads("Downloads waiting for enrichment to finish.");
+                : DenyDownloads("enrichment_running", "Downloads waiting for enrichment to finish.");
         }
 
         var runningJobDecision = TryResolveRunningJobGateDecision(allowManualQueueDuringEnrichment);
@@ -458,13 +457,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return AllowDownloads();
     }
 
-    private static DownloadGateDecision AllowDownloads(bool enhancementPaused = false)
-        => new(true, string.Empty, enhancementPaused);
+    private static DownloadQueueExecutionDecision AllowDownloads(bool enhancementPaused = false)
+        => new(true, "open", string.Empty, enhancementPaused);
 
-    private static DownloadGateDecision DenyDownloads(string message)
-        => new(false, message, false);
+    private static DownloadQueueExecutionDecision DenyDownloads(string reasonCode, string message)
+        => new(false, reasonCode, message);
 
-    private DownloadGateDecision? TryResolveRunningJobGateDecision(bool allowManualQueueDuringEnrichment)
+    private DownloadQueueExecutionDecision? TryResolveRunningJobGateDecision(bool allowManualQueueDuringEnrichment)
     {
         if (!_autoTagService.TryGetAnyRunningJobId(out var runningJobId))
         {
@@ -478,11 +477,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var runningJob = _autoTagService.GetJob(runningJobId);
-        if (string.Equals(runningJob?.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
+        if (runningJob is not null
+            && string.Equals(runningJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(runningJob.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
         {
             return allowManualQueueDuringEnrichment
                 ? AllowDownloads()
-                : DenyDownloads("Downloads waiting for enrichment to finish.");
+                : DenyDownloads("enrichment_running", "Downloads waiting for enrichment to finish.");
         }
 
         return AllowDownloads();
@@ -525,6 +526,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             SignalWake();
         }
+    }
+
+    private void OnAutoTagJobCompleted(AutoTagJob _)
+    {
+        SignalWake();
+        _queueWakeSignal.Pulse();
     }
 
     private void SignalWake(bool resetIdleCountdown = false)

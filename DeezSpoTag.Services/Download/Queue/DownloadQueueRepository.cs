@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using DeezSpoTag.Core.Security;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
@@ -49,6 +50,7 @@ public sealed class DownloadQueueRepository
     private const string UpdateDownloadTaskSqlPrefix = "\nUPDATE " + DownloadTaskTable;
     private readonly string _connectionString;
     private readonly DownloadStagingCleanupService? _stagingCleanupService;
+    private readonly DownloadQueueWakeSignal? _queueWakeSignal;
     private readonly ILogger<DownloadQueueRepository> _logger;
     private bool _schemaEnsured;
     private readonly object _schemaLock = new();
@@ -56,10 +58,12 @@ public sealed class DownloadQueueRepository
     public DownloadQueueRepository(
         IConfiguration configuration,
         ILogger<DownloadQueueRepository> logger,
-        DownloadStagingCleanupService? stagingCleanupService = null)
+        DownloadStagingCleanupService? stagingCleanupService = null,
+        DownloadQueueWakeSignal? queueWakeSignal = null)
     {
         _logger = logger;
         _stagingCleanupService = stagingCleanupService;
+        _queueWakeSignal = queueWakeSignal;
         var rawConnection =
             Environment.GetEnvironmentVariable("QUEUE_DB")
             ?? configuration.GetConnectionString("Queue")
@@ -667,10 +671,16 @@ WHERE status = 'paused';";
         PublishQueueStateChanged(string.Empty, "queued");
     }
 
-    private static void PublishQueueStateChanged(string queueUuid, string status)
+    private void PublishQueueStateChanged(string queueUuid, string status)
     {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return;
+        }
+
+        _queueWakeSignal?.Pulse();
         var handler = QueueStateChanged;
-        if (handler == null || string.IsNullOrWhiteSpace(status))
+        if (handler == null)
         {
             return;
         }

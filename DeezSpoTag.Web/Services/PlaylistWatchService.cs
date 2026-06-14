@@ -3251,7 +3251,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
-        var downloadGate = await orchestrationService.EvaluateManualQueueGateAsync(cancellationToken);
+        var downloadGate = await orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
         if (downloadGate.Allowed)
         {
             return capacity;
@@ -3515,7 +3515,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     {
         try
         {
-            return await intentService.EnqueueManualAsync(intent, cancellationToken, blockRules: blockRules);
+            return await intentService.EnqueueAsync(intent, cancellationToken, blockRules: blockRules);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3568,7 +3568,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var atmosIntent = CreateAtmosOnlyIntent(baseIntent, options.AtmosDestinationFolderId);
         try
         {
-            var atmosResult = await intentService.EnqueueManualAsync(
+            var atmosResult = await intentService.EnqueueAsync(
                 atmosIntent,
                 cancellationToken,
                 blockRules: options.BlockRules);

@@ -21,13 +21,14 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void PlaylistWatchQueue_UsesManualQueueGateButStillTracksGateDeferrals()
+    public void PlaylistWatchQueue_UsesStrictQueueGateAndTracksGateDeferrals()
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
         var intentSource = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
 
-        Assert.Contains("EvaluateManualQueueGateAsync", watchSource, StringComparison.Ordinal);
-        Assert.Contains("EnqueueManualAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("EvaluateDownloadGateAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnqueueManualAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("ShouldDeferWatchTrack", watchSource, StringComparison.Ordinal);
         Assert.Contains("download_gate_paused", watchSource, StringComparison.Ordinal);
         Assert.Contains("download_gate_paused", intentSource, StringComparison.Ordinal);

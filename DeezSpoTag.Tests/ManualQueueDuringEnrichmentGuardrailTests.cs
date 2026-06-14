@@ -48,12 +48,13 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
-    public void WatchlistQueueing_UsesManualQueueGateForAdmission()
+    public void WatchlistQueueing_UsesStrictExecutionGateForAdmission()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
 
-        Assert.Contains("EvaluateManualQueueGateAsync", source, StringComparison.Ordinal);
-        Assert.Contains("intentService.EnqueueManualAsync", source, StringComparison.Ordinal);
+        Assert.Contains("EvaluateDownloadGateAsync", source, StringComparison.Ordinal);
+        Assert.Contains("intentService.EnqueueAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("intentService.EnqueueManualAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -70,7 +71,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
             appSource.IndexOf("CanStartQueueItemAsync(CancellationToken.None)", StringComparison.Ordinal)
             < appSource.IndexOf("DequeueNextAnyAsync", StringComparison.Ordinal));
         Assert.True(
-            engineQueueSource.IndexOf("CanStartDownloadAsync(stoppingToken)", StringComparison.Ordinal)
+            engineQueueSource.IndexOf("EvaluateDownloadExecutionAsync(stoppingToken)", StringComparison.Ordinal)
             < engineQueueSource.IndexOf("DequeueNextAsync", StringComparison.Ordinal));
         Assert.Contains(
             "DownloadOrchestrationService : BackgroundService, IDownloadQueueExecutionGate",
@@ -105,8 +106,36 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.Contains("EvaluateManualQueueGateAsync", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("allowManualQueueDuringEnrichment: true", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("allowManualQueueDuringEnrichment: false", orchestrationSource, StringComparison.Ordinal);
-        Assert.Contains("CanStartDownloadAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("EvaluateDownloadExecutionAsync", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("EvaluateDownloadGateAsync(cancellationToken)", orchestrationSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QueueAndAutoTagTransitions_WakeTheDownloadWorker()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var repositorySource = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
+
+        Assert.Contains("DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("_autoTagService.JobCompleted += OnAutoTagJobCompleted", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("_queueWakeSignal.Pulse();", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("_queueWakeSignal?.Pulse();", repositorySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagCompletion_ClearsActiveRegistrationBeforePublishingCompletion()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var notifyStart = source.IndexOf("private void NotifyCompleted(AutoTagJob job)", StringComparison.Ordinal);
+        var notifyEnd = source.IndexOf("private static AutoTagOrganizerOptions", notifyStart, StringComparison.Ordinal);
+        var notifySource = source[notifyStart..notifyEnd];
+
+        Assert.True(
+            notifySource.IndexOf("_activeJobIds.TryRemove", StringComparison.Ordinal)
+            < notifySource.IndexOf("JobCompleted?.Invoke(job)", StringComparison.Ordinal));
+        Assert.True(
+            notifySource.IndexOf("_activeJobStages.TryRemove", StringComparison.Ordinal)
+            < notifySource.IndexOf("JobCompleted?.Invoke(job)", StringComparison.Ordinal));
     }
 
     [Fact]

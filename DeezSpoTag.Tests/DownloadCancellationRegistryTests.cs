@@ -119,8 +119,10 @@ public sealed class DownloadCancellationRegistryTests
 
     private sealed class AlwaysOpenExecutionGate : IDownloadQueueExecutionGate
     {
-        public Task<bool> CanStartDownloadAsync(CancellationToken cancellationToken = default)
-            => Task.FromResult(true);
+        public Task<DownloadQueueExecutionDecision> EvaluateDownloadExecutionAsync(
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new DownloadQueueExecutionDecision(true, "open", string.Empty));
+
     }
 
     private sealed class TestContext : IAsyncDisposable

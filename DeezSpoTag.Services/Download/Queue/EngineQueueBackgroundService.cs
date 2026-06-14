@@ -7,7 +7,7 @@ namespace DeezSpoTag.Services.Download.Queue;
 
 public abstract class EngineQueueBackgroundService<TProcessor> : BackgroundService
 {
-    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(2);
+    private readonly TimeSpan _pollInterval = TimeSpan.FromMinutes(1);
 
     private readonly DownloadQueueRepository _queueRepository;
     private readonly TProcessor _processor;
@@ -49,7 +49,8 @@ public abstract class EngineQueueBackgroundService<TProcessor> : BackgroundServi
 
     private async Task ProcessNextAsync(CancellationToken stoppingToken)
     {
-        if (!await _executionGate.CanStartDownloadAsync(stoppingToken))
+        var gateDecision = await _executionGate.EvaluateDownloadExecutionAsync(stoppingToken);
+        if (!gateDecision.Allowed)
         {
             return;
         }
