@@ -192,6 +192,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly KnownLibraryFileIngestionService _knownFileIngestionService;
+    private readonly MediaServerLibraryRefreshService _mediaServerLibraryRefreshService;
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
@@ -249,6 +250,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _configBuilder = serviceProvider.GetRequiredService<AutoTagConfigBuilder>();
         _profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         _knownFileIngestionService = serviceProvider.GetRequiredService<KnownLibraryFileIngestionService>();
+        _mediaServerLibraryRefreshService = serviceProvider.GetRequiredService<MediaServerLibraryRefreshService>();
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
@@ -1192,6 +1194,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     return false;
                 }
 
+                await RefreshConfiguredMediaServersAfterMoveAsync(group, summary.ChangedFilePaths, cancellationToken);
                 await NotifyWatchlistFinalizedItemsAsync(group, summary.ChangedFilePaths, cancellationToken);
             }
 
@@ -1275,6 +1278,79 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 changedFilePaths,
                 cancellationToken);
         }
+    }
+
+    private async Task RefreshConfiguredMediaServersAfterMoveAsync(
+        PipelineWorkGroup group,
+        IReadOnlyCollection<string> changedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        var finalizedAudioPaths = changedFilePaths
+            .Where(IsExistingAudioFile)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (finalizedAudioPaths.Count == 0)
+        {
+            var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
+                group.PendingQueueUuids,
+                cancellationToken);
+            finalizedAudioPaths = movedFilesByDestination.Values
+                .SelectMany(static paths => paths)
+                .Where(IsExistingAudioFile)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        if (finalizedAudioPaths.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var refresh = await _mediaServerLibraryRefreshService.RefreshConfiguredServersAsync(cancellationToken);
+            if (refresh.ConfiguredServerCount == 0)
+            {
+                return;
+            }
+
+            if (refresh.IsComplete)
+            {
+                _logger.LogInformation(
+                    "Post-download media-server refresh requested after finalizing destination folder {DestinationFolderId}: files={FileCount}, refreshedServers={RefreshedServers}.",
+                    group.DestinationFolderId,
+                    finalizedAudioPaths.Count,
+                    refresh.RefreshedServerCount);
+                return;
+            }
+
+            _logger.LogWarning(
+                "Post-download media-server refresh was incomplete after finalizing destination folder {DestinationFolderId}: refreshedServers={RefreshedServers}/{ConfiguredServers}, failedServers={FailedServers}.",
+                group.DestinationFolderId,
+                refresh.RefreshedServerCount,
+                refresh.ConfiguredServerCount,
+                string.Join(',', refresh.FailedServers));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Post-download media-server refresh failed after finalizing destination folder {DestinationFolderId}.",
+                group.DestinationFolderId);
+        }
+    }
+
+    private static bool IsExistingAudioFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(path);
+        return !string.IsNullOrWhiteSpace(ioPath)
+               && File.Exists(ioPath)
+               && StagingAudioExtensions.Contains(Path.GetExtension(ioPath));
     }
 
     private static bool HasExistingGroupSourceFiles(PipelineWorkGroup group)

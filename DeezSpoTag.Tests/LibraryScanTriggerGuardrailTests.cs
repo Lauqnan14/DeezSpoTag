@@ -28,6 +28,26 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void DownloadOrchestration_RefreshesConfiguredMediaServersAfterVerifiedIngestion()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var ingestionIndex = source.IndexOf(
+            "IngestMovedFilesBeforeWatchlistFinalizationAsync(group, summary.ChangedFilePaths",
+            StringComparison.Ordinal);
+        var refreshIndex = source.IndexOf(
+            "RefreshConfiguredMediaServersAfterMoveAsync(group, summary.ChangedFilePaths",
+            StringComparison.Ordinal);
+        var watchlistIndex = source.IndexOf(
+            "NotifyWatchlistFinalizedItemsAsync(group, summary.ChangedFilePaths",
+            StringComparison.Ordinal);
+
+        Assert.True(ingestionIndex >= 0);
+        Assert.True(refreshIndex > ingestionIndex);
+        Assert.True(watchlistIndex > refreshIndex);
+        Assert.Contains("RefreshConfiguredServersAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DownloadOrchestration_FinalDestinationReaderUsesDatabaseJsonOnly()
     {
         const string staleStagingPath = "/tmp/deezspotag/staging/Artist/Album/Artist - Song.flac";
