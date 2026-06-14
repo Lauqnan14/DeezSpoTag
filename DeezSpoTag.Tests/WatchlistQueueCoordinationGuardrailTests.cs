@@ -10,14 +10,16 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 
     [Fact]
-    public void PlaylistWatchQueue_RespectsWatchlistTrackLimitAsQueueCapacity()
+    public void PlaylistWatchQueue_UsesRunBudgetAsTheOnlyQueueItemLimit()
     {
         var source = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
 
-        Assert.Contains("settings.WatchMaxTracksPerPlaylistCheck", source, StringComparison.Ordinal);
-        Assert.Contains("GetActiveDownloadCountAsync", source, StringComparison.Ordinal);
-        Assert.Contains("capacityRemaining <= 0", source, StringComparison.Ordinal);
-        Assert.Contains("active downloads already meet the watchlist cap", source, StringComparison.Ordinal);
+        Assert.Contains("_watchlistRunQueueBudget.TryReserve(1)", source, StringComparison.Ordinal);
+        Assert.Contains("_watchlistRunQueueBudget.Release(1)", source, StringComparison.Ordinal);
+        Assert.Contains("result.Queued.Count", source, StringComparison.Ordinal);
+        Assert.Contains("allowAutomaticSecondaryQuality: false", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetActiveDownloadCountAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("WatchQueueCapacity", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -36,12 +38,13 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void PlaylistWatchQueue_DoesNotDeadlockOnStaleUnfinishedRowsWithoutActiveDownloads()
+    public void PlaylistWatchQueue_DoesNotUseExistingQueueRowsAsRunBudget()
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
 
-        Assert.Contains("unfinishedWatchlistCount > 0 && activeWatchlistCount > 0", watchSource, StringComparison.Ordinal);
-        Assert.Contains("Continuing queue flow to avoid stale watch deadlock", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetUnfinishedWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetActiveWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("_watchlistRunQueueBudget.TryReserve(1)", watchSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -63,6 +66,16 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("watchSettings.WatchMaxTracksPerPlaylistCheck", watchSource, StringComparison.Ordinal);
         Assert.Contains("attemptedCount >= maxResolutionAttempts", watchSource, StringComparison.Ordinal);
         Assert.Contains("watch queue reached resolution-attempt budget", watchSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatchTriggers_DoNotWaitAndStartAnotherBudgetedRun()
+    {
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
+
+        Assert.Contains("Interlocked.Exchange(ref _triggerPending, 1)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("if (!await _runLock.WaitAsync(0, cancellationToken))", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _runLock.WaitAsync(cancellationToken);", hostedSource, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

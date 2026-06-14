@@ -30,6 +30,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
     private int _roundRobinIndex;
     private int _artistRoundRobinIndex;
+    private int _triggerPending;
 
     public PlaylistWatchHostedService(
         IServiceProvider serviceProvider,
@@ -151,12 +152,23 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return;
         }
 
+        var coalescedTrigger = Interlocked.Exchange(ref _triggerPending, 0) != 0;
+        if (coalescedTrigger && _logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Running scheduled watchlist cycle with coalesced trigger notifications.");
+        }
         await ExecuteLockedRunAsync(stoppingToken);
     }
 
     private async Task RunTriggeredOnceAsync(CancellationToken cancellationToken)
     {
-        await _runLock.WaitAsync(cancellationToken);
+        Interlocked.Exchange(ref _triggerPending, 1);
+        if (!await _runLock.WaitAsync(0, cancellationToken))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _triggerPending, 0);
         await ExecuteLockedRunAsync(cancellationToken);
     }
 
@@ -378,9 +390,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         var skippedByDelayWindow = 0;
         var skippedByLockBusy = 0;
         var resolutionAttempts = 0;
-        var maxResolutionAttemptsPerRun = Math.Max(
-            1,
-            Math.Max(settings.WatchMaxTracksPerPlaylistCheck, settings.WatchMaxItemsPerRun));
+        var maxResolutionAttemptsPerRun = Math.Max(1, settings.WatchMaxTracksPerPlaylistCheck);
         while (activeItem != null)
         {
             stoppingToken.ThrowIfCancellationRequested();

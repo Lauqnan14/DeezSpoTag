@@ -281,7 +281,6 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("if (queueResult.RemainingQueueableCount <= 0)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("if (queueResult.QueuedCount <= 0)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("RunBudget", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("QueueCapacity", serviceSource, StringComparison.Ordinal);
         Assert.Contains("ResolutionBudget", serviceSource, StringComparison.Ordinal);
         Assert.Contains("IsStaleActivePlaylistState", hostedSource, StringComparison.Ordinal);
         Assert.Contains("state.ZeroQueueStreak >= 3", hostedSource, StringComparison.Ordinal);
@@ -297,7 +296,6 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("ResolveQueueFailureMessage", source, StringComparison.Ordinal);
         Assert.Contains("ResolveQueueStopStatus", source, StringComparison.Ordinal);
         Assert.Contains("queue_budget_reached", source, StringComparison.Ordinal);
-        Assert.Contains("queue_capacity_reached", source, StringComparison.Ordinal);
         Assert.Contains("resolution_budget_reached", source, StringComparison.Ordinal);
         Assert.Contains("track_queue_deferred", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Playlist reconciled with queue failures.", source, StringComparison.Ordinal);

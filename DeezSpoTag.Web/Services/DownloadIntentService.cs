@@ -330,15 +330,28 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false,
-        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
-        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: false, blockRules, cancellationToken);
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null,
+        bool allowAutomaticSecondaryQuality = true)
+        => EnqueueCoreAsync(
+            intent,
+            preferIsrcOnly,
+            allowManualQueueDuringEnrichment: false,
+            blockRules,
+            allowAutomaticSecondaryQuality,
+            cancellationToken);
 
     public Task<DownloadIntentResult> EnqueueManualAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
-        => EnqueueCoreAsync(intent, preferIsrcOnly, allowManualQueueDuringEnrichment: true, blockRules, cancellationToken);
+        => EnqueueCoreAsync(
+            intent,
+            preferIsrcOnly,
+            allowManualQueueDuringEnrichment: true,
+            blockRules,
+            allowAutomaticSecondaryQuality: true,
+            cancellationToken);
 
     public async Task<DownloadIntentResult> EnqueueManualVisibleAsync(
         DownloadIntent intent,
@@ -447,12 +460,14 @@ public sealed class DownloadIntentService
         bool preferIsrcOnly,
         bool allowManualQueueDuringEnrichment,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
+        bool allowAutomaticSecondaryQuality,
         CancellationToken cancellationToken)
     {
         var resolution = await TryPrepareEnqueueResolutionAsync(
             intent,
             preferIsrcOnly,
             allowManualQueueDuringEnrichment,
+            allowAutomaticSecondaryQuality,
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -593,6 +608,7 @@ public sealed class DownloadIntentService
             intent,
             preferIsrcOnly: false,
             allowManualQueueDuringEnrichment: false,
+            allowAutomaticSecondaryQuality: true,
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -950,6 +966,7 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         bool preferIsrcOnly,
         bool allowManualQueueDuringEnrichment,
+        bool allowAutomaticSecondaryQuality,
         CancellationToken cancellationToken)
     {
         var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment, cancellationToken);
@@ -976,7 +993,11 @@ public sealed class DownloadIntentService
             return (routingFailure, null);
         }
 
-        var routing = await PrepareEnqueueRoutingAsync(intent, preparation, cancellationToken);
+        var routing = await PrepareEnqueueRoutingAsync(
+            intent,
+            preparation,
+            allowAutomaticSecondaryQuality,
+            cancellationToken);
         var noSourcesFailure = TryValidateRoutingSources(routing);
         if (noSourcesFailure != null)
         {
@@ -1799,7 +1820,11 @@ public sealed class DownloadIntentService
             : null;
     }
 
-    private async Task<EnqueueRoutingState> PrepareEnqueueRoutingAsync(DownloadIntent intent, EnqueuePreparation preparation, CancellationToken cancellationToken)
+    private async Task<EnqueueRoutingState> PrepareEnqueueRoutingAsync(
+        DownloadIntent intent,
+        EnqueuePreparation preparation,
+        bool allowAutomaticSecondaryQuality,
+        CancellationToken cancellationToken)
     {
         var settings = preparation.Settings;
         var normalizedRequestedContentType = NormalizeContentType(intent.ContentType);
@@ -1813,7 +1838,7 @@ public sealed class DownloadIntentService
         var targetQuality = string.IsNullOrWhiteSpace(intent.Quality) ? null : intent.Quality;
         var availability = await ResolveAvailabilityAsync(intent, cancellationToken);
         var multiQuality = settings.MultiQuality;
-        var useMultiQuality = IsMultiQualityDualEnabled(multiQuality);
+        var useMultiQuality = allowAutomaticSecondaryQuality && IsMultiQualityDualEnabled(multiQuality);
         if (useMultiQuality && !explicitAtmosRequest && IsMusicIntent(intent) && !intent.HasAtmos)
         {
             await TryHydrateAtmosCapabilityAsync(intent, availability, settings, cancellationToken);

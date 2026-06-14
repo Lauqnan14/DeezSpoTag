@@ -6,6 +6,7 @@ public sealed class WatchlistRunQueueBudgetService
     private readonly AsyncLocal<long> _executionGeneration = new();
     private long _generation;
     private long _activeGeneration;
+    private int _limit;
     private int _remaining;
 
     public long BeginRun(int queueBudget)
@@ -15,7 +16,8 @@ public sealed class WatchlistRunQueueBudgetService
             _generation++;
             _activeGeneration = _generation;
             _executionGeneration.Value = _activeGeneration;
-            _remaining = Math.Max(0, queueBudget);
+            _limit = Math.Max(0, queueBudget);
+            _remaining = _limit;
             return _activeGeneration;
         }
     }
@@ -31,6 +33,7 @@ public sealed class WatchlistRunQueueBudgetService
 
             _activeGeneration = 0;
             _executionGeneration.Value = 0;
+            _limit = 0;
             _remaining = 0;
         }
     }
@@ -45,23 +48,42 @@ public sealed class WatchlistRunQueueBudgetService
         }
     }
 
-    public int Consume(int queuedCount)
+    public bool TryReserve(int queueItemCount)
     {
-        if (queuedCount <= 0)
+        if (queueItemCount <= 0)
         {
-            return 0;
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (_activeGeneration == 0
+                || _executionGeneration.Value != _activeGeneration
+                || _remaining < queueItemCount)
+            {
+                return false;
+            }
+
+            _remaining -= queueItemCount;
+            return true;
+        }
+    }
+
+    public void Release(int queueItemCount)
+    {
+        if (queueItemCount <= 0)
+        {
+            return;
         }
 
         lock (_gate)
         {
             if (_activeGeneration == 0 || _executionGeneration.Value != _activeGeneration)
             {
-                return 0;
+                return;
             }
 
-            var consumed = Math.Min(_remaining, queuedCount);
-            _remaining -= consumed;
-            return consumed;
+            _remaining = Math.Min(_limit, _remaining + queueItemCount);
         }
     }
 }

@@ -1,4 +1,6 @@
 using DeezSpoTag.Web.Services;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -11,7 +13,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
         var service = new WatchlistRunQueueBudgetService();
 
         Assert.Equal(0, service.GetRemaining());
-        Assert.Equal(0, service.Consume(1));
+        Assert.False(service.TryReserve(1));
     }
 
     [Fact]
@@ -21,10 +23,55 @@ public sealed class WatchlistRunQueueBudgetServiceTests
         var token = service.BeginRun(5);
 
         Assert.Equal(5, service.GetRemaining());
-        Assert.Equal(2, service.Consume(2));
+        Assert.True(service.TryReserve(2));
         Assert.Equal(3, service.GetRemaining());
 
         service.EndRun(token);
+        Assert.Equal(0, service.GetRemaining());
+    }
+
+    [Fact]
+    public void Release_ReturnsUnusedReservationWithoutExceedingRunLimit()
+    {
+        var service = new WatchlistRunQueueBudgetService();
+        _ = service.BeginRun(3);
+
+        Assert.True(service.TryReserve(2));
+        service.Release(1);
+        service.Release(5);
+
+        Assert.Equal(3, service.GetRemaining());
+    }
+
+    [Fact]
+    public void TryReserve_DoesNotPartiallyReserveBeyondRemainingBudget()
+    {
+        var service = new WatchlistRunQueueBudgetService();
+        _ = service.BeginRun(2);
+
+        Assert.False(service.TryReserve(3));
+        Assert.Equal(2, service.GetRemaining());
+    }
+
+    [Fact]
+    public void TryReserve_ConcurrentCallersCannotExceedRunLimit()
+    {
+        var service = new WatchlistRunQueueBudgetService();
+        _ = service.BeginRun(10);
+        var reserved = 0;
+
+        Parallel.For(
+            0,
+            50,
+            _ =>
+            {
+                if (service.TryReserve(1))
+                {
+                    Interlocked.Increment(ref reserved);
+                }
+            });
+
+        Assert.Equal(10, reserved);
         Assert.Equal(0, service.GetRemaining());
     }
 

@@ -52,14 +52,6 @@ public sealed class PlaylistWatchService
         QueueWatchOptions Options,
         string NormalizedDownloadVariantMode);
 
-    private readonly record struct WatchQueueCapacity(int Limit, int ActiveCount)
-    {
-        // Queue admission is capped per run via watch settings + run budget.
-        // Do not subtract currently active queue rows; that causes under-admission
-        // (often 1-2 tracks per pass) when users configured a larger enqueue target.
-        public int Remaining => Math.Max(0, Limit);
-    }
-
     private const string SpotifySource = "spotify";
     private const string DeezerSource = "deezer";
     private const string SmartTracklistSource = "smarttracklist";
@@ -235,7 +227,6 @@ public sealed class PlaylistWatchService
         None,
         WatchlistDisabled,
         DownloadGate,
-        QueueCapacity,
         RunBudget,
         ResolutionBudget,
         TrackDeferred,
@@ -660,7 +651,6 @@ public sealed class PlaylistWatchService
         }
 
         return queueResult.StopReason is WatchQueueStopReason.RunBudget
-            or WatchQueueStopReason.QueueCapacity
             or WatchQueueStopReason.ResolutionBudget;
     }
 
@@ -985,7 +975,6 @@ public sealed class PlaylistWatchService
             return queueResult.StopReason switch
             {
                 WatchQueueStopReason.RunBudget => $"Queued {queueResult.QueuedCount} track(s); run budget reached.",
-                WatchQueueStopReason.QueueCapacity => $"Queued {queueResult.QueuedCount} track(s); queue capacity reached.",
                 WatchQueueStopReason.ResolutionBudget => $"Queued {queueResult.QueuedCount} track(s); resolution budget reached.",
                 _ => $"Queued {queueResult.QueuedCount} missing track(s)."
             };
@@ -1122,7 +1111,6 @@ public sealed class PlaylistWatchService
         {
             WatchQueueStopReason.WatchlistDisabled => "watchlist_disabled",
             WatchQueueStopReason.DownloadGate => "media_sync_deferred_queue_active",
-            WatchQueueStopReason.QueueCapacity => "queue_capacity_reached",
             WatchQueueStopReason.RunBudget => "queue_budget_reached",
             WatchQueueStopReason.ResolutionBudget => "resolution_budget_reached",
             WatchQueueStopReason.TrackDeferred => "track_queue_deferred",
@@ -3021,12 +3009,10 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         using var scope = _serviceProvider.CreateScope();
         var intentService = scope.ServiceProvider.GetRequiredService<DownloadIntentService>();
-        var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
         var orchestrationService = scope.ServiceProvider.GetRequiredService<DownloadOrchestrationService>();
         var normalizedPreferredEngine = NormalizePreferredEngine(options.PreferredEngine);
         var normalizedDownloadVariantMode = NormalizeDownloadVariantMode(options.DownloadVariantMode);
-        var capacity = await TryResolveWatchQueueCapacityAsync(queueRepository, orchestrationService, options, cancellationToken);
-        if (capacity is null)
+        if (!await CanQueueWatchItemsAsync(orchestrationService, options, cancellationToken))
         {
             return new QueueWatchResult(
                 0,
@@ -3071,24 +3057,13 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 }
                 break;
             }
-            var capacityRemaining = capacity.Value.Remaining - queuedCount;
-            if (capacityRemaining <= 0)
-            {
-                LogWatchQueueCapacityFilled(options, queuedCount, capacity.Value);
-                stopReason = WatchQueueStopReason.QueueCapacity;
-                break;
-            }
-
-            var runBudgetRemaining = _watchlistRunQueueBudget.GetRemaining();
-            if (runBudgetRemaining <= 0)
+            if (!_watchlistRunQueueBudget.TryReserve(1))
             {
                 LogWatchRunQueueBudgetFilled(options, queuedCount);
                 deferred = true;
                 stopReason = WatchQueueStopReason.RunBudget;
                 break;
             }
-
-            var effectiveRemainingCapacity = Math.Min(capacityRemaining, runBudgetRemaining);
 
             var intent = PrepareWatchIntent(
                 track.Intent,
@@ -3104,10 +3079,12 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 options.SourceLabel,
                 track.TrackId,
                 options.BlockRules,
+                allowAutomaticSecondaryQuality: false,
                 cancellationToken);
             attemptedCount++;
             if (result is null)
             {
+                _watchlistRunQueueBudget.Release(1);
                 await TryMarkWatchTrackStatusAsync(
                     options.WatchlistSource,
                     options.WatchlistPlaylistId,
@@ -3122,6 +3099,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 continue;
             }
 
+            var primaryQueuedCount = result.Success ? result.Queued.Count : 0;
+            _watchlistRunQueueBudget.Release(1 - primaryQueuedCount);
+
             if (ShouldDeferWatchTrack(result))
             {
                 LogWatchTrackDeferred(options.SourceLabel, track.TrackId, result.Message);
@@ -3135,27 +3115,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 result,
                 track,
                 intent,
-                remainingCapacity: effectiveRemainingCapacity,
+                primaryQueuedCount,
                 cancellationToken);
             queuedCount += trackResult.QueuedCount;
-            if (trackResult.QueuedCount > 0)
-            {
-                var consumed = _watchlistRunQueueBudget.Consume(trackResult.QueuedCount);
-                if (consumed < trackResult.QueuedCount)
-                {
-                    deferred = true;
-                    stopReason = WatchQueueStopReason.RunBudget;
-                    if (_logger.IsEnabled(LogLevel.Warning))
-                    {
-                        _logger.LogWarning(
-                            "{Source} watch queue budget over-consumed by {OverConsumed} track(s). queued={Queued} consumed={Consumed}",
-                            options.SourceLabel,
-                            trackResult.QueuedCount - consumed,
-                            trackResult.QueuedCount,
-                            consumed);
-                    }
-                }
-            }
             if (trackResult.Completed)
             {
                 completedCount++;
@@ -3210,70 +3172,19 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             : WatchQueueStopReason.Completed;
     }
 
-    private async Task<WatchQueueCapacity?> TryResolveWatchQueueCapacityAsync(
-        DownloadQueueRepository queueRepository,
+    private async Task<bool> CanQueueWatchItemsAsync(
         DownloadOrchestrationService orchestrationService,
         QueueWatchOptions options,
         CancellationToken cancellationToken)
     {
-        var settings = _settingsService.LoadSettings();
-        var capacity = await ResolveWatchQueueCapacityAsync(queueRepository, settings.WatchMaxTracksPerPlaylistCheck, cancellationToken);
-        var unfinishedWatchlistCount = await queueRepository.GetUnfinishedWatchlistDownloadCountAsync(cancellationToken);
-        var activeWatchlistCount = await queueRepository.GetActiveWatchlistDownloadCountAsync(cancellationToken);
-        if (unfinishedWatchlistCount > 0 && activeWatchlistCount > 0 && _logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "{Source} watch queue detected unfinished watchlist rows while active watchlist downloads are in-flight. Continuing enqueue flow under queue cap and download gate. unfinished={UnfinishedWatchlistDownloads}, activeWatchlist={ActiveWatchlistDownloads}",
-                options.SourceLabel,
-                unfinishedWatchlistCount,
-                activeWatchlistCount);
-        }
-
-        if (unfinishedWatchlistCount > 0 && capacity.ActiveCount <= 0 && _logger.IsEnabled(LogLevel.Warning))
-        {
-            _logger.LogWarning(
-                "{Source} watch queue found unfinished watchlist rows but no active downloads. Continuing queue flow to avoid stale watch deadlock. unfinished={UnfinishedWatchlistDownloads}",
-                options.SourceLabel,
-                unfinishedWatchlistCount);
-        }
-
-        if (capacity.Remaining <= 0)
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation(
-                    "{Source} watch queue deferred because active downloads already meet the watchlist cap. active={ActiveCount}, cap={QueueCap}",
-                    options.SourceLabel,
-                    capacity.ActiveCount,
-                    capacity.Limit);
-            }
-
-            return null;
-        }
-
         var downloadGate = await orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
         if (downloadGate.Allowed)
         {
-            return capacity;
+            return true;
         }
 
         LogDownloadGateDeferred(options.SourceLabel, downloadGate.Message);
-        return null;
-    }
-
-    private void LogWatchQueueCapacityFilled(QueueWatchOptions options, int queuedCount, WatchQueueCapacity capacity)
-    {
-        if (!_logger.IsEnabled(LogLevel.Information))
-        {
-            return;
-        }
-
-        _logger.LogInformation(
-            "{Source} watch queue deferred remaining tracks after filling watchlist capacity. queuedThisRun={QueuedThisRun}, activeAtStart={ActiveCount}, cap={QueueCap}",
-            options.SourceLabel,
-            queuedCount,
-            capacity.ActiveCount,
-            capacity.Limit);
+        return false;
     }
 
     private void LogWatchRunQueueBudgetFilled(QueueWatchOptions options, int queuedCount)
@@ -3319,44 +3230,30 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             ResolveDeferredDownloadReason(message));
     }
 
-    private static async Task<WatchQueueCapacity> ResolveWatchQueueCapacityAsync(
-        DownloadQueueRepository queueRepository,
-        int configuredLimit,
-        CancellationToken cancellationToken)
-    {
-        var limit = Math.Max(1, configuredLimit);
-        var activeCount = await queueRepository.GetActiveDownloadCountAsync(cancellationToken);
-        return new WatchQueueCapacity(limit, activeCount);
-    }
-
     private async Task<QueueWatchTrackResult> HandleQueuedWatchIntentResultAsync(
         QueuedWatchIntentContext context,
         DownloadIntentResult result,
         WatchIntentTrack track,
         DownloadIntent intent,
-        int remainingCapacity,
+        int primaryQueuedCount,
         CancellationToken cancellationToken)
     {
-        var queuedCount = 0;
+        var queuedCount = primaryQueuedCount;
         if (result.Success)
         {
-            queuedCount++;
             await TryRecordWatchDownloadClaimsAsync(
                 context.Options,
                 track.TrackId,
                 result.Queued,
                 intent.DestinationFolderId,
                 cancellationToken);
-            if (remainingCapacity - queuedCount > 0)
-            {
-                queuedCount += await TryQueueAtmosIntentAsync(
-                    context.IntentService,
-                    context.NormalizedDownloadVariantMode,
-                    intent,
-                    new AtmosQueueRequest(context.Options.SourceLabel, track.TrackId, AfterPrimarySkip: false),
-                    context.Options,
-                    cancellationToken);
-            }
+            queuedCount += await TryQueueAtmosIntentAsync(
+                context.IntentService,
+                context.NormalizedDownloadVariantMode,
+                intent,
+                new AtmosQueueRequest(context.Options.SourceLabel, track.TrackId, AfterPrimarySkip: false),
+                context.Options,
+                cancellationToken);
             return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: false);
         }
 
@@ -3388,16 +3285,13 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     track,
                     cancellationToken);
             }
-            if (remainingCapacity > 0)
-            {
-                queuedCount += await TryQueueAtmosIntentAsync(
-                    context.IntentService,
-                    context.NormalizedDownloadVariantMode,
-                    intent,
-                    new AtmosQueueRequest(context.Options.SourceLabel, track.TrackId, AfterPrimarySkip: true),
-                    context.Options,
-                    cancellationToken);
-            }
+            queuedCount += await TryQueueAtmosIntentAsync(
+                context.IntentService,
+                context.NormalizedDownloadVariantMode,
+                intent,
+                new AtmosQueueRequest(context.Options.SourceLabel, track.TrackId, AfterPrimarySkip: true),
+                context.Options,
+                cancellationToken);
             await TryMarkWatchTrackCompletedAsync(
                 context.Options.WatchlistSource,
                 context.Options.WatchlistPlaylistId,
@@ -3511,11 +3405,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string sourceLabel,
         string trackId,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
+        bool allowAutomaticSecondaryQuality,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await intentService.EnqueueAsync(intent, cancellationToken, blockRules: blockRules);
+            return await intentService.EnqueueAsync(
+                intent,
+                cancellationToken,
+                blockRules: blockRules,
+                allowAutomaticSecondaryQuality: allowAutomaticSecondaryQuality);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -3565,17 +3464,30 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return 0;
         }
 
+        if (!_watchlistRunQueueBudget.TryReserve(1))
+        {
+            return 0;
+        }
+
         var atmosIntent = CreateAtmosOnlyIntent(baseIntent, options.AtmosDestinationFolderId);
         try
         {
             var atmosResult = await intentService.EnqueueAsync(
                 atmosIntent,
                 cancellationToken,
-                blockRules: options.BlockRules);
-            return atmosResult.Success ? 1 : 0;
+                blockRules: options.BlockRules,
+                allowAutomaticSecondaryQuality: false);
+            if (atmosResult.Success)
+            {
+                return 1;
+            }
+
+            _watchlistRunQueueBudget.Release(1);
+            return 0;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _watchlistRunQueueBudget.Release(1);
             var messageSuffix = request.AfterPrimarySkip ? " after primary skip" : string.Empty;
             _logger.LogWarning(
                 ex,
