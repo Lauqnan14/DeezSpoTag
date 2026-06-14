@@ -13,6 +13,10 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadQueueRepositoryDuplicateTests
 {
+    private const string WatchlistPayloadJson = """
+        {"WatchlistOrigin":"playlist","WatchlistSource":"spotify","WatchlistPlaylistId":"playlist-1","WatchlistTrackId":"track-1"}
+        """;
+
     [Fact]
     public async Task ExistsDuplicateAsync_DoesNotTreatSharedAlbumOrArtistIdsAsTrackDuplicates()
     {
@@ -81,6 +85,83 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             CancellationToken.None);
 
         Assert.True(exists);
+    }
+
+    [Theory]
+    [InlineData("queued")]
+    [InlineData("resolving")]
+    [InlineData("preparing")]
+    [InlineData("prepared")]
+    [InlineData("inqueue")]
+    [InlineData("running")]
+    [InlineData("downloading")]
+    [InlineData("paused")]
+    [InlineData("retrying")]
+    public async Task HasActiveWatchlistDownloadsAsync_DetectsOnlyActiveWatchlistStatuses(string status)
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem($"watch-active-{status}", "Artist", $"Track {status}", 1) with
+            {
+                Status = status,
+                PayloadJson = WatchlistPayloadJson
+            },
+            CancellationToken.None);
+
+        Assert.True(await context.QueueRepository.HasActiveWatchlistDownloadsAsync(CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("canceled")]
+    [InlineData("cancelled")]
+    [InlineData("completed")]
+    [InlineData("complete")]
+    public async Task HasActiveWatchlistDownloadsAsync_IgnoresTerminalWatchlistStatuses(string status)
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem($"watch-terminal-{status}", "Artist", $"Track {status}", 1) with
+            {
+                Status = status,
+                PayloadJson = WatchlistPayloadJson
+            },
+            CancellationToken.None);
+
+        Assert.False(await context.QueueRepository.HasActiveWatchlistDownloadsAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task HasActiveWatchlistDownloadsAsync_IgnoresActiveManualDownloads()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("manual-active", "Artist", "Manual Track", 1) with
+            {
+                Status = "downloading",
+                PayloadJson = "{\"title\":\"Manual Track\",\"artist\":\"Artist\"}"
+            },
+            CancellationToken.None);
+
+        Assert.False(await context.QueueRepository.HasActiveWatchlistDownloadsAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task HasActiveWatchlistDownloadsAsync_UsesPopulatedWatchlistIdentityShape()
+    {
+        await using var context = await CreateContextAsync();
+        const string mixedPayload = """
+            {"WatchlistSource":"","watchlistSource":"boomplay","watchlistPlaylistId":"playlist-2","watchlistTrackId":"track-2"}
+            """;
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("watch-mixed-shape", "Artist", "Mixed Track", 1) with
+            {
+                Status = "queued",
+                PayloadJson = mixedPayload
+            },
+            CancellationToken.None);
+
+        Assert.True(await context.QueueRepository.HasActiveWatchlistDownloadsAsync(CancellationToken.None));
     }
 
     [Fact]

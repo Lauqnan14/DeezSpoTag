@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Controllers.Api;
@@ -32,6 +33,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     private LibraryConfigStore _configStore = default!;
     private PlaylistVisualService _playlistVisualService = default!;
     private DeezSpoTagSettingsService _settingsService = default!;
+    private DownloadQueueRepository _queueRepository = default!;
     private ServiceProvider _provider = default!;
 
     public async Task InitializeAsync()
@@ -41,10 +43,12 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         _configScope = new TestConfigRootScope(_tempRoot);
 
         var dbPath = Path.Join(_tempRoot, "library.db");
+        var queueDbPath = Path.Join(_tempRoot, "queue.db");
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:Library"] = $"Data Source={dbPath}",
+                ["ConnectionStrings:Queue"] = $"Data Source={queueDbPath}",
                 ["DataDirectory"] = _tempRoot
             })
             .Build();
@@ -69,6 +73,10 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         settings.WatchDelayBetweenPlaylistsSeconds = 1;
         settings.WatchMaxItemsPerRun = 50;
         _settingsService.SaveSettings(settings);
+        var runQueueBudget = new WatchlistRunQueueBudgetService();
+        _queueRepository = new DownloadQueueRepository(
+            config,
+            NullLogger<DownloadQueueRepository>.Instance);
 
         var playlistWatchService = new PlaylistWatchService(
             _repository,
@@ -89,7 +97,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             {
                 PlaylistSyncService = null!,
                 PlaylistVisualService = null!,
-                WatchlistRunQueueBudgetService = null,
+                WatchlistRunQueueBudgetService = runQueueBudget,
                 ActivitiesRealtimeService = null!
             },
             _settingsService,
@@ -111,6 +119,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddSingleton(_settingsService);
         services.AddSingleton(_repository);
+        services.AddSingleton(_queueRepository);
+        services.AddSingleton(runQueueBudget);
         services.AddSingleton(playlistWatchService);
         services.AddSingleton(artistWatchService);
         services.AddSingleton(CreateProfileResolutionService());
@@ -167,6 +177,48 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         var failuresAfterThird = GetFailureMap(hosted);
         failuresAfterThird.TryGetValue(failKey, out var thirdFailures);
         Assert.True(thirdFailures <= Math.Max(1, secondFailures));
+    }
+
+    [Fact]
+    public async Task RunOnce_DefersAdmissionWhenPreviousWatchlistDownloadIsActive()
+    {
+        await _queueRepository.EnqueueAsync(
+            CreateQueueItem(
+                "previous-watch-active",
+                "queued",
+                "{\"WatchlistOrigin\":\"playlist\",\"WatchlistSource\":\"spotify\",\"WatchlistPlaylistId\":\"playlist-1\",\"WatchlistTrackId\":\"track-1\"}"),
+            CancellationToken.None);
+        var logger = new ListLogger<PlaylistWatchHostedService>();
+        var hosted = new PlaylistWatchHostedService(_provider, logger);
+
+        await InvokeRunOnceAsync(hosted);
+
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Message.Contains(
+                "previous watchlist run are still active",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunOnce_DoesNotTreatActiveManualDownloadAsPreviousWatchlistWork()
+    {
+        await _queueRepository.EnqueueAsync(
+            CreateQueueItem(
+                "manual-active",
+                "downloading",
+                "{\"title\":\"Manual Track\",\"artist\":\"Artist\"}"),
+            CancellationToken.None);
+        var logger = new ListLogger<PlaylistWatchHostedService>();
+        var hosted = new PlaylistWatchHostedService(_provider, logger);
+
+        await InvokeRunOnceAsync(hosted);
+
+        Assert.DoesNotContain(
+            logger.Entries,
+            entry => entry.Message.Contains(
+                "previous watchlist run are still active",
+                StringComparison.Ordinal));
     }
 
     [Fact]
@@ -455,6 +507,37 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         Assert.NotNull(result);
         await (Task)result!;
     }
+
+    private static DownloadQueueItem CreateQueueItem(string queueUuid, string status, string payloadJson)
+        => new(
+            Id: 0,
+            QueueUuid: queueUuid,
+            Engine: "qobuz",
+            ArtistName: "Artist",
+            TrackTitle: queueUuid,
+            Isrc: null,
+            DeezerTrackId: null,
+            DeezerAlbumId: null,
+            DeezerArtistId: null,
+            SpotifyTrackId: null,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: null,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: null,
+            DestinationFolderId: 1,
+            QualityRank: null,
+            QueueOrder: null,
+            ContentType: "stereo",
+            Status: status,
+            PayloadJson: payloadJson,
+            Progress: 0,
+            Downloaded: 0,
+            Failed: 0,
+            Error: null,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow);
 
     private static ConcurrentDictionary<string, int> GetFailureMap(PlaylistWatchHostedService hosted)
         => (ConcurrentDictionary<string, int>)GetPrivateField(hosted, "_consecutiveFailures");

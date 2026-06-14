@@ -434,6 +434,31 @@ LIMIT 1;";
         return result is not null && result is not DBNull;
     }
 
+    public async Task<bool> HasActiveWatchlistDownloadsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT 1
+FROM download_task
+WHERE lower(status) IN ('queued', 'resolving', 'preparing', 'prepared', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+  AND json_valid(payload)
+  AND (
+      COALESCE(CAST(json_extract(payload, '$.WatchlistOrigin') AS TEXT), '') <> ''
+      OR COALESCE(CAST(json_extract(payload, '$.watchlistOrigin') AS TEXT), '') <> ''
+      OR COALESCE(CAST(json_extract(payload, '$.WatchlistSource') AS TEXT), '') <> ''
+      OR COALESCE(CAST(json_extract(payload, '$.watchlistSource') AS TEXT), '') <> ''
+      OR COALESCE(CAST(json_extract(payload, '$.WatchlistPlaylistId') AS TEXT), '') <> ''
+      OR COALESCE(CAST(json_extract(payload, '$.watchlistPlaylistId') AS TEXT), '') <> ''
+      OR COALESCE(CAST(json_extract(payload, '$.WatchlistTrackId') AS TEXT), '') <> ''
+      OR COALESCE(CAST(json_extract(payload, '$.watchlistTrackId') AS TEXT), '') <> ''
+  )
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null && result is not DBNull;
+    }
+
     public async Task<bool> HasRunnableDownloadsAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);

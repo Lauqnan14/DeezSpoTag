@@ -87,4 +87,17 @@ public sealed class WatchlistRunQueueBudgetServiceTests
         Assert.Equal(6, service.GetRemaining());
     }
 
+    [Fact]
+    public void BlockReason_IsScopedToActiveRun()
+    {
+        var service = new WatchlistRunQueueBudgetService();
+        var token = service.BeginRun(0, WatchlistQueueBlockReason.PreviousWatchlistRunActive);
+
+        Assert.Equal(WatchlistQueueBlockReason.PreviousWatchlistRunActive, service.GetBlockReason());
+        Assert.False(service.TryReserve(1));
+
+        service.EndRun(token);
+        Assert.Equal(WatchlistQueueBlockReason.None, service.GetBlockReason());
+    }
+
 }

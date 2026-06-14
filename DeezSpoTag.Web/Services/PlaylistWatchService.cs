@@ -227,6 +227,7 @@ public sealed class PlaylistWatchService
         None,
         WatchlistDisabled,
         DownloadGate,
+        PreviousWatchlistRunActive,
         RunBudget,
         ResolutionBudget,
         TrackDeferred,
@@ -986,6 +987,7 @@ public sealed class PlaylistWatchService
             {
                 WatchQueueStopReason.WatchlistDisabled => "Watchlist is disabled.",
                 WatchQueueStopReason.DownloadGate => "Waiting for download/enrichment gate to clear.",
+                WatchQueueStopReason.PreviousWatchlistRunActive => "Waiting for downloads from the previous watchlist run to finish.",
                 WatchQueueStopReason.RunBudget => "Watchlist run budget reached.",
                 WatchQueueStopReason.ResolutionBudget => "Resolution budget reached before more tracks could be queued.",
                 WatchQueueStopReason.TrackDeferred => "Track queueing deferred by download gate.",
@@ -1111,6 +1113,7 @@ public sealed class PlaylistWatchService
         {
             WatchQueueStopReason.WatchlistDisabled => "watchlist_disabled",
             WatchQueueStopReason.DownloadGate => "media_sync_deferred_queue_active",
+            WatchQueueStopReason.PreviousWatchlistRunActive => "queue_deferred_previous_watchlist_active",
             WatchQueueStopReason.RunBudget => "queue_budget_reached",
             WatchQueueStopReason.ResolutionBudget => "resolution_budget_reached",
             WatchQueueStopReason.TrackDeferred => "track_queue_deferred",
@@ -3059,9 +3062,12 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             }
             if (!_watchlistRunQueueBudget.TryReserve(1))
             {
-                LogWatchRunQueueBudgetFilled(options, queuedCount);
+                var queueBlockReason = _watchlistRunQueueBudget.GetBlockReason();
+                LogWatchRunQueueAdmissionDeferred(options, queuedCount, queueBlockReason);
                 deferred = true;
-                stopReason = WatchQueueStopReason.RunBudget;
+                stopReason = queueBlockReason == WatchlistQueueBlockReason.PreviousWatchlistRunActive
+                    ? WatchQueueStopReason.PreviousWatchlistRunActive
+                    : WatchQueueStopReason.RunBudget;
                 break;
             }
 
@@ -3187,17 +3193,29 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return false;
     }
 
-    private void LogWatchRunQueueBudgetFilled(QueueWatchOptions options, int queuedCount)
+    private void LogWatchRunQueueAdmissionDeferred(
+        QueueWatchOptions options,
+        int queuedCount,
+        WatchlistQueueBlockReason blockReason)
     {
         if (!_logger.IsEnabled(LogLevel.Information))
         {
             return;
         }
 
-        _logger.LogInformation(
-            "{Source} watch queue reached per-run budget. queuedThisRun={QueuedThisRun}",
-            options.SourceLabel,
-            queuedCount);
+        if (blockReason == WatchlistQueueBlockReason.PreviousWatchlistRunActive)
+        {
+            _logger.LogInformation(
+                "{Source} watch queue deferred because downloads from the previous watchlist run are still active.",
+                options.SourceLabel);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "{Source} watch queue reached per-run budget. queuedThisRun={QueuedThisRun}",
+                options.SourceLabel,
+                queuedCount);
+        }
     }
 
     private void LogDownloadGateDeferred(string sourceLabel, string? message)

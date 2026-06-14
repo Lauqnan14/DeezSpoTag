@@ -204,7 +204,18 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
 
         var runQueueBudget = scope.ServiceProvider.GetService<WatchlistRunQueueBudgetService>();
-        var runQueueBudgetToken = runQueueBudget?.BeginRun(Math.Max(1, settings.WatchMaxItemsPerRun)) ?? 0;
+        var queueRepository = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>();
+        var previousWatchlistRunActive = await queueRepository.HasActiveWatchlistDownloadsAsync(stoppingToken);
+        var queueBudget = previousWatchlistRunActive ? 0 : Math.Max(1, settings.WatchMaxItemsPerRun);
+        var blockReason = previousWatchlistRunActive
+            ? WatchlistQueueBlockReason.PreviousWatchlistRunActive
+            : WatchlistQueueBlockReason.None;
+        var runQueueBudgetToken = runQueueBudget?.BeginRun(queueBudget, blockReason) ?? 0;
+        if (previousWatchlistRunActive && _logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Watchlist queue admission deferred because downloads from the previous watchlist run are still active.");
+        }
         try
         {
             await RunWatchCycleCoreAsync(scope.ServiceProvider, settings, runQueueBudget, stoppingToken);
@@ -595,6 +606,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         if (result.KeepActivePlaylist)
         {
             return PlaylistAdvanceDecision.StopRunKeepActive;
+        }
+
+        if (string.Equals(
+                result.QueueStopReason,
+                PlaylistWatchService.WatchQueueStopReason.PreviousWatchlistRunActive.ToString(),
+                StringComparison.Ordinal))
+        {
+            return PlaylistAdvanceDecision.Advance;
         }
 
         if (remainingRunBudget <= 0)

@@ -78,6 +78,28 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("await _runLock.WaitAsync(cancellationToken);", hostedSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void HostedCycle_ChecksExistingWatchlistDownloadsBeforeOpeningRunBudget()
+    {
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
+        var activeCheckIndex = hostedSource.IndexOf("HasActiveWatchlistDownloadsAsync", StringComparison.Ordinal);
+        var beginRunIndex = hostedSource.IndexOf("runQueueBudget?.BeginRun", StringComparison.Ordinal);
+
+        Assert.True(activeCheckIndex >= 0);
+        Assert.True(beginRunIndex > activeCheckIndex);
+        Assert.Contains("WatchlistQueueBlockReason.PreviousWatchlistRunActive", hostedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PreviousWatchlistRunBlock_HasSpecificNonFailureStatusAndMessage()
+    {
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+
+        Assert.Contains("Waiting for downloads from the previous watchlist run to finish.", watchSource, StringComparison.Ordinal);
+        Assert.Contains("queue_deferred_previous_watchlist_active", watchSource, StringComparison.Ordinal);
+        Assert.Contains("WatchQueueStopReason.PreviousWatchlistRunActive", watchSource, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

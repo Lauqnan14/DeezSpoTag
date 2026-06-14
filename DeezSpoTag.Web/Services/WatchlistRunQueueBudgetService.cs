@@ -1,5 +1,11 @@
 namespace DeezSpoTag.Web.Services;
 
+public enum WatchlistQueueBlockReason
+{
+    None,
+    PreviousWatchlistRunActive
+}
+
 public sealed class WatchlistRunQueueBudgetService
 {
     private readonly object _gate = new();
@@ -8,8 +14,11 @@ public sealed class WatchlistRunQueueBudgetService
     private long _activeGeneration;
     private int _limit;
     private int _remaining;
+    private WatchlistQueueBlockReason _blockReason;
 
-    public long BeginRun(int queueBudget)
+    public long BeginRun(
+        int queueBudget,
+        WatchlistQueueBlockReason blockReason = WatchlistQueueBlockReason.None)
     {
         lock (_gate)
         {
@@ -18,6 +27,7 @@ public sealed class WatchlistRunQueueBudgetService
             _executionGeneration.Value = _activeGeneration;
             _limit = Math.Max(0, queueBudget);
             _remaining = _limit;
+            _blockReason = blockReason;
             return _activeGeneration;
         }
     }
@@ -35,6 +45,7 @@ public sealed class WatchlistRunQueueBudgetService
             _executionGeneration.Value = 0;
             _limit = 0;
             _remaining = 0;
+            _blockReason = WatchlistQueueBlockReason.None;
         }
     }
 
@@ -45,6 +56,16 @@ public sealed class WatchlistRunQueueBudgetService
             return _activeGeneration == 0 || _executionGeneration.Value != _activeGeneration
                 ? 0
                 : _remaining;
+        }
+    }
+
+    public WatchlistQueueBlockReason GetBlockReason()
+    {
+        lock (_gate)
+        {
+            return _activeGeneration == 0 || _executionGeneration.Value != _activeGeneration
+                ? WatchlistQueueBlockReason.None
+                : _blockReason;
         }
     }
 
