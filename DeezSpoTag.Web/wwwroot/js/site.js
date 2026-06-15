@@ -1746,6 +1746,12 @@ globalThis.DeezSpoTag = {
             connected.add('jellyfin');
             this.setPlatformState(platformStates, 'jellyfin', true, 'credentials');
         }
+        if (authData.qobuz?.connected === true) {
+            connected.add('qobuz');
+            this.setPlatformState(platformStates, 'qobuz', true, authData.qobuz.publicApiOnline ? 'public-api' : 'official-api');
+        } else {
+            this.setPlatformState(platformStates, 'qobuz', false, 'offline');
+        }
 
         return authData;
     },

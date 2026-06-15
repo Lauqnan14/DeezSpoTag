@@ -557,6 +557,7 @@ public partial class Program
         services.AddSingleton<QuickTagService>();
         services.AddSingleton<QuickTagTagSourceService>();
         services.AddHttpClient<DeezSpoTag.Web.Services.PlaylistCoverService>();
+        services.AddHttpClient<DeezSpoTag.Web.Services.QobuzAccountProfileService>();
         services.AddHttpClient<DeezSpoTag.Integrations.Plex.PlexApiClient>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
@@ -1392,6 +1393,8 @@ public partial class Program
     {
         services.AddSingleton<DeezSpoTag.Web.Services.AppInstanceIdProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlatformAuthService>();
+        services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthQobuzCredentialProvider>();
+        services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry, DeezSpoTag.Web.Services.QobuzPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Web.Services.CrossDeviceSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.TracklistSongCacheStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyUserAuthStore>();
@@ -1597,6 +1600,11 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SystemStatsService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService, DeezSpoTag.Services.Download.Qobuz.QobuzDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
+        services.AddSingleton<DeezSpoTag.Web.Services.QobuzPublicProviderHealthService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.QobuzPublicProviderHealthService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Periodic sequential Qobuz public provider health checks after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Download.Amazon.IAmazonDownloadService, DeezSpoTag.Services.Download.Amazon.AmazonDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Amazon.AmazonEngineProcessor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>();

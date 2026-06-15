@@ -11,6 +11,7 @@ using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
@@ -44,7 +45,10 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
 
         _repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
         var environment = new StubWebHostEnvironment(_tempRoot);
-        var authService = new PlatformAuthService(environment, NullLogger<PlatformAuthService>.Instance);
+        var authService = new PlatformAuthService(
+            environment,
+            NullLogger<PlatformAuthService>.Instance,
+            DataProtectionProvider.Create(new DirectoryInfo(Path.Join(_tempRoot, "keys"))));
         var plexClient = new PlexApiClient(
             NullLogger<PlexApiClient>.Instance,
             new HttpClient(new StubHttpMessageHandler()));

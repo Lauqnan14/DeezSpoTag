@@ -3,6 +3,8 @@ using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
+using DeezSpoTag.Integrations.Qobuz;
+using DeezSpoTag.Services.Download.Qobuz;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -17,22 +19,31 @@ public class PlatformAuthApiController : ControllerBase
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly AppleMusicWrapperService _appleWrapperService;
+    private readonly QobuzAccountProfileService _qobuzAccountProfileService;
+    private readonly IQobuzPublicProviderRegistry _qobuzPublicProviderRegistry;
+    private readonly IQobuzDownloadService _qobuzDownloadService;
     public PlatformAuthApiController(
         PlatformAuthService authService,
         DiscogsApiClient discogsApiClient,
         PlexApiClient plexApiClient,
         JellyfinApiClient jellyfinApiClient,
-        AppleMusicWrapperService appleWrapperService)
+        AppleMusicWrapperService appleWrapperService,
+        QobuzAccountProfileService qobuzAccountProfileService,
+        IQobuzPublicProviderRegistry qobuzPublicProviderRegistry,
+        IQobuzDownloadService qobuzDownloadService)
     {
         _authService = authService;
         _discogsApiClient = discogsApiClient;
         _plexApiClient = plexApiClient;
         _jellyfinApiClient = jellyfinApiClient;
         _appleWrapperService = appleWrapperService;
+        _qobuzAccountProfileService = qobuzAccountProfileService;
+        _qobuzPublicProviderRegistry = qobuzPublicProviderRegistry;
+        _qobuzDownloadService = qobuzDownloadService;
     }
 
     [HttpGet]
-    public async Task<IActionResult> Get()
+    public async Task<IActionResult> Get(CancellationToken cancellationToken)
     {
         var gate = EnsureAccess();
         if (gate != null)
@@ -80,6 +91,9 @@ public class PlatformAuthApiController : ControllerBase
             });
         }
 
+        state = await RefreshQobuzAccountAsync(state, cancellationToken);
+        var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
+
         return Ok(new
         {
             spotify = state.Spotify,
@@ -88,8 +102,38 @@ public class PlatformAuthApiController : ControllerBase
             bpmSupreme = state.BpmSupreme,
             plex = state.Plex,
             jellyfin = state.Jellyfin,
-            appleMusic = state.AppleMusic
+            appleMusic = state.AppleMusic,
+            qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders)
         });
+    }
+
+    [HttpGet("qobuz/providers")]
+    public async Task<IActionResult> GetQobuzProviders(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
+    }
+
+    [HttpPut("qobuz/providers/{providerId}/enabled")]
+    public async Task<IActionResult> SetQobuzProviderEnabled(
+        string providerId,
+        [FromBody] QobuzProviderEnabledRequest request,
+        CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        var updated = await _qobuzPublicProviderRegistry.SetEnabledAsync(providerId, request.Enabled, cancellationToken);
+        return updated is null ? NotFound("Unknown Qobuz provider.") : Ok(ToPublicProvider(updated));
+    }
+
+    [HttpPost("qobuz/providers/check")]
+    public async Task<IActionResult> CheckQobuzProviders(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        await _qobuzDownloadService.CheckPublicProvidersAsync(cancellationToken);
+        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
     }
 
     [HttpPost("spotify")]
@@ -136,6 +180,79 @@ public class PlatformAuthApiController : ControllerBase
             return state.Discogs;
         });
         return Ok(new { saved = true, discogs });
+    }
+
+    [HttpPost("qobuz")]
+    public async Task<IActionResult> SaveQobuz([FromBody] QobuzAuth request, CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null)
+        {
+            return gate;
+        }
+
+        if (request is null)
+        {
+            return BadRequest("Qobuz credentials are required.");
+        }
+
+        var existingState = await _authService.LoadAsync();
+        var authToken = string.IsNullOrWhiteSpace(request.AuthToken)
+            ? existingState.Qobuz?.AuthToken
+            : request.AuthToken.Trim();
+        var submittedAppSecret = string.IsNullOrWhiteSpace(request.AppSecret)
+            ? request.DownloadSecret
+            : request.AppSecret;
+        var existingAppSecret = string.IsNullOrWhiteSpace(existingState.Qobuz?.AppSecret)
+            ? existingState.Qobuz?.DownloadSecret
+            : existingState.Qobuz.AppSecret;
+        var appSecret = string.IsNullOrWhiteSpace(submittedAppSecret)
+            ? existingAppSecret
+            : submittedAppSecret.Trim();
+        if (string.IsNullOrWhiteSpace(appSecret))
+        {
+            return BadRequest("Qobuz App Secret is required.");
+        }
+
+        var appId = string.IsNullOrWhiteSpace(request.AppId) ? "712109809" : request.AppId.Trim();
+        QobuzAccountProfileResult? accountResult = null;
+        if (!string.IsNullOrWhiteSpace(authToken))
+        {
+            accountResult = await _qobuzAccountProfileService.FetchAsync(appId, authToken, cancellationToken);
+            if (accountResult.Status == QobuzAccountProfileStatus.InvalidToken)
+            {
+                return BadRequest(accountResult.Error ?? "Qobuz User Auth Token is invalid.");
+            }
+            if (accountResult.Status == QobuzAccountProfileStatus.Unavailable)
+            {
+                return StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    accountResult.Error ?? "Qobuz account lookup is unavailable.");
+            }
+        }
+
+        var qobuz = await _authService.UpdateAsync(state =>
+        {
+            state.Qobuz = new QobuzAuth
+            {
+                AppId = appId,
+                AuthToken = authToken,
+                AppSecret = appSecret,
+                UserId = accountResult?.Profile?.UserId,
+                DisplayName = accountResult?.Profile?.DisplayName,
+                Country = accountResult?.Profile?.Country,
+                Zone = accountResult?.Profile?.Zone,
+                CredentialLabel = accountResult?.Profile?.CredentialLabel,
+                SubscriptionOffer = accountResult?.Profile?.SubscriptionOffer,
+                AuthTokenValid = accountResult is null ? null : true,
+                AccountRefreshedAt = accountResult is null ? null : DateTimeOffset.UtcNow,
+                DownloadSecret = null
+            };
+            return state.Qobuz;
+        });
+
+        var providers = await GetPublicQobuzProvidersAsync(cancellationToken);
+        return Ok(new { saved = true, qobuz = ToPublicQobuz(qobuz, providers) });
     }
 
     [HttpPost("lastfm")]
@@ -360,6 +477,79 @@ public class PlatformAuthApiController : ControllerBase
         };
     }
 
+    private static object ToPublicQobuz(QobuzAuth? auth, QobuzProviderSummary providers)
+    {
+        return new
+        {
+            appId = auth?.AppId,
+            authTokenSaved = !string.IsNullOrWhiteSpace(auth?.AuthToken),
+            appSecretSaved = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret),
+            configured = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret),
+            userId = auth?.UserId,
+            displayName = auth?.DisplayName,
+            country = auth?.Country,
+            zone = auth?.Zone,
+            credentialLabel = auth?.CredentialLabel,
+            subscriptionOffer = auth?.SubscriptionOffer,
+            authTokenValid = auth?.AuthTokenValid,
+            accountRefreshedAt = auth?.AccountRefreshedAt,
+            publicApiOnline = providers.Online,
+            connected = providers.Online || (!string.IsNullOrWhiteSpace(auth?.AppSecret) && auth?.AuthTokenValid != false),
+            providers = providers.Providers
+        };
+    }
+
+    private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken)
+    {
+        var providers = await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken);
+        var publicProviders = providers.Select(ToPublicProvider).ToArray();
+        return new QobuzProviderSummary(publicProviders.Any(provider => provider.Enabled && provider.Status == "online"), publicProviders);
+    }
+
+    private static QobuzProviderView ToPublicProvider(QobuzPublicProvider provider)
+        => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
+
+    public sealed record QobuzProviderEnabledRequest(bool Enabled);
+    private sealed record QobuzProviderSummary(bool Online, QobuzProviderView[] Providers);
+    private sealed record QobuzProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
+
+    private async Task<PlatformAuthState> RefreshQobuzAccountAsync(
+        PlatformAuthState state,
+        CancellationToken cancellationToken)
+    {
+        var qobuz = state.Qobuz;
+        if (qobuz is null
+            || string.IsNullOrWhiteSpace(qobuz.AppId)
+            || string.IsNullOrWhiteSpace(qobuz.AuthToken))
+        {
+            return state;
+        }
+
+        var result = await _qobuzAccountProfileService.FetchAsync(qobuz.AppId, qobuz.AuthToken, cancellationToken);
+        return await _authService.UpdateAsync(current =>
+        {
+            if (current.Qobuz is null)
+            {
+                return current;
+            }
+
+            if (result.Status == QobuzAccountProfileStatus.Unavailable)
+            {
+                return current;
+            }
+
+            current.Qobuz.AuthTokenValid = result.IsValid;
+            current.Qobuz.AccountRefreshedAt = DateTimeOffset.UtcNow;
+            current.Qobuz.UserId = result.Profile?.UserId;
+            current.Qobuz.DisplayName = result.Profile?.DisplayName;
+            current.Qobuz.Country = result.Profile?.Country;
+            current.Qobuz.Zone = result.Profile?.Zone;
+            current.Qobuz.CredentialLabel = result.Profile?.CredentialLabel;
+            current.Qobuz.SubscriptionOffer = result.Profile?.SubscriptionOffer;
+            return current;
+        });
+    }
+
     [HttpPost("{platform}/disconnect")]
     public async Task<IActionResult> Disconnect(string platform, CancellationToken cancellationToken)
     {
@@ -412,6 +602,9 @@ public class PlatformAuthApiController : ControllerBase
                 case "applemusic":
                     state.AppleMusic = null;
                     break;
+                case "qobuz":
+                    state.Qobuz = null;
+                    break;
             }
 
             return 0;
@@ -428,7 +621,8 @@ public class PlatformAuthApiController : ControllerBase
             or "bpmsupreme"
             or "plex"
             or "jellyfin"
-            or "applemusic";
+            or "applemusic"
+            or "qobuz";
     }
 
     private UnauthorizedObjectResult? EnsureAccess()

@@ -13,6 +13,7 @@ public class PlatformRegistryApiController : ControllerBase
     private const string LastFmPlatform = "lastfm";
     private const string AppleMusicPlatform = "applemusic";
     private const string BpmSupremePlatform = "bpmsupreme";
+    private const string QobuzPlatform = "qobuz";
 
     private static readonly string[] SidebarOrder =
     [
@@ -20,6 +21,7 @@ public class PlatformRegistryApiController : ControllerBase
         "spotify",
         LastFmPlatform,
         AppleMusicPlatform,
+        QobuzPlatform,
         "discogs",
         BpmSupremePlatform,
         "plex",
@@ -49,7 +51,8 @@ public class PlatformRegistryApiController : ControllerBase
         BpmSupremePlatform,
         "plex",
         "jellyfin",
-        AppleMusicPlatform
+        AppleMusicPlatform,
+        QobuzPlatform
     };
 
     private static readonly Dictionary<string, string> LoginTabMap = new(StringComparer.OrdinalIgnoreCase)
@@ -57,6 +60,7 @@ public class PlatformRegistryApiController : ControllerBase
         ["deezer"] = "deezer-login",
         ["spotify"] = "spotify-login",
         [AppleMusicPlatform] = "apple-music-login",
+        [QobuzPlatform] = "qobuz-login",
         ["discogs"] = "discogs-login",
         [LastFmPlatform] = "lastfm-login",
         [BpmSupremePlatform] = "bpmsupreme-login",
@@ -71,7 +75,8 @@ public class PlatformRegistryApiController : ControllerBase
         ["junodownload"] = "Juno Download",
         ["musicbrainz"] = "MusicBrainz",
         ["itunes"] = "iTunes",
-        [AppleMusicPlatform] = "Apple Music"
+        [AppleMusicPlatform] = "Apple Music",
+        [QobuzPlatform] = "Qobuz"
     };
 
     private readonly AutoTagMetadataService _metadataService;
@@ -219,6 +224,10 @@ public class PlatformRegistryApiController : ControllerBase
         if (string.Equals(platformId, AppleMusicPlatform, StringComparison.OrdinalIgnoreCase))
         {
             return "/images/icons/apple-music.png";
+        }
+        if (string.Equals(platformId, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return "/images/availability/qobuz.svg";
         }
 
         return $"/images/icons/{platformId}.png";

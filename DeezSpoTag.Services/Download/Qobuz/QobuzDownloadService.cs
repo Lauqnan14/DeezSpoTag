@@ -27,12 +27,14 @@ public interface IQobuzDownloadService
         string quality,
         bool allowQualityFallback,
         CancellationToken cancellationToken);
+    Task CheckPublicProvidersAsync(CancellationToken cancellationToken);
 }
 
 public readonly record struct QobuzResolvedStreamUrl(string Url, string SelectedQuality);
 
 public sealed class QobuzDownloadService : IQobuzDownloadService
 {
+    private const long ProviderHealthCheckTrackId = 411245095;
     private const string ApplicationJsonContentType = "application/json";
     private const string DownloadUrlUnavailableMessage = "Qobuz download URL not available";
     private const string FlacExtension = ".flac";
@@ -49,17 +51,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const int StreamProbeReadLimitBytes = 64 * 1024;
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] ProviderUrlPropertyNames = ["url", "download_url", "link"];
-    private static readonly string[] MonochromeQobuzProviderBases =
-    [
-        "https://trypt-hifi-dl-456461932686.us-west1.run.app",
-        "https://qobuz.kennyy.com.br"
-    ];
-    private static readonly string[] MusicDlProviderEndpoints =
-    [
-        "https://api.zarz.moe/v1/dl/qbz",
-        "https://dl.musicdl.me/dl/qbz",
-        "https://qobuz.spotbye.qzz.io/dl/qbz"
-    ];
     private const string MusicDlUserAgent = "QobuzDL/1.0";
     private static readonly (int Start, int End)[] ExtendedLatinRanges =
     {
@@ -86,6 +77,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private readonly HttpClient _downloadClient;
     private readonly QobuzTrackResolver _trackResolver;
     private readonly QobuzApiConfig _qobuzConfig;
+    private readonly IQobuzCredentialProvider _credentialProvider;
+    private readonly IQobuzPublicProviderRegistry _publicProviderRegistry;
     private readonly ResolveProxyClient _resolveProxyClient;
     private static readonly object PreferredProviderLock = new();
     private static string? _preferredProviderName;
@@ -95,12 +88,17 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         ILogger<QobuzDownloadService> logger,
         QobuzTrackResolver trackResolver,
         ResolveProxyClient resolveProxyClient,
-        IOptions<QobuzApiConfig> qobuzOptions)
+        IOptions<QobuzApiConfig> qobuzOptions,
+        IQobuzCredentialProvider? credentialProvider = null,
+        IQobuzPublicProviderRegistry? publicProviderRegistry = null)
     {
         _logger = logger;
         _trackResolver = trackResolver;
         _resolveProxyClient = resolveProxyClient;
         _qobuzConfig = qobuzOptions.Value ?? new QobuzApiConfig();
+        _credentialProvider = credentialProvider ?? new OptionsQobuzCredentialProvider(qobuzOptions);
+        _publicProviderRegistry = publicProviderRegistry
+            ?? throw new ArgumentNullException(nameof(publicProviderRegistry));
         _apiClient = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(60)
@@ -304,6 +302,16 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         return new QobuzResolvedStreamUrl(resolution.Url!, resolution.SelectedQuality);
+    }
+
+    public async Task CheckPublicProvidersAsync(CancellationToken cancellationToken)
+    {
+        var providers = await BuildProvidersAsync(ProviderHealthCheckTrackId, "6", cancellationToken);
+        foreach (var provider in providers.Where(provider => provider.Id != "official"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await TryResolveProviderAsync(provider, ProviderHealthCheckTrackId, "6", cancellationToken);
+        }
     }
 
     private async Task NotifySelectedQualityAsync(QobuzDownloadRequest request, string selectedQuality)
@@ -573,7 +581,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         foreach (var qualityCode in qualityOrder)
         {
-            var providers = BuildOrderedProviders(trackId, qualityCode);
+            var providers = await BuildOrderedProvidersAsync(trackId, qualityCode, cancellationToken);
             foreach (var provider in providers)
             {
                 var attempt = await TryDownloadWithProviderAsync(
@@ -645,6 +653,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             DownloadFileUtilities.TryDeleteFile(outputPath);
             ClearPreferredProvider(provider.Name);
+            await _publicProviderRegistry.RecordFailureAsync(
+                provider.Id,
+                ClassifyProviderFailure(ex),
+                0,
+                ShouldApplyProviderCooldown(ex) ? DateTimeOffset.UtcNow.Add(ProviderCooldown) : null,
+                CancellationToken.None);
             if (!IsProviderStreamFailure(ex))
             {
                 throw;
@@ -660,9 +674,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
     }
 
-    private ProviderCandidate[] BuildOrderedProviders(long trackId, string qualityCode)
+    private async Task<ProviderCandidate[]> BuildOrderedProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
     {
-        var providers = BuildProviders(trackId, qualityCode).ToList();
+        var providers = (await BuildProvidersAsync(trackId, qualityCode, cancellationToken)).ToList();
         var preferredProviderName = GetPreferredProviderName();
         if (string.IsNullOrWhiteSpace(preferredProviderName))
         {
@@ -915,7 +929,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         int expectedDurationSeconds,
         CancellationToken cancellationToken)
     {
-        var providers = BuildProviders(trackId, qualityCode);
+        var providers = await BuildProvidersAsync(trackId, qualityCode, cancellationToken);
         var preferredProviderName = GetPreferredProviderName();
         if (!string.IsNullOrWhiteSpace(preferredProviderName))
         {
@@ -1042,9 +1056,20 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         string qualityCode,
         CancellationToken cancellationToken)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            return await provider.ResolveAsync(cancellationToken);
+            var resolved = await provider.ResolveAsync(cancellationToken);
+            stopwatch.Stop();
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                await _publicProviderRegistry.RecordSuccessAsync(provider.Id, stopwatch.ElapsedMilliseconds, cancellationToken);
+            }
+            else
+            {
+                await _publicProviderRegistry.RecordFailureAsync(provider.Id, "empty_response", stopwatch.ElapsedMilliseconds, null, cancellationToken);
+            }
+            return resolved;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1056,6 +1081,13 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             {
                 MarkProviderCoolingDown(provider.Name);
             }
+
+            await _publicProviderRegistry.RecordFailureAsync(
+                provider.Id,
+                "timeout",
+                stopwatch.ElapsedMilliseconds,
+                DateTimeOffset.UtcNow.Add(ProviderCooldown),
+                CancellationToken.None);
 
             _logger.LogWarning(
                 ex,
@@ -1071,6 +1103,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             {
                 MarkProviderCoolingDown(provider.Name);
             }
+
+
+            await _publicProviderRegistry.RecordFailureAsync(
+                provider.Id,
+                ClassifyProviderFailure(ex),
+                stopwatch.ElapsedMilliseconds,
+                ShouldApplyProviderCooldown(ex) ? DateTimeOffset.UtcNow.Add(ProviderCooldown) : null,
+                CancellationToken.None);
 
             _logger.LogWarning(
                 ex,
@@ -1246,21 +1286,28 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return fragments.Any(fragment => message.Contains(fragment, StringComparison.OrdinalIgnoreCase));
     }
 
-    private ProviderCandidate[] BuildProviders(long trackId, string qualityCode)
+    private async Task<ProviderCandidate[]> BuildProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
     {
-        var squidBase = "https://qobuz.squid.wtf/api/download-music";
+        var providers = new List<ProviderCandidate>
+        {
+            new("official", "Qobuz Official", ct => TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, ct))
+        };
+        foreach (var provider in await _publicProviderRegistry.GetProvidersAsync(cancellationToken))
+        {
+            if (!provider.Enabled)
+            {
+                continue;
+            }
 
-        return
-        [
-            new ProviderCandidate("qobuz-official", ct => TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, ct)),
-            new ProviderCandidate("qobuz.squid.wtf/us", ct => TryGetSquidStreamUrlAsync(squidBase, trackId, qualityCode, "US", ct)),
-            new ProviderCandidate("qobuz.squid.wtf/fr", ct => TryGetSquidStreamUrlAsync(squidBase, trackId, qualityCode, "FR", ct)),
-            new ProviderCandidate("qobuz.spotbye.qzz.io", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[2], trackId, qualityCode, ct)),
-            new ProviderCandidate("api.zarz.moe/dl/qbz", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[0], trackId, qualityCode, ct)),
-            new ProviderCandidate("dl.musicdl.me", ct => TryGetMusicDlStreamUrlAsync(MusicDlProviderEndpoints[1], trackId, qualityCode, ct)),
-            new ProviderCandidate("monochrome-qobuz:trypt-hifi-dl-456461932686.us-west1.run.app", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(MonochromeQobuzProviderBases[0], trackId, qualityCode, ct)),
-            new ProviderCandidate("monochrome-qobuz:qobuz.kennyy.com.br", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(MonochromeQobuzProviderBases[1], trackId, qualityCode, ct))
-        ];
+            providers.Add(provider.Kind switch
+            {
+                "squid" => new ProviderCandidate(provider.Id, provider.DisplayName, ct => TryGetSquidStreamUrlAsync(provider.Endpoint, trackId, qualityCode, provider.Region ?? "US", ct)),
+                "musicdl" => new ProviderCandidate(provider.Id, provider.DisplayName, ct => TryGetMusicDlStreamUrlAsync(provider.Endpoint, trackId, qualityCode, ct)),
+                "monochrome" => new ProviderCandidate(provider.Id, provider.DisplayName, ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(provider.Endpoint, trackId, qualityCode, ct)),
+                _ => throw new InvalidOperationException($"Unsupported Qobuz provider kind '{provider.Kind}'.")
+            });
+        }
+        return providers.ToArray();
     }
 
     private async Task<string?> TryGetOfficialQobuzStreamUrlAsync(
@@ -1268,14 +1315,15 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         string qualityCode,
         CancellationToken cancellationToken)
     {
-        var appId = string.IsNullOrWhiteSpace(_qobuzConfig.AppId)
+        var credentials = await _credentialProvider.GetCredentialsAsync(cancellationToken);
+        var appId = string.IsNullOrWhiteSpace(credentials.AppId)
             ? DefaultAppId
-            : _qobuzConfig.AppId.Trim();
-        var authToken = _qobuzConfig.AuthToken?.Trim();
-        var secret = _qobuzConfig.DownloadSecret?.Trim();
-        if (string.IsNullOrWhiteSpace(authToken) || string.IsNullOrWhiteSpace(secret))
+            : credentials.AppId.Trim();
+        var authToken = credentials.AuthToken?.Trim();
+        var secret = credentials.AppSecret?.Trim();
+        if (string.IsNullOrWhiteSpace(secret))
         {
-            throw new InvalidOperationException("Qobuz download credentials are missing. Configure Qobuz:AuthToken and Qobuz:DownloadSecret.");
+            throw new InvalidOperationException("Qobuz official credentials are missing. Configure the App ID and App Secret on the Login page.");
         }
 
         var apiBase = string.IsNullOrWhiteSpace(_qobuzConfig.ApiBase)
@@ -1294,7 +1342,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.TryAddWithoutValidation("x-app-id", appId);
-        request.Headers.TryAddWithoutValidation("x-user-auth-token", authToken);
+        if (!string.IsNullOrWhiteSpace(authToken))
+        {
+            request.Headers.TryAddWithoutValidation("x-user-auth-token", authToken);
+        }
         using var response = await SendProviderRequestAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -1449,7 +1500,16 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         throw new InvalidOperationException("Squid response did not contain a usable stream URL.");
     }
 
-    private sealed record ProviderCandidate(string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
+    private static string ClassifyProviderFailure(Exception exception)
+    {
+        var message = exception.Message;
+        if (message.Contains("429", StringComparison.OrdinalIgnoreCase)) return "rate_limited";
+        if (message.Contains("captcha", StringComparison.OrdinalIgnoreCase)) return "captcha_required";
+        if (exception is TimeoutException or HttpRequestException || message.Contains("timed out", StringComparison.OrdinalIgnoreCase)) return "transient";
+        return "unavailable";
+    }
+
+    private sealed record ProviderCandidate(string Id, string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
 
     private async Task<string?> TryGetMonochromeQobuzStreamUrlByTrackIdAsync(
         string providerBase,

@@ -28,6 +28,11 @@
             </button>
         </li>
         <li class="nav-item">
+            <button class="nav-link" id="qobuz-login-tab" data-login-target="qobuz-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/availability/qobuz.svg" alt="Qobuz" class="platform-icon platform-icon-qobuz" />Qobuz
+            </button>
+        </li>
+        <li class="nav-item">
             <button class="nav-link" id="discogs-login-tab" data-login-target="discogs-login" type="button" role="tab" aria-selected="false">
                 <img src="/images/icons/discogs.png" alt="Discogs" class="platform-icon" />Discogs
             </button>
@@ -224,6 +229,44 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "appleMusicLoggedInInfo", ImageId = "appleMusicLoggedInPicture", ImageAlt = "Apple Music", ButtonId = "appleMusicDisconnectBtn", NameId = "appleMusicLoggedInName", NameFallback = "Apple Music account", DetailId = "appleMusicLoggedInStatus" })
+            </div>
+        </div>
+
+        <div class="tab-pane" id="qobuz-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">album</i>Qobuz Credentials
+                </h3>
+                <div id="qobuzLoginFormSection">
+                    <p class="text-muted">Configure credentials for the official Qobuz download API.</p>
+                    <form id="qobuzLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">App ID</span>
+                            <input type="text" id="qobuzAppId" value="712109809" placeholder="712109809" class="w-full" autocomplete="off" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">User Auth Token (optional)</span>
+                            <input type="password" id="qobuzAuthToken" placeholder="Optional Qobuz user auth token" class="w-full" autocomplete="off" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">App Secret</span>
+                            <input type="password" id="qobuzAppSecret" placeholder="Qobuz App Secret" class="w-full" autocomplete="off" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Save</button>
+                        <p class="text-muted" id="qobuzStatus"></p>
+                    </form>
+                </div>
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/availability/qobuz.svg", ImageCssClass = "h-20 w-20 platform-icon-qobuz", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = "Official Qobuz API", DetailId = "qobuzLoggedInStatus", DetailText = "Credentials saved" })
+                <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading">
+                    <div class="qobuz-provider-panel__header">
+                        <div>
+                            <h4 id="qobuzProviderHeading">Public API Providers</h4>
+                            <p class="text-muted" id="qobuzProviderSummary">Provider status has not been loaded.</p>
+                        </div>
+                        <button class="btn btn-primary action-btn" id="qobuzCheckProvidersBtn" type="button">Check now</button>
+                    </div>
+                    <div id="qobuzProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                </section>
             </div>
         </div>
 
@@ -444,6 +487,165 @@ body {
     height: 18px;
     margin-right: 8px;
     object-fit: contain;
+}
+
+.platform-icon-qobuz {
+    filter: invert(1);
+}
+
+.qobuz-provider-panel {
+    border-top: 1px solid var(--border-primary);
+    margin-top: 2rem;
+    padding-top: 2rem;
+}
+
+.qobuz-provider-panel__header,
+.qobuz-provider-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.qobuz-provider-panel__header h4 {
+    margin: 0;
+    color: var(--text-primary);
+}
+
+.qobuz-provider-list {
+    display: grid;
+    gap: .75rem;
+    margin-top: 1rem;
+}
+
+.qobuz-provider-row {
+    min-height: 58px;
+    padding: .75rem 1rem;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+}
+
+.qobuz-provider-row__identity {
+    min-width: 0;
+}
+
+.qobuz-provider-row__name,
+.qobuz-provider-row__detail {
+    display: block;
+}
+
+.qobuz-provider-row__detail {
+    color: var(--text-muted);
+    font-size: .85rem;
+}
+
+.qobuz-provider-row__controls {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+}
+
+.qobuz-provider-state {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: .65rem;
+    min-width: 150px;
+    padding: .35rem .8rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    background: var(--bg-secondary);
+    font-size: .78rem;
+}
+
+.qobuz-provider-state--online {
+    color: var(--success-color, #00d084);
+    background: color-mix(in srgb, var(--success-color, #00d084) 10%, var(--bg-secondary));
+}
+
+.qobuz-provider-state--degraded,
+.qobuz-provider-state--rate_limited,
+.qobuz-provider-state--captcha_required {
+    color: var(--warning-color, #f5c542);
+    background: color-mix(in srgb, var(--warning-color, #f5c542) 10%, var(--bg-secondary));
+}
+
+.qobuz-provider-state--offline {
+    color: var(--danger-color, #ff3860);
+    background: color-mix(in srgb, var(--danger-color, #ff3860) 10%, var(--bg-secondary));
+}
+
+.qobuz-provider-state--disabled,
+.qobuz-provider-state--unknown {
+    color: var(--text-muted);
+}
+
+.qobuz-provider-status {
+    display: inline-flex;
+    align-items: center;
+    padding-left: .65rem;
+    border-left: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent);
+    text-transform: capitalize;
+}
+
+.qobuz-provider-status--online { color: var(--success-color, #00d084); }
+.qobuz-provider-status--degraded,
+.qobuz-provider-status--rate_limited,
+.qobuz-provider-status--captcha_required { color: var(--warning-color, #f5c542); }
+.qobuz-provider-status--offline { color: var(--danger-color, #ff3860); }
+.qobuz-provider-status--disabled,
+.qobuz-provider-status--unknown { color: var(--text-muted); }
+
+.qobuz-provider-activity {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    color: inherit;
+}
+
+.qobuz-provider-activity::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.qobuz-provider-activity.is-active {
+    color: inherit;
+}
+
+.qobuz-provider-activity.is-active::before {
+    background: currentColor;
+}
+
+.qobuz-provider-row .switch {
+    width: 52px;
+    height: 28px;
+}
+
+.qobuz-provider-row .slider::before {
+    width: 22px;
+    height: 22px;
+    left: 2px;
+    top: 2px;
+}
+
+.qobuz-provider-row .switch input:checked + .slider::before {
+    transform: translateX(24px);
+}
+
+@@media (max-width: 640px) {
+    .qobuz-provider-row {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .qobuz-provider-row__controls {
+        width: 100%;
+        justify-content: space-between;
+        flex-wrap: wrap;
+    }
 }
 
 .platform-logged-in {
@@ -1156,6 +1358,11 @@ document.addEventListener('DOMContentLoaded', function() {
             matches: '/applemusic',
             render: data => renderAppleMusicInfo(data || {}),
             clear: () => clearAppleMusicLoginInputs()
+        },
+        qobuz: {
+            matches: '/qobuz',
+            render: data => renderQobuzInfo(data || {}),
+            clear: () => clearQobuzInputs()
         }
     };
 
@@ -1312,6 +1519,29 @@ document.addEventListener('DOMContentLoaded', function() {
         appleMusicLoginRequestPending = false;
     });
 
+    const qobuzForm = document.getElementById('qobuzLoginForm');
+    if (qobuzForm) {
+        qobuzForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await savePlatformAuth('/api/platform-auth/qobuz', {
+                appId: document.getElementById('qobuzAppId').value.trim(),
+                authToken: document.getElementById('qobuzAuthToken').value.trim(),
+                appSecret: document.getElementById('qobuzAppSecret').value.trim()
+            }, 'qobuzStatus', true);
+        });
+    }
+    bindPlatformDisconnect('qobuzDisconnectBtn', '/api/platform-auth/qobuz/disconnect', 'qobuzStatus');
+    bindAsyncClick('qobuzCheckProvidersBtn', checkQobuzProviders);
+    const qobuzProviderRows = document.getElementById('qobuzProviderRows');
+    if (qobuzProviderRows) {
+        qobuzProviderRows.addEventListener('change', async function(event) {
+            const toggle = event.target.closest('[data-qobuz-provider-id]');
+            if (!toggle) return;
+            await setQobuzProviderEnabled(toggle.dataset.qobuzProviderId, toggle.checked, toggle);
+        });
+        window.setInterval(refreshQobuzProviderView, 60_000);
+    }
+
     const discogsForm = document.getElementById('discogsLoginForm');
     if (discogsForm) {
         discogsForm.addEventListener('submit', async function(e) {
@@ -1438,6 +1668,7 @@ function getLoginTabFromLocation() {
             deezer: 'deezer-login',
             spotify: 'spotify-login',
             applemusic: 'apple-music-login',
+            qobuz: 'qobuz-login',
             discogs: 'discogs-login',
             lastfm: 'lastfm-login',
             bpmsupreme: 'bpmsupreme-login',
@@ -1725,6 +1956,18 @@ async function loadPlatformAuthState() {
                 setAppleMusicLoggedInStatus('Restoring Apple Music session...');
             }
         }
+        if (data.qobuz) {
+            document.getElementById('qobuzAppId').value = data.qobuz.appId || '712109809';
+            document.getElementById('qobuzAuthToken').placeholder = data.qobuz.authTokenSaved
+                ? 'Saved - leave blank to keep current token'
+                : 'Optional Qobuz user auth token';
+            document.getElementById('qobuzAppSecret').placeholder = data.qobuz.appSecretSaved
+                ? 'Saved - leave blank to keep current secret'
+                : 'Qobuz App Secret';
+            setStatus('qobuzStatus', Boolean(data.qobuz.configured));
+            renderQobuzInfo(data.qobuz);
+            togglePlatformLoginState('qobuz', Boolean(data.qobuz.configured));
+        }
     } catch (error) {
         console.warn('Failed to load platform auth state', error);
     }
@@ -2002,6 +2245,12 @@ function clearAppleMusicLoginInputs() {
     hideAppleMusic2fa();
 }
 
+function clearQobuzInputs() {
+    resetFormById('qobuzLoginForm');
+    clearElementValue('qobuzAppId', '712109809');
+    clearElementText('qobuzStatus');
+}
+
 function clearDiscogsInputs() {
     resetFormById('discogsLoginForm');
 }
@@ -2114,6 +2363,157 @@ function renderAppleMusicInfo(auth) {
     }
     if (picture) {
         picture.src = getPlatformIcon('apple-music');
+    }
+}
+
+function renderQobuzInfo(auth) {
+    const nameLabel = document.getElementById('qobuzLoggedInName');
+    const statusLabel = document.getElementById('qobuzLoggedInStatus');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.displayName || 'Official Qobuz API';
+    }
+    if (statusLabel) {
+        if (auth?.connected && !auth?.configured) {
+            statusLabel.textContent = 'Public Qobuz API online';
+        } else if (!auth?.configured) {
+            statusLabel.textContent = 'No Qobuz API is currently online';
+        } else if (auth?.authTokenValid === true) {
+            const country = auth.country || auth.zone || 'Country unavailable';
+            const subscription = auth.credentialLabel || auth.subscriptionOffer;
+            statusLabel.textContent = subscription ? `${country} | ${subscription}` : country;
+        } else if (auth?.authTokenSaved) {
+            statusLabel.textContent = 'User Auth Token is invalid or expired';
+        } else {
+            statusLabel.textContent = 'App credentials saved | country requires a valid User Auth Token';
+        }
+    }
+    renderQobuzProviders(auth?.providers || [], auth?.publicApiOnline === true);
+}
+
+function renderQobuzProviders(providers, publicApiOnline) {
+    const container = document.getElementById('qobuzProviderRows');
+    const summary = document.getElementById('qobuzProviderSummary');
+    if (!container || !summary) return;
+
+    const rows = Array.isArray(providers) ? providers : [];
+    const enabledCount = rows.filter(provider => provider?.enabled).length;
+    const onlineCount = rows.filter(provider => provider?.enabled && provider?.status === 'online').length;
+    summary.textContent = publicApiOnline
+        ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
+        : enabledCount === 0
+            ? 'All public API providers are disabled.'
+            : 'No enabled public API provider is currently confirmed online.';
+
+    container.replaceChildren(...rows.map(createQobuzProviderRow));
+}
+
+function createQobuzProviderRow(provider) {
+    const row = document.createElement('div');
+    row.className = 'qobuz-provider-row';
+
+    const identity = document.createElement('div');
+    identity.className = 'qobuz-provider-row__identity';
+    const name = document.createElement('strong');
+    name.className = 'qobuz-provider-row__name';
+    name.textContent = provider?.name || 'Qobuz provider';
+    const detail = document.createElement('span');
+    detail.className = 'qobuz-provider-row__detail';
+    detail.textContent = formatQobuzProviderDetail(provider);
+    identity.append(name, detail);
+
+    const controls = document.createElement('div');
+    controls.className = 'qobuz-provider-row__controls';
+    const state = document.createElement('span');
+    const activity = document.createElement('span');
+    const enabled = provider?.enabled === true;
+    const normalizedStatus = String(provider?.status || 'unknown').toLowerCase();
+    state.className = `qobuz-provider-state qobuz-provider-state--${normalizedStatus}${enabled ? ' is-active' : ''}`;
+    activity.className = `qobuz-provider-activity${enabled ? ' is-active' : ''}`;
+    activity.textContent = enabled ? 'Active' : 'Inactive';
+    const status = document.createElement('span');
+    status.className = `qobuz-provider-status qobuz-provider-status--${normalizedStatus}`;
+    status.textContent = normalizedStatus.replaceAll('_', ' ');
+
+    const switchControl = document.createElement('label');
+    switchControl.className = 'switch';
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = enabled;
+    toggle.dataset.qobuzProviderId = provider?.id || '';
+    toggle.setAttribute('aria-label', `${toggle.checked ? 'Disable' : 'Enable'} ${provider?.name || 'Qobuz provider'}`);
+    const slider = document.createElement('span');
+    slider.className = 'slider';
+    slider.setAttribute('aria-hidden', 'true');
+    switchControl.append(toggle, slider);
+
+    state.append(activity, status);
+    controls.append(state, switchControl);
+    row.append(identity, controls);
+    return row;
+}
+
+function formatQobuzProviderDetail(provider) {
+    const parts = [];
+    if (Number.isFinite(provider?.responseTimeMs)) parts.push(`${provider.responseTimeMs} ms`);
+    if (provider?.lastCheckedAt) parts.push(`checked ${new Date(provider.lastCheckedAt).toLocaleString()}`);
+    if (provider?.failureMessage && provider?.status !== 'online') parts.push(provider.failureMessage);
+    return parts.join(' | ') || 'Not checked yet';
+}
+
+async function setQobuzProviderEnabled(providerId, enabled, toggle) {
+    toggle.disabled = true;
+    try {
+        const response = await fetch(`/api/platform-auth/qobuz/providers/${encodeURIComponent(providerId)}/enabled`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update Qobuz provider'));
+        await loadPlatformAuthState();
+        refreshConnectedPlatformsSidebar();
+    } catch (error) {
+        toggle.checked = !enabled;
+        showToast(error.message || 'Failed to update Qobuz provider', 'error');
+    } finally {
+        toggle.disabled = false;
+    }
+}
+
+async function checkQobuzProviders() {
+    const button = document.getElementById('qobuzCheckProvidersBtn');
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch('/api/platform-auth/qobuz/providers/check', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Qobuz provider check failed'));
+        await loadPlatformAuthState();
+        refreshConnectedPlatformsSidebar();
+    } catch (error) {
+        showToast(error.message || 'Qobuz provider check failed', 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+async function refreshQobuzProviderView() {
+    const qobuzPane = document.getElementById('qobuz-login');
+    if (document.hidden || !qobuzPane || qobuzPane.hidden) return;
+
+    try {
+        const response = await fetch('/api/platform-auth/qobuz/providers', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) return;
+        const result = await response.json();
+        renderQobuzProviders(result?.providers || [], result?.online === true);
+    } catch (error) {
+        console.warn('Failed to refresh Qobuz provider status', error);
     }
 }
 
@@ -3203,6 +3603,8 @@ function getPlatformIcon(platform) {
             return '/images/icons/deezer.png';
         case 'apple-music':
             return '/images/icons/apple-music.png';
+        case 'qobuz':
+            return '/images/availability/qobuz.svg';
         case 'shazam':
             return '/images/icons/shazam.png';
         default:
@@ -3306,6 +3708,10 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         appleMusic: {
             matches: '/applemusic',
             render: info => renderAppleMusicInfo(info || {})
+        },
+        qobuz: {
+            matches: '/qobuz',
+            render: info => renderQobuzInfo(info || {})
         }
     };
 
@@ -3322,7 +3728,8 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         platform === 'bpm' ? data?.bpmSupreme || payload :
         platform === 'plex' ? data?.plex || payload :
         platform === 'jellyfin' ? data?.jellyfin || payload :
-        data?.appleMusic || payload;
+        platform === 'appleMusic' ? data?.appleMusic || payload :
+        data?.qobuz || payload;
     const effectiveConnected = binding.render(payloadForRender, payload, isConnected, statusElementId) ?? isConnected;
     togglePlatformLoginState(platform, effectiveConnected);
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -20,19 +21,22 @@ namespace DeezSpoTag.Tests;
 public sealed class ProviderIntegrationSurfaceTests
 {
     [Fact]
-    public void QobuzBuildProviders_IncludesSpotByeProvider()
+    public async Task QobuzBuildProviders_UsesEnabledRegistryProviders()
     {
+        var registry = new StubQobuzProviderRegistry();
         var service = new QobuzDownloadService(
             NullLogger<QobuzDownloadService>.Instance,
             trackResolver: null!,
             resolveProxyClient: null!,
-            Options.Create(new QobuzApiConfig()));
-        var method = typeof(QobuzDownloadService).GetMethod("BuildProviders", BindingFlags.NonPublic | BindingFlags.Instance);
+            Options.Create(new QobuzApiConfig()),
+            publicProviderRegistry: registry);
+        var method = typeof(QobuzDownloadService).GetMethod("BuildProvidersAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
         Assert.NotNull(method);
 
-        var result = method!.Invoke(service, [123L, "27"]);
-        Assert.NotNull(result);
+        var task = Assert.IsAssignableFrom<Task>(method!.Invoke(service, [123L, "27", CancellationToken.None]));
+        await task;
+        var result = task.GetType().GetProperty("Result")?.GetValue(task);
 
         var providers = Assert.IsAssignableFrom<Array>(result);
         var names = providers
@@ -42,11 +46,22 @@ public sealed class ProviderIntegrationSurfaceTests
             .Cast<string>()
             .ToArray();
 
-        Assert.Contains("qobuz.spotbye.qzz.io", names);
-        Assert.Contains("dl.musicdl.me", names);
-        Assert.Contains("api.zarz.moe/dl/qbz", names);
-        Assert.Contains("monochrome-qobuz:trypt-hifi-dl-456461932686.us-west1.run.app", names);
-        Assert.Contains("monochrome-qobuz:qobuz.kennyy.com.br", names);
+        Assert.Contains("Qobuz Official", names);
+        Assert.Contains("Enabled provider", names);
+        Assert.DoesNotContain("Disabled provider", names);
+    }
+
+    private sealed class StubQobuzProviderRegistry : IQobuzPublicProviderRegistry
+    {
+        public Task<IReadOnlyList<QobuzPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<QobuzPublicProvider>>([
+                new("enabled", "Enabled provider", "musicdl", "https://example.com/enabled", null, true, "unknown", null, null, null, null, null, null),
+                new("disabled", "Disabled provider", "musicdl", "https://example.com/disabled", null, false, "disabled", null, null, null, null, null, null)
+            ]);
+
+        public Task<QobuzPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken) => Task.FromResult<QobuzPublicProvider?>(null);
+        public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task RecordFailureAsync(string providerId, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     [Fact]

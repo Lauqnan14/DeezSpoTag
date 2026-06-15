@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Threading;
 using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Security;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Integrations.Qobuz;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -138,6 +140,65 @@ public sealed class CredentialProtectionTests : IDisposable
         Assert.Contains("deezspotag-protected-credential", stored, StringComparison.Ordinal);
         Assert.DoesNotContain("onetagger-access-token", stored, StringComparison.Ordinal);
         Assert.Equal(plaintext, await store.ReadTextAsync(cachePath));
+    }
+
+    [Fact]
+    public async Task PlatformAuthService_ProtectsQobuzCredentials_AndMigratesPlaintext()
+    {
+        var authDirectory = Path.Join(_tempRoot, "autotag");
+        Directory.CreateDirectory(authDirectory);
+        var authPath = Path.Join(authDirectory, "qobuz.json");
+        await File.WriteAllTextAsync(authPath, JsonSerializer.Serialize(new
+        {
+            appId = "qobuz-app-id",
+            appSecret = "qobuz-app-secret",
+            authToken = "qobuz-user-token",
+            country = "KE"
+        }));
+
+        var service = new PlatformAuthService(
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<PlatformAuthService>.Instance,
+            _dataProtectionProvider);
+
+        var loaded = await service.LoadAsync();
+
+        Assert.Equal("qobuz-app-id", loaded.Qobuz?.AppId);
+        Assert.Equal("qobuz-app-secret", loaded.Qobuz?.AppSecret);
+        Assert.Equal("qobuz-user-token", loaded.Qobuz?.AuthToken);
+        Assert.Equal("KE", loaded.Qobuz?.Country);
+
+        var stored = await File.ReadAllTextAsync(authPath);
+        Assert.True(ProtectedCredentialFileStore.IsProtectedText(stored));
+        Assert.DoesNotContain("qobuz-app-secret", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("qobuz-user-token", stored, StringComparison.Ordinal);
+
+        var reloaded = await service.LoadAsync();
+        Assert.Equal("qobuz-app-secret", reloaded.Qobuz?.AppSecret);
+        Assert.Equal("qobuz-user-token", reloaded.Qobuz?.AuthToken);
+    }
+
+    [Fact]
+    public async Task QobuzPublicProviderRegistry_ProtectsEndpoints_AndPersistsToggleState()
+    {
+        var registry = new QobuzPublicProviderRegistry(
+            new StubWebHostEnvironment(_tempRoot),
+            _dataProtectionProvider,
+            NullLogger<QobuzPublicProviderRegistry>.Instance);
+
+        var providers = await registry.GetProvidersAsync(CancellationToken.None);
+        var squid = Assert.Single(providers, provider => provider.Id == "squid-us");
+        Assert.True(squid.Enabled);
+
+        await registry.SetEnabledAsync(squid.Id, false, CancellationToken.None);
+        var reloaded = await registry.GetProvidersAsync(CancellationToken.None);
+        Assert.False(Assert.Single(reloaded, provider => provider.Id == squid.Id).Enabled);
+
+        var storedPath = Path.Join(_tempRoot, "autotag", "qobuz-public-providers.json");
+        var stored = await File.ReadAllTextAsync(storedPath);
+        Assert.True(ProtectedCredentialFileStore.IsProtectedText(stored));
+        Assert.DoesNotContain("qobuz.squid.wtf", stored, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("download-music", stored, StringComparison.OrdinalIgnoreCase);
     }
 
     private SpotifyBlobService CreateSpotifyBlobService()

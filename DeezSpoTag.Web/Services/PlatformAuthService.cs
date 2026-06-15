@@ -1,4 +1,6 @@
 using System.Text.Json;
+using DeezSpoTag.Services.Security;
+using Microsoft.AspNetCore.DataProtection;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -11,6 +13,7 @@ public class PlatformAuthState
     public PlexAuth? Plex { get; set; }
     public JellyfinAuth? Jellyfin { get; set; }
     public AppleMusicAuth? AppleMusic { get; set; }
+    public QobuzAuth? Qobuz { get; set; }
 }
 
 public class SpotifyConfig
@@ -86,8 +89,26 @@ public class AppleMusicAuth
     public DateTimeOffset? WrapperLoggedInAt { get; set; }
 }
 
+public class QobuzAuth
+{
+    public string? AppId { get; set; }
+    public string? AuthToken { get; set; }
+    public string? AppSecret { get; set; }
+    public string? UserId { get; set; }
+    public string? DisplayName { get; set; }
+    public string? Country { get; set; }
+    public string? Zone { get; set; }
+    public string? CredentialLabel { get; set; }
+    public string? SubscriptionOffer { get; set; }
+    public bool? AuthTokenValid { get; set; }
+    public DateTimeOffset? AccountRefreshedAt { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? DownloadSecret { get; set; }
+}
+
 public class PlatformAuthService
 {
+    private const string QobuzProtectionPurpose = "DeezSpoTag.PlatformAuth.Qobuz";
     private const string SpotifyFileName = "spotify.json";
     private const string DiscogsFileName = "discogs.json";
     private const string LastFmFileName = "lastfm.json";
@@ -95,6 +116,7 @@ public class PlatformAuthService
     private const string PlexFileName = "plex.json";
     private const string JellyfinFileName = "jellyfin.json";
     private const string AppleMusicFileName = "applemusic.json";
+    private const string QobuzFileName = "qobuz.json";
     private const string LegacyAggregateFileName = "platform-auth.json";
     private const string AutotagDirectory = "autotag";
     private const string MissingStatus = "missing";
@@ -107,6 +129,7 @@ public class PlatformAuthService
     private readonly string _authDirectory;
     private readonly string _legacyAggregateFilePath;
     private readonly string[] _legacyAggregateFileCandidates;
+    private readonly ProtectedCredentialFileStore _qobuzCredentialStore;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly object _statusLock = new();
     private string? _lastStatusSignature;
@@ -137,7 +160,8 @@ public class PlatformAuthService
         BpmSupremeFileName,
         PlexFileName,
         JellyfinFileName,
-        AppleMusicFileName
+        AppleMusicFileName,
+        QobuzFileName
     };
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -145,15 +169,22 @@ public class PlatformAuthService
         WriteIndented = true
     };
 
-    public PlatformAuthService(IWebHostEnvironment env, ILogger<PlatformAuthService> logger)
+    public PlatformAuthService(
+        IWebHostEnvironment env,
+        ILogger<PlatformAuthService> logger,
+        IDataProtectionProvider dataProtectionProvider)
     {
         _logger = logger;
+        ArgumentNullException.ThrowIfNull(dataProtectionProvider);
         _contentRoot = env.ContentRootPath;
         _dataRoot = AppDataPaths.GetDataRoot(env);
         _authDirectory = Path.Join(_dataRoot, AutotagDirectory);
         Directory.CreateDirectory(_authDirectory);
         _legacyAggregateFilePath = Path.Join(_authDirectory, LegacyAggregateFileName);
         _legacyAggregateFileCandidates = BuildLegacyAggregateCandidates();
+        _qobuzCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            QobuzProtectionPurpose);
     }
 
     public async Task<PlatformAuthState> LoadAsync()
@@ -222,6 +253,7 @@ public class PlatformAuthService
         await SavePlatformSectionNoLockAsync(PlexFileName, state.Plex);
         await SavePlatformSectionNoLockAsync(JellyfinFileName, state.Jellyfin);
         await SavePlatformSectionNoLockAsync(AppleMusicFileName, state.AppleMusic);
+        await SaveQobuzNoLockAsync(state.Qobuz);
         TryRetireLegacyAggregateStateNoLock();
         LogAuthStatus(state);
     }
@@ -238,7 +270,8 @@ public class PlatformAuthService
             BpmSupreme = await LoadPlatformSectionNoLockAsync<BpmSupremeAuth>(BpmSupremeFileName),
             Plex = await LoadPlatformSectionNoLockAsync<PlexAuth>(PlexFileName),
             Jellyfin = await LoadPlatformSectionNoLockAsync<JellyfinAuth>(JellyfinFileName),
-            AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName)
+            AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
+            Qobuz = await LoadQobuzNoLockAsync()
         };
 
         if (NormalizeSpotifyBlobPaths(state))
@@ -254,6 +287,69 @@ public class PlatformAuthService
         where T : class
     {
         return await LoadJsonFileNoLockAsync<T>(GetPlatformFilePath(fileName));
+    }
+
+    private async Task<QobuzAuth?> LoadQobuzNoLockAsync()
+    {
+        var path = GetPlatformFilePath(QobuzFileName);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = await _qobuzCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenQobuzCredentialFilePermissions(path);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                _logger.LogWarning("Qobuz auth section is empty at {Path}", path);
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<QobuzAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load protected Qobuz auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    private async Task SaveQobuzNoLockAsync(QobuzAuth? auth)
+    {
+        var path = GetPlatformFilePath(QobuzFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        var json = JsonSerializer.Serialize(auth, _jsonOptions);
+        await _qobuzCredentialStore.WriteTextAsync(path, json);
+        HardenQobuzCredentialFilePermissions(path);
+    }
+
+    private void HardenQobuzCredentialFilePermissions(string path)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to restrict Qobuz credential file permissions at {Path}", path);
+        }
     }
 
     private async Task<T?> LoadJsonFileNoLockAsync<T>(string path)

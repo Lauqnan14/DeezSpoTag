@@ -1,5 +1,6 @@
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,7 +37,7 @@ public sealed class LastFmTagServiceNormalizationTests
             .Build();
 
         var env = new StubWebHostEnvironment();
-        var auth = new PlatformAuthService(env, NullLogger<PlatformAuthService>.Instance);
+        var auth = CreatePlatformAuthService(env);
         var service = new LastFmTagService(factory, config, auth, NullLogger<LastFmTagService>.Instance);
 
         var tags = await service.GetTrackTagsAsync("Davido feat. Chris Brown", "With You (feat. Omah Lay) [Remix]", CancellationToken.None);
@@ -74,7 +75,7 @@ public sealed class LastFmTagServiceNormalizationTests
             .Build();
 
         var env = new StubWebHostEnvironment();
-        var auth = new PlatformAuthService(env, NullLogger<PlatformAuthService>.Instance);
+        var auth = CreatePlatformAuthService(env);
         var service = new LastFmTagService(factory, config, auth, NullLogger<LastFmTagService>.Instance);
 
         var first = await service.GetTrackTagsAsync("Chris Brown", "Run It! (feat. Juelz Santana)", CancellationToken.None);
@@ -88,6 +89,16 @@ public sealed class LastFmTagServiceNormalizationTests
     private sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    private static PlatformAuthService CreatePlatformAuthService(IWebHostEnvironment environment)
+    {
+        var keyDirectory = Path.Join(Path.GetTempPath(), $"deezspotag-lastfm-keys-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(keyDirectory);
+        return new PlatformAuthService(
+            environment,
+            NullLogger<PlatformAuthService>.Instance,
+            DataProtectionProvider.Create(new DirectoryInfo(keyDirectory)));
     }
 
     private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
