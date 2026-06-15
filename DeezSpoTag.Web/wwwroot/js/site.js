@@ -1752,6 +1752,12 @@ globalThis.DeezSpoTag = {
         } else {
             this.setPlatformState(platformStates, 'qobuz', false, 'offline');
         }
+        if (authData.tidal?.connected === true) {
+            connected.add('tidal');
+            this.setPlatformState(platformStates, 'tidal', true, authData.tidal.publicApiOnline ? 'public-api' : 'official-api');
+        } else {
+            this.setPlatformState(platformStates, 'tidal', false, 'offline');
+        }
 
         return authData;
     },

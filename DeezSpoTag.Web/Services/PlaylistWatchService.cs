@@ -9,6 +9,7 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Shared.Models;
 using HtmlAgilityPack;
 using Microsoft.Extensions.DependencyInjection;

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers.Api;

@@ -12,6 +12,7 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Integrations.Tidal;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -606,6 +607,12 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
             => Task.FromResult("test-token");
+
+        public Task<string> GetCountryCodeAsync(CancellationToken cancellationToken)
+            => Task.FromResult("US");
+
+        public Task<bool> ValidateCredentialsAsync(CancellationToken cancellationToken)
+            => Task.FromResult(true);
 
         public void Invalidate()
         {

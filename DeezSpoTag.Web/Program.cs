@@ -1395,6 +1395,9 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.PlatformAuthService>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthQobuzCredentialProvider>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry, DeezSpoTag.Web.Services.QobuzPublicProviderRegistry>();
+        services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthTidalCredentialProvider>();
+        services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalPublicProviderRegistry, DeezSpoTag.Web.Services.TidalPublicProviderRegistry>();
+        services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider, DeezSpoTag.Web.Services.TidalAccessTokenProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.CrossDeviceSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.TracklistSongCacheStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyUserAuthStore>();
@@ -1436,7 +1439,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueDependencies>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyRecommendationService>();
-        services.AddSingleton<DeezSpoTag.Web.Services.ITidalAccessTokenProvider, DeezSpoTag.Web.Services.TidalAccessTokenProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyTracklistMatchQueue, DeezSpoTag.Web.Services.SpotifyTracklistMatchQueue>();
         services.AddSingleton<DeezSpoTag.Web.Services.ISpotifyTracklistMatchStore, DeezSpoTag.Web.Services.SpotifyTracklistMatchStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistMatchBackgroundService>();
@@ -1542,7 +1544,7 @@ public partial class Program
                 BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
                 LibraryRecommendationService = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRecommendationService>(),
                 HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
-                TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Web.Services.ITidalAccessTokenProvider>()
+                TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchRuntimeServices>(sp =>
             new DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchRuntimeServices
@@ -1609,6 +1611,11 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Download.Amazon.AmazonEngineProcessor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalEngineProcessor>();
+        services.AddSingleton<DeezSpoTag.Web.Services.TidalPublicProviderHealthService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.TidalPublicProviderHealthService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Periodic sequential Tidal public provider health checks after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.IAppleDownloadService, DeezSpoTag.Services.Download.Apple.AppleDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWebPlaybackClient>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleHlsDownloader>();

@@ -1,11 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Net;
-using System.Net.Http;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Tidal;
-using Microsoft.Extensions.Logging.Abstractions;
+using DeezSpoTag.Integrations.Tidal;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -13,20 +13,17 @@ namespace DeezSpoTag.Tests;
 public sealed class TidalApiProviderSourceTests
 {
     [Fact]
-    public async Task GetRotatedProvidersAsync_UsesSeedProviders_WhenGistFetchFails()
+    public async Task GetRotatedProvidersAsync_UsesEightCataloguedNonMonochromeProviders()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
         using var scope = new TestConfigRootScope(rootPath);
-        var service = new TidalApiProviderSource(
-            new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)),
-            NullLogger<TidalApiProviderSource>.Instance);
+        var service = CreateService();
 
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(17, providers.Count);
-        Assert.Equal("https://eu-central.monochrome.tf", providers[0]);
-        Assert.Contains("https://api.monochrome.tf", providers);
-        Assert.Contains("https://monochrome-api.samidy.com", providers);
+        Assert.Equal(8, providers.Count);
+        Assert.DoesNotContain(providers, provider => provider.Contains("monochrome", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("https://hifi.geeked.wtf", providers[0]);
         Assert.Contains("https://hifi-one.spotisaver.net", providers);
         Assert.Contains("https://hifi-two.spotisaver.net", providers);
         Assert.Contains("https://triton.squid.wtf", providers);
@@ -37,80 +34,66 @@ public sealed class TidalApiProviderSourceTests
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
         using var scope = new TestConfigRootScope(rootPath);
-        var service = new TidalApiProviderSource(
-            new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)),
-            NullLogger<TidalApiProviderSource>.Instance);
+        var service = CreateService();
 
-        await service.RememberSuccessAsync("https://vogel.qqdl.site", CancellationToken.None);
+        await service.RememberSuccessAsync("https://hifi.geeked.wtf", CancellationToken.None);
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal("https://maus.qqdl.site", providers[0]);
-        Assert.Equal("https://vogel.qqdl.site", providers[^1]);
+        Assert.Equal("https://hifi.p1nkhamster.xyz", providers[0]);
+        Assert.Equal("https://hifi.geeked.wtf", providers[^1]);
     }
 
     [Fact]
-    public async Task GetRotatedProvidersAsync_UsesFetchedGistProviders_WhenAvailable()
+    public async Task GetRotatedProvidersAsync_UsesCleanCatalogNames()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
         using var scope = new TestConfigRootScope(rootPath);
-        var service = new TidalApiProviderSource(
-            new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("[\"https://one.example\",\"https://two.example\"]")
-            }),
-            NullLogger<TidalApiProviderSource>.Instance);
+        var registry = new InMemoryProviderRegistry();
+        var service = new TidalApiProviderSource(registry);
 
-        var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
+        _ = await service.GetRotatedProvidersAsync(CancellationToken.None);
+        var providers = await registry.GetProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(["https://one.example", "https://two.example"], providers);
+        string[] expectedNames = ["Geeked", "Pink Hamster", "QQDL Vogel", "SpotiSaver One", "SpotiSaver Two", "KinoPlus", "Binimum", "Squid Triton"];
+        Assert.Equal(expectedNames, providers.Select(provider => provider.DisplayName).ToArray());
     }
 
     [Fact]
-    public async Task GetRotatedProvidersAsync_MergesMonochromeInstances_WhenAvailable()
+    public async Task GetRotatedProvidersAsync_ExcludesDisabledProvider()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
         using var scope = new TestConfigRootScope(rootPath);
-        var service = new TidalApiProviderSource(
-            new StubHttpClientFactory(request =>
-            {
-                var url = request.RequestUri?.ToString() ?? string.Empty;
-                if (url.Contains("gist.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
-                {
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("[\"https://one.example\",\"https://two.example\"]")
-                    };
-                }
+        var registry = new InMemoryProviderRegistry();
+        var service = new TidalApiProviderSource(registry);
 
-                if (url.Contains("monochrome.tf/instances.json", StringComparison.OrdinalIgnoreCase))
-                {
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("{\"api\":[\"https://two.example\",\"https://three.example\"]}")
-                    };
-                }
-
-                return new HttpResponseMessage(HttpStatusCode.NotFound);
-            }),
-            NullLogger<TidalApiProviderSource>.Instance);
-
+        _ = await service.GetRotatedProvidersAsync(CancellationToken.None);
+        await registry.SetEnabledAsync("geeked", false, CancellationToken.None);
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(["https://one.example", "https://two.example", "https://three.example"], providers);
+        Assert.Equal(7, providers.Count);
+        Assert.DoesNotContain("https://hifi.geeked.wtf", providers);
     }
 
-    private sealed class StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responder) : IHttpClientFactory
+    private static TidalApiProviderSource CreateService() => new(new InMemoryProviderRegistry());
+
+    private sealed class InMemoryProviderRegistry : ITidalPublicProviderRegistry
     {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder = responder;
+        private readonly List<TidalPublicProvider> _providers = TidalPublicProviderDefaults.Providers
+            .Select(definition => new TidalPublicProvider(definition.Id, definition.DisplayName, definition.Endpoint, true, "unknown", null, null, null, null, null))
+            .ToList();
 
-        public HttpClient CreateClient(string name) => new(new StubHttpMessageHandler(_responder));
-    }
+        public Task<IReadOnlyList<TidalPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<TidalPublicProvider>>(_providers.ToArray());
 
-    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder = responder;
+        public Task<TidalPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken)
+        {
+            var index = _providers.FindIndex(provider => provider.Id == providerId);
+            if (index < 0) return Task.FromResult<TidalPublicProvider?>(null);
+            _providers[index] = _providers[index] with { Enabled = enabled };
+            return Task.FromResult<TidalPublicProvider?>(_providers[index]);
+        }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Task.FromResult(_responder(request));
+        public Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

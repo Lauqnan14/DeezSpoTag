@@ -14,6 +14,7 @@ public class PlatformAuthState
     public JellyfinAuth? Jellyfin { get; set; }
     public AppleMusicAuth? AppleMusic { get; set; }
     public QobuzAuth? Qobuz { get; set; }
+    public TidalAuth? Tidal { get; set; }
 }
 
 public class SpotifyConfig
@@ -106,9 +107,22 @@ public class QobuzAuth
     public string? DownloadSecret { get; set; }
 }
 
+public class TidalAuth
+{
+    public string? ClientId { get; set; }
+    public string? ClientSecret { get; set; }
+    public string? AccessToken { get; set; }
+    public string? RefreshToken { get; set; }
+    public string? UserId { get; set; }
+    public string? CountryCode { get; set; }
+    public bool CredentialsValid { get; set; }
+    public DateTimeOffset? ValidatedAt { get; set; }
+}
+
 public class PlatformAuthService
 {
     private const string QobuzProtectionPurpose = "DeezSpoTag.PlatformAuth.Qobuz";
+    private const string TidalProtectionPurpose = "DeezSpoTag.PlatformAuth.Tidal";
     private const string SpotifyFileName = "spotify.json";
     private const string DiscogsFileName = "discogs.json";
     private const string LastFmFileName = "lastfm.json";
@@ -117,6 +131,7 @@ public class PlatformAuthService
     private const string JellyfinFileName = "jellyfin.json";
     private const string AppleMusicFileName = "applemusic.json";
     private const string QobuzFileName = "qobuz.json";
+    private const string TidalFileName = "tidal.json";
     private const string LegacyAggregateFileName = "platform-auth.json";
     private const string AutotagDirectory = "autotag";
     private const string MissingStatus = "missing";
@@ -130,6 +145,7 @@ public class PlatformAuthService
     private readonly string _legacyAggregateFilePath;
     private readonly string[] _legacyAggregateFileCandidates;
     private readonly ProtectedCredentialFileStore _qobuzCredentialStore;
+    private readonly ProtectedCredentialFileStore _tidalCredentialStore;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly object _statusLock = new();
     private string? _lastStatusSignature;
@@ -161,7 +177,8 @@ public class PlatformAuthService
         PlexFileName,
         JellyfinFileName,
         AppleMusicFileName,
-        QobuzFileName
+        QobuzFileName,
+        TidalFileName
     };
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -185,6 +202,9 @@ public class PlatformAuthService
         _qobuzCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             QobuzProtectionPurpose);
+        _tidalCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            TidalProtectionPurpose);
     }
 
     public async Task<PlatformAuthState> LoadAsync()
@@ -254,6 +274,7 @@ public class PlatformAuthService
         await SavePlatformSectionNoLockAsync(JellyfinFileName, state.Jellyfin);
         await SavePlatformSectionNoLockAsync(AppleMusicFileName, state.AppleMusic);
         await SaveQobuzNoLockAsync(state.Qobuz);
+        await SaveTidalNoLockAsync(state.Tidal);
         TryRetireLegacyAggregateStateNoLock();
         LogAuthStatus(state);
     }
@@ -271,7 +292,8 @@ public class PlatformAuthService
             Plex = await LoadPlatformSectionNoLockAsync<PlexAuth>(PlexFileName),
             Jellyfin = await LoadPlatformSectionNoLockAsync<JellyfinAuth>(JellyfinFileName),
             AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
-            Qobuz = await LoadQobuzNoLockAsync()
+            Qobuz = await LoadQobuzNoLockAsync(),
+            Tidal = await LoadTidalNoLockAsync()
         };
 
         if (NormalizeSpotifyBlobPaths(state))
@@ -335,7 +357,48 @@ public class PlatformAuthService
         HardenQobuzCredentialFilePermissions(path);
     }
 
+    private async Task<TidalAuth?> LoadTidalNoLockAsync()
+    {
+        var path = GetPlatformFilePath(TidalFileName);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var json = await _tidalCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "Tidal");
+            return string.IsNullOrWhiteSpace(json)
+                ? null
+                : JsonSerializer.Deserialize<TidalAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load protected Tidal auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    private async Task SaveTidalNoLockAsync(TidalAuth? auth)
+    {
+        var path = GetPlatformFilePath(TidalFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        await _tidalCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "Tidal");
+    }
+
     private void HardenQobuzCredentialFilePermissions(string path)
+        => HardenCredentialFilePermissions(path, "Qobuz");
+
+    private void HardenCredentialFilePermissions(string path, string platform)
     {
         if (OperatingSystem.IsWindows() || !File.Exists(path))
         {
@@ -348,7 +411,7 @@ public class PlatformAuthService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to restrict Qobuz credential file permissions at {Path}", path);
+            _logger.LogWarning(ex, "Failed to restrict {Platform} credential file permissions at {Path}", platform, path);
         }
     }
 

@@ -8,6 +8,7 @@ using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Security;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Integrations.Qobuz;
+using DeezSpoTag.Integrations.Tidal;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -199,6 +200,60 @@ public sealed class CredentialProtectionTests : IDisposable
         Assert.True(ProtectedCredentialFileStore.IsProtectedText(stored));
         Assert.DoesNotContain("qobuz.squid.wtf", stored, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("download-music", stored, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PlatformAuthService_ProtectsTidalCredentials_AndMigratesPlaintext()
+    {
+        var authDirectory = Path.Join(_tempRoot, "autotag");
+        Directory.CreateDirectory(authDirectory);
+        var authPath = Path.Join(authDirectory, "tidal.json");
+        await File.WriteAllTextAsync(authPath, JsonSerializer.Serialize(new
+        {
+            clientId = "tidal-client-id",
+            clientSecret = "tidal-client-secret",
+            refreshToken = "tidal-refresh-token",
+            countryCode = "KE"
+        }));
+
+        var service = new PlatformAuthService(
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<PlatformAuthService>.Instance,
+            _dataProtectionProvider);
+
+        var loaded = await service.LoadAsync();
+        Assert.Equal("tidal-client-id", loaded.Tidal?.ClientId);
+        Assert.Equal("tidal-client-secret", loaded.Tidal?.ClientSecret);
+        Assert.Equal("tidal-refresh-token", loaded.Tidal?.RefreshToken);
+        Assert.Equal("KE", loaded.Tidal?.CountryCode);
+
+        var stored = await File.ReadAllTextAsync(authPath);
+        Assert.True(ProtectedCredentialFileStore.IsProtectedText(stored));
+        Assert.DoesNotContain("tidal-client-secret", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("tidal-refresh-token", stored, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TidalPublicProviderRegistry_ProtectsEndpoints_AndPersistsToggleState()
+    {
+        var registry = new TidalPublicProviderRegistry(
+            new StubWebHostEnvironment(_tempRoot),
+            _dataProtectionProvider,
+            NullLogger<TidalPublicProviderRegistry>.Instance);
+
+        var providers = await registry.GetProvidersAsync(CancellationToken.None);
+        var provider = providers[0];
+        Assert.True(provider.Enabled);
+
+        await registry.SetEnabledAsync(provider.Id, false, CancellationToken.None);
+        var reloaded = await registry.GetProvidersAsync(CancellationToken.None);
+        Assert.False(Assert.Single(reloaded, item => item.Id == provider.Id).Enabled);
+
+        var storedPath = Path.Join(_tempRoot, "autotag", "tidal-public-providers.json");
+        var stored = await File.ReadAllTextAsync(storedPath);
+        Assert.True(ProtectedCredentialFileStore.IsProtectedText(stored));
+        Assert.DoesNotContain("monochrome.tf", stored, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("squid.wtf", stored, StringComparison.OrdinalIgnoreCase);
     }
 
     private SpotifyBlobService CreateSpotifyBlobService()

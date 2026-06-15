@@ -1,13 +1,8 @@
 using System.Text;
 using System.Text.Json;
+using DeezSpoTag.Integrations.Tidal;
 
 namespace DeezSpoTag.Web.Services;
-
-public interface ITidalAccessTokenProvider
-{
-    Task<string> GetAccessTokenAsync(CancellationToken cancellationToken);
-    void Invalidate();
-}
 
 public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
 {
@@ -32,13 +27,15 @@ public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
     ];
 
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ITidalCredentialProvider _credentialProvider;
     private readonly SemaphoreSlim _tokenGate = new(1, 1);
     private string _cachedAccessToken = string.Empty;
     private DateTimeOffset _cachedAccessTokenExpiresUtc = DateTimeOffset.MinValue;
 
-    public TidalAccessTokenProvider(IHttpClientFactory httpClientFactory)
+    public TidalAccessTokenProvider(IHttpClientFactory httpClientFactory, ITidalCredentialProvider credentialProvider)
     {
         _httpClientFactory = httpClientFactory;
+        _credentialProvider = credentialProvider;
     }
 
     public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
@@ -56,17 +53,24 @@ public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
                 return _cachedAccessToken;
             }
 
-            var (clientId, partnerKey) = DecodePartnerCredentials();
+            var credentials = await _credentialProvider.GetCredentialsAsync(cancellationToken);
+            if (!string.IsNullOrWhiteSpace(credentials.AccessToken)
+                && string.IsNullOrWhiteSpace(credentials.RefreshToken))
+            {
+                _cachedAccessToken = credentials.AccessToken;
+                _cachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10);
+                return _cachedAccessToken;
+            }
+
+            var (defaultClientId, defaultPartnerKey) = DecodePartnerCredentials();
+            var clientId = string.IsNullOrWhiteSpace(credentials.ClientId) ? defaultClientId : credentials.ClientId;
+            var partnerKey = string.IsNullOrWhiteSpace(credentials.ClientSecret) ? defaultPartnerKey : credentials.ClientSecret;
             var authValue = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{clientId}:{partnerKey}"));
             var authUrl = new UriBuilder(Uri.UriSchemeHttps, AuthHost) { Path = AuthPath }.Uri;
 
             using var request = new HttpRequestMessage(HttpMethod.Post, authUrl)
             {
-                Content = new FormUrlEncodedContent(new Dictionary<string, string>
-                {
-                    ["client_id"] = clientId,
-                    ["grant_type"] = "client_credentials"
-                })
+                Content = new FormUrlEncodedContent(BuildTokenRequestFields(credentials, clientId))
             };
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", authValue);
 
@@ -96,6 +100,20 @@ public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
         }
     }
 
+    public async Task<string> GetCountryCodeAsync(CancellationToken cancellationToken)
+        => (await _credentialProvider.GetCredentialsAsync(cancellationToken)).CountryCode;
+
+    public async Task<bool> ValidateCredentialsAsync(CancellationToken cancellationToken)
+    {
+        var token = await GetAccessTokenAsync(cancellationToken);
+        var countryCode = await GetCountryCodeAsync(cancellationToken);
+        var url = $"https://api.tidal.com/v1/tracks/251380836?countryCode={Uri.EscapeDataString(countryCode)}";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
     public void Invalidate()
     {
         _cachedAccessToken = string.Empty;
@@ -113,6 +131,21 @@ public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
         var clientId = Encoding.UTF8.GetString(Convert.FromBase64String(encodedClientId));
         var partnerKey = Encoding.UTF8.GetString(Convert.FromBase64String(encodedPartnerKey));
         return (clientId, partnerKey);
+    }
+
+    private static Dictionary<string, string> BuildTokenRequestFields(TidalOfficialCredentials credentials, string clientId)
+    {
+        var fields = new Dictionary<string, string> { ["client_id"] = clientId };
+        if (!string.IsNullOrWhiteSpace(credentials.RefreshToken))
+        {
+            fields["grant_type"] = "refresh_token";
+            fields["refresh_token"] = credentials.RefreshToken;
+        }
+        else
+        {
+            fields["grant_type"] = "client_credentials";
+        }
+        return fields;
     }
 
     private static string ReadString(JsonElement element, string propertyName)

@@ -5,6 +5,8 @@ using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Integrations.Tidal;
+using DeezSpoTag.Services.Download.Tidal;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -22,6 +24,9 @@ public class PlatformAuthApiController : ControllerBase
     private readonly QobuzAccountProfileService _qobuzAccountProfileService;
     private readonly IQobuzPublicProviderRegistry _qobuzPublicProviderRegistry;
     private readonly IQobuzDownloadService _qobuzDownloadService;
+    private readonly ITidalPublicProviderRegistry _tidalPublicProviderRegistry;
+    private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
+    private readonly TidalDownloadService _tidalDownloadService;
     public PlatformAuthApiController(
         PlatformAuthService authService,
         DiscogsApiClient discogsApiClient,
@@ -30,7 +35,10 @@ public class PlatformAuthApiController : ControllerBase
         AppleMusicWrapperService appleWrapperService,
         QobuzAccountProfileService qobuzAccountProfileService,
         IQobuzPublicProviderRegistry qobuzPublicProviderRegistry,
-        IQobuzDownloadService qobuzDownloadService)
+        IQobuzDownloadService qobuzDownloadService,
+        ITidalPublicProviderRegistry tidalPublicProviderRegistry,
+        ITidalAccessTokenProvider tidalAccessTokenProvider,
+        TidalDownloadService tidalDownloadService)
     {
         _authService = authService;
         _discogsApiClient = discogsApiClient;
@@ -40,6 +48,9 @@ public class PlatformAuthApiController : ControllerBase
         _qobuzAccountProfileService = qobuzAccountProfileService;
         _qobuzPublicProviderRegistry = qobuzPublicProviderRegistry;
         _qobuzDownloadService = qobuzDownloadService;
+        _tidalPublicProviderRegistry = tidalPublicProviderRegistry;
+        _tidalAccessTokenProvider = tidalAccessTokenProvider;
+        _tidalDownloadService = tidalDownloadService;
     }
 
     [HttpGet]
@@ -93,6 +104,7 @@ public class PlatformAuthApiController : ControllerBase
 
         state = await RefreshQobuzAccountAsync(state, cancellationToken);
         var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
+        var tidalProviders = await GetPublicTidalProvidersAsync(cancellationToken);
 
         return Ok(new
         {
@@ -103,8 +115,35 @@ public class PlatformAuthApiController : ControllerBase
             plex = state.Plex,
             jellyfin = state.Jellyfin,
             appleMusic = state.AppleMusic,
-            qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders)
+            qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
+            tidal = ToPublicTidal(state.Tidal, tidalProviders)
         });
+    }
+
+    [HttpGet("tidal/providers")]
+    public async Task<IActionResult> GetTidalProviders(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        return Ok(await GetPublicTidalProvidersAsync(cancellationToken));
+    }
+
+    [HttpPut("tidal/providers/{providerId}/enabled")]
+    public async Task<IActionResult> SetTidalProviderEnabled(string providerId, [FromBody] TidalProviderEnabledRequest request, CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        var updated = await _tidalPublicProviderRegistry.SetEnabledAsync(providerId, request.Enabled, cancellationToken);
+        return updated is null ? NotFound("Unknown Tidal provider.") : Ok(ToPublicTidalProvider(updated));
+    }
+
+    [HttpPost("tidal/providers/check")]
+    public async Task<IActionResult> CheckTidalProviders(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        await _tidalDownloadService.CheckPublicProvidersAsync(cancellationToken);
+        return Ok(await GetPublicTidalProvidersAsync(cancellationToken));
     }
 
     [HttpGet("qobuz/providers")]
@@ -253,6 +292,56 @@ public class PlatformAuthApiController : ControllerBase
 
         var providers = await GetPublicQobuzProvidersAsync(cancellationToken);
         return Ok(new { saved = true, qobuz = ToPublicQobuz(qobuz, providers) });
+    }
+
+    [HttpPost("tidal")]
+    public async Task<IActionResult> SaveTidal([FromBody] TidalAuth request, CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        if (request is null) return BadRequest("Tidal credentials are required.");
+
+        var currentState = await _authService.LoadAsync();
+        var previous = currentState.Tidal;
+        var clientId = ResolveSubmittedSecret(request.ClientId, previous?.ClientId);
+        var clientSecret = ResolveSubmittedSecret(request.ClientSecret, previous?.ClientSecret);
+        var accessToken = ResolveSubmittedSecret(request.AccessToken, previous?.AccessToken);
+        var refreshToken = ResolveSubmittedSecret(request.RefreshToken, previous?.RefreshToken);
+        if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+        {
+            return BadRequest("Tidal Client ID and Client Secret are required.");
+        }
+
+        var tidal = new TidalAuth
+        {
+            ClientId = clientId,
+            ClientSecret = clientSecret,
+            AccessToken = accessToken,
+            RefreshToken = refreshToken,
+            UserId = request.UserId?.Trim(),
+            CountryCode = NormalizeCountryCode(request.CountryCode),
+            CredentialsValid = false
+        };
+        await _authService.UpdateAsync(state => state.Tidal = tidal);
+        _tidalAccessTokenProvider.Invalidate();
+        try
+        {
+            if (!await _tidalAccessTokenProvider.ValidateCredentialsAsync(cancellationToken))
+            {
+                throw new InvalidOperationException("Tidal API validation failed.");
+            }
+            tidal.CredentialsValid = true;
+            tidal.ValidatedAt = DateTimeOffset.UtcNow;
+            await _authService.UpdateAsync(state => state.Tidal = tidal);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await _authService.UpdateAsync(state => state.Tidal = previous);
+            _tidalAccessTokenProvider.Invalidate();
+            return BadRequest($"Tidal credentials were rejected: {ex.Message}");
+        }
+
+        return Ok(new { saved = true, tidal = ToPublicTidal(tidal, await GetPublicTidalProvidersAsync(cancellationToken)) });
     }
 
     [HttpPost("lastfm")]
@@ -499,6 +588,21 @@ public class PlatformAuthApiController : ControllerBase
         };
     }
 
+    private static object ToPublicTidal(TidalAuth? auth, TidalProviderSummary providers) => new
+    {
+        clientId = auth?.ClientId,
+        clientSecretSaved = !string.IsNullOrWhiteSpace(auth?.ClientSecret),
+        accessTokenSaved = !string.IsNullOrWhiteSpace(auth?.AccessToken),
+        refreshTokenSaved = !string.IsNullOrWhiteSpace(auth?.RefreshToken),
+        userId = auth?.UserId,
+        countryCode = auth?.CountryCode ?? "US",
+        credentialsValid = auth?.CredentialsValid == true,
+        validatedAt = auth?.ValidatedAt,
+        publicApiOnline = providers.Online,
+        connected = auth?.CredentialsValid == true || providers.Online,
+        providers = providers.Providers
+    };
+
     private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken)
     {
         var providers = await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken);
@@ -512,6 +616,28 @@ public class PlatformAuthApiController : ControllerBase
     public sealed record QobuzProviderEnabledRequest(bool Enabled);
     private sealed record QobuzProviderSummary(bool Online, QobuzProviderView[] Providers);
     private sealed record QobuzProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
+
+    private async Task<TidalProviderSummary> GetPublicTidalProvidersAsync(CancellationToken cancellationToken)
+    {
+        var providers = (await _tidalPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicTidalProvider).ToArray();
+        return new TidalProviderSummary(providers.Any(provider => provider.Enabled && provider.Status == "online"), providers);
+    }
+
+    private static TidalProviderView ToPublicTidalProvider(TidalPublicProvider provider)
+        => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs);
+
+    public sealed record TidalProviderEnabledRequest(bool Enabled);
+    private sealed record TidalProviderSummary(bool Online, TidalProviderView[] Providers);
+    private sealed record TidalProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs);
+
+    private static string? ResolveSubmittedSecret(string? submitted, string? existing)
+        => string.IsNullOrWhiteSpace(submitted) ? existing : submitted.Trim();
+
+    private static string NormalizeCountryCode(string? value)
+    {
+        var normalized = value?.Trim().ToUpperInvariant() ?? string.Empty;
+        return normalized.Length == 2 ? normalized : "US";
+    }
 
     private async Task<PlatformAuthState> RefreshQobuzAccountAsync(
         PlatformAuthState state,
@@ -605,10 +731,18 @@ public class PlatformAuthApiController : ControllerBase
                 case "qobuz":
                     state.Qobuz = null;
                     break;
+                case "tidal":
+                    state.Tidal = null;
+                    break;
             }
 
             return 0;
         });
+
+        if (normalizedPlatform == "tidal")
+        {
+            _tidalAccessTokenProvider.Invalidate();
+        }
 
         return Ok(new { disconnected = true });
     }
@@ -622,7 +756,8 @@ public class PlatformAuthApiController : ControllerBase
             or "plex"
             or "jellyfin"
             or "applemusic"
-            or "qobuz";
+            or "qobuz"
+            or "tidal";
     }
 
     private UnauthorizedObjectResult? EnsureAccess()

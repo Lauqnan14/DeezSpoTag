@@ -14,6 +14,7 @@ public class PlatformRegistryApiController : ControllerBase
     private const string AppleMusicPlatform = "applemusic";
     private const string BpmSupremePlatform = "bpmsupreme";
     private const string QobuzPlatform = "qobuz";
+    private const string TidalPlatform = "tidal";
 
     private static readonly string[] SidebarOrder =
     [
@@ -22,6 +23,7 @@ public class PlatformRegistryApiController : ControllerBase
         LastFmPlatform,
         AppleMusicPlatform,
         QobuzPlatform,
+        TidalPlatform,
         "discogs",
         BpmSupremePlatform,
         "plex",
@@ -52,7 +54,8 @@ public class PlatformRegistryApiController : ControllerBase
         "plex",
         "jellyfin",
         AppleMusicPlatform,
-        QobuzPlatform
+        QobuzPlatform,
+        TidalPlatform
     };
 
     private static readonly Dictionary<string, string> LoginTabMap = new(StringComparer.OrdinalIgnoreCase)
@@ -61,6 +64,7 @@ public class PlatformRegistryApiController : ControllerBase
         ["spotify"] = "spotify-login",
         [AppleMusicPlatform] = "apple-music-login",
         [QobuzPlatform] = "qobuz-login",
+        [TidalPlatform] = "tidal-login",
         ["discogs"] = "discogs-login",
         [LastFmPlatform] = "lastfm-login",
         [BpmSupremePlatform] = "bpmsupreme-login",
@@ -76,7 +80,8 @@ public class PlatformRegistryApiController : ControllerBase
         ["musicbrainz"] = "MusicBrainz",
         ["itunes"] = "iTunes",
         [AppleMusicPlatform] = "Apple Music",
-        [QobuzPlatform] = "Qobuz"
+        [QobuzPlatform] = "Qobuz",
+        [TidalPlatform] = "Tidal"
     };
 
     private readonly AutoTagMetadataService _metadataService;

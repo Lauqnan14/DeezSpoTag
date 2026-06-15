@@ -123,12 +123,6 @@ public static class DownloadServiceExtensions
             client.Timeout = TimeSpan.FromMinutes(5);
         }).ConfigurePrimaryHttpMessageHandler(CreatePermissiveHandler);
 
-        services.AddHttpClient("TidalProviderList", client =>
-        {
-            client.Timeout = TimeSpan.FromSeconds(15);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
-        });
-
         services.AddHttpClient("ResolveProxy", client =>
         {
             client.Timeout = ResolveProxyTimeout;
