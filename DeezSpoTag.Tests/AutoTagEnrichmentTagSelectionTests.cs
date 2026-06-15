@@ -66,6 +66,82 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     }
 
     [Fact]
+    public void ResolveAutomaticDownloadEnrichmentRequestedTags_RemovesEveryLyricsTag()
+    {
+        var method = typeof(AutoTagService).GetMethod(
+            "ResolveAutomaticDownloadEnrichmentRequestedTags",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var root = new JsonObject
+        {
+            ["tags"] = new JsonArray(
+                "artist",
+                "lyrics",
+                "unsyncedLyrics",
+                "syncedLyrics",
+                "ttmlLyrics",
+                "genre")
+        };
+
+        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
+        Assert.Equal(ExpectedDownloadEnrichmentTags, actual);
+    }
+
+    [Fact]
+    public void ResolveAutomaticDownloadEnrichmentRequestedTags_LyricsOnlyProfileReturnsNoTags()
+    {
+        var method = typeof(AutoTagService).GetMethod(
+            "ResolveAutomaticDownloadEnrichmentRequestedTags",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var root = new JsonObject
+        {
+            ["tags"] = new JsonArray("lyrics", "unsyncedLyrics", "syncedLyrics", "ttmlLyrics")
+        };
+
+        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
+        Assert.Empty(actual);
+    }
+
+    [Fact]
+    public void AutomaticDownloadLyricsOnlyProfile_UsesExistingSuccessfulSkipFinalizationPath()
+    {
+        var mapStatus = typeof(DownloadOrchestrationService).GetMethod(
+            "MapEnrichmentResultToQueueStatus",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        var finalizationAllowed = typeof(DownloadOrchestrationService).GetMethod(
+            "IsFinalizationAllowed",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(mapStatus);
+        Assert.NotNull(finalizationAllowed);
+
+        var mappedStatus = mapStatus!.Invoke(null, new object?[] { "skipped" }) as string;
+        var canFinalize = Assert.IsType<bool>(finalizationAllowed!.Invoke(null, new object?[] { "skipped" }));
+
+        Assert.Equal("not_required", mappedStatus);
+        Assert.True(canFinalize);
+    }
+
+    [Fact]
+    public void ResolveEnrichmentRequestedTags_ManualEnrichmentRetainsLyricsTags()
+    {
+        var method = typeof(AutoTagService).GetMethod(
+            "ResolveEnrichmentRequestedTags",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var root = new JsonObject
+        {
+            ["tags"] = new JsonArray("lyrics", "syncedLyrics", "ttmlLyrics")
+        };
+
+        var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
+        Assert.Equal(new[] { "lyrics", "syncedLyrics", "ttmlLyrics" }, actual);
+    }
+
+    [Fact]
     public void ResolveEnhancementRequestedTags_UsesOnlyGapFillTags()
     {
         var method = typeof(AutoTagService).GetMethod(

@@ -139,9 +139,22 @@ public partial class AutoTagService
                 .Where(platform => !string.Equals(platform, excludedPlatform, StringComparison.OrdinalIgnoreCase))
                 .ToList();
         return new EnrichmentStagePlan(
-            RequestedTags: ResolveEnrichmentRequestedTags(baseRoot),
+            RequestedTags: ResolveAutomaticDownloadEnrichmentRequestedTags(baseRoot),
             Platforms: platforms,
             ExcludedPlatform: excludedPlatform);
+    }
+
+    private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags(JsonObject baseRoot)
+    {
+        return ResolveEnrichmentRequestedTags(baseRoot)
+            .Where(tag => !IsLyricsTag(tag))
+            .ToList();
+    }
+
+    private static bool IsLyricsTag(string? tag)
+    {
+        var normalized = NormalizeSupportedTagKey(tag);
+        return normalized is "unsyncedLyrics" or "syncedLyrics" or "ttmlLyrics";
     }
 
     private bool TryBuildEnrichmentStageFromPlan(

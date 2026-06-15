@@ -38,11 +38,19 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
         Assert.Contains("\"materializeToTemplatePath\"", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "OrganizeSidecarsIntoTemplateFolders",
-            ExtractMethod(source, "BuildAutomaticDownloadEnrichmentStagePlan"),
+            ExtractMethod(source, "private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan"),
             StringComparison.Ordinal);
         Assert.DoesNotContain(
             "MaterializeToTemplatePath",
-            ExtractMethod(source, "BuildAutomaticDownloadEnrichmentStagePlan"),
+            ExtractMethod(source, "private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan"),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ResolveAutomaticDownloadEnrichmentRequestedTags(baseRoot)",
+            ExtractMethod(source, "private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan"),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".Where(tag => !IsLyricsTag(tag))",
+            ExtractMethod(source, "private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags"),
             StringComparison.Ordinal);
     }
 
