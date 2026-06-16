@@ -49,8 +49,28 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
             ExtractMethod(source, "private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan"),
             StringComparison.Ordinal);
         Assert.Contains(
+            "FilterAutomaticDownloadEnrichmentPlatforms(sourceFilteredPlatforms, requestedTags, platformCaps)",
+            ExtractMethod(source, "private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan"),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".Where(platform => !IsLyricsProviderPlatform(platform))",
+            ExtractMethod(source, "private static List<string> FilterAutomaticDownloadEnrichmentPlatforms"),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "lrclib",
+            ExtractMethod(source, "private static bool IsLyricsProviderPlatform"),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "musixmatch",
+            ExtractMethod(source, "private static bool IsLyricsProviderPlatform"),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
             ".Where(tag => !IsLyricsTag(tag))",
             ExtractMethod(source, "private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags"),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "caps.SupportedTags.Any(requestedTags.Contains)",
+            ExtractMethod(source, "private static bool PlatformSupportsAnyRequestedTag"),
             StringComparison.Ordinal);
     }
 

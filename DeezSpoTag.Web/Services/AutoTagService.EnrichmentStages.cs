@@ -110,7 +110,7 @@ public partial class AutoTagService
             baseRoot,
             platformCaps,
             context,
-            BuildAutomaticDownloadEnrichmentStagePlan(baseRoot, eligiblePlatforms),
+            BuildAutomaticDownloadEnrichmentStagePlan(baseRoot, eligiblePlatforms, platformCaps),
             out stage,
             out skipReason,
             out strippedKeys);
@@ -130,18 +130,60 @@ public partial class AutoTagService
 
     private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan(
         JsonObject baseRoot,
-        IReadOnlyList<string> eligiblePlatforms)
+        IReadOnlyList<string> eligiblePlatforms,
+        Dictionary<string, PlatformTagCapabilities> platformCaps)
     {
         var excludedPlatform = ResolveDownloadSourcePlatform(baseRoot);
-        var platforms = string.IsNullOrWhiteSpace(excludedPlatform)
+        var requestedTags = ResolveAutomaticDownloadEnrichmentRequestedTags(baseRoot);
+        var sourceFilteredPlatforms = string.IsNullOrWhiteSpace(excludedPlatform)
             ? eligiblePlatforms.ToList()
             : eligiblePlatforms
                 .Where(platform => !string.Equals(platform, excludedPlatform, StringComparison.OrdinalIgnoreCase))
                 .ToList();
+        var platforms = FilterAutomaticDownloadEnrichmentPlatforms(sourceFilteredPlatforms, requestedTags, platformCaps);
         return new EnrichmentStagePlan(
-            RequestedTags: ResolveAutomaticDownloadEnrichmentRequestedTags(baseRoot),
+            RequestedTags: requestedTags,
             Platforms: platforms,
             ExcludedPlatform: excludedPlatform);
+    }
+
+    private static List<string> FilterAutomaticDownloadEnrichmentPlatforms(
+        IEnumerable<string> platforms,
+        IReadOnlyCollection<string> requestedTags,
+        Dictionary<string, PlatformTagCapabilities> platformCaps)
+    {
+        var requested = requestedTags
+            .Select(NormalizeSupportedTagKey)
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(tag => tag!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requested.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        return platforms
+            .Where(platform => !IsLyricsProviderPlatform(platform))
+            .Where(platform => PlatformSupportsAnyRequestedTag(platform, requested, platformCaps))
+            .ToList();
+    }
+
+    private static bool IsLyricsProviderPlatform(string? platform)
+        => string.Equals(platform?.Trim(), "lrclib", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(platform?.Trim(), "musixmatch", StringComparison.OrdinalIgnoreCase);
+
+    private static bool PlatformSupportsAnyRequestedTag(
+        string platform,
+        HashSet<string> requestedTags,
+        Dictionary<string, PlatformTagCapabilities> platformCaps)
+    {
+        if (string.IsNullOrWhiteSpace(platform))
+        {
+            return false;
+        }
+
+        return platformCaps.TryGetValue(platform.Trim(), out var caps)
+            && caps.SupportedTags.Any(requestedTags.Contains);
     }
 
     private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags(JsonObject baseRoot)
