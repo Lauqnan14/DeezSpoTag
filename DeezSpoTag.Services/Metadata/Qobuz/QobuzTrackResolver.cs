@@ -123,8 +123,17 @@ public sealed class QobuzTrackResolver
         }
 
         var score = ScoreCandidate(track, title, artist, album, expectedDurationSec, preferHiRes: true);
-        if (string.IsNullOrWhiteSpace(isrc)
-            && !HasAuthoritativeMetadataMatch(track, title, artist, album, expectedDurationSec, score))
+        var hasAuthoritativeMetadataMatch = HasAuthoritativeMetadataMatch(
+            track,
+            title,
+            artist,
+            album,
+            expectedDurationSec,
+            score);
+        var hasExactIsrcIdentity = !string.IsNullOrWhiteSpace(isrc)
+            && IsExactIsrcMatch(track, isrc)
+            && !HasContradictoryMetadata(track, title, artist, expectedDurationSec);
+        if (!hasAuthoritativeMetadataMatch && !hasExactIsrcIdentity)
         {
             return null;
         }

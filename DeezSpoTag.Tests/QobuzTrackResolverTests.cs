@@ -265,6 +265,35 @@ public sealed class QobuzTrackResolverTests
         Assert.Contains("Aminia Nyashinski", service.Queries);
     }
 
+    [Fact]
+    public async Task ValidateTrackIdAsync_RejectsExactIsrcWhenMetadataContradictsRequestedTrack()
+    {
+        var service = new StubQobuzMetadataService
+        {
+            TrackResult = new QobuzTrack
+            {
+                Id = 370472406,
+                ISRC = "ZA41S1733415",
+                Title = "Wrong Song",
+                Duration = 120,
+                Performer = new QobuzArtist { Name = "Wrong Artist" },
+                Album = new QobuzAlbum { Title = "Wrong Album" }
+            }
+        };
+        var resolver = CreateResolver(service);
+
+        var result = await resolver.ValidateTrackIdAsync(
+            370472406,
+            "ZA41S1733415",
+            "Aminia",
+            "Nyashinski",
+            "Aminia",
+            239000,
+            CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
     private static QobuzTrackResolver CreateResolver(StubQobuzMetadataService metadataService)
     {
         return new QobuzTrackResolver(
@@ -280,6 +309,7 @@ public sealed class QobuzTrackResolverTests
     private sealed class StubQobuzMetadataService : IQobuzMetadataService
     {
         public QobuzTrack? IsrcResult { get; init; }
+        public QobuzTrack? TrackResult { get; init; }
         public Func<string, List<QobuzTrack>> SearchHandler { get; set; } = _ => new List<QobuzTrack>();
         public Func<string, List<QobuzTrack>> AlbumSearchHandler { get; set; } = _ => new List<QobuzTrack>();
         public List<string> Queries { get; } = new();
@@ -339,7 +369,7 @@ public sealed class QobuzTrackResolverTests
 
         public Task<QobuzTrack?> GetTrack(int trackId, CancellationToken ct)
         {
-            return Task.FromResult<QobuzTrack?>(null);
+            return Task.FromResult(TrackResult);
         }
 
         public Task<QobuzQualityInfo?> GetTrackQuality(int trackId, CancellationToken ct)
