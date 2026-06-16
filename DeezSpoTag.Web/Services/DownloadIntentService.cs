@@ -2889,8 +2889,13 @@ public sealed class DownloadIntentService
             return (false, string.Empty, string.Empty);
         }
 
+        if (!QobuzTrackId.TryCreate(mappedTrackId.Value, out var qobuzTrackId))
+        {
+            return (false, string.Empty, string.Empty);
+        }
+
         var validated = await _qobuzTrackResolver.ValidateTrackIdAsync(
-            mappedTrackId.Value,
+            qobuzTrackId,
             intent.Isrc,
             intent.Title,
             intent.Artist,

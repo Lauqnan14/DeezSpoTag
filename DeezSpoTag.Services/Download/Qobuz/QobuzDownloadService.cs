@@ -1414,8 +1414,13 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var fromProxy = await TryResolveTrackIdViaResolveProxyAsync(request, cancellationToken);
         if (fromProxy.HasValue && fromProxy.Value > 0)
         {
+            if (!QobuzTrackId.TryCreate(fromProxy.Value, out var qobuzTrackId))
+            {
+                return await TryResolveTrackIdByIsrcAsync(resolvedIsrc ?? string.Empty, cancellationToken);
+            }
+
             var validated = await _trackResolver.ValidateTrackIdAsync(
-                checked((int)fromProxy.Value),
+                qobuzTrackId,
                 resolvedIsrc,
                 request.TrackName,
                 request.ArtistName,

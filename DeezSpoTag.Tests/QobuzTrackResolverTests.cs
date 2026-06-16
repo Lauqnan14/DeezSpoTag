@@ -281,9 +281,10 @@ public sealed class QobuzTrackResolverTests
             }
         };
         var resolver = CreateResolver(service);
+        Assert.True(QobuzTrackId.TryCreate(370472406, out var trackId));
 
         var result = await resolver.ValidateTrackIdAsync(
-            370472406,
+            trackId,
             "ZA41S1733415",
             "Aminia",
             "Nyashinski",

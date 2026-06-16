@@ -89,7 +89,7 @@ public sealed class QobuzTrackResolver
     }
 
     public async Task<QobuzTrackResolution?> ValidateTrackIdAsync(
-        int trackId,
+        QobuzTrackId trackId,
         string? isrc,
         string? title,
         string? artist,
@@ -97,12 +97,7 @@ public sealed class QobuzTrackResolver
         int? durationMs,
         CancellationToken cancellationToken)
     {
-        if (trackId <= 0)
-        {
-            return null;
-        }
-
-        var track = await TryGetTrackAsync(trackId, cancellationToken);
+        var track = await TryGetTrackAsync(trackId.Value, cancellationToken);
         if (track == null || track.Id <= 0)
         {
             return null;
@@ -803,3 +798,25 @@ public sealed class QobuzTrackResolver
 }
 
 public sealed record QobuzTrackResolution(QobuzTrack Track, string Source, int Score);
+
+public readonly struct QobuzTrackId
+{
+    private QobuzTrackId(int value)
+    {
+        Value = value;
+    }
+
+    public int Value { get; }
+
+    public static bool TryCreate(long value, out QobuzTrackId trackId)
+    {
+        if (value <= 0 || value > int.MaxValue)
+        {
+            trackId = default;
+            return false;
+        }
+
+        trackId = new QobuzTrackId((int)value);
+        return true;
+    }
+}

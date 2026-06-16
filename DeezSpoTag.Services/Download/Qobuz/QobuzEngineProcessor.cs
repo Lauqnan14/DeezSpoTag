@@ -435,8 +435,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             return BuildResolvedUrlTrack(payload, trackId, resolvedIsrc);
         }
 
+        if (!QobuzTrackId.TryCreate(trackId, out var qobuzTrackId))
+        {
+            return null;
+        }
+
         var validated = await _qobuzTrackResolver.ValidateTrackIdAsync(
-            trackId,
+            qobuzTrackId,
             validationIsrc,
             payload.Title,
             payload.Artist,
