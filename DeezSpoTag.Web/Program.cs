@@ -1295,8 +1295,6 @@ public partial class Program
                 DeezerMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.DeezerMatcher>(),
                 LastFmMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.LastFmMatcher>(),
                 BoomplayMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BoomplayMatcher>(),
-                MusixmatchMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.MusixmatchMatcher>(),
-                LrclibMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.LrclibMatcher>(),
                 ShazamMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.ShazamMatcher>(),
                 ShazamRecognitionService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRecognitionService>(),
                 AppleLyricsService = sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleLyricsService>(),
@@ -1353,9 +1351,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BpmSupremeMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.ItunesClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.ItunesMatcher>();
-        services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.MusixmatchClient>();
-        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.MusixmatchMatcher>();
-        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LrclibMatcher>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.SpotifyClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.SpotifyMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.DeezerClient>()

@@ -320,8 +320,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly DeezerMatcher _deezerMatcher;
     private readonly LastFmMatcher _lastFmMatcher;
     private readonly BoomplayMatcher _boomplayMatcher;
-    private readonly MusixmatchMatcher _musixmatchMatcher;
-    private readonly LrclibMatcher _lrclibMatcher;
     private readonly ShazamMatcher _shazamMatcher;
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly AppleLyricsService _appleLyricsService;
@@ -357,8 +355,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _deezerMatcher = collaborators.DeezerMatcher;
         _lastFmMatcher = collaborators.LastFmMatcher;
         _boomplayMatcher = collaborators.BoomplayMatcher;
-        _musixmatchMatcher = collaborators.MusixmatchMatcher;
-        _lrclibMatcher = collaborators.LrclibMatcher;
         _shazamMatcher = collaborators.ShazamMatcher;
         _shazamRecognitionService = collaborators.ShazamRecognitionService;
         _appleLyricsService = collaborators.AppleLyricsService;
@@ -2175,12 +2171,82 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             case ShazamPlatform:
                 return await MatchShazamAsync(context.FilePath, info, context.Config, context.Settings, context.MatchingConfig, context.ShazamCache, token);
             case "musixmatch":
-                return enableLyrics && !hasLyricsSidecar ? await _musixmatchMatcher.MatchAsync(info, token) : null;
+                return await MatchLyricsProviderAsync("musixmatch", info, context, enableLyrics, hasLyricsSidecar, token);
             case "lrclib":
-                return enableLyrics && !hasLyricsSidecar ? await _lrclibMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, LrclibProvider, new LrclibConfig()), token) : null;
+                return await MatchLyricsProviderAsync(LrclibProvider, info, context, enableLyrics, hasLyricsSidecar, token);
             default:
                 return null;
         }
+    }
+
+    private async Task<AutoTagMatchResult?> MatchLyricsProviderAsync(
+        string provider,
+        AutoTagAudioInfo info,
+        PlatformMatchContext context,
+        bool enableLyrics,
+        bool hasLyricsSidecar,
+        CancellationToken token)
+    {
+        if (!enableLyrics || hasLyricsSidecar)
+        {
+            return null;
+        }
+
+        var track = BuildLyricsOnlyAutoTagTrack(info);
+        var request = BuildLyricsPopulationRequest(context.FilePath, track, context.Config, context.Settings);
+        if (!request.ShouldFetch || request.HasAllRequestedLyrics())
+        {
+            return null;
+        }
+
+        var lookupSettings = BuildLyricsLookupSettings(
+            context.Settings,
+            request.WantsSynced,
+            request.WantsUnsynced,
+            request.WantsTtml);
+        lookupSettings.LyricsFallbackEnabled = true;
+        lookupSettings.LyricsFallbackOrder = provider;
+
+        var lyrics = await _downloadLyricsService.ResolveLyricsAsync(
+            BuildLyricsLookupTrack(track, provider),
+            lookupSettings,
+            BuildLyricsProviderOptions(context.Config.Custom),
+            token);
+        if (lyrics == null || !lyrics.IsLoaded())
+        {
+            return null;
+        }
+
+        ApplyResolvedLyrics(track, lyrics, request);
+        return new AutoTagMatchResult
+        {
+            Accuracy = 1.0,
+            Track = track
+        };
+    }
+
+    private static AutoTagTrack BuildLyricsOnlyAutoTagTrack(AutoTagAudioInfo info)
+    {
+        var artists = info.Artists
+            .Where(static artist => !string.IsNullOrWhiteSpace(artist))
+            .Select(static artist => artist.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (artists.Count == 0 && !string.IsNullOrWhiteSpace(info.Artist))
+        {
+            artists.Add(info.Artist.Trim());
+        }
+
+        return new AutoTagTrack
+        {
+            Title = info.Title ?? string.Empty,
+            Artists = artists,
+            Album = info.Album,
+            Duration = info.DurationSeconds is > 0 ? TimeSpan.FromSeconds(info.DurationSeconds.Value) : null,
+            Isrc = info.Isrc,
+            TrackNumber = info.TrackNumber,
+            Other = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+        };
     }
 
     private async Task<AutoTagMatchResult?> MatchShazamAsync(
@@ -5950,8 +6016,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required DeezerMatcher DeezerMatcher { get; init; }
         public required LastFmMatcher LastFmMatcher { get; init; }
         public required BoomplayMatcher BoomplayMatcher { get; init; }
-        public required MusixmatchMatcher MusixmatchMatcher { get; init; }
-        public required LrclibMatcher LrclibMatcher { get; init; }
         public required ShazamMatcher ShazamMatcher { get; init; }
         public required ShazamRecognitionService ShazamRecognitionService { get; init; }
         public required AppleLyricsService AppleLyricsService { get; init; }

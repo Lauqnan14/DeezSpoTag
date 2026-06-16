@@ -107,17 +107,7 @@ public sealed class AppleLyricsService
             return AppleLyrics.CreateError("Apple Music ID is required for lyrics.");
         }
 
-        var mediaUserToken = settings.AppleMusic?.MediaUserToken ?? string.Empty;
-        if (mediaUserToken.Length < MinMediaUserTokenLength)
-        {
-            mediaUserToken = await TryResolveWrapperMusicTokenAsync(cancellationToken) ?? string.Empty;
-        }
-
-        if (mediaUserToken.Length < MinMediaUserTokenLength)
-        {
-            return AppleLyrics.CreateError("Media user token is required for Apple Music lyrics.");
-        }
-
+        var mediaUserToken = NormalizeMediaUserToken(settings.AppleMusic?.MediaUserToken);
         var storefront = await _catalogService.ResolveStorefrontAsync(
             settings.AppleMusic?.Storefront,
             mediaUserToken,
@@ -127,6 +117,19 @@ public sealed class AppleLyricsService
         var lrcFormat = string.IsNullOrWhiteSpace(settings.LrcFormat) ? "lrc" : settings.LrcFormat;
 
         var ttml = await FetchLyricsTtmlAsync(appleId, storefront, language, lrcType, mediaUserToken, cancellationToken);
+        if (string.IsNullOrWhiteSpace(ttml) && string.IsNullOrWhiteSpace(mediaUserToken))
+        {
+            mediaUserToken = NormalizeMediaUserToken(await TryResolveWrapperMusicTokenAsync(cancellationToken));
+            if (!string.IsNullOrWhiteSpace(mediaUserToken))
+            {
+                storefront = await _catalogService.ResolveStorefrontAsync(
+                    settings.AppleMusic?.Storefront,
+                    mediaUserToken,
+                    cancellationToken);
+                ttml = await FetchLyricsTtmlAsync(appleId, storefront, language, lrcType, mediaUserToken, cancellationToken);
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(ttml))
         {
             return AppleLyrics.CreateError("Apple Music lyrics not available.");
@@ -450,6 +453,11 @@ public sealed class AppleLyricsService
             return catalogTtml;
         }
 
+        if (string.IsNullOrWhiteSpace(mediaUserToken))
+        {
+            return null;
+        }
+
         using var client = _httpClientFactory.CreateClient();
         return await TryFetchLyricsFromTypedEndpointsAsync(
             client,
@@ -486,11 +494,18 @@ public sealed class AppleLyricsService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Apple lyrics endpoint request failed for song {AppleId} lang={Lang}", appleId, lang);                }
+                    _logger.LogDebug(ex, "Apple lyrics endpoint request failed for song {AppleId} lang={Lang}", appleId, lang);
+                }
             }
         }
 
         return null;
+    }
+
+    private static string NormalizeMediaUserToken(string? mediaUserToken)
+    {
+        var trimmed = mediaUserToken?.Trim();
+        return trimmed is { Length: >= MinMediaUserTokenLength } ? trimmed : string.Empty;
     }
 
     private async Task<string?> TryFetchLyricsFromTypedEndpointsAsync(
