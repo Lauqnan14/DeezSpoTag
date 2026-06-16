@@ -637,6 +637,26 @@ WHERE status = 'paused';";
         PublishQueueStateChanged(string.Empty, "queued");
     }
 
+    public async Task<int> RecoverInterruptedPreResolutionAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET status = 'queued',
+    error = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE status = 'resolving';";
+        await using var command = new SqliteCommand(sql, connection);
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (affected > 0)
+        {
+            PublishQueueStateChanged(string.Empty, "queued");
+        }
+
+        return affected;
+    }
+
     private void PublishQueueStateChanged(string queueUuid, string status)
     {
         if (string.IsNullOrWhiteSpace(status))
@@ -729,7 +749,7 @@ WHERE queue_uuid = @queueUuid
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
 	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
-	WHERE status IN ('queued', 'resolving')
+	WHERE status = 'queued'
   {extraWhereClause}
 ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
 LIMIT 1;";

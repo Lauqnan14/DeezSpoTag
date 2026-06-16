@@ -376,39 +376,20 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         CancellationToken cancellationToken)
     {
         var sourceSelection = ResolveQobuzSource(payload);
-        if (!string.IsNullOrWhiteSpace(payload.QobuzId) && sourceSelection.HasTrackUrl)
+        if (sourceSelection.HasTrackUrl)
         {
             var directTrackId = ExtractQobuzTrackId(sourceSelection.TrackUrl);
             if (directTrackId.HasValue)
             {
-                var directResolution = await _qobuzTrackResolver.ValidateTrackIdAsync(
-                    directTrackId.Value,
-                    resolvedIsrc,
-                    payload.Title,
-                    payload.Artist,
-                    payload.Album,
-                    payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-                    cancellationToken);
-                if (directResolution != null)
-                {
-                    payload.QobuzId = directResolution.Track.Id.ToString();
-                    payload.QobuzResolutionSource = directResolution.Source;
-                    payload.QobuzResolutionScore = directResolution.Score;
-                    payload.SourceUrl = $"https://play.qobuz.com/track/{directResolution.Track.Id}";
-                    payload.ResolutionError = string.Empty;
-                    await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-                    return directResolution;
-                }
+                var directResolution = BuildResolvedUrlTrack(payload, directTrackId.Value, resolvedIsrc);
+                payload.QobuzId = directTrackId.Value.ToString();
+                payload.QobuzResolutionSource = directResolution.Source;
+                payload.QobuzResolutionScore = directResolution.Score;
+                payload.SourceUrl = $"https://play.qobuz.com/track/{directTrackId.Value}";
+                MarkResolutionComplete(payload);
+                await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+                return directResolution;
             }
-
-            _logger.LogWarning(
-                "Qobuz direct source rejected for {QueueUuid}: trackUrl={TrackUrl} title={Title} artist={Artist} isrc={Isrc}",
-                queueUuid,
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceSelection.TrackUrl),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Title),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Artist),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedIsrc ?? payload.Isrc));
-            ClearQobuzDirectSource(payload, sourceSelection.TrackUrl);
         }
 
         var resolvedTrack = await ResolvePreferredQobuzTrackAsync(payload, resolvedIsrc, cancellationToken);
@@ -421,26 +402,37 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         payload.QobuzResolutionSource = resolvedTrack.Source;
         payload.QobuzResolutionScore = resolvedTrack.Score;
         payload.SourceUrl = $"https://play.qobuz.com/track/{resolvedTrack.Track.Id}";
+        MarkResolutionComplete(payload);
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
         return resolvedTrack;
     }
 
-    private static void ClearQobuzDirectSource(QobuzQueueItem payload, string rejectedTrackUrl)
+    private static void MarkResolutionComplete(QobuzQueueItem payload)
     {
-        payload.QobuzId = string.Empty;
-        payload.QobuzResolutionSource = string.Empty;
-        payload.QobuzResolutionScore = null;
-        payload.ResolutionError = "Qobuz direct source did not match requested metadata.";
+        payload.ResolutionStatus = QueuePreResolutionPayload.Resolved;
+        payload.ResolvedAtUtc = DateTimeOffset.UtcNow;
+        payload.ResolvedEngine = EngineName;
+        payload.ResolvedSourceUrl = payload.SourceUrl;
+        payload.ResolvedQuality = payload.Quality;
+        payload.ResolvedAutoIndex = payload.AutoIndex;
+        payload.ResolutionError = string.Empty;
+    }
 
-        if (string.Equals(payload.SourceUrl, rejectedTrackUrl, StringComparison.OrdinalIgnoreCase))
+    private static QobuzTrackResolution BuildResolvedUrlTrack(
+        QobuzQueueItem payload,
+        int trackId,
+        string? resolvedIsrc)
+    {
+        var track = new DeezSpoTag.Core.Models.Qobuz.QobuzTrack
         {
-            payload.SourceUrl = string.Empty;
-        }
-
-        if (string.Equals(payload.ResolvedSourceUrl, rejectedTrackUrl, StringComparison.OrdinalIgnoreCase))
-        {
-            payload.ResolvedSourceUrl = string.Empty;
-        }
+            Id = trackId,
+            Title = payload.Title,
+            ISRC = resolvedIsrc ?? payload.Isrc,
+            Duration = Math.Max(0, payload.DurationSeconds),
+            TrackNumber = Math.Max(0, payload.TrackNumber),
+            MediaNumber = Math.Max(0, payload.DiscNumber)
+        };
+        return new QobuzTrackResolution(track, "resolved_url", 20);
     }
 
     private static QobuzSourceSelection ResolveQobuzSource(QobuzQueueItem payload)

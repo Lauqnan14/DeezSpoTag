@@ -42,13 +42,15 @@ public sealed class DownloadQueueOrderingTests
     }
 
     [Fact]
-    public async Task DequeueNextAnyAsync_PicksResolvingItemSoPreResolutionCannotBlockDownload()
+    public async Task RecoverInterruptedPreResolutionAsync_RequeuesResolvingItemForDownload()
     {
         await using var context = CreateContext();
         await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-resolving", status: "resolving"), CancellationToken.None);
 
+        var recovered = await context.QueueRepository.RecoverInterruptedPreResolutionAsync(CancellationToken.None);
         var next = await context.QueueRepository.DequeueNextAnyAsync(newestFirst: false, CancellationToken.None);
 
+        Assert.Equal(1, recovered);
         Assert.NotNull(next);
         Assert.Equal("queue-resolving", next!.QueueUuid);
         Assert.Equal("running", next.Status);

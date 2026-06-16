@@ -77,6 +77,27 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
     }
 
     [Fact]
+    public async Task DequeueNextAnyAsync_DoesNotClaimPreResolutionItem()
+    {
+        await using var context = CreateContext();
+        var item = CreateQueueItem("queue-resolving", "qobuz", "{\"ResolutionStatus\":\"resolving\"}");
+        await context.QueueRepository.EnqueueAsync(item, skipDuplicateCheck: true, CancellationToken.None);
+        var claimed = await context.QueueRepository.TryUpdateQueuedPayloadIfCurrentAsync(
+            item.QueueUuid,
+            item.PayloadJson,
+            item.PayloadJson!,
+            status: "resolving",
+            cancellationToken: CancellationToken.None);
+
+        var dequeued = await context.QueueRepository.DequeueNextAnyAsync(
+            newestFirst: false,
+            CancellationToken.None);
+
+        Assert.True(claimed);
+        Assert.Null(dequeued);
+    }
+
+    [Fact]
     public async Task TryUpdateQueuedIdentityIfCurrentAsync_PersistsResolvedIdentityColumns()
     {
         await using var context = CreateContext();

@@ -28,6 +28,10 @@ public sealed class QobuzResolutionGuardrailTests
             StringComparison.Ordinal);
 
         Assert.True(resolveIndex >= 0);
+        Assert.Contains("BuildResolvedUrlTrack(payload, directTrackId.Value, resolvedIsrc)", source, StringComparison.Ordinal);
+        Assert.Contains("new QobuzTrackResolution(track, \"resolved_url\", 20)", source, StringComparison.Ordinal);
+        Assert.Contains("if (sourceSelection.HasTrackUrl)", source, StringComparison.Ordinal);
+        Assert.Contains("payload.ResolutionStatus = QueuePreResolutionPayload.Resolved", source, StringComparison.Ordinal);
         Assert.True(contextIndex > resolveIndex);
         Assert.True(persistIndex > contextIndex);
         Assert.True(failureIndex > resolveIndex && failureIndex < contextIndex);

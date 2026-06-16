@@ -35,6 +35,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await _queueRepository.RecoverInterruptedPreResolutionAsync(stoppingToken);
         using var timer = new PeriodicTimer(PollInterval);
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -107,6 +108,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
             item.QueueUuid,
             item.PayloadJson,
             resolvingPayloadJson,
+            status: "resolving",
             cancellationToken: cancellationToken);
         if (!claimed)
         {
