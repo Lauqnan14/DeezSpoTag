@@ -180,6 +180,91 @@ public sealed class QobuzTrackResolverTests
         Assert.Null(result);
     }
 
+    [Theory]
+    [InlineData(
+        "USJZ10900031",
+        "Empire State Of Mind",
+        "JAŸ-Z",
+        "Jay Z",
+        "The Blueprint 3",
+        277000,
+        20654859)]
+    [InlineData(
+        "USUM71312049",
+        "23",
+        "Mike WiLL Made-It",
+        "Mike Will Made It",
+        "23",
+        252000,
+        11411080)]
+    public async Task ResolveTrackAsync_AcceptsExactIsrcCandidateWhenArtistIdentityDiffersByService(
+        string isrc,
+        string title,
+        string sourceArtist,
+        string qobuzArtist,
+        string album,
+        int durationMs,
+        int qobuzTrackId)
+    {
+        var service = new StubQobuzMetadataService();
+        service.SearchHandler = _ => new List<QobuzTrack>
+        {
+            new()
+            {
+                Id = qobuzTrackId,
+                ISRC = isrc,
+                Title = title,
+                Duration = (int)Math.Round(durationMs / 1000d),
+                Performer = new QobuzArtist { Name = qobuzArtist },
+                Album = new QobuzAlbum { Title = album }
+            }
+        };
+        var resolver = CreateResolver(service);
+
+        var result = await resolver.ResolveTrackAsync(
+            isrc,
+            title,
+            sourceArtist,
+            album,
+            durationMs,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(qobuzTrackId, result!.Track.Id);
+    }
+
+    [Fact]
+    public async Task ResolveTrackAsync_CleansSourceReleaseTypeSuffixBeforeAlbumLookup()
+    {
+        var service = new StubQobuzMetadataService();
+        service.AlbumSearchHandler = query => string.Equals(query, "Aminia Nyashinski", StringComparison.OrdinalIgnoreCase)
+            ? new List<QobuzTrack>
+            {
+                new()
+                {
+                    Id = 370472406,
+                    Title = "Aminia",
+                    Duration = 239,
+                    Performer = new QobuzArtist { Name = "Nyashinski" },
+                    Album = new QobuzAlbum { Title = "Aminia" }
+                }
+            }
+            : new List<QobuzTrack>();
+        var resolver = CreateResolver(service);
+
+        var result = await resolver.ResolveTrackAsync(
+            isrc: "ZA41S1733415",
+            title: "Aminia",
+            artist: "Nyashinski",
+            album: "Aminia - Single",
+            durationMs: 239000,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(370472406, result!.Track.Id);
+        Assert.Contains("Aminia Nyashinski", service.Queries);
+    }
+
     private static QobuzTrackResolver CreateResolver(StubQobuzMetadataService metadataService)
     {
         return new QobuzTrackResolver(

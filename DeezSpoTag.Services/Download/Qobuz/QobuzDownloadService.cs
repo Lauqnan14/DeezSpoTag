@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using IOFile = System.IO.File;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using Microsoft.Extensions.Logging;
@@ -1917,38 +1918,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static bool QobuzArtistsMatch(string expectedArtist, string foundArtist)
     {
-        var normExpected = NormalizeText(expectedArtist);
-        var normFound = NormalizeText(foundArtist);
-        if (string.IsNullOrWhiteSpace(normExpected) || string.IsNullOrWhiteSpace(normFound))
-        {
-            return false;
-        }
-
-        if (HasDirectArtistMatch(normExpected, normFound))
-        {
-            return true;
-        }
-
-        var expectedArtists = SplitArtists(normExpected);
-        var foundArtists = SplitArtists(normFound);
-        return HasOverlappingArtistTokens(expectedArtists, foundArtists)
+        return TrackTitleMatcher.ArtistsMatch(expectedArtist, foundArtist)
             || IsCrossScriptVariant(expectedArtist, foundArtist);
-    }
-
-    private static bool HasDirectArtistMatch(string normExpected, string normFound)
-    {
-        return normExpected == normFound
-            || normExpected.Contains(normFound, StringComparison.Ordinal)
-            || normFound.Contains(normExpected, StringComparison.Ordinal);
-    }
-
-    private static bool HasOverlappingArtistTokens(List<string> expectedArtists, List<string> foundArtists)
-    {
-        return expectedArtists.Any(exp => foundArtists.Any(fnd =>
-            exp == fnd
-            || exp.Contains(fnd, StringComparison.Ordinal)
-            || fnd.Contains(exp, StringComparison.Ordinal)
-            || SameWordsUnordered(exp, fnd)));
     }
 
     private static bool IsCrossScriptVariant(string expectedArtist, string foundArtist)

@@ -25,4 +25,19 @@ public sealed class TrackTitleMatcherTests
         string expected,
         string actual)
         => Assert.False(TrackTitleMatcher.TitlesMatch(expected, actual));
+
+    [Theory]
+    [InlineData("JAŸ-Z", "Jay Z")]
+    [InlineData("Mike WiLL Made-It", "Mike Will Made It")]
+    public void StrictArtistsMatch_TreatsCrossServicePunctuationAndDiacriticsAsSameArtist(
+        string expected,
+        string actual)
+    {
+        Assert.True(TrackTitleMatcher.StrictArtistsMatch(expected, actual));
+        Assert.True(TrackTitleMatcher.ArtistsMatch(expected, actual));
+    }
+
+    [Fact]
+    public void StrictArtistsMatch_DoesNotMatchUnrelatedArtists()
+        => Assert.False(TrackTitleMatcher.StrictArtistsMatch("Jay Z", "Sonny Rollins"));
 }

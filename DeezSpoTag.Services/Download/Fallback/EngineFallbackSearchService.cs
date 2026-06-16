@@ -712,11 +712,7 @@ public sealed class EngineFallbackSearchService
 
     private static bool StrictArtistsMatch(string? expected, string? actual)
     {
-        var expectedParts = SplitArtists(TrackTitleMatcher.NormalizeText(expected));
-        var actualParts = SplitArtists(TrackTitleMatcher.NormalizeText(actual));
-        return expectedParts.Count > 0
-            && actualParts.Count > 0
-            && expectedParts.Any(expectedPart => actualParts.Contains(expectedPart, StringComparer.Ordinal));
+        return TrackTitleMatcher.StrictArtistsMatch(expected, actual);
     }
 
     private static int ScoreTextMatch(string? expected, string? actual, int maxScore)

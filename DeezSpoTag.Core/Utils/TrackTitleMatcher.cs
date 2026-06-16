@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Core.Utils;
@@ -57,8 +59,8 @@ public static class TrackTitleMatcher
 
     public static bool ArtistsMatch(string? expected, string? actual)
     {
-        var expectedArtists = ExpandArtists(expected);
-        var actualArtists = ExpandArtists(actual);
+        var expectedArtists = ExpandComparableArtists(expected);
+        var actualArtists = ExpandComparableArtists(actual);
         if (expectedArtists.Count == 0 || actualArtists.Count == 0)
         {
             return false;
@@ -68,6 +70,18 @@ public static class TrackTitleMatcher
             exp == act
             || exp.Contains(act, StringComparison.Ordinal)
             || act.Contains(exp, StringComparison.Ordinal)));
+    }
+
+    public static bool StrictArtistsMatch(string? expected, string? actual)
+    {
+        var expectedArtists = ExpandComparableArtists(expected);
+        var actualArtists = ExpandComparableArtists(actual);
+        if (expectedArtists.Count == 0 || actualArtists.Count == 0)
+        {
+            return false;
+        }
+
+        return expectedArtists.Any(expectedArtist => actualArtists.Contains(expectedArtist, StringComparer.Ordinal));
     }
 
     public static string NormalizeText(string? value)
@@ -107,13 +121,41 @@ public static class TrackTitleMatcher
         return new TrackTitleSignature(cleaned, compact, toxicVariants, strictVariants);
     }
 
-    private static HashSet<string> ExpandArtists(string? artists)
+    private static HashSet<string> ExpandComparableArtists(string? artists)
     {
         return ArtistNameNormalizer
             .ExpandArtistNames(new[] { NormalizeText(artists) })
-            .Select(NormalizeText)
+            .Select(NormalizeComparableIdentity)
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static string NormalizeComparableIdentity(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var decomposed = value.Trim().ToLowerInvariant().Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(decomposed.Length);
+        foreach (var character in decomposed)
+        {
+            var category = CharUnicodeInfo.GetUnicodeCategory(character);
+            if (category == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            builder.Append(char.IsLetterOrDigit(character) ? character : ' ');
+        }
+
+        return Regex.Replace(
+            builder.ToString().Normalize(NormalizationForm.FormC),
+            @"\s+",
+            " ",
+            RegexOptions.None,
+            RegexTimeout).Trim();
     }
 
     private static HashSet<string> ExtractVariants(string title, IEnumerable<string> markers)

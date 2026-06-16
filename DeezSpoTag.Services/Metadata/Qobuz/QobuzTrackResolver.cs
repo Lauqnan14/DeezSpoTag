@@ -18,6 +18,11 @@ public sealed class QobuzTrackResolver
         "club mix", "remix", "live", "acoustic", "demo"
     };
 
+    private static readonly string[] AlbumReleaseTypeSuffixes =
+    {
+        "single", "ep"
+    };
+
     private readonly IQobuzMetadataService _metadataService;
     private readonly QobuzApiConfig _config;
     private readonly ILogger<QobuzTrackResolver> _logger;
@@ -57,7 +62,7 @@ public sealed class QobuzTrackResolver
         }
 
         var candidates = new Dictionary<int, QobuzTrack>();
-        await CollectAlbumCandidatesAsync(candidates, artist, album, cancellationToken);
+        await CollectAlbumCandidatesAsync(candidates, title, artist, album, cancellationToken);
         await CollectCandidatesAsync(candidates, title, artist, album, requireArtist: !string.IsNullOrWhiteSpace(isrc), cancellationToken);
 
         if (!string.IsNullOrWhiteSpace(isrc))
@@ -157,11 +162,12 @@ public sealed class QobuzTrackResolver
 
     private async Task CollectAlbumCandidatesAsync(
         Dictionary<int, QobuzTrack> candidates,
+        string? title,
         string? artist,
         string? album,
         CancellationToken cancellationToken)
     {
-        foreach (var query in BuildAlbumQueries(artist, album))
+        foreach (var query in BuildAlbumQueries(title, artist, album))
         {
             var albumTracks = await SearchAlbumTracksSafeAsync(query, cancellationToken);
             foreach (var track in albumTracks.Where(static track => track.Id > 0))
@@ -574,25 +580,81 @@ public sealed class QobuzTrackResolver
         return seen;
     }
 
-    private static HashSet<string> BuildAlbumQueries(string? artist, string? album)
+    private static HashSet<string> BuildAlbumQueries(string? title, string? artist, string? album)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(album))
+        var albumVariants = BuildAlbumTitleVariants(album);
+        if (albumVariants.Count == 0 && !string.IsNullOrWhiteSpace(title))
+        {
+            albumVariants = BuildAlbumTitleVariants(title);
+        }
+
+        if (albumVariants.Count == 0)
         {
             return seen;
         }
 
-        if (!string.IsNullOrWhiteSpace(artist))
+        foreach (var albumVariant in albumVariants)
         {
-            seen.Add($"{artist.Trim()} {album.Trim()}");
-            seen.Add($"{album.Trim()} {artist.Trim()}");
-        }
-        else
-        {
-            seen.Add(album.Trim());
+            if (!string.IsNullOrWhiteSpace(artist))
+            {
+                seen.Add($"{artist.Trim()} {albumVariant}");
+                seen.Add($"{albumVariant} {artist.Trim()}");
+            }
+            else
+            {
+                seen.Add(albumVariant);
+            }
         }
 
         return seen;
+    }
+
+    private static List<string> BuildAlbumTitleVariants(string? album)
+    {
+        var normalized = TrackTitleMatcher.NormalizeText(album);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return new List<string>();
+        }
+
+        var variants = new List<string> { normalized };
+        foreach (var suffix in AlbumReleaseTypeSuffixes)
+        {
+            AddAlbumVariant(variants, RemoveReleaseTypeSuffix(normalized, suffix));
+        }
+
+        return variants
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static void AddAlbumVariant(List<string> variants, string value)
+    {
+        if (!string.IsNullOrWhiteSpace(value)
+            && !variants.Contains(value, StringComparer.OrdinalIgnoreCase))
+        {
+            variants.Add(value);
+        }
+    }
+
+    private static string RemoveReleaseTypeSuffix(string value, string suffix)
+    {
+        var escapedSuffix = Regex.Escape(suffix);
+        var withoutBracketedSuffix = Regex.Replace(
+            value,
+            $@"\s*[\(\[]\s*{escapedSuffix}\s*[\)\]]\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase,
+            RegexTimeout).Trim();
+
+        return Regex.Replace(
+            withoutBracketedSuffix,
+            $@"\s*[-–—]\s*{escapedSuffix}\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase,
+            RegexTimeout).Trim();
     }
 
     private static bool TitlesMatch(string? expected, string? actual)
@@ -630,39 +692,12 @@ public sealed class QobuzTrackResolver
 
     private static bool ArtistsMatch(string? expected, string? actual)
     {
-        var normalizedExpected = TrackTitleMatcher.NormalizeText(expected);
-        var normalizedActual = TrackTitleMatcher.NormalizeText(actual);
-        if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))
-        {
-            return false;
-        }
-
-        if (normalizedExpected == normalizedActual)
-        {
-            return true;
-        }
-
-        if (normalizedExpected.Contains(normalizedActual, StringComparison.Ordinal)
-            || normalizedActual.Contains(normalizedExpected, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        var expectedParts = SplitArtists(normalizedExpected);
-        var actualParts = SplitArtists(normalizedActual);
-        return expectedParts.Any(exp => actualParts.Any(act =>
-            exp == act
-            || exp.Contains(act, StringComparison.Ordinal)
-            || act.Contains(exp, StringComparison.Ordinal)));
+        return TrackTitleMatcher.ArtistsMatch(expected, actual);
     }
 
     private static bool StrictArtistsMatch(string? expected, string? actual)
     {
-        var expectedParts = SplitArtists(TrackTitleMatcher.NormalizeText(expected));
-        var actualParts = SplitArtists(TrackTitleMatcher.NormalizeText(actual));
-        return expectedParts.Count > 0
-            && actualParts.Count > 0
-            && expectedParts.Any(expectedPart => actualParts.Contains(expectedPart, StringComparer.Ordinal));
+        return TrackTitleMatcher.StrictArtistsMatch(expected, actual);
     }
 
     private static bool AlbumMatches(string? expected, string? actual)
