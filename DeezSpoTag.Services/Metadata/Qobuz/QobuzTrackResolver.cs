@@ -130,10 +130,7 @@ public sealed class QobuzTrackResolver
             album,
             expectedDurationSec,
             score);
-        var hasExactIsrcIdentity = !string.IsNullOrWhiteSpace(isrc)
-            && IsExactIsrcMatch(track, isrc)
-            && !HasContradictoryMetadata(track, title, artist, expectedDurationSec);
-        if (!hasAuthoritativeMetadataMatch && !hasExactIsrcIdentity)
+        if (!hasAuthoritativeMetadataMatch)
         {
             return null;
         }
