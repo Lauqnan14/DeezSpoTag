@@ -82,6 +82,22 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
+    public void AutoTagStatusScript_PreservesManualHistoricalSelectionWhileLiveRunUpdates()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        var resetMethod = ExtractFunction(source, "function shouldResetManualHistorySelectionForLiveRun");
+        var realtimeMethod = ExtractFunction(source, "async function refreshRealtimeRunDetails");
+
+        Assert.Contains("return selectedRunId === liveRunId;", resetMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("selectedRunId !== liveRunId && isTodayDateToken(state.selectedDate)", resetMethod, StringComparison.Ordinal);
+        Assert.Contains("const shouldFollowRun = !state.manualHistorySelection", realtimeMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTagStatusScript_TreatsPausedRunsAsTerminalWarningState()
     {
         var repoRoot = ResolveRepoRoot();
@@ -319,6 +335,23 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         Assert.Contains("public AutoTagRunArchive? GetArchivedRun(string id)", source, StringComparison.Ordinal);
         Assert.Contains("if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ResolveArchivedRunRetentionPeriod())))", source, StringComparison.Ordinal);
         Assert.Contains("public void WarmRunIndexIfMissing()", source, StringComparison.Ordinal);
+    }
+
+    private static string ExtractFunction(string source, string functionName)
+    {
+        var index = source.IndexOf(functionName, StringComparison.Ordinal);
+        if (index < 0)
+        {
+            return string.Empty;
+        }
+
+        var nextFunction = source.IndexOf("\n    function ", index + functionName.Length, StringComparison.Ordinal);
+        var nextAsyncFunction = source.IndexOf("\n    async function ", index + functionName.Length, StringComparison.Ordinal);
+        var candidates = new[] { nextFunction, nextAsyncFunction }
+            .Where(position => position >= 0)
+            .ToArray();
+        var end = candidates.Length == 0 ? source.Length : candidates.Min();
+        return source[index..end];
     }
 
     private static string ResolveRepoRoot()

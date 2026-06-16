@@ -280,10 +280,10 @@
         const selectedRunId = normalizeRunId(state.selectedRunId);
         const liveRunId = normalizeRunId(job.id);
         if (!selectedRunId || !liveRunId) {
-            return true;
+            return false;
         }
 
-        return selectedRunId !== liveRunId && isTodayDateToken(state.selectedDate);
+        return selectedRunId === liveRunId;
     }
 
     function getRunsForDisplay(runs) {
