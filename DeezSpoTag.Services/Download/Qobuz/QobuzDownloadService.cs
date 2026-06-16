@@ -80,9 +80,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private readonly IQobuzCredentialProvider _credentialProvider;
     private readonly IQobuzPublicProviderRegistry _publicProviderRegistry;
     private readonly ResolveProxyClient _resolveProxyClient;
-    private static readonly object PreferredProviderLock = new();
-    private static string? _preferredProviderName;
-    private static DateTimeOffset _preferredProviderSetAtUtc;
+    private static readonly ConcurrentDictionary<string, PreferredProviderState> PreferredProviders = new(StringComparer.OrdinalIgnoreCase);
 
     public QobuzDownloadService(
         ILogger<QobuzDownloadService> logger,
@@ -642,7 +640,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 OutputPath = outputPath,
                 Request = request
             }, cancellationToken);
-            MarkPreferredProvider(provider.Name);
+            MarkPreferredProvider(provider, qualityCode);
             return new ProviderDownloadAttempt(true, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -652,7 +650,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             DownloadFileUtilities.TryDeleteFile(outputPath);
-            ClearPreferredProvider(provider.Name);
+            ClearPreferredProvider(provider, qualityCode);
             await _publicProviderRegistry.RecordFailureAsync(
                 provider.Id,
                 ClassifyProviderFailure(ex),
@@ -677,22 +675,21 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private async Task<ProviderCandidate[]> BuildOrderedProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
     {
         var providers = (await BuildProvidersAsync(trackId, qualityCode, cancellationToken)).ToList();
-        var preferredProviderName = GetPreferredProviderName();
-        if (string.IsNullOrWhiteSpace(preferredProviderName))
+        var preferredProvider = GetPreferredProvider(providers, qualityCode);
+        if (preferredProvider == null)
         {
             return providers.ToArray();
         }
 
         var preferredIndex = providers.FindIndex(provider =>
-            string.Equals(provider.Name, preferredProviderName, StringComparison.OrdinalIgnoreCase));
+            string.Equals(provider.Name, preferredProvider.Name, StringComparison.OrdinalIgnoreCase));
         if (preferredIndex <= 0)
         {
             return providers.ToArray();
         }
 
-        var preferred = providers[preferredIndex];
         providers.RemoveAt(preferredIndex);
-        providers.Insert(0, preferred);
+        providers.Insert(0, preferredProvider);
         return providers.ToArray();
     }
 
@@ -930,12 +927,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         CancellationToken cancellationToken)
     {
         var providers = await BuildProvidersAsync(trackId, qualityCode, cancellationToken);
-        var preferredProviderName = GetPreferredProviderName();
-        if (!string.IsNullOrWhiteSpace(preferredProviderName))
+        var preferredProvider = GetPreferredProvider(providers, qualityCode);
+        if (preferredProvider != null)
         {
-            var preferredProvider = providers.FirstOrDefault(provider =>
-                string.Equals(provider.Name, preferredProviderName, StringComparison.OrdinalIgnoreCase));
-            if (preferredProvider != null && !IsProviderCoolingDown(preferredProvider.Name))
+            if (!IsProviderCoolingDown(preferredProvider.Name))
             {
                 var preferredResolved = await TryResolveProviderAsync(preferredProvider, trackId, qualityCode, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(preferredResolved)
@@ -947,18 +942,18 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                         expectedDurationSeconds,
                         cancellationToken))
                 {
-                    MarkPreferredProvider(preferredProvider.Name);
+                    MarkPreferredProvider(preferredProvider, qualityCode);
                     return preferredResolved;
                 }
 
-                ClearPreferredProvider(preferredProvider.Name);
+                ClearPreferredProvider(preferredProvider, qualityCode);
             }
         }
 
         providers = providers
             .Where(provider => !IsProviderCoolingDown(provider.Name))
-            .Where(provider => string.IsNullOrWhiteSpace(preferredProviderName)
-                || !string.Equals(provider.Name, preferredProviderName, StringComparison.OrdinalIgnoreCase))
+            .Where(provider => preferredProvider == null
+                || !string.Equals(provider.Name, preferredProvider.Name, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         if (providers.Length == 0)
         {
@@ -968,14 +963,16 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var pending = providers
             .ToDictionary(
-                provider => provider.Name,
-                provider => TryResolveProviderAsync(provider, trackId, qualityCode, raceCts.Token),
+                provider => provider.Id,
+                provider => (Provider: provider, Task: TryResolveProviderAsync(provider, trackId, qualityCode, raceCts.Token)),
                 StringComparer.OrdinalIgnoreCase);
 
         while (pending.Count > 0)
         {
-            var completed = await Task.WhenAny(pending.Values);
-            var completedKey = pending.First(pair => ReferenceEquals(pair.Value, completed)).Key;
+            var completed = await Task.WhenAny(pending.Values.Select(static pair => pair.Task));
+            var completedPair = pending.First(pair => ReferenceEquals(pair.Value.Task, completed));
+            var completedKey = completedPair.Key;
+            var completedProvider = completedPair.Value.Provider;
             pending.Remove(completedKey);
 
             var resolved = await completed;
@@ -988,7 +985,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                     expectedDurationSeconds,
                     cancellationToken))
             {
-                MarkPreferredProvider(completedKey);
+                MarkPreferredProvider(completedProvider, qualityCode);
                 await raceCts.CancelAsync();
                 return resolved;
             }
@@ -997,57 +994,69 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return null;
     }
 
-    private static string? GetPreferredProviderName()
+    private static ProviderCandidate? GetPreferredProvider(
+        IEnumerable<ProviderCandidate> providers,
+        string qualityCode)
     {
-        lock (PreferredProviderLock)
+        foreach (var provider in providers)
         {
-            if (string.IsNullOrWhiteSpace(_preferredProviderName))
+            var key = BuildPreferredProviderKey(provider, qualityCode);
+            if (!PreferredProviders.TryGetValue(key, out var preferred))
             {
-                return null;
+                continue;
             }
 
-            if ((DateTimeOffset.UtcNow - _preferredProviderSetAtUtc) > PreferredProviderTtl)
+            if ((DateTimeOffset.UtcNow - preferred.SetAtUtc) > PreferredProviderTtl)
             {
-                _preferredProviderName = null;
-                _preferredProviderSetAtUtc = default;
-                return null;
+                PreferredProviders.TryRemove(key, out _);
+                continue;
             }
 
-            return _preferredProviderName;
+            if (string.Equals(provider.Id, preferred.ProviderId, StringComparison.OrdinalIgnoreCase))
+            {
+                return provider;
+            }
         }
+
+        return null;
     }
 
-    private static void MarkPreferredProvider(string providerName)
+    private static void MarkPreferredProvider(ProviderCandidate provider, string qualityCode)
     {
-        if (string.IsNullOrWhiteSpace(providerName))
+        if (string.IsNullOrWhiteSpace(provider.Name))
         {
             return;
         }
 
-        lock (PreferredProviderLock)
-        {
-            _preferredProviderName = providerName;
-            _preferredProviderSetAtUtc = DateTimeOffset.UtcNow;
-        }
+        PreferredProviders[BuildPreferredProviderKey(provider, qualityCode)] = new PreferredProviderState(
+            provider.Id,
+            DateTimeOffset.UtcNow);
     }
 
-    private static void ClearPreferredProvider(string providerName)
+    private static void ClearPreferredProvider(ProviderCandidate provider, string qualityCode)
     {
-        if (string.IsNullOrWhiteSpace(providerName))
+        if (string.IsNullOrWhiteSpace(provider.Name))
         {
             return;
         }
 
-        lock (PreferredProviderLock)
+        var key = BuildPreferredProviderKey(provider, qualityCode);
+        if (!PreferredProviders.TryGetValue(key, out var preferred)
+            || !string.Equals(preferred.ProviderId, provider.Id, StringComparison.OrdinalIgnoreCase))
         {
-            if (!string.Equals(_preferredProviderName, providerName, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            _preferredProviderName = null;
-            _preferredProviderSetAtUtc = default;
+            return;
         }
+
+        PreferredProviders.TryRemove(key, out _);
+    }
+
+    private static string BuildPreferredProviderKey(ProviderCandidate provider, string qualityCode)
+    {
+        var normalizedQuality = NormalizeQobuzQualityCode(qualityCode);
+        var regionKey = string.IsNullOrWhiteSpace(provider.RegionKey)
+            ? "global"
+            : provider.RegionKey.Trim().ToLowerInvariant();
+        return $"{normalizedQuality}|{regionKey}";
     }
 
     private async Task<string?> TryResolveProviderAsync(
@@ -1290,7 +1299,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     {
         var providers = new List<ProviderCandidate>
         {
-            new("official", "Qobuz Official", ct => TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, ct))
+            new("official", "Qobuz Official", "official", ct => TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, ct))
         };
         foreach (var provider in await _publicProviderRegistry.GetProvidersAsync(cancellationToken))
         {
@@ -1301,9 +1310,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
             providers.Add(provider.Kind switch
             {
-                "squid" => new ProviderCandidate(provider.Id, provider.DisplayName, ct => TryGetSquidStreamUrlAsync(provider.Endpoint, trackId, qualityCode, provider.Region ?? "US", ct)),
-                "musicdl" => new ProviderCandidate(provider.Id, provider.DisplayName, ct => TryGetMusicDlStreamUrlAsync(provider.Endpoint, trackId, qualityCode, ct)),
-                "monochrome" => new ProviderCandidate(provider.Id, provider.DisplayName, ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(provider.Endpoint, trackId, qualityCode, ct)),
+                "squid" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "US", ct => TryGetSquidStreamUrlAsync(provider.Endpoint, trackId, qualityCode, provider.Region ?? "US", ct)),
+                "musicdl" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "public", ct => TryGetMusicDlStreamUrlAsync(provider.Endpoint, trackId, qualityCode, ct)),
+                "monochrome" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "public", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(provider.Endpoint, trackId, qualityCode, ct)),
                 _ => throw new InvalidOperationException($"Unsupported Qobuz provider kind '{provider.Kind}'.")
             });
         }
@@ -1509,7 +1518,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return "unavailable";
     }
 
-    private sealed record ProviderCandidate(string Id, string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
+    private sealed record ProviderCandidate(string Id, string Name, string RegionKey, Func<CancellationToken, Task<string?>> ResolveAsync);
+
+    private sealed record PreferredProviderState(string ProviderId, DateTimeOffset SetAtUtc);
 
     private async Task<string?> TryGetMonochromeQobuzStreamUrlByTrackIdAsync(
         string providerBase,

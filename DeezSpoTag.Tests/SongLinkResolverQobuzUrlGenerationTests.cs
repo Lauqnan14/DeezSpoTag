@@ -21,6 +21,19 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
     {
         const string appleTrackId = "1716080873";
         var appleUrl = $"https://music.apple.com/us/song/yoyo-feat-sewersydaa/{appleTrackId}";
+        var metadataService = new StubQobuzMetadataService(query =>
+        {
+            return query.Contains("Virusi Mbaya", StringComparison.OrdinalIgnoreCase)
+                ? [new QobuzTrack
+                {
+                    Id = 411245095,
+                    Title = "YoYo (feat. Sewersydaa)",
+                    Duration = 204,
+                    Performer = new QobuzArtist { Name = "Virusi Mbaya" },
+                    Album = new QobuzAlbum { Title = "YoYo" }
+                }]
+                : [];
+        });
         var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
         {
             HttpClientFactory = new StubHttpClientFactory(request =>
@@ -45,13 +58,8 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
 
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             }),
-            QobuzMetadataService = new StubQobuzMetadataService(query =>
-            {
-                return query.Contains("Virusi Mbaya", StringComparison.OrdinalIgnoreCase)
-                    ? [new QobuzTrack { Id = 411245095, Title = "YoYo", Duration = 204, Performer = new QobuzArtist { Name = "Virusi Mbaya" } }]
-                    : [];
-            }),
-            QobuzOptions = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" }),
+            QobuzMetadataService = metadataService,
+            QobuzTrackResolver = CreateQobuzTrackResolver(metadataService),
             Logger = NullLogger<SongLinkResolver>.Instance
         });
 
@@ -66,6 +74,23 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
     {
         const string deezerId = "3135556";
         var deezerUrl = $"https://www.deezer.com/track/{deezerId}";
+        var metadataService = new StubQobuzMetadataService(query =>
+        {
+            return query.Contains("Daft Punk", StringComparison.OrdinalIgnoreCase)
+                ? [new QobuzTrack { Id = 99112233, Title = "Harder, Better, Faster, Stronger", Duration = 224, Performer = new QobuzArtist { Name = "Daft Punk" } }]
+                : [];
+        })
+        {
+            IsrcResult = new QobuzTrack
+            {
+                Id = 99112233,
+                ISRC = "GBDUW0000059",
+                Title = "Harder, Better, Faster, Stronger",
+                Duration = 224,
+                Performer = new QobuzArtist { Name = "Daft Punk" },
+                Album = new QobuzAlbum { Title = "Discovery" }
+            }
+        };
         var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
         {
             HttpClientFactory = new StubHttpClientFactory(request =>
@@ -87,13 +112,8 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
 
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             }),
-            QobuzMetadataService = new StubQobuzMetadataService(query =>
-            {
-                return query.Contains("Daft Punk", StringComparison.OrdinalIgnoreCase)
-                    ? [new QobuzTrack { Id = 99112233, Title = "Harder, Better, Faster, Stronger", Duration = 224, Performer = new QobuzArtist { Name = "Daft Punk" } }]
-                    : [];
-            }),
-            QobuzOptions = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" }),
+            QobuzMetadataService = metadataService,
+            QobuzTrackResolver = CreateQobuzTrackResolver(metadataService),
             Logger = NullLogger<SongLinkResolver>.Instance
         });
 
@@ -111,6 +131,14 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
         };
     }
 
+    private static QobuzTrackResolver CreateQobuzTrackResolver(IQobuzMetadataService metadataService)
+    {
+        return new QobuzTrackResolver(
+            metadataService,
+            Options.Create(new QobuzApiConfig { DefaultStore = "us-en" }),
+            NullLogger<QobuzTrackResolver>.Instance);
+    }
+
     private sealed class StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responder) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(new StubHttpMessageHandler(responder), disposeHandler: true);
@@ -124,7 +152,9 @@ public sealed class SongLinkResolverQobuzUrlGenerationTests
 
     private sealed class StubQobuzMetadataService(Func<string, List<QobuzTrack>> searchHandler) : IQobuzMetadataService
     {
-        public Task<QobuzTrack?> FindTrackByISRC(string isrc, CancellationToken ct) => Task.FromResult<QobuzTrack?>(null);
+        public QobuzTrack? IsrcResult { get; init; }
+
+        public Task<QobuzTrack?> FindTrackByISRC(string isrc, CancellationToken ct) => Task.FromResult(IsrcResult);
 
         public Task<QobuzAlbum?> FindAlbumByUPC(string upc, CancellationToken ct) => Task.FromResult<QobuzAlbum?>(null);
 

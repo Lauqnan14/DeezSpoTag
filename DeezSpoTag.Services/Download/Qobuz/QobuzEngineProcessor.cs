@@ -381,14 +381,27 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             var directTrackId = ExtractQobuzTrackId(sourceSelection.TrackUrl);
             if (directTrackId.HasValue)
             {
-                var directResolution = BuildResolvedUrlTrack(payload, directTrackId.Value, resolvedIsrc);
-                payload.QobuzId = directTrackId.Value.ToString();
-                payload.QobuzResolutionSource = directResolution.Source;
-                payload.QobuzResolutionScore = directResolution.Score;
-                payload.SourceUrl = $"https://play.qobuz.com/track/{directTrackId.Value}";
-                MarkResolutionComplete(payload);
-                await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-                return directResolution;
+                var directResolution = await ValidateQobuzUrlTrackSelectionAsync(
+                    payload,
+                    directTrackId.Value,
+                    resolvedIsrc,
+                    cancellationToken);
+                if (directResolution != null)
+                {
+                    payload.QobuzId = directResolution.Track.Id.ToString();
+                    payload.QobuzResolutionSource = directResolution.Source;
+                    payload.QobuzResolutionScore = directResolution.Score;
+                    payload.SourceUrl = $"https://play.qobuz.com/track/{directResolution.Track.Id}";
+                    MarkResolutionComplete(payload);
+                    await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
+                    return directResolution;
+                }
+
+                _logger.LogWarning(
+                    "Rejected queued Qobuz URL track id {TrackId} because it did not match requested metadata for {Artist} - {Title}.",
+                    directTrackId.Value,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Artist),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Title));
             }
         }
 
@@ -405,6 +418,37 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         MarkResolutionComplete(payload);
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
         return resolvedTrack;
+    }
+
+    private async Task<QobuzTrackResolution?> ValidateQobuzUrlTrackSelectionAsync(
+        QobuzQueueItem payload,
+        int trackId,
+        string? resolvedIsrc,
+        CancellationToken cancellationToken)
+    {
+        var validationIsrc = string.IsNullOrWhiteSpace(resolvedIsrc) ? payload.Isrc : resolvedIsrc;
+        var hasValidationIdentity = !string.IsNullOrWhiteSpace(validationIsrc)
+                                    || (!string.IsNullOrWhiteSpace(payload.Title)
+                                        && !string.IsNullOrWhiteSpace(payload.Artist));
+        if (!hasValidationIdentity)
+        {
+            return BuildResolvedUrlTrack(payload, trackId, resolvedIsrc);
+        }
+
+        var validated = await _qobuzTrackResolver.ValidateTrackIdAsync(
+            trackId,
+            validationIsrc,
+            payload.Title,
+            payload.Artist,
+            payload.Album,
+            payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
+            cancellationToken);
+        if (validated?.Track.Id > 0)
+        {
+            return new QobuzTrackResolution(validated.Track, "validated_url", validated.Score);
+        }
+
+        return null;
     }
 
     private static void MarkResolutionComplete(QobuzQueueItem payload)

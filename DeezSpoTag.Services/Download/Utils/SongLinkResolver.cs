@@ -60,15 +60,9 @@ public sealed class SongLinkResolver
         @"^(.+)\s+(?:by|von|de|par|di|door|av|af|przez)\s+(.+)$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         RegexTimeout);
-    private static readonly string[] QobuzTitleNoiseMarkers =
-    [
-        "remaster", "remastered", "radio edit", "single version", "album version", "live", "acoustic", "demo"
-    ];
-
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IQobuzMetadataService? _qobuzMetadataService;
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
-    private readonly QobuzApiConfig _qobuzConfig;
     private readonly SongLinkPersistentCacheStore? _persistentCacheStore;
     private readonly ILogger<SongLinkResolver> _logger;
     private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
@@ -82,7 +76,6 @@ public sealed class SongLinkResolver
         public required IHttpClientFactory HttpClientFactory { get; init; }
         public IQobuzMetadataService? QobuzMetadataService { get; init; }
         public QobuzTrackResolver? QobuzTrackResolver { get; init; }
-        public IOptions<QobuzApiConfig>? QobuzOptions { get; init; }
         public required ILogger<SongLinkResolver> Logger { get; init; }
         public SongLinkPersistentCacheStore? PersistentCacheStore { get; init; }
         public SpotifyTrackMetadataResolver? SpotifyTrackMetadataResolver { get; init; }
@@ -96,7 +89,6 @@ public sealed class SongLinkResolver
         _httpClientFactory = dependencies.HttpClientFactory;
         _qobuzMetadataService = dependencies.QobuzMetadataService;
         _qobuzTrackResolver = dependencies.QobuzTrackResolver;
-        _qobuzConfig = dependencies.QobuzOptions?.Value ?? new QobuzApiConfig();
         _logger = dependencies.Logger;
         _persistentCacheStore = dependencies.PersistentCacheStore;
         _spotifyTrackMetadataResolver = dependencies.SpotifyTrackMetadataResolver;
@@ -948,13 +940,7 @@ public sealed class SongLinkResolver
             return resolverResult;
         }
 
-        var metadataResult = await TryResolveQobuzUrlViaMetadataServiceAsync(normalizedIsrc, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(metadataResult))
-        {
-            return metadataResult;
-        }
-
-        return await TryResolveQobuzUrlViaPublicSearchAsync(normalizedIsrc, cancellationToken);
+        return await TryResolveQobuzUrlViaMetadataServiceAsync(normalizedIsrc, cancellationToken);
     }
 
     public async Task<string?> ResolveQobuzUrlByMetadataAsync(
@@ -990,10 +976,6 @@ public sealed class SongLinkResolver
             return null;
         }
 
-        var expectedDurationSec = durationMs.HasValue && durationMs.Value > 0
-            ? (int)Math.Round(durationMs.Value / 1000d)
-            : 0;
-
         var resolverResult = await TryResolveQobuzUrlViaResolverAsync(
             isrc,
             title,
@@ -1006,18 +988,7 @@ public sealed class SongLinkResolver
             return resolverResult;
         }
 
-        if (_qobuzMetadataService == null)
-        {
-            return null;
-        }
-
-        var queries = BuildQobuzQueries(title, artist);
-        var candidates = await SearchQobuzCandidatesByQueriesAsync(queries, cancellationToken);
-        var best = PickBestQobuzCandidate(candidates, title, artist, expectedDurationSec);
-
-        return best.HasValue
-            ? BuildQobuzTrackUrl(best.Value)
-            : null;
+        return null;
     }
 
     private async Task<string?> TryResolveQobuzUrlViaResolverAsync(
@@ -1087,210 +1058,6 @@ public sealed class SongLinkResolver
         }
     }
 
-    private async Task<string?> TryResolveQobuzUrlViaPublicSearchAsync(string isrc, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var searchUrl =
-                $"https://www.qobuz.com/api.json/0.2/track/search?query={WebUtility.UrlEncode(isrc)}&limit=1&app_id=798273057";
-            using var client = _httpClientFactory.CreateClient();
-            using var response = await client.GetAsync(searchUrl, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
-            if (!TryGetQobuzTrackItems(document.RootElement, out var items) || items.GetArrayLength() == 0)
-            {
-                return null;
-            }
-
-            return TryExtractQobuzTrackId(items[0], out var trackId)
-                ? BuildQobuzTrackUrl(trackId)
-                : null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Qobuz public ISRC lookup failed for {Isrc}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
-            }
-
-            return null;
-        }
-    }
-
-    private async Task<List<QobuzTrack>> SearchQobuzCandidatesByQueriesAsync(
-        IEnumerable<string> queries,
-        CancellationToken cancellationToken)
-    {
-        if (_qobuzMetadataService == null)
-        {
-            return new List<QobuzTrack>();
-        }
-
-        var results = new Dictionary<int, QobuzTrack>();
-        foreach (var query in queries)
-        {
-            if (string.IsNullOrWhiteSpace(query))
-            {
-                continue;
-            }
-
-            AddQobuzCandidates(results, await SearchQobuzTracksAsync(query, cancellationToken));
-            await AddQobuzAutosuggestCandidatesAsync(results, query, cancellationToken);
-        }
-
-        return results.Values.ToList();
-    }
-
-    private async Task<IReadOnlyList<QobuzTrack>> SearchQobuzTracksAsync(string query, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _qobuzMetadataService!.SearchTracks(query, cancellationToken);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
-        {
-            _logger.LogWarning(ex, "Qobuz track search throttled for query {Query}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(query));
-            return [];
-        }
-    }
-
-    private async Task AddQobuzAutosuggestCandidatesAsync(
-        Dictionary<int, QobuzTrack> results,
-        string query,
-        CancellationToken cancellationToken)
-    {
-        foreach (var store in ResolveQobuzStores())
-        {
-            AddQobuzCandidates(results, await SearchQobuzAutosuggestAsync(query, store, cancellationToken));
-        }
-    }
-
-    private async Task<IReadOnlyList<QobuzTrack>> SearchQobuzAutosuggestAsync(
-        string query,
-        string store,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _qobuzMetadataService!.SearchTracksAutosuggest(query, store, cancellationToken);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
-        {
-            _logger.LogWarning(
-                ex,
-                "Qobuz autosuggest throttled for query {Query} store {Store}.",
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(query),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(store));
-            return [];
-        }
-    }
-
-    private static void AddQobuzCandidates(Dictionary<int, QobuzTrack> results, IEnumerable<QobuzTrack> tracks)
-    {
-        foreach (var track in tracks.Where(static track => track.Id > 0))
-        {
-            results[track.Id] = track;
-        }
-    }
-
-    private IEnumerable<string> ResolveQobuzStores()
-    {
-        var configuredStores = _qobuzConfig.PreferredStores ?? new List<string>();
-        if (configuredStores.Count == 0)
-        {
-            yield return string.IsNullOrWhiteSpace(_qobuzConfig.DefaultStore) ? "us-en" : _qobuzConfig.DefaultStore;
-            yield break;
-        }
-
-        foreach (var store in configuredStores
-                     .Where(static value => !string.IsNullOrWhiteSpace(value))
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            yield return store;
-        }
-    }
-
-    private static List<string> BuildQobuzQueries(string title, string artist)
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var queries = new List<string>();
-        var normalizedTitle = NormalizeQobuzTitle(title);
-        var normalizedArtist = NormalizeQobuzArtist(artist);
-
-        if (!string.IsNullOrWhiteSpace(normalizedArtist) && !string.IsNullOrWhiteSpace(normalizedTitle))
-        {
-            AddQuery($"{normalizedArtist} {normalizedTitle}", seen, queries);
-            AddQuery($"{normalizedTitle} {normalizedArtist}", seen, queries);
-        }
-
-        AddQuery(normalizedTitle, seen, queries);
-        AddQuery(normalizedArtist, seen, queries);
-        AddQuery(title, seen, queries);
-        AddQuery(artist, seen, queries);
-
-        return queries;
-    }
-
-    private static void AddQuery(string? value, HashSet<string> seen, List<string> queries)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        var trimmed = value.Trim();
-        if (seen.Add(trimmed))
-        {
-            queries.Add(trimmed);
-        }
-    }
-
-    private static long? PickBestQobuzCandidate(
-        IEnumerable<QobuzTrack> candidates,
-        string title,
-        string artist,
-        int expectedDurationSec)
-    {
-        QobuzTrack? best = null;
-        var bestScore = double.MinValue;
-
-        foreach (var candidate in candidates.Where(static candidate => candidate != null && candidate.Id > 0))
-        {
-            var candidateArtist = candidate.Performer?.Name
-                                  ?? candidate.Album?.Artists?.FirstOrDefault()?.Name
-                                  ?? string.Empty;
-
-            var titleScore = ComputeTokenSimilarity(title, candidate.Title);
-            var artistScore = ComputeTokenSimilarity(artist, candidateArtist);
-            var durationScore = ComputeDurationScore(
-                expectedDurationSec > 0 ? expectedDurationSec * 1000 : null,
-                candidate.Duration > 0 ? candidate.Duration * 1000 : null);
-            var hiresBonus = candidate.MaximumBitDepth >= 24 || candidate.MaximumSamplingRate >= 96 ? 0.08d : 0d;
-
-            var score = (titleScore * 0.50d) + (artistScore * 0.35d) + (durationScore * 0.15d) + hiresBonus;
-            if (score <= bestScore)
-            {
-                continue;
-            }
-
-            best = candidate;
-            bestScore = score;
-        }
-
-        if (best == null)
-        {
-            return null;
-        }
-
-        return bestScore >= 0.58d ? best.Id : null;
-    }
-
     private static string BuildQobuzTrackUrl(long trackId)
     {
         return $"https://play.qobuz.com/track/{trackId}";
@@ -1299,38 +1066,6 @@ public sealed class SongLinkResolver
     private static string BuildQobuzTrackUrl(string qobuzTrackId)
     {
         return $"https://play.qobuz.com/track/{qobuzTrackId}";
-    }
-
-    private static bool TryGetQobuzTrackItems(JsonElement rootElement, out JsonElement items)
-    {
-        items = default;
-        if (!rootElement.TryGetProperty("tracks", out var tracks)
-            || tracks.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        if (tracks.TryGetProperty("total", out var total)
-            && total.ValueKind == JsonValueKind.Number
-            && total.GetInt32() <= 0)
-        {
-            return false;
-        }
-
-        return tracks.TryGetProperty("items", out items)
-               && items.ValueKind == JsonValueKind.Array;
-    }
-
-    private static bool TryExtractQobuzTrackId(JsonElement item, out int trackId)
-    {
-        trackId = 0;
-        if (!item.TryGetProperty("id", out var idElement) || idElement.ValueKind != JsonValueKind.Number)
-        {
-            return false;
-        }
-
-        trackId = idElement.GetInt32();
-        return trackId > 0;
     }
 
     private static bool IsDerivativeMismatch(string? sourceTitle, string? candidateTitle, string? sourceArtist, string? candidateArtist)
@@ -1841,54 +1576,6 @@ public sealed class SongLinkResolver
         }
 
         return long.TryParse(parsed, out _) ? parsed : null;
-    }
-
-    private static string NormalizeQobuzTitle(string? title)
-    {
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            return string.Empty;
-        }
-
-        var normalized = title.Trim();
-        normalized = Regex.Replace(normalized, @"\((?:feat|ft)\.?[^)]*\)", string.Empty, RegexOptions.IgnoreCase, RegexTimeout);
-        normalized = Regex.Replace(normalized, @"\[(?:feat|ft)\.?[^\]]*\]", string.Empty, RegexOptions.IgnoreCase, RegexTimeout);
-
-        foreach (var marker in QobuzTitleNoiseMarkers)
-        {
-            normalized = Regex.Replace(
-                normalized,
-                $@"\s*[-–]\s*{Regex.Escape(marker)}\s*$",
-                string.Empty,
-                RegexOptions.IgnoreCase,
-                RegexTimeout);
-            normalized = Regex.Replace(
-                normalized,
-                $@"\(({Regex.Escape(marker)})\)\s*$",
-                string.Empty,
-                RegexOptions.IgnoreCase,
-                RegexTimeout);
-            normalized = Regex.Replace(
-                normalized,
-                $@"\[({Regex.Escape(marker)})\]\s*$",
-                string.Empty,
-                RegexOptions.IgnoreCase,
-                RegexTimeout);
-        }
-
-        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
-    }
-
-    private static string NormalizeQobuzArtist(string? artist)
-    {
-        if (string.IsNullOrWhiteSpace(artist))
-        {
-            return string.Empty;
-        }
-
-        var normalized = artist.Trim();
-        normalized = Regex.Replace(normalized, @"\b(feat|ft)\.?\b.*$", string.Empty, RegexOptions.IgnoreCase, RegexTimeout);
-        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
     }
 
     private static string? NormalizeIsrc(string? value)

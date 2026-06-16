@@ -82,7 +82,6 @@ public static class DownloadServiceExtensions
             HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
             QobuzMetadataService = sp.GetService<IQobuzMetadataService>(),
             QobuzTrackResolver = sp.GetService<QobuzTrackResolver>(),
-            QobuzOptions = sp.GetService<IOptions<QobuzApiConfig>>(),
             Logger = sp.GetRequiredService<ILogger<SongLinkResolver>>(),
             PersistentCacheStore = sp.GetService<SongLinkPersistentCacheStore>(),
             SpotifyTrackMetadataResolver = sp.GetService<SpotifyTrackMetadataResolver>(),

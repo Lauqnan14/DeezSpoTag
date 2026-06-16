@@ -28,8 +28,10 @@ public sealed class QobuzResolutionGuardrailTests
             StringComparison.Ordinal);
 
         Assert.True(resolveIndex >= 0);
-        Assert.Contains("BuildResolvedUrlTrack(payload, directTrackId.Value, resolvedIsrc)", source, StringComparison.Ordinal);
+        Assert.Contains("ValidateQobuzUrlTrackSelectionAsync", source, StringComparison.Ordinal);
+        Assert.Contains("_qobuzTrackResolver.ValidateTrackIdAsync", source, StringComparison.Ordinal);
         Assert.Contains("new QobuzTrackResolution(track, \"resolved_url\", 20)", source, StringComparison.Ordinal);
+        Assert.Contains("new QobuzTrackResolution(validated.Track, \"validated_url\", validated.Score)", source, StringComparison.Ordinal);
         Assert.Contains("if (sourceSelection.HasTrackUrl)", source, StringComparison.Ordinal);
         Assert.Contains("payload.ResolutionStatus = QueuePreResolutionPayload.Resolved", source, StringComparison.Ordinal);
         Assert.True(contextIndex > resolveIndex);
@@ -49,6 +51,22 @@ public sealed class QobuzResolutionGuardrailTests
         Assert.Contains("DownloadDedupeService DedupeService", controllerServices, StringComparison.Ordinal);
         Assert.Contains("await dedupeService.CheckAsync", helper, StringComparison.Ordinal);
         Assert.DoesNotContain("RequeueAsync(existing.QueueUuid", helper, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QobuzResolution_UsesSingleAuthoritativeResolverPath()
+    {
+        var songLinkResolver = ReadSource("DeezSpoTag.Services/Download/Utils/SongLinkResolver.cs");
+        var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
+
+        Assert.DoesNotContain("TryResolveQobuzUrlViaPublicSearchAsync", songLinkResolver, StringComparison.Ordinal);
+        Assert.DoesNotContain("PickBestQobuzCandidate", songLinkResolver, StringComparison.Ordinal);
+        Assert.DoesNotContain("SearchQobuzCandidatesByQueriesAsync", songLinkResolver, StringComparison.Ordinal);
+        Assert.Contains("return await TryResolveQobuzUrlViaMetadataServiceAsync(normalizedIsrc, cancellationToken);", songLinkResolver, StringComparison.Ordinal);
+        Assert.Contains("var resolverResult = await TryResolveQobuzUrlViaResolverAsync", songLinkResolver, StringComparison.Ordinal);
+
+        Assert.Contains("var validated = await _qobuzTrackResolver.ValidateTrackIdAsync", downloadIntentService, StringComparison.Ordinal);
+        Assert.Contains("Rejected Qobuz mapped URL that did not match requested track", downloadIntentService, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

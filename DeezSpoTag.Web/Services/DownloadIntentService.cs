@@ -2873,13 +2873,61 @@ public sealed class DownloadIntentService
             }
         }
 
-        if (!string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase)
-            || !string.IsNullOrWhiteSpace(mappedUrl))
+        if (!string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
         {
             return (true, mappedUrl ?? string.Empty, mappingSource);
         }
 
+        if (string.IsNullOrWhiteSpace(mappedUrl))
+        {
+            return (false, string.Empty, string.Empty);
+        }
+
+        var mappedTrackId = TryExtractQobuzTrackId(mappedUrl);
+        if (!mappedTrackId.HasValue)
+        {
+            return (false, string.Empty, string.Empty);
+        }
+
+        var validated = await _qobuzTrackResolver.ValidateTrackIdAsync(
+            mappedTrackId.Value,
+            intent.Isrc,
+            intent.Title,
+            intent.Artist,
+            intent.Album,
+            intent.DurationMs > 0 ? intent.DurationMs : null,
+            cancellationToken);
+        if (validated?.Track.Id > 0)
+        {
+            return (true, $"https://play.qobuz.com/track/{validated.Track.Id}", $"{mappingSource}:validated");
+        }
+
+        _activityLog.Warn(
+            $"Rejected Qobuz mapped URL that did not match requested track: title='{intent.Title}' artist='{intent.Artist}' isrc='{intent.Isrc}'");
         return (false, string.Empty, string.Empty);
+    }
+
+    private static int? TryExtractQobuzTrackId(string? sourceUrl)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrl)
+            || !Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
+            || !parsed.Host.Contains(QobuzDomain, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var segments = parsed.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (segments[i].Equals("track", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(segments[i + 1], out var trackId)
+                && trackId > 0)
+            {
+                return trackId;
+            }
+        }
+
+        return null;
     }
 
     private static string? ResolveSongLinkMappedUrl(SongLinkResult songLink, string engine, string sourceUrl)
