@@ -42,6 +42,7 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public TimeSpan? Duration { get; set; }
     public int? TrackNumber { get; set; }
     public int? TrackTotal { get; set; }
+    public string? ReleaseType { get; set; }
     public int? DiscNumber { get; set; }
     public string? Isrc { get; set; }
     public string? Label { get; set; }

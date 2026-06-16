@@ -32,6 +32,7 @@ public sealed class DiscogsPlatform : AutoTagPlatformBase
                 SupportedTag.TrackNumber,
                 SupportedTag.DiscNumber,
                 SupportedTag.TrackTotal,
+                SupportedTag.ReleaseType,
                 SupportedTag.OtherTags
             },
             CustomOptions = new PlatformCustomOptions

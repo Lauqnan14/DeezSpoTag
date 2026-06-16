@@ -30,6 +30,7 @@ public sealed class JunoDownloadPlatform : AutoTagPlatformBase
                 SupportedTag.ReleaseId,
                 SupportedTag.TrackNumber,
                 SupportedTag.TrackTotal,
+                SupportedTag.ReleaseType,
                 SupportedTag.Duration
             }
         };

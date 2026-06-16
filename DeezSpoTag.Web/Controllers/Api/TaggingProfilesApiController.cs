@@ -178,6 +178,7 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Cover = ParseTagSource(tagConfigObject, "cover"),
             TrackNumber = ParseTagSource(tagConfigObject, "trackNumber"),
             TrackTotal = ParseTagSource(tagConfigObject, "trackTotal"),
+            ReleaseType = ParseTagSource(tagConfigObject, "releaseType"),
             DiscNumber = ParseTagSource(tagConfigObject, "discNumber"),
             DiscTotal = ParseTagSource(tagConfigObject, "discTotal"),
             Genre = ParseTagSource(tagConfigObject, "genre"),
@@ -366,6 +367,7 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Cover = TagSource.None,
             TrackNumber = TagSource.None,
             TrackTotal = TagSource.None,
+            ReleaseType = TagSource.None,
             DiscNumber = TagSource.None,
             DiscTotal = TagSource.None,
             Genre = TagSource.None,
@@ -458,6 +460,9 @@ public sealed class TaggingProfilesApiController : ControllerBase
                 break;
             case "trackTotal":
                 config.TrackTotal = MergeTagSource(config.TrackTotal, source);
+                break;
+            case "releaseType":
+                config.ReleaseType = MergeTagSource(config.ReleaseType, source);
                 break;
             case "discNumber":
                 config.DiscNumber = MergeTagSource(config.DiscNumber, source);

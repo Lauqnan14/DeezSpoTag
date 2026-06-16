@@ -44,6 +44,8 @@ public sealed class MusicBrainzPlatform : AutoTagPlatformBase
                 SupportedTag.Label,
                 SupportedTag.CatalogNumber,
                 SupportedTag.TrackNumber,
+                SupportedTag.TrackTotal,
+                SupportedTag.ReleaseType,
                 SupportedTag.Genre),
             RequiresAuth = false
         };

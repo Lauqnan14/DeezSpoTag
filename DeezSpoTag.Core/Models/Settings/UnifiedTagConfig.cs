@@ -11,6 +11,7 @@ public class UnifiedTagConfig
 
     public TagSource TrackNumber { get; set; } = TagSource.DownloadSource;
     public TagSource TrackTotal { get; set; } = TagSource.DownloadSource;
+    public TagSource ReleaseType { get; set; } = TagSource.DownloadSource;
     public TagSource DiscNumber { get; set; } = TagSource.DownloadSource;
     public TagSource DiscTotal { get; set; } = TagSource.DownloadSource;
 

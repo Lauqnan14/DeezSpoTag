@@ -23,6 +23,7 @@ public enum SupportedTag
     Remixer,
     TrackNumber,
     TrackTotal,
+    ReleaseType,
     DiscNumber,
     Mood,
     SyncedLyrics,

@@ -40,6 +40,7 @@ public static class TaggingProfileCanonicalizer
         new("cover", c => c.Cover, (c, v) => c.Cover = v, "albumArt"),
         new("trackNumber", c => c.TrackNumber, (c, v) => c.TrackNumber = v),
         new("trackTotal", c => c.TrackTotal, (c, v) => c.TrackTotal = v),
+        new("releaseType", c => c.ReleaseType, (c, v) => c.ReleaseType = v),
         new("discNumber", c => c.DiscNumber, (c, v) => c.DiscNumber = v),
         new("discTotal", c => c.DiscTotal, (c, v) => c.DiscTotal = v),
         new("genre", c => c.Genre, (c, v) => c.Genre = v),

@@ -300,6 +300,7 @@ public sealed class MusicBrainzMatcher
         if (release.ReleaseGroup != null)
         {
             track.Other.Add(("MUSICBRAINZ_RELEASEGROUPID", new List<string> { release.ReleaseGroup.Id }));
+            track.ReleaseType = AutoTagReleaseCategory.Resolve(release.ReleaseGroup.PrimaryType, track.TrackTotal);
         }
 
         if (!string.IsNullOrWhiteSpace(release.Barcode))
@@ -578,6 +579,7 @@ public sealed class MusicBrainzMatcher
             Duration = track.Duration,
             TrackNumber = track.TrackNumber,
             TrackTotal = track.TrackTotal,
+            ReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal),
             DiscNumber = track.DiscNumber,
             Isrc = track.Isrc,
             Label = track.Label,

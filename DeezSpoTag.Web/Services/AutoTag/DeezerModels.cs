@@ -155,6 +155,8 @@ public sealed class DeezerAlbumFull
     public string Label { get; set; } = "";
     [JsonPropertyName("nb_tracks")]
     public ushort NbTracks { get; set; }
+    [JsonPropertyName("record_type")]
+    public string? RecordType { get; set; }
     public int Duration { get; set; }
     [JsonPropertyName("release_date")]
     public string ReleaseDate { get; set; } = "";
@@ -194,6 +196,7 @@ public sealed class DeezerTrackInfo
     public int? TrackNumber { get; set; }
     public int? DiscNumber { get; set; }
     public int? TrackTotal { get; set; }
+    public string? ReleaseType { get; set; }
     public long? Bpm { get; set; }
     public bool? Explicit { get; set; }
     public string? Barcode { get; set; }

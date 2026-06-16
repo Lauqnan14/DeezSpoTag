@@ -37,6 +37,7 @@ public sealed class BeatportPlatform : AutoTagPlatformBase
                 SupportedTag.Remixer,
                 SupportedTag.CatalogNumber,
                 SupportedTag.TrackTotal,
+                SupportedTag.ReleaseType,
                 SupportedTag.ISRC,
                 SupportedTag.TrackNumber
             },

@@ -263,6 +263,7 @@ public sealed class SpotifyMatcher
             TrackNumber = track.TrackNumber,
             DiscNumber = track.DiscNumber,
             TrackTotal = track.TrackTotal,
+            ReleaseType = AutoTagReleaseCategory.Resolve(null, track.TrackTotal),
             Label = track.Label,
             Genres = track.Genres.ToList(),
             Danceability = track.Danceability,

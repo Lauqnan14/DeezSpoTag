@@ -33,6 +33,7 @@ public sealed class TraxsourcePlatform : AutoTagPlatformBase
                 SupportedTag.AlbumArtist,
                 SupportedTag.TrackNumber,
                 SupportedTag.TrackTotal,
+                SupportedTag.ReleaseType,
                 SupportedTag.AlbumArt
             }
         };

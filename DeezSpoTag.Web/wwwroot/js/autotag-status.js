@@ -1548,6 +1548,7 @@
             { key: "composers", label: "Composers" },
             { key: "trackNumber", label: "Track #" },
             { key: "trackTotal", label: "Track Total" },
+            { key: "releaseType", label: "Release Type" },
             { key: "discNumber", label: "Disc #" },
             { key: "discTotal", label: "Disc Total" },
             { key: "genres", label: "Genres" },

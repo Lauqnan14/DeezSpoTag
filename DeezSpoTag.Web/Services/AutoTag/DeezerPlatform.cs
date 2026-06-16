@@ -24,6 +24,7 @@ public sealed class DeezerPlatform : AutoTagPlatformBase
                     "albumArtist",
                     "trackNumber",
                     "trackTotal",
+                    "releaseType",
                     "discNumber",
                     "discTotal",
                     "genre",

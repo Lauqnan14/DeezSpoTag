@@ -493,6 +493,7 @@ public sealed class DeezerMatcher
 
             track.Genres = album.Genres.Data.Select(genre => genre.Name).ToList();
             track.TrackTotal = album.NbTracks;
+            track.ReleaseType = AutoTagReleaseCategory.Resolve(album.RecordType, album.NbTracks);
             track.Label = album.Label;
             track.AlbumArtists = album.Contributors.Select(artist => artist.Name).ToList();
             track.Barcode ??= Normalize(album.Upc);
@@ -625,6 +626,7 @@ public sealed class DeezerMatcher
             TrackNumber = track.TrackNumber,
             DiscNumber = track.DiscNumber,
             TrackTotal = track.TrackTotal,
+            ReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal),
             Bpm = track.Bpm,
             Explicit = track.Explicit,
             Other = other

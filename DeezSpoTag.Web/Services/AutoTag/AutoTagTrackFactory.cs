@@ -43,6 +43,7 @@ internal static class AutoTagTrackFactory
             Duration = input.Duration,
             TrackNumber = input.TrackNumber,
             TrackTotal = input.TrackTotal,
+            ReleaseType = AutoTagReleaseCategory.Resolve(null, input.TrackTotal),
             ReleaseDate = input.ReleaseDate
         };
     }
@@ -136,6 +137,7 @@ internal static class AutoTagTrackFactory
         autoTagTrack.TrackId = track.TrackId;
         autoTagTrack.Remixers = track.Remixers.ToList();
         autoTagTrack.Isrc = track.Isrc;
+        autoTagTrack.ReleaseType = AutoTagReleaseCategory.Resolve(null, autoTagTrack.TrackTotal);
         return autoTagTrack;
     }
 }

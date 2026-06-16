@@ -110,6 +110,7 @@ public class AutoTagMetadataService
         lookup["discNumber"] = SupportedTag.DiscNumber;
         lookup["duration"] = SupportedTag.Duration;
         lookup["trackTotal"] = SupportedTag.TrackTotal;
+        lookup["releaseType"] = SupportedTag.ReleaseType;
         lookup["isrc"] = SupportedTag.ISRC;
         lookup["publishDate"] = SupportedTag.PublishDate;
         lookup["releaseDate"] = SupportedTag.ReleaseDate;

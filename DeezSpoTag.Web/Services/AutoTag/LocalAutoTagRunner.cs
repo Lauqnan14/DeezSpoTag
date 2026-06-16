@@ -99,6 +99,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string AlbumArtistTag = "albumArtist";
     private const string TrackTotalTag = "trackTotal";
+    private const string ReleaseTypeTag = "releaseType";
     private const string AlbumTag = "album";
     private const string CatalogNumberTag = "catalogNumber";
     private const string ReleaseIdTag = "releaseId";
@@ -126,6 +127,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string ExplicitTag = "explicit";
     private const string ItunesAdvisoryTag = "ITUNESADVISORY";
     private const string TrackTotalRawTag = "TRACKTOTAL";
+    private const string ReleaseTypeRawTag = "RELEASETYPE";
     private const string DiscTotalRawTag = "DISCTOTAL";
     private const string TitleUpperTag = "TITLE";
     private const string ArtistUpperTag = "ARTIST";
@@ -3681,6 +3683,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string platformId,
         CancellationToken token)
     {
+        EnsureReleaseCategory(track);
         UpdateAutoTagCapabilities(platformId, track);
         var separator = ResolveSeparatorForFormat(config, Path.GetExtension(filePath));
         var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId, track, settings);
@@ -4711,13 +4714,30 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void WriteOtherTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
-        if (!context.EnabledTags.Contains(OtherTagsTag) || context.SourceTrack.Other.Count == 0)
+        if (!context.EnabledTags.Contains(OtherTagsTag)
+            && !context.EnabledTags.Contains(ReleaseTypeTag))
+        {
+            return;
+        }
+
+        if (context.SourceTrack.Other.Count == 0)
         {
             return;
         }
 
         foreach (var kvp in context.SourceTrack.Other)
         {
+            var isReleaseType = kvp.Key.Equals(ReleaseTypeRawTag, StringComparison.OrdinalIgnoreCase);
+            if (isReleaseType && !HasReleaseTypeTagEnabled(context.EnabledTags))
+            {
+                continue;
+            }
+
+            if (!isReleaseType && !context.EnabledTags.Contains(OtherTagsTag))
+            {
+                continue;
+            }
+
             if (!ShouldAllowLyricsOtherTagKey(
                     kvp.Key,
                     context.AllowsLyricsBySettings,
@@ -4729,7 +4749,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 continue;
             }
 
-            SetRaw(tagWriteContext, kvp.Key, SupportedTag.OtherTags, kvp.Value.ToList());
+            SetRaw(tagWriteContext, kvp.Key, isReleaseType ? SupportedTag.ReleaseType : SupportedTag.OtherTags, kvp.Value.ToList());
         }
     }
 
@@ -5281,6 +5301,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         map[DiscNumberTag] = SupportedTag.DiscNumber;
         map[DurationTag] = SupportedTag.Duration;
         map[TrackTotalTag] = SupportedTag.TrackTotal;
+        map[ReleaseTypeTag] = SupportedTag.ReleaseType;
         map[DiscTotalTag] = SupportedTag.DiscNumber;
         map["isrc"] = SupportedTag.ISRC;
         map[PublishDateTag] = SupportedTag.PublishDate;
@@ -5411,6 +5432,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         add(CatalogNumberTag, !string.IsNullOrWhiteSpace(track.CatalogNumber));
         add(TrackNumberTag, track.TrackNumber.HasValue && track.TrackNumber.Value > 0);
         add(TrackTotalTag, track.TrackTotal.HasValue && track.TrackTotal.Value > 0);
+        add(ReleaseTypeTag, !string.IsNullOrWhiteSpace(AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal)));
         add(DiscTotalTag, HasOtherTagValues(track, DiscTotalTag));
         add(DiscNumberTag, track.DiscNumber.HasValue && track.DiscNumber.Value > 0);
         add(DurationTag, track.Duration.HasValue && track.Duration.Value.TotalSeconds > 0);
@@ -5474,6 +5496,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static bool HasOtherTagValues(AutoTagTrack track, string key)
     {
         return track.Other.TryGetValue(key, out var values) && values.Count > 0;
+    }
+
+    private static bool HasReleaseTypeTagEnabled(ISet<string> enabledTags)
+        => enabledTags.Contains(ReleaseTypeTag) || enabledTags.Contains(OtherTagsTag);
+
+    private static void EnsureReleaseCategory(AutoTagTrack track)
+    {
+        var releaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal);
+        if (string.IsNullOrWhiteSpace(releaseType))
+        {
+            return;
+        }
+
+        track.ReleaseType = releaseType;
+        track.Other[ReleaseTypeRawTag] = new List<string> { releaseType };
     }
 
     private static string[] ApplySeparator(List<string> values, string separator, bool useNullSeparator = false)
@@ -5553,6 +5590,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Version => TagRawProbe.HasId3Raw(tag, "TIT3"),
             SupportedTag.TrackNumber => tag.Track > 0,
             SupportedTag.TrackTotal => tag.TrackCount > 0,
+            SupportedTag.ReleaseType => TagRawProbe.HasId3Raw(tag, ReleaseTypeRawTag),
             SupportedTag.DiscNumber => tag.Disc > 0,
             SupportedTag.Duration => TagRawProbe.HasId3Raw(tag, "TLEN"),
             SupportedTag.Remixer => TagRawProbe.HasId3Raw(tag, "TPE4"),
@@ -5600,6 +5638,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Version => tag.GetField("SUBTITLE").Length > 0,
             SupportedTag.TrackNumber => tag.GetField(TrackNumberUpperTag).Length > 0,
             SupportedTag.TrackTotal => tag.GetField(TrackTotalRawTag).Length > 0,
+            SupportedTag.ReleaseType => tag.GetField(ReleaseTypeRawTag).Length > 0,
             SupportedTag.DiscNumber => tag.GetField("DISCNUMBER").Length > 0,
             SupportedTag.Duration => tag.GetField(LengthUpperTag).Length > 0,
             SupportedTag.Remixer => tag.GetField(RemixerUpperTag).Length > 0,
@@ -5648,6 +5687,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Version => Mp4TagHelper.HasRaw(file, "desc"),
             SupportedTag.TrackNumber => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.TrackTotal => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.ReleaseType => Mp4TagHelper.HasRaw(file, ReleaseTypeRawTag),
             SupportedTag.DiscNumber => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.Duration => Mp4TagHelper.HasRaw(file, LengthUpperTag),
             SupportedTag.Remixer => Mp4TagHelper.HasRaw(file, RemixerUpperTag),
@@ -5794,7 +5834,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         foreach (var kvp in otherTags.Where(kvp => kvp.Value.Count > 0))
         {
-            writes.Add(new CustomTagWrite(OtherTagsTag, SupportedTag.OtherTags, kvp.Key, kvp.Value.ToList()));
+            var isReleaseType = kvp.Key.Equals(ReleaseTypeRawTag, StringComparison.OrdinalIgnoreCase);
+            writes.Add(new CustomTagWrite(
+                isReleaseType ? ReleaseTypeTag : OtherTagsTag,
+                isReleaseType ? SupportedTag.ReleaseType : SupportedTag.OtherTags,
+                kvp.Key,
+                kvp.Value.ToList()));
         }
     }
 
