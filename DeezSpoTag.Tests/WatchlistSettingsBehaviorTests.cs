@@ -164,7 +164,11 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var watchlistScriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
 
         Assert.DoesNotContain(WatchMaxItemsPerRunName, artistWatchSource, StringComparison.Ordinal);
-        Assert.DoesNotContain(WatchMaxItemsPerRunName, playlistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("BeginRunIfInactive(watchSettings.WatchMaxItemsPerRun)", playlistWatchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            WatchMaxItemsPerRunName,
+            playlistWatchSource.Replace("BeginRunIfInactive(watchSettings.WatchMaxItemsPerRun)", string.Empty, StringComparison.Ordinal),
+            StringComparison.Ordinal);
         Assert.Contains(WatchMaxItemsPerRunName, hostedSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxReleasesPerArtistName, artistWatchSource, StringComparison.Ordinal);
         Assert.Contains("ResolveArtistAlbumGroups(artist)", artistWatchSource, StringComparison.Ordinal);
@@ -249,11 +253,17 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("DownloadDedupeService.FromDownloadIntent", source, StringComparison.Ordinal);
         Assert.Contains("preparedIntent", source, StringComparison.Ordinal);
         Assert.Contains("HandlePreQueueDedupeDecisionAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RecoverInvalidPendingWatchClaimsAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GetPlaylistWatchDownloadClaimsForPlaylistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("stale_claim_recovered", source, StringComparison.Ordinal);
+        Assert.Contains("TryHandleQueueDuplicateForWatchlistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IsPendingWatchClaimStillOwnedByQueue", source, StringComparison.Ordinal);
         Assert.Contains("queue_duplicate", source, StringComparison.Ordinal);
         Assert.Contains("library_duplicate", source, StringComparison.Ordinal);
         Assert.Contains("blocklist_match", source, StringComparison.Ordinal);
         Assert.Contains("TryRecordWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
         Assert.Contains("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
+        Assert.Contains("CheckLibraryPresenceAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
         Assert.Contains("public static DownloadDedupeRequest FromDownloadIntent(", dedupeSource, StringComparison.Ordinal);
@@ -282,6 +292,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("if (queueResult.QueuedCount <= 0)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("RunBudget", serviceSource, StringComparison.Ordinal);
         Assert.Contains("ResolutionBudget", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (result.QueuedTracks <= 0)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("IsBlockingPlaylistStopReason(result.QueueStopReason)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("WatchQueueStopReason.DownloadGate.ToString()", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("WatchQueueStopReason.TrackDeferred.ToString()", hostedSource, StringComparison.Ordinal);
         Assert.Contains("IsStaleActivePlaylistState", hostedSource, StringComparison.Ordinal);
         Assert.Contains("state.ZeroQueueStreak >= 3", hostedSource, StringComparison.Ordinal);
         Assert.Contains("Watchlist active playlist state was stale and will be released.", hostedSource, StringComparison.Ordinal);

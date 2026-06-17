@@ -285,7 +285,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RunOnce_ZeroQueueActivePlaylist_StopsWithoutAdvancingToOtherPlaylists()
+    public async Task RunOnce_ZeroQueueActivePlaylist_AdvancesWhenThereIsNoBlocker()
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-zero-1", new PlaylistWatchlistMetadataInput("Zero One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-zero-2", new PlaylistWatchlistMetadataInput("Zero Two", null, null, null));
@@ -293,17 +293,10 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
         await InvokeRunOnceAsync(hosted);
 
-        var scheduler = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
-        Assert.NotNull(scheduler);
-        Assert.Equal("unsupported", scheduler!.ActiveSource);
-        Assert.Equal("pl-zero-2", scheduler.ActiveSourceId);
-
         var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-zero-2", CancellationToken.None);
         var secondState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-zero-1", CancellationToken.None);
         Assert.NotNull(firstState?.LastCheckedUtc);
-        Assert.True(
-            secondState == null || secondState.LastCheckedUtc == null,
-            "Second playlist should not be reconciled when active playlist queued nothing.");
+        Assert.NotNull(secondState?.LastCheckedUtc);
     }
 
     [Fact]

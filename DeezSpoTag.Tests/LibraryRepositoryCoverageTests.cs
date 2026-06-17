@@ -445,10 +445,19 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal(seeded.Folder.Id, claim.DestinationFolderId);
         Assert.Equal("pending", claim.Status);
         Assert.Single(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1", status: "pending"));
+        var pendingSatisfiedIds = await _repository.GetSatisfiedPlaylistWatchTrackIdsAsync("spotify", "pl-123");
+        Assert.Contains("dz-song-1", pendingSatisfiedIds);
+        Assert.DoesNotContain("dz-song-2", pendingSatisfiedIds);
+        var playlistPendingClaims = await _repository.GetPlaylistWatchDownloadClaimsForPlaylistAsync(" SPOTIFY ", " pl-123 ", status: "pending");
+        Assert.Single(playlistPendingClaims);
+        Assert.Equal("queue-shared-1", playlistPendingClaims.Single().QueueUuid);
+
         var claimUpdates = await _repository.UpdatePlaylistWatchDownloadClaimStatusAsync("queue-shared-1", "completed");
         Assert.Equal(1, claimUpdates);
         Assert.Equal("completed", (await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1")).Single().Status);
         Assert.Empty(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1", status: "pending"));
+        var completedSatisfiedIds = await _repository.GetSatisfiedPlaylistWatchTrackIdsAsync("spotify", "pl-123");
+        Assert.Contains("dz-song-2", completedSatisfiedIds);
 
         await _repository.AddPlaylistWatchIgnoredTracksAsync(
             " SPOTIFY ",

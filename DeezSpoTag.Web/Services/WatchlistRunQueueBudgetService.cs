@@ -32,6 +32,27 @@ public sealed class WatchlistRunQueueBudgetService
         }
     }
 
+    public long BeginRunIfInactive(
+        int queueBudget,
+        WatchlistQueueBlockReason blockReason = WatchlistQueueBlockReason.None)
+    {
+        lock (_gate)
+        {
+            if (_activeGeneration != 0)
+            {
+                return 0;
+            }
+
+            _generation++;
+            _activeGeneration = _generation;
+            _executionGeneration.Value = _activeGeneration;
+            _limit = Math.Max(0, queueBudget);
+            _remaining = _limit;
+            _blockReason = blockReason;
+            return _activeGeneration;
+        }
+    }
+
     public void EndRun(long token)
     {
         lock (_gate)

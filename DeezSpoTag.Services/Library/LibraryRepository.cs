@@ -7110,7 +7110,7 @@ SELECT track_source_id
 FROM playlist_watch_download_claim
 WHERE source = @source
   AND source_id = @sourceId
-  AND lower(status) IN ('pending', 'completed', 'complete');";
+  AND lower(status) IN ('completed', 'complete');";
         return await QueryPlaylistWatchTrackSourceIdsAsync(sql, source, sourceId, cancellationToken);
     }
 
@@ -7602,6 +7602,46 @@ WHERE queue_uuid = @queueUuid
 ORDER BY source, source_id, track_source_id;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid.Trim());
+        command.Parameters.AddWithValue("status", string.IsNullOrWhiteSpace(status) ? DBNull.Value : status.Trim());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var claims = new List<PlaylistWatchDownloadClaimDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            claims.Add(new PlaylistWatchDownloadClaimDto(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt64(4),
+                reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6))));
+        }
+
+        return claims;
+    }
+
+    public async Task<IReadOnlyList<PlaylistWatchDownloadClaimDto>> GetPlaylistWatchDownloadClaimsForPlaylistAsync(
+        string source,
+        string sourceId,
+        string? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return Array.Empty<PlaylistWatchDownloadClaimDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source, source_id, track_source_id, queue_uuid, destination_folder_id, status, updated_at
+FROM playlist_watch_download_claim
+WHERE source = @source
+  AND source_id = @sourceId
+  AND (@status IS NULL OR lower(status) = lower(@status))
+ORDER BY track_source_id, queue_uuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("status", string.IsNullOrWhiteSpace(status) ? DBNull.Value : status.Trim());
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var claims = new List<PlaylistWatchDownloadClaimDto>();

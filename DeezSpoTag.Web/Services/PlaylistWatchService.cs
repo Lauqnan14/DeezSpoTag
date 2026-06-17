@@ -47,7 +47,8 @@ public sealed class PlaylistWatchService
         int IgnoredCount,
         int LocalCount,
         int ClaimedCount,
-        int BlockedCount);
+        int BlockedCount,
+        int RecoveredClaimCount);
     private readonly record struct QueuedWatchIntentContext(
         DownloadIntentService IntentService,
         QueueWatchOptions Options,
@@ -498,6 +499,16 @@ public sealed class PlaylistWatchService
                 "skipped_already_queued",
                 cancellationToken);
         }
+        if (selection.RecoveredClaimCount > 0)
+        {
+            await AddPlaylistWatchHistoryStageAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                selection.RecoveredClaimCount,
+                "stale_claim_recovered",
+                cancellationToken);
+        }
         if (selection.BlockedCount > 0)
         {
             await AddPlaylistWatchHistoryStageAsync(
@@ -847,6 +858,7 @@ public sealed class PlaylistWatchService
         QueueWatchOptions queueOptions,
         CancellationToken cancellationToken)
     {
+        var recoveredClaimCount = await RecoverInvalidPendingWatchClaimsAsync(source, sourceId, cancellationToken);
         var ignored = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(source, sourceId, cancellationToken);
         var satisfied = await _libraryRepository.GetSatisfiedPlaylistWatchTrackIdsAsync(source, sourceId, cancellationToken);
         var dedupeService = _serviceProvider.GetRequiredService<DownloadDedupeService>();
@@ -917,7 +929,7 @@ public sealed class PlaylistWatchService
             }
         }
 
-        return new PlaylistTrackSelection(missingTracks, ignoredCount, localCount, claimedCount, blockedCount);
+        return new PlaylistTrackSelection(missingTracks, ignoredCount, localCount, claimedCount, blockedCount, recoveredClaimCount);
     }
 
     private readonly record struct PreQueueDedupeHandledResult(
@@ -941,16 +953,14 @@ public sealed class PlaylistWatchService
         {
             case "queue_duplicate":
             case "queue_insert_ignored":
-                if (!string.IsNullOrWhiteSpace(decision.QueueUuid))
-                {
-                    await TryRecordWatchDownloadClaimsAsync(
-                        queueOptions,
-                        track.TrackId,
-                        new[] { decision.QueueUuid },
-                        intent.DestinationFolderId,
-                        cancellationToken);
-                }
-                return new PreQueueDedupeHandledResult(true, 0, 1, 0, 0);
+                return await TryHandleQueueDuplicateForWatchlistAsync(
+                    source,
+                    sourceId,
+                    track,
+                    intent,
+                    queueOptions,
+                    decision,
+                    cancellationToken);
 
             case "library_duplicate":
             case "library_quality_not_higher":
@@ -965,6 +975,141 @@ public sealed class PlaylistWatchService
             default:
                 return new PreQueueDedupeHandledResult(false, 0, 0, 0, 0);
         }
+    }
+
+    private async Task<int> RecoverInvalidPendingWatchClaimsAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var pendingClaims = await _libraryRepository.GetPlaylistWatchDownloadClaimsForPlaylistAsync(
+            source,
+            sourceId,
+            status: "pending",
+            cancellationToken);
+        if (pendingClaims.Count == 0)
+        {
+            return 0;
+        }
+
+        var queueRepository = _serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        var recoveredTrackIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var claim in pendingClaims)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var queueItem = await queueRepository.GetByUuidAsync(claim.QueueUuid, cancellationToken);
+            if (IsPendingWatchClaimStillOwnedByQueue(queueItem))
+            {
+                continue;
+            }
+
+            await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                claim.QueueUuid,
+                FailedStatus,
+                cancellationToken);
+            await TryMarkWatchTrackStatusAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                FailedStatus,
+                cancellationToken);
+            recoveredTrackIds.Add(claim.TrackSourceId);
+        }
+
+        if (recoveredTrackIds.Count > 0 && _logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Recovered {Count} stale pending watchlist download claim(s) for {Source}:{SourceId}.",
+                recoveredTrackIds.Count,
+                source,
+                sourceId);
+        }
+
+        return recoveredTrackIds.Count;
+    }
+
+    private async Task<PreQueueDedupeHandledResult> TryHandleQueueDuplicateForWatchlistAsync(
+        string source,
+        string sourceId,
+        WatchIntentTrack track,
+        DownloadIntent intent,
+        QueueWatchOptions queueOptions,
+        DownloadDedupeDecision decision,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(decision.QueueUuid))
+        {
+            return new PreQueueDedupeHandledResult(false, 0, 0, 0, 0);
+        }
+
+        var queueRepository = _serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        var queueItem = await queueRepository.GetByUuidAsync(decision.QueueUuid, cancellationToken);
+        if (IsPendingWatchClaimStillOwnedByQueue(queueItem))
+        {
+            await TryRecordWatchDownloadClaimsAsync(
+                queueOptions,
+                track.TrackId,
+                new[] { decision.QueueUuid },
+                intent.DestinationFolderId,
+                cancellationToken);
+            return new PreQueueDedupeHandledResult(true, 0, 1, 0, 0);
+        }
+
+        if (IsCompletedQueueStatus(queueItem?.Status))
+        {
+            var dedupeService = _serviceProvider.GetRequiredService<DownloadDedupeService>();
+            var libraryDecision = await dedupeService.CheckLibraryPresenceAsync(
+                DownloadDedupeService.FromDownloadIntent(
+                    intent,
+                    blockRules: queueOptions.BlockRules),
+                cancellationToken);
+            if (!libraryDecision.Allowed)
+            {
+                await TryMarkWatchTrackCompletedAsync(source, sourceId, track.TrackId, cancellationToken);
+                await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                    decision.QueueUuid,
+                    CompletedStatus,
+                    cancellationToken);
+                return new PreQueueDedupeHandledResult(true, 1, 0, 0, 0);
+            }
+        }
+
+        await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+            decision.QueueUuid,
+            FailedStatus,
+            cancellationToken);
+        await TryMarkWatchTrackStatusAsync(source, sourceId, track.TrackId, FailedStatus, cancellationToken);
+        return new PreQueueDedupeHandledResult(false, 0, 0, 0, 0);
+    }
+
+    private static bool IsPendingWatchClaimStillOwnedByQueue(DownloadQueueItem? queueItem)
+    {
+        if (queueItem == null)
+        {
+            return false;
+        }
+
+        var status = NormalizeReasonCode(queueItem.Status);
+        if (status is "queued" or "resolving" or "preparing" or "prepared" or "inqueue" or "running" or "downloading" or "paused" or "retrying")
+        {
+            return true;
+        }
+
+        if (!IsCompletedQueueStatus(status))
+        {
+            return false;
+        }
+
+        var moveStatus = NormalizeReasonCode(queueItem.FinalizationStatus);
+        var enrichmentStatus = NormalizeReasonCode(queueItem.EnrichmentStatus);
+        return moveStatus is "pending" or "running"
+            || enrichmentStatus is "pending" or "running";
+    }
+
+    private static bool IsCompletedQueueStatus(string? status)
+    {
+        var normalized = NormalizeReasonCode(status);
+        return normalized is "completed" or "complete";
     }
 
     private static string NormalizeReasonCode(string? reasonCode)
@@ -3043,106 +3188,117 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? firstFailureMessage = null;
         var deferred = false;
         var stopReason = WatchQueueStopReason.None;
-        for (var index = 0; index < trackList.Count; index++)
+        var localBudgetToken = _watchlistRunQueueBudget.BeginRunIfInactive(watchSettings.WatchMaxItemsPerRun);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var track = trackList[index];
-            if (attemptedCount >= maxResolutionAttempts)
+            for (var index = 0; index < trackList.Count; index++)
             {
-                deferred = true;
-                stopReason = WatchQueueStopReason.ResolutionBudget;
-                if (_logger.IsEnabled(LogLevel.Information))
+                cancellationToken.ThrowIfCancellationRequested();
+                var track = trackList[index];
+                if (attemptedCount >= maxResolutionAttempts)
                 {
-                    _logger.LogInformation(
-                        "{Source} watch queue reached resolution-attempt budget. attempts={Attempts}, limit={Limit}",
-                        options.SourceLabel,
-                        attemptedCount,
-                        maxResolutionAttempts);
+                    deferred = true;
+                    stopReason = WatchQueueStopReason.ResolutionBudget;
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "{Source} watch queue reached resolution-attempt budget. attempts={Attempts}, limit={Limit}",
+                            options.SourceLabel,
+                            attemptedCount,
+                            maxResolutionAttempts);
+                    }
+                    break;
                 }
-                break;
-            }
-            if (!_watchlistRunQueueBudget.TryReserve(1))
-            {
-                var queueBlockReason = _watchlistRunQueueBudget.GetBlockReason();
-                LogWatchRunQueueAdmissionDeferred(options, queuedCount, queueBlockReason);
-                deferred = true;
-                stopReason = queueBlockReason == WatchlistQueueBlockReason.PreviousWatchlistRunActive
-                    ? WatchQueueStopReason.PreviousWatchlistRunActive
-                    : WatchQueueStopReason.RunBudget;
-                break;
-            }
+                if (!_watchlistRunQueueBudget.TryReserve(1))
+                {
+                    var queueBlockReason = _watchlistRunQueueBudget.GetBlockReason();
+                    LogWatchRunQueueAdmissionDeferred(options, queuedCount, queueBlockReason);
+                    deferred = true;
+                    stopReason = queueBlockReason == WatchlistQueueBlockReason.PreviousWatchlistRunActive
+                        ? WatchQueueStopReason.PreviousWatchlistRunActive
+                        : WatchQueueStopReason.RunBudget;
+                    break;
+                }
 
-            var intent = PrepareWatchIntent(
-                track.Intent,
-                track.TrackId,
-                options,
-                destinationFolderId,
-                normalizedDownloadVariantMode,
-                normalizedPreferredEngine);
-
-            var result = await TryQueuePrimaryIntentAsync(
-                intentService,
-                intent,
-                options.SourceLabel,
-                track.TrackId,
-                options.BlockRules,
-                allowAutomaticSecondaryQuality: false,
-                cancellationToken);
-            attemptedCount++;
-            if (result is null)
-            {
-                _watchlistRunQueueBudget.Release(1);
-                await TryMarkWatchTrackStatusAsync(
-                    options.WatchlistSource,
-                    options.WatchlistPlaylistId,
+                var intent = PrepareWatchIntent(
+                    track.Intent,
                     track.TrackId,
-                    FailedStatus,
+                    options,
+                    destinationFolderId,
+                    normalizedDownloadVariantMode,
+                    normalizedPreferredEngine);
+
+                var result = await TryQueuePrimaryIntentAsync(
+                    intentService,
+                    intent,
+                    options.SourceLabel,
+                    track.TrackId,
+                    options.BlockRules,
+                    allowAutomaticSecondaryQuality: false,
                     cancellationToken);
-                failedCount++;
-                if (string.IsNullOrWhiteSpace(firstFailureMessage))
+                attemptedCount++;
+                if (result is null)
                 {
-                    firstFailureMessage = "Primary enqueue failed without result.";
+                    _watchlistRunQueueBudget.Release(1);
+                    await TryMarkWatchTrackStatusAsync(
+                        options.WatchlistSource,
+                        options.WatchlistPlaylistId,
+                        track.TrackId,
+                        FailedStatus,
+                        cancellationToken);
+                    failedCount++;
+                    if (string.IsNullOrWhiteSpace(firstFailureMessage))
+                    {
+                        firstFailureMessage = "Primary enqueue failed without result.";
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            var primaryQueuedCount = result.Success ? result.Queued.Count : 0;
-            _watchlistRunQueueBudget.Release(1 - primaryQueuedCount);
+                var primaryQueuedCount = result.Success ? result.Queued.Count : 0;
+                _watchlistRunQueueBudget.Release(1 - primaryQueuedCount);
 
-            if (ShouldDeferWatchTrack(result))
-            {
-                LogWatchTrackDeferred(options.SourceLabel, track.TrackId, result.Message);
-                deferred = true;
-                stopReason = WatchQueueStopReason.TrackDeferred;
-                break;
-            }
-
-            var trackResult = await HandleQueuedWatchIntentResultAsync(
-                queueContext,
-                result,
-                track,
-                intent,
-                primaryQueuedCount,
-                cancellationToken);
-            queuedCount += trackResult.QueuedCount;
-            if (trackResult.Completed)
-            {
-                completedCount++;
-            }
-
-            if (trackResult.Failed)
-            {
-                failedCount++;
-                var failureClassification = ClassifyWatchFailure(result);
-                if (string.IsNullOrWhiteSpace(firstFailureMessage))
+                if (ShouldDeferWatchTrack(result))
                 {
-                    firstFailureMessage = failureClassification.Message;
+                    LogWatchTrackDeferred(options.SourceLabel, track.TrackId, result.Message);
+                    deferred = true;
+                    stopReason = WatchQueueStopReason.TrackDeferred;
+                    break;
                 }
-                if (failureClassification.IsSystemic)
+
+                var trackResult = await HandleQueuedWatchIntentResultAsync(
+                    queueContext,
+                    result,
+                    track,
+                    intent,
+                    primaryQueuedCount,
+                    cancellationToken);
+                queuedCount += trackResult.QueuedCount;
+                if (trackResult.Completed)
                 {
-                    systemicFailureCount++;
-                    firstSystemicFailureFingerprint ??= failureClassification.Fingerprint;
+                    completedCount++;
                 }
+
+                if (trackResult.Failed)
+                {
+                    failedCount++;
+                    var failureClassification = ClassifyWatchFailure(result);
+                    if (string.IsNullOrWhiteSpace(firstFailureMessage))
+                    {
+                        firstFailureMessage = failureClassification.Message;
+                    }
+                    if (failureClassification.IsSystemic)
+                    {
+                        systemicFailureCount++;
+                        firstSystemicFailureFingerprint ??= failureClassification.Fingerprint;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            if (localBudgetToken != 0)
+            {
+                _watchlistRunQueueBudget.EndRun(localBudgetToken);
             }
         }
 

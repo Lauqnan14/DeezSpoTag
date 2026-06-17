@@ -100,4 +100,20 @@ public sealed class WatchlistRunQueueBudgetServiceTests
         Assert.Equal(WatchlistQueueBlockReason.None, service.GetBlockReason());
     }
 
+    [Fact]
+    public void BeginRunIfInactive_OpensBudgetForDirectReconciliationOnlyWhenNoRunOwnsContext()
+    {
+        var service = new WatchlistRunQueueBudgetService();
+
+        var directToken = service.BeginRunIfInactive(2);
+
+        Assert.NotEqual(0, directToken);
+        Assert.True(service.TryReserve(1));
+        Assert.Equal(1, service.GetRemaining());
+        Assert.Equal(0, service.BeginRunIfInactive(5));
+
+        service.EndRun(directToken);
+        Assert.Equal(0, service.GetRemaining());
+    }
+
 }

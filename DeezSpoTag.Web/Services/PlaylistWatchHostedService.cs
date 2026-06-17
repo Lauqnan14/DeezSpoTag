@@ -621,7 +621,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return PlaylistAdvanceDecision.StopRunClearActive;
         }
 
-        if (result.QueuedTracks <= 0)
+        if (IsBlockingPlaylistStopReason(result.QueueStopReason))
         {
             return PlaylistAdvanceDecision.StopRunKeepActive;
         }
@@ -633,6 +633,16 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
         return PlaylistAdvanceDecision.Advance;
     }
+
+    private static bool IsBlockingPlaylistStopReason(string? queueStopReason)
+        => string.Equals(
+                queueStopReason,
+                PlaylistWatchService.WatchQueueStopReason.DownloadGate.ToString(),
+                StringComparison.Ordinal)
+            || string.Equals(
+                queueStopReason,
+                PlaylistWatchService.WatchQueueStopReason.TrackDeferred.ToString(),
+                StringComparison.Ordinal);
 
     private async Task ProcessArtistWatchItemsAsync(
         IReadOnlyList<WatchItem> artistItems,
