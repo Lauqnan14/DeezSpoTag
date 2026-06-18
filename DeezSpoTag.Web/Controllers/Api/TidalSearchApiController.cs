@@ -16,7 +16,18 @@ public sealed class TidalSearchApiController : ControllerBase
     private const string AlbumType = "album";
     private const string ArtistType = "artist";
     private const string PlaylistType = "playlist";
+    private const string VideoType = "video";
+    private const string AtmosType = "atmos";
     private const string TitleProperty = "title";
+    private static readonly HashSet<string> AllowedTypes = new(StringComparer.Ordinal)
+    {
+        TrackType,
+        AlbumType,
+        ArtistType,
+        PlaylistType,
+        VideoType,
+        AtmosType
+    };
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
@@ -38,14 +49,33 @@ public sealed class TidalSearchApiController : ControllerBase
         [FromQuery] string? type = null,
         [FromQuery] int limit = 25,
         CancellationToken cancellationToken = default)
-        => await ExternalSearchControllerHelpers.RunSearchAsync(
-            query,
-            type,
-            limit,
-            _logger,
-            failureMessage: "Tidal search failed.",
-            (normalizedType, normalizedLimit, ct) => BuildSearchPayloadAsync(query, normalizedType, normalizedLimit, ct),
-            cancellationToken);
+    {
+        if (!ExternalSearchControllerHelpers.TryPrepareSearchRequest(
+                query,
+                type,
+                limit,
+                out var normalizedType,
+                out var normalizedLimit,
+                out var errorResult,
+                AllowedTypes))
+        {
+            return errorResult!;
+        }
+
+        try
+        {
+            return Ok(await BuildSearchPayloadAsync(query, normalizedType, normalizedLimit, cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Tidal search failed.");
+            return StatusCode(StatusCodes.Status502BadGateway, new { available = false, error = "Tidal search failed." });
+        }
+    }
 
     private async Task<object> BuildSearchPayloadAsync(
         string query,
@@ -54,10 +84,10 @@ public sealed class TidalSearchApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
-        var tracks = normalizedType is null or TrackType
+        var tracks = normalizedType is null or TrackType or AtmosType
             ? await SearchTypedAsync("tracks", query, normalizedLimit, token, MapTrack, cancellationToken)
             : new List<object>();
-        var albums = normalizedType is null or AlbumType
+        var albums = normalizedType is null or AlbumType or AtmosType
             ? await SearchTypedAsync("albums", query, normalizedLimit, token, MapAlbum, cancellationToken)
             : new List<object>();
         var artists = normalizedType is null or ArtistType
@@ -66,6 +96,15 @@ public sealed class TidalSearchApiController : ControllerBase
         var playlists = normalizedType is null or PlaylistType
             ? await SearchTypedAsync("playlists", query, normalizedLimit, token, MapPlaylist, cancellationToken)
             : new List<object>();
+        var videos = normalizedType is null or VideoType
+            ? await SearchTypedAsync("videos", query, normalizedLimit, token, MapVideo, cancellationToken)
+            : new List<object>();
+
+        if (normalizedType == AtmosType)
+        {
+            tracks = tracks.Where(HasAtmosObject).ToList();
+            albums = albums.Where(HasAtmosObject).ToList();
+        }
 
         return new
         {
@@ -74,6 +113,7 @@ public sealed class TidalSearchApiController : ControllerBase
             albums,
             artists,
             playlists,
+            videos,
             totals = ExternalSearchControllerHelpers.BuildTotals(
                 tracks.Count,
                 albums.Count,
@@ -170,6 +210,7 @@ public sealed class TidalSearchApiController : ControllerBase
 
         var duration = GetInt(item, "duration");
         var audioQuality = GetString(item, "audioQuality");
+        var hasAtmos = HasAtmos(item);
         return new
         {
             source = TidalSource,
@@ -186,6 +227,7 @@ public sealed class TidalSearchApiController : ControllerBase
             tidalUrl = url,
             externalUrl = url,
             hasHiRes = audioQuality.Contains("HI_RES", StringComparison.OrdinalIgnoreCase),
+            hasAtmos,
             audioQuality
         };
     }
@@ -215,7 +257,40 @@ public sealed class TidalSearchApiController : ControllerBase
             tidalType = AlbumType,
             tidalUrl = url,
             externalUrl = url,
+            hasAtmos = HasAtmos(item),
             audioQuality = GetString(item, "audioQuality")
+        };
+    }
+
+    private static object MapVideo(JsonElement item)
+    {
+        var id = GetAnyString(item, "id");
+        var url = GetString(item, "url");
+        if (string.IsNullOrWhiteSpace(url) && !string.IsNullOrWhiteSpace(id))
+        {
+            url = $"https://tidal.com/browse/video/{Uri.EscapeDataString(id)}";
+        }
+
+        var artist = item.TryGetProperty("artist", out var artistNode)
+            ? GetString(artistNode, "name")
+            : GetString(item, "artistName");
+
+        return new
+        {
+            source = TidalSource,
+            type = VideoType,
+            name = ComposeTitle(GetString(item, TitleProperty), GetString(item, "version")),
+            artist,
+            image = BuildImageUrl(GetString(item, "imageId"), fallbackId: GetString(item, "image")),
+            releaseDate = GetString(item, "releaseDate"),
+            duration = GetInt(item, "duration"),
+            durationMs = Math.Max(0, GetInt(item, "duration")) * 1000L,
+            previewUrl = GetString(item, "previewUrl"),
+            tidalId = id,
+            tidalType = VideoType,
+            tidalUrl = url,
+            externalUrl = url,
+            hasAtmos = HasAtmos(item)
         };
     }
 
@@ -327,5 +402,46 @@ public sealed class TidalSearchApiController : ControllerBase
         }
 
         return 0;
+    }
+
+    private static bool HasAtmosObject(object item)
+    {
+        var property = item.GetType().GetProperty("hasAtmos");
+        return property?.GetValue(item) is bool value && value;
+    }
+
+    private static bool HasAtmos(JsonElement item)
+    {
+        if (StringContainsAtmos(GetString(item, "audioQuality")))
+        {
+            return true;
+        }
+
+        foreach (var propertyName in new[] { "audioModes", "audioMode", "mediaMetadata", "tags" })
+        {
+            if (item.TryGetProperty(propertyName, out var property) && JsonElementContainsAtmos(property))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool JsonElementContainsAtmos(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => StringContainsAtmos(element.GetString()),
+            JsonValueKind.Array => element.EnumerateArray().Any(JsonElementContainsAtmos),
+            JsonValueKind.Object => element.EnumerateObject().Any(prop => JsonElementContainsAtmos(prop.Value)),
+            _ => false
+        };
+    }
+
+    private static bool StringContainsAtmos(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && value.Contains("ATMOS", StringComparison.OrdinalIgnoreCase);
     }
 }

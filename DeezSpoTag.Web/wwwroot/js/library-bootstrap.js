@@ -9,6 +9,9 @@ function initializeLibraryBootstrapBindings(elements) {
     bindFolderChangeInput(elements.folderConvertEnabledInput, syncFolderConversionFieldsState);
     bindFolderChangeInput(elements.folderConvertFormatInput, syncFolderConversionFieldsState);
     bindFolderChangeInput(elements.folderConvertBitrateInput, syncFolderConversionFieldsState);
+    if (typeof bindLibraryArtistMediaDefaultControls === 'function') {
+        bindLibraryArtistMediaDefaultControls();
+    }
     updateSaveFolderState();
     syncFolderConversionFieldsState();
 }

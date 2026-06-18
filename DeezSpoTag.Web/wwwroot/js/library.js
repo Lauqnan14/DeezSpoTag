@@ -108,6 +108,12 @@ const libraryState = {
     }
 };
 
+const ARTIST_MEDIA_SOURCE_DEFAULTS = Object.freeze({
+    atmos: 'libraryArtistAtmosSource',
+    video: 'libraryArtistVideoSource'
+});
+const ARTIST_MEDIA_SOURCE_VALUES = new Set(['apple', 'tidal']);
+
 const libraryTrackSummaryCache = new Map();
 let spotifyTopTrackMatchRequestId = 0;
 let spotifyTopTrackPreviewWarmupTimer = 0;
@@ -4316,6 +4322,7 @@ async function loadAlbums(artistId) {
     libraryState.appleExtras.biography = normalizeArtistBiographyForSync(resolvedArtist?.appleBiography || '') || null;
     libraryState.appleExtras.biographyAppleId = storedAppleId || null;
     updateArtistBiographySourceControls();
+    bindArtistMediaSourceControls(artistIdValue);
     initAppleLazyLoad(resolvedArtist?.name, storedAppleId);
     loadAppleArtistBiography(storedAppleId);
     initAppleIdEditor(artistIdValue);
@@ -6003,6 +6010,108 @@ function initAppleIdEditor(artistIdValue) {
 function getArtistVisualStorageKey(artistId) {
     return `artist-visuals:${artistId || 'unknown'}`;
 }
+
+function normalizeArtistMediaSource(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ARTIST_MEDIA_SOURCE_VALUES.has(normalized) ? normalized : 'apple';
+}
+
+function getArtistMediaSourceLabel(source) {
+    return normalizeArtistMediaSource(source) === 'tidal' ? 'Tidal' : 'Apple Music';
+}
+
+function getGlobalArtistMediaSource(kind) {
+    const prefKey = ARTIST_MEDIA_SOURCE_DEFAULTS[kind] || ARTIST_MEDIA_SOURCE_DEFAULTS.atmos;
+    const raw = globalThis.__userPrefsData && typeof globalThis.__userPrefsData === 'object'
+        ? globalThis.__userPrefsData[prefKey]
+        : null;
+    return normalizeArtistMediaSource(raw);
+}
+
+function setGlobalArtistMediaSource(kind, source) {
+    const prefKey = ARTIST_MEDIA_SOURCE_DEFAULTS[kind] || ARTIST_MEDIA_SOURCE_DEFAULTS.atmos;
+    const normalized = normalizeArtistMediaSource(source);
+    globalThis.__userPrefsData = globalThis.__userPrefsData && typeof globalThis.__userPrefsData === 'object'
+        ? globalThis.__userPrefsData
+        : {};
+    globalThis.__userPrefsData[prefKey] = normalized;
+    if (globalThis.UserPrefs?.set) {
+        globalThis.UserPrefs.set(prefKey, normalized);
+    } else {
+        localStorage.setItem(prefKey, JSON.stringify(normalized));
+    }
+}
+
+function getArtistMediaSourcePreference(artistId, kind) {
+    const prefs = loadArtistVisualPrefs(artistId) || {};
+    return normalizeArtistMediaSource(prefs[`${kind}Source`] || getGlobalArtistMediaSource(kind));
+}
+
+function setArtistMediaSourcePreference(artistId, kind, source) {
+    if (!artistId) {
+        return;
+    }
+    const prefs = loadArtistVisualPrefs(artistId) || {};
+    prefs[`${kind}Source`] = normalizeArtistMediaSource(source);
+    saveArtistVisualPrefs(artistId, prefs);
+}
+
+function syncArtistMediaSourceSelects(artistId) {
+    const atmosphereSelect = document.getElementById('artist-atmos-source');
+    const videoSelect = document.getElementById('artist-video-source');
+    if (atmosphereSelect) {
+        atmosphereSelect.value = getArtistMediaSourcePreference(artistId, 'atmos');
+    }
+    if (videoSelect) {
+        videoSelect.value = getArtistMediaSourcePreference(artistId, 'video');
+    }
+}
+
+function bindArtistMediaSourceControls(artistId) {
+    const atmosphereSelect = document.getElementById('artist-atmos-source');
+    const videoSelect = document.getElementById('artist-video-source');
+    const bindSelect = (select, kind) => {
+        if (!select || select.dataset.bound === 'true') {
+            return;
+        }
+        select.dataset.bound = 'true';
+        select.addEventListener('change', () => {
+            const currentArtistId = getCurrentLibraryArtistId() || artistId;
+            setArtistMediaSourcePreference(currentArtistId, kind, select.value);
+            if (typeof globalThis.reloadArtistMediaExtras === 'function') {
+                globalThis.reloadArtistMediaExtras();
+            }
+        });
+    };
+    bindSelect(atmosphereSelect, 'atmos');
+    bindSelect(videoSelect, 'video');
+    syncArtistMediaSourceSelects(artistId);
+}
+
+function bindLibraryArtistMediaDefaultControls() {
+    const atmosphereSelect = document.getElementById('library-artist-atmos-source');
+    const videoSelect = document.getElementById('library-artist-video-source');
+    const bindSelect = (select, kind) => {
+        if (!select) {
+            return;
+        }
+        select.value = getGlobalArtistMediaSource(kind);
+        if (select.dataset.bound === 'true') {
+            return;
+        }
+        select.dataset.bound = 'true';
+        select.addEventListener('change', () => {
+            setGlobalArtistMediaSource(kind, select.value);
+        });
+    };
+    bindSelect(atmosphereSelect, 'atmos');
+    bindSelect(videoSelect, 'video');
+}
+
+globalThis.getArtistMediaSourcePreference = getArtistMediaSourcePreference;
+globalThis.getArtistMediaSourceLabel = getArtistMediaSourceLabel;
+globalThis.bindArtistMediaSourceControls = bindArtistMediaSourceControls;
+globalThis.bindLibraryArtistMediaDefaultControls = bindLibraryArtistMediaDefaultControls;
 
 function loadArtistVisualPrefs(artistId) {
     if (!artistId) {

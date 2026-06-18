@@ -72,8 +72,12 @@ public sealed class TidalDownloadService
         Func<double, double, Task>? progressCallback,
         CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(request.OutputDir);
+        if (request.IsVideo)
+        {
+            return await DownloadVideoAsync(request, progressCallback, cancellationToken);
+        }
 
+        Directory.CreateDirectory(request.OutputDir);
         string? tidalUrl = request.ServiceUrl;
         if (string.IsNullOrWhiteSpace(tidalUrl) && !string.IsNullOrWhiteSpace(request.SpotifyId))
         {
@@ -97,6 +101,41 @@ public sealed class TidalDownloadService
         }
 
         throw new InvalidOperationException("Tidal download requires a valid service URL or Spotify ID for native link regeneration.");
+    }
+
+    public Task<string> ResolveVideoStreamUrlAsync(long videoId, CancellationToken cancellationToken)
+    {
+        if (videoId <= 0)
+        {
+            throw new InvalidOperationException("Invalid Tidal video ID");
+        }
+
+        return GetVideoStreamUrlAsync(videoId, cancellationToken);
+    }
+
+    private async Task<string> DownloadVideoAsync(
+        TidalDownloadRequest request,
+        Func<double, double, Task>? progressCallback,
+        CancellationToken cancellationToken)
+    {
+        var tidalUrl = request.ServiceUrl;
+        if (string.IsNullOrWhiteSpace(tidalUrl))
+        {
+            throw new InvalidOperationException("Tidal video download requires a valid video URL.");
+        }
+
+        var videoId = GetVideoIdFromUrl(tidalUrl);
+        var outputRoot = !string.IsNullOrWhiteSpace(request.VideoOutputRoot)
+            ? DownloadPathResolver.ResolveIoPath(request.VideoOutputRoot)
+            : request.OutputDir;
+        Directory.CreateDirectory(outputRoot);
+
+        var outputPath = BuildTidalVideoOutputPath(outputRoot, request, videoId);
+        await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
+
+        var streamUrl = await GetVideoStreamUrlAsync(videoId, cancellationToken);
+        await DownloadVideoStreamWithFfmpegAsync(streamUrl, outputPath, progressCallback, cancellationToken);
+        return outputPath;
     }
 
     public async Task<string?> ResolveTrackUrlAsync(
@@ -178,6 +217,39 @@ public sealed class TidalDownloadService
             progressCallback,
             cancellationToken);
         return outputPath;
+    }
+
+    private static long GetVideoIdFromUrl(string tidalUrl)
+    {
+        if (!Uri.TryCreate(tidalUrl, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException("Invalid Tidal video URL");
+        }
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (!segments[i].Equals("video", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (long.TryParse(segments[i + 1], out var id) && id > 0)
+            {
+                return id;
+            }
+        }
+
+        throw new InvalidOperationException("Invalid Tidal video ID");
+    }
+
+    private static string BuildTidalVideoOutputPath(string outputRoot, TidalDownloadRequest request, long videoId)
+    {
+        var artist = DownloadFileUtilities.SanitizeFilename(
+            string.IsNullOrWhiteSpace(request.ArtistName) ? "Unknown Artist" : request.ArtistName);
+        var title = DownloadFileUtilities.SanitizeFilename(
+            string.IsNullOrWhiteSpace(request.TrackName) ? $"Tidal Video {videoId}" : request.TrackName);
+        return Path.Join(outputRoot, $"{artist} - {title}.mp4");
     }
 
     private async Task<string> GetTidalUrlFromSpotifyAsync(string spotifyId, CancellationToken cancellationToken)
@@ -1441,6 +1513,125 @@ public sealed class TidalDownloadService
         }
 
         throw new InvalidOperationException("Tidal download URL not available");
+    }
+
+    private async Task<string> GetVideoStreamUrlAsync(long videoId, CancellationToken cancellationToken)
+    {
+        var token = await _accessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        var url = $"https://api.tidal.com/v1/videos/{videoId}/playbackinfo?videoquality=HIGH&playbackmode=STREAM&assetpresentation=FULL";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var response = await _client.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Tidal video playback info failed with status {(int)response.StatusCode}.");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!document.RootElement.TryGetProperty("manifest", out var manifestElement)
+            || manifestElement.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidOperationException("Tidal video playback info did not return a manifest.");
+        }
+
+        var streamUrl = ExtractStreamUrlFromManifest(manifestElement.GetString() ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(streamUrl))
+        {
+            throw new InvalidOperationException("Tidal video stream URL not available.");
+        }
+
+        return streamUrl;
+    }
+
+    private static string ExtractStreamUrlFromManifest(string manifest)
+    {
+        var decoded = TryDecodeManifest(manifest);
+        if (string.IsNullOrWhiteSpace(decoded))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(decoded);
+            if (document.RootElement.TryGetProperty("urls", out var urls)
+                && urls.ValueKind == JsonValueKind.Array)
+            {
+                var first = urls.EnumerateArray()
+                    .Where(static item => item.ValueKind == JsonValueKind.String)
+                    .Select(static item => item.GetString() ?? string.Empty)
+                    .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
+                if (!string.IsNullOrWhiteSpace(first))
+                {
+                    return first;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            var match = Regex.Match(decoded, @"https?:\/\/[^\s""'<>]+", RegexOptions.IgnoreCase, RegexTimeout);
+            return match.Success ? match.Value : string.Empty;
+        }
+
+        return string.Empty;
+    }
+
+    private async Task DownloadVideoStreamWithFfmpegAsync(
+        string streamUrl,
+        string outputPath,
+        Func<double, double, Task>? progressCallback,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(streamUrl))
+        {
+            throw new InvalidOperationException("Tidal video stream URL is empty.");
+        }
+
+        var ffmpegPath = ResolveFfmpegPath();
+        if (string.IsNullOrWhiteSpace(ffmpegPath))
+        {
+            throw new InvalidOperationException("ffmpeg not available for Tidal video download.");
+        }
+
+        if (progressCallback != null)
+        {
+            await progressCallback(0, 0);
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("-y");
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add(streamUrl);
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("copy");
+        startInfo.ArgumentList.Add(outputPath);
+
+        using var process = Process.Start(startInfo);
+        if (process == null)
+        {
+            throw new InvalidOperationException("Failed to start ffmpeg process.");
+        }
+
+        await process.WaitForExitAsync(cancellationToken);
+        var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
+        if (process.ExitCode != 0 || !IOFile.Exists(outputPath))
+        {
+            DownloadFileUtilities.TryDeleteFile(outputPath);
+            throw new InvalidOperationException($"Tidal video download failed: {DownloadFileUtilities.TruncateForLog(stderr)}");
+        }
+
+        if (progressCallback != null)
+        {
+            await progressCallback(100, 0);
+        }
     }
 
     public async Task CheckPublicProvidersAsync(CancellationToken cancellationToken)

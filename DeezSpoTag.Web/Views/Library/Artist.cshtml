@@ -79,6 +79,14 @@
                                     <option value="spotify" selected>Spotify biography</option>
                                     <option value="apple">Apple Music biography</option>
                                 </select>
+                                <select id="artist-atmos-source" class="form-select">
+                                    <option value="apple">Atmos: Apple Music</option>
+                                    <option value="tidal">Atmos: Tidal</option>
+                                </select>
+                                <select id="artist-video-source" class="form-select">
+                                    <option value="apple">Videos: Apple Music</option>
+                                    <option value="tidal">Videos: Tidal</option>
+                                </select>
                                 <select id="spotify-cache-push-target" class="form-select">
                                     <option value="plex">Plex</option>
                                     <option value="jellyfin">Jellyfin</option>
@@ -187,12 +195,12 @@
             <div class="apple-section" data-lazy-apple="true">
                 <div class="panel glass" id="appleAtmosPanel">
                     <div class="panel__head">
-                        <h2>Apple Music Atmos</h2>
+                        <h2 id="artistAtmosPanelTitle">Atmos</h2>
                     </div>
                     <div id="appleAtmosGrid" class="apple-grid wrap-grid artist-grid-7">
                         <div class="apple-lazy-placeholder">
                             <div class="loading-spinner"></div>
-                            <p>Scroll to load Apple Music content</p>
+                            <p>Scroll to load Atmos content</p>
                         </div>
                     </div>
                 </div>
@@ -221,7 +229,7 @@
             <div class="apple-section" data-lazy-apple="true">
                 <div class="panel glass" id="appleVideosPanel">
                     <div class="panel__head">
-                        <h2>Apple Music Videos</h2>
+                        <h2 id="artistVideosPanelTitle">Videos</h2>
                     </div>
                     <div class="video-selection-bar" id="artist-video-selection-bar">
                         <div class="selection-left">

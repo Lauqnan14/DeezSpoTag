@@ -68,6 +68,7 @@ internal static class EngineDownloadControllerCommon
     {
         public required Func<string, string?> NormalizeSourceUrl { get; init; }
         public required Func<string, string?> ExtractTrackId { get; init; }
+        public string? ContentType { get; init; }
     }
 
     internal abstract class SpotifyLinkedPayloadMapping<TTrack, TPayload>
@@ -102,6 +103,7 @@ internal static class EngineDownloadControllerCommon
         where TPayload : EngineQueueItemBase
     {
         public required string Quality { get; init; }
+        public string? ContentType { get; init; }
         public long? DestinationFolderId { get; init; }
         public required DeezSpoTagSettings Settings { get; init; }
         public required ISpotifyIdResolver SpotifyIdResolver { get; init; }
@@ -323,7 +325,7 @@ internal static class EngineDownloadControllerCommon
             context.DestinationFolderId,
             autoSources,
             autoIndex,
-            ResolveContentType(context.Quality));
+            context.ContentType ?? ResolveContentType(context.Quality));
 
         return payload;
     }
@@ -404,6 +406,7 @@ internal static class EngineDownloadControllerCommon
         return new SpotifyLinkedPayloadContext<TTrack, TPayload>
         {
             Quality = context.Quality,
+            ContentType = context is TidalPayloadPreparationContext tidalContext ? tidalContext.ContentType : null,
             DestinationFolderId = context.DestinationFolderId,
             Settings = context.Settings,
             SpotifyIdResolver = context.SpotifyIdResolver,

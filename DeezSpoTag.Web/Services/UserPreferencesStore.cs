@@ -185,6 +185,8 @@ public sealed class UserPreferencesDto
 
     // Library
     public string? LibraryAlbumDestinationFolderId { get; set; }
+    public string? LibraryArtistAtmosSource { get; set; }
+    public string? LibraryArtistVideoSource { get; set; }
 
     // Audio
     public int PreviewVolume { get; set; } = 100;

@@ -24,10 +24,12 @@ public sealed class TidalDownloadApiController : ControllerBase
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly DownloadDedupeService _dedupeService;
+    private readonly TidalDownloadService _tidalDownloadService;
     private readonly ILogger<TidalDownloadApiController> _logger;
 
     public TidalDownloadApiController(
         DownloadControllerServices services,
+        TidalDownloadService tidalDownloadService,
         ILogger<TidalDownloadApiController> logger)
     {
         _queueRepository = services.QueueRepository;
@@ -37,11 +39,43 @@ public sealed class TidalDownloadApiController : ControllerBase
         _spotifyIdResolver = services.SpotifyIdResolver;
         _libraryRepository = services.LibraryRepository;
         _dedupeService = services.DedupeService;
+        _tidalDownloadService = tidalDownloadService;
         _logger = logger;
     }
 
     [HttpPost]
     public async Task<IActionResult> Enqueue([FromBody] TidalDownloadBatchRequest request)
+        => await EnqueueCoreAsync(request, forceVideo: false);
+
+    [HttpPost("videos/download")]
+    public async Task<IActionResult> EnqueueVideo([FromBody] TidalDownloadBatchRequest request)
+        => await EnqueueCoreAsync(request, forceVideo: true);
+
+    [HttpGet("videos/preview")]
+    public async Task<IActionResult> PreviewVideo([FromQuery] long id, CancellationToken cancellationToken)
+    {
+        if (id <= 0)
+        {
+            return BadRequest(new { error = "Invalid Tidal video ID." });
+        }
+
+        try
+        {
+            var streamUrl = await _tidalDownloadService.ResolveVideoStreamUrlAsync(id, cancellationToken);
+            return Redirect(streamUrl);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Tidal video stream lookup failed for {VideoId}.", id);
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Tidal video stream lookup failed." });
+        }
+    }
+
+    private async Task<IActionResult> EnqueueCoreAsync(TidalDownloadBatchRequest request, bool forceVideo)
     {
         var destinationFolderId = request?.DestinationFolderId;
         var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<TidalQueueItem>(
@@ -62,21 +96,13 @@ public sealed class TidalDownloadApiController : ControllerBase
                 SettingsService = _settingsService,
                 LibraryRepository = _libraryRepository,
                 Logger = _logger,
-                ValidateSettings = settings =>
-                {
-                    var normalizedQuality = ResolveRequestedQuality(request, settings);
-                    if (normalizedQuality.Contains("ATMOS", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return new BadRequestObjectResult(new { error = "Atmos downloads are restricted to Apple Music." });
-                    }
-
-                    return null;
-                },
+                ValidateSettings = _ => null,
                 PreparePayloadAsync = (track, settings, cancellationToken) => PreparePayloadAsync(
                     track,
                     ResolveRequestedQuality(request, settings),
                     destinationFolderId,
                     settings,
+                    forceVideo,
                     cancellationToken),
                 EnqueueAsync = enqueue,
                 OnQueued = onQueued
@@ -88,19 +114,21 @@ public sealed class TidalDownloadApiController : ControllerBase
         string quality,
         long? destinationFolderId,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        bool forceVideo,
         CancellationToken cancellationToken)
         => EngineDownloadControllerCommon.PrepareTidalPayloadAsync(
             track,
             new EngineDownloadControllerCommon.TidalPayloadPreparationContext
             {
                 Quality = quality,
+                ContentType = forceVideo ? DeezSpoTag.Services.Download.Shared.Models.DownloadContentTypes.Video : null,
                 DestinationFolderId = destinationFolderId,
                 Settings = settings,
                 SpotifyIdResolver = _spotifyIdResolver,
                 Logger = _logger,
                 RegexTimeout = RegexTimeout,
-                NormalizeSourceUrl = TryNormalizeTidalUrl,
-                ExtractTrackId = TryExtractTidalTrackId
+                NormalizeSourceUrl = forceVideo ? TryNormalizeTidalVideoUrl : TryNormalizeTidalUrl,
+                ExtractTrackId = forceVideo ? TryExtractTidalVideoId : TryExtractTidalTrackId
             },
             cancellationToken);
 
@@ -135,14 +163,32 @@ public sealed class TidalDownloadApiController : ControllerBase
         return $"https://tidal.com/track/{trackId}";
     }
 
+    private static string? TryNormalizeTidalVideoUrl(string sourceUrl)
+    {
+        var videoId = TryExtractTidalVideoId(sourceUrl);
+        if (string.IsNullOrWhiteSpace(videoId))
+        {
+            return null;
+        }
+
+        return $"https://tidal.com/video/{videoId}";
+    }
+
     private static string? TryExtractTidalTrackId(string sourceUrl)
+        => TryExtractTidalEntityId(sourceUrl, "track");
+
+    private static string? TryExtractTidalVideoId(string sourceUrl)
+        => TryExtractTidalEntityId(sourceUrl, "video");
+
+    private static string? TryExtractTidalEntityId(string sourceUrl, string entityType)
     {
         if (string.IsNullOrWhiteSpace(sourceUrl))
         {
             return null;
         }
 
-        var match = Regex.Match(sourceUrl, @"\/track\/(?<id>\d+)", RegexOptions.IgnoreCase, RegexTimeout);
+        var pattern = $@"\/{Regex.Escape(entityType)}\/(?<id>\d+)";
+        var match = Regex.Match(sourceUrl, pattern, RegexOptions.IgnoreCase, RegexTimeout);
         if (!match.Success)
         {
             return null;

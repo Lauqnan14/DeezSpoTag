@@ -11,10 +11,25 @@ function setPanelSectionVisible(panelId, visible) {
 }
 
 function updateAppleExtrasPanelVisibility() {
-    const atmosCount = Array.isArray(libraryState.appleExtras.atmos) ? libraryState.appleExtras.atmos.length : 0;
-    const videoCount = Array.isArray(libraryState.appleExtras.videos) ? libraryState.appleExtras.videos.length : 0;
+    const state = libraryState.appleExtras;
+    const atmosCount = Array.isArray(state.atmos) ? state.atmos.length : 0;
+    const videoCount = Array.isArray(state.videos) ? state.videos.length : 0;
     setPanelSectionVisible('appleAtmosPanel', atmosCount > 0);
     setPanelSectionVisible('appleVideosPanel', videoCount > 0);
+}
+
+function updateArtistMediaPanelTitles() {
+    const artistId = getCurrentLibraryArtistId();
+    const atmosSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'atmos') || 'apple';
+    const videoSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'video') || 'apple';
+    const atmosTitle = document.getElementById('artistAtmosPanelTitle');
+    const videoTitle = document.getElementById('artistVideosPanelTitle');
+    if (atmosTitle) {
+        atmosTitle.textContent = `${globalThis.getArtistMediaSourceLabel?.(atmosSource) || 'Apple Music'} Atmos`;
+    }
+    if (videoTitle) {
+        videoTitle.textContent = `${globalThis.getArtistMediaSourceLabel?.(videoSource) || 'Apple Music'} Videos`;
+    }
 }
 
 function initAppleArtistExtras(artistName, storedAppleId) {
@@ -28,6 +43,8 @@ function initAppleArtistExtras(artistName, storedAppleId) {
         state.initialized = true;
         state.atmos = [];
         state.videos = [];
+        state.atmosSource = globalThis.getArtistMediaSourcePreference?.(getCurrentLibraryArtistId(), 'atmos') || 'apple';
+        state.videoSource = globalThis.getArtistMediaSourcePreference?.(getCurrentLibraryArtistId(), 'video') || 'apple';
         state.videoOffset = 0;
         state.hasMoreVideos = false;
         state.loadingVideos = false;
@@ -40,6 +57,24 @@ function initAppleArtistExtras(artistName, storedAppleId) {
         bindArtistVideoInfiniteScroll();
     }
 }
+
+globalThis.reloadArtistMediaExtras = function reloadArtistMediaExtras() {
+    const state = libraryState.appleExtras;
+    if (!state?.term) {
+        return;
+    }
+    state.atmos = [];
+    state.videos = [];
+    state.videoOffset = 0;
+    state.hasMoreVideos = false;
+    state.loadingVideos = false;
+    state.selectedVideoKeys.clear();
+    state.showSelectedOnly = false;
+    state.atmosSource = globalThis.getArtistMediaSourcePreference?.(getCurrentLibraryArtistId(), 'atmos') || 'apple';
+    state.videoSource = globalThis.getArtistMediaSourcePreference?.(getCurrentLibraryArtistId(), 'video') || 'apple';
+    updateArtistMediaPanelTitles();
+    fetchAppleArtistExtras();
+};
 
 function bindArtistVideoSelectionControls() {
     const viewBtn = document.getElementById('artist-view-selected');
@@ -76,6 +111,7 @@ function bindArtistVideoInfiniteScroll() {
             ticking = false;
             const state = libraryState.appleExtras;
             if (!state.hasMoreVideos || state.loadingVideos) return;
+            if ((state.videoSource || 'apple') !== 'apple') return;
             const nearBottom = (globalThis.innerHeight + globalThis.scrollY) >= (document.body.offsetHeight - 500);
             if (!nearBottom) return;
             loadMoreArtistVideos();
@@ -103,6 +139,45 @@ async function fetchAppleArtistSearch(termParam, normalizedTerm) {
             atmos: []
         };
     }
+}
+
+async function fetchTidalArtistMedia(termParam, kind) {
+    try {
+        const data = await fetchJsonOptional(`/api/tidal/search?query=${termParam}&limit=50&type=${encodeURIComponent(kind)}`);
+        if (!data || data.available === false) {
+            throw new Error(data?.error || 'Tidal search unavailable');
+        }
+        if (kind === 'video') {
+            return filterTidalArtistItems(Array.isArray(data.videos) ? data.videos : [], libraryState.appleExtras.term);
+        }
+        return filterTidalArtistItems(buildTidalAtmosList(data), libraryState.appleExtras.term);
+    } catch (err) {
+        console.warn(`Tidal artist ${kind} lookup failed`, err);
+        return [];
+    }
+}
+
+function filterTidalArtistItems(items, term) {
+    if (!Array.isArray(items) || items.length === 0) {
+        return [];
+    }
+    const normalizedTerm = normalizeArtistName(term);
+    if (!normalizedTerm) {
+        return items;
+    }
+    return items.filter(item => {
+        const artistName = normalizeArtistName(item?.artist || item?.artistName || '');
+        return artistName === normalizedTerm || artistName.includes(normalizedTerm);
+    });
+}
+
+function buildTidalAtmosList(data) {
+    const tracks = Array.isArray(data?.tracks) ? data.tracks : [];
+    const albums = Array.isArray(data?.albums) ? data.albums : [];
+    return [
+        ...tracks.filter(item => item?.hasAtmos === true).map(item => ({ ...item, __kind: 'track', source: 'tidal' })),
+        ...albums.filter(item => item?.hasAtmos === true).map(item => ({ ...item, __kind: 'album', source: 'tidal' }))
+    ];
 }
 
 async function ensureAppleArtistCandidates(termParam, artistCandidates) {
@@ -181,14 +256,24 @@ async function fetchAppleArtistExtras() {
     const storedId = libraryState.appleExtras.storedAppleId;
     const atmosContainer = document.getElementById('appleAtmosGrid');
     const videoContainer = document.getElementById('appleVideosGrid');
+    const artistId = getCurrentLibraryArtistId();
+    const atmosSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'atmos') || 'apple';
+    const videoSource = globalThis.getArtistMediaSourcePreference?.(artistId, 'video') || 'apple';
+    libraryState.appleExtras.atmosSource = atmosSource;
+    libraryState.appleExtras.videoSource = videoSource;
+    updateArtistMediaPanelTitles();
     setAppleArtistExtrasLoading(term, atmosContainer, videoContainer);
 
     const normalizedTerm = normalizeArtistName(term);
     const termParam = encodeURIComponent(term);
     let appleArtistId = storedId || null;
-    const searchResult = await fetchAppleArtistSearch(termParam, normalizedTerm);
+    const searchResult = (atmosSource === 'apple' || videoSource === 'apple')
+        ? await fetchAppleArtistSearch(termParam, normalizedTerm)
+        : { data: null, artistCandidates: [], atmos: [] };
     let { data, artistCandidates } = searchResult;
-    libraryState.appleExtras.atmos = searchResult.atmos;
+    libraryState.appleExtras.atmos = atmosSource === 'tidal'
+        ? await fetchTidalArtistMedia(termParam, 'atmos')
+        : searchResult.atmos;
 
     if (!appleArtistId) {
         artistCandidates = await ensureAppleArtistCandidates(termParam, artistCandidates);
@@ -197,15 +282,17 @@ async function fetchAppleArtistExtras() {
         }
     }
 
-    if (!data) {
+    if (atmosSource === 'apple' && !data) {
         libraryState.appleExtras.atmos = await backfillAppleAtmos(termParam, normalizedTerm);
     }
 
     libraryState.appleExtras.appleArtistId = appleArtistId;
-    const { videos, hasMoreVideos } = await loadAppleArtistVideos(appleArtistId, data, term, termParam);
-    libraryState.appleExtras.videos = videos;
-    libraryState.appleExtras.videoOffset = videos.length;
-    libraryState.appleExtras.hasMoreVideos = hasMoreVideos;
+    const videoResult = videoSource === 'tidal'
+        ? { videos: await fetchTidalArtistMedia(termParam, 'video'), hasMoreVideos: false }
+        : await loadAppleArtistVideos(appleArtistId, data, term, termParam);
+    libraryState.appleExtras.videos = videoResult.videos;
+    libraryState.appleExtras.videoOffset = videoResult.videos.length;
+    libraryState.appleExtras.hasMoreVideos = videoResult.hasMoreVideos;
 
     updateAppleExtrasPanelVisibility();
     renderAppleAtmos();
@@ -339,9 +426,14 @@ function bindAppleAtmosDelegation() {
             return;
         }
         const type = card.dataset.kind;
-        const appleUrl = card.dataset.url || '';
-        const appleId = card.dataset.id || '';
-        openAppleTracklist(type === 'album' ? 'album' : 'track', appleId, appleUrl, 'atmos');
+        const source = (card.dataset.source || 'apple').toLowerCase();
+        const sourceUrl = card.dataset.url || '';
+        const sourceId = card.dataset.id || '';
+        if (source === 'tidal') {
+            openTidalTracklist(type === 'album' ? 'album' : 'track', sourceId, sourceUrl, 'DOLBY_ATMOS');
+            return;
+        }
+        openAppleTracklist(type === 'album' ? 'album' : 'track', sourceId, sourceUrl, 'atmos');
     });
 }
 
@@ -400,9 +492,20 @@ function bindAppleVideosDelegation() {
         const downloadBtn = e.target.closest('[data-download]');
         if (downloadBtn) {
             e.stopPropagation();
-            downloadAppleVideo(downloadBtn.dataset.download, {
-                hasAtmos: toBoolish(downloadBtn.dataset.hasAtmos)
-            });
+            const source = (downloadBtn.dataset.source || 'apple').toLowerCase();
+            if (source === 'apple') {
+                downloadAppleVideo(downloadBtn.dataset.download, {
+                    hasAtmos: toBoolish(downloadBtn.dataset.hasAtmos)
+                });
+            } else if (source === 'tidal') {
+                downloadTidalVideo({
+                    tidalUrl: downloadBtn.dataset.download,
+                    tidalId: downloadBtn.dataset.tidalId,
+                    title: downloadBtn.dataset.title,
+                    artist: downloadBtn.dataset.artist,
+                    image: downloadBtn.dataset.image
+                });
+            }
             return;
         }
         const card = e.target.closest('.apple-card.video');
@@ -424,6 +527,7 @@ function renderAppleVideos() {
         list = list.filter(v => selected.has(getVideoKey(v)));
     }
     if (!list.length) {
+        container.innerHTML = `<div class="empty-card">No ${globalThis.getArtistMediaSourceLabel?.(libraryState.appleExtras.videoSource) || 'Apple Music'} videos found.</div>`;
         updateArtistVideoSelectionBar();
         return;
     }
@@ -439,7 +543,11 @@ function renderAppleCard(item, isAlbum, localAlbumIndex = null, localTrackVarian
         sub = `${item.artist || ''} • ${item.album}`;
     }
     const kind = isAlbum ? 'album' : 'track';
-    const idVal = item.appleId || extractAppleIdFromUrl(item.appleUrl || '');
+    const source = String(item.source || 'apple').trim().toLowerCase() === 'tidal' ? 'tidal' : 'apple';
+    const idVal = source === 'tidal'
+        ? (item.tidalId || '')
+        : (item.appleId || extractAppleIdFromUrl(item.appleUrl || ''));
+    const sourceUrl = source === 'tidal' ? (item.tidalUrl || item.externalUrl || '') : (item.appleUrl || '');
     const inLibrary = isAppleAtmosItemInLibrary(item, isAlbum, localAlbumIndex, localTrackVariantIndex);
     const localAlbumId = getLocalAlbumIdForAppleAtmosItem(item, isAlbum, localAlbumIndex, localTrackVariantIndex);
     const previewUrl = isAlbum ? '' : String(item.previewUrl || item.preview || '').trim();
@@ -453,7 +561,7 @@ function renderAppleCard(item, isAlbum, localAlbumIndex = null, localTrackVarian
         : '';
     const localAlbumAttr = localAlbumId ? ` data-local-album-id="${escapeHtml(localAlbumId)}"` : '';
     return `
-        <div class="apple-card${inLibrary ? ' in-library' : ''}" data-kind="${kind}" data-url="${escapeHtml(item.appleUrl || '')}" data-id="${escapeHtml(idVal)}"${localAlbumAttr}>
+        <div class="apple-card${inLibrary ? ' in-library' : ''}" data-source="${escapeHtml(source)}" data-kind="${kind}" data-url="${escapeHtml(sourceUrl)}" data-id="${escapeHtml(idVal)}"${localAlbumAttr}>
             <div class="apple-thumb">${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" />` : ''}${previewButton}${libraryBadge}</div>
             <div class="apple-title">${escapeHtml(title)}</div>
             <div class="apple-sub">${escapeHtml(sub)}</div>
@@ -675,6 +783,7 @@ function renderVideoCard(video) {
     const image = video.image || '';
     const title = video.name || '';
     const artist = video.artist || '';
+    const source = String(video.source || 'apple').trim().toLowerCase() === 'tidal' ? 'tidal' : 'apple';
     const key = getVideoKey(video);
     const selectedClass = libraryState.appleExtras.selectedVideoKeys.has(key) ? 'selected' : '';
     const year = video.releaseDate ? new Date(video.releaseDate).getFullYear() : '';
@@ -688,19 +797,24 @@ function renderVideoCard(video) {
     } else if (hasStereoOnly) {
         capabilityBadge = '<div class="artist-video-capabilities"><span class="artist-video-badge stereo-only">Stereo</span></div>';
     }
-    const playBtn = video.previewUrl
-        ? `<button class="video-overlay-btn video-overlay-btn--play" data-preview="${escapeHtml(video.previewUrl)}" type="button" aria-label="Play preview">
+    const previewUrl = String(video.previewUrl || '').trim();
+    const tidalPreviewId = source === 'tidal' ? String(video.tidalId || '').trim() : '';
+    const playablePreviewUrl = previewUrl || (tidalPreviewId ? `/api/tidal/download/videos/preview?id=${encodeURIComponent(tidalPreviewId)}` : '');
+    const playBtn = playablePreviewUrl
+        ? `<button class="video-overlay-btn video-overlay-btn--play" data-preview="${escapeHtml(playablePreviewUrl)}" type="button" aria-label="Play preview">
                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
            </button>`
         : '';
     const hasAtmosFlag = hasManifestAtmos || hasCatalogAtmos ? 'true' : 'false';
-    const downloadBtn = video.appleUrl
-        ? `<button class="video-overlay-btn video-overlay-btn--download" data-download="${escapeHtml(video.appleUrl)}" data-has-atmos="${hasAtmosFlag}" type="button" aria-label="Download">
+    const tidalUrl = video.tidalUrl || video.externalUrl || '';
+    const downloadUrl = source === 'apple' ? video.appleUrl : tidalUrl;
+    const downloadBtn = downloadUrl
+        ? `<button class="video-overlay-btn video-overlay-btn--download" data-source="${escapeHtml(source)}" data-download="${escapeHtml(downloadUrl)}" data-tidal-id="${escapeHtml(video.tidalId || '')}" data-title="${escapeHtml(title)}" data-artist="${escapeHtml(artist)}" data-image="${escapeHtml(image)}" data-has-atmos="${hasAtmosFlag}" type="button" aria-label="Download">
                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
            </button>`
         : '';
     return `
-        <div class="apple-card video ${selectedClass}" data-key="${escapeHtml(key)}">
+        <div class="apple-card video ${selectedClass}" data-source="${escapeHtml(source)}" data-key="${escapeHtml(key)}">
             <div class="apple-thumb">
                 ${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" />` : ''}
                 ${playBtn}
@@ -752,7 +866,8 @@ function updateArtistVideoSelectionBar() {
 
 function getVideoKey(video) {
     if (!video) return '';
-    return video.appleUrl || video.appleId || video.name || '';
+    const source = String(video.source || 'apple').trim().toLowerCase();
+    return `${source}:${video.appleUrl || video.appleId || video.tidalUrl || video.tidalId || video.name || ''}`;
 }
 
 function extractAppleIdFromUrl(url) {
@@ -804,6 +919,29 @@ function openAppleTracklist(type, appleId, appleUrl, audioVariant) {
     globalThis.location.href = `/Tracklist?${qs.toString()}`;
 }
 
+function openTidalTracklist(type, tidalId, tidalUrl, quality) {
+    const idVal = String(tidalId || '').trim();
+    const urlVal = String(tidalUrl || '').trim();
+    if (!idVal && !urlVal) {
+        showToast('Missing Tidal ID for this item.', true);
+        return;
+    }
+    const qs = new URLSearchParams();
+    qs.set('source', 'tidal');
+    qs.set('type', type === 'album' ? 'album' : 'track');
+    if (idVal) {
+        qs.set('id', idVal);
+        qs.set('tidalId', idVal);
+    }
+    if (urlVal) {
+        qs.set('tidalUrl', urlVal);
+    }
+    if (quality) {
+        qs.set('quality', quality);
+    }
+    globalThis.location.href = `/Tracklist?${qs.toString()}`;
+}
+
 function escapeHtml(text) {
     if (text === null || text === undefined) {
         return '';
@@ -839,7 +977,66 @@ function isSpotifySourceUrl(url) {
     }
 }
 
-function playVideoPreview(url) {
+let hlsLibraryPromise = null;
+
+function loadHlsLibraryAsync() {
+    if (globalThis.Hls) {
+        return Promise.resolve(globalThis.Hls);
+    }
+    if (hlsLibraryPromise) {
+        return hlsLibraryPromise;
+    }
+
+    hlsLibraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
+        script.async = true;
+        script.onload = () => resolve(globalThis.Hls || null);
+        script.onerror = () => reject(new Error('Failed to load HLS player.'));
+        document.head.appendChild(script);
+    });
+    return hlsLibraryPromise;
+}
+
+async function configureVideoPreviewSource(video, safeUrl) {
+    const isHlsCandidate = safeUrl.includes('.m3u8') || safeUrl.includes('/api/tidal/download/videos/preview');
+    if (!isHlsCandidate) {
+        video.src = safeUrl;
+        return;
+    }
+
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = safeUrl;
+        return;
+    }
+
+    try {
+        const Hls = await loadHlsLibraryAsync();
+        if (Hls?.isSupported?.()) {
+            const hls = new Hls();
+            video._hls = hls;
+            hls.loadSource(safeUrl);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                video.play().catch(() => {});
+            });
+            hls.on(Hls.Events.ERROR, (_event, data) => {
+                if (data?.fatal) {
+                    hls.destroy();
+                    video._hls = null;
+                    showToast('Video preview failed.', true);
+                }
+            });
+            return;
+        }
+    } catch (err) {
+        console.error('HLS preview setup failed', err);
+    }
+
+    video.src = safeUrl;
+}
+
+async function playVideoPreview(url) {
     if (!url) return;
     const safeUrl = toSafeHttpUrl(url);
     if (!safeUrl) {
@@ -847,9 +1044,9 @@ function playVideoPreview(url) {
         return;
     }
     const video = document.createElement('video');
-    video.src = safeUrl;
     video.controls = true;
     video.autoplay = true;
+    video.playsInline = true;
     video.style.width = '100%';
     video.style.maxHeight = '70vh';
 
@@ -867,6 +1064,8 @@ function playVideoPreview(url) {
             w.document.body.appendChild(video);
         }
     }
+
+    await configureVideoPreviewSource(video, safeUrl);
 }
 
 async function downloadAppleVideo(appleUrl, options = null) {
@@ -900,6 +1099,40 @@ async function downloadAppleVideo(appleUrl, options = null) {
         }
     } catch (err) {
         console.error('Video download failed', err);
+        if (globalThis.DeezSpoTag?.ui?.showToast) {
+            globalThis.DeezSpoTag.ui.showToast(err.message || 'Download failed', { type: 'error' });
+        }
+    }
+}
+
+async function downloadTidalVideo(video) {
+    const tidalUrl = String(video?.tidalUrl || '').trim();
+    if (!tidalUrl) return;
+    try {
+        const response = await fetch('/api/tidal/download/videos/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tracks: [{
+                    sourceUrl: tidalUrl,
+                    tidalId: video?.tidalId || '',
+                    title: video?.title || '',
+                    artist: video?.artist || '',
+                    cover: video?.image || '',
+                    collectionType: 'music-video',
+                    queueOrigin: 'artist-videos'
+                }]
+            })
+        });
+        const data = await response.json();
+        if (!response.ok || data?.success === false) {
+            throw new Error(data?.error || data?.message || 'Download failed');
+        }
+        if (globalThis.DeezSpoTag?.ui?.showToast) {
+            globalThis.DeezSpoTag.ui.showToast('Video download started');
+        }
+    } catch (err) {
+        console.error('Tidal video download failed', err);
         if (globalThis.DeezSpoTag?.ui?.showToast) {
             globalThis.DeezSpoTag.ui.showToast(err.message || 'Download failed', { type: 'error' });
         }
