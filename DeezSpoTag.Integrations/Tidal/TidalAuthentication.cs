@@ -55,8 +55,7 @@ public static class TidalPublicProviderDefaults
         ("spotisaver-one", "SpotiSaver One", "aHR0cHM6Ly9oaWZpLW9uZS5zcG90aXNhdmVyLm5ldA=="),
         ("spotisaver-two", "SpotiSaver Two", "aHR0cHM6Ly9oaWZpLXR3by5zcG90aXNhdmVyLm5ldA=="),
         ("kinoplus", "KinoPlus", "aHR0cHM6Ly90aWRhbC5raW5vcGx1cy5vbmxpbmU="),
-        ("binimum", "Binimum", "aHR0cHM6Ly90aWRhbC1hcGkuYmluaW11bS5vcmc="),
-        ("squid-triton", "Squid Triton", "aHR0cHM6Ly90cml0b24uc3F1aWQud3Rm")
+        ("binimum", "Binimum", "aHR0cHM6Ly90aWRhbC1hcGkuYmluaW11bS5vcmc=")
     ];
 
     public static IReadOnlyList<TidalPublicProviderDefinition> Providers { get; } = EncodedProviders

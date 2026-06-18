@@ -153,8 +153,11 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
 
     private static bool ReconcileDefaults(ProviderRegistryState state)
     {
+        var definitions = DefaultProviders().ToArray();
+        var allowedIds = definitions.Select(definition => definition.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var changed = false;
-        foreach (var definition in DefaultProviders())
+        changed |= state.Providers.RemoveAll(provider => !allowedIds.Contains(provider.Id)) > 0;
+        foreach (var definition in definitions)
         {
             var existing = state.Providers.FirstOrDefault(item => string.Equals(item.Id, definition.Id, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
@@ -178,8 +181,6 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
 
     private static IEnumerable<ProviderState> DefaultProviders()
     {
-        yield return Create("squid-us", "Squid US", "squid", "aHR0cHM6Ly9xb2J1ei5zcXVpZC53dGYvYXBpL2Rvd25sb2FkLW11c2lj", "US");
-        yield return Create("squid-fr", "Squid FR", "squid", "aHR0cHM6Ly9xb2J1ei5zcXVpZC53dGYvYXBpL2Rvd25sb2FkLW11c2lj", "FR");
         yield return Create("spotbye", "Spotbye", "musicdl", "aHR0cHM6Ly9xb2J1ei5zcG90YnllLnF6ei5pby9kbC9xYno=", null);
         yield return Create("zarz", "Zarz", "musicdl", "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvZGwvcWJ6", null);
         yield return Create("musicdl", "MusicDL", "musicdl", "aHR0cHM6Ly9kbC5tdXNpY2RsLm1lL2RsL3Fieg==", null);

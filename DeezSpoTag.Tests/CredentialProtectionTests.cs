@@ -188,17 +188,20 @@ public sealed class CredentialProtectionTests : IDisposable
             NullLogger<QobuzPublicProviderRegistry>.Instance);
 
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
-        var squid = Assert.Single(providers, provider => provider.Id == "squid-us");
-        Assert.True(squid.Enabled);
+        Assert.DoesNotContain(providers, provider => provider.Id.Contains("squid", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(providers, provider => provider.DisplayName.Contains("squid", StringComparison.OrdinalIgnoreCase));
+        var provider = providers[0];
+        Assert.True(provider.Enabled);
 
-        await registry.SetEnabledAsync(squid.Id, false, CancellationToken.None);
+        await registry.SetEnabledAsync(provider.Id, false, CancellationToken.None);
         var reloaded = await registry.GetProvidersAsync(CancellationToken.None);
-        Assert.False(Assert.Single(reloaded, provider => provider.Id == squid.Id).Enabled);
+        Assert.False(Assert.Single(reloaded, item => item.Id == provider.Id).Enabled);
 
         var storedPath = Path.Join(_tempRoot, "autotag", "qobuz-public-providers.json");
         var stored = await File.ReadAllTextAsync(storedPath);
         Assert.True(ProtectedCredentialFileStore.IsProtectedText(stored));
         Assert.DoesNotContain("qobuz.squid.wtf", stored, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("squid", stored, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("download-music", stored, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -254,6 +257,7 @@ public sealed class CredentialProtectionTests : IDisposable
         Assert.True(ProtectedCredentialFileStore.IsProtectedText(stored));
         Assert.DoesNotContain("monochrome.tf", stored, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("squid.wtf", stored, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("squid", stored, StringComparison.OrdinalIgnoreCase);
     }
 
     private SpotifyBlobService CreateSpotifyBlobService()

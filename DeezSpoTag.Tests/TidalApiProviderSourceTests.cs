@@ -13,7 +13,7 @@ namespace DeezSpoTag.Tests;
 public sealed class TidalApiProviderSourceTests
 {
     [Fact]
-    public async Task GetRotatedProvidersAsync_UsesEightCataloguedNonMonochromeProviders()
+    public async Task GetRotatedProvidersAsync_UsesSevenCataloguedNonMonochromeProviders()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
         using var scope = new TestConfigRootScope(rootPath);
@@ -21,12 +21,12 @@ public sealed class TidalApiProviderSourceTests
 
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(8, providers.Count);
+        Assert.Equal(7, providers.Count);
         Assert.DoesNotContain(providers, provider => provider.Contains("monochrome", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(providers, provider => provider.Contains("squid", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("https://hifi.geeked.wtf", providers[0]);
         Assert.Contains("https://hifi-one.spotisaver.net", providers);
         Assert.Contains("https://hifi-two.spotisaver.net", providers);
-        Assert.Contains("https://triton.squid.wtf", providers);
     }
 
     [Fact]
@@ -54,7 +54,7 @@ public sealed class TidalApiProviderSourceTests
         _ = await service.GetRotatedProvidersAsync(CancellationToken.None);
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
 
-        string[] expectedNames = ["Geeked", "Pink Hamster", "QQDL Vogel", "SpotiSaver One", "SpotiSaver Two", "KinoPlus", "Binimum", "Squid Triton"];
+        string[] expectedNames = ["Geeked", "Pink Hamster", "QQDL Vogel", "SpotiSaver One", "SpotiSaver Two", "KinoPlus", "Binimum"];
         Assert.Equal(expectedNames, providers.Select(provider => provider.DisplayName).ToArray());
     }
 
@@ -70,7 +70,7 @@ public sealed class TidalApiProviderSourceTests
         await registry.SetEnabledAsync("geeked", false, CancellationToken.None);
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(7, providers.Count);
+        Assert.Equal(6, providers.Count);
         Assert.DoesNotContain("https://hifi.geeked.wtf", providers);
     }
 

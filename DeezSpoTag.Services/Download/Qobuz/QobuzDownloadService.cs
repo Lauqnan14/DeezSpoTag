@@ -1311,7 +1311,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
             providers.Add(provider.Kind switch
             {
-                "squid" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "US", ct => TryGetSquidStreamUrlAsync(provider.Endpoint, trackId, qualityCode, provider.Region ?? "US", ct)),
                 "musicdl" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "public", ct => TryGetMusicDlStreamUrlAsync(provider.Endpoint, trackId, qualityCode, ct)),
                 "monochrome" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "public", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(provider.Endpoint, trackId, qualityCode, ct)),
                 _ => throw new InvalidOperationException($"Unsupported Qobuz provider kind '{provider.Kind}'.")
@@ -1477,43 +1476,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static string ComputeMd5Hex(string input)
         => QobuzOfficialSignature.ComputeProtocolDigestHex(input);
-
-    private async Task<string?> TryGetSquidStreamUrlAsync(
-        string squidBase,
-        long trackId,
-        string qualityCode,
-        string country,
-        CancellationToken cancellationToken)
-    {
-        var normalizedQuality = NormalizeQobuzQualityCode(qualityCode);
-        var url = $"{squidBase}?track_id={trackId}&quality={normalizedQuality}&country={country}";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        var squidUserAgent = string.IsNullOrWhiteSpace(_qobuzConfig.SquidUserAgent)
-            ? BrowserUserAgent
-            : _qobuzConfig.SquidUserAgent.Trim();
-        request.Headers.TryAddWithoutValidation("User-Agent", squidUserAgent);
-        request.Headers.TryAddWithoutValidation("Accept", ApplicationJsonContentType);
-
-        var clearance = _qobuzConfig.SquidCfClearance?.Trim();
-        if (!string.IsNullOrWhiteSpace(clearance))
-        {
-            request.Headers.TryAddWithoutValidation("Cookie", $"cf_clearance={clearance}");
-        }
-
-        using var response = await SendProviderRequestAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Squid returned HTTP {(int)response.StatusCode}: {DownloadFileUtilities.TruncateForLog(body)}");
-        }
-
-        if (TryExtractCommonProviderUrlPayload(body, "Squid Qobuz", out var directUrl))
-        {
-            return directUrl;
-        }
-
-        throw new InvalidOperationException("Squid response did not contain a usable stream URL.");
-    }
 
     private static string ClassifyProviderFailure(Exception exception)
     {
