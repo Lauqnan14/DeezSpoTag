@@ -446,7 +446,7 @@
                                         <select id="folderQuality">
 @foreach (var option in DeezSpoTag.Services.Download.QualityCatalog.GetLibraryFolderQualityOptions())
 {
-                                            <option value="@option.Value" selected="@(option.Value == "27")">@option.Label</option>
+                                            <option value="@option.Value" selected="@(option.Value == DeezSpoTag.Services.Download.QualityCatalog.MaxHiRes192)">@option.Label</option>
 }
                                         </select>
                                     </div>

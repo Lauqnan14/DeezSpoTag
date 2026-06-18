@@ -1,3 +1,4 @@
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -172,7 +173,7 @@ public class LibraryFoldersApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var desiredQualityValue = string.IsNullOrWhiteSpace(request.DesiredQuality) ? "27" : request.DesiredQuality;
+        var desiredQualityValue = QualityCatalog.NormalizeLibraryFolderQualityValue(request.DesiredQuality);
         var convertEnabled = request.ConvertEnabled == true;
         string? convertFormat = null;
         string? convertBitrate = null;
@@ -229,7 +230,7 @@ public class LibraryFoldersApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var desiredQualityValue = string.IsNullOrWhiteSpace(request.DesiredQuality) ? "27" : request.DesiredQuality;
+        var desiredQualityValue = QualityCatalog.NormalizeLibraryFolderQualityValue(request.DesiredQuality);
         var existingFolder = await ResolveExistingFolderAsync(id, cancellationToken);
         if (existingFolder is null)
         {

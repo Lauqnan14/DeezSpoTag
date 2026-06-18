@@ -1460,7 +1460,7 @@ body.autotag-col-resizing * {
     top: 120px;
     left: 50%;
     transform: translateX(-50%);
-    width: min(640px, 92vw);
+    width: min(360px, 92vw);
     max-height: min(72vh, 620px);
     overflow: auto;
     padding: 10px;
@@ -2041,7 +2041,7 @@ body.autotag-col-resizing * {
 
     .folder-quality-panel {
         top: 86px;
-        width: min(640px, 94vw);
+        width: min(360px, 94vw);
         max-height: min(76vh, 620px);
         padding: 10px;
     }

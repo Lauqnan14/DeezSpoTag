@@ -115,6 +115,12 @@ internal static class RequestBuilderCommon
 
     private static int? ResolveRequestedLocalQualityRank(string? quality)
     {
+        var catalogRank = QualityCatalog.GetLibraryFolderLocalRank(quality);
+        if (catalogRank.HasValue)
+        {
+            return catalogRank.Value;
+        }
+
         if (int.TryParse((quality ?? string.Empty).Trim(), out var numericQuality))
         {
             return MediaQualityInference.MapRequestedNumericQualityToLocalRank(numericQuality);

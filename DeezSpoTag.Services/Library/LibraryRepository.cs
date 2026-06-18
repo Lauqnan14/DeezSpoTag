@@ -12,6 +12,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Library;
@@ -357,13 +358,13 @@ WITH library_rows AS (
            CASE
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'atmos'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%atmos%' THEN 5
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('hi_res_lossless', 'hi_res', '27', '7')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('max_hires_192', 'hires_96', 'hi_res_lossless', 'hi_res', '27', '7')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi_res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi-res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24-bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24 bit%' THEN 4
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('alac', 'flac', 'lossless', '9', '6')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('alac', 'cd_lossless', 'flac', 'lossless', '9', '6')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%lossless%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%flac%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%alac%'
@@ -371,13 +372,14 @@ WITH library_rows AS (
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16-bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16 bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%cd%' THEN 3
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac', 'high', '5', '3')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac_lc', 'aac', 'mp3_320', 'high', '5', '3')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%aac%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%320%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%vorbis%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%opus%' THEN 2
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('low', '1')
-                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%128%' THEN 1
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('mp3_128', 'mp3_96', 'low', '1')
+                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%128%'
+                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%96%' THEN 1
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'video'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%video%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) = 'podcast'
@@ -1755,9 +1757,9 @@ INSERT INTO quality_scan_action_log (
     {
         var numericQuality = await reader.IsDBNullAsync(6, cancellationToken) ? 27 : reader.GetInt32(6);
         var qualityValue = await reader.IsDBNullAsync(7, cancellationToken) ? string.Empty : reader.GetString(7);
-        return string.IsNullOrWhiteSpace(qualityValue)
+        return QualityCatalog.NormalizeLibraryFolderQualityValue(string.IsNullOrWhiteSpace(qualityValue)
             ? numericQuality.ToString(CultureInfo.InvariantCulture)
-            : qualityValue;
+            : qualityValue);
     }
 
     private static async Task<(string? ConvertFormat, string? ConvertBitrate)> ReadFolderConvertSettingsAsync(
@@ -8762,13 +8764,13 @@ WITH track_rows AS (
            CASE
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'atmos'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%atmos%' THEN 5
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('hi_res_lossless', 'hi_res', '27', '7')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('max_hires_192', 'hires_96', 'hi_res_lossless', 'hi_res', '27', '7')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi_res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi-res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24-bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24 bit%' THEN 4
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('alac', 'flac', 'lossless', '9', '6')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('alac', 'cd_lossless', 'flac', 'lossless', '9', '6')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%lossless%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%flac%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%alac%'
@@ -8776,13 +8778,14 @@ WITH track_rows AS (
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16-bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16 bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%cd%' THEN 3
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac', 'high', '5', '3')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac_lc', 'aac', 'mp3_320', 'high', '5', '3')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%aac%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%320%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%vorbis%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%opus%' THEN 2
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('low', '1')
-                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%128%' THEN 1
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('mp3_128', 'mp3_96', 'low', '1')
+                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%128%'
+                    OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%96%' THEN 1
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'video'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%video%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) = 'podcast'
@@ -11546,10 +11549,16 @@ ON CONFLICT DO NOTHING;";
 
     private static int NormalizeDesiredQualityRank(string? desiredQuality)
     {
-        var normalized = (desiredQuality ?? string.Empty).Trim().ToLowerInvariant();
+        var normalized = QualityCatalog.NormalizeLibraryFolderQualityValue(desiredQuality).Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(normalized))
         {
             return 3;
+        }
+
+        var tierRank = QualityCatalog.GetLibraryFolderLocalRank(normalized);
+        if (tierRank.HasValue)
+        {
+            return tierRank.Value;
         }
 
         return normalized switch

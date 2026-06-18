@@ -79,15 +79,46 @@ public sealed class DownloadSourceOrderFallbackParityTests
     }
 
     [Fact]
-    public void LibraryFolderQualityOptions_KeepDeezer128AboveTidalLow()
+    public void LibraryFolderQualityOptions_UseCanonicalMergedQualityTiers()
     {
         var options = QualityCatalog.GetLibraryFolderQualityOptions().ToList();
-        var deezer128Index = options.FindIndex(option => option.Value == "1");
-        var tidalLowIndex = options.FindIndex(option => option.Value == "LOW");
 
-        Assert.True(deezer128Index >= 0);
-        Assert.True(tidalLowIndex >= 0);
-        Assert.True(deezer128Index < tidalLowIndex);
+        var expected = new (string Value, string Label)[]
+        {
+                ("max_hires_192", "Max Hi-Res (24-bit/192kHz)"),
+                ("hires_96", "Hi-Res (24-bit/96kHz)"),
+                ("alac", "ALAC"),
+                ("cd_lossless", "CD Lossless (16-bit/44.1kHz)"),
+                ("flac", "FLAC"),
+                ("aac_lc", "AAC-LC"),
+                ("mp3_320", "MP3 320 kbps"),
+                ("mp3_128", "MP3 128 kbps"),
+                ("mp3_96", "MP3 96 kbps")
+        };
+
+        Assert.Equal(expected, options.Select(option => (option.Value, option.Label)).ToArray());
+        Assert.Equal(options.Count, options.Select(option => option.Label).Distinct().Count());
+    }
+
+    [Fact]
+    public void LibraryFolderQualityTiers_NormalizeLegacyEngineValuesAndResolveEngineQuality()
+    {
+        Assert.Equal("max_hires_192", QualityCatalog.NormalizeLibraryFolderQualityValue("27"));
+        Assert.Equal("max_hires_192", QualityCatalog.NormalizeLibraryFolderQualityValue("HI_RES_LOSSLESS"));
+        Assert.Equal("hires_96", QualityCatalog.NormalizeLibraryFolderQualityValue("HI_RES"));
+        Assert.Equal("cd_lossless", QualityCatalog.NormalizeLibraryFolderQualityValue("LOSSLESS"));
+        Assert.Equal("flac", QualityCatalog.NormalizeLibraryFolderQualityValue("9"));
+        Assert.Equal("aac_lc", QualityCatalog.NormalizeLibraryFolderQualityValue("AAC"));
+        Assert.Equal("mp3_320", QualityCatalog.NormalizeLibraryFolderQualityValue("3"));
+        Assert.Equal("mp3_128", QualityCatalog.NormalizeLibraryFolderQualityValue("1"));
+        Assert.Equal("mp3_96", QualityCatalog.NormalizeLibraryFolderQualityValue("LOW"));
+
+        Assert.Equal("5", QualityCatalog.ResolveEngineQualityForLibraryFolderTier("mp3_320", "qobuz"));
+        Assert.Equal("HIGH", QualityCatalog.ResolveEngineQualityForLibraryFolderTier("mp3_320", "tidal"));
+        Assert.Equal("3", QualityCatalog.ResolveEngineQualityForLibraryFolderTier("mp3_320", "deezer"));
+        Assert.Equal("FLAC", QualityCatalog.ResolveEngineQualityForLibraryFolderTier("flac", "amazon"));
+        Assert.Equal("9", QualityCatalog.ResolveEngineQualityForLibraryFolderTier("flac", "deezer"));
+        Assert.Null(QualityCatalog.ResolveEngineQualityForLibraryFolderTier("mp3_96", "deezer"));
     }
 
     [Fact]

@@ -168,6 +168,42 @@ let activeFolderQualityDropdown = null;
 let activeFolderQualityPanel = null;
 let activeFolderQualitySummary = null;
 let folderQualityOverlayHandlersBound = false;
+const DEFAULT_FOLDER_QUALITY = 'max_hires_192';
+const FOLDER_QUALITY_ALIASES = {
+    '27': 'max_hires_192',
+    'hi_res_lossless': 'max_hires_192',
+    'max hi-res (24-bit/192khz)': 'max_hires_192',
+    '7': 'hires_96',
+    'hi_res': 'hires_96',
+    'hi-res (24-bit/96khz)': 'hires_96',
+    'alac': 'alac',
+    '6': 'cd_lossless',
+    'lossless': 'cd_lossless',
+    'cd lossless (16-bit/44.1khz)': 'cd_lossless',
+    'flac': 'flac',
+    '9': 'flac',
+    'aac': 'aac_lc',
+    'aac-lc': 'aac_lc',
+    '5': 'mp3_320',
+    'high': 'mp3_320',
+    '3': 'mp3_320',
+    'mp3 320 kbps': 'mp3_320',
+    'mp3 (320kbps)': 'mp3_320',
+    '1': 'mp3_128',
+    'mp3 128 kbps': 'mp3_128',
+    'low': 'mp3_96',
+    'mp3 96 kbps': 'mp3_96'
+};
+
+function normalizeFolderQualityValue(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+        return DEFAULT_FOLDER_QUALITY;
+    }
+
+    const normalized = raw.toLowerCase();
+    return FOLDER_QUALITY_ALIASES[normalized] || raw;
+}
 const FOLDER_CONVERSION_FORMAT_VALUES = Object.freeze([
     'aa', 'aax', 'aac', 'aiff', 'ape', 'dsf', 'flac', 'm4a', 'm4b', 'm4p',
     'mp3', 'mpc', 'mpp', 'ogg', 'oga', 'wav', 'wma', 'wv', 'webm',
@@ -3107,7 +3143,7 @@ function buildAutoTagProfileLibrarySettingsSnapshot() {
                 rootPath: String(normalizedFolder?.rootPath || '').trim(),
                 displayName: String(normalizedFolder?.displayName || normalizedFolder?.libraryName || '').trim(),
                 enabled: isFolderEnabledFlag(normalizedFolder?.enabled),
-                desiredQuality: String(normalizedFolder?.desiredQuality || '27').trim() || '27',
+                desiredQuality: normalizeFolderQualityValue(normalizedFolder?.desiredQuality),
                 convertEnabled: normalizedFolder?.convertEnabled === true,
                 convertFormat: normalizedFolder?.convertEnabled === true
                     ? normalizeFolderConvertFormatValue(normalizedFolder?.convertFormat)
@@ -3160,7 +3196,7 @@ function normalizeAutoTagProfileLibrarySettingsSnapshot(snapshot) {
             pathKey,
             displayName: String(item?.displayName || '').trim(),
             enabled: isFolderEnabledFlag(item?.enabled),
-            desiredQuality: String(item?.desiredQuality || '27').trim() || '27',
+            desiredQuality: normalizeFolderQualityValue(item?.desiredQuality),
             convertEnabled: item?.convertEnabled === true,
             convertFormat: item?.convertEnabled === true
                 ? normalizeFolderConvertFormatValue(item?.convertFormat)
@@ -8569,7 +8605,7 @@ function resetFolderModalFields() {
     }
     const qualityField = document.getElementById('folderQuality');
     if (qualityField) {
-        qualityField.value = '27';
+        qualityField.value = DEFAULT_FOLDER_QUALITY;
     }
     const convertEnabledField = document.getElementById('folderConvertEnabled');
     if (convertEnabledField) {
@@ -8624,7 +8660,7 @@ function openFolderModal(folder = null) {
 }
 
 function resolveFolderDestinationFlags(folder) {
-    const desiredQuality = String(folder.desiredQuality || '27');
+    const desiredQuality = normalizeFolderQualityValue(folder.desiredQuality);
     const storedContentMode = getFolderStoredContentMode(folder);
     const normalizedPath = normalizePath(folder.rootPath || '');
     const currentVideoPath = normalizePath(libraryState.videoDownloadLocation || '');
@@ -8679,13 +8715,13 @@ function populateFolderModalDestinationFields(folder, flags) {
 
     const qualityField = document.getElementById('folderQuality');
     if (qualityField) {
-        const desiredQuality = String(flags.desiredQuality || '').trim();
+        const desiredQuality = normalizeFolderQualityValue(flags.desiredQuality);
         const qualityOptions = Array.from(qualityField.options || []);
         const exactMatch = qualityOptions.find((option) => option.value === desiredQuality);
         const caseInsensitiveMatch = exactMatch
             ? null
             : qualityOptions.find((option) => option.value.localeCompare(desiredQuality, undefined, { sensitivity: 'accent' }) === 0);
-        qualityField.value = (exactMatch || caseInsensitiveMatch)?.value || '27';
+        qualityField.value = (exactMatch || caseInsensitiveMatch)?.value || DEFAULT_FOLDER_QUALITY;
     }
 }
 
@@ -8820,7 +8856,7 @@ function readFolderModalInput() {
         rootPath,
         displayName: document.getElementById('folderName').value.trim() || deriveFolderDisplayName(rootPath),
         enabled,
-        desiredQuality: document.getElementById('folderQuality')?.value || '27',
+        desiredQuality: document.getElementById('folderQuality')?.value || DEFAULT_FOLDER_QUALITY,
         useAtmosDestination: document.getElementById('folderAtmosDestination')?.checked === true,
         useVideoDestination: document.getElementById('folderVideoDestination')?.checked === true,
         usePodcastDestination: document.getElementById('folderPodcastDestination')?.checked === true,
@@ -9580,7 +9616,7 @@ function buildFolderProfileColumnMarkup(profileOptionsSource, profileOptions, sh
 function computeFolderRowViewModel(folder, context) {
     const combinedEnabledId = `folder-enabled-${folder.id}`;
     const currentLibraryEnabled = isFolderEnabledFlag(folder.enabled);
-    const currentQuality = String(folder.desiredQuality ?? '27');
+    const currentQuality = normalizeFolderQualityValue(folder.desiredQuality);
     const folderIdKey = String(folder.id);
     const currentProfile = resolveFolderProfileReference(folder);
     const currentSchedule = context.folderSchedules[folderIdKey] || '';
@@ -9779,18 +9815,15 @@ function renderFolders() {
             { value: 'ATMOS', label: 'Atmos' },
             { value: 'VIDEO', label: 'Video' },
             { value: 'PODCAST', label: 'Podcast' },
-            { value: '27', label: 'Max Hi-Res (24-bit/192kHz)' },
-            { value: 'HI_RES_LOSSLESS', label: 'Max Hi-Res (24-bit/192kHz)' },
-            { value: '7', label: 'Hi-Res (24-bit/96kHz)' },
-            { value: 'HI_RES', label: 'Hi-Res (24-bit/96kHz)' },
-            { value: '6', label: 'CD Lossless (16-bit/44.1kHz)' },
-            { value: 'LOSSLESS', label: 'CD Lossless (16-bit/44.1kHz)' },
-            { value: '9', label: 'FLAC' },
-            { value: '5', label: 'MP3 (320kbps)' },
-            { value: 'HIGH', label: 'MP3 (320kbps)' },
-            { value: '3', label: 'MP3 320kbps' },
-            { value: '1', label: 'MP3 128kbps' },
-            { value: 'LOW', label: 'Low (96kbps)' }
+            { value: 'max_hires_192', label: 'Max Hi-Res (24-bit/192kHz)' },
+            { value: 'hires_96', label: 'Hi-Res (24-bit/96kHz)' },
+            { value: 'alac', label: 'ALAC' },
+            { value: 'cd_lossless', label: 'CD Lossless (16-bit/44.1kHz)' },
+            { value: 'flac', label: 'FLAC' },
+            { value: 'aac_lc', label: 'AAC-LC' },
+            { value: 'mp3_320', label: 'MP3 320 kbps' },
+            { value: 'mp3_128', label: 'MP3 128 kbps' },
+            { value: 'mp3_96', label: 'MP3 96 kbps' }
         ];
     };
 
@@ -9862,7 +9895,7 @@ function renderFolders() {
             .join('');
     };
     const qualityLabel = (qualityValue) => {
-        const desired = String(qualityValue ?? '');
+        const desired = normalizeFolderQualityValue(qualityValue);
         const match = qualityOptions.find((option) => option.value === desired);
         return match ? match.label : (desired || 'Unknown');
     };
@@ -10376,7 +10409,7 @@ async function setFolderEnabled(id, enabled, options = {}) {
             displayName: folder.displayName,
             enabled,
             libraryName: folder.libraryName ?? null,
-            desiredQuality: folder.desiredQuality ?? '27',
+            desiredQuality: normalizeFolderQualityValue(folder.desiredQuality),
             convertEnabled: folder.convertEnabled === true,
             convertFormat: folder.convertFormat ?? null,
             convertBitrate: folder.convertBitrate ?? null
@@ -10416,7 +10449,7 @@ async function setFolderDesiredQuality(id, desiredQuality) {
             displayName: folder.displayName,
             enabled: isFolderEnabledFlag(folder.enabled),
             libraryName: folder.libraryName ?? null,
-            desiredQuality: desiredQuality || '27',
+            desiredQuality: normalizeFolderQualityValue(desiredQuality),
             convertEnabled: folder.convertEnabled === true,
             convertFormat: folder.convertFormat ?? null,
             convertBitrate: folder.convertBitrate ?? null
@@ -10444,7 +10477,7 @@ async function setFolderConversionSettings(id, convertEnabled, convertFormat, co
             displayName: folder.displayName,
             enabled: isFolderEnabledFlag(folder.enabled),
             libraryName: folder.libraryName ?? null,
-            desiredQuality: folder.desiredQuality ?? '27',
+            desiredQuality: normalizeFolderQualityValue(folder.desiredQuality),
             convertEnabled: normalizedEnabled,
             convertFormat: normalizedFormat,
             convertBitrate: normalizedBitrate

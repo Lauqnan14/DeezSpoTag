@@ -1,3 +1,4 @@
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
@@ -664,7 +665,8 @@ public sealed class QualityScannerService
             return GetRequestedQualityValue(matchSource, settings);
         }
 
-        return track.DesiredQualityValue;
+        return QualityCatalog.ResolveEngineQualityForLibraryFolderTier(track.DesiredQualityValue, matchSource)
+            ?? track.DesiredQualityValue;
     }
 
     private async Task ProcessAtmosEnhancementStageAsync(

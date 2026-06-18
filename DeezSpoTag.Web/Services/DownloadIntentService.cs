@@ -4825,6 +4825,12 @@ public sealed class DownloadIntentService
         }
 
         var normalized = quality.Trim();
+        var catalogCanonicalRank = QualityCatalog.GetLibraryFolderCanonicalRank(normalized);
+        if (catalogCanonicalRank.HasValue)
+        {
+            return catalogCanonicalRank.Value;
+        }
+
         if (CanonicalQualityRanks.TryGetValue(normalized, out var canonicalRank))
         {
             return canonicalRank;
@@ -4843,6 +4849,12 @@ public sealed class DownloadIntentService
         if (!string.IsNullOrWhiteSpace(quality))
         {
             var normalized = quality.Trim();
+            var catalogLocalRank = QualityCatalog.GetLibraryFolderLocalRank(normalized);
+            if (catalogLocalRank.HasValue)
+            {
+                return catalogLocalRank.Value;
+            }
+
             if (LocalQualityRanks.TryGetValue(normalized, out var mapped))
             {
                 return mapped;
