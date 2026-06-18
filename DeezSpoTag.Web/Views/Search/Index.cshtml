@@ -546,6 +546,9 @@
     <li class="nav-item">
         <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="apple" id="tab-apple" data-bs-toggle="tab" data-bs-target="#search-source-apple">Apple Music</button>
     </li>
+    <li class="nav-item">
+        <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="tidal" id="tab-tidal" data-bs-toggle="tab" data-bs-target="#search-source-tidal">Tidal</button>
+    </li>
     }
 </ul>
 
@@ -655,6 +658,35 @@
             </div>
         </div>
     </div>
+
+    <div class="tab-pane fade" id="search-source-tidal" role="tabpanel" aria-labelledby="tab-tidal">
+        <div class="search-filters">
+            <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="tidal">Tracks</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="tidal">Albums</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="tidal">Artists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="tidal">Playlists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="atmos" data-source="tidal">Atmos</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="video" data-source="tidal">Videos</a>
+        </div>
+
+        <div class="results-section">
+            <div id="tidal-video-selection-bar" class="selection-bar">
+                <div class="selection-bar-inner">
+                    <span class="selection-bar-count" id="tidal-selection-count">0 selected</span>
+                    <button type="button" class="action-btn action-btn-sm" onclick="downloadSelectedVideos()">Download selected</button>
+                    <button type="button" class="action-btn action-btn-sm" id="tidal-view-selected-toggle" onclick="toggleViewSelected()">View selected only</button>
+                    <button type="button" class="action-btn action-btn-sm secondary" onclick="clearVideoSelection()">Clear</button>
+                </div>
+            </div>
+
+            <div id="search-results-tidal">
+                <div class="loading-section">
+                    <div class="loading-spinner"></div>
+                    <p>Searching...</p>
+                </div>
+            </div>
+        </div>
+    </div>
     }
 
 </div>
@@ -675,7 +707,7 @@ const searchMode = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData[
 const searchModeNormalized = String(searchMode || '').trim().toLowerCase();
 const soundtrackSearchMode = searchModeNormalized === 'soundtrack';
 const soundtrackSearchTypes = new Set(['all', 'album', 'playlist', 'compilation']);
-const searchSources = soundtrackSearchMode ? ['spotify', 'deezer', 'manual'] : ['spotify', 'deezer', 'apple'];
+const searchSources = soundtrackSearchMode ? ['spotify', 'deezer', 'manual'] : ['spotify', 'deezer', 'apple', 'tidal'];
 let sourceTypeSelections = {};
 const soundtrackContextTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextType"]?.ToString() ?? string.Empty));
 const soundtrackContextServerTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextServerType"]?.ToString() ?? string.Empty));
@@ -1461,7 +1493,7 @@ function updateActiveFilter(type) {
 let cachedResults = null;
 
 function createEmptySourceResults(source) {
-    if (source === 'apple') {
+    if (source === 'apple' || source === 'tidal') {
         return {
             tracks: [],
             albums: [],
@@ -1510,7 +1542,7 @@ function hasAnySourceItems(sourceData, source) {
     if (count(sourceData.playlists) > 0) return true;
 
     const normalizedSource = String(source || '').trim().toLowerCase();
-    if (normalizedSource === 'apple' && count(sourceData.videos) > 0) {
+    if ((normalizedSource === 'apple' || normalizedSource === 'tidal') && count(sourceData.videos) > 0) {
         return true;
     }
 
@@ -1564,6 +1596,8 @@ function markBroadSourceResultsLoaded(sourceData, source) {
     const normalizedSource = String(source || '').trim().toLowerCase();
     const types = normalizedSource === 'apple'
         ? ['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video']
+        : normalizedSource === 'tidal'
+            ? ['track', 'album', 'artist', 'playlist', 'atmos', 'video']
         : soundtrackSearchMode
             ? ['all', 'album', 'playlist', 'compilation']
             : ['track', 'album', 'artist', 'playlist'];
@@ -1602,6 +1636,10 @@ function shouldUseTypedSearch(source, type) {
 
     if (normalizedSource === 'apple') {
         return ['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video'].includes(normalizedType);
+    }
+
+    if (normalizedSource === 'tidal') {
+        return ['track', 'album', 'artist', 'playlist', 'atmos', 'video'].includes(normalizedType);
     }
 
     return false;
@@ -1755,7 +1793,7 @@ function mergeSourceResults(existingData, incomingData, source, type, typedOnly)
         ...(existingData || {})
     };
     const normalizedType = normalizeTypeForSource(source, type);
-    if (normalizedType === 'atmos' && source === 'apple') {
+    if (normalizedType === 'atmos' && (source === 'apple' || source === 'tidal')) {
         merged.tracks = incomingData.tracks || [];
         merged.albums = incomingData.albums || [];
         markSourceTypesLoaded(merged, source, ['atmos']);
@@ -1799,6 +1837,25 @@ async function fetchSourceResults(source, term, type, options = {}) {
         return {
             ...createEmptySourceResults('apple'),
             ...appleData
+        };
+    }
+
+    if (normalizedSource === 'tidal') {
+        const tidalType = typedOnly ? mapTidalSearchType(normalizedType) : '';
+        const tidalUrl = tidalType
+            ? `/api/tidal/search?query=${encodeURIComponent(term)}&type=${encodeURIComponent(tidalType)}&limit=50`
+            : `/api/tidal/search?query=${encodeURIComponent(term)}&limit=25`;
+        const tidalResponse = await fetch(tidalUrl);
+        const tidalData = await tidalResponse.json().catch(() => null);
+        if (!tidalResponse.ok || tidalData?.available === false) {
+            return {
+                ...createEmptySourceResults('tidal'),
+                error: tidalData?.error || `Tidal search unavailable (HTTP ${tidalResponse.status})`
+            };
+        }
+        return {
+            ...createEmptySourceResults('tidal'),
+            ...tidalData
         };
     }
 
@@ -1858,6 +1915,25 @@ function mapAppleSearchType(type) {
             return 'stations';
         case 'video':
             return 'music-videos';
+        default:
+            return '';
+    }
+}
+
+function mapTidalSearchType(type) {
+    switch (String(type || '').trim().toLowerCase()) {
+        case 'track':
+            return 'track';
+        case 'album':
+            return 'album';
+        case 'artist':
+            return 'artist';
+        case 'playlist':
+            return 'playlist';
+        case 'video':
+            return 'video';
+        case 'atmos':
+            return 'atmos';
         default:
             return '';
     }
@@ -2034,19 +2110,21 @@ function getResultsForType(type, source) {
     }
 
     if (type === 'atmos') {
-        if (source !== 'apple') return [];
-        const appleTracks = (cachedResults.apple?.tracks || []).filter(isAtmosOnly).map(t => ({ ...t, __kind: 'track' }));
-        const appleAlbums = (cachedResults.apple?.albums || []).filter(isAtmosOnly).map(a => ({ ...a, __kind: 'album' }));
-        return [...appleTracks, ...appleAlbums];
+        if (source !== 'apple' && source !== 'tidal') return [];
+        const sourceData = cachedResults[source] || {};
+        const tracks = (sourceData.tracks || []).filter(isAtmosOnly).map(t => ({ ...t, __kind: 'track' }));
+        const albums = (sourceData.albums || []).filter(isAtmosOnly).map(a => ({ ...a, __kind: 'album' }));
+        return [...tracks, ...albums];
     }
 
     if (type === 'video') {
-        if (source !== 'apple') return [];
-        return cachedResults.apple?.videos || [];
+        if (source !== 'apple' && source !== 'tidal') return [];
+        return cachedResults[source]?.videos || [];
     }
 
     if (source === 'deezer') return from(cachedResults.deezer || {});
     if (source === 'apple') return from(cachedResults.apple || {}).filter(item => !item?.hasAtmos);
+    if (source === 'tidal') return from(cachedResults.tidal || {}).filter(item => !item?.hasAtmos);
     if (source === 'spotify') return from(cachedResults.spotify || {});
 
     return [];
@@ -2098,7 +2176,7 @@ function setupInfiniteScroll() {
             _scrollRafPending = false;
             if (currentSearchType !== 'video') return;
             if (appleLoadingMore || !appleHasMoreVideos) return;
-            if (currentSearchSource === 'deezer') return; // videos currently from Apple only
+            if (currentSearchSource !== 'apple') return;
 
             const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 500);
             if (!nearBottom) return;
@@ -2146,9 +2224,14 @@ async function loadMoreAppleVideos() {
 }
 
 function updateActiveSource(source) {
+    const previousSource = currentSearchSource;
     const normalizedSource = String(source || '').trim().toLowerCase();
     if (searchSources.includes(normalizedSource)) {
         currentSearchSource = normalizedSource;
+    }
+    if (previousSource !== currentSearchSource) {
+        selectedVideoKeys.clear();
+        showSelectedOnly = false;
     }
     setActiveSourceTab(currentSearchSource);
     if (currentSearchSource === 'manual') {
@@ -2183,8 +2266,9 @@ function displayResults(results, type) {
     if (!list || list.length === 0) {
         if (type === 'atmos') {
             const anyTracks = getResultsForType('track', currentSearchSource);
+            const sourceLabel = currentSearchSource === 'tidal' ? 'Tidal' : 'Apple';
             const hint = anyTracks.length > 0
-                ? 'No Atmos results found. Try the Tracks tab to see Apple results.'
+                ? `No Atmos results found. Try the Tracks tab to see ${sourceLabel} results.`
                 : 'No Atmos results found for this search.';
             container.innerHTML = `
                 <div class="empty-results">
@@ -2244,7 +2328,7 @@ function renderResultCard(item, type) {
                 artist = item.artist || '';
                 meta = item.album || '';
                 clickAction = buildUnifiedClick(item, 'track');
-                if (currentSearchSource === 'apple') {
+                if (currentSearchSource === 'apple' || currentSearchSource === 'tidal') {
                     previewUrl = item.previewUrl || '';
                     appleUrl = item.appleUrl || '';
                 }
@@ -2337,11 +2421,18 @@ function renderResultCard(item, type) {
 
     const selectedClass = (resolvedType === 'video' && videoKey && isVideoSelected(videoKey)) ? ' selected' : '';
     const extraClass = resolvedType === 'video' ? ' video' : '';
+    const tidalUrl = item.tidalUrl || item.externalUrl || '';
+    const tidalId = item.tidalId || '';
     const isAppleAudioTrackCard = currentSearchSource === 'apple' && effectiveType === 'track' && resolvedType !== 'video';
+    const isTidalAudioTrackCard = currentSearchSource === 'tidal' && effectiveType === 'track' && resolvedType !== 'video';
     const audioPreviewButton = isAppleAudioTrackCard && previewUrl
         ? `<button class="audio-preview-btn" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playSearchPreview('', '', '${escapeJsString(appleUrl)}', '${escapeJsString(item.appleId || '')}', '${escapeJsString(previewUrl)}', 'apple')">
                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
            </button>`
+        : isTidalAudioTrackCard && previewUrl
+            ? `<button class="audio-preview-btn" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playSearchPreview('', '', '', '', '${escapeJsString(previewUrl)}', 'tidal')">
+                   <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+               </button>`
         : '';
 
     const libKeyRaw = (resolvedType === 'track' || resolvedType === 'atmos') ? buildLibraryCheckKey(item) : '';
@@ -2368,16 +2459,23 @@ function renderResultCard(item, type) {
                 ? `<div class="artist-video-capabilities"><span class="artist-video-badge stereo-only">Stereo</span></div>`
                 : '';
         const cardClickAttr = clickAction ? ` onclick="${clickAction}"` : '';
-        const previewButton = previewUrl
-            ? `<button class="video-overlay-btn video-overlay-btn--play" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playVideoPreview('${escapeJsString(previewUrl)}')">
+        const source = String(item.source || currentSearchSource || '').trim().toLowerCase();
+        const playablePreviewUrl = source === 'tidal' && tidalId
+            ? `/api/tidal/download/videos/preview?id=${encodeURIComponent(tidalId)}`
+            : previewUrl;
+        const previewButton = playablePreviewUrl
+            ? `<button class="video-overlay-btn video-overlay-btn--play" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playVideoPreview('${escapeJsString(playablePreviewUrl)}')">
                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                </button>`
             : '';
-        const downloadButton = appleUrl
-            ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.stopPropagation(); downloadAppleVideo('${escapeJsString(appleUrl)}', ${hasAtmosCapability ? 'true' : 'false'})">
-                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-               </button>`
-            : '';
+        const downloadIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        const downloadButton = source === 'tidal'
+            ? (tidalUrl
+                ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.stopPropagation(); downloadTidalVideoFromSearch('${escapeJsString(tidalUrl)}', '${escapeJsString(tidalId)}', '${escapeJsString(title)}', '${escapeJsString(artist)}', '${escapeJsString(imageUrl)}')">${downloadIcon}</button>`
+                : '')
+            : (appleUrl
+                ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.stopPropagation(); downloadAppleVideo('${escapeJsString(appleUrl)}', ${hasAtmosCapability ? 'true' : 'false'})">${downloadIcon}</button>`
+                : '');
         return `
             <div class="result-card video apple-card${selectedClass}"${cardClickAttr}>
                 <div class="apple-thumb">
@@ -2393,7 +2491,7 @@ function renderResultCard(item, type) {
     }
 
     return `
-        <div class="result-card${extraClass}${selectedClass}${isAppleAudioTrackCard ? ' result-card--apple-audio' : ''}"${libKeyAttr} onclick="${clickAction}">
+        <div class="result-card${extraClass}${selectedClass}${(isAppleAudioTrackCard || isTidalAudioTrackCard) ? ' result-card--apple-audio' : ''}"${libKeyAttr} onclick="${clickAction}">
             <div class="result-image ${imageUrl ? '' : 'no-img'}">
                 ${imgHtml}
                 <span class="result-image-placeholder">${defaultIcon}</span>
@@ -2597,6 +2695,11 @@ function buildUnifiedClick(item, type) {
     if (appleUrl) {
         return `openUnifiedTracklist('${escapeJsString(appleUrl)}', '${type}', 'apple')`;
     }
+    const tidalId = item.tidalId || '';
+    const tidalUrl = item.tidalUrl || item.externalUrl || '';
+    if (tidalId || tidalUrl) {
+        return `openTidalResult('${escapeJsString(tidalId)}', '${type}', '${escapeJsString(tidalUrl)}', '${escapeJsString(item.name || '')}')`;
+    }
     const qobuzUrl = item.qobuzUrl || buildQobuzUrlForItem(item.qobuzId || '', item.qobuzType || type || '');
     if (qobuzUrl) {
         return '';
@@ -2605,7 +2708,10 @@ function buildUnifiedClick(item, type) {
 }
 
 function getVideoKey(item) {
-    return (item.appleId && String(item.appleId)) || (item.appleUrl || '');
+    return (item.appleId && String(item.appleId))
+        || (item.appleUrl || '')
+        || (item.tidalId ? `tidal:${String(item.tidalId)}` : '')
+        || (item.tidalUrl || item.externalUrl || '');
 }
 
 function isVideoSelected(key) {
@@ -2644,6 +2750,42 @@ function openUnifiedTracklist(id, type, source) {
     navigateToTracklist(id, type, source);
 }
 
+function openTidalResult(tidalId, type, tidalUrl, artistName = '') {
+    const normalizedType = String(type || '').trim().toLowerCase();
+    const normalizedId = String(tidalId || '').trim();
+    const normalizedUrl = String(tidalUrl || '').trim() || buildTidalUrlForItem(normalizedId, normalizedType);
+    if (normalizedType === 'artist') {
+        if (normalizedId) {
+            openUnifiedArtist(normalizedId, 'tidal');
+        }
+        return;
+    }
+
+    const id = normalizedId || normalizedUrl;
+    if (!id) {
+        return;
+    }
+    navigateToTracklist(id, normalizedType || 'track', 'tidal', { externalUrl: normalizedUrl });
+}
+
+function buildTidalUrlForItem(id, type) {
+    const normalizedId = String(id || '').trim();
+    if (!normalizedId) {
+        return '';
+    }
+    const normalizedType = String(type || 'track').trim().toLowerCase();
+    if (normalizedType === 'album') {
+        return `https://tidal.com/browse/album/${encodeURIComponent(normalizedId)}`;
+    }
+    if (normalizedType === 'artist') {
+        return `https://tidal.com/browse/artist/${encodeURIComponent(normalizedId)}`;
+    }
+    if (normalizedType === 'playlist') {
+        return `https://tidal.com/browse/playlist/${encodeURIComponent(normalizedId)}`;
+    }
+    return `https://tidal.com/browse/track/${encodeURIComponent(normalizedId)}`;
+}
+
 async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativePreviewUrl = '', source = '') {
     const player = window.DeezerUnifiedPlayback;
     if (!player || typeof player.play !== 'function') {
@@ -2652,10 +2794,10 @@ async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativeP
 
     const normalizedSource = String(source || '').trim().toLowerCase();
     const normalizedPreviewUrl = String(nativePreviewUrl || '').trim();
-    if (normalizedSource === 'apple') {
+    if (normalizedSource === 'apple' || normalizedSource === 'tidal') {
         if (!normalizedPreviewUrl) {
             if (window.DeezSpoTag?.ui?.showToast) {
-                window.DeezSpoTag.ui.showToast('No Apple preview available.', { type: 'warning' });
+                window.DeezSpoTag.ui.showToast(normalizedSource === 'tidal' ? 'No Tidal preview available.' : 'No Apple preview available.', { type: 'warning' });
             }
             return;
         }
@@ -2663,7 +2805,7 @@ async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativeP
             page: 'search',
             sourceKey: normalizedPreviewUrl,
             previewUrl: normalizedPreviewUrl,
-            unavailableMessage: 'No Apple preview available.',
+            unavailableMessage: normalizedSource === 'tidal' ? 'No Tidal preview available.' : 'No Apple preview available.',
             startFailedMessage: 'Unable to start playback.',
             interruptedMessage: 'Playback interrupted.'
         });
@@ -2803,7 +2945,7 @@ function normalizeTypeForSource(source, type) {
         return 'track';
     }
 
-    if (normalizedSource !== 'apple' && (normalizedType === 'atmos' || normalizedType === 'video')) {
+    if (normalizedSource !== 'apple' && normalizedSource !== 'tidal' && (normalizedType === 'atmos' || normalizedType === 'video')) {
         return 'track';
     }
 
@@ -2839,8 +2981,8 @@ async function refreshLibraryExistence(sourcesToCheck) {
     if (!cachedResults) return;
     const sources = Array.isArray(sourcesToCheck) && sourcesToCheck.length > 0
         ? sourcesToCheck
-        : ['deezer', 'spotify', 'apple'];
-    const tasks = sources.map(source => updateLibraryStatusForTracks(cachedResults[source]?.tracks || []));
+        : ['deezer', 'spotify', 'apple', 'tidal'];
+    const tasks = sources.map(source => updateLibraryStatusForTracks(cachedResults[source]?.tracks || [], source));
     await Promise.all(tasks);
     if (currentSearchType === 'track' || currentSearchType === 'atmos') {
         const container = getResultsContainer();
@@ -2870,8 +3012,9 @@ async function refreshLibraryExistence(sourcesToCheck) {
     saveSearchPageState();
 }
 
-async function updateLibraryStatusForTracks(items) {
+async function updateLibraryStatusForTracks(items, source) {
     if (!items || items.length === 0) return;
+    const normalizedSource = String(source || currentSearchSource || '').trim().toLowerCase();
     const requests = [];
     for (const item of items) {
         const key = buildLibraryCheckKey(item);
@@ -2880,16 +3023,16 @@ async function updateLibraryStatusForTracks(items) {
             item.inLibrary = libraryExistenceCache.get(key) === true;
             continue;
         }
-	        const req = {
-	            id: key,
-	            source: currentSearchSource || '',
-	            sourceId: item.id || item.sourceId || '',
-	            isrc: item.isrc || '',
-	            trackTitle: item.name || '',
-	            artistName: item.artist || '',
-	            albumTitle: item.album || item.albumTitle || item.albumName || '',
-	            durationMs: resolveSearchItemDurationMs(item) || null
-	        };
+        const req = {
+            id: key,
+            source: normalizedSource,
+            sourceId: item.tidalId || item.appleId || item.spotifyId || item.deezerId || item.id || item.sourceId || '',
+            isrc: item.isrc || '',
+            trackTitle: item.name || '',
+            artistName: item.artist || '',
+            albumTitle: item.album || item.albumTitle || item.albumName || '',
+            durationMs: resolveSearchItemDurationMs(item) || null
+        };
         requests.push(req);
     }
 
@@ -2922,13 +3065,94 @@ async function updateLibraryStatusForTracks(items) {
     }
 }
 
-// Video preview player (simple HTML5 audio/video)
-function playVideoPreview(url) {
+let searchHlsLibraryPromise = null;
+
+function loadSearchHlsLibraryAsync() {
+    if (window.Hls) {
+        return Promise.resolve(window.Hls);
+    }
+    if (searchHlsLibraryPromise) {
+        return searchHlsLibraryPromise;
+    }
+
+    searchHlsLibraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
+        script.async = true;
+        script.onload = () => resolve(window.Hls || null);
+        script.onerror = () => reject(new Error('Failed to load HLS player.'));
+        document.head.appendChild(script);
+    });
+    return searchHlsLibraryPromise;
+}
+
+function toSafePreviewUrl(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('/api/tidal/download/videos/preview')) {
+        return raw;
+    }
+    try {
+        const parsed = new URL(raw, window.location.origin);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : '';
+    } catch {
+        return '';
+    }
+}
+
+async function configureSearchVideoPreviewSource(video, safeUrl) {
+    const isHlsCandidate = safeUrl.includes('.m3u8') || safeUrl.includes('/api/tidal/download/videos/preview');
+    if (!isHlsCandidate) {
+        video.src = safeUrl;
+        return;
+    }
+
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = safeUrl;
+        return;
+    }
+
+    try {
+        const Hls = await loadSearchHlsLibraryAsync();
+        if (Hls?.isSupported?.()) {
+            const hls = new Hls();
+            video._hls = hls;
+            hls.loadSource(safeUrl);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                video.play().catch(() => {});
+            });
+            hls.on(Hls.Events.ERROR, (_event, data) => {
+                if (data?.fatal) {
+                    hls.destroy();
+                    video._hls = null;
+                    if (window.DeezSpoTag?.ui?.showToast) {
+                        window.DeezSpoTag.ui.showToast('Video preview failed.', { type: 'error' });
+                    }
+                }
+            });
+            return;
+        }
+    } catch (err) {
+        console.error('HLS preview setup failed', err);
+    }
+
+    video.src = safeUrl;
+}
+
+async function playVideoPreview(url) {
     if (!url) return;
+    const safeUrl = toSafePreviewUrl(url);
+    if (!safeUrl) {
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast('Invalid preview URL.', { type: 'error' });
+        }
+        return;
+    }
     const video = document.createElement('video');
-    video.src = url;
     video.controls = true;
     video.autoplay = true;
+    video.playsInline = true;
     video.style.width = '100%';
     video.style.maxHeight = '70vh';
 
@@ -2946,6 +3170,8 @@ function playVideoPreview(url) {
             w.document.body.appendChild(video);
         }
     }
+
+    await configureSearchVideoPreviewSource(video, safeUrl);
 }
 
 async function downloadAppleVideo(appleUrl, hasAtmos = false) {
@@ -2984,15 +3210,54 @@ async function downloadAppleVideo(appleUrl, hasAtmos = false) {
     }
 }
 
+async function downloadTidalVideoFromSearch(tidalUrl, tidalId = '', title = '', artist = '', image = '') {
+    const normalizedUrl = String(tidalUrl || '').trim();
+    if (!normalizedUrl) return;
+    try {
+        const response = await fetch('/api/tidal/download/videos/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tracks: [{
+                    sourceUrl: normalizedUrl,
+                    tidalId,
+                    title,
+                    artist,
+                    cover: image,
+                    collectionType: 'music-video',
+                    queueOrigin: 'search-videos'
+                }]
+            })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || data?.success === false) {
+            throw new Error(data?.error || data?.message || 'Download failed');
+        }
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast('Video download started');
+        }
+    } catch (err) {
+        console.error('Tidal video download failed', err);
+        if (window.DeezSpoTag?.ui?.showToast) {
+            window.DeezSpoTag.ui.showToast(err.message || 'Download failed', { type: 'error' });
+        }
+    }
+}
+
 function updateVideoSelectionBar() {
-    const bar = document.getElementById('video-selection-bar');
-    const countEl = document.getElementById('selection-count');
-    const viewToggle = document.getElementById('view-selected-toggle');
+    const isTidal = currentSearchSource === 'tidal';
+    const bar = document.getElementById(isTidal ? 'tidal-video-selection-bar' : 'video-selection-bar');
+    const inactiveBar = document.getElementById(isTidal ? 'video-selection-bar' : 'tidal-video-selection-bar');
+    const countEl = document.getElementById(isTidal ? 'tidal-selection-count' : 'selection-count');
+    const viewToggle = document.getElementById(isTidal ? 'tidal-view-selected-toggle' : 'view-selected-toggle');
     const count = selectedVideoKeys.size;
     if (!bar || !countEl) return;
+    if (inactiveBar) {
+        inactiveBar.classList.remove('active');
+    }
 
     countEl.textContent = `${count} selected`;
-    if (count > 0 && currentSearchType === 'video' && currentSearchSource === 'apple') {
+    if (count > 0 && currentSearchType === 'video' && (currentSearchSource === 'apple' || currentSearchSource === 'tidal')) {
         bar.classList.add('active');
     } else {
         bar.classList.remove('active');
@@ -3032,9 +3297,19 @@ async function downloadSelectedVideos() {
     for (const key of selectedVideoKeys) {
         const item = byKey.get(key);
         const appleUrl = item?.appleUrl;
-        if (!appleUrl) continue;
+        const tidalUrl = item?.tidalUrl || item?.externalUrl;
+        if (!appleUrl && !tidalUrl) continue;
         started++;
-        downloadAppleVideo(appleUrl);
+        if (currentSearchSource === 'tidal') {
+            downloadTidalVideoFromSearch(
+                tidalUrl,
+                item?.tidalId || '',
+                item?.name || '',
+                item?.artist || '',
+                resolveResultImageUrl(item));
+        } else {
+            downloadAppleVideo(appleUrl);
+        }
     }
 
     if (started > 0 && window.DeezSpoTag?.ui?.showToast) {

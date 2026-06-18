@@ -132,6 +132,7 @@ public sealed class TidalSearchApiController : ControllerBase
     {
         var items = await FetchItemsAsync(endpointType, query, limit, token, cancellationToken);
         return items
+            .Select(UnwrapSearchItem)
             .Select(mapper)
             .Where(static mapped => mapped != null)
             .ToList()!;
@@ -157,17 +158,47 @@ public sealed class TidalSearchApiController : ControllerBase
 
             if (!response.IsSuccessStatusCode)
             {
+                break;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var typedItems = ExtractSearchItems(doc.RootElement, endpointType);
+            if (typedItems.Count > 0)
+            {
+                return typedItems;
+            }
+        }
+
+        return await FetchGenericSearchItemsAsync(endpointType, query, limit, currentToken, cancellationToken);
+    }
+
+    private async Task<List<JsonElement>> FetchGenericSearchItemsAsync(
+        string endpointType,
+        string query,
+        int limit,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        var currentToken = token;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var response = await SendGenericSearchRequestAsync(endpointType, query, limit, currentToken, cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && attempt == 0)
+            {
+                _tidalAccessTokenProvider.Invalidate();
+                currentToken = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+                continue;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
                 return new List<JsonElement>();
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!doc.RootElement.TryGetProperty("items", out var itemsElement) || itemsElement.ValueKind != JsonValueKind.Array)
-            {
-                return new List<JsonElement>();
-            }
-
-            return itemsElement.EnumerateArray().Select(element => element.Clone()).ToList();
+            return ExtractSearchItems(doc.RootElement, endpointType);
         }
 
         return new List<JsonElement>();
@@ -186,6 +217,108 @@ public sealed class TidalSearchApiController : ControllerBase
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
         return await client.SendAsync(request, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendGenericSearchRequestAsync(
+        string endpointType,
+        string query,
+        int limit,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        var client = _httpClientFactory.CreateClient();
+        var requestUrl =
+            $"https://api.tidal.com/v1/search?query={Uri.EscapeDataString(query)}&types={Uri.EscapeDataString(ToGenericSearchType(endpointType))}&limit={limit}&offset=0&countryCode=US";
+        using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        return await client.SendAsync(request, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendTidalRequestAsync(
+        string requestUrl,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        var client = _httpClientFactory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        return await client.SendAsync(request, cancellationToken);
+    }
+
+    private static List<JsonElement> ExtractSearchItems(JsonElement root, string endpointType)
+    {
+        if (TryGetItemsArray(root, out var directItems))
+        {
+            return CloneArrayItems(directItems);
+        }
+
+        if (root.TryGetProperty(endpointType, out var typedNode) && TryGetItemsArray(typedNode, out var typedItems))
+        {
+            return CloneArrayItems(typedItems);
+        }
+
+        if (root.TryGetProperty("data", out var dataNode))
+        {
+            if (TryGetItemsArray(dataNode, out var dataItems))
+            {
+                return CloneArrayItems(dataItems);
+            }
+
+            if (dataNode.TryGetProperty(endpointType, out var dataTypedNode)
+                && TryGetItemsArray(dataTypedNode, out var dataTypedItems))
+            {
+                return CloneArrayItems(dataTypedItems);
+            }
+        }
+
+        return new List<JsonElement>();
+    }
+
+    private static bool TryGetItemsArray(JsonElement element, out JsonElement itemsElement)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            itemsElement = element;
+            return true;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty("items", out itemsElement)
+            && itemsElement.ValueKind == JsonValueKind.Array)
+        {
+            return true;
+        }
+
+        itemsElement = default;
+        return false;
+    }
+
+    private static List<JsonElement> CloneArrayItems(JsonElement itemsElement)
+        => itemsElement.ValueKind == JsonValueKind.Array
+            ? itemsElement.EnumerateArray().Select(element => element.Clone()).ToList()
+            : new List<JsonElement>();
+
+    private static string ToGenericSearchType(string endpointType)
+        => endpointType switch
+        {
+            "tracks" => "TRACKS",
+            "albums" => "ALBUMS",
+            "artists" => "ARTISTS",
+            "playlists" => "PLAYLISTS",
+            "videos" => "VIDEOS",
+            _ => endpointType.ToUpperInvariant()
+        };
+
+    private static JsonElement UnwrapSearchItem(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty("item", out var itemElement)
+            && itemElement.ValueKind == JsonValueKind.Object)
+        {
+            return itemElement;
+        }
+
+        return element;
     }
 
     private static object MapTrack(JsonElement item)

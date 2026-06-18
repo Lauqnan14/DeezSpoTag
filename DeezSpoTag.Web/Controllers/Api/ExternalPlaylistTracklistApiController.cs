@@ -44,25 +44,32 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         CancellationToken cancellationToken = default)
     {
         var normalizedType = (type ?? string.Empty).Trim().ToLowerInvariant();
-        if (!string.Equals(normalizedType, "playlist", StringComparison.OrdinalIgnoreCase))
-        {
-            return BadRequest(new { available = false, error = $"Unsupported type '{type}'." });
-        }
-
         var normalizedSource = NormalizeSource(source);
         if (string.IsNullOrWhiteSpace(normalizedSource))
         {
             return BadRequest(new
             {
                 available = false,
-                error = "Only Tidal, Qobuz, and Bandcamp playlist links are supported in this external playlist endpoint."
+                error = "Only Tidal artist, Tidal mix, Tidal track, Tidal album, and supported external playlist links are supported in this endpoint."
             });
+        }
+
+        if (string.Equals(normalizedSource, TidalSource, StringComparison.Ordinal))
+        {
+            if (normalizedType != "artist" && normalizedType != "mix" && normalizedType != "track" && normalizedType != "album" && normalizedType != "playlist")
+            {
+                return BadRequest(new { available = false, error = $"Unsupported type '{type}'." });
+            }
+        }
+        else if (!string.Equals(normalizedType, "playlist", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { available = false, error = $"Unsupported type '{type}'." });
         }
 
         var playlistUrl = (url ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(playlistUrl))
         {
-            return BadRequest(new { available = false, error = "External playlist URL is required." });
+            return BadRequest(new { available = false, error = "External URL is required." });
         }
 
         try
@@ -70,13 +77,14 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             object? payload;
             if (string.Equals(normalizedSource, TidalSource, StringComparison.Ordinal))
             {
-                var resolvedPlaylistId = ResolveTidalPlaylistId(id, playlistUrl);
-                if (string.IsNullOrWhiteSpace(resolvedPlaylistId))
+                payload = normalizedType switch
                 {
-                    return BadRequest(new { available = false, error = "Tidal playlist id is required." });
-                }
-
-                payload = await BuildTidalPlaylistTracklistAsync(resolvedPlaylistId, playlistUrl, cancellationToken);
+                    "artist" => await BuildTidalArtistTopTracksAsync(ResolveTidalEntityId(id, playlistUrl, "artist"), playlistUrl, cancellationToken),
+                    "mix" => await BuildTidalMixTracklistAsync(ResolveTidalMixId(id, playlistUrl), playlistUrl, cancellationToken),
+                    "track" => await BuildTidalTrackTracklistAsync(ResolveTidalEntityId(id, playlistUrl, "track"), playlistUrl, cancellationToken),
+                    "album" => await BuildTidalAlbumTracklistAsync(ResolveTidalEntityId(id, playlistUrl, "album"), playlistUrl, cancellationToken),
+                    _ => await BuildTidalPlaylistTracklistAsync(ResolveTidalPlaylistId(id, playlistUrl), playlistUrl, cancellationToken)
+                };
             }
             else if (string.Equals(normalizedSource, QobuzSource, StringComparison.Ordinal))
             {
@@ -92,7 +100,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
                 return NotFound(new
                 {
                     available = false,
-                    error = $"{normalizedSource.ToUpperInvariant()} playlist unavailable."
+                    error = $"{normalizedSource.ToUpperInvariant()} tracklist unavailable."
                 });
             }
 
@@ -168,6 +176,206 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             link = normalizedPlaylistUrl,
             sourceUrl = normalizedPlaylistUrl,
             creator = new { name = creatorName },
+            nb_tracks = tracks.Count,
+            tracks
+        };
+    }
+
+    private async Task<object?> BuildTidalMixTracklistAsync(
+        string mixId,
+        string mixUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(mixId))
+        {
+            return null;
+        }
+
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        using var response = await SendTidalRequestAsync(
+            $"https://api.tidal.com/v1/pages/mix?mixId={Uri.EscapeDataString(mixId)}&countryCode=US&deviceType=BROWSER",
+            token,
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!TryExtractTidalMix(doc.RootElement, out var mixHeader, out var itemsElement))
+        {
+            return null;
+        }
+
+        var tracks = new List<object>();
+        var position = 0;
+        AppendTidalTracks(itemsElement, tracks, ref position);
+        if (tracks.Count == 0)
+        {
+            return null;
+        }
+
+        var title = GetString(mixHeader, "title");
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = "Tidal Mix";
+        }
+
+        var subtitle = GetString(mixHeader, "subTitle") ?? GetString(mixHeader, "subtitle") ?? string.Empty;
+        var coverUrl = ResolveTidalMixImageUrl(mixHeader);
+        var normalizedMixUrl = BuildTidalEntityUrl(mixId, mixUrl, "mix");
+        return new
+        {
+            id = mixId,
+            title,
+            description = subtitle,
+            cover_big = coverUrl,
+            cover_xl = coverUrl,
+            picture_big = coverUrl,
+            picture_xl = coverUrl,
+            link = normalizedMixUrl,
+            sourceUrl = normalizedMixUrl,
+            creator = new { name = "Tidal" },
+            nb_tracks = tracks.Count,
+            tracks
+        };
+    }
+
+    private async Task<object?> BuildTidalArtistTopTracksAsync(
+        string artistId,
+        string artistUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistId))
+        {
+            return null;
+        }
+
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        var artistNode = await FetchTidalEntityAsync("artists", artistId, token, cancellationToken);
+        if (!artistNode.HasValue)
+        {
+            return null;
+        }
+
+        var tracks = await FetchTidalArtistTopTracksAsync(artistId, token, cancellationToken);
+        if (tracks.Count == 0)
+        {
+            return null;
+        }
+
+        var artistName = GetString(artistNode.Value, "name");
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            artistName = "Tidal Artist";
+        }
+
+        var coverUrl = BuildTidalImageUrl(GetString(artistNode.Value, "picture"));
+        var normalizedArtistUrl = BuildTidalEntityUrl(artistId, artistUrl, "artist");
+        return new
+        {
+            id = artistId,
+            title = artistName,
+            description = "Top Songs",
+            cover_big = coverUrl,
+            cover_xl = coverUrl,
+            picture_big = coverUrl,
+            picture_xl = coverUrl,
+            link = normalizedArtistUrl,
+            sourceUrl = normalizedArtistUrl,
+            creator = new { name = "Tidal" },
+            nb_tracks = tracks.Count,
+            tracks
+        };
+    }
+
+    private async Task<object?> BuildTidalTrackTracklistAsync(
+        string trackId,
+        string trackUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            return null;
+        }
+
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        var trackNode = await FetchTidalEntityAsync("tracks", trackId, token, cancellationToken);
+        if (!trackNode.HasValue || !TryBuildTidalTrack(trackNode.Value, 1, out var track))
+        {
+            return null;
+        }
+
+        var title = GetString(trackNode.Value, MetadataTitleKey);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = "Tidal Track";
+        }
+
+        var albumMetadata = ResolveTidalAlbumMetadata(trackNode.Value);
+        var coverUrl = albumMetadata.Cover;
+        var normalizedTrackUrl = NormalizeTidalTrackUrl(trackUrl, trackId);
+        return new
+        {
+            id = trackId,
+            title,
+            description = string.Empty,
+            cover_big = coverUrl,
+            cover_xl = coverUrl,
+            picture_big = coverUrl,
+            picture_xl = coverUrl,
+            link = normalizedTrackUrl,
+            sourceUrl = normalizedTrackUrl,
+            creator = new { name = ResolveArtistName(trackNode.Value) },
+            nb_tracks = 1,
+            tracks = new[] { track }
+        };
+    }
+
+    private async Task<object?> BuildTidalAlbumTracklistAsync(
+        string albumId,
+        string albumUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(albumId))
+        {
+            return null;
+        }
+
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        var albumNode = await FetchTidalEntityAsync("albums", albumId, token, cancellationToken);
+        if (!albumNode.HasValue)
+        {
+            return null;
+        }
+
+        var tracks = await FetchTidalAlbumTracksAsync(albumId, token, cancellationToken);
+        if (tracks.Count == 0)
+        {
+            return null;
+        }
+
+        var title = ComposeTitle(GetString(albumNode.Value, MetadataTitleKey), GetString(albumNode.Value, "version"));
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = "Tidal Album";
+        }
+
+        var coverUrl = BuildTidalImageUrl(GetString(albumNode.Value, "cover"));
+        var normalizedAlbumUrl = BuildTidalEntityUrl(albumId, albumUrl, "album");
+        return new
+        {
+            id = albumId,
+            title,
+            description = string.Empty,
+            cover_big = coverUrl,
+            cover_xl = coverUrl,
+            picture_big = coverUrl,
+            picture_xl = coverUrl,
+            link = normalizedAlbumUrl,
+            sourceUrl = normalizedAlbumUrl,
+            creator = new { name = ResolveArtistName(albumNode.Value) },
             nb_tracks = tracks.Count,
             tracks
         };
@@ -610,6 +818,162 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         return tracks;
     }
 
+    private async Task<JsonElement?> FetchTidalEntityAsync(
+        string endpoint,
+        string id,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendTidalRequestAsync(
+            $"https://api.tidal.com/v1/{endpoint}/{Uri.EscapeDataString(id)}?countryCode=US",
+            token,
+            cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return doc.RootElement.Clone();
+    }
+
+    private async Task<List<object>> FetchTidalAlbumTracksAsync(
+        string albumId,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        var tracks = new List<object>();
+        var offset = 0;
+        var total = int.MaxValue;
+        var position = 0;
+
+        while (offset < total)
+        {
+            using var response = await SendTidalRequestAsync(
+                $"https://api.tidal.com/v1/albums/{Uri.EscapeDataString(albumId)}/tracks?countryCode=US&limit={DefaultPageSize}&offset={offset}",
+                token,
+                cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                break;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var root = doc.RootElement;
+
+            total = ResolveTidalTotalCount(root, total);
+            if (!TryGetTidalItems(root, out var itemsElement))
+            {
+                break;
+            }
+
+            var appended = AppendTidalTracks(itemsElement, tracks, ref position);
+            if (appended == 0)
+            {
+                break;
+            }
+
+            offset += itemsElement.GetArrayLength();
+        }
+
+        return tracks;
+    }
+
+    private async Task<List<object>> FetchTidalArtistTopTracksAsync(
+        string artistId,
+        string token,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendTidalRequestAsync(
+            $"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(artistId)}/toptracks?countryCode=US&limit=50&offset=0",
+            token,
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<object>();
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!TryGetTidalItems(doc.RootElement, out var itemsElement))
+        {
+            return new List<object>();
+        }
+
+        var tracks = new List<object>();
+        var position = 0;
+        AppendTidalTracks(itemsElement, tracks, ref position);
+        return tracks;
+    }
+
+    private static bool TryExtractTidalMix(JsonElement root, out JsonElement mixHeader, out JsonElement itemsElement)
+    {
+        mixHeader = default;
+        itemsElement = default;
+        if (!root.TryGetProperty("rows", out var rows) || rows.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (!row.TryGetProperty("modules", out var modules) || modules.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var module in modules.EnumerateArray())
+            {
+                var type = GetString(module, "type");
+                if (string.Equals(type, "MIX_HEADER", StringComparison.OrdinalIgnoreCase)
+                    && module.TryGetProperty("mix", out var mix)
+                    && mix.ValueKind == JsonValueKind.Object)
+                {
+                    mixHeader = mix.Clone();
+                    continue;
+                }
+
+                if (string.Equals(type, "TRACK_LIST", StringComparison.OrdinalIgnoreCase)
+                    && module.TryGetProperty("pagedList", out var pagedList)
+                    && pagedList.ValueKind == JsonValueKind.Object
+                    && pagedList.TryGetProperty("items", out var items)
+                    && items.ValueKind == JsonValueKind.Array)
+                {
+                    itemsElement = items.Clone();
+                }
+            }
+        }
+
+        return mixHeader.ValueKind == JsonValueKind.Object && itemsElement.ValueKind == JsonValueKind.Array;
+    }
+
+    private static string ResolveTidalMixImageUrl(JsonElement mixHeader)
+    {
+        if (!mixHeader.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        foreach (var key in new[] { "LARGE", "MEDIUM", "SMALL" })
+        {
+            if (images.TryGetProperty(key, out var image)
+                && image.ValueKind == JsonValueKind.Object)
+            {
+                var url = GetString(image, "url");
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    return url;
+                }
+            }
+        }
+
+        return string.Empty;
+    }
+
     private static int ResolveTidalTotalCount(JsonElement root, int fallbackTotal)
     {
         var pageTotal = GetInt(root, "totalNumberOfItems");
@@ -775,6 +1139,20 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         return $"https://tidal.com/browse/playlist/{Uri.EscapeDataString(playlistId)}";
     }
 
+    private static string BuildTidalEntityUrl(string id, string providedUrl, string entityType)
+    {
+        if (Uri.TryCreate(providedUrl, UriKind.Absolute, out var uri))
+        {
+            var absolute = uri.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
+            if (!string.IsNullOrWhiteSpace(absolute))
+            {
+                return absolute;
+            }
+        }
+
+        return $"https://tidal.com/browse/{Uri.EscapeDataString(entityType)}/{Uri.EscapeDataString(id)}";
+    }
+
     private static string BuildTidalImageUrl(string? coverId)
     {
         var normalized = (coverId ?? string.Empty).Trim();
@@ -806,6 +1184,60 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         for (var i = 0; i < segments.Length - 1; i++)
         {
             if (segments[i].Equals("playlist", StringComparison.OrdinalIgnoreCase))
+            {
+                return segments[i + 1];
+            }
+        }
+
+        return explicitId;
+    }
+
+    private static string ResolveTidalEntityId(string? id, string? url, string entityType)
+    {
+        var explicitId = (id ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(explicitId) && explicitId.All(char.IsDigit))
+        {
+            return explicitId;
+        }
+
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return explicitId;
+        }
+
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (segments[i].Equals(entityType, StringComparison.OrdinalIgnoreCase))
+            {
+                return segments[i + 1];
+            }
+        }
+
+        return explicitId;
+    }
+
+    private static string ResolveTidalMixId(string? id, string? url)
+    {
+        var explicitId = (id ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(explicitId))
+        {
+            return explicitId;
+        }
+
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return explicitId;
+        }
+
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (segments[i].Equals("mix", StringComparison.OrdinalIgnoreCase))
             {
                 return segments[i + 1];
             }

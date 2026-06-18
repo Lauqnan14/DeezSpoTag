@@ -9,6 +9,7 @@ using System.Net;
 using System.Globalization;
 using System.IO.Compression;
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Authentication;
@@ -21,6 +22,7 @@ using Newtonsoft.Json.Linq;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Core.Security;
+using DeezSpoTag.Web.Controllers.Api;
 using GwTrack = DeezSpoTag.Core.Models.Deezer.GwTrack;
 
 namespace DeezSpoTag.Web.Controllers
@@ -44,6 +46,8 @@ namespace DeezSpoTag.Web.Controllers
         private const string DeezerSource = "deezer";
         private const string AppleSource = "apple";
         private const string SpotifySource = "spotify";
+        private const string TidalSource = "tidal";
+        private const string VideoType = "video";
         private const string ArtistPageCacheSource = "artist-page";
         private const string SmartTracklistType = "smarttracklist";
         private const string ShowType = "show";
@@ -127,6 +131,7 @@ namespace DeezSpoTag.Web.Controllers
         private readonly TracklistSongCacheStore _tracklistSongCacheStore;
         private readonly CrossDeviceSyncService _crossDeviceSyncService;
         private readonly SpotifyHomeFeedRuntimeService _spotifyHomeFeedRuntimeService;
+        private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
 
         public sealed class ApiControllerMusicServices
         {
@@ -164,6 +169,7 @@ namespace DeezSpoTag.Web.Controllers
             public required TracklistSongCacheStore TracklistSongCacheStore { get; init; }
             public required CrossDeviceSyncService CrossDeviceSyncService { get; init; }
             public required SpotifyHomeFeedRuntimeService SpotifyHomeFeedRuntimeService { get; init; }
+            public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
         }
 
         public ApiController(ApiControllerDependencies dependencies)
@@ -183,6 +189,7 @@ namespace DeezSpoTag.Web.Controllers
             _tracklistSongCacheStore = dependencies.TracklistSongCacheStore;
             _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
             _spotifyHomeFeedRuntimeService = dependencies.SpotifyHomeFeedRuntimeService;
+            _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
         }
 
         // Login endpoints removed - handled by DeezSpoTag.API.Controllers.LoginController
@@ -2150,7 +2157,7 @@ namespace DeezSpoTag.Web.Controllers
         }
 
         private static bool IsSupportedArtistPageSource(string source) =>
-            source == DeezerSource || source == AppleSource || source == SpotifySource;
+            source == DeezerSource || source == AppleSource || source == SpotifySource || source == TidalSource;
 
         private async Task<ArtistCacheEntry?> GetArtistPageCacheSnapshotAsync(
             string cacheKey,
@@ -2467,6 +2474,11 @@ namespace DeezSpoTag.Web.Controllers
             if (source == SpotifySource)
             {
                 return await BuildSpotifyArtistPageAsync(id, forceRefresh: false, cancellationToken);
+            }
+
+            if (source == TidalSource)
+            {
+                return await BuildTidalArtistPageAsync(id, cancellationToken);
             }
 
             var deezerData = await FetchDeezerArtistDataAsync(httpClient, id);
@@ -2840,6 +2852,574 @@ namespace DeezSpoTag.Web.Controllers
                 [PictureMediumField] = artistArtwork ?? string.Empty,
                 [ReleasesField] = releases
             };
+        }
+
+        private async Task<Dictionary<string, object>?> BuildTidalArtistPageAsync(string id, CancellationToken cancellationToken)
+        {
+            var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+            var countryCode = await _tidalAccessTokenProvider.GetCountryCodeAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(countryCode))
+            {
+                countryCode = "US";
+            }
+
+            var artistProfile = await FetchTidalJsonAsync(
+                $"https://openapi.tidal.com/v2/artists/{Uri.EscapeDataString(id)}?countryCode={Uri.EscapeDataString(countryCode)}&include=biography,profileArt&collapseBy=FINGERPRINT",
+                token,
+                cancellationToken);
+            if (!artistProfile.HasValue || artistProfile.Value.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var included = BuildTidalOpenApiIncludedMap(artistProfile.Value);
+            if (!artistProfile.Value.TryGetProperty("data", out var artistData) || artistData.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var attributes = artistData.TryGetProperty("attributes", out var attrs) && attrs.ValueKind == JsonValueKind.Object
+                ? attrs
+                : default;
+            var name = GetString(attributes, NameField) ?? "Unknown Artist";
+            var picture = ResolveTidalOpenApiArtworkId(artistData, included, "profileArt")
+                ?? GetString(attributes, "selectedAlbumCoverFallback")
+                ?? string.Empty;
+            var pictureUrl = BuildTidalImageUrl(picture);
+            var popularity = ResolveTidalPopularity(attributes);
+            var biography = ResolveTidalBiography(artistData, included);
+            var artistMixId = ResolveTidalArtistMixId(attributes);
+
+            var albumsTask = FetchTidalArtistReleaseBucketAsync(id, "albums", countryCode, token, cancellationToken);
+            var epsTask = FetchTidalArtistReleaseBucketAsync(id, "EPSANDSINGLES", countryCode, token, cancellationToken);
+            var topTracksTask = FetchTidalArtistTopTracksAsync(id, countryCode, token, cancellationToken);
+            var videosTask = FetchTidalArtistVideosAsync(id, countryCode, token, cancellationToken);
+            var relatedTask = FetchTidalRelatedArtistsAsync(id, countryCode, token, cancellationToken);
+            await Task.WhenAll(albumsTask, epsTask, topTracksTask, videosTask, relatedTask);
+
+            var releases = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            if (albumsTask.Result.Count > 0)
+            {
+                releases[AlbumType] = albumsTask.Result;
+            }
+            if (epsTask.Result.Count > 0)
+            {
+                releases["singles_eps"] = epsTask.Result;
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["id"] = id,
+                [SourceField] = TidalSource,
+                [NameField] = name,
+                ["nb_fan"] = popularity,
+                ["biography"] = biography,
+                ["artist_mix_id"] = artistMixId,
+                [PictureXlField] = pictureUrl,
+                [PictureBigField] = pictureUrl,
+                [PictureMediumField] = pictureUrl,
+                [ReleasesField] = releases,
+                ["top_tracks"] = topTracksTask.Result,
+                ["videos"] = videosTask.Result,
+                [RelatedField] = relatedTask.Result,
+                ["download_link"] = $"https://tidal.com/browse/artist/{Uri.EscapeDataString(id)}"
+            };
+        }
+
+        private async Task<List<Dictionary<string, object>>> FetchTidalArtistReleaseBucketAsync(
+            string artistId,
+            string filter,
+            string countryCode,
+            string token,
+            CancellationToken cancellationToken)
+        {
+            var result = new List<Dictionary<string, object>>();
+            var offset = 0;
+            var total = int.MaxValue;
+            while (offset < total)
+            {
+                var filterQuery = string.Equals(filter, "albums", StringComparison.OrdinalIgnoreCase)
+                    ? string.Empty
+                    : $"&filter={Uri.EscapeDataString(filter)}";
+                var url = $"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(artistId)}/albums?countryCode={Uri.EscapeDataString(countryCode)}{filterQuery}&limit=50&offset={offset}";
+                var root = await FetchTidalJsonAsync(url, token, cancellationToken);
+                if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+                {
+                    break;
+                }
+
+                total = GetInt32(root.Value, "totalNumberOfItems") ?? total;
+                if (!root.Value.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                {
+                    break;
+                }
+
+                var before = result.Count;
+                foreach (var item in items.EnumerateArray())
+                {
+                    var release = BuildTidalReleaseEntry(item, filter);
+                    if (release != null)
+                    {
+                        result.Add(release);
+                    }
+                }
+
+                var itemCount = items.GetArrayLength();
+                if (itemCount == 0 || result.Count == before && itemCount < 50)
+                {
+                    break;
+                }
+
+                offset += itemCount;
+            }
+
+            return result
+                .GroupBy(item => item["id"].ToString(), StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
+        }
+
+        private async Task<List<Dictionary<string, object>>> FetchTidalArtistTopTracksAsync(
+            string artistId,
+            string countryCode,
+            string token,
+            CancellationToken cancellationToken)
+        {
+            var root = await FetchTidalJsonAsync($"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(artistId)}/toptracks?countryCode={Uri.EscapeDataString(countryCode)}&limit=30&offset=0", token, cancellationToken);
+            if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+            {
+                return new List<Dictionary<string, object>>();
+            }
+
+            if (!root.Value.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+            {
+                return new List<Dictionary<string, object>>();
+            }
+
+            return items.EnumerateArray()
+                .Select(BuildTidalTopTrackEntry)
+                .Where(static item => item != null)
+                .ToList()!;
+        }
+
+        private async Task<List<Dictionary<string, object>>> FetchTidalRelatedArtistsAsync(
+            string artistId,
+            string countryCode,
+            string token,
+            CancellationToken cancellationToken)
+        {
+            var root = await FetchTidalJsonAsync($"https://openapi.tidal.com/v2/artists/{Uri.EscapeDataString(artistId)}/relationships/similarArtists?countryCode={Uri.EscapeDataString(countryCode)}&include=similarArtists,similarArtists.profileArt", token, cancellationToken);
+            if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+            {
+                return new List<Dictionary<string, object>>();
+            }
+
+            if (!root.Value.TryGetProperty("data", out var items) || items.ValueKind != JsonValueKind.Array)
+            {
+                return new List<Dictionary<string, object>>();
+            }
+
+            var included = BuildTidalOpenApiIncludedMap(root.Value);
+            return items.EnumerateArray()
+                .Select(item => BuildTidalOpenApiRelatedArtistEntry(item, included))
+                .Where(static item => item != null)
+                .ToList()!;
+        }
+
+        private async Task<List<Dictionary<string, object>>> FetchTidalArtistVideosAsync(
+            string artistId,
+            string countryCode,
+            string token,
+            CancellationToken cancellationToken)
+        {
+            var root = await FetchTidalJsonAsync(
+                $"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(artistId)}/videos?countryCode={Uri.EscapeDataString(countryCode)}&limit=50&offset=0",
+                token,
+                cancellationToken);
+            if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+            {
+                return new List<Dictionary<string, object>>();
+            }
+
+            if (!root.Value.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+            {
+                return new List<Dictionary<string, object>>();
+            }
+
+            var videos = new List<Dictionary<string, object>>();
+            foreach (var item in items.EnumerateArray())
+            {
+                var video = BuildTidalArtistVideoEntry(item);
+                if (video != null)
+                {
+                    videos.Add(video);
+                }
+            }
+
+            return videos;
+        }
+
+        private async Task<JsonElement?> FetchTidalJsonAsync(string url, string token, CancellationToken cancellationToken)
+        {
+            using var response = await SendTidalApiRequestAsync(url, token, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            return doc.RootElement.Clone();
+        }
+
+        private async Task<HttpResponseMessage> SendTidalApiRequestAsync(string url, string token, CancellationToken cancellationToken)
+        {
+            var client = _httpClientFactory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            return await client.SendAsync(request, cancellationToken);
+        }
+
+        private static Dictionary<string, object>? BuildTidalReleaseEntry(JsonElement album, string filter)
+        {
+            var id = GetScalarString(album, "id");
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return null;
+            }
+
+            var recordType = string.Equals(filter, "EPSANDSINGLES", StringComparison.OrdinalIgnoreCase)
+                ? "singles_eps"
+                : AlbumType;
+
+            return new Dictionary<string, object>
+            {
+                ["id"] = id,
+                [TitleField] = ComposeTidalTitle(GetString(album, TitleField), GetString(album, "version")),
+                [ReleaseDateField] = GetString(album, "releaseDate") ?? string.Empty,
+                [NbTracksField] = GetInt32(album, "numberOfTracks") ?? 0,
+                ["explicit_lyrics"] = GetBool(album, "explicit") ?? false,
+                [RecordTypeField] = recordType,
+                ["link"] = $"https://tidal.com/browse/album/{Uri.EscapeDataString(id)}",
+                [CoverImageType] = BuildTidalImageUrl(GetString(album, "cover")),
+                [CoverSmallField] = BuildTidalImageUrl(GetString(album, "cover"), 320),
+                [SourceField] = TidalSource
+            };
+        }
+
+        private static Dictionary<string, object>? BuildTidalTopTrackEntry(JsonElement track)
+        {
+            var id = GetScalarString(track, "id");
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return null;
+            }
+
+            var artist = track.TryGetProperty(ArtistType, out var artistNode) ? artistNode : default;
+            var album = track.TryGetProperty(AlbumType, out var albumNode) ? albumNode : default;
+            var albumId = GetScalarString(album, "id") ?? id;
+            var cover = BuildTidalImageUrl(GetString(album, "cover"));
+            return new Dictionary<string, object>
+            {
+                ["id"] = id,
+                [TitleField] = ComposeTidalTitle(GetString(track, TitleField), GetString(track, "version")),
+                ["link"] = $"https://tidal.com/browse/track/{Uri.EscapeDataString(id)}",
+                [SourceField] = TidalSource,
+                ["duration"] = GetInt32(track, DurationField) ?? 0,
+                ["isrc"] = GetString(track, "isrc") ?? string.Empty,
+                ["explicit_lyrics"] = GetBool(track, "explicit") ?? false,
+                [ArtistType] = new Dictionary<string, object>
+                {
+                    ["id"] = GetScalarString(artist, "id") ?? string.Empty,
+                    [NameField] = GetString(artist, NameField) ?? string.Empty,
+                    [SourceField] = TidalSource
+                },
+                [AlbumType] = new Dictionary<string, object>
+                {
+                    ["id"] = albumId,
+                    [TitleField] = GetString(album, TitleField) ?? string.Empty,
+                    [TypeField] = AlbumType,
+                    [SourceField] = TidalSource,
+                    [CoverSmallField] = cover,
+                    [CoverMediumField] = cover,
+                    [CoverBigField] = cover,
+                    [CoverXlField] = cover,
+                    [ReleaseDateField] = GetString(album, "releaseDate") ?? string.Empty
+                }
+            };
+        }
+
+        private static Dictionary<string, object>? BuildTidalOpenApiRelatedArtistEntry(
+            JsonElement relationship,
+            IReadOnlyDictionary<string, JsonElement> included)
+        {
+            var id = GetScalarString(relationship, "id");
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return null;
+            }
+
+            var artist = included.TryGetValue($"artists:{id}", out var includedArtist)
+                ? includedArtist
+                : relationship;
+            var attributes = artist.TryGetProperty("attributes", out var attrs) && attrs.ValueKind == JsonValueKind.Object
+                ? attrs
+                : default;
+            var picture = ResolveTidalOpenApiArtworkId(artist, included, "profileArt")
+                ?? GetString(attributes, "selectedAlbumCoverFallback")
+                ?? string.Empty;
+            var pictureUrl = BuildTidalImageUrl(picture);
+            return new Dictionary<string, object>
+            {
+                ["id"] = id,
+                [NameField] = GetString(attributes, NameField) ?? string.Empty,
+                [SourceField] = TidalSource,
+                ["picture"] = pictureUrl,
+                [PictureMediumField] = pictureUrl
+            };
+        }
+
+        private static Dictionary<string, object>? BuildTidalArtistVideoEntry(JsonElement video)
+        {
+            var id = GetScalarString(video, "id");
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return null;
+            }
+
+            var artistName = ResolveTidalVideoArtistName(video);
+            var image = BuildTidalImageUrl(GetString(video, "imageId") ?? GetString(video, "image"));
+            var url = $"https://tidal.com/browse/video/{Uri.EscapeDataString(id)}";
+            return new Dictionary<string, object>
+            {
+                [SourceField] = TidalSource,
+                [TypeField] = VideoType,
+                [NameField] = ComposeTidalTitle(GetString(video, TitleField), GetString(video, "version")),
+                ["artist"] = artistName,
+                ["image"] = image,
+                ["releaseDate"] = GetString(video, "releaseDate") ?? string.Empty,
+                ["duration"] = GetInt32(video, DurationField) ?? 0,
+                ["durationMs"] = Math.Max(0, GetInt32(video, DurationField) ?? 0) * 1000L,
+                ["previewUrl"] = string.Empty,
+                ["tidalId"] = id,
+                ["tidalType"] = VideoType,
+                ["tidalUrl"] = url,
+                ["externalUrl"] = url,
+                ["hasAtmos"] = JsonElementContainsAtmos(video)
+            };
+        }
+
+        private static string ResolveTidalVideoArtistName(JsonElement video)
+        {
+            if (video.TryGetProperty("artist", out var artist) && artist.ValueKind == JsonValueKind.Object)
+            {
+                return GetString(artist, NameField) ?? string.Empty;
+            }
+
+            if (video.TryGetProperty("artists", out var artists) && artists.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in artists.EnumerateArray())
+                {
+                    var name = GetString(item, NameField);
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        return name;
+                    }
+                }
+            }
+
+            return GetString(video, "artistName") ?? string.Empty;
+        }
+
+        private static Dictionary<string, JsonElement> BuildTidalOpenApiIncludedMap(JsonElement root)
+        {
+            var map = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+            if (!root.TryGetProperty("included", out var included) || included.ValueKind != JsonValueKind.Array)
+            {
+                return map;
+            }
+
+            foreach (var item in included.EnumerateArray())
+            {
+                var type = GetString(item, TypeField);
+                var id = GetScalarString(item, "id");
+                if (!string.IsNullOrWhiteSpace(type) && !string.IsNullOrWhiteSpace(id))
+                {
+                    map[$"{type}:{id}"] = item.Clone();
+                }
+            }
+
+            return map;
+        }
+
+        private static string? ResolveTidalOpenApiArtworkId(
+            JsonElement item,
+            IReadOnlyDictionary<string, JsonElement> included,
+            string relationshipName)
+        {
+            if (!item.TryGetProperty("relationships", out var relationships)
+                || relationships.ValueKind != JsonValueKind.Object
+                || !relationships.TryGetProperty(relationshipName, out var relationship)
+                || relationship.ValueKind != JsonValueKind.Object
+                || !relationship.TryGetProperty("data", out var data))
+            {
+                return null;
+            }
+
+            var artId = data.ValueKind switch
+            {
+                JsonValueKind.Array => data.EnumerateArray().Select(node => GetScalarString(node, "id")).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
+                JsonValueKind.Object => GetScalarString(data, "id"),
+                _ => null
+            };
+            if (string.IsNullOrWhiteSpace(artId) || !included.TryGetValue($"artworks:{artId}", out var artwork))
+            {
+                return null;
+            }
+
+            if (!artwork.TryGetProperty("attributes", out var attributes)
+                || attributes.ValueKind != JsonValueKind.Object
+                || !attributes.TryGetProperty("files", out var files)
+                || files.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var file in files.EnumerateArray())
+            {
+                var href = GetString(file, "href");
+                var uuid = ExtractTidalImageUuid(href);
+                if (!string.IsNullOrWhiteSpace(uuid))
+                {
+                    return uuid;
+                }
+            }
+
+            return null;
+        }
+
+        private static string ResolveTidalBiography(JsonElement artistData, IReadOnlyDictionary<string, JsonElement> included)
+        {
+            if (!artistData.TryGetProperty("relationships", out var relationships)
+                || relationships.ValueKind != JsonValueKind.Object
+                || !relationships.TryGetProperty("biography", out var biographyRelationship)
+                || biographyRelationship.ValueKind != JsonValueKind.Object
+                || !biographyRelationship.TryGetProperty("data", out var data)
+                || data.ValueKind != JsonValueKind.Object)
+            {
+                return string.Empty;
+            }
+
+            var bioId = GetScalarString(data, "id");
+            if (string.IsNullOrWhiteSpace(bioId))
+            {
+                return string.Empty;
+            }
+
+            var keys = new[] { $"biographies:{bioId}", $"biography:{bioId}" };
+            foreach (var key in keys)
+            {
+                if (!included.TryGetValue(key, out var biography)
+                    || !biography.TryGetProperty("attributes", out var attributes)
+                    || attributes.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var text = GetString(attributes, "text");
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static int ResolveTidalPopularity(JsonElement attributes)
+        {
+            if (attributes.ValueKind != JsonValueKind.Object || !attributes.TryGetProperty("popularity", out var popularity))
+            {
+                return 0;
+            }
+
+            if (popularity.ValueKind == JsonValueKind.Number && popularity.TryGetDouble(out var value))
+            {
+                return value <= 1 ? (int)Math.Round(value * 100) : (int)Math.Round(value);
+            }
+
+            return 0;
+        }
+
+        private static string ResolveTidalArtistMixId(JsonElement attributes)
+        {
+            if (attributes.ValueKind != JsonValueKind.Object
+                || !attributes.TryGetProperty("mixes", out var mixes)
+                || mixes.ValueKind != JsonValueKind.Object)
+            {
+                return string.Empty;
+            }
+
+            return GetString(mixes, "ARTIST_MIX")
+                ?? GetString(mixes, "artistMix")
+                ?? string.Empty;
+        }
+
+        private static string? ExtractTidalImageUuid(string? href)
+        {
+            if (string.IsNullOrWhiteSpace(href))
+            {
+                return null;
+            }
+
+            var match = System.Text.RegularExpressions.Regex.Match(
+                href,
+                @"images/([0-9a-fA-F]{8})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{12})/");
+            return match.Success
+                ? string.Join('-', match.Groups.Values.Skip(1).Select(group => group.Value))
+                : null;
+        }
+
+        private static string BuildTidalImageUrl(string? imageId, int size = 750)
+        {
+            if (string.IsNullOrWhiteSpace(imageId))
+            {
+                return string.Empty;
+            }
+
+            var normalized = imageId.Replace("-", "/", StringComparison.Ordinal).Trim('/');
+            return $"https://resources.tidal.com/images/{normalized}/{size}x{size}.jpg";
+        }
+
+        private static string ComposeTidalTitle(string? title, string? version)
+            => ExternalSearchControllerHelpers.ComposeTitle(title, version);
+
+        private static bool JsonElementContainsAtmos(JsonElement element)
+        {
+            return element.ValueKind switch
+            {
+                JsonValueKind.String => element.GetString()?.Contains("ATMOS", StringComparison.OrdinalIgnoreCase) == true,
+                JsonValueKind.Array => element.EnumerateArray().Any(JsonElementContainsAtmos),
+                JsonValueKind.Object => element.EnumerateObject().Any(prop => JsonElementContainsAtmos(prop.Value)),
+                _ => false
+            };
+        }
+
+        private static int? GetInt32(JsonElement element, string name)
+        {
+            if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(name, out var value))
+            {
+                return null;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
+            {
+                return number;
+            }
+
+            return value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out number)
+                ? number
+                : null;
         }
 
         private async Task<Dictionary<string, object>> FetchAppleArtistAlbumsAsync(string id, string artistName, CancellationToken cancellationToken)

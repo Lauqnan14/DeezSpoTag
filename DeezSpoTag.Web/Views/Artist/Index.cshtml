@@ -5,6 +5,7 @@
 
 @section Styles {
 <link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/loading-state-shared.css")" />
+<link rel="stylesheet" href="@AssetUrl.Versioned(ViewContext, Url, "~/css/library.css")" />
 <style>
 .deezer-artist-page {
     display: flex;
@@ -858,8 +859,25 @@ function formatArtistData(data) {
         artistReleases: releases,
         artistTopTracks: topTracks,
         artistRelated: Array.isArray(data.related) ? data.related : [],
+        artistVideos: Array.isArray(data.videos) ? data.videos : [],
+        artistMixId: data.artist_mix_id || data.artistMixId || '',
+        artistBiography: data.biography || '',
         downloadLink: data.download_link || (data.id ? `https://www.deezer.com/artist/${data.id}` : '')
     };
+}
+
+function formatArtistStatText(data) {
+    const value = Number(data?.artistFans || 0);
+    const source = String(data?.artistSource || '').toLowerCase();
+    if (!Number.isFinite(value) || value <= 0) {
+        return source === 'tidal' ? 'Popularity unavailable' : 'Fans unavailable';
+    }
+
+    if (source === 'tidal') {
+        return `${formatNumber(value)}% popularity`;
+    }
+
+    return `${formatNumber(value)} fans`;
 }
 
 function normalizeReleaseTabKey(key) {
@@ -906,7 +924,7 @@ function displayArtist(data) {
     const genreChips = data.artistGenres.length
         ? data.artistGenres.map(genre => `<span class="artist-hero__genre">${escapeHtml(genre)}</span>`).join('')
         : '';
-    const fansText = data.artistFans ? `${formatNumber(data.artistFans)} fans` : 'Fans unavailable';
+    const fansText = formatArtistStatText(data);
 
     const topTracksHtml = renderTopTracks(data.artistTopTracks);
     const discographyTabs = tabsWithData.length ? tabsWithData : availableTabs;
@@ -926,6 +944,7 @@ function displayArtist(data) {
                     ${genreChips ? `<div class="artist-hero__genres">${genreChips}</div>` : ''}
                     <div class="artist-hero__actions">
                         <button class="btn btn-secondary action-btn action-btn--wide" onclick="downloadArtist('${data.downloadLink}/discography')" ${!data.downloadLink ? 'style="display:none"' : ''}>Download Discography</button>
+                        <button class="btn btn-secondary action-btn action-btn--wide" onclick="openArtistMix('${escapeJsString(data.artistMixId)}')" ${!data.artistMixId ? 'style="display:none"' : ''}>Artist Mix</button>
                         <button id="watchlistToggle" class="btn btn-primary action-btn" type="button">Monitor Artist</button>
                         <select id="downloadDestinationArtist" class="form-select download-destination-select"></select>
                     </div>
@@ -950,6 +969,14 @@ function displayArtist(data) {
             </div>
         </section>
 
+        ${data.artistVideos.length ? `
+        <section class="section-card">
+            <h2 class="section-title">Videos</h2>
+            <div class="apple-grid video-grid wrap-grid artist-video-style">
+                ${renderArtistVideos(data.artistVideos)}
+            </div>
+        </section>` : ''}
+
         <section class="section-card">
             <h2 class="section-title">Similar artists</h2>
             ${renderRelatedArtists(data.artistRelated)}
@@ -969,6 +996,15 @@ function displayArtist(data) {
     }
 
     document.title = `${data.artistName} - DeezSpoTag`;
+}
+
+function openArtistMix(mixId) {
+    const normalizedId = String(mixId || '').trim();
+    if (!normalizedId) {
+        return;
+    }
+
+    window.location.href = `/Tracklist?id=${encodeURIComponent(normalizedId)}&type=mix&source=tidal`;
 }
 
 async function primeArtistTopTrackPreviews(options = {}) {
@@ -2181,6 +2217,47 @@ function renderDiscography(releases) {
     }).join('');
 }
 
+function renderArtistVideos(videos) {
+    if (!Array.isArray(videos) || videos.length === 0) {
+        return '<div class="empty-state">No videos available.</div>';
+    }
+
+    return videos.map(video => {
+        const title = video.name || video.title || '';
+        const artist = video.artist || '';
+        const image = video.image || video.cover || '';
+        const tidalId = video.tidalId || video.id || '';
+        const tidalUrl = video.tidalUrl || video.externalUrl || (tidalId ? `https://tidal.com/browse/video/${tidalId}` : '');
+        const previewUrl = tidalId ? `/api/tidal/download/videos/preview?id=${encodeURIComponent(tidalId)}` : '';
+        const dateRaw = video.releaseDate || video.release_date || '';
+        const releaseYear = dateRaw ? new Date(dateRaw).getFullYear() : '';
+        const yearText = Number.isFinite(releaseYear) ? String(releaseYear) : '';
+        const meta = [artist, yearText].filter(Boolean).join(' · ');
+        const playButton = previewUrl
+            ? `<button class="video-overlay-btn video-overlay-btn--play" type="button" aria-label="Preview" onclick="event.preventDefault(); event.stopPropagation(); playArtistVideoPreview('${escapeJsString(previewUrl)}')">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </button>`
+            : '';
+        const downloadButton = tidalUrl
+            ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.preventDefault(); event.stopPropagation(); downloadArtistTidalVideo('${escapeJsString(tidalUrl)}', '${escapeJsString(tidalId)}', '${escapeJsString(title)}', '${escapeJsString(artist)}', '${escapeJsString(image)}')">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>`
+            : '';
+
+        return `
+            <div class="apple-card video" data-source="tidal" data-key="${escapeHtml(tidalId)}">
+                <div class="apple-thumb">
+                    ${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" />` : ''}
+                    ${playButton}
+                    ${downloadButton}
+                </div>
+                <div class="apple-title">${escapeHtml(title)}</div>
+                ${meta ? `<div class="apple-sub">${escapeHtml(meta)}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+}
+
 function resolveReleaseCover(release) {
     const candidates = [
         release?.cover_medium,
@@ -2537,6 +2614,134 @@ function downloadArtist(link, metadata = null) {
     }
 }
 
+let artistHlsLibraryPromise = null;
+
+function loadArtistHlsLibraryAsync() {
+    if (window.Hls) {
+        return Promise.resolve(window.Hls);
+    }
+    if (artistHlsLibraryPromise) {
+        return artistHlsLibraryPromise;
+    }
+
+    artistHlsLibraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
+        script.async = true;
+        script.onload = () => resolve(window.Hls || null);
+        script.onerror = () => reject(new Error('Failed to load HLS player.'));
+        document.head.appendChild(script);
+    });
+    return artistHlsLibraryPromise;
+}
+
+function toSafeArtistPreviewUrl(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('/api/tidal/download/videos/preview')) {
+        return raw;
+    }
+    try {
+        const parsed = new URL(raw, window.location.origin);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : '';
+    } catch {
+        return '';
+    }
+}
+
+async function configureArtistVideoPreviewSource(video, safeUrl) {
+    const isHlsCandidate = safeUrl.includes('.m3u8') || safeUrl.includes('/api/tidal/download/videos/preview');
+    if (!isHlsCandidate) {
+        video.src = safeUrl;
+        return;
+    }
+
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = safeUrl;
+        return;
+    }
+
+    const Hls = await loadArtistHlsLibraryAsync();
+    if (Hls?.isSupported?.()) {
+        const hls = new Hls();
+        video._hls = hls;
+        hls.loadSource(safeUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            video.play().catch(() => {});
+        });
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (data?.fatal) {
+                hls.destroy();
+                video._hls = null;
+                window.DeezSpoTag?.ui?.showToast?.('Video preview failed.', { type: 'error' });
+            }
+        });
+        return;
+    }
+
+    video.src = safeUrl;
+}
+
+async function playArtistVideoPreview(url) {
+    const safeUrl = toSafeArtistPreviewUrl(url);
+    if (!safeUrl) {
+        window.DeezSpoTag?.ui?.showToast?.('Invalid preview URL.', { type: 'error' });
+        return;
+    }
+
+    const video = document.createElement('video');
+    video.controls = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.style.width = '100%';
+    video.style.maxHeight = '70vh';
+
+    if (window.DeezSpoTag?.ui?.showModal) {
+        window.DeezSpoTag.ui.showModal({
+            title: 'Preview',
+            message: '',
+            contentElement: video,
+            buttons: [{ label: 'Close', value: true, primary: true }]
+        });
+    }
+
+    await configureArtistVideoPreviewSource(video, safeUrl);
+}
+
+async function downloadArtistTidalVideo(tidalUrl, tidalId = '', title = '', artist = '', image = '') {
+    const normalizedUrl = String(tidalUrl || '').trim();
+    if (!normalizedUrl) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/tidal/download/videos/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tracks: [{
+                    sourceUrl: normalizedUrl,
+                    tidalId,
+                    title,
+                    artist,
+                    cover: image,
+                    collectionType: 'music-video',
+                    queueOrigin: 'artist-videos'
+                }]
+            })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || data?.success === false) {
+            throw new Error(data?.error || data?.message || 'Download failed');
+        }
+        window.DeezSpoTag?.ui?.showToast?.('Video download started');
+    } catch (err) {
+        console.error('Tidal video download failed', err);
+        window.DeezSpoTag?.ui?.showToast?.(err.message || 'Download failed', { type: 'error' });
+    }
+}
+
 async function downloadUsingApi(url, metadata = null) {
     try {
         const destinationFolderId = window.DeezSpoTagDownload?.getDestinationFolderId(true);
@@ -2676,6 +2881,15 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function escapeJsString(value) {
+    if (!value) return '';
+    return String(value)
+        .replaceAll('\\', '\\\\')
+        .replaceAll("'", "\\'")
+        .replaceAll('\n', '')
+        .replaceAll('\r', '');
 }
 </script>
 }

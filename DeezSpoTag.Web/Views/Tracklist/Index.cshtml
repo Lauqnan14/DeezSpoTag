@@ -2272,7 +2272,11 @@ function resolveExternalPlaylistUrl() {
 async function loadExternalPlaylistTracklist() {
     resetSpotifyState();
     const normalizedSource = String(tracklistSource || '').trim().toLowerCase();
-    const sourceUrl = resolveExternalPlaylistUrl();
+    let sourceUrl = resolveExternalPlaylistUrl();
+    if (!sourceUrl && normalizedSource === 'tidal' && tracklistId) {
+        const normalizedType = String(tracklistType || 'playlist').trim().toLowerCase();
+        sourceUrl = `https://tidal.com/browse/${encodeURIComponent(normalizedType)}/${encodeURIComponent(tracklistId)}`;
+    }
     if (!sourceUrl) {
         throw new Error(`Missing ${normalizedSource || 'external'} playlist URL.`);
     }
@@ -2289,12 +2293,12 @@ async function loadExternalPlaylistTracklist() {
 
     const response = await fetch(`/api/external/playlist/tracklist?${qs.toString()}`);
     if (!response.ok) {
-        throw new Error(`Failed to load external playlist tracklist (HTTP ${response.status})`);
+        throw new Error(`Failed to load external tracklist (HTTP ${response.status})`);
     }
 
     const payload = await response.json();
     if (!payload.available || !payload.tracklist) {
-        throw new Error(payload.error || 'External playlist unavailable.');
+        throw new Error(payload.error || 'External tracklist unavailable.');
     }
 
     await loadIgnoredTracks();

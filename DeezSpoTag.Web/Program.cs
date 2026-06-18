@@ -1525,7 +1525,8 @@ public partial class Program
                 MusicServices = sp.GetRequiredService<DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices>(),
                 TracklistSongCacheStore = sp.GetRequiredService<DeezSpoTag.Web.Services.TracklistSongCacheStore>(),
                 CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
-                SpotifyHomeFeedRuntimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyHomeFeedRuntimeService>()
+                SpotifyHomeFeedRuntimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyHomeFeedRuntimeService>(),
+                TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchPlatformServices>(sp =>
             new DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchPlatformServices
