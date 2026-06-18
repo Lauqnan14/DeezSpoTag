@@ -3100,6 +3100,11 @@ function renderTracklist(data, options = {}) {
         playlistFlags.push('Collaborative');
     }
     const tracks = data.tracks || [];
+    tracks.forEach((track, index) => {
+        if (track && typeof track === 'object' && typeof track.index !== 'number') {
+            track.index = index;
+        }
+    });
     if (tracklistSource === 'apple') {
         tracks.forEach(t => {
             if (!t.link) t.link = t.sourceUrl || t.appleUrl || '';
@@ -3946,7 +3951,7 @@ function isDeezerMatchedExternalSource(source) {
 
 function shouldHydrateDeezerMetadata(source) {
     const normalizedSource = String(source || '').trim().toLowerCase();
-    return deezerMatchedExternalSources.has(normalizedSource);
+    return normalizedSource === 'boomplay';
 }
 
 function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
@@ -4110,7 +4115,7 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
         const result = await inFlightEntry.promise;
         const deezerId = String(result?.deezerId || '').trim();
         if (deezerId && row) {
-            if (result?.resolvePayload) {
+            if (result?.resolvePayload && shouldHydrateDeezerMetadata(source)) {
                 applyDeezerMetadataToRow(row, result.resolvePayload);
             }
             applyExternalMatchToRow(row, deezerId);
