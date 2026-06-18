@@ -112,7 +112,7 @@ public sealed class DownloadIntentService
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
         CancellationToken CancellationToken);
 
-    private sealed record AppleSecondaryEnqueueRequest(
+    private sealed record AtmosSecondaryEnqueueRequest(
         DownloadIntent Intent,
         DeezSpoTagSettings Settings,
         long? PrimaryDestinationFolderId,
@@ -1332,8 +1332,8 @@ public sealed class DownloadIntentService
                 && !isVideo
                 && !IsAtmosQuality(request.SelectedQuality))
             {
-                await TryEnqueueAppleAtmosSecondaryAsync(
-                    new AppleSecondaryEnqueueRequest(
+                await TryEnqueueAtmosSecondaryAsync(
+                    new AtmosSecondaryEnqueueRequest(
                         request.Intent,
                         request.Settings,
                         request.PrimaryDestinationFolderId,
@@ -1355,8 +1355,8 @@ public sealed class DownloadIntentService
             && !IsAtmosQuality(request.SelectedQuality)
             && ShouldContinueWithSecondaryAfterPrimarySkip(enqueueDecision))
         {
-            await TryEnqueueAppleAtmosSecondaryAsync(
-                new AppleSecondaryEnqueueRequest(
+            await TryEnqueueAtmosSecondaryAsync(
+                new AtmosSecondaryEnqueueRequest(
                     request.Intent,
                     request.Settings,
                     request.PrimaryDestinationFolderId,
@@ -1814,7 +1814,7 @@ public sealed class DownloadIntentService
             return new DownloadIntentResult
             {
                 Success = false,
-                Message = "Videos and Atmos downloads must use the Apple engine.",
+                Message = "Apple video and Apple Atmos downloads must use the Apple engine.",
                 Engine = string.Empty
             };
         }
@@ -1845,12 +1845,26 @@ public sealed class DownloadIntentService
         var normalizedRequestedContentType = NormalizeContentType(intent.ContentType);
         var explicitAtmosRequest = string.Equals(normalizedRequestedContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase);
         var explicitStereoRequest = string.Equals(normalizedRequestedContentType, DownloadContentTypes.Stereo, StringComparison.OrdinalIgnoreCase);
+        var settingsAtmosSourceRequest = SettingsRequestsAtmosSource(settings)
+            && IsMusicIntent(intent)
+            && !IsVideoIntent(intent)
+            && !preparation.IsPodcastIntent
+            && !explicitStereoRequest;
         if (explicitAtmosRequest && string.IsNullOrWhiteSpace(intent.Quality))
         {
             intent.Quality = AtmosQuality;
         }
 
         var targetQuality = string.IsNullOrWhiteSpace(intent.Quality) ? null : intent.Quality;
+        if (settingsAtmosSourceRequest)
+        {
+            var atmosEngine = NormalizeAtmosEngine(settings.MultiQuality?.AtmosEngine);
+            intent.ContentType = DownloadContentTypes.Atmos;
+            targetQuality = ResolveAtmosQualityForEngine(atmosEngine);
+            intent.Quality = targetQuality;
+            explicitAtmosRequest = true;
+        }
+
         var availability = await ResolveAvailabilityAsync(intent, cancellationToken);
         var multiQuality = settings.MultiQuality;
         var useMultiQuality = allowAutomaticSecondaryQuality && IsMultiQualityDualEnabled(multiQuality);
@@ -4777,6 +4791,7 @@ public sealed class DownloadIntentService
         new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
         {
             ["ATMOS"] = 130,
+            ["DOLBY_ATMOS"] = 130,
             ["VIDEO"] = 125,
             ["27"] = 120,
             ["HI_RES_LOSSLESS"] = 115,
@@ -4799,6 +4814,7 @@ public sealed class DownloadIntentService
         new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
         {
             ["ATMOS"] = 5,
+            ["DOLBY_ATMOS"] = 5,
             ["VIDEO"] = 0,
             ["27"] = 4,
             ["HI_RES_LOSSLESS"] = 4,
@@ -5098,6 +5114,12 @@ public sealed class DownloadIntentService
     private static bool IsAtmosQuality(string? quality) =>
         !string.IsNullOrWhiteSpace(quality)
         && quality.Contains(AtmosQuality, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAppleAtmosQuality(string? quality) =>
+        string.Equals(quality?.Trim(), AtmosQuality, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SettingsRequestsAtmosSource(DeezSpoTagSettings settings)
+        => string.Equals(settings.DownloadSourceContentType?.Trim(), DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsMultiQualityDualEnabled(MultiQualityDownloadSettings? multiQuality)
     {
@@ -5400,12 +5422,7 @@ public sealed class DownloadIntentService
             return true;
         }
 
-        if (string.Equals(intent.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (IsAtmosQuality(targetQuality))
+        if (IsAppleAtmosQuality(targetQuality))
         {
             return true;
         }
@@ -5509,7 +5526,7 @@ public sealed class DownloadIntentService
         };
     }
 
-    private async Task<bool> TryEnqueueAppleAtmosSecondaryAsync(AppleSecondaryEnqueueRequest request)
+    private async Task<bool> TryEnqueueAtmosSecondaryAsync(AtmosSecondaryEnqueueRequest request)
     {
         var secondaryDestinationFolderId =
             request.SecondaryDestinationFolderId
@@ -5518,7 +5535,7 @@ public sealed class DownloadIntentService
         if (secondaryDestinationFolderId is null)
         {
             _logger.LogWarning(
-                "Multi-quality secondary skipped: secondary destination folder is required for Apple Atmos.");
+                "Multi-quality secondary skipped: secondary destination folder is required for Atmos.");
             return false;
         }
         if (request.PrimaryDestinationFolderId.HasValue
@@ -5542,8 +5559,28 @@ public sealed class DownloadIntentService
             return false;
         }
 
-        const string secondaryQuality = "ATMOS";
+        var atmosEngines = ResolveAtmosEngineOrder(
+            request.Settings.MultiQuality,
+            request.Settings.MultiQuality?.AtmosSearchFallback == true);
+        foreach (var atmosEngine in atmosEngines)
+        {
+            var queued = string.Equals(atmosEngine, TidalPlatform, StringComparison.OrdinalIgnoreCase)
+                ? await TryEnqueueTidalAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value)
+                : await TryEnqueueAppleAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value);
+            if (queued)
+            {
+                return true;
+            }
+        }
 
+        return false;
+    }
+
+    private async Task<bool> TryEnqueueAppleAtmosSecondaryAsync(
+        AtmosSecondaryEnqueueRequest request,
+        long secondaryDestinationFolderId)
+    {
+        const string secondaryQuality = "ATMOS";
         var candidate = await ResolveIntentAsync(
             request.Intent,
             ApplePlatform,
@@ -5590,19 +5627,16 @@ public sealed class DownloadIntentService
         payload.Id = Guid.NewGuid().ToString("N");
         payload.DestinationFolderId = secondaryDestinationFolderId;
         payload.QualityBucket = AtmosQuality;
+        var autoSources = BuildAtmosAutoSources(request.Settings.MultiQuality, request.Settings.MultiQuality?.AtmosDownloadFallback == true);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             request.Intent,
             request.Settings,
             ApplePlatform,
             secondaryQuality,
             MusicIntent: IsMusicIntent(request.Intent),
-            AllowCrossEngineFallback: false,
+            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosDownloadFallback == true,
             UseAtmosStereoDual: false,
-            AutoSources: DownloadSourceOrder.ResolveEngineQualitySources(
-                request.Settings,
-                ApplePlatform,
-                secondaryQuality,
-                strict: UseStrictQualityFallback(request.Settings, ApplePlatform, secondaryQuality)),
+            AutoSources: autoSources,
             Availability: request.Availability));
         payload.FallbackPlan = fallbackInfo.FallbackPlan;
         payload.AutoSources = fallbackInfo.AutoSources;
@@ -5623,6 +5657,106 @@ public sealed class DownloadIntentService
 
         return false;
     }
+
+    private async Task<bool> TryEnqueueTidalAtmosSecondaryAsync(
+        AtmosSecondaryEnqueueRequest request,
+        long secondaryDestinationFolderId)
+    {
+        const string secondaryQuality = "DOLBY_ATMOS";
+        var candidate = await ResolveIntentAsync(
+            request.Intent,
+            TidalPlatform,
+            request.PreferIsrcOnly,
+            request.Availability,
+            request.CancellationToken);
+        if (!string.IsNullOrWhiteSpace(candidate.Message) && candidate.Engine == string.Empty)
+        {
+            _activityLog.Warn($"Secondary Atmos mapping skipped: {candidate.Message}");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(candidate.SourceUrl))
+        {
+            _activityLog.Warn("Secondary Atmos mapping skipped: Tidal URL unavailable.");
+            return false;
+        }
+
+        var autoSources = BuildAtmosAutoSources(request.Settings.MultiQuality, request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+        var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
+            request.Intent,
+            request.Settings,
+            TidalPlatform,
+            secondaryQuality,
+            MusicIntent: IsMusicIntent(request.Intent),
+            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosDownloadFallback == true,
+            UseAtmosStereoDual: false,
+            AutoSources: autoSources,
+            Availability: request.Availability));
+        var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
+        var payload = new TidalQueueItem();
+        PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
+            candidate.SourceUrl,
+            string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
+            DownloadContentTypes.Atmos,
+            fallbackInfo.AutoSources,
+            fallbackInfo.AutoIndex,
+            fallbackInfo.FallbackPlan,
+            string.Empty,
+            durationSeconds,
+            secondaryDestinationFolderId,
+            AtmosQuality));
+        payload.Quality = secondaryQuality;
+        payload.Id = Guid.NewGuid().ToString("N");
+        payload.QualityBucket = AtmosQuality;
+        ApplyIntentMetadata(payload, request.Intent);
+
+        var enqueueDecision = await EnqueueItemAsync(
+            payload,
+            request.BlockRules,
+            request.AllowQualityUpgrade,
+            ParseRequestedQualityRank(secondaryQuality),
+            request.CancellationToken);
+        if (enqueueDecision.Success)
+        {
+            request.Queued.Add(enqueueDecision.QueueUuid ?? payload.Id);
+            _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
+            return true;
+        }
+
+        return false;
+    }
+
+    private static IReadOnlyList<string> ResolveAtmosEngineOrder(
+        MultiQualityDownloadSettings? multiQuality,
+        bool includeFallbackEngine)
+    {
+        var primary = NormalizeAtmosEngine(multiQuality?.AtmosEngine);
+        var secondary = string.Equals(primary, TidalPlatform, StringComparison.OrdinalIgnoreCase)
+            ? ApplePlatform
+            : TidalPlatform;
+        return includeFallbackEngine
+            ? new[] { primary, secondary }
+            : new[] { primary };
+    }
+
+    private static List<string> BuildAtmosAutoSources(
+        MultiQualityDownloadSettings? multiQuality,
+        bool includeFallbackEngine)
+    {
+        return ResolveAtmosEngineOrder(multiQuality, includeFallbackEngine)
+            .Select(engine => DownloadSourceOrder.EncodeAutoSource(engine, ResolveAtmosQualityForEngine(engine)))
+            .ToList();
+    }
+
+    private static string NormalizeAtmosEngine(string? engine)
+    {
+        return string.Equals(engine?.Trim(), TidalPlatform, StringComparison.OrdinalIgnoreCase)
+            ? TidalPlatform
+            : ApplePlatform;
+    }
+
+    private static string ResolveAtmosQualityForEngine(string engine)
+        => string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase) ? "DOLBY_ATMOS" : "ATMOS";
 
     private async Task<(AppleQueueItem Payload, bool IsVideo)> BuildApplePayloadBaseAsync(
         DownloadIntent intent,
@@ -6284,8 +6418,8 @@ public sealed class DownloadIntentService
         if (context.UseAtmosStereoDual
             && (enqueueDecision.Success || ShouldContinueWithSecondaryAfterPrimarySkip(enqueueDecision)))
         {
-            await TryEnqueueAppleAtmosSecondaryAsync(
-                new AppleSecondaryEnqueueRequest(
+            await TryEnqueueAtmosSecondaryAsync(
+                new AtmosSecondaryEnqueueRequest(
                     context.Intent,
                     context.Settings,
                     context.PrimaryDestinationFolderId,

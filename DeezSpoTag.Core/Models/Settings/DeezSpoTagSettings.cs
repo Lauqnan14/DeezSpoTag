@@ -174,6 +174,7 @@ public class DeezSpoTagSettings
 
     // Engine settings (spotizerr-phoenix compatibility)
     public string Service { get; set; } = "auto";
+    public string DownloadSourceContentType { get; set; } = "stereo";
     public bool Fallback { get; set; } = false;
 
     // Spotizerr-phoenix compatibility (currently used by Settings UI)
@@ -293,7 +294,8 @@ public class DownloadEngineOrderSettings
                         new() { Quality = "HI_RES", Enabled = true },
                         new() { Quality = "LOSSLESS", Enabled = true },
                         new() { Quality = "HIGH", Enabled = true },
-                        new() { Quality = "LOW", Enabled = true }
+                        new() { Quality = "LOW", Enabled = true },
+                        new() { Quality = "DOLBY_ATMOS", Enabled = true }
                     }
                 },
                 new()
@@ -303,7 +305,8 @@ public class DownloadEngineOrderSettings
                     Qualities = new List<DownloadEngineQualityItem>
                     {
                         new() { Quality = "ALAC", Enabled = true },
-                        new() { Quality = "AAC", Enabled = true }
+                        new() { Quality = "AAC", Enabled = true },
+                        new() { Quality = "ATMOS", Enabled = true }
                     }
                 },
                 new()

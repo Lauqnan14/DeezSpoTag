@@ -15,7 +15,7 @@ public static class EngineQualityFallback
         var ordered = qualities.Select(q => q.Value).ToList();
         if (excludeAtmos)
         {
-            ordered = ordered.Where(q => !string.Equals(q, "ATMOS", StringComparison.OrdinalIgnoreCase)).ToList();
+            ordered = ordered.Where(q => !q.Contains("ATMOS", StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
         if (ordered.Count == 0)

@@ -36,12 +36,6 @@ public static class FallbackPayloadNormalizer
             return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
-        if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
-        {
-            var firstStep = new DownloadSourceOrder.AutoSourceStep("apple", "ATMOS");
-            return BuildSingleStepFallback(firstStep, DirectUrlResolution);
-        }
-
         if (payloadAutoSources.Count > 0)
         {
             var normalizedAutoSources = NormalizeEncodedSources(payloadAutoSources);
@@ -53,6 +47,16 @@ public static class FallbackPayloadNormalizer
                     : BuildDirectUrlPlanFromAutoSources(normalizedAutoSources);
                 return new CanonicalFallbackState(normalizedAutoSources, normalizedFallbackPlan, firstStep);
             }
+        }
+
+        if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
+        {
+            var engine = string.IsNullOrWhiteSpace(item.Engine) ? "apple" : item.Engine;
+            var quality = string.IsNullOrWhiteSpace(payloadQuality)
+                ? (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase) ? "DOLBY_ATMOS" : "ATMOS")
+                : payloadQuality;
+            var firstStep = new DownloadSourceOrder.AutoSourceStep(engine, quality);
+            return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
         if (payloadFallbackPlan.Count > 0)

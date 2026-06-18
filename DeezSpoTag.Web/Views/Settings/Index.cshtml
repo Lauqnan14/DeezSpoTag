@@ -187,6 +187,17 @@
     margin-bottom: 20px;
 }
 
+.multi-quality-atmos-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+}
+
+.multi-quality-atmos-grid .checkbox-group {
+    margin-bottom: 8px;
+}
+
 .engine-order-toggle {
     display: flex;
     align-items: flex-start;
@@ -276,6 +287,31 @@
 
 .engine-order-item.engine-disabled .engine-order-title {
     color: var(--text-muted);
+}
+
+.download-source-section-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 4px 6px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-tertiary));
+    color: var(--primary-color);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: default;
+    user-select: none;
+    box-shadow: inset 3px 0 0 var(--primary-color);
+}
+
+.download-source-section-label::after {
+    content: "";
+    height: 1px;
+    flex: 1;
+    background: color-mix(in srgb, var(--primary-color) 35%, transparent);
 }
 
 #livePreviewIngest + label,
@@ -774,6 +810,7 @@
     .form-row,
     .form-row-3,
     .form-row-half,
+    .multi-quality-atmos-grid,
     .settings-container {
         grid-template-columns: 1fr;
         flex-direction: column;
@@ -820,10 +857,15 @@
                         <div class="dropdown-select" data-dropdown="downloadSource">
                             <button type="button" class="dropdown-trigger" id="downloadSourceTrigger">Deezer</button>
                             <div class="dropdown-menu" id="downloadSourceMenu">
+                                <div class="download-source-section-label">Stereo</div>
                                 @foreach (var option in settingsDownloadSourceOptions)
                                 {
                                     <button type="button" class="dropdown-option" data-value="@option.Value">@option.Label</button>
                                 }
+                                <div class="download-source-section-label">Atmos</div>
+                                <button type="button" class="dropdown-option" data-value="atmos:auto">Auto</button>
+                                <button type="button" class="dropdown-option" data-value="atmos:apple">Apple Music</button>
+                                <button type="button" class="dropdown-option" data-value="atmos:tidal">Tidal</button>
                             </div>
                             <input type="hidden" id="downloadSource" value="deezer">
                         </div>
@@ -897,15 +939,39 @@
                         </div>
                     </div>
                     <div class="form-group" id="multiQualityConfigGroup" style="display: none;">
-                        <label for="multiQualitySecondaryDestinationFolderId">Atmos destination folder id</label>
-                        <select id="multiQualitySecondaryDestinationFolderId">
-                            <option value="">(Select destination)</option>
-                        </select>
-                        <div class="warning-text">Atmos downloads require a dedicated folder (Apple only).</div>
-                        <div class="warning-text" id="multiQualitySecondaryFolderWarning" style="display:none;">
-                            Select an Atmos destination to enable the secondary download.
+                        <div class="multi-quality-atmos-grid">
+                            <div class="form-group">
+                                <label for="multiQualityAtmosEngine">Atmos download engine</label>
+                                <div class="dropdown-select" data-dropdown="multiQualityAtmosEngine">
+                                    <button type="button" class="dropdown-trigger" id="multiQualityAtmosEngineTrigger">Apple Music</button>
+                                    <div class="dropdown-menu" id="multiQualityAtmosEngineMenu">
+                                        <button type="button" class="dropdown-option" data-value="apple">Apple Music</button>
+                                        <button type="button" class="dropdown-option" data-value="tidal">Tidal</button>
+                                    </div>
+                                    <input type="hidden" id="multiQualityAtmosEngine" value="apple">
+                                </div>
+                                <div class="checkbox-group" style="margin-top: 12px;">
+                                    <input type="checkbox" id="multiQualityAtmosSearchFallback">
+                                    <label for="multiQualityAtmosSearchFallback">Enable Atmos search fallback</label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="multiQualityAtmosDownloadFallback">
+                                    <label for="multiQualityAtmosDownloadFallback">Enable Atmos download fallback</label>
+                                </div>
+                                <div class="warning-text">Atmos search/download fallback tries the other Atmos engine when the selected engine cannot provide that variant.</div>
+                            </div>
+                            <div class="form-group">
+                                <label for="multiQualitySecondaryDestinationFolderId">Atmos destination folder id</label>
+                                <select id="multiQualitySecondaryDestinationFolderId">
+                                    <option value="">(Select destination)</option>
+                                </select>
+                                <div class="warning-text">Atmos downloads require a dedicated folder.</div>
+                                <div class="warning-text" id="multiQualitySecondaryFolderWarning" style="display:none;">
+                                    Select an Atmos destination to enable the secondary download.
+                                </div>
+                                <div class="warning-text" style="margin-top: 12px;">Stereo uses the selected source and its configured quality automatically.</div>
+                            </div>
                         </div>
-                        <div class="warning-text" style="margin-top: 12px;">Stereo uses the selected source and its configured quality automatically.</div>
                     </div>
                 </div>
                 <div class="engine-order-panel" id="downloadEngineOrderPanel" style="display: none;">
@@ -2123,6 +2189,78 @@ function updateEmbedMaxQualityCoverState(enabled) {
     }
 }
 
+function isAtmosDownloadSource(value) {
+    return String(value || '').startsWith('atmos:');
+}
+
+function resolveDownloadSourceService(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'custom') {
+        return 'auto';
+    }
+
+    if (normalized === 'atmos:auto') {
+        return 'auto';
+    }
+
+    if (normalized === 'atmos:apple') {
+        return 'apple';
+    }
+
+    if (normalized === 'atmos:tidal') {
+        return 'tidal';
+    }
+
+    return normalized || 'deezer';
+}
+
+function resolveDownloadSourceSelection(settings) {
+    const loadedDownloadEngineOrder = settings.downloadEngineOrder || settings.DownloadEngineOrder;
+    if (loadedDownloadEngineOrder?.enabled === true) {
+        return 'custom';
+    }
+
+    const sourceContentType = String(settings.downloadSourceContentType || settings.DownloadSourceContentType || 'stereo').trim().toLowerCase();
+    const service = String(settings.service || 'deezer').trim().toLowerCase();
+    if (sourceContentType !== 'atmos') {
+        return service || 'deezer';
+    }
+
+    const mq = settings.multiQuality || {};
+    if (service === 'auto') {
+        return 'atmos:auto';
+    }
+
+    if (service === 'tidal' || String(mq.atmosEngine || '').trim().toLowerCase() === 'tidal') {
+        return 'atmos:tidal';
+    }
+
+    return 'atmos:apple';
+}
+
+function syncAtmosSourceControls(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!isAtmosDownloadSource(normalized)) {
+        return;
+    }
+
+    if (normalized === 'atmos:auto') {
+        setFieldValue('multiQualityAtmosEngine', 'apple');
+        setCheckboxValue('multiQualityAtmosSearchFallback', true);
+        setCheckboxValue('multiQualityAtmosDownloadFallback', true);
+        setFieldValue('applePreferredAudioProfile', 'atmos');
+        return;
+    }
+
+    const engine = normalized === 'atmos:tidal' ? 'tidal' : 'apple';
+    setFieldValue('multiQualityAtmosEngine', engine);
+    setCheckboxValue('multiQualityAtmosSearchFallback', false);
+    setCheckboxValue('multiQualityAtmosDownloadFallback', false);
+    if (engine === 'apple') {
+        setFieldValue('applePreferredAudioProfile', 'atmos');
+    }
+}
+
 function initDownloadSourceDropdowns() {
     const dropdowns = document.querySelectorAll('.dropdown-select');
     dropdowns.forEach(dropdown => {
@@ -2155,6 +2293,7 @@ function initDownloadSourceDropdowns() {
                 option.setAttribute('aria-selected', 'true');
                 closeMenu();
                 if (input.id === 'downloadSource') {
+                    syncAtmosSourceControls(value);
                     updateQualityDropdownVisibility(value, true);
                 }
             });
@@ -2168,6 +2307,7 @@ function initDownloadSourceDropdowns() {
 }
 
 function updateQualityDropdownVisibility(source, autoOpen) {
+    const normalizedSource = resolveDownloadSourceService(source);
     const tidalGroup = document.getElementById('multisource-tidalQualityGroup');
     const qobuzGroup = document.getElementById('multisource-qobuzQualityGroup');
     const appleGroup = document.getElementById('apple-qualityGroup');
@@ -2175,16 +2315,16 @@ function updateQualityDropdownVisibility(source, autoOpen) {
     const fallbackQuality = document.getElementById('fallbackBitrate');
     const fallbackQualityLabel = document.querySelector('label[for="fallbackBitrate"]');
     if (tidalGroup) {
-        tidalGroup.style.display = source === 'tidal' ? 'block' : 'none';
+        tidalGroup.style.display = normalizedSource === 'tidal' && !isAtmosDownloadSource(source) ? 'block' : 'none';
     }
     if (qobuzGroup) {
-        qobuzGroup.style.display = source === 'qobuz' ? 'block' : 'none';
+        qobuzGroup.style.display = normalizedSource === 'qobuz' ? 'block' : 'none';
     }
     if (appleGroup) {
-        appleGroup.style.display = source === 'apple' ? 'block' : 'none';
+        appleGroup.style.display = normalizedSource === 'apple' && !isAtmosDownloadSource(source) ? 'block' : 'none';
     }
     if (deezerGroup) {
-        deezerGroup.style.display = source === 'deezer' ? 'block' : 'none';
+        deezerGroup.style.display = normalizedSource === 'deezer' ? 'block' : 'none';
     }
     updateCustomEngineOrderVisibility(source);
     if (fallbackQuality) {
@@ -3671,7 +3811,7 @@ function loadSettings(settings) {
     
     setFieldValue('queueOrder', settings.queueOrder || 'fifo');
     const loadedDownloadEngineOrder = settings.downloadEngineOrder || settings.DownloadEngineOrder;
-    const loadedDownloadSource = loadedDownloadEngineOrder?.enabled === true ? 'custom' : (settings.service || 'deezer');
+    const loadedDownloadSource = resolveDownloadSourceSelection(settings);
     setFieldValue('downloadSource', loadedDownloadSource);
     setCheckboxValue('preferAlbumLayoutForPlaylists', settings.preferAlbumLayoutForPlaylists);
     setMaxBitrateValue(settings.maxBitrate);
@@ -3757,6 +3897,9 @@ function loadSettings(settings) {
     setCheckboxValue('multiQualityEnabled', mq.enabled);
     setFieldValue('multiQualityPrimaryDestinationFolderId', mq.primaryDestinationFolderId ?? '');
     setFieldValue('multiQualitySecondaryDestinationFolderId', mq.secondaryDestinationFolderId ?? '');
+    setFieldValue('multiQualityAtmosEngine', mq.atmosEngine || 'apple');
+    setCheckboxValue('multiQualityAtmosSearchFallback', mq.atmosSearchFallback === true);
+    setCheckboxValue('multiQualityAtmosDownloadFallback', mq.atmosDownloadFallback === true);
     updateSecondaryFolderRequirement();
 
     const video = settings.video || {};
@@ -3989,7 +4132,10 @@ function collectFormData() {
     const baseVideo = baseSettings.video || {};
     const baseTags = baseSettings.tags || {};
     const selectedDownloadSource = getValue('downloadSource', 'deezer');
-    const persistedDownloadService = selectedDownloadSource === 'custom' ? 'auto' : selectedDownloadSource;
+    const selectedAtmosSource = isAtmosDownloadSource(selectedDownloadSource);
+    const selectedAtmosAuto = selectedDownloadSource === 'atmos:auto';
+    const selectedAtmosEngine = selectedDownloadSource === 'atmos:tidal' ? 'tidal' : 'apple';
+    const persistedDownloadService = resolveDownloadSourceService(selectedDownloadSource);
     const formData = {
         downloadLocation: getValue('downloadLocation'),
 
@@ -4014,6 +4160,7 @@ function collectFormData() {
 
         queueOrder: getValue('queueOrder', 'fifo'),
         service: persistedDownloadService,
+        downloadSourceContentType: selectedAtmosSource ? 'atmos' : 'stereo',
         preferAlbumLayoutForPlaylists: getChecked('preferAlbumLayoutForPlaylists', baseSettings.preferAlbumLayoutForPlaylists ?? true),
         maxBitrate: getNumber('maxBitrate', baseSettings.maxBitrate ?? 9),
         feelingLucky: baseSettings.feelingLucky ?? false,
@@ -4123,7 +4270,10 @@ function collectFormData() {
             enabled: multiQualityEnabledValue,
             secondaryEnabled: multiQualityEnabledValue,
             primaryDestinationFolderId: getOptionalNumber('multiQualityPrimaryDestinationFolderId', baseSettings.multiQuality?.primaryDestinationFolderId ?? null),
-            secondaryDestinationFolderId: getOptionalNumber('multiQualitySecondaryDestinationFolderId', baseSettings.multiQuality?.secondaryDestinationFolderId ?? null)
+            secondaryDestinationFolderId: getOptionalNumber('multiQualitySecondaryDestinationFolderId', baseSettings.multiQuality?.secondaryDestinationFolderId ?? null),
+            atmosEngine: selectedAtmosSource ? selectedAtmosEngine : getValue('multiQualityAtmosEngine', baseSettings.multiQuality?.atmosEngine || 'apple'),
+            atmosSearchFallback: selectedAtmosSource ? selectedAtmosAuto : getChecked('multiQualityAtmosSearchFallback', baseSettings.multiQuality?.atmosSearchFallback ?? false),
+            atmosDownloadFallback: selectedAtmosSource ? selectedAtmosAuto : getChecked('multiQualityAtmosDownloadFallback', baseSettings.multiQuality?.atmosDownloadFallback ?? false)
         },
 
         video: {

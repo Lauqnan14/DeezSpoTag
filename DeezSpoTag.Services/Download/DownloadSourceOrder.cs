@@ -37,7 +37,9 @@ public static class DownloadSourceOrder
         new(TidalSource, "MP3 (320kbps)", "HIGH", null),
         new(DeezerSource, "Deezer 320kbps", "3", DeezerMp3High),
         new(DeezerSource, "Deezer 128kbps", "1", DeezerMp3Low),
-        new(TidalSource, "Low (96kbps)", "LOW", null)
+        new(TidalSource, "Low (96kbps)", "LOW", null),
+        new(AppleSource, "Apple Music Atmos", "ATMOS", null),
+        new(TidalSource, "Tidal Dolby Atmos", "DOLBY_ATMOS", null)
     ];
 
     public static string ResolveService(DeezSpoTagSettings settings)
@@ -89,7 +91,7 @@ public static class DownloadSourceOrder
         var forcedService = string.IsNullOrWhiteSpace(forcedServiceOverride)
             ? settings.Service?.Trim().ToLowerInvariant()
             : forcedServiceOverride.Trim().ToLowerInvariant();
-        var includeAtmos = string.Equals(targetQuality, "atmos", StringComparison.OrdinalIgnoreCase);
+        var includeAtmos = IsAtmosQuality(targetQuality);
         var sources = BuildConfiguredAutoSources(
             settings,
             includeDeezer,
@@ -545,7 +547,7 @@ public static class DownloadSourceOrder
         string? forcedService,
         bool includeAtmos)
     {
-        if (!includeAtmos && string.Equals(profile.Quality, "atmos", StringComparison.OrdinalIgnoreCase))
+        if (!includeAtmos && IsAtmosQuality(profile.Quality))
         {
             return false;
         }
@@ -558,6 +560,10 @@ public static class DownloadSourceOrder
 
         return true;
     }
+
+    private static bool IsAtmosQuality(string? quality)
+        => !string.IsNullOrWhiteSpace(quality)
+           && quality.Contains("ATMOS", StringComparison.OrdinalIgnoreCase);
 
     public static string EncodeAutoSource(string source, string? quality)
     {

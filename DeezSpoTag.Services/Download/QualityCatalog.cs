@@ -91,9 +91,9 @@ public static class QualityCatalog
         {
             ["apple"] = new[]
             {
-                new QualityOption("ATMOS", "Apple Music Atmos"),
                 new QualityOption("ALAC", "Apple Music ALAC (lossless)"),
-                new QualityOption("AAC", "Apple Music AAC")
+                new QualityOption("AAC", "Apple Music AAC"),
+                new QualityOption("ATMOS", "Apple Music Atmos")
             },
             ["deezer"] = new[]
             {
@@ -118,7 +118,8 @@ public static class QualityCatalog
                 new QualityOption("HI_RES", "Hi-Res (24-bit/96kHz)"),
                 new QualityOption("LOSSLESS", "CD Lossless (16-bit/44.1kHz)"),
                 new QualityOption("HIGH", "MP3 (320kbps)"),
-                new QualityOption("LOW", "Low (96kbps)")
+                new QualityOption("LOW", "Low (96kbps)"),
+                new QualityOption("DOLBY_ATMOS", "Tidal Dolby Atmos")
             }
         };
     }
