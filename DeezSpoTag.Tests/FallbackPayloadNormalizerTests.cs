@@ -201,7 +201,8 @@ public sealed class FallbackPayloadNormalizerTests
                         {
                             new() { Quality = "27", Enabled = false },
                             new() { Quality = "7", Enabled = false },
-                            new() { Quality = "6", Enabled = true }
+                            new() { Quality = "6", Enabled = true },
+                            new() { Quality = "5", Enabled = false }
                         }
                     },
                     new()
@@ -211,7 +212,10 @@ public sealed class FallbackPayloadNormalizerTests
                         Qualities = new List<DownloadEngineQualityItem>
                         {
                             new() { Quality = "HI_RES_LOSSLESS", Enabled = true },
-                            new() { Quality = "LOSSLESS", Enabled = true }
+                            new() { Quality = "HI_RES", Enabled = true },
+                            new() { Quality = "LOSSLESS", Enabled = true },
+                            new() { Quality = "HIGH", Enabled = true },
+                            new() { Quality = "LOW", Enabled = true }
                         }
                     },
                     new()

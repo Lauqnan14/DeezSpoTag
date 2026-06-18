@@ -10,9 +10,21 @@ public static class QobuzQualityCodeNormalizer
         }
 
         var normalized = quality.Trim().ToUpperInvariant();
-        if (normalized is "27" or "7" or "6")
+        if (normalized is "27" or "7" or "6" or "5")
         {
             return normalized;
+        }
+
+        if (normalized.Contains("MP3", StringComparison.Ordinal)
+            || normalized.Contains("320", StringComparison.Ordinal))
+        {
+            return "5";
+        }
+
+        if (normalized.Contains("MAX", StringComparison.Ordinal)
+            || normalized.Contains("192", StringComparison.Ordinal))
+        {
+            return "27";
         }
 
         if (normalized.Contains("HI_RES", StringComparison.Ordinal)
@@ -20,7 +32,7 @@ public static class QobuzQualityCodeNormalizer
             || normalized.Contains("HIRES", StringComparison.Ordinal)
             || normalized.Contains("24", StringComparison.Ordinal))
         {
-            return "27";
+            return "7";
         }
 
         if (normalized.Contains("LOSSLESS", StringComparison.Ordinal)

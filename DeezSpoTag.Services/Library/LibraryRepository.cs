@@ -357,7 +357,7 @@ WITH library_rows AS (
            CASE
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'atmos'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%atmos%' THEN 5
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('hi_res_lossless', '27', '7')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('hi_res_lossless', 'hi_res', '27', '7')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi_res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi-res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24bit%'
@@ -371,12 +371,12 @@ WITH library_rows AS (
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16-bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16 bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%cd%' THEN 3
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac', '3')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac', 'high', '5', '3')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%aac%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%320%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%vorbis%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%opus%' THEN 2
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) = '1'
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('low', '1')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%128%' THEN 1
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'video'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%video%'
@@ -8762,7 +8762,7 @@ WITH track_rows AS (
            CASE
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'atmos'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%atmos%' THEN 5
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('hi_res_lossless', '27', '7')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('hi_res_lossless', 'hi_res', '27', '7')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi_res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%hi-res%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%24bit%'
@@ -8776,12 +8776,12 @@ WITH track_rows AS (
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16-bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%16 bit%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%cd%' THEN 3
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac', '3')
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('aac', 'high', '5', '3')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%aac%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%320%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%vorbis%'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%opus%' THEN 2
-               WHEN LOWER(COALESCE(f.desired_quality_value, '')) = '1'
+               WHEN LOWER(COALESCE(f.desired_quality_value, '')) IN ('low', '1')
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%128%' THEN 1
                WHEN LOWER(COALESCE(f.desired_quality_value, '')) = 'video'
                     OR LOWER(COALESCE(f.desired_quality_value, '')) LIKE '%video%'

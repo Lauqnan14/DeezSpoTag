@@ -820,27 +820,31 @@
                 <div class="form-row">
                     <div class="form-group">
                         <div class="engine-quality-stack">
-                            <div class="form-group" id="multisource-tidalQualityGroup" style="display: none;">
-                                <label for="multisource-tidalQuality">Tidal Quality</label>
-                                <div class="dropdown-select" data-dropdown="multisource-tidalQuality">
-                                    <button type="button" class="dropdown-trigger" id="multisource-tidalQualityTrigger">Hi-Res Lossless (24-bit/48kHz+)</button>
-                                    <div class="dropdown-menu" id="multisource-tidalQualityMenu">
-                                        <button type="button" class="dropdown-option" data-value="HI_RES_LOSSLESS">Hi-Res Lossless (24-bit/48kHz+)</button>
-                                        <button type="button" class="dropdown-option" data-value="LOSSLESS">Lossless (16-bit/CD)</button>
-                                    </div>
-                                    <input type="hidden" id="multisource-tidalQuality" value="HI_RES_LOSSLESS">
-                                </div>
+	                            <div class="form-group" id="multisource-tidalQualityGroup" style="display: none;">
+	                                <label for="multisource-tidalQuality">Tidal Quality</label>
+	                                <div class="dropdown-select" data-dropdown="multisource-tidalQuality">
+	                                    <button type="button" class="dropdown-trigger" id="multisource-tidalQualityTrigger">Max Hi-Res (24-bit/192kHz)</button>
+	                                    <div class="dropdown-menu" id="multisource-tidalQualityMenu">
+	                                        <button type="button" class="dropdown-option" data-value="HI_RES_LOSSLESS">Max Hi-Res (24-bit/192kHz)</button>
+	                                        <button type="button" class="dropdown-option" data-value="HI_RES">Hi-Res (24-bit/96kHz)</button>
+	                                        <button type="button" class="dropdown-option" data-value="LOSSLESS">CD Lossless (16-bit/44.1kHz)</button>
+	                                        <button type="button" class="dropdown-option" data-value="HIGH">MP3 (320kbps)</button>
+	                                        <button type="button" class="dropdown-option" data-value="LOW">Low (96kbps)</button>
+	                                    </div>
+	                                    <input type="hidden" id="multisource-tidalQuality" value="HI_RES_LOSSLESS">
+	                                </div>
                             </div>
-                            <div class="form-group" id="multisource-qobuzQualityGroup" style="display: none;">
-                                <label for="multisource-qobuzQuality">Qobuz Quality</label>
-                                <div class="dropdown-select" data-dropdown="multisource-qobuzQuality">
-                                    <button type="button" class="dropdown-trigger" id="multisource-qobuzQualityTrigger">Hi-Res (24-bit/96kHz+)</button>
-                                    <div class="dropdown-menu" id="multisource-qobuzQualityMenu">
-                                        <button type="button" class="dropdown-option" data-value="27">Hi-Res (24-bit/96kHz+)</button>
-                                        <button type="button" class="dropdown-option" data-value="7">FLAC 24-bit</button>
-                                        <button type="button" class="dropdown-option" data-value="6">FLAC 16-bit (CD)</button>
-                                    </div>
-                                    <input type="hidden" id="multisource-qobuzQuality" value="27">
+	                            <div class="form-group" id="multisource-qobuzQualityGroup" style="display: none;">
+	                                <label for="multisource-qobuzQuality">Qobuz Quality</label>
+	                                <div class="dropdown-select" data-dropdown="multisource-qobuzQuality">
+	                                    <button type="button" class="dropdown-trigger" id="multisource-qobuzQualityTrigger">Max Hi-Res (24-bit/192kHz)</button>
+	                                    <div class="dropdown-menu" id="multisource-qobuzQualityMenu">
+	                                        <button type="button" class="dropdown-option" data-value="27">Max Hi-Res (24-bit/192kHz)</button>
+	                                        <button type="button" class="dropdown-option" data-value="7">Hi-Res (24-bit/96kHz)</button>
+	                                        <button type="button" class="dropdown-option" data-value="6">CD Lossless (16-bit/44.1kHz)</button>
+	                                        <button type="button" class="dropdown-option" data-value="5">MP3 (320kbps)</button>
+	                                    </div>
+	                                    <input type="hidden" id="multisource-qobuzQuality" value="27">
                                 </div>
                             </div>
                             <div class="form-group" id="apple-qualityGroup" style="display: none;">
@@ -2237,31 +2241,24 @@ function normalizeDownloadEngineOrderConfig(config) {
 
 function normalizeDownloadEngineOrderItem(engineConfig, defaultEngine) {
     const incomingQualities = Array.isArray(engineConfig?.qualities) ? engineConfig.qualities : [];
-    const byQuality = new Map(defaultEngine.qualities.map(quality => [quality.quality.toLowerCase(), quality]));
-    const seenQualities = new Set();
-    const qualities = [];
+    const incomingByQuality = new Map();
 
     incomingQualities.forEach(qualityConfig => {
         const qualityKey = String(qualityConfig?.quality || '').trim();
-        const defaultQuality = byQuality.get(qualityKey.toLowerCase());
-        if (!defaultQuality || seenQualities.has(defaultQuality.quality.toLowerCase())) {
+        if (!qualityKey || incomingByQuality.has(qualityKey.toLowerCase())) {
             return;
         }
 
-        seenQualities.add(defaultQuality.quality.toLowerCase());
-        qualities.push({
-            quality: defaultQuality.quality,
-            label: defaultQuality.label,
-            enabled: qualityConfig.enabled !== false
-        });
+        incomingByQuality.set(qualityKey.toLowerCase(), qualityConfig);
     });
 
-    defaultEngine.qualities.forEach(defaultQuality => {
-        if (seenQualities.has(defaultQuality.quality.toLowerCase())) {
-            return;
-        }
-
-        qualities.push({ ...defaultQuality });
+    const qualities = defaultEngine.qualities.map(defaultQuality => {
+        const incomingQuality = incomingByQuality.get(defaultQuality.quality.toLowerCase());
+        return {
+            quality: defaultQuality.quality,
+            label: defaultQuality.label,
+            enabled: incomingQuality ? incomingQuality.enabled !== false : defaultQuality.enabled !== false
+        };
     });
 
     return {

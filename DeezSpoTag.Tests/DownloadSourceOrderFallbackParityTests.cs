@@ -9,6 +9,7 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadSourceOrderFallbackParityTests
 {
+    private static readonly string[] ExpectedTargetQualityFallback = { "deezer|3", "deezer|1", "tidal|LOW" };
     private static readonly string[] ExpectedDeezerQualityFallback = { "deezer|3", "deezer|1" };
     private static readonly string[] ExpectedQobuzStrictQuality = { "qobuz|6" };
     private static readonly string[] ExpectedCustomQualityOrder = { "apple|ALAC", "qobuz|6", "tidal|LOSSLESS" };
@@ -21,13 +22,17 @@ public sealed class DownloadSourceOrderFallbackParityTests
         "tidal|HI_RES_LOSSLESS",
         "apple|ALAC",
         "qobuz|7",
+        "tidal|HI_RES",
         "qobuz|6",
         "tidal|LOSSLESS",
         "amazon|FLAC",
         "deezer|9",
         "apple|AAC",
+        "qobuz|5",
+        "tidal|HIGH",
         "deezer|3",
-        "deezer|1"
+        "deezer|1",
+        "tidal|LOW"
     };
 
     [Fact]
@@ -78,9 +83,9 @@ public sealed class DownloadSourceOrderFallbackParityTests
     {
         var settings = CreateCustomOrderSettings(
             ("apple", true, new[] { ("ALAC", true), ("AAC", false) }),
-            ("qobuz", true, new[] { ("6", true), ("7", false), ("27", false) }),
+            ("qobuz", true, new[] { ("6", true), ("5", false), ("7", false), ("27", false) }),
             ("deezer", false, new[] { ("9", true), ("3", true), ("1", true) }),
-            ("tidal", true, new[] { ("LOSSLESS", true), ("HI_RES_LOSSLESS", false) }),
+            ("tidal", true, new[] { ("LOSSLESS", true), ("HIGH", false), ("LOW", false), ("HI_RES", false), ("HI_RES_LOSSLESS", false) }),
             ("amazon", false, new[] { ("FLAC", true) }));
 
         var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
@@ -93,8 +98,8 @@ public sealed class DownloadSourceOrderFallbackParityTests
     {
         var settings = CreateCustomOrderSettings(
             ("apple", true, new[] { ("ALAC", true), ("AAC", true) }),
-            ("qobuz", false, new[] { ("27", true), ("7", true), ("6", true) }),
-            ("tidal", false, new[] { ("HI_RES_LOSSLESS", true), ("LOSSLESS", true) }),
+            ("qobuz", false, new[] { ("27", true), ("7", true), ("6", true), ("5", true) }),
+            ("tidal", false, new[] { ("HI_RES_LOSSLESS", true), ("HI_RES", true), ("LOSSLESS", true), ("HIGH", true), ("LOW", true) }),
             ("amazon", false, new[] { ("FLAC", true) }),
             ("deezer", false, new[] { ("9", true), ("3", true), ("1", true) }));
 
@@ -107,8 +112,8 @@ public sealed class DownloadSourceOrderFallbackParityTests
     public void ResolveEngineQualitySources_CustomOrderEnabled_RespectsDisabledQualities_ForForcedEngine()
     {
         var settings = CreateCustomOrderSettings(
-            ("qobuz", true, new[] { ("27", false), ("7", false), ("6", true) }),
-            ("tidal", true, new[] { ("HI_RES_LOSSLESS", true), ("LOSSLESS", true) }),
+            ("qobuz", true, new[] { ("27", false), ("7", false), ("6", true), ("5", false) }),
+            ("tidal", true, new[] { ("HI_RES_LOSSLESS", true), ("HI_RES", true), ("LOSSLESS", true), ("HIGH", true), ("LOW", true) }),
             ("apple", true, new[] { ("ALAC", true), ("AAC", true) }),
             ("amazon", true, new[] { ("FLAC", true) }),
             ("deezer", true, new[] { ("9", true), ("3", true), ("1", true) }));
@@ -123,8 +128,8 @@ public sealed class DownloadSourceOrderFallbackParityTests
     {
         var settings = CreateCustomOrderSettings(
             ("apple", true, new[] { ("ALAC", true), ("AAC", false) }),
-            ("qobuz", true, new[] { ("27", false), ("7", false), ("6", true) }),
-            ("tidal", false, new[] { ("HI_RES_LOSSLESS", true), ("LOSSLESS", true) }),
+            ("qobuz", true, new[] { ("27", false), ("7", false), ("6", true), ("5", false) }),
+            ("tidal", false, new[] { ("HI_RES_LOSSLESS", true), ("HI_RES", true), ("LOSSLESS", true), ("HIGH", true), ("LOW", true) }),
             ("amazon", false, new[] { ("FLAC", true) }),
             ("deezer", false, new[] { ("9", true), ("3", true), ("1", true) }));
 
@@ -139,8 +144,8 @@ public sealed class DownloadSourceOrderFallbackParityTests
     public void ValidateDownloadEngineOrderSettings_RejectsEnabledConfigWithoutEnabledQualities()
     {
         var settings = CreateCustomOrderSettings(
-            ("qobuz", true, new[] { ("27", false), ("7", false), ("6", false) }),
-            ("tidal", false, new[] { ("HI_RES_LOSSLESS", true), ("LOSSLESS", true) }),
+            ("qobuz", true, new[] { ("27", false), ("7", false), ("6", false), ("5", false) }),
+            ("tidal", false, new[] { ("HI_RES_LOSSLESS", true), ("HI_RES", true), ("LOSSLESS", true), ("HIGH", true), ("LOW", true) }),
             ("apple", false, new[] { ("ALAC", true), ("AAC", true) }),
             ("amazon", false, new[] { ("FLAC", true) }),
             ("deezer", false, new[] { ("9", true), ("3", true), ("1", true) }));
@@ -155,9 +160,9 @@ public sealed class DownloadSourceOrderFallbackParityTests
     public void ValidateDownloadEngineOrderSettings_RejectsDuplicateEngines()
     {
         var settings = CreateCustomOrderSettings(
-            ("qobuz", true, new[] { ("27", true), ("7", true), ("6", true) }),
-            ("qobuz", true, new[] { ("27", true), ("7", true), ("6", true) }),
-            ("tidal", true, new[] { ("HI_RES_LOSSLESS", true), ("LOSSLESS", true) }),
+            ("qobuz", true, new[] { ("27", true), ("7", true), ("6", true), ("5", true) }),
+            ("qobuz", true, new[] { ("27", true), ("7", true), ("6", true), ("5", true) }),
+            ("tidal", true, new[] { ("HI_RES_LOSSLESS", true), ("HI_RES", true), ("LOSSLESS", true), ("HIGH", true), ("LOW", true) }),
             ("apple", true, new[] { ("ALAC", true), ("AAC", true) }),
             ("amazon", true, new[] { ("FLAC", true) }),
             ("deezer", true, new[] { ("9", true), ("3", true), ("1", true) }));
@@ -188,7 +193,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
         Assert.Equal("deezer|3", sources[0]);
         Assert.DoesNotContain("qobuz|6", sources);
         Assert.DoesNotContain("tidal|LOSSLESS", sources);
-        Assert.Equal(ExpectedDeezerQualityFallback, sources);
+        Assert.Equal(ExpectedTargetQualityFallback, sources);
     }
 
     [Fact]

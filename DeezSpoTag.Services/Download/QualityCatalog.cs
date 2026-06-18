@@ -26,14 +26,18 @@ public static class QualityCatalog
             },
             ["qobuz"] = new[]
             {
-                new QualityOption("27", "Qobuz Hi-Res (24-bit/96kHz+)"),
-                new QualityOption("7", "Qobuz FLAC 24-bit"),
-                new QualityOption("6", "Qobuz FLAC 16-bit (CD)")
+                new QualityOption("27", "Max Hi-Res (24-bit/192kHz)"),
+                new QualityOption("7", "Hi-Res (24-bit/96kHz)"),
+                new QualityOption("6", "CD Lossless (16-bit/44.1kHz)"),
+                new QualityOption("5", "MP3 (320kbps)")
             },
             ["tidal"] = new[]
             {
-                new QualityOption("HI_RES_LOSSLESS", "Tidal Hi-Res Lossless (24-bit/48kHz+)"),
-                new QualityOption("LOSSLESS", "Tidal Lossless (16-bit/CD)")
+                new QualityOption("HI_RES_LOSSLESS", "Max Hi-Res (24-bit/192kHz)"),
+                new QualityOption("HI_RES", "Hi-Res (24-bit/96kHz)"),
+                new QualityOption("LOSSLESS", "CD Lossless (16-bit/44.1kHz)"),
+                new QualityOption("HIGH", "MP3 (320kbps)"),
+                new QualityOption("LOW", "Low (96kbps)")
             }
         };
     }
@@ -54,16 +58,20 @@ public static class QualityCatalog
             new QualityOption("ATMOS", "Atmos"),
             new QualityOption("VIDEO", "Video"),
             new QualityOption("PODCAST", "Podcast"),
-            new QualityOption("27", "Qobuz Hi-Res (24-bit/96kHz+)"),
-            new QualityOption("HI_RES_LOSSLESS", "Tidal Hi-Res Lossless (24-bit/48kHz+)"),
+            new QualityOption("27", "Max Hi-Res (24-bit/192kHz)"),
+            new QualityOption("HI_RES_LOSSLESS", "Max Hi-Res (24-bit/192kHz)"),
             new QualityOption("ALAC", "Apple Music ALAC (lossless)"),
-            new QualityOption("7", "Qobuz FLAC 24-bit"),
-            new QualityOption("6", "Qobuz FLAC 16-bit (CD)"),
-            new QualityOption("LOSSLESS", "Tidal Lossless (16-bit/CD)"),
+            new QualityOption("7", "Hi-Res (24-bit/96kHz)"),
+            new QualityOption("HI_RES", "Hi-Res (24-bit/96kHz)"),
+            new QualityOption("6", "CD Lossless (16-bit/44.1kHz)"),
+            new QualityOption("LOSSLESS", "CD Lossless (16-bit/44.1kHz)"),
             new QualityOption("FLAC", "Amazon FLAC"),
             new QualityOption("9", "Deezer FLAC"),
             new QualityOption("AAC", "Apple Music AAC"),
+            new QualityOption("5", "MP3 (320kbps)"),
+            new QualityOption("HIGH", "MP3 (320kbps)"),
             new QualityOption("3", "Deezer MP3 320kbps"),
+            new QualityOption("LOW", "Low (96kbps)"),
             new QualityOption("1", "Deezer MP3 128kbps"),
         };
     }

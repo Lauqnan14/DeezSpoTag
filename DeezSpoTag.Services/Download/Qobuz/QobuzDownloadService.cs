@@ -910,12 +910,17 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         if (string.Equals(quality, "27", StringComparison.OrdinalIgnoreCase))
         {
-            return new List<string> { "27", "7", "6" };
+            return new List<string> { "27", "7", "6", "5" };
         }
 
         if (string.Equals(quality, "7", StringComparison.OrdinalIgnoreCase))
         {
-            return new List<string> { "7", "6" };
+            return new List<string> { "7", "6", "5" };
+        }
+
+        if (string.Equals(quality, "6", StringComparison.OrdinalIgnoreCase))
+        {
+            return new List<string> { "6", "5" };
         }
 
         return new List<string> { string.IsNullOrWhiteSpace(quality) ? "6" : quality };
@@ -1619,6 +1624,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             "27" => "hi-res-max",
             "7" => "hi-res",
+            "5" => "mp3",
             _ => "cd"
         };
     }

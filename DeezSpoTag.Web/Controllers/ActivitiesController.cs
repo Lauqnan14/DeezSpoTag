@@ -776,9 +776,10 @@ public class ActivitiesController : Controller
 
         return quality switch
         {
-            "6" => "FLAC 16-bit",
-            "7" => "FLAC 24-bit",
-            "27" => "Hi-Res 24-bit",
+            "5" => "MP3 (320kbps)",
+            "6" => "CD Lossless (16-bit/44.1kHz)",
+            "7" => "Hi-Res (24-bit/96kHz)",
+            "27" => "Max Hi-Res (24-bit/192kHz)",
             _ => quality
         };
     }
@@ -792,8 +793,11 @@ public class ActivitiesController : Controller
 
         return quality switch
         {
-            "LOSSLESS" => "Lossless",
-            "HI_RES_LOSSLESS" => "Hi-Res Lossless",
+            "LOW" => "Low (96kbps)",
+            "HIGH" => "MP3 (320kbps)",
+            "LOSSLESS" => "CD Lossless (16-bit/44.1kHz)",
+            "HI_RES" => "Hi-Res (24-bit/96kHz)",
+            "HI_RES_LOSSLESS" => "Max Hi-Res (24-bit/192kHz)",
             _ => quality
         };
     }

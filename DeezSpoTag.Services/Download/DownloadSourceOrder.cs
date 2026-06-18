@@ -23,17 +23,21 @@ public static class DownloadSourceOrder
     // WARNING: Do not change this order and do not remove any items; fallback behavior depends on it.
     private static readonly DownloadProfile[] AutoPriority =
     [
-        new(QobuzSource, "Qobuz Hi-Res (24-bit/96kHz+)", "27", null),
-        new(TidalSource, "Tidal Hi-Res Lossless (24-bit/48kHz+)", "HI_RES_LOSSLESS", null),
+        new(QobuzSource, "Max Hi-Res (24-bit/192kHz)", "27", null),
+        new(TidalSource, "Max Hi-Res (24-bit/192kHz)", "HI_RES_LOSSLESS", null),
         new(AppleSource, "Apple Music ALAC (lossless)", "ALAC", null),
-        new(QobuzSource, "Qobuz FLAC 24-bit", "7", null),
-        new(QobuzSource, "Qobuz FLAC 16-bit (CD)", "6", null),
-        new(TidalSource, "Tidal Lossless 16-bit", "LOSSLESS", null),
+        new(QobuzSource, "Hi-Res (24-bit/96kHz)", "7", null),
+        new(TidalSource, "Hi-Res (24-bit/96kHz)", "HI_RES", null),
+        new(QobuzSource, "CD Lossless (16-bit/44.1kHz)", "6", null),
+        new(TidalSource, "CD Lossless (16-bit/44.1kHz)", "LOSSLESS", null),
         new(AmazonSource, "Amazon FLAC", "FLAC", null),
         new(DeezerSource, "Deezer FLAC", "9", DeezerFlac),
         new(AppleSource, "Apple Music AAC", "AAC", null),
+        new(QobuzSource, "MP3 (320kbps)", "5", null),
+        new(TidalSource, "MP3 (320kbps)", "HIGH", null),
         new(DeezerSource, "Deezer 320kbps", "3", DeezerMp3High),
-        new(DeezerSource, "Deezer 128kbps", "1", DeezerMp3Low)
+        new(DeezerSource, "Deezer 128kbps", "1", DeezerMp3Low),
+        new(TidalSource, "Low (96kbps)", "LOW", null)
     ];
 
     public static string ResolveService(DeezSpoTagSettings settings)

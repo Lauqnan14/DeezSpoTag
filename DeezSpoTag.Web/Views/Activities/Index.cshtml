@@ -4513,15 +4513,19 @@ async function clearCanceledTasks() {
 
 	    const upper = quality.toUpperCase();
 	    const qualityLabels = {
-	        '27': 'Qobuz 27',
-	        'HI_RES_LOSSLESS': 'Tidal Hi-Res Lossless',
+	        '27': 'Max Hi-Res (24-bit/192kHz)',
+	        'HI_RES_LOSSLESS': 'Max Hi-Res (24-bit/192kHz)',
 	        'ALAC': 'Apple ALAC',
-	        '7': 'Qobuz 24-bit',
-	        '6': 'Qobuz CD',
-	        'LOSSLESS': 'Tidal Lossless',
+	        '7': 'Hi-Res (24-bit/96kHz)',
+	        'HI_RES': 'Hi-Res (24-bit/96kHz)',
+	        '6': 'CD Lossless (16-bit/44.1kHz)',
+	        'LOSSLESS': 'CD Lossless (16-bit/44.1kHz)',
 	        'FLAC': 'Amazon FLAC',
 	        '9': 'Deezer FLAC',
 	        'AAC': 'Apple AAC',
+	        '5': 'MP3 (320kbps)',
+	        'HIGH': 'MP3 (320kbps)',
+	        'LOW': 'Low (96kbps)',
 	        '3': 'Deezer 320kbps',
 	        '1': 'Deezer 128kbps'
 	    };
@@ -6244,14 +6248,15 @@ function mapBitrate(bitrate) {
         : (typeof bitrate === 'string' && /^\d+$/.test(bitrate) ? Number(bitrate) : null);
 
     if (numeric !== null) {
-        const numericMap = {
-            1: 'MP3 128',
-            3: 'MP3 320',
-            6: 'FLAC 16-bit',
-            7: 'FLAC 24-bit',
-            9: 'FLAC',
-            27: 'Hi-Res 24-bit'
-        };
+	        const numericMap = {
+	            1: 'MP3 128',
+	            3: 'MP3 320',
+	            5: 'MP3 (320kbps)',
+	            6: 'CD Lossless (16-bit/44.1kHz)',
+	            7: 'Hi-Res (24-bit/96kHz)',
+	            9: 'FLAC',
+	            27: 'Max Hi-Res (24-bit/192kHz)'
+	        };
         return numericMap[numeric] || '';
     }
 

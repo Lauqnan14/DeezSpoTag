@@ -9779,13 +9779,17 @@ function renderFolders() {
             { value: 'ATMOS', label: 'Atmos' },
             { value: 'VIDEO', label: 'Video' },
             { value: 'PODCAST', label: 'Podcast' },
-            { value: '27', label: 'Hi-Res (24-bit/96kHz+)' },
-            { value: 'HI_RES_LOSSLESS', label: 'Hi-Res Lossless (24-bit/48kHz+)' },
-            { value: '7', label: 'FLAC 24-bit' },
-            { value: '6', label: 'FLAC 16-bit (CD)' },
-            { value: 'LOSSLESS', label: 'Lossless (16-bit/CD)' },
+            { value: '27', label: 'Max Hi-Res (24-bit/192kHz)' },
+            { value: 'HI_RES_LOSSLESS', label: 'Max Hi-Res (24-bit/192kHz)' },
+            { value: '7', label: 'Hi-Res (24-bit/96kHz)' },
+            { value: 'HI_RES', label: 'Hi-Res (24-bit/96kHz)' },
+            { value: '6', label: 'CD Lossless (16-bit/44.1kHz)' },
+            { value: 'LOSSLESS', label: 'CD Lossless (16-bit/44.1kHz)' },
             { value: '9', label: 'FLAC' },
+            { value: '5', label: 'MP3 (320kbps)' },
+            { value: 'HIGH', label: 'MP3 (320kbps)' },
             { value: '3', label: 'MP3 320kbps' },
+            { value: 'LOW', label: 'Low (96kbps)' },
             { value: '1', label: 'MP3 128kbps' }
         ];
     };

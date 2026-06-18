@@ -4782,12 +4782,16 @@ public sealed class DownloadIntentService
             ["HI_RES_LOSSLESS"] = 115,
             ["ALAC"] = 110,
             ["7"] = 100,
+            ["HI_RES"] = 95,
             ["6"] = 90,
             ["LOSSLESS"] = 80,
             ["FLAC"] = 70,
             ["9"] = 60,
             ["AAC"] = 50,
+            ["5"] = 45,
+            ["HIGH"] = 45,
             ["3"] = 40,
+            ["LOW"] = 35,
             ["1"] = 30
         };
 
@@ -4800,12 +4804,16 @@ public sealed class DownloadIntentService
             ["HI_RES_LOSSLESS"] = 4,
             ["ALAC"] = 3,
             ["7"] = 4,
+            ["HI_RES"] = 4,
             ["6"] = 3,
             ["LOSSLESS"] = 3,
             ["FLAC"] = 3,
             ["9"] = 3,
             ["AAC"] = 2,
+            ["5"] = 2,
+            ["HIGH"] = 2,
             ["3"] = 2,
+            ["LOW"] = 1,
             ["1"] = 1
         };
 

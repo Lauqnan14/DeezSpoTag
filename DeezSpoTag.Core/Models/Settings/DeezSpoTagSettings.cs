@@ -279,7 +279,8 @@ public class DownloadEngineOrderSettings
                     {
                         new() { Quality = "27", Enabled = true },
                         new() { Quality = "7", Enabled = true },
-                        new() { Quality = "6", Enabled = true }
+                        new() { Quality = "6", Enabled = true },
+                        new() { Quality = "5", Enabled = true }
                     }
                 },
                 new()
@@ -289,7 +290,10 @@ public class DownloadEngineOrderSettings
                     Qualities = new List<DownloadEngineQualityItem>
                     {
                         new() { Quality = "HI_RES_LOSSLESS", Enabled = true },
-                        new() { Quality = "LOSSLESS", Enabled = true }
+                        new() { Quality = "HI_RES", Enabled = true },
+                        new() { Quality = "LOSSLESS", Enabled = true },
+                        new() { Quality = "HIGH", Enabled = true },
+                        new() { Quality = "LOW", Enabled = true }
                     }
                 },
                 new()

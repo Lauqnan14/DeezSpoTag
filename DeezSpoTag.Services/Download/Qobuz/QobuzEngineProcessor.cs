@@ -689,6 +689,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             "27" => 3,
             "7" => 2,
             "6" => 1,
+            "5" => 0,
             _ => 0
         };
 
@@ -1203,6 +1204,12 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             }
 
             var sampleRate = mediaFile.Properties.AudioSampleRate;
+            var extension = Path.GetExtension(filePath);
+            if (string.Equals(extension, ".mp3", StringComparison.OrdinalIgnoreCase))
+            {
+                return "5";
+            }
+
             if (bitsPerSample >= 24)
             {
                 return sampleRate >= 96000 ? "27" : "7";

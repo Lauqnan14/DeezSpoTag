@@ -732,32 +732,25 @@ function normalizeWatchlistDownloadEngineOrderConfig(config, defaults) {
 function normalizeWatchlistDownloadEngineOrderItem(engineConfig, defaultEngine) {
     const defaultQualities = Array.isArray(defaultEngine.qualities) ? defaultEngine.qualities : [];
     const incomingQualities = Array.isArray(engineConfig?.qualities) ? engineConfig.qualities : [];
-    const byQuality = new Map(defaultQualities.map(quality => [String(quality.quality || '').toLowerCase(), quality]));
-    const seenQualities = new Set();
-    const qualities = [];
+    const incomingByQuality = new Map();
 
     incomingQualities.forEach(qualityConfig => {
         const qualityKey = String(qualityConfig?.quality || '').trim().toLowerCase();
-        const defaultQuality = byQuality.get(qualityKey);
-        if (!defaultQuality || seenQualities.has(qualityKey)) {
+        if (!qualityKey || incomingByQuality.has(qualityKey)) {
             return;
         }
 
-        seenQualities.add(qualityKey);
-        qualities.push({
-            quality: defaultQuality.quality,
-            label: defaultQuality.label,
-            enabled: qualityConfig.enabled !== false
-        });
+        incomingByQuality.set(qualityKey, qualityConfig);
     });
 
-    defaultQualities.forEach(defaultQuality => {
+    const qualities = defaultQualities.map(defaultQuality => {
         const qualityKey = String(defaultQuality.quality || '').trim().toLowerCase();
-        if (!qualityKey || seenQualities.has(qualityKey)) {
-            return;
-        }
-
-        qualities.push({ ...defaultQuality });
+        const incomingQuality = incomingByQuality.get(qualityKey);
+        return {
+            quality: defaultQuality.quality,
+            label: defaultQuality.label,
+            enabled: incomingQuality ? incomingQuality.enabled !== false : defaultQuality.enabled !== false
+        };
     });
 
     return {
