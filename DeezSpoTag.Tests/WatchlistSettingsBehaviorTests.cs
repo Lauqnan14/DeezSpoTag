@@ -147,6 +147,19 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void SettingsView_CustomDownloadSourceOrderIsCollapsible()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var settingsSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
+
+        Assert.Contains("id=\"downloadEngineOrderToggle\"", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("id=\"downloadEngineOrderSummary\"", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("id=\"downloadEngineOrderEditor\" hidden", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("setDownloadEngineOrderEditorExpanded", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("updateDownloadEngineOrderSummary", settingsSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistWatchCustomDownloadSource_IsPerPlaylistAndQueuedWithIntentOrder()
     {
         var repoRoot = ResolveRepoRoot();

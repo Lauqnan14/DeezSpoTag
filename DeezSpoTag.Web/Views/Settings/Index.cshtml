@@ -166,10 +166,35 @@
     margin-bottom: 20px;
 }
 
+.engine-order-toggle {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.engine-order-toggle .warning-text {
+    margin-bottom: 0;
+}
+
+.engine-order-summary {
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.4;
+    margin-top: 10px;
+}
+
+.engine-order-editor {
+    margin-top: 12px;
+}
+
+.engine-order-editor[hidden] {
+    display: none;
+}
+
 .engine-order-list {
     display: grid;
     gap: 8px;
-    margin-top: 12px;
 }
 
 .engine-order-item {
@@ -860,9 +885,17 @@
                 </div>
                 <div class="engine-order-panel" id="downloadEngineOrderPanel" style="display: none;">
                     <input type="hidden" id="downloadEngineOrderEnabled" value="false">
-                    <div class="form-label">Custom download engine order</div>
-                    <div class="warning-text">Drag engines into priority order. Quality choices are shown only for enabled engines. Existing queued items keep the order stored when they were queued.</div>
-                    <div class="engine-order-list" id="downloadEngineOrderList"></div>
+                    <div class="engine-order-toggle">
+                        <div>
+                            <div class="form-label">Custom download sources</div>
+                            <div class="warning-text">Drag engines into priority order. Quality choices are shown only for enabled engines. Existing queued items keep the order stored when they were queued.</div>
+                        </div>
+                        <button type="button" class="action-btn action-btn-sm" id="downloadEngineOrderToggle" aria-expanded="false">Edit order</button>
+                    </div>
+                    <div class="engine-order-summary" id="downloadEngineOrderSummary"></div>
+                    <div class="engine-order-editor" id="downloadEngineOrderEditor" hidden>
+                        <div class="engine-order-list" id="downloadEngineOrderList"></div>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label for="queueOrder">Queue Order</label>
@@ -1513,6 +1546,7 @@ document.addEventListener('DOMContentLoaded', function() {
     setupTemplateVariableHelpers();
     initTabPreferenceToggle();
     initDownloadSourceDropdowns();
+    initDownloadEngineOrderCollapse();
     initLibraryFolderDestinationDropdowns();
     initSecondarySourceControls();
     setupArtworkFallbackOrder();
@@ -2130,12 +2164,42 @@ function updateQualityDropdownVisibility(source, autoOpen) {
 function updateCustomEngineOrderVisibility(source) {
     const panel = document.getElementById('downloadEngineOrderPanel');
     const enabled = document.getElementById('downloadEngineOrderEnabled');
+    const editor = document.getElementById('downloadEngineOrderEditor');
+    const toggle = document.getElementById('downloadEngineOrderToggle');
     const isCustom = String(source || '').toLowerCase() === 'custom';
     if (panel) {
         panel.style.display = isCustom ? 'block' : 'none';
     }
     if (enabled) {
         enabled.value = isCustom ? 'true' : 'false';
+    }
+    if (!isCustom) {
+        setDownloadEngineOrderEditorExpanded(false, editor, toggle);
+    }
+}
+
+function initDownloadEngineOrderCollapse() {
+    const editor = document.getElementById('downloadEngineOrderEditor');
+    const toggle = document.getElementById('downloadEngineOrderToggle');
+    if (!editor || !toggle) {
+        return;
+    }
+
+    setDownloadEngineOrderEditorExpanded(false, editor, toggle);
+    toggle.addEventListener('click', () => {
+        setDownloadEngineOrderEditorExpanded(editor.hidden, editor, toggle);
+    });
+}
+
+function setDownloadEngineOrderEditorExpanded(expanded, editor, toggle) {
+    const resolvedEditor = editor || document.getElementById('downloadEngineOrderEditor');
+    const resolvedToggle = toggle || document.getElementById('downloadEngineOrderToggle');
+    if (resolvedEditor) {
+        resolvedEditor.hidden = !expanded;
+    }
+    if (resolvedToggle) {
+        resolvedToggle.textContent = expanded ? 'Done' : 'Edit order';
+        resolvedToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     }
 }
 
@@ -2211,6 +2275,7 @@ function normalizeDownloadEngineOrderItem(engineConfig, defaultEngine) {
 function renderDownloadEngineOrder(config) {
     const list = document.getElementById('downloadEngineOrderList');
     const enabled = document.getElementById('downloadEngineOrderEnabled');
+    const summary = document.getElementById('downloadEngineOrderSummary');
     if (!list || !enabled) {
         return;
     }
@@ -2244,6 +2309,7 @@ function renderDownloadEngineOrder(config) {
     });
 
     bindDownloadEngineOrderControls(list);
+    updateDownloadEngineOrderSummary(list, summary);
 }
 
 function bindDownloadEngineOrderControls(list) {
@@ -2256,6 +2322,7 @@ function bindDownloadEngineOrderControls(list) {
         item.addEventListener('dragend', () => {
             item.classList.remove('dragging');
             dragged = null;
+            updateDownloadEngineOrderSummary(list);
         });
         item.addEventListener('dragover', event => {
             event.preventDefault();
@@ -2275,8 +2342,36 @@ function bindDownloadEngineOrderControls(list) {
             if (status) {
                 status.textContent = checked ? 'enabled' : 'disabled';
             }
+            updateDownloadEngineOrderSummary(list);
         });
     });
+
+    list.querySelectorAll('.engine-quality-enabled').forEach(input => {
+        input.addEventListener('change', () => {
+            updateDownloadEngineOrderSummary(list);
+        });
+    });
+}
+
+function updateDownloadEngineOrderSummary(list, summary) {
+    const resolvedList = list || document.getElementById('downloadEngineOrderList');
+    const resolvedSummary = summary || document.getElementById('downloadEngineOrderSummary');
+    if (!resolvedList || !resolvedSummary) {
+        return;
+    }
+
+    const engineRows = Array.from(resolvedList.querySelectorAll('.engine-order-item'));
+    const enabledEngines = engineRows.filter(row => row.querySelector('.engine-order-enabled')?.checked === true);
+    const enabledQualityCount = enabledEngines.reduce((total, row) => (
+        total + Array.from(row.querySelectorAll('.engine-quality-enabled')).filter(input => input.checked === true).length
+    ), 0);
+    const engineLabels = enabledEngines
+        .map(row => row.querySelector('.engine-order-title')?.textContent?.trim())
+        .filter(Boolean);
+    const engineSummary = engineLabels.length > 0
+        ? engineLabels.join(' -> ')
+        : 'No enabled sources';
+    resolvedSummary.textContent = `${enabledEngines.length} enabled source${enabledEngines.length === 1 ? '' : 's'}, ${enabledQualityCount} enabled qualit${enabledQualityCount === 1 ? 'y' : 'ies'}: ${engineSummary}.`;
 }
 
 function collectDownloadEngineOrder() {
