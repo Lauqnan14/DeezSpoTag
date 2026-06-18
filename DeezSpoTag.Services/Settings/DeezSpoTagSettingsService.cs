@@ -603,7 +603,6 @@ public class DeezSpoTagSettingsService : ISettingsService
         EnsureNestedSettings(settings, fixes);
         NormalizeSpotifySettings(settings, defaultSettings, fixes);
         NormalizeDownloadExecutionSettings(settings, defaultSettings, fixes);
-        NormalizeDownloadSourceSettings(settings, defaultSettings, fixes);
         NormalizeDownloadEngineOrderSettings(settings, fixes);
         NormalizeWatchSettings(settings, defaultSettings, fixes);
         NormalizeRegionalAndLyricsSettings(settings, defaultSettings, fixes);
@@ -825,32 +824,6 @@ public class DeezSpoTagSettingsService : ISettingsService
             () => settings.AutoTagHistoryRetentionDays = defaultSettings.AutoTagHistoryRetentionDays,
             fixes,
             nameof(settings.AutoTagHistoryRetentionDays));
-    }
-
-    private static void NormalizeDownloadSourceSettings(
-        DeezSpoTagSettings settings,
-        DeezSpoTagSettings defaultSettings,
-        SettingsFixTracker fixes)
-    {
-        var normalizedAutomaticSource = NormalizeDownloadSource(settings.AutomaticDownloadSource);
-        if (string.IsNullOrWhiteSpace(normalizedAutomaticSource))
-        {
-            normalizedAutomaticSource = NormalizeDownloadSource(defaultSettings.AutomaticDownloadSource);
-        }
-
-        ApplyFixIf(
-            !string.Equals(settings.AutomaticDownloadSource, normalizedAutomaticSource, StringComparison.Ordinal),
-            () => settings.AutomaticDownloadSource = normalizedAutomaticSource,
-            fixes,
-            nameof(settings.AutomaticDownloadSource));
-    }
-
-    private static string NormalizeDownloadSource(string? source)
-    {
-        var normalized = (source ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized is "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal"
-            ? normalized
-            : string.Empty;
     }
 
     private static void NormalizeDownloadEngineOrderSettings(

@@ -136,18 +136,14 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void SettingsView_ExposesSeparateAutomaticDownloadSource()
+    public void SettingsView_DoesNotExposeWatchlistAutomaticDownloadSource()
     {
         var repoRoot = ResolveRepoRoot();
         var settingsSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
-        var settingsModelSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Core", "Models", "Settings", "DeezSpoTagSettings.cs"));
-        var playlistWatchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
 
-        Assert.Contains("public string AutomaticDownloadSource { get; set; } = \"auto\";", settingsModelSource, StringComparison.Ordinal);
-        Assert.Contains("id=\"automaticDownloadSource\"", settingsSource, StringComparison.Ordinal);
-        Assert.Contains("automaticDownloadSource: getValue('automaticDownloadSource'", settingsSource, StringComparison.Ordinal);
-        Assert.Contains("ResolveAutomaticPreferredEngine(input.PreferredEngine)", playlistWatchSource, StringComparison.Ordinal);
-        Assert.Contains("settings.AutomaticDownloadSource", playlistWatchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"automaticDownloadSource\"", settingsSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("automaticDownloadSource:", settingsSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Automatic source", settingsSource, StringComparison.Ordinal);
     }
 
     [Fact]

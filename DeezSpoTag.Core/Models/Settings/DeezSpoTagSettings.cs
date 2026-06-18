@@ -174,7 +174,6 @@ public class DeezSpoTagSettings
 
     // Engine settings (spotizerr-phoenix compatibility)
     public string Service { get; set; } = "auto";
-    public string AutomaticDownloadSource { get; set; } = "auto";
     public bool Fallback { get; set; } = false;
 
     // Spotizerr-phoenix compatibility (currently used by Settings UI)

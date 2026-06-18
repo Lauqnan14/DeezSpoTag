@@ -2952,12 +2952,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(itemPreferredEngine))
-        {
-            return itemDownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
-        }
-
-        return _settingsService.LoadSettings().DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
+        return itemDownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
     }
 
     private string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
@@ -2968,11 +2963,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return normalizedItemEngine;
         }
 
-        var settings = _settingsService.LoadSettings();
-        var normalizedAutomaticSource = NormalizePreferredEngine(settings.AutomaticDownloadSource);
-        return string.IsNullOrWhiteSpace(normalizedAutomaticSource)
-            ? "auto"
-            : normalizedAutomaticSource;
+        return "auto";
     }
 
     private static long? ResolveRoutingFolderId(DownloadIntent intent, IReadOnlyList<PlaylistTrackRoutingRule>? rules, long? defaultFolderId)
