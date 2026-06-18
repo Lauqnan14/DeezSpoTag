@@ -1081,6 +1081,10 @@
     gap: 8px;
 }
 
+.playlist-settings-section[hidden] {
+    display: none;
+}
+
 .playlist-settings-section-title {
     font-size: 11px;
     text-transform: uppercase;
@@ -1355,6 +1359,33 @@
 .watchlist-playlist-settings .checkbox-group.is-disabled input,
 .watchlist-playlist-settings .checkbox-group.is-disabled span {
     cursor: not-allowed;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-toggle {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-edit {
+    white-space: nowrap;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-summary,
+.watchlist-playlist-settings .watchlist-engine-order-footer {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-panel {
+    display: grid;
+    gap: 8px;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-panel[hidden] {
+    display: none;
 }
 
 .watchlist-playlist-settings .watchlist-engine-order-list {

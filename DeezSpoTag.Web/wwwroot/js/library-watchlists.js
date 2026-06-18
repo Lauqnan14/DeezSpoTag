@@ -772,18 +772,47 @@ function normalizeWatchlistDownloadEngineOrderItem(engineConfig, defaultEngine) 
 function createWatchlistDownloadEngineOrderSection(config, defaults) {
     const section = document.createElement('div');
     section.className = 'playlist-settings-section watchlist-engine-order-section';
+    const toggle = document.createElement('div');
+    toggle.className = 'watchlist-engine-order-toggle';
     const title = document.createElement('div');
     title.className = 'playlist-settings-section-title';
     title.textContent = 'Custom download sources';
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'btn btn-secondary action-btn btn-sm watchlist-engine-order-edit';
+    editButton.textContent = 'Edit order';
+    editButton.setAttribute('aria-expanded', 'false');
+    toggle.appendChild(title);
+    toggle.appendChild(editButton);
+    const summary = document.createElement('div');
+    summary.className = 'watchlist-engine-order-summary';
+    const panel = document.createElement('div');
+    panel.className = 'watchlist-engine-order-panel';
+    panel.hidden = true;
     const list = document.createElement('div');
     list.className = 'watchlist-engine-order-list';
-    section.appendChild(title);
-    section.appendChild(list);
-    renderWatchlistDownloadEngineOrder(list, config, defaults);
-    return { section, list };
+    const footer = document.createElement('div');
+    footer.className = 'watchlist-engine-order-footer';
+    footer.textContent = 'Drag sources into monitored playlist download priority order.';
+    panel.appendChild(list);
+    panel.appendChild(footer);
+    section.appendChild(toggle);
+    section.appendChild(summary);
+    section.appendChild(panel);
+    renderWatchlistDownloadEngineOrder(list, config, defaults, () => {
+        updateWatchlistDownloadEngineOrderSummary(list, summary);
+    });
+    updateWatchlistDownloadEngineOrderSummary(list, summary);
+    editButton.addEventListener('click', () => {
+        panel.hidden = !panel.hidden;
+        const expanded = !panel.hidden;
+        editButton.textContent = expanded ? 'Done' : 'Edit order';
+        editButton.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    });
+    return { section, list, panel, summary, editButton };
 }
 
-function renderWatchlistDownloadEngineOrder(list, config, defaults) {
+function renderWatchlistDownloadEngineOrder(list, config, defaults, onChange) {
     const normalized = normalizeWatchlistDownloadEngineOrderConfig(config, defaults);
     list.innerHTML = '';
     normalized.engines.forEach(engine => {
@@ -809,10 +838,10 @@ function renderWatchlistDownloadEngineOrder(list, config, defaults) {
         `;
         list.appendChild(row);
     });
-    bindWatchlistDownloadEngineOrderControls(list);
+    bindWatchlistDownloadEngineOrderControls(list, onChange);
 }
 
-function bindWatchlistDownloadEngineOrderControls(list) {
+function bindWatchlistDownloadEngineOrderControls(list, onChange) {
     let dragged = null;
     list.querySelectorAll('.watchlist-engine-order-item').forEach(item => {
         item.addEventListener('dragstart', () => {
@@ -822,6 +851,7 @@ function bindWatchlistDownloadEngineOrderControls(list) {
         item.addEventListener('dragend', () => {
             item.classList.remove('is-dragging');
             dragged = null;
+            onChange?.();
         });
         item.addEventListener('dragover', event => {
             event.preventDefault();
@@ -841,8 +871,30 @@ function bindWatchlistDownloadEngineOrderControls(list) {
             if (status) {
                 status.textContent = checked ? 'enabled' : 'disabled';
             }
+            onChange?.();
         });
     });
+
+    list.querySelectorAll('.watchlist-engine-quality-enabled').forEach(input => {
+        input.addEventListener('change', () => {
+            onChange?.();
+        });
+    });
+}
+
+function updateWatchlistDownloadEngineOrderSummary(list, summary) {
+    const engineRows = Array.from(list.querySelectorAll('.watchlist-engine-order-item'));
+    const enabledEngines = engineRows.filter(row => row.querySelector('.watchlist-engine-order-enabled')?.checked === true);
+    const enabledQualityCount = enabledEngines.reduce((total, row) => (
+        total + Array.from(row.querySelectorAll('.watchlist-engine-quality-enabled')).filter(input => input.checked === true).length
+    ), 0);
+    const engineLabels = enabledEngines
+        .map(row => row.querySelector('.watchlist-engine-order-title')?.textContent?.trim())
+        .filter(Boolean);
+    const engineSummary = engineLabels.length > 0
+        ? engineLabels.join(' -> ')
+        : 'No enabled sources';
+    summary.textContent = `${enabledEngines.length} enabled source${enabledEngines.length === 1 ? '' : 's'}, ${enabledQualityCount} enabled qualit${enabledQualityCount === 1 ? 'y' : 'ies'}: ${engineSummary}.`;
 }
 
 function collectWatchlistDownloadEngineOrder(panel) {
