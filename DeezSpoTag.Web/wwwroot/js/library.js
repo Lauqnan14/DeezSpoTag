@@ -77,6 +77,8 @@ const libraryState = {
         storedAppleId: null,
         biography: null,
         biographyAppleId: null,
+        tidalArtistId: null,
+        storedTidalId: null,
         atmos: [],
         localTrackVariantIndex: null,
         localTrackVariantArtistId: null,
@@ -4253,10 +4255,11 @@ async function loadAlbums(artistId) {
     libraryState.appleExtras.localTrackVariantArtistId = null;
     libraryState.appleExtras.localTrackVariantIndexPromise = null;
     const cachedUnavailable = libraryState.unavailableAlbums.get(artistIdValue);
-    const [artist, albums, appleIdData] = await Promise.all([
+    const [artist, albums, appleIdData, tidalIdData] = await Promise.all([
         fetchJsonOptional(`/api/library/artists/${artistIdValue}`),
         fetchJson(buildLibraryScopedUrl(`/api/library/artists/${artistIdValue}/albums`)),
-        fetchJsonOptional(`/api/library/artists/${artistIdValue}/apple-id`)
+        fetchJsonOptional(`/api/library/artists/${artistIdValue}/apple-id`),
+        fetchJsonOptional(`/api/library/artists/${artistIdValue}/tidal-id`)
     ]);
 
     let resolvedArtist = artist;
@@ -4317,8 +4320,11 @@ async function loadAlbums(artistId) {
     initSpotifyAvatarFetch(artistIdValue);
     initSpotifyCacheControls(artistIdValue);
     const storedAppleId = appleIdData?.appleId || null;
+    const storedTidalId = tidalIdData?.tidalId || null;
     libraryState.appleExtras.storedAppleId = storedAppleId || null;
     libraryState.appleExtras.appleArtistId = storedAppleId || null;
+    libraryState.appleExtras.storedTidalId = storedTidalId || null;
+    libraryState.appleExtras.tidalArtistId = storedTidalId || null;
     libraryState.appleExtras.biography = normalizeArtistBiographyForSync(resolvedArtist?.appleBiography || '') || null;
     libraryState.appleExtras.biographyAppleId = storedAppleId || null;
     updateArtistBiographySourceControls();
@@ -4326,6 +4332,10 @@ async function loadAlbums(artistId) {
     initAppleLazyLoad(resolvedArtist?.name, storedAppleId);
     loadAppleArtistBiography(storedAppleId);
     initAppleIdEditor(artistIdValue);
+    initTidalIdEditor(artistIdValue);
+    if (!storedTidalId && resolvedArtist?.name) {
+        resolveAndStoreTidalArtistId(artistIdValue, resolvedArtist.name);
+    }
 }
 
 function renderSpotifyArtistUnavailable(reason = 'Spotify artist data unavailable.') {
@@ -6005,6 +6015,89 @@ function initAppleIdEditor(artistIdValue) {
             editButton.disabled = false;
         }
     });
+}
+
+function initTidalIdEditor(artistIdValue) {
+    const editButton = document.getElementById('tidalIdEdit');
+    if (!editButton || !artistIdValue || editButton.dataset.bound === 'true') return;
+    editButton.dataset.bound = 'true';
+
+    editButton.addEventListener('click', async () => {
+        if (!libraryState.appleExtras.storedTidalId) {
+            await resolveAndStoreTidalArtistId(artistIdValue, libraryState.currentLocalArtistName || libraryState.appleExtras.term);
+        }
+        const current = libraryState.appleExtras.storedTidalId || '';
+        const updated = await DeezSpoTag.ui.prompt('Tidal artist ID (numeric)', {
+            title: 'Update Tidal Artist ID',
+            value: current,
+            placeholder: 'e.g. 123456789'
+        });
+        if (updated === null) return;
+        const trimmed = updated.trim();
+        if (!trimmed) {
+            showToast('Tidal artist ID is required.', true);
+            return;
+        }
+        if (!/^\d+$/.test(trimmed)) {
+            showToast('Tidal artist ID should be numeric.', true);
+            return;
+        }
+
+        editButton.disabled = true;
+        try {
+            await fetchJson(`/api/library/artists/${artistIdValue}/tidal-id`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tidalId: trimmed })
+            });
+            libraryState.appleExtras.storedTidalId = trimmed;
+            libraryState.appleExtras.tidalArtistId = trimmed;
+            libraryState.appleExtras.initialized = false;
+            initAppleArtistExtras(libraryState.appleExtras.term, libraryState.appleExtras.storedAppleId);
+            showToast('Tidal artist ID updated.');
+        } catch (error) {
+            showToast(`Tidal ID update failed: ${error.message}`, true);
+        } finally {
+            editButton.disabled = false;
+        }
+    });
+}
+
+async function resolveAndStoreTidalArtistId(artistIdValue, artistName) {
+    const normalizedArtistId = String(artistIdValue || '').trim();
+    const term = String(artistName || '').trim();
+    if (!normalizedArtistId || !term || libraryState.appleExtras.storedTidalId) {
+        return null;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/tidal/search?query=${encodeURIComponent(term)}&limit=10&type=artist`);
+        const artists = Array.isArray(data?.artists) ? data.artists : [];
+        if (artists.length === 0) {
+            return null;
+        }
+
+        const normalizedTerm = normalizeArtistName(term);
+        const match = artists.find(artist => normalizeArtistName(artist?.name) === normalizedTerm)
+            || artists.find(artist => normalizeArtistName(artist?.name).includes(normalizedTerm))
+            || null;
+        const tidalId = String(match?.tidalId || match?.id || '').trim();
+        if (!/^\d+$/.test(tidalId)) {
+            return null;
+        }
+
+        await fetchJson(`/api/library/artists/${encodeURIComponent(normalizedArtistId)}/tidal-id`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tidalId })
+        });
+        libraryState.appleExtras.storedTidalId = tidalId;
+        libraryState.appleExtras.tidalArtistId = tidalId;
+        return tidalId;
+    } catch (error) {
+        console.warn('Tidal artist ID auto-resolve failed', error);
+        return null;
+    }
 }
 
 function getArtistVisualStorageKey(artistId) {

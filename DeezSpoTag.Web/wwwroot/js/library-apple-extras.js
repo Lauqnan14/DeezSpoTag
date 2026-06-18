@@ -148,19 +148,33 @@ async function fetchTidalArtistMedia(termParam, kind) {
             throw new Error(data?.error || 'Tidal search unavailable');
         }
         if (kind === 'video') {
-            return filterTidalArtistItems(Array.isArray(data.videos) ? data.videos : [], libraryState.appleExtras.term);
+            return filterTidalArtistItems(Array.isArray(data.videos) ? data.videos : [], libraryState.appleExtras.term, libraryState.appleExtras.storedTidalId);
         }
-        return filterTidalArtistItems(buildTidalAtmosList(data), libraryState.appleExtras.term);
+        return filterTidalArtistItems(buildTidalAtmosList(data), libraryState.appleExtras.term, libraryState.appleExtras.storedTidalId);
     } catch (err) {
         console.warn(`Tidal artist ${kind} lookup failed`, err);
         return [];
     }
 }
 
-function filterTidalArtistItems(items, term) {
+function filterTidalArtistItems(items, term, tidalArtistId = null) {
     if (!Array.isArray(items) || items.length === 0) {
         return [];
     }
+    const normalizedTidalArtistId = String(tidalArtistId || '').trim();
+    if (normalizedTidalArtistId) {
+        return items.filter(item => {
+            const ids = [
+                item?.artistId,
+                item?.artist_id,
+                item?.artist?.id,
+                ...(Array.isArray(item?.artistIds) ? item.artistIds : []),
+                ...(Array.isArray(item?.artists) ? item.artists.map(artist => artist?.id) : [])
+            ];
+            return ids.some(id => String(id || '').trim() === normalizedTidalArtistId);
+        });
+    }
+
     const normalizedTerm = normalizeArtistName(term);
     if (!normalizedTerm) {
         return items;

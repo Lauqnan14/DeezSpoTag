@@ -195,6 +195,9 @@ public sealed class TidalSearchApiController : ControllerBase
         var artist = item.TryGetProperty("artist", out var artistNode)
             ? GetString(artistNode, "name")
             : string.Empty;
+        var artistId = item.TryGetProperty("artist", out artistNode)
+            ? GetAnyString(artistNode, "id")
+            : string.Empty;
         var albumTitle = string.Empty;
         var coverId = string.Empty;
         if (item.TryGetProperty("album", out var albumNode))
@@ -217,6 +220,8 @@ public sealed class TidalSearchApiController : ControllerBase
             type = TrackType,
             name = ComposeTitle(GetString(item, TitleProperty), GetString(item, "version")),
             artist,
+            artistId,
+            artistIds = BuildArtistIds(item, artistId),
             album = albumTitle,
             image = BuildImageUrl(coverId),
             duration,
@@ -239,6 +244,9 @@ public sealed class TidalSearchApiController : ControllerBase
         var artist = item.TryGetProperty("artist", out var artistNode)
             ? GetString(artistNode, "name")
             : string.Empty;
+        var artistId = item.TryGetProperty("artist", out artistNode)
+            ? GetAnyString(artistNode, "id")
+            : string.Empty;
         if (string.IsNullOrWhiteSpace(url) && !string.IsNullOrWhiteSpace(id))
         {
             url = $"https://tidal.com/browse/album/{Uri.EscapeDataString(id)}";
@@ -250,6 +258,8 @@ public sealed class TidalSearchApiController : ControllerBase
             type = AlbumType,
             name = ComposeTitle(GetString(item, TitleProperty), GetString(item, "version")),
             artist,
+            artistId,
+            artistIds = BuildArtistIds(item, artistId),
             image = BuildImageUrl(GetString(item, "cover")),
             release_date = GetString(item, "releaseDate"),
             trackCount = GetInt(item, "numberOfTracks"),
@@ -274,6 +284,9 @@ public sealed class TidalSearchApiController : ControllerBase
         var artist = item.TryGetProperty("artist", out var artistNode)
             ? GetString(artistNode, "name")
             : GetString(item, "artistName");
+        var artistId = item.TryGetProperty("artist", out artistNode)
+            ? GetAnyString(artistNode, "id")
+            : string.Empty;
 
         return new
         {
@@ -281,6 +294,8 @@ public sealed class TidalSearchApiController : ControllerBase
             type = VideoType,
             name = ComposeTitle(GetString(item, TitleProperty), GetString(item, "version")),
             artist,
+            artistId,
+            artistIds = BuildArtistIds(item, artistId),
             image = BuildImageUrl(GetString(item, "imageId"), fallbackId: GetString(item, "image")),
             releaseDate = GetString(item, "releaseDate"),
             duration = GetInt(item, "duration"),
@@ -316,6 +331,30 @@ public sealed class TidalSearchApiController : ControllerBase
             tidalUrl = url,
             externalUrl = url
         };
+    }
+
+    private static string[] BuildArtistIds(JsonElement item, string primaryArtistId)
+    {
+        var ids = new List<string>();
+        if (!string.IsNullOrWhiteSpace(primaryArtistId))
+        {
+            ids.Add(primaryArtistId);
+        }
+
+        if (item.TryGetProperty("artists", out var artistsElement)
+            && artistsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var artist in artistsElement.EnumerateArray())
+            {
+                var id = GetAnyString(artist, "id");
+                if (!string.IsNullOrWhiteSpace(id))
+                {
+                    ids.Add(id);
+                }
+            }
+        }
+
+        return ids.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     private static object MapPlaylist(JsonElement item)

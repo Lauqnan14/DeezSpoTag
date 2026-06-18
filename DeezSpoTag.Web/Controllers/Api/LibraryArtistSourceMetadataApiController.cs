@@ -13,6 +13,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 {
     private const string SpotifySource = "spotify";
     private const string AppleSource = "apple";
+    private const string TidalSource = "tidal";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly SpotifyArtistService _spotifyArtistService;
@@ -268,6 +269,53 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
             $"[apple] manual id set for artist {id}."));
 
         return Ok(new { appleId });
+    }
+
+    [HttpGet("{id:long}/tidal-id")]
+    public async Task<IActionResult> GetTidalId(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return Ok(new { tidalId = default(string) });
+        }
+
+        var tidalId = await _repository.GetArtistSourceIdAsync(id, TidalSource, cancellationToken);
+        return Ok(new { tidalId });
+    }
+
+    [HttpPut("{id:long}/tidal-id")]
+    public async Task<IActionResult> UpdateTidalId(long id, [FromBody] TidalIdUpdateRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.TidalId))
+        {
+            return BadRequest("Tidal artist ID is required.");
+        }
+
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest("Library DB not configured.");
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound();
+        }
+
+        var tidalId = request.TidalId.Trim();
+        if (!tidalId.All(char.IsDigit))
+        {
+            return BadRequest("Tidal artist ID should be numeric.");
+        }
+
+        await _repository.UpsertArtistSourceIdAsync(id, TidalSource, tidalId, cancellationToken);
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"[tidal] manual id set for artist {id}."));
+
+        return Ok(new { tidalId });
     }
 
     private async Task<IActionResult> GetCachedSpotifyArtistPageResultAsync(
@@ -531,6 +579,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     public sealed record SpotifyIdUpdateRequest(string SpotifyId);
 
     public sealed record AppleIdUpdateRequest(string AppleId);
+
+    public sealed record TidalIdUpdateRequest(string TidalId);
 
     private sealed record UnmatchedSpotifyArtistDto(long ArtistId, string ArtistName);
 }
