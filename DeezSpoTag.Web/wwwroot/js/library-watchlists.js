@@ -1134,11 +1134,103 @@ function renderPlaylistWatchlistPresentationBadges(item) {
     return `${syncBadge}${stateBadges ? `<div class="playlist-watchlist-state-badges">${stateBadges}</div>` : ''}`;
 }
 
+function renderPlaylistWatchlistPriorityBadge(priorityNumber) {
+    return `<div class="playlist-watchlist-priority-badge" title="Sync priority ${priorityNumber}">${escapeHtml(String(priorityNumber))}</div>`;
+}
+
+function refreshPlaylistWatchlistPriorityBadges(container) {
+    container.querySelectorAll('.watchlist-playlist-card-v2').forEach((card, index) => {
+        const badge = card.querySelector('.playlist-watchlist-priority-badge');
+        const priorityNumber = index + 1;
+        if (badge) {
+            badge.textContent = String(priorityNumber);
+            badge.title = `Sync priority ${priorityNumber}`;
+        }
+    });
+}
+
+function collectPlaylistWatchlistPriorityOrder(container) {
+    return Array.from(container.querySelectorAll('.watchlist-playlist-card-v2'))
+        .map(card => ({
+            source: card.dataset.playlistSource || '',
+            sourceId: card.dataset.playlistId || ''
+        }))
+        .filter(item => item.source && item.sourceId);
+}
+
+async function savePlaylistWatchlistPriorityOrder(container) {
+    const order = collectPlaylistWatchlistPriorityOrder(container);
+    if (order.length === 0) {
+        return;
+    }
+
+    await fetchJson('/api/library/playlists/priority-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(order)
+    });
+}
+
+function bindPlaylistWatchlistDragOrdering(container) {
+    let draggedCard = null;
+    let dragMoved = false;
+
+    container.querySelectorAll('.watchlist-playlist-card-v2').forEach(card => {
+        card.addEventListener('dragstart', (event) => {
+            draggedCard = card;
+            dragMoved = false;
+            card.classList.add('is-dragging');
+            if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', card.dataset.playlistId || '');
+            }
+        });
+
+        card.addEventListener('dragend', async () => {
+            const moved = dragMoved;
+            card.classList.remove('is-dragging');
+            draggedCard = null;
+            dragMoved = false;
+            if (!moved) {
+                return;
+            }
+
+            refreshPlaylistWatchlistPriorityBadges(container);
+            try {
+                await savePlaylistWatchlistPriorityOrder(container);
+                showToast('Playlist sync priority updated.');
+            } catch (error) {
+                showToast(`Priority update failed: ${error.message}`, true);
+                await loadPlaylistWatchlist();
+            }
+        });
+    });
+
+    container.ondragover = (event) => {
+        if (!draggedCard) {
+            return;
+        }
+
+        const target = event.target.closest('.watchlist-playlist-card-v2');
+        if (!target || target === draggedCard || !container.contains(target)) {
+            return;
+        }
+
+        event.preventDefault();
+        const rect = target.getBoundingClientRect();
+        const afterTarget = event.clientY > rect.top + rect.height / 2
+            || (event.clientY >= rect.top && event.clientY <= rect.bottom && event.clientX > rect.left + rect.width / 2);
+        container.insertBefore(draggedCard, afterTarget ? target.nextSibling : target);
+        dragMoved = true;
+    };
+}
+
 // NOSONAR - preserves end-to-end watchlist rendering/binding flow in one place to avoid UI wiring regressions.
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
     if (!container) return;
     container.dataset.loadState = 'loading';
+    container.ondragover = null;
     container.innerHTML = '<div class="watchlist-empty-state">Loading monitored playlists...</div>';
     const mergeButton = document.getElementById('mergePlaylistWatchlistBtn');
     const resetRuntimeButton = document.getElementById('resetPlaylistWatchlistRuntimeBtn');
@@ -1218,12 +1310,13 @@ async function loadPlaylistWatchlist() {
 
         const playlistPrefsPromise = hydratePlaylistPreferences();
 
-        container.innerHTML = items.map((item) => {
+        container.innerHTML = items.map((item, index) => {
             const imageUrl = toSafeHttpUrl(item.imageUrl || '');
             const artContent = imageUrl
                 ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`
                 : `<div class="watchlist-card-art-placeholder"><i class="fa-solid fa-list-music"></i></div>`;
             const presentationBadges = renderPlaylistWatchlistPresentationBadges(item);
+            const priorityBadge = renderPlaylistWatchlistPriorityBadge(index + 1);
             const trackCount = item.trackCount === null || item.trackCount === undefined
                 ? ''
                 : `${item.trackCount} tracks`;
@@ -1259,11 +1352,12 @@ async function loadPlaylistWatchlist() {
                     .filter(Boolean)
                     .join(' • ')
                 : '';
-            return `<div class="watchlist-playlist-card-v2">
+            return `<div class="watchlist-playlist-card-v2" draggable="true" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}">
                 <button class="watchlist-card-art" type="button"
                     data-playlist-open="${escapeHtml(item.sourceId)}"
                     data-playlist-source="${escapeHtml(item.source)}">
                     ${artContent}
+                    ${priorityBadge}
                     ${presentationBadges}
                 </button>
                 <div class="watchlist-action-menu watchlist-action-menu--hover">
@@ -1288,6 +1382,8 @@ async function loadPlaylistWatchlist() {
                 </div>
             </div>`;
         }).join('');
+
+        bindPlaylistWatchlistDragOrdering(container);
 
         container.querySelectorAll('[data-playlist-open]').forEach(button => {
             button.addEventListener('click', () => {

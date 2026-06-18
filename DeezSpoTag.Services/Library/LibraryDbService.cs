@@ -80,6 +80,8 @@ public sealed class LibraryDbService
             ,
             ["idx_playlist_watchlist_created"] = (PlaylistWatchlistTable, CreatedAtColumn, false)
             ,
+            ["idx_playlist_watchlist_priority"] = (PlaylistWatchlistTable, "sync_priority, created_at", false)
+            ,
             ["idx_playlist_watch_preferences_updated"] = (PlaylistWatchPreferencesTable, UpdatedAtColumn, false)
             ,
             ["idx_playlist_watch_state_updated"] = (PlaylistWatchStateTable, UpdatedAtColumn, false)
@@ -242,6 +244,8 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "next_attempt_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "consecutive_failures", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "description", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchlistTable, "sync_priority", IntegerType, cancellationToken);
+        await BackfillPlaylistWatchlistPrioritiesAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "preferred_engine", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "download_variant_mode", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "sync_mode", TextType, cancellationToken);
@@ -349,6 +353,7 @@ CREATE TABLE IF NOT EXISTS song_link_cache (
         await EnsureIndexAsync(connection, "idx_artist_watchlist_spotify_id", ArtistWatchlistTable, "spotify_id", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_watchlist_deezer_id", ArtistWatchlistTable, DeezerIdColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watchlist_created", PlaylistWatchlistTable, CreatedAtColumn, unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watchlist_priority", PlaylistWatchlistTable, "sync_priority, created_at", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_source_status", PlaylistWatchTrackTable, "source, source_id, status", unique: false, cancellationToken);
@@ -1015,6 +1020,27 @@ WHERE (spotify_id IS NOT NULL AND spotify_id <> TRIM(spotify_id))
             return;
         }
 
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task BackfillPlaylistWatchlistPrioritiesAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        const string sql = @"
+WITH ordered AS (
+    SELECT id,
+           ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC)
+               + COALESCE((SELECT MAX(sync_priority) FROM playlist_watchlist WHERE sync_priority > 0), 0) AS priority
+    FROM playlist_watchlist
+    WHERE sync_priority IS NULL OR sync_priority <= 0
+)
+UPDATE playlist_watchlist
+SET sync_priority = (
+    SELECT priority
+    FROM ordered
+    WHERE ordered.id = playlist_watchlist.id
+)
+WHERE id IN (SELECT id FROM ordered);";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

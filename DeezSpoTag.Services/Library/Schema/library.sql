@@ -367,6 +367,7 @@ CREATE TABLE IF NOT EXISTS playlist_watchlist (
     image_url TEXT,
     description TEXT,
     track_count INTEGER,
+    sync_priority INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (source, source_id)
 );

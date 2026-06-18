@@ -5972,12 +5972,15 @@ SELECT id,
        pws.last_run_status,
        pws.last_run_message,
        pws.next_attempt_utc,
-       pws.consecutive_failures
+       pws.consecutive_failures,
+       pw.sync_priority
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
    AND pws.source_id = pw.source_id
-ORDER BY pw.created_at DESC;";
+ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE 0 END,
+         pw.sync_priority ASC,
+         pw.created_at DESC;";
         await using var command = new SqliteCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var items = new List<PlaylistWatchlistDto>();
@@ -5999,7 +6002,8 @@ ORDER BY pw.created_at DESC;";
                 await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10),
                 await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11),
                 await reader.IsDBNullAsync(12, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(12)),
-                await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetInt32(13)));
+                await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetInt32(13),
+                await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetInt32(14)));
         }
 
         return items;
@@ -6034,8 +6038,16 @@ ORDER BY pw.created_at DESC;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO playlist_watchlist (source, source_id, name, image_url, description, track_count)
-VALUES (@source, @sourceId, @name, @imageUrl, @description, @trackCount)
+INSERT INTO playlist_watchlist (source, source_id, name, image_url, description, track_count, sync_priority)
+VALUES (
+    @source,
+    @sourceId,
+    @name,
+    @imageUrl,
+    @description,
+    @trackCount,
+    1
+)
 ON CONFLICT(source, source_id) DO UPDATE SET
     name = CASE WHEN excluded.name IS NULL OR TRIM(excluded.name) = '' THEN playlist_watchlist.name ELSE excluded.name END,
     image_url = COALESCE(excluded.image_url, playlist_watchlist.image_url),
@@ -6048,6 +6060,14 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("imageUrl", (object?)metadata.ImageUrl ?? DBNull.Value);
         command.Parameters.AddWithValue("description", (object?)metadata.Description ?? DBNull.Value);
         command.Parameters.AddWithValue(TrackCountField, (object?)metadata.TrackCount ?? DBNull.Value);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        command.Transaction = transaction;
+        var isNewEntry = !await PlaylistWatchlistEntryExistsAsync(connection, transaction, normalizedSource, normalizedSourceId, cancellationToken);
+        if (isNewEntry)
+        {
+            await ShiftPlaylistWatchlistPrioritiesForNewEntryAsync(connection, transaction, normalizedSource, normalizedSourceId, cancellationToken);
+        }
+
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         const string selectSql = @"
@@ -6058,29 +6078,120 @@ SELECT id,
        image_url,
        description,
        track_count,
-       created_at
+       created_at,
+       sync_priority
 FROM playlist_watchlist
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
-        await using var selectCommand = new SqliteCommand(selectSql, connection);
-        selectCommand.Parameters.AddWithValue(SourceField, normalizedSource);
-        selectCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        PlaylistWatchlistDto item;
         {
-            return null;
+            await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
+            selectCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            selectCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
+
+            var created = await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7));
+            item = new PlaylistWatchlistDto(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
+                created,
+                SyncPriority: await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetInt32(8));
         }
 
-        var created = await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7));
-        return new PlaylistWatchlistDto(
-            reader.GetInt64(0),
-            reader.GetString(1),
-            reader.GetString(2),
-            reader.GetString(3),
-            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
-            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
-            created);
+        await transaction.CommitAsync(cancellationToken);
+        return item;
+    }
+
+    private static async Task<bool> PlaylistWatchlistEntryExistsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"SELECT EXISTS(SELECT 1 FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId);";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue(SourceField, source);
+        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null && result != DBNull.Value && Convert.ToInt32(result) == 1;
+    }
+
+    private static async Task ShiftPlaylistWatchlistPrioritiesForNewEntryAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+WITH ordered AS (
+    SELECT id,
+           ROW_NUMBER() OVER (
+               ORDER BY CASE WHEN sync_priority IS NULL OR sync_priority <= 0 THEN 1 ELSE 0 END,
+                        sync_priority ASC,
+                        created_at DESC,
+                        id DESC
+           ) + 1 AS priority
+    FROM playlist_watchlist
+    WHERE NOT (source = @source AND source_id = @sourceId)
+)
+UPDATE playlist_watchlist
+SET sync_priority = (
+    SELECT priority
+    FROM ordered
+    WHERE ordered.id = playlist_watchlist.id
+)
+WHERE id IN (SELECT id FROM ordered);";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue(SourceField, source);
+        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdatePlaylistWatchlistPrioritiesAsync(
+        IReadOnlyList<(string Source, string SourceId, int SyncPriority)> priorities,
+        CancellationToken cancellationToken = default)
+    {
+        if (priorities.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string sql = @"
+UPDATE playlist_watchlist
+SET sync_priority = @syncPriority
+WHERE source = @source AND source_id = @sourceId;";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        var sourceParameter = command.Parameters.Add(SourceField, SqliteType.Text);
+        var sourceIdParameter = command.Parameters.Add(SourceIdField, SqliteType.Text);
+        var priorityParameter = command.Parameters.Add("syncPriority", SqliteType.Integer);
+        foreach (var priority in priorities)
+        {
+            if (!TryNormalizePlaylistWatchKey(priority.Source, priority.SourceId, out var normalizedSource, out var normalizedSourceId))
+            {
+                continue;
+            }
+
+            sourceParameter.Value = normalizedSource;
+            sourceIdParameter.Value = normalizedSourceId;
+            priorityParameter.Value = Math.Max(1, priority.SyncPriority);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task UpdatePlaylistWatchlistMetadataAsync(

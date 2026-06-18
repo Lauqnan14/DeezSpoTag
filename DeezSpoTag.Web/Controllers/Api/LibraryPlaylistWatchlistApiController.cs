@@ -87,6 +87,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 hydratedItem.LastRunMessage,
                 hydratedItem.NextAttemptUtc,
                 hydratedItem.ConsecutiveFailures,
+                hydratedItem.SyncPriority,
                 syncedTrackCount = summary.SyncedTrackCount,
                 incompleteTrackCount = summary.IncompleteTrackCount,
                 ignoredBlockedTrackCount = summary.IgnoredBlockedTrackCount,
@@ -293,6 +294,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     }
 
     public sealed record PlaylistWatchlistRequest(string Source, string SourceId, string Name, string? ImageUrl, string? Description, int? TrackCount);
+    public sealed record PlaylistWatchlistPriorityRequest(string Source, string SourceId);
 
     [HttpPost]
     public async Task<IActionResult> Add([FromBody] PlaylistWatchlistRequest request, CancellationToken cancellationToken)
@@ -343,6 +345,61 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         return Ok(added);
+    }
+
+    [HttpPost("priority-order")]
+    public async Task<IActionResult> UpdatePriorityOrder([FromBody] IReadOnlyList<PlaylistWatchlistPriorityRequest>? request, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        if (request == null || request.Count == 0)
+        {
+            return BadRequest("Playlist priority order is required.");
+        }
+
+        var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        var existingKeys = watchlist
+            .Select(item => $"{WatchlistPreferenceNormalizer.PlaylistSource(item.Source)}:{item.SourceId}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var priorities = new List<(string Source, string SourceId, int SyncPriority)>(request.Count);
+        for (var index = 0; index < request.Count; index++)
+        {
+            var item = request[index];
+            if (item == null
+                || string.IsNullOrWhiteSpace(item.Source)
+                || string.IsNullOrWhiteSpace(item.SourceId))
+            {
+                return BadRequest("Playlist source and id are required.");
+            }
+
+            var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(item.Source);
+            var key = $"{normalizedSource}:{item.SourceId}";
+            if (!existingKeys.Contains(key))
+            {
+                return BadRequest("Playlist priority order contains a playlist that is not monitored.");
+            }
+
+            if (!seen.Add(key))
+            {
+                return BadRequest("Playlist priority order contains duplicate playlists.");
+            }
+
+            priorities.Add((normalizedSource, item.SourceId, index + 1));
+        }
+
+        await _repository.UpdatePlaylistWatchlistPrioritiesAsync(priorities, cancellationToken);
+        var updated = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        _playlistWatchHostedService?.ResetPlaylistRuntimeStateForAll(updated);
+        var first = priorities[0];
+        await SetPlaylistWatchSchedulerFocusAsync(first.Source, first.SourceId, cancellationToken);
+        return Ok(new
+        {
+            updated = priorities.Count
+        });
     }
 
     public sealed record PlaylistWatchPreferenceRequest(
