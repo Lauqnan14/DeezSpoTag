@@ -96,6 +96,69 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
         }
     }
 
+    public async Task<LastFmArtistBiography?> GetArtistBiographyAsync(
+        string? artistName,
+        CancellationToken cancellationToken)
+    {
+        var normalizedArtist = NormalizeArtistName(artistName);
+        if (string.IsNullOrWhiteSpace(normalizedArtist))
+        {
+            return null;
+        }
+
+        var apiKey = await ResolveApiKeyAsync();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return null;
+        }
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            using var response = await client.GetAsync(BuildArtistInfoUri(normalizedArtist, apiKey), cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (doc.RootElement.TryGetProperty("error", out var error)
+                && error.ValueKind == JsonValueKind.Number
+                && error.TryGetInt32(out var errorCode)
+                && errorCode == 10)
+            {
+                _cachedApiKey = null;
+                return null;
+            }
+
+            if (!doc.RootElement.TryGetProperty("artist", out var artist)
+                || artist.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var returnedName = GetString(artist, "name");
+            if (!ArtistNamesMatch(normalizedArtist, returnedName))
+            {
+                return null;
+            }
+
+            var biography = ResolveBiographyText(artist);
+            return string.IsNullOrWhiteSpace(biography)
+                ? null
+                : new LastFmArtistBiography(returnedName, biography);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Last.fm artist biography lookup failed for {ArtistName}", LogSanitizer.OneLine(normalizedArtist));
+            }
+            return null;
+        }
+    }
+
     private async Task<IReadOnlyList<LastFmArtistImageCandidate>> SearchArtistInfoImagesAsync(
         string normalizedArtist,
         string apiKey,
@@ -193,6 +256,57 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
             "autocorrect=1");
         return new Uri($"https://ws.audioscrobbler.com/2.0/?{query}");
     }
+
+    private static string ResolveBiographyText(JsonElement artist)
+    {
+        if (!artist.TryGetProperty("bio", out var bio) || bio.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        var content = GetString(bio, "content");
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            content = GetString(bio, "summary");
+        }
+
+        return NormalizeBiography(content);
+    }
+
+    private static string NormalizeBiography(string? value)
+    {
+        var decoded = WebUtility.HtmlDecode(value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(decoded))
+        {
+            return string.Empty;
+        }
+
+        var readMoreIndex = decoded.IndexOf("<a href=", StringComparison.OrdinalIgnoreCase);
+        if (readMoreIndex >= 0)
+        {
+            decoded = decoded[..readMoreIndex];
+        }
+
+        decoded = Regex.Replace(decoded, "<.*?>", " ", RegexOptions.Singleline, RegexTimeout);
+        return Regex.Replace(decoded, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
+    }
+
+    private static string GetString(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? (value.GetString() ?? string.Empty).Trim()
+            : string.Empty;
+
+    private static bool ArtistNamesMatch(string expectedName, string returnedName)
+        => NormalizeArtistNameForComparison(expectedName) == NormalizeArtistNameForComparison(returnedName);
+
+    private static string NormalizeArtistNameForComparison(string? value)
+        => Regex.Replace(
+                WebUtility.HtmlDecode(value ?? string.Empty).Trim().ToLowerInvariant(),
+                @"[^\p{L}\p{N}]+",
+                " ",
+                RegexOptions.None,
+                RegexTimeout)
+            .Trim();
 
     private static Uri BuildArtistGalleryUri(string artistName)
     {
@@ -379,3 +493,4 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
 }
 
 public sealed record LastFmArtistImageCandidate(string Url, string Label, string Source = "lastfm");
+public sealed record LastFmArtistBiography(string Name, string Biography);

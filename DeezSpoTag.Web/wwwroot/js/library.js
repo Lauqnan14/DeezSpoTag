@@ -77,6 +77,10 @@ const libraryState = {
         storedAppleId: null,
         biography: null,
         biographyAppleId: null,
+        tidalBiography: null,
+        biographyTidalId: null,
+        lastFmBiography: null,
+        biographyLastFmArtistName: null,
         tidalArtistId: null,
         storedTidalId: null,
         atmos: [],
@@ -4327,14 +4331,25 @@ async function loadAlbums(artistId) {
     libraryState.appleExtras.tidalArtistId = storedTidalId || null;
     libraryState.appleExtras.biography = normalizeArtistBiographyForSync(resolvedArtist?.appleBiography || '') || null;
     libraryState.appleExtras.biographyAppleId = storedAppleId || null;
+    libraryState.appleExtras.tidalBiography = null;
+    libraryState.appleExtras.biographyTidalId = storedTidalId || null;
+    libraryState.appleExtras.lastFmBiography = null;
+    libraryState.appleExtras.biographyLastFmArtistName = libraryState.currentLocalArtistName || null;
     updateArtistBiographySourceControls();
     bindArtistMediaSourceControls(artistIdValue);
     initAppleLazyLoad(resolvedArtist?.name, storedAppleId);
     loadAppleArtistBiography(storedAppleId);
+    loadTidalArtistBiography(storedTidalId);
+    loadLastFmArtistBiography(libraryState.currentLocalArtistName);
     initAppleIdEditor(artistIdValue);
     initTidalIdEditor(artistIdValue);
     if (!storedTidalId && resolvedArtist?.name) {
-        resolveAndStoreTidalArtistId(artistIdValue, resolvedArtist.name);
+        resolveAndStoreTidalArtistId(artistIdValue, resolvedArtist.name)
+            .then((tidalId) => {
+                if (tidalId) {
+                    loadTidalArtistBiography(tidalId);
+                }
+            });
     }
 }
 
@@ -6052,8 +6067,12 @@ function initTidalIdEditor(artistIdValue) {
             });
             libraryState.appleExtras.storedTidalId = trimmed;
             libraryState.appleExtras.tidalArtistId = trimmed;
+            libraryState.appleExtras.tidalBiography = null;
+            libraryState.appleExtras.biographyTidalId = trimmed;
+            updateArtistBiographySourceControls();
             libraryState.appleExtras.initialized = false;
             initAppleArtistExtras(libraryState.appleExtras.term, libraryState.appleExtras.storedAppleId);
+            loadTidalArtistBiography(trimmed);
             showToast('Tidal artist ID updated.');
         } catch (error) {
             showToast(`Tidal ID update failed: ${error.message}`, true);
@@ -6406,16 +6425,31 @@ function normalizeArtistBiographyForSync(value) {
 
 function getSelectedArtistBiographySource() {
     const selected = (document.getElementById('artist-biography-source')?.value || 'spotify').toString().trim().toLowerCase();
-    return selected === 'apple' ? 'apple' : 'spotify';
+    if (selected === 'apple' || selected === 'tidal' || selected === 'lastfm') {
+        return selected;
+    }
+    return 'spotify';
 }
 
 function getArtistBiographySourceLabel(source) {
-    return source === 'apple' ? 'Apple Music' : 'Spotify';
+    if (source === 'apple') {
+        return 'Apple Music';
+    }
+    if (source === 'tidal') {
+        return 'Tidal';
+    }
+    return source === 'lastfm' ? 'Last.fm' : 'Spotify';
 }
 
 function getArtistBiographyBySource(source) {
     if (source === 'apple') {
         return normalizeArtistBiographyForSync(libraryState.appleExtras?.biography || '');
+    }
+    if (source === 'tidal') {
+        return normalizeArtistBiographyForSync(libraryState.appleExtras?.tidalBiography || '');
+    }
+    if (source === 'lastfm') {
+        return normalizeArtistBiographyForSync(libraryState.appleExtras?.lastFmBiography || '');
     }
 
     return normalizeArtistBiographyForSync(libraryState.currentSpotifyArtist?.biography || '');
@@ -6428,11 +6462,27 @@ function updateArtistBiographySourceControls() {
     }
 
     const appleOption = select.querySelector('option[value="apple"]');
+    const tidalOption = select.querySelector('option[value="tidal"]');
+    const lastFmOption = select.querySelector('option[value="lastfm"]');
     const hasAppleBiography = !!getArtistBiographyBySource('apple');
+    const hasTidalBiography = !!getArtistBiographyBySource('tidal');
+    const hasLastFmBiography = !!getArtistBiographyBySource('lastfm');
     if (appleOption) {
         appleOption.disabled = !hasAppleBiography;
     }
+    if (tidalOption) {
+        tidalOption.disabled = !hasTidalBiography;
+    }
+    if (lastFmOption) {
+        lastFmOption.disabled = !hasLastFmBiography;
+    }
     if (select.value === 'apple' && !hasAppleBiography) {
+        select.value = 'spotify';
+    }
+    if (select.value === 'tidal' && !hasTidalBiography) {
+        select.value = 'spotify';
+    }
+    if (select.value === 'lastfm' && !hasLastFmBiography) {
         select.value = 'spotify';
     }
 }
@@ -6474,6 +6524,66 @@ async function loadAppleArtistBiography(storedAppleId) {
             updateArtistBiographySourceControls();
         }
         console.warn('Apple artist biography failed.', error);
+    }
+}
+
+async function loadTidalArtistBiography(storedTidalId) {
+    const tidalId = (storedTidalId || '').toString().trim();
+    libraryState.appleExtras.biographyTidalId = tidalId || null;
+    updateArtistBiographySourceControls();
+
+    if (!tidalId) {
+        return;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/artist-page?id=${encodeURIComponent(tidalId)}&source=tidal`);
+        if ((libraryState.appleExtras.biographyTidalId || '') !== tidalId) {
+            return;
+        }
+
+        libraryState.appleExtras.tidalBiography = normalizeArtistBiographyForSync(data?.biography || '') || null;
+        updateArtistBiographySourceControls();
+        if (getSelectedArtistBiographySource() === 'tidal') {
+            applySelectedArtistBiographySource();
+        }
+    } catch (error) {
+        if ((libraryState.appleExtras.biographyTidalId || '') === tidalId) {
+            libraryState.appleExtras.tidalBiography = null;
+            updateArtistBiographySourceControls();
+        }
+        console.warn('Tidal artist biography failed.', error);
+    }
+}
+
+async function loadLastFmArtistBiography(artistName) {
+    const normalizedArtistName = (artistName || '').toString().trim();
+    libraryState.appleExtras.biographyLastFmArtistName = normalizedArtistName || null;
+    updateArtistBiographySourceControls();
+
+    if (!normalizedArtistName) {
+        return;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/library/artists/lastfm-biography?artistName=${encodeURIComponent(normalizedArtistName)}`);
+        if ((libraryState.appleExtras.biographyLastFmArtistName || '') !== normalizedArtistName) {
+            return;
+        }
+
+        libraryState.appleExtras.lastFmBiography = data?.available
+            ? (normalizeArtistBiographyForSync(data?.biography || '') || null)
+            : null;
+        updateArtistBiographySourceControls();
+        if (getSelectedArtistBiographySource() === 'lastfm') {
+            applySelectedArtistBiographySource();
+        }
+    } catch (error) {
+        if ((libraryState.appleExtras.biographyLastFmArtistName || '') === normalizedArtistName) {
+            libraryState.appleExtras.lastFmBiography = null;
+            updateArtistBiographySourceControls();
+        }
+        console.warn('Last.fm artist biography failed.', error);
     }
 }
 

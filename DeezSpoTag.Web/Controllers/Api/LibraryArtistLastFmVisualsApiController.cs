@@ -49,6 +49,30 @@ public sealed class LibraryArtistLastFmVisualsApiController : ControllerBase
         return Ok(results);
     }
 
+    [HttpGet("lastfm-biography")]
+    public async Task<IActionResult> GetLastFmBiography(
+        [FromQuery] string? artistName,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistName))
+        {
+            return BadRequest(new { available = false, error = "Artist name is required." });
+        }
+
+        var biography = await _lastFmArtistImageService.GetArtistBiographyAsync(artistName, cancellationToken);
+        if (biography is null)
+        {
+            return Ok(new { available = false, artistName, biography = string.Empty });
+        }
+
+        return Ok(new
+        {
+            available = true,
+            artistName = biography.Name,
+            biography = biography.Biography
+        });
+    }
+
     private object[] GetCachedLastFmVisuals(long artistId)
     {
         var cacheDir = Path.GetFullPath(Path.Join(
