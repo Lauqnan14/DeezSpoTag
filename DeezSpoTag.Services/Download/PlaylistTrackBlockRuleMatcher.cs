@@ -1,9 +1,9 @@
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
 
-namespace DeezSpoTag.Web.Services;
+namespace DeezSpoTag.Services.Download;
 
-internal static class PlaylistTrackBlockRuleMatcher
+public static class PlaylistTrackBlockRuleMatcher
 {
     public sealed record TrackRuleMatchInput(
         string? Title,
@@ -17,28 +17,6 @@ internal static class PlaylistTrackBlockRuleMatcher
         string? Field,
         string? Operator,
         string? Value);
-
-    public static PlaylistTrackBlockRule? FindMatch(
-        DownloadIntent intent,
-        IReadOnlyList<PlaylistTrackBlockRule>? rules)
-    {
-        if (rules is null || rules.Count == 0)
-        {
-            return null;
-        }
-
-        return rules
-            .OrderBy(static rule => rule.Order)
-            .FirstOrDefault(rule => RuleMatches(
-                new TrackRuleMatchInput(
-                intent.Title,
-                intent.Artist,
-                intent.Album,
-                intent.Genres,
-                intent.Explicit,
-                intent.ReleaseDate),
-                new RuleCondition(rule.ConditionField, rule.ConditionOperator, rule.ConditionValue)));
-    }
 
     public static PlaylistTrackBlockRule? FindMatch(
         string? title,

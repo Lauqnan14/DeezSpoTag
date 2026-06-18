@@ -1,5 +1,6 @@
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Plex;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
 using System;
 using System.Collections.Generic;

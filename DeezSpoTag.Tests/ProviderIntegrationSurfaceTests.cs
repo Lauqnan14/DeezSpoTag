@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -26,6 +25,7 @@ public sealed class ProviderIntegrationSurfaceTests
         var registry = new StubQobuzProviderRegistry();
         var service = new QobuzDownloadService(
             NullLogger<QobuzDownloadService>.Instance,
+            dedupeService: null!,
             trackResolver: null!,
             resolveProxyClient: null!,
             Options.Create(new QobuzApiConfig()),
@@ -62,32 +62,6 @@ public sealed class ProviderIntegrationSurfaceTests
         public Task<QobuzPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken) => Task.FromResult<QobuzPublicProvider?>(null);
         public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task RecordFailureAsync(string providerId, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken) => Task.CompletedTask;
-    }
-
-    [Fact]
-    public void QobuzCleanUnverifiedExpectedOutput_RemovesStaleFallbackFile()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"deezspotag-qobuz-stale-{Guid.NewGuid():N}.flac");
-        File.WriteAllBytes(path, new byte[4096]);
-
-        try
-        {
-            var method = typeof(QobuzDownloadService).GetMethod(
-                "CleanUnverifiedExpectedOutput",
-                BindingFlags.NonPublic | BindingFlags.Static);
-
-            Assert.NotNull(method);
-            method!.Invoke(null, [path]);
-
-            Assert.False(File.Exists(path));
-        }
-        finally
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
     }
 
     [Fact]

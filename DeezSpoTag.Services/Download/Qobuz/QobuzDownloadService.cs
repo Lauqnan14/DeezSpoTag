@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using IOFile = System.IO.File;
 using DeezSpoTag.Core.Utils;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using Microsoft.Extensions.Logging;
@@ -81,10 +82,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private readonly IQobuzCredentialProvider _credentialProvider;
     private readonly IQobuzPublicProviderRegistry _publicProviderRegistry;
     private readonly ResolveProxyClient _resolveProxyClient;
+    private readonly DownloadDedupeService _dedupeService;
     private static readonly ConcurrentDictionary<string, PreferredProviderState> PreferredProviders = new(StringComparer.OrdinalIgnoreCase);
 
     public QobuzDownloadService(
         ILogger<QobuzDownloadService> logger,
+        DownloadDedupeService dedupeService,
         QobuzTrackResolver trackResolver,
         ResolveProxyClient resolveProxyClient,
         IOptions<QobuzApiConfig> qobuzOptions,
@@ -92,6 +95,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         IQobuzPublicProviderRegistry? publicProviderRegistry = null)
     {
         _logger = logger;
+        _dedupeService = dedupeService;
         _trackResolver = trackResolver;
         _resolveProxyClient = resolveProxyClient;
         _qobuzConfig = qobuzOptions.Value ?? new QobuzApiConfig();
@@ -144,13 +148,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         Directory.CreateDirectory(request.OutputDir);
 
         var resolvedIsrc = await ResolveRequestIsrcAsync(request, cancellationToken);
-        if (TryResolveExistingDownloadPath(request, resolvedIsrc, out var existingDownloadPath))
-        {
-            return existingDownloadPath;
-        }
-
         var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
-        CleanUnverifiedExpectedOutput(expectedPath);
 
         var resolution = await _trackResolver.ResolveTrackAsync(
             resolvedIsrc,
@@ -190,26 +188,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         return metadataTrack.Isrc;
-    }
-
-    private static bool TryResolveExistingDownloadPath(QobuzDownloadRequest request, string? resolvedIsrc, out string existingPath)
-    {
-        if (!string.IsNullOrWhiteSpace(resolvedIsrc)
-            && AudioFilePathHelper.TryFindExistingByIsrc(request.OutputDir, resolvedIsrc, out var existingByIsrc, FlacExtension))
-        {
-            existingPath = existingByIsrc;
-            return true;
-        }
-
-        var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
-        if (TryResolveExpectedExisting(expectedPath, resolvedIsrc ?? string.Empty, out var resolvedPath))
-        {
-            existingPath = resolvedPath;
-            return true;
-        }
-
-        existingPath = string.Empty;
-        return false;
     }
 
     private async Task<string> DownloadByFallbackTrackIdAsync(
@@ -266,12 +244,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
-        if (TryResolveExpectedExisting(expectedPath, string.Empty, out var resolvedPath))
-        {
-            return resolvedPath;
-        }
-        CleanUnverifiedExpectedOutput(expectedPath);
-
         var outputPath = expectedPath;
         await DownloadTrackWithProviderFallbackAsync(trackId.Value, request, outputPath, cancellationToken);
         return outputPath;
@@ -574,6 +546,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         string outputPath,
         CancellationToken cancellationToken)
     {
+        await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
+
         var requestedQuality = NormalizeQobuzQualityCode(request.Quality);
         var qualityOrder = GetQualityFallbackOrder(requestedQuality, request.AllowQualityFallback);
         Exception? lastFailure = null;
@@ -1707,6 +1681,20 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
     }
 
+    private async Task EnsureFinalDestinationAllowedAsync(
+        QobuzDownloadRequest request,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        var decision = await _dedupeService.CheckFinalDestinationAsync(
+            DownloadDedupeService.FromEngineDownloadRequest(request, outputPath),
+            cancellationToken);
+        if (!decision.Allowed)
+        {
+            throw new InvalidOperationException(decision.Message ?? "Qobuz final destination rejected by dedupe.");
+        }
+    }
+
     private async Task ExecuteDownloadAndTagAsync(
         DownloadExecutionContext context,
         CancellationToken cancellationToken)
@@ -1836,49 +1824,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     {
         public static AudioIdentityGuardResult Ok() => new(true, string.Empty);
         public static AudioIdentityGuardResult Fail(string message) => new(false, message);
-    }
-
-    private static bool TryResolveExpectedExisting(string expectedPath, string isrc, out string resolvedPath)
-    {
-        resolvedPath = "";
-        if (string.IsNullOrWhiteSpace(expectedPath) || string.IsNullOrWhiteSpace(isrc))
-        {
-            return false;
-        }
-
-        try
-        {
-            var fileInfo = new FileInfo(expectedPath);
-            if (!fileInfo.Exists || fileInfo.Length <= 100 * 1024)
-            {
-                return false;
-            }
-
-            using var tagFile = TagLib.File.Create(expectedPath);
-            if (!string.IsNullOrWhiteSpace(tagFile.Tag.ISRC) &&
-                string.Equals(tagFile.Tag.ISRC, isrc, StringComparison.OrdinalIgnoreCase))
-            {
-                resolvedPath = expectedPath;
-                return true;
-            }
-
-            DownloadFileUtilities.TryDeleteFile(expectedPath);
-            return false;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-    }
-
-    private static void CleanUnverifiedExpectedOutput(string expectedPath)
-    {
-        if (string.IsNullOrWhiteSpace(expectedPath))
-        {
-            return;
-        }
-
-        DownloadFileUtilities.TryDeleteFile(expectedPath);
     }
 
     private static string GetTrackArtist(QobuzTrack track)

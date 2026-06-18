@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Net.Http.Json;
 using System.Linq;
 using IOFile = System.IO.File;
+using DeezSpoTag.Services.Download;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Services.Download.Utils;
@@ -63,12 +64,15 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     private readonly ILogger<AmazonDownloadService> _logger;
     private readonly HttpClient _client;
     private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
+    private readonly DownloadDedupeService _dedupeService;
 
     public AmazonDownloadService(
         ILogger<AmazonDownloadService> logger,
+        DownloadDedupeService dedupeService,
         SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
     {
         _logger = logger;
+        _dedupeService = dedupeService;
         _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
         _client = new HttpClient
         {
@@ -121,11 +125,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             Sanitize = value => DownloadFileUtilities.SanitizeFilename(value, "Unknown")
         };
         var expectedPaths = AudioFilePathHelper.BuildExpectedPaths(expectedPathContext, FlacExtension, ".m4a");
-        var existingPath = expectedPaths.FirstOrDefault(IOFile.Exists);
-        if (!string.IsNullOrWhiteSpace(existingPath))
-        {
-            return existingPath;
-        }
+        await EnsureExpectedFinalDestinationsAllowedAsync(request, expectedPaths, cancellationToken);
 
         var filePath = await DownloadFromServiceAsync(amazonUrl, request.OutputDir, progressCallback, cancellationToken);
         var durationValidation = AudioDurationGuard.ValidateAgainstPreview(filePath, request.DurationSeconds);
@@ -153,7 +153,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 SpotifyDiscNumber: request.SpotifyDiscNumber,
                 SpotifyTotalTracks: request.SpotifyTotalTracks,
                 EmbedMaxQualityCover: embedMaxQualityCover,
-                TagSettings: tagSettings));
+                TagSettings: tagSettings,
+                RequestedLocalQualityRank: request.RequestedLocalQualityRank));
 
         return renamedPath ?? filePath;
     }
@@ -782,6 +783,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             Sanitize = value => DownloadFileUtilities.SanitizeFilename(value, "Unknown")
         };
         var newPath = AudioFilePathHelper.BuildOutputPath(outputPathContext, extension);
+        await EnsureFinalDestinationAllowedAsync(request, newPath);
 
         try
         {
@@ -797,6 +799,57 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
 
         return newPath;
+    }
+
+    private async Task EnsureExpectedFinalDestinationsAllowedAsync(
+        AmazonDownloadRequest request,
+        IReadOnlyList<string> expectedPaths,
+        CancellationToken cancellationToken)
+    {
+        foreach (var expectedPath in expectedPaths)
+        {
+            var decision = await _dedupeService.CheckFinalDestinationAsync(
+                DownloadDedupeService.FromEngineDownloadRequest(request, expectedPath),
+                cancellationToken);
+            if (!decision.Allowed)
+            {
+                throw new InvalidOperationException(decision.Message ?? "Amazon final destination rejected by dedupe.");
+            }
+        }
+    }
+
+    private async Task EnsureFinalDestinationAllowedAsync(
+        RenameAndTagRequest request,
+        string outputPath)
+    {
+        var decision = await _dedupeService.CheckFinalDestinationAsync(
+            new DownloadDedupeRequest
+            {
+                Isrc = request.Isrc,
+                TrackTitle = request.TrackTitle,
+                TrackArtist = request.ArtistName,
+                TrackPrimaryArtist = NormalizePrimaryArtist(request.ArtistName),
+                Album = request.AlbumTitle,
+                ReleaseDate = request.ReleaseDate,
+                RequestedLocalQualityRank = request.RequestedLocalQualityRank,
+                FinalOutputPath = outputPath
+            });
+        if (!decision.Allowed)
+        {
+            throw new InvalidOperationException(decision.Message ?? "Amazon final destination rejected by dedupe.");
+        }
+    }
+
+    private static string? NormalizePrimaryArtist(string? artist)
+    {
+        if (string.IsNullOrWhiteSpace(artist))
+        {
+            return null;
+        }
+
+        var normalized = artist.Split([',', '&'], 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
     }
 
     private static string InferAudioExtension(string sourceUrl, string fallback)
@@ -849,7 +902,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         int SpotifyDiscNumber,
         int SpotifyTotalTracks,
         bool EmbedMaxQualityCover,
-        DeezSpoTag.Core.Models.Settings.TagSettings? TagSettings);
+        DeezSpoTag.Core.Models.Settings.TagSettings? TagSettings,
+        int? RequestedLocalQualityRank);
 
     private sealed record LucidaSessionData(string DecodedToken, string StreamUrl, string Expiry);
 

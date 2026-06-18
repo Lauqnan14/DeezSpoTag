@@ -1,8 +1,8 @@
 using System.Text.Json;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
-using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 

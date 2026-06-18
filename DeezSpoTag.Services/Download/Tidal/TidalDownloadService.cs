@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using TagLib;
@@ -44,14 +45,17 @@ public sealed class TidalDownloadService
     private readonly TidalApiProviderSource _providerSource;
     private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
     private readonly ITidalAccessTokenProvider _accessTokenProvider;
+    private readonly DownloadDedupeService _dedupeService;
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
+        DownloadDedupeService dedupeService,
         TidalApiProviderSource providerSource,
         ITidalAccessTokenProvider accessTokenProvider,
         SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
     {
         _logger = logger;
+        _dedupeService = dedupeService;
         _providerSource = providerSource;
         _accessTokenProvider = accessTokenProvider;
         _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
@@ -69,12 +73,6 @@ public sealed class TidalDownloadService
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(request.OutputDir);
-
-        if (!string.IsNullOrWhiteSpace(request.Isrc) &&
-            AudioFilePathHelper.TryFindExistingByIsrc(request.OutputDir, request.Isrc, out var existingPath, ".flac"))
-        {
-            return existingPath;
-        }
 
         string? tidalUrl = request.ServiceUrl;
         if (string.IsNullOrWhiteSpace(tidalUrl) && !string.IsNullOrWhiteSpace(request.SpotifyId))
@@ -169,6 +167,8 @@ public sealed class TidalDownloadService
             Sanitize = value => DownloadFileUtilities.SanitizeFilename(value)
         };
         var outputPath = AudioFilePathHelper.BuildOutputPath(outputPathContext, ".flac");
+        await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
+
         var candidateUrls = await GetDownloadUrlCandidatesAsync(trackInfo.Id, request.Quality, cancellationToken);
         var expectedDurationSeconds = ResolveExpectedDurationSeconds(request.DurationSeconds, trackInfo.Duration);
         await DownloadValidatedFileAsync(
@@ -678,6 +678,20 @@ public sealed class TidalDownloadService
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         await using var file = IOFile.Create(outputPath);
         await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
+    }
+
+    private async Task EnsureFinalDestinationAllowedAsync(
+        TidalDownloadRequest request,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        var decision = await _dedupeService.CheckFinalDestinationAsync(
+            DownloadDedupeService.FromEngineDownloadRequest(request, outputPath),
+            cancellationToken);
+        if (!decision.Allowed)
+        {
+            throw new InvalidOperationException(decision.Message ?? "Tidal final destination rejected by dedupe.");
+        }
     }
 
     private async Task DownloadValidatedFileAsync(

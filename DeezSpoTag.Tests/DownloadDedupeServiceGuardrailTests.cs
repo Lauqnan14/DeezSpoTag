@@ -1,5 +1,8 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
+using DeezSpoTag.Services.Download;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -45,7 +48,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
     public void GlobalBlocklist_CoversTrackArtistAlbumAndGenre()
     {
         var source = ReadSource("DeezSpoTag.Services", "Library", "LibraryRepository.cs");
-        var service = ReadSource("DeezSpoTag.Web", "Services", "DownloadDedupeService.cs");
+        var service = ReadSource("DeezSpoTag.Services", "Download", "DownloadDedupeService.cs");
 
         Assert.Contains("private const string GenreType = \"genre\";", source, StringComparison.Ordinal);
         Assert.Contains("field = 'genre'", source, StringComparison.Ordinal);
@@ -55,7 +58,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
     [Fact]
     public void DedupeIdentity_CoversAllDownloadEngines()
     {
-        var service = ReadSource("DeezSpoTag.Web", "Services", "DownloadDedupeService.cs");
+        var service = ReadSource("DeezSpoTag.Services", "Download", "DownloadDedupeService.cs");
         var queueRepository = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
 
         Assert.Contains("QobuzTrackId", service, StringComparison.Ordinal);
@@ -93,7 +96,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
     [Fact]
     public void ProviderDedupeIdentity_DoesNotUseGenericQueuePayloadIdAsSourceId()
     {
-        var service = ReadSource("DeezSpoTag.Web", "Services", "DownloadDedupeService.cs");
+        var service = ReadSource("DeezSpoTag.Services", "Download", "DownloadDedupeService.cs");
         var resolver = ExtractBetween(
             service,
             "private static string? ResolvePayloadSourceId",
@@ -103,6 +106,79 @@ public sealed class DownloadDedupeServiceGuardrailTests
         Assert.Contains("ExtractSourceTrackId(payload.SourceUrl, source)", resolver, StringComparison.Ordinal);
         Assert.Contains("ExtractSourceTrackId(payload.Url, source)", resolver, StringComparison.Ordinal);
         Assert.DoesNotContain("payload.Id", resolver, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EngineDownloadServices_UseSharedFinalDestinationDedupe()
+    {
+        var dedupe = ReadSource("DeezSpoTag.Services", "Download", "DownloadDedupeService.cs");
+        var requestBase = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineDownloadRequestBase.cs");
+        var requestBuilder = ReadSource("DeezSpoTag.Services", "Download", "Shared", "RequestBuilderCommon.cs");
+        var qobuz = ReadSource("DeezSpoTag.Services", "Download", "Qobuz", "QobuzDownloadService.cs");
+        var tidal = ReadSource("DeezSpoTag.Services", "Download", "Tidal", "TidalDownloadService.cs");
+        var amazon = ReadSource("DeezSpoTag.Services", "Download", "Amazon", "AmazonDownloadService.cs");
+
+        Assert.Contains("CheckFinalDestinationAsync", dedupe, StringComparison.Ordinal);
+        Assert.Contains("RequestedLocalQualityRank", requestBase, StringComparison.Ordinal);
+        Assert.Contains("MediaQualityInference.MapRequestedNumericQualityToLocalRank", requestBuilder, StringComparison.Ordinal);
+        Assert.Contains("MediaQualityInference.InferLocalQualityRankFromText", requestBuilder, StringComparison.Ordinal);
+        Assert.Contains("CheckFinalDestinationAsync", qobuz, StringComparison.Ordinal);
+        Assert.Contains("CheckFinalDestinationAsync", tidal, StringComparison.Ordinal);
+        Assert.Contains("CheckFinalDestinationAsync", amazon, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveExistingDownloadPath", qobuz, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveExpectedExisting", qobuz, StringComparison.Ordinal);
+        Assert.DoesNotContain("CleanUnverifiedExpectedOutput", qobuz, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryFindExistingByIsrc(request.OutputDir", tidal, StringComparison.Ordinal);
+        Assert.DoesNotContain("return existingPath", amazon, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FinalDestinationDedupe_RejectsExistingDestinationWithoutHigherQuality()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"deezspotag-dedupe-{Guid.NewGuid():N}.mp3");
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
+        try
+        {
+            var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance);
+            var decision = await service.CheckFinalDestinationAsync(new DownloadDedupeRequest
+            {
+                TrackTitle = "Track",
+                TrackArtist = "Artist",
+                RequestedLocalQualityRank = 2,
+                FinalOutputPath = path
+            });
+
+            Assert.False(decision.Allowed);
+            Assert.Equal("final_destination_quality_not_higher", decision.ReasonCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task FinalDestinationDedupe_AllowsExistingDestinationOnlyForHigherQuality()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"deezspotag-dedupe-{Guid.NewGuid():N}.mp3");
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
+        try
+        {
+            var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance);
+            var decision = await service.CheckFinalDestinationAsync(new DownloadDedupeRequest
+            {
+                TrackTitle = "Track",
+                TrackArtist = "Artist",
+                RequestedLocalQualityRank = 3,
+                FinalOutputPath = path
+            });
+
+            Assert.True(decision.Allowed);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]

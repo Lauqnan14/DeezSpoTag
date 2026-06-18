@@ -5,6 +5,7 @@ using System.Text.Json;
 using DeezSpoTag.Services.Download.Deezer;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;

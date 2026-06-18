@@ -5,7 +5,7 @@ using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
 using Microsoft.Extensions.Logging;
 
-namespace DeezSpoTag.Web.Services;
+namespace DeezSpoTag.Services.Download;
 
 public sealed class DownloadDedupeService
 {
@@ -89,6 +89,35 @@ public sealed class DownloadDedupeService
             : DownloadDedupeDecision.AllowedDecision;
     }
 
+    public Task<DownloadDedupeDecision> CheckFinalDestinationAsync(
+        DownloadDedupeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (string.IsNullOrWhiteSpace(request.FinalOutputPath) || !File.Exists(request.FinalOutputPath))
+        {
+            return Task.FromResult(DownloadDedupeDecision.AllowedDecision);
+        }
+
+        var existingLocalQualityRank = InferExistingFileLocalQualityRank(request.FinalOutputPath);
+        if (request.RequestedLocalQualityRank.HasValue
+            && existingLocalQualityRank.HasValue
+            && request.RequestedLocalQualityRank.Value > existingLocalQualityRank.Value)
+        {
+            return Task.FromResult(DownloadDedupeDecision.AllowedDecision);
+        }
+
+        var reasonCode = request.RequestedLocalQualityRank.HasValue
+            ? "final_destination_quality_not_higher"
+            : "final_destination_duplicate";
+        return Task.FromResult(DownloadDedupeDecision.Rejected(
+            reasonCode,
+            "Skipped: final destination already contains a file and the requested quality is not proven higher.",
+            "final-destination"));
+    }
+
     public static DownloadDedupeRequest FromQueuePayload(
         EngineQueueItemBase payload,
         int? durationMs,
@@ -155,6 +184,27 @@ public sealed class DownloadDedupeService
             RequestedAudioVariant = requestedAudioVariant,
             RequestedLocalQualityRank = requestedLocalQualityRank,
             BlockRules = blockRules
+        };
+    }
+
+    public static DownloadDedupeRequest FromEngineDownloadRequest(
+        EngineDownloadRequestBase request,
+        string finalOutputPath)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return new DownloadDedupeRequest
+        {
+            Isrc = request.Isrc,
+            SpotifyTrackId = request.SpotifyId,
+            TrackTitle = request.TrackName,
+            TrackArtist = request.ArtistName,
+            TrackPrimaryArtist = NormalizePrimaryArtist(request.ArtistName),
+            Album = request.AlbumName,
+            ReleaseDate = request.ReleaseDate,
+            DurationMs = request.DurationSeconds > 0 ? request.DurationSeconds * 1000 : null,
+            RequestedLocalQualityRank = request.RequestedLocalQualityRank,
+            FinalOutputPath = finalOutputPath
         };
     }
 
@@ -249,6 +299,69 @@ public sealed class DownloadDedupeService
         }
 
         return await CheckLibraryPresenceAsync(request, cancellationToken);
+    }
+
+    private static int? InferExistingFileLocalQualityRank(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var tagFile = global::TagLib.File.Create(path);
+            var properties = tagFile.Properties;
+            var bitsPerSample = properties.BitsPerSample;
+            var sampleRate = properties.AudioSampleRate;
+            var bitrate = properties.AudioBitrate;
+            var codecText = string.Join(' ', properties.Codecs.Select(codec => codec.Description));
+            var extensionRank = InferLocalQualityRankFromExtension(path);
+            return InferLocalQualityRankFromAudioProperties(bitsPerSample, sampleRate, bitrate, codecText)
+                ?? extensionRank;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return InferLocalQualityRankFromExtension(path);
+        }
+    }
+
+    private static int? InferLocalQualityRankFromAudioProperties(
+        int bitsPerSample,
+        int sampleRate,
+        int bitrate,
+        string codecText)
+    {
+        if (bitsPerSample >= 24 || sampleRate > 48000)
+        {
+            return 4;
+        }
+
+        if (bitsPerSample >= 16
+            || codecText.Contains("flac", StringComparison.OrdinalIgnoreCase)
+            || codecText.Contains("alac", StringComparison.OrdinalIgnoreCase)
+            || codecText.Contains("lossless", StringComparison.OrdinalIgnoreCase)
+            || codecText.Contains("pcm", StringComparison.OrdinalIgnoreCase))
+        {
+            return 3;
+        }
+
+        if (bitrate >= 256)
+        {
+            return 2;
+        }
+
+        return bitrate > 0 ? 1 : null;
+    }
+
+    private static int? InferLocalQualityRankFromExtension(string path)
+    {
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".flac" or ".alac" or ".wav" or ".aiff" or ".aif" => 3,
+            ".mp3" or ".m4a" or ".aac" or ".ogg" or ".opus" => 2,
+            _ => null
+        };
     }
 
     private async Task<bool> ExistsLibraryDuplicateInFolderAsync(
@@ -572,6 +685,7 @@ public sealed class DownloadDedupeRequest : DownloadIdentityLookupRequest
     public string? ReleaseDate { get; init; }
     public string? RequestedAudioVariant { get; init; }
     public int? RequestedLocalQualityRank { get; init; }
+    public string? FinalOutputPath { get; init; }
     public IReadOnlyList<PlaylistTrackBlockRule>? BlockRules { get; init; }
 }
 

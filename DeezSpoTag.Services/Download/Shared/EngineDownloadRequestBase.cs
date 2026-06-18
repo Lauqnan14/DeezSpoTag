@@ -20,4 +20,5 @@ public abstract class EngineDownloadRequestBase
     public int SpotifyTotalTracks { get; set; }
     public string SpotifyId { get; set; } = "";
     public string ServiceUrl { get; set; } = "";
+    public int? RequestedLocalQualityRank { get; set; }
 }

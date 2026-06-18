@@ -1708,7 +1708,7 @@ public partial class Program
                 DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 SongLinkResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.SongLinkResolver>(),
-                DedupeService = sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadDedupeService>()
+                DedupeService = sp.GetRequiredService<DeezSpoTag.Services.Download.DownloadDedupeService>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationAutomationHostedService>();
@@ -1734,7 +1734,7 @@ public partial class Program
             StartupWorkerCategory.Deferred,
             "Mood bucket background processing after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MoodMixService>();
-        services.AddSingleton<DeezSpoTag.Web.Services.DownloadDedupeService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.DownloadDedupeService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadOrchestrationService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IDownloadQueueExecutionGate>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadOrchestrationService>());

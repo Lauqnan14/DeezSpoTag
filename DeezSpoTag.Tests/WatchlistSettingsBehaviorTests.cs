@@ -278,7 +278,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     {
         var repoRoot = ResolveRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
-        var dedupeSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadDedupeService.cs"));
+        var dedupeSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "DownloadDedupeService.cs"));
 
         Assert.Contains("var selection = await SelectMissingPlaylistTracksAsync(", source, StringComparison.Ordinal);
         Assert.Contains("queueOptions,", source, StringComparison.Ordinal);

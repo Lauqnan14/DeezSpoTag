@@ -1,5 +1,6 @@
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Core.Models.Deezer;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;

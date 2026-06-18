@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
 
 namespace DeezSpoTag.Services.Download.Shared;
@@ -8,6 +9,7 @@ internal static class RequestBuilderCommon
     private const string PlaylistType = "playlist";
     private const string ArtistType = "artist";
     private const string DefaultFilenameTemplate = "{title} - {artist}";
+    private const string AtmosQuality = "atmos";
 
     public static string ResolveOutputDirectory(
         string baseOutputDir,
@@ -75,6 +77,7 @@ internal static class RequestBuilderCommon
         request.SpotifyTotalTracks = item.SpotifyTotalTracks;
         request.SpotifyId = item.SpotifyId;
         request.ServiceUrl = item.SourceUrl;
+        request.RequestedLocalQualityRank = ResolveRequestedLocalQualityRank(item.Quality);
     }
 
     public static TRequest CreateCommonRequest<TRequest>(EngineQueueItemBase item, DeezSpoTagSettings settings)
@@ -108,5 +111,15 @@ internal static class RequestBuilderCommon
             replacement: "_",
             collapseWhitespace: true,
             trimTrailingDotsAndSpaces: true);
+    }
+
+    private static int? ResolveRequestedLocalQualityRank(string? quality)
+    {
+        if (int.TryParse((quality ?? string.Empty).Trim(), out var numericQuality))
+        {
+            return MediaQualityInference.MapRequestedNumericQualityToLocalRank(numericQuality);
+        }
+
+        return MediaQualityInference.InferLocalQualityRankFromText(quality, AtmosQuality, treatPodcastAsVideo: false);
     }
 }
