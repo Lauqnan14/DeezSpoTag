@@ -1020,7 +1020,7 @@ async function cleanupMissingLibraryFiles() {
         showToast(selectedFolder
             ? `Removed ${removed.toLocaleString()} missing files from ${scopeLabel}.`
             : `Removed ${removed.toLocaleString()} missing files.`);
-        await Promise.all([loadLibraryScanStatus(), loadArtists()]);
+        await Promise.all([loadLibraryScanStatus(), requestArtistRefresh({ force: true })]);
     } catch (error) {
         showToast(`Cleanup failed: ${error.message}`, true);
     } finally {
@@ -1063,7 +1063,7 @@ async function clearLibraryData() {
                 { title: selectedFolder ? `${scopeLabel} Cleared` : 'Library Cleared' }
             );
         }
-        await Promise.all([loadLibraryScanStatus(), loadArtists()]);
+        await Promise.all([loadLibraryScanStatus(), requestArtistRefresh({ force: true })]);
         setTimeout(() => {
             void runLocalScan(false, false);
         }, 1200);
@@ -1143,7 +1143,7 @@ function bindBootstrapScanActions(elements) {
         if (typeof hasScopedLibraryIndexControls === 'function' && hasScopedLibraryIndexControls()) {
             await refreshScopedLibraryIndexData({ includeSettings: true });
         } else {
-            await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+            await Promise.all([loadLibrarySettings(), loadFolders(), requestArtistRefresh({ force: true }), loadLibraryScanStatus()]);
         }
     });
     bindLibraryAction(elements.scanButton, async () => {
@@ -1151,7 +1151,7 @@ function bindBootstrapScanActions(elements) {
         if (typeof hasScopedLibraryIndexControls === 'function' && hasScopedLibraryIndexControls()) {
             await refreshScopedLibraryIndexData({ includeSettings: true });
         } else {
-            await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+            await Promise.all([loadLibrarySettings(), loadFolders(), requestArtistRefresh({ force: true }), loadLibraryScanStatus()]);
         }
     });
     bindLibraryAction(elements.cancelScanButton, cancelLibraryScan);
@@ -1164,7 +1164,7 @@ function bindBootstrapScanActions(elements) {
         if (typeof hasScopedLibraryIndexControls === 'function' && hasScopedLibraryIndexControls()) {
             await refreshScopedLibraryIndexData({ includeSettings: true });
         } else {
-            await Promise.all([loadLibrarySettings(), loadFolders(), loadArtists(), loadLibraryScanStatus()]);
+            await Promise.all([loadLibrarySettings(), loadFolders(), requestArtistRefresh({ force: true }), loadLibraryScanStatus()]);
         }
     });
     bindLibraryAction(elements.cleanupButton, cleanupMissingLibraryFiles);
@@ -1367,7 +1367,7 @@ async function applyUnmatchedArtistSuggestion(elements, artistId, spotifyId) {
         renderUnmatchedArtistsResolverList(elements);
         showToast('Spotify artist match updated.');
         if (document.getElementById('artistsGrid')) {
-            await loadArtists();
+            await applyLibraryViewFilter();
         }
     } catch (error) {
         showToast(`Failed to apply match: ${error.message}`, true);
@@ -1490,7 +1490,7 @@ async function applyBestSuggestionsForHighConfidence(elements) {
             state.items = state.items.filter(item => !appliedArtistIds.has(item.artistId));
             renderUnmatchedArtistsResolverList(elements);
             if (document.getElementById('artistsGrid')) {
-                await loadArtists();
+                await applyLibraryViewFilter();
             }
         }
 

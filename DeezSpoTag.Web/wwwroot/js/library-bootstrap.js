@@ -55,8 +55,10 @@ async function initializeLibraryBootstrapData(targets) {
     initDiscographyFilters();
 }
 
-function initializeLibraryBootstrapEvents(targets) {
-    bindLibraryFilterEvents(targets.viewSelect, targets.searchInput, targets.sortSelect);
+function initializeLibraryBootstrapEvents(targets, options = {}) {
+    if (options.bindFilters !== false) {
+        bindLibraryFilterEvents(targets.viewSelect, targets.searchInput, targets.sortSelect);
+    }
     bindAlbumDownloadButton(targets.downloadAlbumButton);
     if (targets.analysisButton) {
         targets.analysisButton.addEventListener('click', runAnalysis);
@@ -79,8 +81,9 @@ async function initializeLibraryBootstrap() {
     }
 
     initializeLibraryBootstrapState(targets);
+    bindLibraryFilterEvents(targets.viewSelect, targets.searchInput, targets.sortSelect);
     await initializeLibraryBootstrapData(targets);
-    initializeLibraryBootstrapEvents(targets);
+    initializeLibraryBootstrapEvents(targets, { bindFilters: false });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
