@@ -77,6 +77,7 @@ public sealed class VideoSettings
     public string AppleMusicVideoAudioType { get; set; } = "atmos"; // atmos | ac3 | aac
     public int AppleMusicVideoMaxResolution { get; set; } = 2160;
     public string AppleMusicVideoCodecPreference { get; set; } = "prefer-hevc"; // prefer-hevc | prefer-avc | auto
+    public int TidalVideoMaxResolution { get; set; } = 1080;
 
     public string ArtistFolderTemplate { get; set; } = "%artist%";
     public string TitleTemplate { get; set; } = "%title%";

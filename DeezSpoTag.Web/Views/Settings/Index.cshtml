@@ -104,6 +104,27 @@
     display: block;
 }
 
+.settings-subsection {
+    border-top: 1px solid var(--border-secondary);
+    margin-top: 8px;
+    padding-top: 18px;
+}
+
+.settings-subsection:first-child {
+    border-top: 0;
+    margin-top: 0;
+    padding-top: 0;
+}
+
+.settings-subsection-title {
+    color: var(--primary-color);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    margin-bottom: 14px;
+    text-transform: uppercase;
+}
+
 .form-group {
     margin-bottom: 20px;
 }
@@ -1187,69 +1208,90 @@
                 Videos
             </div>
             <div class="settings-content">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="videoDownloadLocation">Video download location</label>
-                        <select id="videoDownloadLocation">
-                            <option value="">(required: select video destination folder)</option>
-                        </select>
-                        <div class="warning-text">Required. Video downloads fail when this is not set.</div>
+                <div class="settings-subsection">
+                    <div class="settings-subsection-title">Shared Video Settings</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="videoDownloadLocation">Video download location</label>
+                            <select id="videoDownloadLocation">
+                                <option value="">(required: select video destination folder)</option>
+                            </select>
+                            <div class="warning-text">Required. Apple Music and Tidal video downloads fail when this is not set.</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="mvFileFormat">MV file format</label>
+                            <input type="text" id="mvFileFormat" placeholder="{ArtistName} - {VideoName} [{ReleaseYear}]">
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="videoContainer">Container</label>
-                        <select id="videoContainer">
-                            <option value="mp4">mp4</option>
-                            <option value="m4v">m4v</option>
-                        </select>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="videoArtistFolderTemplate">Artist folder template</label>
+                            <input type="text" id="videoArtistFolderTemplate" placeholder="%artist%">
+                        </div>
+                        <div class="form-group">
+                            <label for="videoTitleTemplate">Title template</label>
+                            <input type="text" id="videoTitleTemplate" placeholder="%title%">
+                        </div>
                     </div>
                 </div>
 
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="videoAppleAudioType">Apple MV audio type</label>
-                        <select id="videoAppleAudioType">
-                            <option value="atmos-prefer">Atmos (Prefer)</option>
-                            <option value="atmos-strict">Atmos (Strict)</option>
-                            <option value="ac3-prefer">AC3 (Prefer)</option>
-                            <option value="ac3-strict">AC3 (Strict)</option>
-                            <option value="aac-prefer">AAC (Prefer)</option>
-                            <option value="aac-strict">AAC (Strict)</option>
-                        </select>
+                <div class="settings-subsection">
+                    <div class="settings-subsection-title">Apple Music Video Settings</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="videoAppleAudioType">Apple MV audio type</label>
+                            <select id="videoAppleAudioType">
+                                <option value="atmos-prefer">Atmos (Prefer)</option>
+                                <option value="atmos-strict">Atmos (Strict)</option>
+                                <option value="ac3-prefer">AC3 (Prefer)</option>
+                                <option value="ac3-strict">AC3 (Strict)</option>
+                                <option value="aac-prefer">AAC (Prefer)</option>
+                                <option value="aac-strict">AAC (Strict)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="videoAppleMaxResolution">Apple MV max resolution</label>
+                            <select id="videoAppleMaxResolution">
+                                <option value="2160">2160p</option>
+                                <option value="1080">1080p</option>
+                                <option value="720">720p</option>
+                            </select>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="videoAppleMaxResolution">Apple MV max resolution</label>
-                        <select id="videoAppleMaxResolution">
-                            <option value="2160">2160p</option>
-                            <option value="1080">1080p</option>
-                            <option value="720">720p</option>
-                        </select>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="videoAppleCodecPreference">Apple MV codec preference</label>
+                            <select id="videoAppleCodecPreference">
+                                <option value="prefer-hevc">Prefer H.265 (HEVC)</option>
+                                <option value="prefer-avc">Prefer H.264 (AVC)</option>
+                                <option value="strict-hevc">Strict H.265 (HEVC only)</option>
+                                <option value="auto">Auto</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="videoContainer">Apple MV container</label>
+                            <select id="videoContainer">
+                                <option value="mp4">mp4</option>
+                                <option value="m4v">m4v</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="videoAppleCodecPreference">Apple MV codec preference</label>
-                        <select id="videoAppleCodecPreference">
-                            <option value="prefer-hevc">Prefer H.265 (HEVC)</option>
-                            <option value="prefer-avc">Prefer H.264 (AVC)</option>
-                            <option value="strict-hevc">Strict H.265 (HEVC only)</option>
-                            <option value="auto">Auto</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="mvFileFormat">MV file format</label>
-                        <input type="text" id="mvFileFormat" placeholder="{ArtistName} - {VideoName} [{ReleaseYear}]">
-                    </div>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="videoArtistFolderTemplate">Artist folder template</label>
-                        <input type="text" id="videoArtistFolderTemplate" placeholder="%artist%">
-                    </div>
-                    <div class="form-group">
-                        <label for="videoTitleTemplate">Title template</label>
-                        <input type="text" id="videoTitleTemplate" placeholder="%title%">
+                <div class="settings-subsection">
+                    <div class="settings-subsection-title">Tidal Video Settings</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="videoTidalMaxResolution">Tidal video max resolution</label>
+                            <select id="videoTidalMaxResolution">
+                                <option value="1080">1080p</option>
+                                <option value="720">720p</option>
+                                <option value="480">480p</option>
+                                <option value="360">360p</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -3723,6 +3765,7 @@ function loadSettings(settings) {
     setFieldValue('videoAppleAudioType', normalizeAppleVideoAudioType(video.appleMusicVideoAudioType || 'atmos-prefer'));
     setFieldValue('videoAppleMaxResolution', video.appleMusicVideoMaxResolution ?? 2160);
     setFieldValue('videoAppleCodecPreference', normalizeAppleVideoCodecPreference(video.appleMusicVideoCodecPreference || 'prefer-hevc'));
+    setFieldValue('videoTidalMaxResolution', normalizeTidalVideoMaxResolution(video.tidalVideoMaxResolution ?? 1080));
     setFieldValue('videoArtistFolderTemplate', video.artistFolderTemplate || '%artist%');
     setFieldValue('videoTitleTemplate', video.titleTemplate || '%title%');
     initLibraryFolderDestinationDropdowns();
@@ -3889,6 +3932,15 @@ function normalizeAppleVideoAudioType(value) {
     }
 
     return 'atmos-prefer';
+}
+
+function normalizeTidalVideoMaxResolution(value) {
+    const normalized = Number(value);
+    if (normalized === 1080 || normalized === 720 || normalized === 480 || normalized === 360) {
+        return normalized;
+    }
+
+    return 1080;
 }
 
 function triggerDependentFields() {
@@ -4080,6 +4132,7 @@ function collectFormData() {
             appleMusicVideoAudioType: normalizeAppleVideoAudioType(getValue('videoAppleAudioType', 'atmos-prefer')),
             appleMusicVideoMaxResolution: getOptionalNumber('videoAppleMaxResolution') ?? baseVideo.appleMusicVideoMaxResolution ?? 2160,
             appleMusicVideoCodecPreference: normalizeAppleVideoCodecPreference(getValue('videoAppleCodecPreference', baseVideo.appleMusicVideoCodecPreference || 'prefer-hevc')),
+            tidalVideoMaxResolution: normalizeTidalVideoMaxResolution(getValue('videoTidalMaxResolution', baseVideo.tidalVideoMaxResolution ?? 1080)),
             artistFolderTemplate: getValue('videoArtistFolderTemplate', baseVideo.artistFolderTemplate || '%artist%'),
             titleTemplate: getValue('videoTitleTemplate', baseVideo.titleTemplate || '%title%')
         },

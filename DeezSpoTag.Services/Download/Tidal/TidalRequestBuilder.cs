@@ -14,6 +14,7 @@ public static class TidalRequestBuilder
             "LOSSLESS");
         request.IsVideo = string.Equals(item.ContentType, DeezSpoTag.Services.Download.Shared.Models.DownloadContentTypes.Video, StringComparison.OrdinalIgnoreCase);
         request.VideoOutputRoot = settings.Video?.VideoDownloadLocation ?? string.Empty;
+        request.VideoMaxResolution = settings.Video?.TidalVideoMaxResolution ?? 1080;
         return request;
     }
 }
@@ -23,4 +24,5 @@ public sealed class TidalDownloadRequest : EngineDownloadRequestBase
     public string Quality { get; set; } = "";
     public bool IsVideo { get; set; }
     public string VideoOutputRoot { get; set; } = "";
+    public int VideoMaxResolution { get; set; } = 1080;
 }

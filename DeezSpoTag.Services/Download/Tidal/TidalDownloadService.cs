@@ -110,7 +110,7 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Invalid Tidal video ID");
         }
 
-        return GetVideoStreamUrlAsync(videoId, cancellationToken);
+        return GetVideoStreamUrlAsync(videoId, 1080, cancellationToken);
     }
 
     private async Task<string> DownloadVideoAsync(
@@ -133,7 +133,7 @@ public sealed class TidalDownloadService
         var outputPath = BuildTidalVideoOutputPath(outputRoot, request, videoId);
         await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
 
-        var streamUrl = await GetVideoStreamUrlAsync(videoId, cancellationToken);
+        var streamUrl = await GetVideoStreamUrlAsync(videoId, request.VideoMaxResolution, cancellationToken);
         await DownloadVideoStreamWithFfmpegAsync(streamUrl, outputPath, progressCallback, cancellationToken);
         return outputPath;
     }
@@ -1515,7 +1515,7 @@ public sealed class TidalDownloadService
         throw new InvalidOperationException("Tidal download URL not available");
     }
 
-    private async Task<string> GetVideoStreamUrlAsync(long videoId, CancellationToken cancellationToken)
+    private async Task<string> GetVideoStreamUrlAsync(long videoId, int maxResolution, CancellationToken cancellationToken)
     {
         var token = await _accessTokenProvider.GetAccessTokenAsync(cancellationToken);
         var url = $"https://api.tidal.com/v1/videos/{videoId}/playbackinfo?videoquality=HIGH&playbackmode=STREAM&assetpresentation=FULL";
@@ -1535,14 +1535,110 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Tidal video playback info did not return a manifest.");
         }
 
-        var streamUrl = ExtractStreamUrlFromManifest(manifestElement.GetString() ?? string.Empty);
-        if (string.IsNullOrWhiteSpace(streamUrl))
+        var masterPlaylistUrl = ExtractStreamUrlFromManifest(manifestElement.GetString() ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(masterPlaylistUrl))
         {
             throw new InvalidOperationException("Tidal video stream URL not available.");
         }
 
-        return streamUrl;
+        return await SelectTidalVideoVariantAsync(masterPlaylistUrl, NormalizeTidalVideoMaxResolution(maxResolution), cancellationToken);
     }
+
+    private async Task<string> SelectTidalVideoVariantAsync(
+        string masterPlaylistUrl,
+        int maxResolution,
+        CancellationToken cancellationToken)
+    {
+        using var response = await _client.GetAsync(masterPlaylistUrl, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Tidal video manifest failed with status {(int)response.StatusCode}.");
+        }
+
+        var playlist = await response.Content.ReadAsStringAsync(cancellationToken);
+        var variants = ParseTidalVideoVariants(playlist, masterPlaylistUrl)
+            .Where(variant => variant.Height <= maxResolution)
+            .OrderByDescending(variant => variant.Height)
+            .ThenByDescending(variant => variant.Bandwidth)
+            .ToList();
+
+        if (variants.Count == 0)
+        {
+            throw new InvalidOperationException($"Tidal video manifest does not contain a stream at or below {maxResolution}p.");
+        }
+
+        return variants[0].Url;
+    }
+
+    private static List<TidalVideoVariant> ParseTidalVideoVariants(string playlist, string masterPlaylistUrl)
+    {
+        var variants = new List<TidalVideoVariant>();
+        if (string.IsNullOrWhiteSpace(playlist))
+        {
+            return variants;
+        }
+
+        var lines = playlist
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+            .Select(static line => line.Trim())
+            .ToList();
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            if (!line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var resolutionMatch = MatchWithTimeout(line, @"RESOLUTION=\d+x(?<height>\d+)", RegexOptions.IgnoreCase);
+            if (!resolutionMatch.Success || !int.TryParse(resolutionMatch.Groups["height"].Value, out var height))
+            {
+                continue;
+            }
+
+            var bandwidth = 0;
+            var bandwidthMatch = MatchWithTimeout(line, @"(?:AVERAGE-)?BANDWIDTH=(?<bandwidth>\d+)", RegexOptions.IgnoreCase);
+            if (bandwidthMatch.Success)
+            {
+                _ = int.TryParse(bandwidthMatch.Groups["bandwidth"].Value, out bandwidth);
+            }
+
+            var variantUrl = lines.Skip(i + 1)
+                .FirstOrDefault(static candidate => !string.IsNullOrWhiteSpace(candidate) && !candidate.StartsWith('#'));
+            if (string.IsNullOrWhiteSpace(variantUrl))
+            {
+                continue;
+            }
+
+            variants.Add(new TidalVideoVariant(height, bandwidth, ResolveTidalManifestUrl(masterPlaylistUrl, variantUrl)));
+        }
+
+        return variants;
+    }
+
+    private static string ResolveTidalManifestUrl(string masterPlaylistUrl, string variantUrl)
+    {
+        if (Uri.TryCreate(variantUrl, UriKind.Absolute, out var absolute))
+        {
+            return absolute.ToString();
+        }
+
+        if (Uri.TryCreate(masterPlaylistUrl, UriKind.Absolute, out var master)
+            && Uri.TryCreate(master, variantUrl, out var resolved))
+        {
+            return resolved.ToString();
+        }
+
+        return variantUrl;
+    }
+
+    private static int NormalizeTidalVideoMaxResolution(int maxResolution)
+        => maxResolution is 360 or 480 or 720 or 1080
+            ? maxResolution
+            : throw new InvalidOperationException($"Unsupported Tidal video max resolution: {maxResolution}.");
+
+    private sealed record TidalVideoVariant(int Height, int Bandwidth, string Url);
 
     private static string ExtractStreamUrlFromManifest(string manifest)
     {
