@@ -268,9 +268,14 @@
                             <h4 id="qobuzProviderHeading">Public API Providers</h4>
                             <p class="text-muted" id="qobuzProviderSummary">Provider status has not been loaded.</p>
                         </div>
-                        <button class="btn btn-primary action-btn" id="qobuzCheckProvidersBtn" type="button">Check now</button>
+                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="qobuzProviderToggle" type="button" aria-expanded="false">Edit providers</button>
                     </div>
-                    <div id="qobuzProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                    <div class="qobuz-provider-editor" id="qobuzProviderEditor" hidden>
+                        <div class="qobuz-provider-actions">
+                            <button class="btn btn-primary action-btn" id="qobuzCheckProvidersBtn" type="button">Check now</button>
+                        </div>
+                        <div id="qobuzProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                    </div>
                 </section>
             </div>
         </div>
@@ -295,9 +300,14 @@
                 <section class="qobuz-provider-panel" aria-labelledby="tidalProviderHeading">
                     <div class="qobuz-provider-panel__header">
                         <div><h4 id="tidalProviderHeading">Public API Providers</h4><p class="text-muted" id="tidalProviderSummary">Provider status has not been loaded.</p></div>
-                        <button class="btn btn-primary action-btn" id="tidalCheckProvidersBtn" type="button">Check now</button>
+                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="tidalProviderToggle" type="button" aria-expanded="false">Edit providers</button>
                     </div>
-                    <div id="tidalProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                    <div class="qobuz-provider-editor" id="tidalProviderEditor" hidden>
+                        <div class="qobuz-provider-actions">
+                            <button class="btn btn-primary action-btn" id="tidalCheckProvidersBtn" type="button">Check now</button>
+                        </div>
+                        <div id="tidalProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                    </div>
                 </section>
             </div>
         </div>
@@ -544,6 +554,23 @@ body {
     color: var(--text-primary);
 }
 
+.qobuz-provider-toggle {
+    white-space: nowrap;
+}
+
+.qobuz-provider-editor {
+    margin-top: 1rem;
+}
+
+.qobuz-provider-editor[hidden] {
+    display: none;
+}
+
+.qobuz-provider-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
 .qobuz-provider-list {
     display: grid;
     gap: .75rem;
@@ -677,6 +704,16 @@ body {
         width: 100%;
         justify-content: space-between;
         flex-wrap: wrap;
+    }
+
+    .qobuz-provider-panel__header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .qobuz-provider-toggle,
+    .qobuz-provider-actions .action-btn {
+        width: 100%;
     }
 }
 
@@ -1568,6 +1605,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     bindPlatformDisconnect('qobuzDisconnectBtn', '/api/platform-auth/qobuz/disconnect', 'qobuzStatus');
+    bindProviderPanelToggle('qobuzProviderToggle', 'qobuzProviderEditor');
     bindAsyncClick('qobuzCheckProvidersBtn', checkQobuzProviders);
     const qobuzProviderRows = document.getElementById('qobuzProviderRows');
     if (qobuzProviderRows) {
@@ -1594,6 +1632,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     bindPlatformDisconnect('tidalDisconnectBtn', '/api/platform-auth/tidal/disconnect', 'tidalStatus');
+    bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
     bindAsyncClick('tidalCheckProvidersBtn', checkTidalProviders);
     const tidalProviderRows = document.getElementById('tidalProviderRows');
     if (tidalProviderRows) {
@@ -1683,6 +1722,25 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
 });
+
+function bindProviderPanelToggle(toggleId, editorId) {
+    const toggle = document.getElementById(toggleId);
+    const editor = document.getElementById(editorId);
+    if (!toggle || !editor) {
+        return;
+    }
+
+    setProviderPanelExpanded(toggle, editor, false);
+    toggle.addEventListener('click', () => {
+        setProviderPanelExpanded(toggle, editor, editor.hidden);
+    });
+}
+
+function setProviderPanelExpanded(toggle, editor, expanded) {
+    editor.hidden = !expanded;
+    toggle.textContent = expanded ? 'Done' : 'Edit providers';
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
 
 async function initializeLoginPageState() {
     const tasks = [ensurePlatformAuthStateLoaded()];
