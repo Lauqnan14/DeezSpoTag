@@ -79,6 +79,18 @@ public sealed class DownloadSourceOrderFallbackParityTests
     }
 
     [Fact]
+    public void LibraryFolderQualityOptions_KeepDeezer128AboveTidalLow()
+    {
+        var options = QualityCatalog.GetLibraryFolderQualityOptions().ToList();
+        var deezer128Index = options.FindIndex(option => option.Value == "1");
+        var tidalLowIndex = options.FindIndex(option => option.Value == "LOW");
+
+        Assert.True(deezer128Index >= 0);
+        Assert.True(tidalLowIndex >= 0);
+        Assert.True(deezer128Index < tidalLowIndex);
+    }
+
+    [Fact]
     public void ResolveQualityAutoSources_CustomOrderEnabled_RespectsEngineAndQualityOrder()
     {
         var settings = CreateCustomOrderSettings(

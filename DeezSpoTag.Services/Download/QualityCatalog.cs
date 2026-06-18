@@ -71,8 +71,8 @@ public static class QualityCatalog
             new QualityOption("5", "MP3 (320kbps)"),
             new QualityOption("HIGH", "MP3 (320kbps)"),
             new QualityOption("3", "Deezer MP3 320kbps"),
-            new QualityOption("LOW", "Low (96kbps)"),
             new QualityOption("1", "Deezer MP3 128kbps"),
+            new QualityOption("LOW", "Low (96kbps)"),
         };
     }
 }

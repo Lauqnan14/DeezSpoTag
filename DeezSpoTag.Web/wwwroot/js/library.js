@@ -9789,8 +9789,8 @@ function renderFolders() {
             { value: '5', label: 'MP3 (320kbps)' },
             { value: 'HIGH', label: 'MP3 (320kbps)' },
             { value: '3', label: 'MP3 320kbps' },
-            { value: 'LOW', label: 'Low (96kbps)' },
-            { value: '1', label: 'MP3 128kbps' }
+            { value: '1', label: 'MP3 128kbps' },
+            { value: 'LOW', label: 'Low (96kbps)' }
         ];
     };
 
