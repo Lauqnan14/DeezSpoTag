@@ -1,3 +1,5 @@
+using DeezSpoTag.Core.Models.Settings;
+
 namespace DeezSpoTag.Services.Library;
 
 public sealed record LibrarySettingsDto(
@@ -576,6 +578,7 @@ public sealed record PlaylistWatchPreferenceDto(
     long? DestinationFolderId,
     string? Service,
     string? PreferredEngine,
+    DownloadEngineOrderSettings? DownloadEngineOrder,
     string? DownloadVariantMode,
     string? SyncMode,
     bool UpdateArtwork,

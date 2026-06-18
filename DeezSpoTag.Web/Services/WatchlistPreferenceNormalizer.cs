@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Download;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -22,12 +23,7 @@ public static class WatchlistPreferenceNormalizer
 
     public static string? PreferredEngine(string? value)
     {
-        var normalized = IncomingText(value)?.ToLowerInvariant();
-        return normalized switch
-        {
-            "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal" => normalized,
-            _ => null
-        };
+        return DownloadSourceCatalog.NormalizeSourcePolicy(value);
     }
 
     public static string? DownloadVariantMode(string? value)

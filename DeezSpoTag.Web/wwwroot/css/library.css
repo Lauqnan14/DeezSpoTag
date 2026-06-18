@@ -1357,6 +1357,102 @@
     cursor: not-allowed;
 }
 
+.watchlist-playlist-settings .watchlist-engine-order-list {
+    display: grid;
+    gap: 8px;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-item {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-item.is-disabled {
+    opacity: 0.58;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-item.is-dragging {
+    opacity: 0.75;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-header {
+    display: grid;
+    grid-template-columns: 18px 18px minmax(120px, 1fr) max-content;
+    align-items: center;
+    gap: 10px;
+    min-height: 28px;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text-muted);
+    cursor: grab;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-enabled,
+.watchlist-playlist-settings .watchlist-engine-quality-enabled {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+.watchlist-playlist-settings .watchlist-engine-order-status {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.watchlist-playlist-settings .watchlist-engine-quality-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px 12px;
+}
+
+.watchlist-playlist-settings .watchlist-engine-quality-list .checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+}
+
+.watchlist-playlist-settings .watchlist-engine-quality-list .checkbox-group span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+    .watchlist-playlist-settings .watchlist-engine-quality-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 520px) {
+    .watchlist-playlist-settings .watchlist-engine-quality-list {
+        grid-template-columns: 1fr;
+    }
+}
+
 .watchlist-playlist-settings .playlist-settings-title-row {
     display: flex;
     align-items: center;

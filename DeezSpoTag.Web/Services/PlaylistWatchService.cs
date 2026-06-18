@@ -2,9 +2,11 @@ using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Security;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download.Queue;
@@ -118,6 +120,7 @@ public sealed class PlaylistWatchService
         public string? WatchlistSource { get; init; }
         public string? WatchlistPlaylistId { get; init; }
         public string? PreferredEngine { get; init; }
+        public DownloadEngineOrderSettings? DownloadEngineOrder { get; init; }
         public string? DownloadVariantMode { get; init; }
         public long? AtmosDestinationFolderId { get; init; }
         public QueueWatchRuleSet? RuleSet { get; init; }
@@ -457,6 +460,7 @@ public sealed class PlaylistWatchService
             WatchlistSource = source,
             WatchlistPlaylistId = sourceId,
             PreferredEngine = preference?.PreferredEngine,
+            DownloadEngineOrder = preference?.DownloadEngineOrder,
             DownloadVariantMode = preference?.DownloadVariantMode,
             AtmosDestinationFolderId = preference?.AtmosDestinationFolderId,
             RuleSet = bypassFolderAndSync
@@ -2924,16 +2928,36 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
     private QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
     {
+        var preferredEngine = ResolveAutomaticPreferredEngine(input.PreferredEngine);
         return new QueueWatchOptions(
             input.SourceLabel,
             input.WatchlistSource,
             input.WatchlistPlaylistId,
-            ResolveAutomaticPreferredEngine(input.PreferredEngine),
+            preferredEngine,
+            ResolveDownloadEngineOrder(input.PreferredEngine, preferredEngine, input.DownloadEngineOrder),
             input.DownloadVariantMode,
             input.AtmosDestinationFolderId,
             input.RuleSet?.RoutingRules,
             input.RuleSet?.BlockRules,
             input.WatchlistOrigin);
+    }
+
+    private DownloadEngineOrderSettings? ResolveDownloadEngineOrder(
+        string? itemPreferredEngine,
+        string? resolvedPreferredEngine,
+        DownloadEngineOrderSettings? itemDownloadEngineOrder)
+    {
+        if (!string.Equals(resolvedPreferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(itemPreferredEngine))
+        {
+            return itemDownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
+        }
+
+        return _settingsService.LoadSettings().DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
     }
 
     private string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
@@ -3045,10 +3069,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
-        var normalized = engine.Trim().ToLowerInvariant();
-        return normalized is "auto" or DeezerSource or AppleSource or "qobuz" or "tidal" or "amazon"
-            ? normalized
-            : null;
+        return DownloadSourceCatalog.NormalizeSourcePolicy(engine);
     }
 
     private static string NormalizeDownloadVariantMode(string? mode)
@@ -3498,6 +3519,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         {
             intent = CreateAtmosOnlyIntent(intent, options.AtmosDestinationFolderId);
         }
+        else if (string.Equals(normalizedPreferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal))
+        {
+            intent.PreferredEngine = DownloadSourceCatalog.Auto;
+            intent.DownloadEngineOrder = options.DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
+        }
         else if (!string.IsNullOrWhiteSpace(normalizedPreferredEngine))
         {
             intent.PreferredEngine = normalizedPreferredEngine;
@@ -3562,7 +3588,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             WatchlistOrigin = intent.WatchlistOrigin,
             HasAtmos = intent.HasAtmos,
             HasAppleDigitalMaster = intent.HasAppleDigitalMaster,
-            AllowQualityUpgrade = intent.AllowQualityUpgrade
+            AllowQualityUpgrade = intent.AllowQualityUpgrade,
+            DownloadEngineOrder = intent.DownloadEngineOrder
         };
     }
 
@@ -4313,6 +4340,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? WatchlistSource,
         string? WatchlistPlaylistId,
         string? PreferredEngine,
+        DownloadEngineOrderSettings? DownloadEngineOrder,
         string? DownloadVariantMode,
         long? AtmosDestinationFolderId,
         IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,

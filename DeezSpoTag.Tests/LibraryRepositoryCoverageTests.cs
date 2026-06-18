@@ -370,6 +370,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 DestinationFolderId: seeded.Folder.Id,
                 Service: "spotify",
                 PreferredEngine: "native",
+                DownloadEngineOrder: null,
                 DownloadVariantMode: "default",
                 SyncMode: "mirror",
                 UpdateArtwork: true,

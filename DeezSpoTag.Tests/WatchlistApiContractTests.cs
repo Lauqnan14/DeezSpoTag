@@ -234,6 +234,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
                 DestinationFolderId: defaultFolder.Id,
                 Service: null,
                 PreferredEngine: null,
+                DownloadEngineOrder: null,
                 DownloadVariantMode: null,
                 SyncMode: null,
                 UpdateArtwork: true,

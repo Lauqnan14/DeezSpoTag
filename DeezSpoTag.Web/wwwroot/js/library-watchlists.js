@@ -669,15 +669,197 @@ const playlistServerOptions = [
     { value: 'none', label: 'No media server (download only)' }
 ];
 
-const playlistEngineOptions = [
-    { value: '', label: 'Follow global download source' },
-    { value: 'auto', label: 'Auto (cross-engine fallback)' },
-    { value: 'amazon', label: 'Amazon Music' },
-    { value: 'apple', label: 'Apple Music' },
-    { value: 'deezer', label: 'Deezer' },
-    { value: 'qobuz', label: 'Qobuz' },
-    { value: 'tidal', label: 'Tidal' }
-];
+let watchlistDownloadSourceCatalogPromise = null;
+
+async function getWatchlistDownloadSourceCatalog() {
+    if (!watchlistDownloadSourceCatalogPromise) {
+        watchlistDownloadSourceCatalogPromise = fetchJson('/api/download-sources')
+            .then(payload => {
+                const options = Array.isArray(payload?.watchlist) ? payload.watchlist : [];
+                const defaultDownloadEngineOrder = Array.isArray(payload?.defaultDownloadEngineOrder)
+                    ? payload.defaultDownloadEngineOrder
+                    : [];
+                if (options.length === 0) {
+                    throw new Error('Download source options unavailable.');
+                }
+
+                return {
+                    options: [
+                        { value: '', label: 'Follow global download source' },
+                        ...options.map(option => ({
+                            value: String(option.value || '').trim(),
+                            label: String(option.label || option.value || '').trim()
+                        })).filter(option => option.value && option.label)
+                    ],
+                    defaultDownloadEngineOrder
+                };
+            });
+    }
+
+    return watchlistDownloadSourceCatalogPromise;
+}
+
+function normalizeWatchlistDownloadEngineOrderConfig(config, defaults) {
+    const defaultEngines = Array.isArray(defaults) ? defaults : [];
+    const incoming = config && typeof config === 'object' ? config : {};
+    const incomingEngines = Array.isArray(incoming.engines) ? incoming.engines : [];
+    const byEngine = new Map(defaultEngines.map(engine => [String(engine.engine || '').toLowerCase(), engine]));
+    const normalized = { enabled: true, engines: [] };
+    const seenEngines = new Set();
+
+    incomingEngines.forEach(engineConfig => {
+        const engineKey = String(engineConfig?.engine || '').trim().toLowerCase();
+        const defaultEngine = byEngine.get(engineKey);
+        if (!defaultEngine || seenEngines.has(engineKey)) {
+            return;
+        }
+
+        seenEngines.add(engineKey);
+        normalized.engines.push(normalizeWatchlistDownloadEngineOrderItem(engineConfig, defaultEngine));
+    });
+
+    defaultEngines.forEach(defaultEngine => {
+        const engineKey = String(defaultEngine.engine || '').trim().toLowerCase();
+        if (!engineKey || seenEngines.has(engineKey)) {
+            return;
+        }
+
+        normalized.engines.push(normalizeWatchlistDownloadEngineOrderItem(defaultEngine, defaultEngine));
+    });
+
+    return normalized;
+}
+
+function normalizeWatchlistDownloadEngineOrderItem(engineConfig, defaultEngine) {
+    const defaultQualities = Array.isArray(defaultEngine.qualities) ? defaultEngine.qualities : [];
+    const incomingQualities = Array.isArray(engineConfig?.qualities) ? engineConfig.qualities : [];
+    const byQuality = new Map(defaultQualities.map(quality => [String(quality.quality || '').toLowerCase(), quality]));
+    const seenQualities = new Set();
+    const qualities = [];
+
+    incomingQualities.forEach(qualityConfig => {
+        const qualityKey = String(qualityConfig?.quality || '').trim().toLowerCase();
+        const defaultQuality = byQuality.get(qualityKey);
+        if (!defaultQuality || seenQualities.has(qualityKey)) {
+            return;
+        }
+
+        seenQualities.add(qualityKey);
+        qualities.push({
+            quality: defaultQuality.quality,
+            label: defaultQuality.label,
+            enabled: qualityConfig.enabled !== false
+        });
+    });
+
+    defaultQualities.forEach(defaultQuality => {
+        const qualityKey = String(defaultQuality.quality || '').trim().toLowerCase();
+        if (!qualityKey || seenQualities.has(qualityKey)) {
+            return;
+        }
+
+        qualities.push({ ...defaultQuality });
+    });
+
+    return {
+        engine: defaultEngine.engine,
+        label: defaultEngine.label,
+        enabled: engineConfig?.enabled !== false,
+        qualities
+    };
+}
+
+function createWatchlistDownloadEngineOrderSection(config, defaults) {
+    const section = document.createElement('div');
+    section.className = 'playlist-settings-section watchlist-engine-order-section';
+    const title = document.createElement('div');
+    title.className = 'playlist-settings-section-title';
+    title.textContent = 'Custom download sources';
+    const list = document.createElement('div');
+    list.className = 'watchlist-engine-order-list';
+    section.appendChild(title);
+    section.appendChild(list);
+    renderWatchlistDownloadEngineOrder(list, config, defaults);
+    return { section, list };
+}
+
+function renderWatchlistDownloadEngineOrder(list, config, defaults) {
+    const normalized = normalizeWatchlistDownloadEngineOrderConfig(config, defaults);
+    list.innerHTML = '';
+    normalized.engines.forEach(engine => {
+        const row = document.createElement('div');
+        row.className = `watchlist-engine-order-item${engine.enabled ? '' : ' is-disabled'}`;
+        row.draggable = true;
+        row.dataset.engine = engine.engine;
+        row.innerHTML = `
+            <div class="watchlist-engine-order-header">
+                <span class="watchlist-engine-order-handle" aria-hidden="true"><i class="fa-solid fa-grip-vertical"></i></span>
+                <input type="checkbox" class="watchlist-engine-order-enabled" ${engine.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)}">
+                <span class="watchlist-engine-order-title">${escapeHtml(engine.label)}</span>
+                <span class="watchlist-engine-order-status">${engine.enabled ? 'enabled' : 'disabled'}</span>
+            </div>
+            <div class="watchlist-engine-quality-list">
+                ${engine.qualities.map(quality => `
+                    <label class="checkbox-group" data-quality="${escapeHtml(quality.quality)}">
+                        <input type="checkbox" class="watchlist-engine-quality-enabled" ${quality.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)} ${escapeHtml(quality.label)}">
+                        <span>${escapeHtml(quality.label)}</span>
+                    </label>
+                `).join('')}
+            </div>
+        `;
+        list.appendChild(row);
+    });
+    bindWatchlistDownloadEngineOrderControls(list);
+}
+
+function bindWatchlistDownloadEngineOrderControls(list) {
+    let dragged = null;
+    list.querySelectorAll('.watchlist-engine-order-item').forEach(item => {
+        item.addEventListener('dragstart', () => {
+            dragged = item;
+            item.classList.add('is-dragging');
+        });
+        item.addEventListener('dragend', () => {
+            item.classList.remove('is-dragging');
+            dragged = null;
+        });
+        item.addEventListener('dragover', event => {
+            event.preventDefault();
+            if (!dragged || dragged === item) {
+                return;
+            }
+
+            const rect = item.getBoundingClientRect();
+            const before = event.clientY < rect.top + rect.height / 2;
+            list.insertBefore(dragged, before ? item : item.nextSibling);
+        });
+
+        item.querySelector('.watchlist-engine-order-enabled')?.addEventListener('change', event => {
+            const checked = event.target?.checked === true;
+            item.classList.toggle('is-disabled', !checked);
+            const status = item.querySelector('.watchlist-engine-order-status');
+            if (status) {
+                status.textContent = checked ? 'enabled' : 'disabled';
+            }
+        });
+    });
+}
+
+function collectWatchlistDownloadEngineOrder(panel) {
+    const engines = Array.from(panel.querySelectorAll('.watchlist-engine-order-list .watchlist-engine-order-item'))
+        .map(item => ({
+            engine: item.dataset.engine || '',
+            enabled: item.querySelector('.watchlist-engine-order-enabled')?.checked === true,
+            qualities: Array.from(item.querySelectorAll('.watchlist-engine-quality-list .checkbox-group'))
+                .map(qualityRow => ({
+                    quality: qualityRow.dataset.quality || '',
+                    enabled: qualityRow.querySelector('.watchlist-engine-quality-enabled')?.checked === true
+                }))
+        }))
+        .filter(engine => engine.engine);
+
+    return { enabled: true, engines };
+}
 
 const playlistDownloadModeOptions = [
     { value: 'standard', label: 'Standard only' },
@@ -743,6 +925,9 @@ async function openArtistSettingsPanel({
 
     await ensurePlaylistSettingsFoldersLoaded();
     const globalSettingsResponse = await fetchJson('/api/getSettings').catch(() => null);
+    const downloadSourceCatalog = await getWatchlistDownloadSourceCatalog();
+    const downloadSourceOptions = downloadSourceCatalog.options
+        .filter(option => String(option.value || '').trim().toLowerCase() !== 'custom');
     const globalSettings = globalSettingsResponse?.settings || {};
     const { selectedGroups, topSongsEnabled, latestOnly } = resolveArtistSettingsDefaults(
         currentGroups,
@@ -800,15 +985,7 @@ async function openArtistSettingsPanel({
     const artistEngine = createPlaylistSettingsSelectSection({
         title: 'Download engine',
         selectClass: 'ps-engine-select',
-        options: [
-        ['', 'Follow global download source'],
-        ['auto', 'Auto'],
-        ['amazon', 'Amazon'],
-        ['apple', 'Apple Music'],
-        ['deezer', 'Deezer'],
-        ['qobuz', 'Qobuz'],
-        ['tidal', 'Tidal']
-        ],
+        options: downloadSourceOptions,
         value: String(currentPreferredEngine || '').toLowerCase(),
         helpText: 'Overrides the global source only for this watched artist.'
     });
@@ -2092,6 +2269,8 @@ function addRoutingValue(routingValueIndex, field, rawValue) {
 
 async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs) {
     await ensurePlaylistSettingsFoldersLoaded();
+    const downloadSourceCatalog = await getWatchlistDownloadSourceCatalog();
+    const downloadSourceOptions = downloadSourceCatalog.options;
 
     const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
 
@@ -2202,12 +2381,16 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         title: 'Download engine',
         selectClass: 'ps-engine-select',
         selectId: `ps-engine-${source}-${sourceId}`,
-        options: playlistEngineOptions,
+        options: downloadSourceOptions,
         value: '',
         helpText: 'Exact-match watchlist mapping pins to Deezer when a Deezer ID/ISRC match is found.'
     });
     const engineSelect = playlistEngine.select;
     panel.appendChild(playlistEngine.section);
+    const customEngineOrder = createWatchlistDownloadEngineOrderSection(
+        stored.downloadEngineOrder,
+        downloadSourceCatalog.defaultDownloadEngineOrder);
+    panel.appendChild(customEngineOrder.section);
 
     const playlistDownloadMode = createPlaylistSettingsSelectSection({
         title: 'Download mode',
@@ -2237,6 +2420,11 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             atmosFolderHint.textContent = 'Used when download mode includes Atmos (Dual quality or Atmos only).';
         }
     };
+    const syncCustomEngineOrderVisibility = () => {
+        customEngineOrder.section.hidden = String(engineSelect?.value || '').trim().toLowerCase() !== 'custom';
+    };
+    engineSelect?.addEventListener('change', syncCustomEngineOrderVisibility);
+    syncCustomEngineOrderVisibility();
 
     downloadModeSelect.addEventListener('change', syncAtmosFolderVisibility);
     engineSelect.addEventListener('change', syncAtmosFolderVisibility);
@@ -2771,6 +2959,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             serviceSel.value = normalizedService || 'plex';
         }
         if (engineSel) engineSel.value = stored.preferredEngine || '';
+        syncCustomEngineOrderVisibility();
         if (downloadModeSel) downloadModeSel.value = stored.downloadVariantMode || 'standard';
         syncAtmosFolderVisibility();
         if (syncModeSel) syncModeSel.value = stored.syncMode || 'mirror';
@@ -2831,6 +3020,7 @@ async function savePlaylistSettingsFromPanel({
                 atmosFolderId: values.atmosFolderId,
                 service: values.service,
                 preferredEngine: values.preferredEngine,
+                downloadEngineOrder: values.downloadEngineOrder,
                 downloadVariantMode: values.downloadVariantMode,
                 syncMode: values.syncMode,
                 updateArtwork: values.updateArtwork,
@@ -2855,6 +3045,7 @@ async function savePlaylistSettingsFromPanel({
             atmosFolderId: values.atmosFolderId ? String(values.atmosFolderId) : '',
             service: values.service,
             preferredEngine: values.preferredEngine,
+            downloadEngineOrder: values.downloadEngineOrder,
             downloadVariantMode: values.downloadVariantMode,
             syncMode: values.syncMode,
             updateArtwork: values.updateArtwork,
@@ -2892,6 +3083,9 @@ function collectPlaylistSettingsValues(panel) {
         atmosFolderId: atmosFolderSel?.value ? Number(atmosFolderSel.value) : null,
         service: serviceSel?.value || 'plex',
         preferredEngine: engineSel?.value || '',
+        downloadEngineOrder: String(engineSel?.value || '').trim().toLowerCase() === 'custom'
+            ? collectWatchlistDownloadEngineOrder(panel)
+            : null,
         downloadVariantMode: downloadModeSel?.value || 'standard',
         syncMode: syncModeSel?.value || 'mirror',
         updateArtwork: normalizedArtwork.updateArtwork,
@@ -3031,6 +3225,7 @@ function normalizePlaylistPreferenceMap(rawPrefs) {
             atmosFolderId: item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId),
             service: item.service || 'plex',
             preferredEngine: item.preferredEngine || '',
+            downloadEngineOrder: item.downloadEngineOrder || null,
             downloadVariantMode: item.downloadVariantMode || 'standard',
             syncMode: item.syncMode || 'mirror',
             updateArtwork: normalizedArtwork.updateArtwork,

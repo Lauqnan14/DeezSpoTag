@@ -108,6 +108,7 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
                 DestinationFolderId: 12,
                 Service: "plex",
                 PreferredEngine: null,
+                DownloadEngineOrder: null,
                 DownloadVariantMode: null,
                 SyncMode: "mirror",
                 UpdateArtwork: false,

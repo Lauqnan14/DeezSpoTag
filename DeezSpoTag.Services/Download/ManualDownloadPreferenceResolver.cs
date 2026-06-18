@@ -11,10 +11,7 @@ public static class ManualDownloadPreferenceResolver
             return "auto";
         }
 
-        var service = (settings.Service ?? string.Empty).Trim().ToLowerInvariant();
-        return service is "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal"
-            ? service
-            : "auto";
+        return DownloadSourceCatalog.NormalizeEngineOrAuto(settings.Service) ?? DownloadSourceCatalog.Auto;
     }
 
     public static string ResolvePreferredQuality(

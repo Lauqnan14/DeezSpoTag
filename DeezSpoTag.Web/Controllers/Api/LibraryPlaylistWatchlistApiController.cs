@@ -7,6 +7,8 @@ using System;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Net.Http.Headers;
 using System.Text.Json;
+using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -409,6 +411,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         long? AtmosFolderId,
         string? Service,
         string? PreferredEngine,
+        DownloadEngineOrderSettings? DownloadEngineOrder,
         string? DownloadVariantMode,
         string? SyncMode,
         bool? UpdateArtwork,
@@ -495,6 +498,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var blockRules = request.BlockRules == null
             ? existing?.IgnoreRules
             : WatchlistPreferenceNormalizer.BlockRules(request.BlockRules);
+        var preferredEngine = WatchlistPreferenceNormalizer.PreferredEngine(request.PreferredEngine);
+        var downloadEngineOrder = string.Equals(preferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal)
+            ? NormalizePlaylistDownloadEngineOrder(request.DownloadEngineOrder ?? existing?.DownloadEngineOrder)
+            : null;
 
         return await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
@@ -502,7 +509,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 request.SourceId,
                 request.FolderId,
                 WatchlistPreferenceNormalizer.IncomingText(request.Service),
-                WatchlistPreferenceNormalizer.PreferredEngine(request.PreferredEngine),
+                preferredEngine,
+                downloadEngineOrder,
                 string.IsNullOrWhiteSpace(request.DownloadVariantMode)
                     ? existing?.DownloadVariantMode
                     : WatchlistPreferenceNormalizer.DownloadVariantMode(request.DownloadVariantMode),
@@ -1108,6 +1116,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 DestinationFolderId: null,
                 Service: null,
                 PreferredEngine: null,
+                DownloadEngineOrder: null,
                 DownloadVariantMode: null,
                 SyncMode: null,
                 UpdateArtwork: normalizedArtwork.UpdateArtwork,
@@ -1384,6 +1393,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 existing?.DestinationFolderId,
                 existing?.Service,
                 existing?.PreferredEngine,
+                existing?.DownloadEngineOrder,
                 existing?.DownloadVariantMode,
                 existing?.SyncMode,
                 normalizedArtwork.UpdateArtwork,
@@ -1392,6 +1402,13 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 ignoreRules ?? existing?.IgnoreRules,
                 existing?.AtmosDestinationFolderId),
             cancellationToken);
+    }
+
+    private static DownloadEngineOrderSettings NormalizePlaylistDownloadEngineOrder(DownloadEngineOrderSettings? configured)
+    {
+        var normalized = DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(configured);
+        normalized.Enabled = true;
+        return normalized;
     }
 
     private async Task ResetPlaylistPersistentStateAsync(
@@ -1488,6 +1505,18 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         if (routingRules?.Any(rule => !validFolderIds.Contains(rule.DestinationFolderId)) == true)
         {
             return "Routing destination folder was not found or is disabled.";
+        }
+
+        var preferredEngine = WatchlistPreferenceNormalizer.PreferredEngine(request.PreferredEngine);
+        if (string.Equals(preferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal)
+            && request.DownloadEngineOrder != null)
+        {
+            request.DownloadEngineOrder.Enabled = true;
+            var orderValidation = DownloadSourceOrder.ValidateDownloadEngineOrderSettings(request.DownloadEngineOrder);
+            if (!orderValidation.IsValid)
+            {
+                return orderValidation.Error ?? "Custom download source order is invalid.";
+            }
         }
 
         return null;

@@ -247,6 +247,7 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "sync_priority", IntegerType, cancellationToken);
         await BackfillPlaylistWatchlistPrioritiesAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "preferred_engine", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "download_engine_order_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "download_variant_mode", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "sync_mode", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "atmos_destination_folder_id", BigIntType, cancellationToken);

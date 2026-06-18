@@ -1718,6 +1718,7 @@ public sealed class DownloadIntentService
         var settings = _settingsService.LoadSettings();
         NormalizeEnqueueSettings(settings);
         var isPodcastIntent = NormalizeIntentContentType(intent);
+        ApplyIntentDownloadEngineOrder(intent, settings);
         if (applyManualDownloadPreference && !isPodcastIntent && IsMusicIntent(intent))
         {
             ApplyManualDownloadPreferenceIfMissing(intent, settings);
@@ -1743,8 +1744,22 @@ public sealed class DownloadIntentService
             intent.Quality = ManualDownloadPreferenceResolver.ResolvePreferredQuality(
                 settings,
                 intent.PreferredEngine,
-                DownloadSourceOrder.DeezerFlac);
+            DownloadSourceOrder.DeezerFlac);
         }
+    }
+
+    private static void ApplyIntentDownloadEngineOrder(DownloadIntent intent, DeezSpoTagSettings settings)
+    {
+        if (intent.DownloadEngineOrder == null)
+        {
+            return;
+        }
+
+        var normalized = DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(intent.DownloadEngineOrder);
+        normalized.Enabled = true;
+        settings.DownloadEngineOrder = normalized;
+        settings.Service = AutoService;
+        intent.PreferredEngine = AutoService;
     }
 
     private static void NormalizeEnqueueSettings(DeezSpoTagSettings settings)
@@ -5249,7 +5264,9 @@ public sealed class DownloadIntentService
 
     private static bool IsKnownDownloadEngine(string? engine)
     {
-        return engine is DeezerPlatform or ApplePlatform or TidalPlatform or AmazonPlatform or QobuzPlatform;
+        var normalized = NormalizeEngineName(engine);
+        return DownloadSourceCatalog.GetEngineOptions()
+            .Any(option => string.Equals(option.Value, normalized, StringComparison.Ordinal));
     }
 
     private static string ResolveEngineFromUrl(string? sourceUrl)

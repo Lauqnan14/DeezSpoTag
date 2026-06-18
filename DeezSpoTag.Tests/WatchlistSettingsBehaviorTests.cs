@@ -151,6 +151,30 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void PlaylistWatchCustomDownloadSource_IsPerPlaylistAndQueuedWithIntentOrder()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var catalogSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "DownloadSourceCatalog.cs"));
+        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryPlaylistWatchlistApiController.cs"));
+        var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var playlistWatchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var downloadIntentSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadIntentService.cs"));
+        var intentModelSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "Shared", "Models", "DownloadIntent.cs"));
+        var watchlistScriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+
+        Assert.Equal("custom", WatchlistPreferenceNormalizer.PreferredEngine(" Custom "));
+        Assert.Contains("new(Custom, \"Custom\")", catalogSource, StringComparison.Ordinal);
+        Assert.Contains("DownloadEngineOrderSettings? DownloadEngineOrder", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizePlaylistDownloadEngineOrder", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("download_engine_order_json", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("DownloadEngineOrder = options.DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault()", playlistWatchSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyIntentDownloadEngineOrder", downloadIntentSource, StringComparison.Ordinal);
+        Assert.Contains("public DownloadEngineOrderSettings? DownloadEngineOrder { get; set; }", intentModelSource, StringComparison.Ordinal);
+        Assert.Contains("createWatchlistDownloadEngineOrderSection", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("downloadEngineOrder: values.downloadEngineOrder", watchlistScriptSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WatchMaxItemsPerRun_IsOnlyUsedBySchedulerAndSettingsContract()
     {
         var repoRoot = ResolveRepoRoot();

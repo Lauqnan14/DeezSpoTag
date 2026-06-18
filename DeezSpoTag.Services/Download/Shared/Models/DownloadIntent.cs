@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models;
+using DeezSpoTag.Core.Models.Settings;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -46,6 +47,7 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public bool HasAtmos { get; set; }
     public bool HasAppleDigitalMaster { get; set; }
     public bool AllowQualityUpgrade { get; set; }
+    public DownloadEngineOrderSettings? DownloadEngineOrder { get; set; }
 }
 
 internal sealed class FlexibleStringJsonConverter : JsonConverter<string>

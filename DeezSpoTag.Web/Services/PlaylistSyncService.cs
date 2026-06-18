@@ -394,6 +394,7 @@ public sealed class PlaylistSyncService
             DestinationFolderId: null,
             Service: service,
             PreferredEngine: null,
+            DownloadEngineOrder: null,
             DownloadVariantMode: null,
             SyncMode: syncMode,
             UpdateArtwork: true,

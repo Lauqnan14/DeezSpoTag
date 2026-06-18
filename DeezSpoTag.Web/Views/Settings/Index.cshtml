@@ -1,6 +1,29 @@
 @{
     ViewData["Title"] = "Settings";
     Layout = "~/Views/Shared/_Layout.cshtml";
+    var settingsDownloadSourceOptions = DeezSpoTag.Services.Download.DownloadSourceCatalog.GetSettingsSourceOptions();
+    var settingsQualityCatalog = DeezSpoTag.Services.Download.QualityCatalog.GetEngineQualityOptions();
+    var settingsSourceLabels = DeezSpoTag.Services.Download.DownloadSourceCatalog.GetEngineOptions()
+        .ToDictionary(option => option.Value, option => option.Label, StringComparer.OrdinalIgnoreCase);
+    var defaultDownloadEngineOrderJson = System.Text.Json.JsonSerializer.Serialize(
+        DeezSpoTag.Core.Models.Settings.DownloadEngineOrderSettings.CreateDefault().Engines.Select(engine =>
+        {
+            settingsQualityCatalog.TryGetValue(engine.Engine, out var qualityOptions);
+            var qualityLabels = (qualityOptions ?? Array.Empty<DeezSpoTag.Services.Download.QualityCatalog.QualityOption>())
+                .ToDictionary(option => option.Value, option => option.Label, StringComparer.OrdinalIgnoreCase);
+            return new
+            {
+                engine = engine.Engine,
+                label = settingsSourceLabels.TryGetValue(engine.Engine, out var label) ? label : engine.Engine,
+                enabled = engine.Enabled,
+                qualities = engine.Qualities.Select(quality => new
+                {
+                    quality = quality.Quality,
+                    label = qualityLabels.TryGetValue(quality.Quality, out var qualityLabel) ? qualityLabel : quality.Quality,
+                    enabled = quality.Enabled
+                }).ToList()
+            };
+        }).ToList());
 }
 
 @section Styles {
@@ -751,13 +774,10 @@
                         <div class="dropdown-select" data-dropdown="downloadSource">
                             <button type="button" class="dropdown-trigger" id="downloadSourceTrigger">Deezer</button>
                             <div class="dropdown-menu" id="downloadSourceMenu">
-                                <button type="button" class="dropdown-option" data-value="auto">Auto</button>
-                                <button type="button" class="dropdown-option" data-value="custom">Custom</button>
-                                <button type="button" class="dropdown-option" data-value="amazon">Amazon Music</button>
-                                <button type="button" class="dropdown-option" data-value="apple">Apple Music</button>
-                                <button type="button" class="dropdown-option" data-value="deezer">Deezer</button>
-                                <button type="button" class="dropdown-option" data-value="qobuz">Qobuz</button>
-                                <button type="button" class="dropdown-option" data-value="tidal">Tidal</button>
+                                @foreach (var option in settingsDownloadSourceOptions)
+                                {
+                                    <button type="button" class="dropdown-option" data-value="@option.Value">@option.Label</button>
+                                }
                             </div>
                             <input type="hidden" id="downloadSource" value="deezer">
                         </div>
@@ -767,12 +787,10 @@
                         <div class="dropdown-select" data-dropdown="automaticDownloadSource">
                             <button type="button" class="dropdown-trigger" id="automaticDownloadSourceTrigger">Auto</button>
                             <div class="dropdown-menu" id="automaticDownloadSourceMenu">
-                                <button type="button" class="dropdown-option" data-value="auto">Auto</button>
-                                <button type="button" class="dropdown-option" data-value="amazon">Amazon Music</button>
-                                <button type="button" class="dropdown-option" data-value="apple">Apple Music</button>
-                                <button type="button" class="dropdown-option" data-value="deezer">Deezer</button>
-                                <button type="button" class="dropdown-option" data-value="qobuz">Qobuz</button>
-                                <button type="button" class="dropdown-option" data-value="tidal">Tidal</button>
+                                @foreach (var option in DeezSpoTag.Services.Download.DownloadSourceCatalog.GetWatchlistSourceOptions())
+                                {
+                                    <button type="button" class="dropdown-option" data-value="@option.Value">@option.Label</button>
+                                }
                             </div>
                             <input type="hidden" id="automaticDownloadSource" value="auto">
                         </div>
@@ -1498,54 +1516,7 @@ const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize
             kvp => kvp.Key,
             kvp => kvp.Value.Select(option => new { value = option.Value, label = option.Label }).ToList(),
             StringComparer.OrdinalIgnoreCase)));
-const defaultDownloadEngineOrder = [
-    {
-        engine: 'qobuz',
-        label: 'Qobuz',
-        enabled: true,
-        qualities: [
-            { quality: '27', label: 'Hi-Res 24/96+', enabled: true },
-            { quality: '7', label: 'FLAC 24-bit', enabled: true },
-            { quality: '6', label: 'FLAC 16-bit', enabled: true }
-        ]
-    },
-    {
-        engine: 'tidal',
-        label: 'Tidal',
-        enabled: true,
-        qualities: [
-            { quality: 'HI_RES_LOSSLESS', label: 'Hi-Res Lossless', enabled: true },
-            { quality: 'LOSSLESS', label: 'Lossless', enabled: true }
-        ]
-    },
-    {
-        engine: 'apple',
-        label: 'Apple Music',
-        enabled: true,
-        qualities: [
-            { quality: 'ALAC', label: 'ALAC', enabled: true },
-            { quality: 'AAC', label: 'AAC', enabled: true }
-        ]
-    },
-    {
-        engine: 'amazon',
-        label: 'Amazon Music',
-        enabled: true,
-        qualities: [
-            { quality: 'FLAC', label: 'FLAC', enabled: true }
-        ]
-    },
-    {
-        engine: 'deezer',
-        label: 'Deezer',
-        enabled: true,
-        qualities: [
-            { quality: '9', label: 'FLAC', enabled: true },
-            { quality: '3', label: 'MP3 320kbps', enabled: true },
-            { quality: '1', label: 'MP3 128kbps', enabled: true }
-        ]
-    }
-];
+const defaultDownloadEngineOrder = @Html.Raw(defaultDownloadEngineOrderJson);
 
 window.DeezSpoTagRevealMaterialIconsWhenReady('.settings-page.material-icons-pending');
 

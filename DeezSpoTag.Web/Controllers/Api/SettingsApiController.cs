@@ -92,6 +92,42 @@ namespace DeezSpoTag.Web.Controllers.Api
             return GetSettings();
         }
 
+        [HttpGet("download-sources")]
+        public IActionResult GetDownloadSources()
+        {
+            return Ok(new
+            {
+                settings = DownloadSourceCatalog.GetSettingsSourceOptions(),
+                watchlist = DownloadSourceCatalog.GetWatchlistSourceOptions(),
+                defaultDownloadEngineOrder = BuildDefaultDownloadEngineOrder()
+            });
+        }
+
+        private static object BuildDefaultDownloadEngineOrder()
+        {
+            var qualityCatalog = QualityCatalog.GetEngineQualityOptions();
+            var sourceLabels = DownloadSourceCatalog.GetEngineOptions()
+                .ToDictionary(option => option.Value, option => option.Label, StringComparer.OrdinalIgnoreCase);
+            return DownloadEngineOrderSettings.CreateDefault().Engines.Select(engine =>
+            {
+                qualityCatalog.TryGetValue(engine.Engine, out var qualityOptions);
+                var qualityLabels = (qualityOptions ?? Array.Empty<QualityCatalog.QualityOption>())
+                    .ToDictionary(option => option.Value, option => option.Label, StringComparer.OrdinalIgnoreCase);
+                return new
+                {
+                    engine = engine.Engine,
+                    label = sourceLabels.TryGetValue(engine.Engine, out var label) ? label : engine.Engine,
+                    enabled = engine.Enabled,
+                    qualities = engine.Qualities.Select(quality => new
+                    {
+                        quality = quality.Quality,
+                        label = qualityLabels.TryGetValue(quality.Quality, out var qualityLabel) ? qualityLabel : quality.Quality,
+                        enabled = quality.Enabled
+                    }).ToList()
+                };
+            }).ToList();
+        }
+
         /// <summary>
         /// Save settings - EXACT PORT from deezspotag saveSettings.ts
         /// POST /api/saveSettings

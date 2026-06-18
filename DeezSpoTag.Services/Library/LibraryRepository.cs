@@ -10,6 +10,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Utils;
 
@@ -112,6 +113,7 @@ public sealed class LibraryRepository
         long? DestinationFolderId,
         string? Service,
         string? PreferredEngine,
+        DownloadEngineOrderSettings? DownloadEngineOrder,
         string? DownloadVariantMode,
         string? SyncMode,
         bool UpdateArtwork,
@@ -1662,18 +1664,19 @@ INSERT INTO quality_scan_action_log (
 
             await UpsertPlaylistWatchPreferenceAsync(
                 new PlaylistWatchPreferenceUpsertInput(
-                    preference.Source,
-                    preference.SourceId,
-                    destinationFolderId,
-                    preference.Service,
-                    preference.PreferredEngine,
-                    preference.DownloadVariantMode,
-                    preference.SyncMode,
-                    preference.UpdateArtwork,
-                    preference.ReuseSavedArtwork,
-                    routingRules,
-                    preference.IgnoreRules,
-                    atmosDestinationFolderId),
+                    Source: preference.Source,
+                    SourceId: preference.SourceId,
+                    DestinationFolderId: destinationFolderId,
+                    Service: preference.Service,
+                    PreferredEngine: preference.PreferredEngine,
+                    DownloadEngineOrder: preference.DownloadEngineOrder,
+                    DownloadVariantMode: preference.DownloadVariantMode,
+                    SyncMode: preference.SyncMode,
+                    UpdateArtwork: preference.UpdateArtwork,
+                    ReuseSavedArtwork: preference.ReuseSavedArtwork,
+                    RoutingRules: routingRules,
+                    IgnoreRules: preference.IgnoreRules,
+                    AtmosDestinationFolderId: atmosDestinationFolderId),
                 resetWatchState: false,
                 cancellationToken);
             playlistUpdated++;
@@ -4390,12 +4393,17 @@ LIMIT @limit;";
         var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
         var plexPlaylistId = await ReadNullableStringAsync(reader, 14, cancellationToken);
         var jellyfinPlaylistId = await ReadNullableStringAsync(reader, 15, cancellationToken);
+        var downloadEngineOrderJson = await ReadNullableStringAsync(reader, 16, cancellationToken);
+        var downloadEngineOrder = downloadEngineOrderJson is null
+            ? null
+            : JsonSerializer.Deserialize<DownloadEngineOrderSettings>(downloadEngineOrderJson);
         return new PlaylistWatchPreferenceDto(
             reader.GetString(0),
             reader.GetString(1),
             await ReadNullableInt64Async(reader, 2, cancellationToken),
             await ReadNullableStringAsync(reader, 4, cancellationToken),
             await ReadNullableStringAsync(reader, 5, cancellationToken),
+            downloadEngineOrder,
             await ReadNullableStringAsync(reader, 6, cancellationToken),
             await ReadNullableStringAsync(reader, 7, cancellationToken),
             updateArtwork,
@@ -6267,7 +6275,8 @@ DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;
        routing_rules_json,
        ignore_rules_json,
        plex_playlist_id,
-       jellyfin_playlist_id
+       jellyfin_playlist_id,
+       download_engine_order_json
 FROM playlist_watch_preferences
 ORDER BY updated_at DESC;";
         await using var command = new SqliteCommand(sql, connection);
@@ -6302,7 +6311,8 @@ ORDER BY updated_at DESC;";
        routing_rules_json,
        ignore_rules_json,
        plex_playlist_id,
-       jellyfin_playlist_id
+       jellyfin_playlist_id,
+       download_engine_order_json
 FROM playlist_watch_preferences
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
@@ -6331,13 +6341,14 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-	INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, atmos_destination_folder_id, service, preferred_engine, download_variant_mode, sync_mode, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
-	        VALUES (@source, @sourceId, @destinationFolderId, @atmosDestinationFolderId, @service, @preferredEngine, @downloadVariantMode, @syncMode, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
+	INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, atmos_destination_folder_id, service, preferred_engine, download_engine_order_json, download_variant_mode, sync_mode, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
+	        VALUES (@source, @sourceId, @destinationFolderId, @atmosDestinationFolderId, @service, @preferredEngine, @downloadEngineOrderJson, @downloadVariantMode, @syncMode, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
 	ON CONFLICT(source, source_id) DO UPDATE SET
 	    destination_folder_id = excluded.destination_folder_id,
         atmos_destination_folder_id = excluded.atmos_destination_folder_id,
 	    service = excluded.service,
 	    preferred_engine = excluded.preferred_engine,
+	    download_engine_order_json = excluded.download_engine_order_json,
 	    download_variant_mode = excluded.download_variant_mode,
 	    sync_mode = excluded.sync_mode,
 	    update_artwork = excluded.update_artwork,
@@ -6352,6 +6363,8 @@ LIMIT 1;";
         command.Parameters.AddWithValue("atmosDestinationFolderId", (object?)input.AtmosDestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("service", (object?)input.Service ?? DBNull.Value);
         command.Parameters.AddWithValue("preferredEngine", (object?)input.PreferredEngine ?? DBNull.Value);
+        var downloadEngineOrderJson = input.DownloadEngineOrder is null ? null : JsonSerializer.Serialize(input.DownloadEngineOrder);
+        command.Parameters.AddWithValue("downloadEngineOrderJson", (object?)downloadEngineOrderJson ?? DBNull.Value);
         command.Parameters.AddWithValue("downloadVariantMode", (object?)input.DownloadVariantMode ?? DBNull.Value);
         command.Parameters.AddWithValue("syncMode", (object?)input.SyncMode ?? DBNull.Value);
         command.Parameters.AddWithValue("updateArtwork", input.UpdateArtwork ? 1 : 0);
