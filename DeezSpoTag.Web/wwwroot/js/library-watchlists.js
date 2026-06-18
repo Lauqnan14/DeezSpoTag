@@ -1103,6 +1103,37 @@ async function openSharedPlaylistArtworkPickerViaShared(source, sourceId, playli
     return picker(source, sourceId, playlistName, options);
 }
 
+function toNonNegativeCount(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function renderPlaylistWatchlistPresentationBadges(item) {
+    const totalTrackCount = toNonNegativeCount(item.trackCount);
+    const syncedTrackCount = toNonNegativeCount(item.syncedTrackCount);
+    const incompleteTrackCount = toNonNegativeCount(item.incompleteTrackCount);
+    const ignoredBlockedTrackCount = toNonNegativeCount(item.ignoredBlockedTrackCount);
+    const reroutedTrackCount = toNonNegativeCount(item.reroutedTrackCount);
+    const hasIncompleteSync = incompleteTrackCount > 0 && syncedTrackCount > 0 && totalTrackCount > syncedTrackCount;
+    const syncBadge = hasIncompleteSync
+        ? `<div class="library-badge library-badge--partial playlist-watchlist-sync-badge" title="Partially synced: ${syncedTrackCount}/${totalTrackCount} tracks">${escapeHtml(`${syncedTrackCount}/${totalTrackCount}`)}</div>`
+        : '';
+    const stateBadges = [
+        ignoredBlockedTrackCount > 0
+            ? `<span class="playlist-watchlist-state-badge playlist-watchlist-state-badge--blocked" title="${ignoredBlockedTrackCount} ignored or blocked track${ignoredBlockedTrackCount === 1 ? '' : 's'}"><i class="fa-solid fa-ban"></i></span>`
+            : '',
+        reroutedTrackCount > 0
+            ? `<span class="playlist-watchlist-state-badge playlist-watchlist-state-badge--rerouted" title="${reroutedTrackCount} rerouted track${reroutedTrackCount === 1 ? '' : 's'}"><i class="fa-solid fa-route"></i></span>`
+            : ''
+    ].filter(Boolean).join('');
+
+    if (!syncBadge && !stateBadges) {
+        return '';
+    }
+
+    return `${syncBadge}${stateBadges ? `<div class="playlist-watchlist-state-badges">${stateBadges}</div>` : ''}`;
+}
+
 // NOSONAR - preserves end-to-end watchlist rendering/binding flow in one place to avoid UI wiring regressions.
 async function loadPlaylistWatchlist() {
     const container = document.getElementById('playlistWatchlistContainer');
@@ -1192,6 +1223,7 @@ async function loadPlaylistWatchlist() {
             const artContent = imageUrl
                 ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`
                 : `<div class="watchlist-card-art-placeholder"><i class="fa-solid fa-list-music"></i></div>`;
+            const presentationBadges = renderPlaylistWatchlistPresentationBadges(item);
             const trackCount = item.trackCount === null || item.trackCount === undefined
                 ? ''
                 : `${item.trackCount} tracks`;
@@ -1232,6 +1264,7 @@ async function loadPlaylistWatchlist() {
                     data-playlist-open="${escapeHtml(item.sourceId)}"
                     data-playlist-source="${escapeHtml(item.source)}">
                     ${artContent}
+                    ${presentationBadges}
                 </button>
                 <div class="watchlist-action-menu watchlist-action-menu--hover">
                     <button class="watchlist-kebab-btn" type="button" title="Actions" data-playlist-menu-toggle="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" aria-expanded="false">
@@ -2740,6 +2773,7 @@ async function savePlaylistSettingsFromPanel({
         }
         showToast('Playlist settings saved.');
         await loadPlaylistBlockedRules();
+        await loadPlaylistWatchlist();
     } catch (error) {
         showToast(`Save failed: ${error.message}`, true);
     }

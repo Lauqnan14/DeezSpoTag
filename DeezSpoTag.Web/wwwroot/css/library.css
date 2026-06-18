@@ -803,6 +803,36 @@
     color: #fff;
 }
 
+.playlist-watchlist-state-badges {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    z-index: 2;
+    pointer-events: none;
+}
+
+.playlist-watchlist-state-badge {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    font-size: 11px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.playlist-watchlist-state-badge--blocked {
+    background: #991b1b;
+}
+
+.playlist-watchlist-state-badge--rerouted {
+    background: #0369a1;
+}
+
 /* Stats overlay (bottom of art, shown on hover) */
 .watchlist-card-stats {
     position: absolute;

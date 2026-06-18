@@ -63,16 +63,141 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        var hydrated = new List<PlaylistWatchlistDto>(items.Count);
+        var allPreferences = await _repository.GetPlaylistWatchPreferencesAsync(cancellationToken);
+        var globalBlockRules = PlaylistTrackBlockRuleHelper.BuildGlobalRules(allPreferences);
+        var hydrated = new List<object>(items.Count);
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var hydratedItem = HydratePlaylistVisual(item);
-            hydrated.Add(hydratedItem);
+            var summary = await BuildPlaylistPresentationSummaryAsync(hydratedItem, allPreferences, globalBlockRules, cancellationToken);
+            hydrated.Add(new
+            {
+                hydratedItem.Id,
+                hydratedItem.Source,
+                hydratedItem.SourceId,
+                hydratedItem.Name,
+                hydratedItem.ImageUrl,
+                hydratedItem.Description,
+                hydratedItem.TrackCount,
+                hydratedItem.CreatedAt,
+                hydratedItem.LastCheckedUtc,
+                hydratedItem.SnapshotId,
+                hydratedItem.LastRunStatus,
+                hydratedItem.LastRunMessage,
+                hydratedItem.NextAttemptUtc,
+                hydratedItem.ConsecutiveFailures,
+                syncedTrackCount = summary.SyncedTrackCount,
+                incompleteTrackCount = summary.IncompleteTrackCount,
+                ignoredBlockedTrackCount = summary.IgnoredBlockedTrackCount,
+                reroutedTrackCount = summary.ReroutedTrackCount
+            });
         }
 
         return Ok(hydrated);
     }
+
+    private async Task<PlaylistPresentationSummary> BuildPlaylistPresentationSummaryAsync(
+        PlaylistWatchlistDto item,
+        IReadOnlyList<PlaylistWatchPreferenceDto> allPreferences,
+        IReadOnlyList<PlaylistTrackBlockRule> globalBlockRules,
+        CancellationToken cancellationToken)
+    {
+        var statusSummary = await _repository.GetPlaylistWatchTrackStatusSummaryAsync(item.Source, item.SourceId, cancellationToken);
+        var total = Math.Max(0, item.TrackCount ?? 0);
+        var synced = Math.Max(0, statusSummary.CompletedCount);
+        var incomplete = total > 0 && synced > 0 && synced < total
+            ? total - synced
+            : 0;
+
+        var ignoredTrackIds = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(item.Source, item.SourceId, cancellationToken);
+        var preference = allPreferences.FirstOrDefault(preference =>
+            string.Equals(preference.Source, item.Source, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(preference.SourceId, item.SourceId, StringComparison.Ordinal));
+        var candidates = await TryReadCachedPlaylistCandidatesAsync(item.Source, item.SourceId, cancellationToken);
+
+        var blockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
+        var blockedOrIgnored = new HashSet<string>(ignoredTrackIds, StringComparer.Ordinal);
+        if (blockRules is { Count: > 0 } && candidates.Count > 0)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (PlaylistTrackBlockRuleMatcher.FindMatch(
+                        candidate.Title,
+                        candidate.Artist,
+                        candidate.Album,
+                        candidate.Genres,
+                        candidate.Explicit,
+                        ResolveCandidateReleaseDate(candidate),
+                        blockRules) != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(candidate.TrackSourceId))
+                    {
+                        blockedOrIgnored.Add(candidate.TrackSourceId);
+                    }
+                }
+            }
+        }
+
+        var rerouted = 0;
+        if (preference?.RoutingRules is { Count: > 0 } routingRules && candidates.Count > 0)
+        {
+            rerouted = candidates.Count(candidate => routingRules.Any(rule =>
+                PlaylistTrackBlockRuleMatcher.RuleMatches(
+                    new PlaylistTrackBlockRuleMatcher.TrackRuleMatchInput(
+                        candidate.Title,
+                        candidate.Artist,
+                        candidate.Album,
+                        candidate.Genres,
+                        candidate.Explicit,
+                        ResolveCandidateReleaseDate(candidate)),
+                    rule.ConditionField,
+                    rule.ConditionOperator,
+                    rule.ConditionValue)));
+        }
+
+        return new PlaylistPresentationSummary(
+            synced,
+            incomplete,
+            blockedOrIgnored.Count,
+            rerouted);
+    }
+
+    private async Task<IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>> TryReadCachedPlaylistCandidatesAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken);
+        if (cache == null || string.IsNullOrWhiteSpace(cache.CandidatesJson))
+        {
+            return Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+        }
+
+        try
+        {
+            var candidates = JsonSerializer.Deserialize<List<PlaylistWatchService.PlaylistTrackCandidate>>(cache.CandidatesJson);
+            if (candidates == null)
+            {
+                return Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+            }
+
+            return candidates;
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+        }
+    }
+
+    private static string? ResolveCandidateReleaseDate(PlaylistWatchService.PlaylistTrackCandidate candidate)
+        => candidate.ReleaseYear.HasValue ? candidate.ReleaseYear.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+
+    private sealed record PlaylistPresentationSummary(
+        int SyncedTrackCount,
+        int IncompleteTrackCount,
+        int IgnoredBlockedTrackCount,
+        int ReroutedTrackCount);
 
     [HttpGet("watch-runtime")]
     public async Task<IActionResult> GetWatchRuntime(CancellationToken cancellationToken)
