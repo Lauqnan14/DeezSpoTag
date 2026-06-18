@@ -1,7 +1,48 @@
 @using DeezSpoTag.Web.Models
+@using DeezSpoTag.Web.Services
+@inject PlatformAuthService PlatformAuthService
 @* ARL-only login page - ported from deezspotag *@
 @{
     ViewData["Title"] = "Login";
+    var initialPlatformAuthState = await PlatformAuthService.LoadAsync();
+    var initialQobuzAuth = initialPlatformAuthState.Qobuz;
+    var initialTidalAuth = initialPlatformAuthState.Tidal;
+    var initialQobuzConnected =
+        (!string.IsNullOrWhiteSpace(initialQobuzAuth?.AppSecret) || !string.IsNullOrWhiteSpace(initialQobuzAuth?.DownloadSecret))
+        && !string.IsNullOrWhiteSpace(initialQobuzAuth?.AuthToken)
+        && initialQobuzAuth.AuthTokenValid != false;
+    var initialTidalConnected = initialTidalAuth?.CredentialsValid == true;
+    var initialQobuzName = string.IsNullOrWhiteSpace(initialQobuzAuth?.DisplayName)
+        ? "Official Qobuz API"
+        : initialQobuzAuth.DisplayName;
+    var initialQobuzStatus = ResolveInitialQobuzStatus(initialQobuzAuth, initialQobuzConnected);
+    var initialTidalName = string.IsNullOrWhiteSpace(initialTidalAuth?.UserId)
+        ? "Official Tidal API"
+        : $"Tidal user {initialTidalAuth.UserId}";
+    var initialTidalStatus = initialTidalConnected
+        ? $"{(string.IsNullOrWhiteSpace(initialTidalAuth?.CountryCode) ? "US" : initialTidalAuth.CountryCode)} | official credentials validated"
+        : "No Tidal API is currently online";
+
+    static string ResolveInitialQobuzStatus(QobuzAuth? auth, bool connected)
+    {
+        if (!connected)
+        {
+            return "No Qobuz API is currently online";
+        }
+
+        if (auth?.AuthTokenValid == true)
+        {
+            var country = string.IsNullOrWhiteSpace(auth.Country)
+                ? (string.IsNullOrWhiteSpace(auth.Zone) ? "Country unavailable" : auth.Zone)
+                : auth.Country;
+            var subscription = string.IsNullOrWhiteSpace(auth.CredentialLabel)
+                ? auth.SubscriptionOffer
+                : auth.CredentialLabel;
+            return string.IsNullOrWhiteSpace(subscription) ? country : $"{country} | {subscription}";
+        }
+
+        return "Credentials saved";
+    }
 }
 
 @section Styles {
@@ -242,7 +283,7 @@
                 <h3 class="settings-group__header">
                     <i class="material-icons">album</i>Qobuz Credentials
                 </h3>
-                <div id="qobuzLoginFormSection">
+                <div id="qobuzLoginFormSection" class="@(initialQobuzConnected ? "hidden" : "")">
                     <p class="text-muted">Configure credentials for the official Qobuz download API.</p>
                     <form id="qobuzLoginForm" class="space-y-5">
                         <label class="block mb-4">
@@ -250,8 +291,8 @@
                             <input type="text" id="qobuzAppId" value="712109809" placeholder="712109809" class="w-full" autocomplete="off" />
                         </label>
                         <label class="block mb-4">
-                            <span class="block mb-2">User Auth Token (optional)</span>
-                            <input type="password" id="qobuzAuthToken" placeholder="Optional Qobuz user auth token" class="w-full" autocomplete="off" />
+                            <span class="block mb-2">User Auth Token</span>
+                            <input type="password" id="qobuzAuthToken" placeholder="Qobuz user auth token" class="w-full" autocomplete="off" />
                         </label>
                         <label class="block mb-4">
                             <span class="block mb-2">App Secret</span>
@@ -261,7 +302,7 @@
                         <p class="text-muted" id="qobuzStatus"></p>
                     </form>
                 </div>
-                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/availability/qobuz.svg", ImageCssClass = "h-20 w-20 platform-icon-qobuz", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = "Official Qobuz API", DetailId = "qobuzLoggedInStatus", DetailText = "Credentials saved" })
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/availability/qobuz.svg", ImageCssClass = "h-20 w-20 platform-icon-qobuz", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = initialQobuzName, DetailId = "qobuzLoggedInStatus", DetailText = initialQobuzStatus, WrapperCssClass = initialQobuzConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
                 <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading">
                     <div class="qobuz-provider-panel__header">
                         <div>
@@ -283,7 +324,7 @@
         <div class="tab-pane" id="tidal-login" role="tabpanel" hidden>
             <div class="settings-group">
                 <h3 class="settings-group__header"><i class="material-icons">graphic_eq</i>Tidal Credentials</h3>
-                <div id="tidalLoginFormSection">
+                <div id="tidalLoginFormSection" class="@(initialTidalConnected ? "hidden" : "")">
                     <p class="text-muted">Configure the official Tidal account used by Tidal metadata and downloads.</p>
                     <form id="tidalLoginForm" class="space-y-5">
                         <label class="block mb-4"><span class="block mb-2">Client ID</span><input type="text" id="tidalClientId" placeholder="Tidal Client ID" class="w-full" autocomplete="off" /></label>
@@ -296,7 +337,7 @@
                         <p class="text-muted" id="tidalStatus"></p>
                     </form>
                 </div>
-                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "tidalLoggedInInfo", ImageAlt = "Tidal", ImageSrc = "/images/availability/tidal.svg", ImageCssClass = "h-20 w-20", ButtonId = "tidalDisconnectBtn", NameId = "tidalLoggedInName", NameFallback = "Official Tidal API", DetailId = "tidalLoggedInStatus", DetailText = "Credentials saved" })
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "tidalLoggedInInfo", ImageAlt = "Tidal", ImageSrc = "/images/availability/tidal.svg", ImageCssClass = "h-20 w-20", ButtonId = "tidalDisconnectBtn", NameId = "tidalLoggedInName", NameFallback = initialTidalName, DetailId = "tidalLoggedInStatus", DetailText = initialTidalStatus, WrapperCssClass = initialTidalConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
                 <section class="qobuz-provider-panel" aria-labelledby="tidalProviderHeading">
                     <div class="qobuz-provider-panel__header">
                         <div><h4 id="tidalProviderHeading">Public API Providers</h4><p class="text-muted" id="tidalProviderSummary">Provider status has not been loaded.</p></div>
@@ -1504,7 +1545,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Render tab UI immediately, then hydrate async state in the background.
+    // Render tab UI immediately, then refresh async state in the background.
     initializeLoginTabs();
     initializeLoginDropdowns();
     void initializeLoginPageState();
@@ -2081,7 +2122,7 @@ async function loadPlatformAuthState() {
             document.getElementById('qobuzAppId').value = data.qobuz.appId || '712109809';
             document.getElementById('qobuzAuthToken').placeholder = data.qobuz.authTokenSaved
                 ? 'Saved - leave blank to keep current token'
-                : 'Optional Qobuz user auth token';
+                : 'Qobuz user auth token';
             document.getElementById('qobuzAppSecret').placeholder = data.qobuz.appSecretSaved
                 ? 'Saved - leave blank to keep current secret'
                 : 'Qobuz App Secret';

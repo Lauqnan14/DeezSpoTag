@@ -252,22 +252,22 @@ public class PlatformAuthApiController : ControllerBase
         {
             return BadRequest("Qobuz App Secret is required.");
         }
+        if (string.IsNullOrWhiteSpace(authToken))
+        {
+            return BadRequest("Qobuz User Auth Token is required.");
+        }
 
         var appId = string.IsNullOrWhiteSpace(request.AppId) ? "712109809" : request.AppId.Trim();
-        QobuzAccountProfileResult? accountResult = null;
-        if (!string.IsNullOrWhiteSpace(authToken))
+        var accountResult = await _qobuzAccountProfileService.FetchAsync(appId, authToken, cancellationToken);
+        if (accountResult.Status == QobuzAccountProfileStatus.InvalidToken)
         {
-            accountResult = await _qobuzAccountProfileService.FetchAsync(appId, authToken, cancellationToken);
-            if (accountResult.Status == QobuzAccountProfileStatus.InvalidToken)
-            {
-                return BadRequest(accountResult.Error ?? "Qobuz User Auth Token is invalid.");
-            }
-            if (accountResult.Status == QobuzAccountProfileStatus.Unavailable)
-            {
-                return StatusCode(
-                    StatusCodes.Status503ServiceUnavailable,
-                    accountResult.Error ?? "Qobuz account lookup is unavailable.");
-            }
+            return BadRequest(accountResult.Error ?? "Qobuz User Auth Token is invalid.");
+        }
+        if (accountResult.Status == QobuzAccountProfileStatus.Unavailable)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                accountResult.Error ?? "Qobuz account lookup is unavailable.");
         }
 
         var qobuz = await _authService.UpdateAsync(state =>
@@ -283,8 +283,8 @@ public class PlatformAuthApiController : ControllerBase
                 Zone = accountResult?.Profile?.Zone,
                 CredentialLabel = accountResult?.Profile?.CredentialLabel,
                 SubscriptionOffer = accountResult?.Profile?.SubscriptionOffer,
-                AuthTokenValid = accountResult is null ? null : true,
-                AccountRefreshedAt = accountResult is null ? null : DateTimeOffset.UtcNow,
+                AuthTokenValid = true,
+                AccountRefreshedAt = DateTimeOffset.UtcNow,
                 DownloadSecret = null
             };
             return state.Qobuz;
@@ -568,12 +568,15 @@ public class PlatformAuthApiController : ControllerBase
 
     private static object ToPublicQobuz(QobuzAuth? auth, QobuzProviderSummary providers)
     {
+        var hasAppSecret = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret);
+        var hasAuthToken = !string.IsNullOrWhiteSpace(auth?.AuthToken);
+        var configured = hasAppSecret && hasAuthToken;
         return new
         {
             appId = auth?.AppId,
-            authTokenSaved = !string.IsNullOrWhiteSpace(auth?.AuthToken),
-            appSecretSaved = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret),
-            configured = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret),
+            authTokenSaved = hasAuthToken,
+            appSecretSaved = hasAppSecret,
+            configured,
             userId = auth?.UserId,
             displayName = auth?.DisplayName,
             country = auth?.Country,
@@ -583,7 +586,7 @@ public class PlatformAuthApiController : ControllerBase
             authTokenValid = auth?.AuthTokenValid,
             accountRefreshedAt = auth?.AccountRefreshedAt,
             publicApiOnline = providers.Online,
-            connected = providers.Online || (!string.IsNullOrWhiteSpace(auth?.AppSecret) && auth?.AuthTokenValid != false),
+            connected = providers.Online || (configured && auth?.AuthTokenValid != false),
             providers = providers.Providers
         };
     }
