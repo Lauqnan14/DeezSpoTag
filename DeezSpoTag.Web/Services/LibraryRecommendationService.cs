@@ -36,6 +36,7 @@ public sealed class LibraryRecommendationService
     public const string RecommendationSourceId = "daily-rotation";
     private const string StatusMatched = "matched";
     private const string StatusMatchedNoRelated = "matched_no_related";
+    private const string StatusMatchedNoDeezerResolution = "matched_no_deezer_resolution";
     private const string StatusError = "error";
     private const string StatusNoMatch = "no_match";
     private const string UnknownTitle = "Unknown";
@@ -60,22 +61,14 @@ public sealed class LibraryRecommendationService
     private const int MaxArtistOccurrences = 2;
     private const int MaxAlbumOccurrences = 2;
     private const int ShazamRelatedPerSeed = 10;
+    private const int ShazamSimilarLookupLimit = 20;
     private const double ShazamDeezerMinTitleSimilarity = 0.62d;
     private const double ShazamDeezerMinArtistSimilarity = 0.52d;
-    private const int ShazamDeezerMaxDurationDeltaSeconds = 24;
     private const int ShazamSelectedSeedLimit = 12;
     private const int ShazamBackgroundBatchSize = 120;
     private static readonly TimeSpan ShazamCacheTtl = TimeSpan.FromDays(14);
     private static readonly TimeSpan RecommendationGenerationLease = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan TrackMixRequestTimeout = TimeSpan.FromSeconds(8);
-    private static readonly HashSet<string> RejectedDerivativeTerms = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "cover",
-        "parody",
-        "instrumental",
-        "karaoke",
-        "tribute"
-    };
 
     private readonly LibraryRepository _repository;
     private readonly ShazamRecognitionService _shazamRecognitionService;
@@ -123,6 +116,12 @@ public sealed class LibraryRecommendationService
         IReadOnlyList<RecommendationTrackDto> Tracks,
         string? StationImageUrl = null);
     private sealed record RecommendationBuildResult(RecommendationDetailDto? Detail, IReadOnlyList<string> ReasonCodes);
+    private sealed record ShazamRecommendationBuildResult(List<RecommendationTrackDto> Tracks, string EmptyReasonCode)
+    {
+        public static ShazamRecommendationBuildResult Empty(string reasonCode)
+            => new(new List<RecommendationTrackDto>(), reasonCode);
+    }
+
     private sealed record ResolvedRecommendationSeed(LibraryRecommendationSeedTrackDto LocalTrack, string DeezerTrackId);
     private sealed class RecommendationAccumulator
     {
@@ -1378,19 +1377,21 @@ public sealed class LibraryRecommendationService
             deezerTracks = new List<RecommendationTrackDto>();
         }
 
+        ShazamRecommendationBuildResult shazamResult;
         List<RecommendationTrackDto> shazamTracks;
         try
         {
-            shazamTracks = await BuildShazamRecommendationsAsync(
+            shazamResult = await BuildShazamRecommendationsAsync(
                 scope,
                 orderedSeeds,
                 cancellationToken);
+            shazamTracks = shazamResult.Tracks;
             shazamTracks = shazamTracks
                 .Where(track => !rejectedTrackIds.Contains(NormalizeId(track.Id)))
                 .ToList();
             if (shazamTracks.Count == 0)
             {
-                reasonCodes.Add(IsShazamRecommendationAvailable() ? "shazam_no_related" : "shazam_unavailable");
+                reasonCodes.Add(shazamResult.EmptyReasonCode);
             }
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -2122,14 +2123,14 @@ public sealed class LibraryRecommendationService
     private static string NormalizeDailyPoolSnapshotId(string? value)
         => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
 
-    private async Task<List<RecommendationTrackDto>> BuildShazamRecommendationsAsync(
+    private async Task<ShazamRecommendationBuildResult> BuildShazamRecommendationsAsync(
         RecommendationScope scope,
         IReadOnlyList<LibraryRecommendationSeedTrackDto> orderedSeeds,
         CancellationToken cancellationToken)
     {
         if (!IsShazamRecommendationAvailable())
         {
-            return new List<RecommendationTrackDto>();
+            return ShazamRecommendationBuildResult.Empty("shazam_unavailable");
         }
 
         var shazamSeedTrackIds = orderedSeeds
@@ -2138,7 +2139,7 @@ public sealed class LibraryRecommendationService
             .ToList();
         if (shazamSeedTrackIds.Count == 0)
         {
-            return new List<RecommendationTrackDto>();
+            return ShazamRecommendationBuildResult.Empty("shazam_no_seed_tracks");
         }
 
         await RefreshStaleShazamSeedsAsync(scope, shazamSeedTrackIds, cancellationToken);
@@ -2147,7 +2148,10 @@ public sealed class LibraryRecommendationService
             scope.LibraryId,
             scope.FolderId,
             cancellationToken);
-        return BuildRecommendationsFromShazamCache(shazamSeedTrackIds, cacheByTrackId, cancellationToken);
+        var tracks = BuildRecommendationsFromShazamCache(shazamSeedTrackIds, cacheByTrackId, cancellationToken);
+        return tracks.Count > 0
+            ? new ShazamRecommendationBuildResult(tracks, "shazam_ok")
+            : ShazamRecommendationBuildResult.Empty(ResolveEmptyShazamReasonCode(shazamSeedTrackIds, cacheByTrackId));
     }
 
     private bool IsShazamRecommendationAvailable()
@@ -2228,6 +2232,65 @@ public sealed class LibraryRecommendationService
     {
         return string.Equals(cache.Status, StatusMatched, StringComparison.OrdinalIgnoreCase)
                && cache.RelatedTracks.Count > 0;
+    }
+
+    private static string ResolveEmptyShazamReasonCode(
+        IReadOnlyList<long> orderedSeeds,
+        IReadOnlyDictionary<long, ShazamTrackCacheDto> cacheByTrackId)
+    {
+        var hasCachedSeed = false;
+        var hasNoDeezerResolution = false;
+        var hasNoRelated = false;
+        var hasNoMatch = false;
+        var hasError = false;
+
+        foreach (var trackId in orderedSeeds)
+        {
+            if (!cacheByTrackId.TryGetValue(trackId, out var cache))
+            {
+                continue;
+            }
+
+            hasCachedSeed = true;
+            if (string.Equals(cache.Status, StatusMatchedNoDeezerResolution, StringComparison.OrdinalIgnoreCase))
+            {
+                hasNoDeezerResolution = true;
+            }
+            else if (string.Equals(cache.Status, StatusMatchedNoRelated, StringComparison.OrdinalIgnoreCase))
+            {
+                hasNoRelated = true;
+            }
+            else if (string.Equals(cache.Status, StatusNoMatch, StringComparison.OrdinalIgnoreCase))
+            {
+                hasNoMatch = true;
+            }
+            else if (string.Equals(cache.Status, StatusError, StringComparison.OrdinalIgnoreCase))
+            {
+                hasError = true;
+            }
+        }
+
+        if (hasNoDeezerResolution)
+        {
+            return "shazam_no_deezer_resolution";
+        }
+
+        if (hasNoRelated)
+        {
+            return "shazam_no_related";
+        }
+
+        if (hasNoMatch)
+        {
+            return "shazam_no_match";
+        }
+
+        if (hasError)
+        {
+            return "shazam_failed";
+        }
+
+        return hasCachedSeed ? "shazam_empty" : "shazam_no_cache";
     }
 
     private static void TryAddShazamRelatedRecommendation(
@@ -2340,17 +2403,34 @@ public sealed class LibraryRecommendationService
         }
 
         await PersistRecognitionSourceLinksAsync(trackId, recognizedTrack.Recognition, cancellationToken);
-        var relatedCards = await TryFetchRelatedShazamTracksAsync(trackId, recognizedTrack, scannedAtUtc, cancellationToken);
-        if (relatedCards is null)
+        var similarCards = await TryFetchSimilarShazamTracksAsync(trackId, recognizedTrack, scannedAtUtc, cancellationToken);
+        if (similarCards is null)
         {
             return;
         }
 
         var relatedRecommendations = await BuildRelatedShazamRecommendationsAsync(
-            relatedCards,
+            similarCards,
+            trackId,
             deezerResolveCache,
             cancellationToken);
-        await PersistMatchedShazamCacheAsync(trackId, recognizedTrack, relatedRecommendations, scannedAtUtc, cancellationToken);
+        var status = relatedRecommendations.Count > 0
+            ? StatusMatched
+            : similarCards.Count > 0 ? StatusMatchedNoDeezerResolution : StatusMatchedNoRelated;
+        var failureReason = status switch
+        {
+            StatusMatchedNoDeezerResolution => "Shazam similar tracks did not resolve to Deezer tracks.",
+            StatusMatchedNoRelated => "Shazam returned no similar tracks.",
+            _ => null
+        };
+        await PersistMatchedShazamCacheAsync(
+            trackId,
+            recognizedTrack,
+            relatedRecommendations,
+            scannedAtUtc,
+            status,
+            failureReason,
+            cancellationToken);
     }
 
     private sealed record RecognizedShazamTrack(ShazamRecognitionInfo Recognition, string ShazamTrackId);
@@ -2527,6 +2607,8 @@ public sealed class LibraryRecommendationService
                 recognizedTrack,
                 Array.Empty<RecommendationTrackDto>(),
                 scannedAtUtc,
+                StatusMatchedNoRelated,
+                "Shazam related-track fetch timed out.",
                 cancellationToken);
             return null;
         }
@@ -2542,9 +2624,139 @@ public sealed class LibraryRecommendationService
                 recognizedTrack,
                 Array.Empty<RecommendationTrackDto>(),
                 scannedAtUtc,
+                StatusMatchedNoRelated,
+                BuildPersistedFailureReason("Shazam related-track fetch failed", ex),
                 cancellationToken);
             return null;
         }
+    }
+
+    private async Task<IReadOnlyList<ShazamTrackCard>?> TryFetchSimilarShazamTracksAsync(
+        long trackId,
+        RecognizedShazamTrack recognizedTrack,
+        DateTimeOffset scannedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var relatedCards = await TryFetchRelatedShazamTracksAsync(trackId, recognizedTrack, scannedAtUtc, cancellationToken);
+        if (relatedCards is null)
+        {
+            return null;
+        }
+
+        var searchCards = await TryFetchSearchShazamTracksAsync(trackId, recognizedTrack.Recognition, cancellationToken);
+        return MergeShazamSimilarCards(relatedCards, searchCards, recognizedTrack);
+    }
+
+    private async Task<IReadOnlyList<ShazamTrackCard>> TryFetchSearchShazamTracksAsync(
+        long trackId,
+        ShazamRecognitionInfo recognition,
+        CancellationToken cancellationToken)
+    {
+        var query = BuildShazamSearchQuery(recognition);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return Array.Empty<ShazamTrackCard>();
+        }
+
+        try
+        {
+            return await _shazamDiscoveryService.SearchTracksAsync(
+                query,
+                limit: ShazamSimilarLookupLimit,
+                offset: 0,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "Shazam search fetch failed for track {TrackId} using query '{Query}'. Continuing with related tracks only.",
+                trackId,
+                query);
+            return Array.Empty<ShazamTrackCard>();
+        }
+    }
+
+    private static IReadOnlyList<ShazamTrackCard> MergeShazamSimilarCards(
+        IReadOnlyList<ShazamTrackCard> relatedCards,
+        IReadOnlyList<ShazamTrackCard> searchCards,
+        RecognizedShazamTrack recognizedTrack)
+    {
+        var output = new List<ShazamTrackCard>(ShazamSimilarLookupLimit);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var matchedIdentity = BuildShazamRecognitionIdentity(recognizedTrack);
+        AddShazamSimilarCards(relatedCards, output, seen, matchedIdentity);
+        AddShazamSimilarCards(searchCards, output, seen, matchedIdentity);
+        return output;
+    }
+
+    private static void AddShazamSimilarCards(
+        IReadOnlyList<ShazamTrackCard> source,
+        List<ShazamTrackCard> output,
+        HashSet<string> seen,
+        string? matchedIdentity)
+    {
+        foreach (var card in source)
+        {
+            if (output.Count >= ShazamSimilarLookupLimit)
+            {
+                return;
+            }
+
+            var identity = BuildShazamCardIdentity(card);
+            if (string.IsNullOrWhiteSpace(identity)
+                || string.Equals(identity, matchedIdentity, StringComparison.OrdinalIgnoreCase)
+                || !seen.Add(identity))
+            {
+                continue;
+            }
+
+            output.Add(card);
+        }
+    }
+
+    private static string? BuildShazamCardIdentity(ShazamTrackCard card)
+    {
+        if (!string.IsNullOrWhiteSpace(card.Id))
+        {
+            return $"id:{card.Id.Trim()}";
+        }
+
+        return BuildShazamTextIdentity(card.Title, card.Artist);
+    }
+
+    private static string? BuildShazamRecognitionIdentity(RecognizedShazamTrack recognizedTrack)
+    {
+        if (!string.IsNullOrWhiteSpace(recognizedTrack.ShazamTrackId))
+        {
+            return $"id:{recognizedTrack.ShazamTrackId.Trim()}";
+        }
+
+        return BuildShazamTextIdentity(
+            recognizedTrack.Recognition.Title,
+            recognizedTrack.Recognition.Artist);
+    }
+
+    private static string? BuildShazamTextIdentity(string? title, string? artist)
+    {
+        var normalizedTitle = NormalizeText(title, string.Empty).ToLowerInvariant();
+        var normalizedArtist = NormalizeText(artist, string.Empty).ToLowerInvariant();
+        return string.IsNullOrWhiteSpace(normalizedTitle) && string.IsNullOrWhiteSpace(normalizedArtist)
+            ? null
+            : $"ta:{normalizedTitle}|{normalizedArtist}";
+    }
+
+    private static string BuildShazamSearchQuery(ShazamRecognitionInfo recognition)
+    {
+        return string.Join(
+            " ",
+            new[] { recognition.Title, recognition.Artist }
+                .Select(value => NormalizeText(value, string.Empty))
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
     }
 
     private static string BuildPersistedFailureReason(string prefix, Exception exception)
@@ -2560,6 +2772,7 @@ public sealed class LibraryRecommendationService
 
     private async Task<List<RecommendationTrackDto>> BuildRelatedShazamRecommendationsAsync(
         IReadOnlyList<ShazamTrackCard> relatedCards,
+        long sourceTrackId,
         IDictionary<string, string> deezerResolveCache,
         CancellationToken cancellationToken)
     {
@@ -2569,7 +2782,7 @@ public sealed class LibraryRecommendationService
         foreach (var card in relatedCards)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var deezerId = NormalizeId(await ResolveDeezerIdAsync(card, deezerResolveCache, cancellationToken));
+            var deezerId = NormalizeId(await ResolveDeezerIdAsync(card, sourceTrackId, deezerResolveCache, cancellationToken));
             if (string.IsNullOrWhiteSpace(deezerId) || !seenDeezerIds.Add(deezerId))
             {
                 continue;
@@ -2613,19 +2826,21 @@ public sealed class LibraryRecommendationService
         RecognizedShazamTrack recognizedTrack,
         IReadOnlyList<RecommendationTrackDto> relatedRecommendations,
         DateTimeOffset scannedAtUtc,
+        string status,
+        string? failureReason,
         CancellationToken cancellationToken)
     {
         await _repository.UpsertTrackShazamCacheAsync(
             new LibraryRepository.TrackShazamCacheUpsertInput(
                 trackId,
-                relatedRecommendations.Count > 0 ? StatusMatched : StatusMatchedNoRelated,
+                status,
                 recognizedTrack.ShazamTrackId,
                 NormalizeText(recognizedTrack.Recognition.Title, string.Empty),
                 GetRecognitionArtist(recognizedTrack.Recognition),
                 NormalizeText(recognizedTrack.Recognition.Isrc, string.Empty),
                 relatedRecommendations,
                 scannedAtUtc,
-                null),
+                failureReason),
             cancellationToken);
     }
 
@@ -2638,6 +2853,7 @@ public sealed class LibraryRecommendationService
 
     private async Task<string> ResolveDeezerIdAsync(
         ShazamTrackCard card,
+        long sourceTrackId,
         IDictionary<string, string> cache,
         CancellationToken cancellationToken)
     {
@@ -2651,52 +2867,42 @@ public sealed class LibraryRecommendationService
         foreach (var deezerLink in EnumerateShazamDeezerLinks(card))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            resolved = NormalizeId(await ResolveDeezerIdFromShazamLinkAsync(deezerLink, card, cancellationToken));
+            resolved = NormalizeId(TryExtractDeezerTrackId(deezerLink));
             if (!string.IsNullOrWhiteSpace(resolved))
             {
                 break;
             }
         }
 
+        if (string.IsNullOrWhiteSpace(resolved))
+        {
+            resolved = await TryResolveShazamCardByIsrcAsync(card, sourceTrackId, cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(resolved))
+        {
+            resolved = await TryResolveShazamCardByMetadataAsync(card, sourceTrackId, cancellationToken);
+        }
+
         cache[cacheKey] = resolved;
         return resolved;
     }
 
-    private async Task<string> ResolveDeezerIdFromShazamLinkAsync(
-        string deezerLink,
-        ShazamTrackCard sourceCard,
+    private async Task<string> TryResolveShazamCardByIsrcAsync(
+        ShazamTrackCard card,
+        long sourceTrackId,
         CancellationToken cancellationToken)
     {
-        var directId = TryExtractDeezerTrackId(deezerLink);
-        if (!string.IsNullOrWhiteSpace(directId))
-        {
-            return directId;
-        }
-
-        var deezerQuery = TryBuildDeezerSearchQueryFromLink(deezerLink);
-        if (string.IsNullOrWhiteSpace(deezerQuery))
-        {
-            return string.Empty;
-        }
-
-        return await ResolveDeezerIdFromDeezerQueryAsync(deezerQuery, sourceCard, cancellationToken);
-    }
-
-    private async Task<string> ResolveDeezerIdFromDeezerQueryAsync(
-        string deezerQuery,
-        ShazamTrackCard sourceCard,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(deezerQuery))
+        var isrc = NormalizeText(card.Isrc, string.Empty);
+        if (string.IsNullOrWhiteSpace(isrc))
         {
             return string.Empty;
         }
 
         try
         {
-            var result = await _deezerClient.SearchTrackAsync(deezerQuery, new ApiOptions { Limit = 25 })
-                .WaitAsync(cancellationToken);
-            return SelectBestDeezerSearchCandidateId(result, sourceCard);
+            var track = await _deezerClient.GetTrackByIsrcAsync(isrc).WaitAsync(cancellationToken);
+            return NormalizeId(track?.Id?.ToString());
         }
         catch (OperationCanceledException)
         {
@@ -2706,41 +2912,53 @@ public sealed class LibraryRecommendationService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer query resolve failed for Shazam Deezer query '{Query}'.", deezerQuery);
+                _logger.LogDebug(
+                    ex,
+                    "Shazam recommendation Deezer ISRC resolve failed for source track {TrackId}.",
+                    sourceTrackId);
             }
             return string.Empty;
         }
     }
 
-    private string SelectBestDeezerSearchCandidateId(
-        DeezerSearchResult? result,
-        ShazamTrackCard sourceCard)
+    private async Task<string> TryResolveShazamCardByMetadataAsync(
+        ShazamTrackCard card,
+        long sourceTrackId,
+        CancellationToken cancellationToken)
     {
-        if (result?.Data == null || result.Data.Length == 0)
+        var artist = NormalizeText(card.Artist, string.Empty);
+        var title = NormalizeText(card.Title, string.Empty);
+        if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(title))
         {
             return string.Empty;
         }
 
-        var firstId = string.Empty;
-        foreach (var item in result.Data)
+        try
         {
-            if (!TryParseDeezerSearchCandidate(item, out var deezerId, out var candidate))
-            {
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(firstId))
-            {
-                firstId = deezerId;
-            }
-
-            if (candidate != null && ValidateDeezerTrackCandidate(deezerId, candidate, sourceCard))
-            {
-                return deezerId;
-            }
+            return NormalizeId(await _deezerClient.GetTrackIdFromMetadataAsync(
+                    artist,
+                    title,
+                    NormalizeText(card.Album, string.Empty),
+                    card.DurationMs.HasValue && card.DurationMs.Value > 0
+                        ? card.DurationMs.Value
+                        : null)
+                .WaitAsync(cancellationToken));
         }
-
-        return firstId;
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Shazam recommendation Deezer metadata resolve failed for source track {TrackId}.",
+                    sourceTrackId);
+            }
+            return string.Empty;
+        }
     }
 
     private static bool TryParseDeezerSearchCandidate(
@@ -2831,58 +3049,6 @@ public sealed class LibraryRecommendationService
         };
     }
 
-    private bool ValidateDeezerTrackCandidate(
-        string deezerId,
-        ApiTrack? candidate,
-        ShazamTrackCard sourceCard)
-    {
-        if (candidate is null)
-        {
-            return false;
-        }
-
-        if (HasIsrcMismatch(sourceCard.Isrc, candidate.Isrc))
-        {
-            return false;
-        }
-
-        var sourceTitle = NormalizeMatchText(sourceCard.Title);
-        var candidateTitle = NormalizeMatchText(BuildCandidateTitle(candidate));
-        var titleScore = ComputeTokenSimilarity(sourceTitle, candidateTitle);
-        if (!string.IsNullOrWhiteSpace(sourceTitle) && titleScore < ShazamDeezerMinTitleSimilarity)
-        {
-            return false;
-        }
-
-        var sourceArtist = NormalizeMatchText(sourceCard.Artist);
-        var candidateArtist = NormalizeMatchText(candidate.Artist?.Name);
-        var artistScore = ComputeTokenSimilarity(sourceArtist, candidateArtist);
-        if (!string.IsNullOrWhiteSpace(sourceArtist) && artistScore < ShazamDeezerMinArtistSimilarity)
-        {
-            return false;
-        }
-
-        if (HasDurationMismatch(sourceCard.DurationMs, candidate.Duration, titleScore))
-        {
-            return false;
-        }
-
-        if (HasDerivativeVersionMismatch(sourceCard, candidate))
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Rejected derivative mismatch for Shazam recommendation candidate {DeezerId}. Source='{SourceTitle}' Candidate='{CandidateTitle}'",
-                    deezerId,
-                    sourceCard.Title,
-                    BuildCandidateTitle(candidate));
-            }
-            return false;
-        }
-
-        return true;
-    }
-
     private static bool HasIsrcMismatch(string? sourceIsrc, string? candidateIsrc)
     {
         var source = NormalizeText(sourceIsrc, string.Empty);
@@ -2890,57 +3056,6 @@ public sealed class LibraryRecommendationService
         return !string.IsNullOrWhiteSpace(source)
             && !string.IsNullOrWhiteSpace(candidate)
             && !string.Equals(source, candidate, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool HasDurationMismatch(int? sourceDurationMs, int candidateDurationSeconds, double titleScore)
-    {
-        if (sourceDurationMs is not > 0 || candidateDurationSeconds <= 0)
-        {
-            return false;
-        }
-
-        var sourceSeconds = (int)Math.Round(sourceDurationMs.Value / 1000d);
-        var durationDiff = Math.Abs(sourceSeconds - candidateDurationSeconds);
-        return durationDiff > ShazamDeezerMaxDurationDeltaSeconds && titleScore < 0.90d;
-    }
-
-    private static bool HasDerivativeVersionMismatch(ShazamTrackCard sourceCard, ApiTrack candidate)
-    {
-        var sourceTerms = ExtractDerivativeTerms(string.Join(' ',
-            sourceCard.Title,
-            sourceCard.Artist,
-            sourceCard.Album ?? string.Empty));
-        var candidateTerms = ExtractDerivativeTerms(string.Join(' ',
-            BuildCandidateTitle(candidate),
-            candidate.Artist?.Name ?? string.Empty,
-            candidate.Album?.Title ?? string.Empty));
-
-        if (candidateTerms.Count == 0)
-        {
-            return false;
-        }
-
-        if (sourceTerms.Count == 0)
-        {
-            return true;
-        }
-
-        return !candidateTerms.IsSubsetOf(sourceTerms);
-    }
-
-    private static HashSet<string> ExtractDerivativeTerms(string input)
-    {
-        var normalized = NormalizeMatchText(input);
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        var terms = normalized
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(token => RejectedDerivativeTerms.Contains(token))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return terms;
     }
 
     private static string BuildCandidateTitle(ApiTrack candidate)
@@ -3054,143 +3169,7 @@ public sealed class LibraryRecommendationService
             return false;
         }
 
-        var normalized = value.Trim();
-        return long.TryParse(normalized, out _)
-               || normalized.StartsWith("deezer-query://", StringComparison.OrdinalIgnoreCase)
-               || normalized.StartsWith("deezer://", StringComparison.OrdinalIgnoreCase)
-               || normalized.StartsWith("deezer:track:", StringComparison.OrdinalIgnoreCase)
-               || normalized.Contains("deezer.com/track/", StringComparison.OrdinalIgnoreCase)
-               || normalized.Contains("deezer.com/play", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string TryBuildDeezerSearchQueryFromLink(string? deezerLink)
-    {
-        var queryValue = TryGetQueryParameterValue(deezerLink, "query");
-        if (string.IsNullOrWhiteSpace(queryValue))
-        {
-            return string.Empty;
-        }
-
-        var decoded = DecodeQueryValue(queryValue);
-        if (string.IsNullOrWhiteSpace(decoded))
-        {
-            return string.Empty;
-        }
-
-        var trackTerm = ExtractDeezerQueryTerm(decoded, "track:");
-        var artistTerm = ExtractDeezerQueryTerm(decoded, "artist:");
-        if (!string.IsNullOrWhiteSpace(trackTerm) && !string.IsNullOrWhiteSpace(artistTerm))
-        {
-            return $"track:\"{trackTerm}\" artist:\"{artistTerm}\"";
-        }
-
-        if (!string.IsNullOrWhiteSpace(trackTerm))
-        {
-            return $"track:\"{trackTerm}\"";
-        }
-
-        return NormalizeText(decoded, string.Empty);
-    }
-
-    private static string TryGetQueryParameterValue(string? value, string parameterName)
-    {
-        if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(parameterName))
-        {
-            return string.Empty;
-        }
-
-        var trimmedValue = value.Trim();
-        if (Uri.TryCreate(trimmedValue, UriKind.Absolute, out var uri))
-        {
-            return TryGetQueryValueFromAbsoluteUri(uri, parameterName);
-        }
-
-        return TryGetQueryValueFromRawText(trimmedValue, parameterName);
-    }
-
-    private static string TryGetQueryValueFromAbsoluteUri(Uri uri, string parameterName)
-    {
-        var query = uri.Query.TrimStart('?');
-        var parts = query.Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(pair => pair.Split('=', 2, StringSplitOptions.TrimEntries))
-            .FirstOrDefault(parts => string.Equals(parts[0], parameterName, StringComparison.OrdinalIgnoreCase));
-
-        return parts is { Length: 2 } ? parts[1] : string.Empty;
-    }
-
-    private static string TryGetQueryValueFromRawText(string value, string parameterName)
-    {
-        var marker = $"{parameterName}=";
-        var markerIndex = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (markerIndex < 0)
-        {
-            return string.Empty;
-        }
-
-        var start = markerIndex + marker.Length;
-        var end = value.IndexOf('&', start);
-        return end >= 0 ? value[start..end] : value[start..];
-    }
-
-    private static string DecodeQueryValue(string value)
-    {
-        var decoded = value.Replace('+', ' ');
-        for (var i = 0; i < 2; i++)
-        {
-            string unescaped;
-            try
-            {
-                unescaped = Uri.UnescapeDataString(decoded);
-            }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-            {
-                break;
-            }
-
-            if (string.Equals(decoded, unescaped, StringComparison.Ordinal))
-            {
-                break;
-            }
-
-            decoded = unescaped;
-        }
-
-        return decoded.Trim();
-    }
-
-    private static string ExtractDeezerQueryTerm(string value, string marker)
-    {
-        if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(marker))
-        {
-            return string.Empty;
-        }
-
-        var markerIndex = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (markerIndex < 0)
-        {
-            return string.Empty;
-        }
-
-        var start = markerIndex + marker.Length;
-        var end = value.Length;
-        var nextMarkers = new[] { " track:", " artist:", " album:", " genre:", " label:", " isrc:" };
-        foreach (var nextMarker in nextMarkers)
-        {
-            var index = value.IndexOf(nextMarker, start, StringComparison.OrdinalIgnoreCase);
-            if (index >= 0 && index < end)
-            {
-                end = index;
-            }
-        }
-
-        if (start >= end)
-        {
-            return string.Empty;
-        }
-
-        var normalized = NormalizeText(value[start..end], string.Empty);
-        normalized = normalized.Trim('{', '}', '[', ']', '(', ')', '"', '\'');
-        return NormalizeText(normalized, string.Empty);
+        return !string.IsNullOrWhiteSpace(TryExtractDeezerTrackId(value));
     }
 
     private static string TryExtractDeezerTrackId(string? value)

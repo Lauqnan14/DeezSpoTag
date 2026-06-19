@@ -44,6 +44,7 @@ public sealed partial class ShazamDiscoveryService
     private const string AttributesPropertyName = "attributes";
     private const string TrackType = "track";
     private const int MaxTrackLimit = 20;
+    private static readonly TimeSpan PortedDiscoverTimeout = TimeSpan.FromSeconds(25);
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<ShazamDiscoveryService> _logger;
@@ -270,9 +271,25 @@ public sealed partial class ShazamDiscoveryService
 
             using var process = new Process { StartInfo = start };
             process.Start();
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(PortedDiscoverTimeout);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                TryKillProcessTree(process);
+                _logger.LogWarning(
+                    "Shazam port discovery timed out: mode={Mode} python={Python} script={Script}",
+                    mode,
+                    python,
+                    scriptPath);
+                return null;
+            }
+
             var stdout = (await stdoutTask).Trim();
             var stderr = (await stderrTask).Trim();
             if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
@@ -293,6 +310,20 @@ public sealed partial class ShazamDiscoveryService
         {
             _logger.LogWarning(ex, "Shazam port discovery bridge failed for mode {Mode}.", mode);
             return null;
+        }
+    }
+
+    private static void TryKillProcessTree(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 
