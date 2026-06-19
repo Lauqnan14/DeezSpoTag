@@ -1698,11 +1698,9 @@ public partial class Program
             "Artist metadata updater after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Library.MixService>();
         services.AddSingleton<DeezSpoTag.Services.Library.RadioService>();
-        services.AddSingleton<DeezSpoTag.Services.Library.DeezerTrackRecommendationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService.LibraryRecommendationCollaborators>(sp =>
             new DeezSpoTag.Web.Services.LibraryRecommendationService.LibraryRecommendationCollaborators
             {
-                DeezerRecommendations = sp.GetRequiredService<DeezSpoTag.Services.Library.DeezerTrackRecommendationService>(),
                 Repository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 ShazamRecognitionService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRecognitionService>(),
                 ShazamDiscoveryService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamDiscoveryService>(),

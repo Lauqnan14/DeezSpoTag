@@ -234,7 +234,6 @@ public sealed class LibraryRecommendationServiceTests
         return new LibraryRecommendationService(
             new LibraryRecommendationService.LibraryRecommendationCollaborators
             {
-                DeezerRecommendations = null!,
                 Repository = null!,
                 ShazamRecognitionService = null!,
                 ShazamDiscoveryService = null!,

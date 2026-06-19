@@ -1852,59 +1852,52 @@ WHERE f.library_id = @libraryId
         return ids;
     }
 
-    public async Task<IReadOnlyList<string>> GetLibraryDeezerTrackSourceIdsAsync(
+    public async Task<IReadOnlyList<LibraryRecommendationSeedTrackDto>> GetRecommendationSeedTracksForLibraryScopeAsync(
         long libraryId,
-        long? folderId = null,
+        long? folderId,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-WITH candidate_ids AS (
-    SELECT CASE
-               WHEN NULLIF(TRIM(ts.source_id), '') IS NOT NULL
-                    AND TRIM(ts.source_id) GLOB '[0-9]*'
-                    AND TRIM(ts.source_id) NOT GLOB '*[^0-9]*'
-                    THEN TRIM(ts.source_id)
-               WHEN NULLIF(TRIM(t.deezer_id), '') IS NOT NULL
-                    AND TRIM(t.deezer_id) GLOB '[0-9]*'
-                    AND TRIM(t.deezer_id) NOT GLOB '*[^0-9]*'
-                    THEN TRIM(t.deezer_id)
-               ELSE NULL
-           END AS deezer_source_id
-    FROM track t
-    JOIN track_local tl ON tl.track_id = t.id
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    LEFT JOIN track_source ts
-           ON ts.track_id = t.id
-          AND ts.source = 'deezer'
-    WHERE f.library_id = @libraryId
-      AND (@folderId IS NULL OR f.id = @folderId)
-)
-SELECT DISTINCT deezer_source_id
-FROM candidate_ids
-WHERE deezer_source_id IS NOT NULL;";
-
+SELECT t.id,
+       COALESCE(NULLIF(TRIM(t.title), ''), NULLIF(TRIM(t.tag_title), '')),
+       COALESCE(NULLIF(TRIM(ar.name), ''), NULLIF(TRIM(t.tag_artist), '')),
+       COALESCE(NULLIF(TRIM(al.title), ''), NULLIF(TRIM(t.tag_album), '')),
+       COALESCE(af.duration_ms, t.duration_ms, t.tag_duration_ms),
+       COALESCE(
+           (SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) = 'isrc' LIMIT 1),
+           NULLIF(TRIM(t.tag_isrc), '')),
+       COALESCE(
+           (SELECT source_id FROM track_source WHERE track_id = t.id AND LOWER(source) = 'deezer' LIMIT 1),
+           NULLIF(TRIM(t.deezer_id), ''))
+FROM track_local tl
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+JOIN track t ON t.id = tl.track_id
+LEFT JOIN album al ON al.id = t.album_id
+LEFT JOIN artist ar ON ar.id = al.artist_id
+WHERE f.library_id = @libraryId
+  AND (@folderId IS NULL OR f.id = @folderId)
+GROUP BY t.id
+ORDER BY t.id;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var sourceIds = new List<string>();
+        var tracks = new List<LibraryRecommendationSeedTrackDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            if (await reader.IsDBNullAsync(0, cancellationToken))
-            {
-                continue;
-            }
-
-            var sourceId = reader.GetString(0);
-            if (!string.IsNullOrWhiteSpace(sourceId))
-            {
-                sourceIds.Add(sourceId);
-            }
+            tracks.Add(new LibraryRecommendationSeedTrackDto(
+                reader.GetInt64(0),
+                await reader.IsDBNullAsync(1, cancellationToken) ? string.Empty : reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken) ? string.Empty : reader.GetString(2),
+                await reader.IsDBNullAsync(3, cancellationToken) ? string.Empty : reader.GetString(3),
+                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt32(4),
+                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6)));
         }
 
-        return sourceIds;
+        return tracks;
     }
 
     public async Task<long?> GetTrackIdForFilePathAsync(string filePath, CancellationToken cancellationToken = default)
@@ -7080,6 +7073,7 @@ ON CONFLICT(library_id, folder_id, target_day) DO UPDATE SET
     public async Task<bool> TryStartRecommendationGenerationAsync(
         RecommendationGenerationStateKey key,
         string reasonCode,
+        DateTimeOffset? runningExpiresBeforeUtc = null,
         CancellationToken cancellationToken = default)
     {
         if (!IsValidRecommendationGenerationKey(key))
@@ -7102,11 +7096,23 @@ SET status = 'running',
 WHERE library_id = @libraryId
   AND folder_id = @folderId
   AND target_day = @targetDay
-  AND status IN ('pending', 'failed');";
+  AND (
+      status IN ('pending', 'failed')
+      OR (
+          status = 'running'
+          AND @runningExpiresBeforeUtc IS NOT NULL
+          AND COALESCE(started_at_utc, updated_at_utc, '') < @runningExpiresBeforeUtc
+      )
+  );";
         await using var command = new SqliteCommand(sql, connection);
         AddRecommendationGenerationKeyParameters(command, key);
         command.Parameters.AddWithValue("reasonCode", NormalizeRecommendationGenerationText(reasonCode) ?? "running");
         command.Parameters.AddWithValue("startedAtUtc", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue(
+            "runningExpiresBeforeUtc",
+            runningExpiresBeforeUtc.HasValue
+                ? runningExpiresBeforeUtc.Value.ToString("O", CultureInfo.InvariantCulture)
+                : DBNull.Value);
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 

@@ -362,6 +362,14 @@ public sealed record FolderAliasDto(long Id, long FolderId, string AliasName);
 public sealed record LibraryLogEntry(DateTimeOffset TimestampUtc, string Level, string Message);
 
 public sealed record LibraryScanInfo(DateTimeOffset? LastRunUtc, int ArtistCount, int AlbumCount, int TrackCount);
+public sealed record LibraryRecommendationSeedTrackDto(
+    long TrackId,
+    string Title,
+    string Artist,
+    string Album,
+    int? DurationMs,
+    string? Isrc,
+    string? DeezerTrackId);
 public sealed record LibraryStatsDto(
     int TotalArtists,
     int TotalAlbums,

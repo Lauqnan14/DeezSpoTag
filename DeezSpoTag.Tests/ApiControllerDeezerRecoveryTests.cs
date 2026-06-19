@@ -36,7 +36,8 @@ public sealed class ApiControllerDeezerRecoveryTests
             MusicServices = musicServices,
             TracklistSongCacheStore = null!,
             CrossDeviceSyncService = null!,
-            SpotifyHomeFeedRuntimeService = null!
+            SpotifyHomeFeedRuntimeService = null!,
+            TidalAccessTokenProvider = null!
         });
 
         var recoverMethod = typeof(ApiController).GetMethod(
@@ -83,7 +84,8 @@ public sealed class ApiControllerDeezerRecoveryTests
             MusicServices = musicServices,
             TracklistSongCacheStore = null!,
             CrossDeviceSyncService = null!,
-            SpotifyHomeFeedRuntimeService = null!
+            SpotifyHomeFeedRuntimeService = null!,
+            TidalAccessTokenProvider = null!
         });
 
         var method = typeof(ApiController).GetMethod(

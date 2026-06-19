@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
+using Newtonsoft.Json.Linq;
 using GwTrack = DeezSpoTag.Core.Models.Deezer.GwTrack;
 
 namespace DeezSpoTag.Web.Services;
@@ -22,7 +23,6 @@ public sealed class LibraryRecommendationService
     private const string FolderContentPodcast = "podcast";
     public sealed class LibraryRecommendationCollaborators
     {
-        public DeezerTrackRecommendationService DeezerRecommendations { get; init; } = null!;
         public LibraryRepository Repository { get; init; } = null!;
         public ShazamRecognitionService ShazamRecognitionService { get; init; } = null!;
         public ShazamDiscoveryService ShazamDiscoveryService { get; init; } = null!;
@@ -35,6 +35,7 @@ public sealed class LibraryRecommendationService
     public const string RecommendationSource = "recommendations";
     public const string RecommendationSourceId = "daily-rotation";
     private const string StatusMatched = "matched";
+    private const string StatusMatchedNoRelated = "matched_no_related";
     private const string StatusError = "error";
     private const string StatusNoMatch = "no_match";
     private const string UnknownTitle = "Unknown";
@@ -54,13 +55,19 @@ public sealed class LibraryRecommendationService
     private const int MaxDailyRecommendations = 50;
     private const int RecommendationPoolMultiplier = 3;
     private const int RecommendationPoolLimit = MaxDailyRecommendations * RecommendationPoolMultiplier;
+    private const int DailySeedProbeLimit = 32;
+    private const int DeezerSearchLimit = 12;
+    private const int MaxArtistOccurrences = 2;
+    private const int MaxAlbumOccurrences = 2;
     private const int ShazamRelatedPerSeed = 10;
     private const double ShazamDeezerMinTitleSimilarity = 0.62d;
     private const double ShazamDeezerMinArtistSimilarity = 0.52d;
     private const int ShazamDeezerMaxDurationDeltaSeconds = 24;
-    private const int ShazamInlineRefreshBudget = 12;
+    private const int ShazamSelectedSeedLimit = 12;
     private const int ShazamBackgroundBatchSize = 120;
     private static readonly TimeSpan ShazamCacheTtl = TimeSpan.FromDays(14);
+    private static readonly TimeSpan RecommendationGenerationLease = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan TrackMixRequestTimeout = TimeSpan.FromSeconds(8);
     private static readonly HashSet<string> RejectedDerivativeTerms = new(StringComparer.OrdinalIgnoreCase)
     {
         "cover",
@@ -70,7 +77,6 @@ public sealed class LibraryRecommendationService
         "tribute"
     };
 
-    private readonly DeezerTrackRecommendationService _deezerRecommendations;
     private readonly LibraryRepository _repository;
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly ShazamDiscoveryService _shazamDiscoveryService;
@@ -91,7 +97,6 @@ public sealed class LibraryRecommendationService
         ILogger<LibraryRecommendationService> logger,
         IHostApplicationLifetime? hostApplicationLifetime = null)
     {
-        _deezerRecommendations = collaborators.DeezerRecommendations;
         _repository = collaborators.Repository;
         _shazamRecognitionService = collaborators.ShazamRecognitionService;
         _shazamDiscoveryService = collaborators.ShazamDiscoveryService;
@@ -118,6 +123,27 @@ public sealed class LibraryRecommendationService
         IReadOnlyList<RecommendationTrackDto> Tracks,
         string? StationImageUrl = null);
     private sealed record RecommendationBuildResult(RecommendationDetailDto? Detail, IReadOnlyList<string> ReasonCodes);
+    private sealed record ResolvedRecommendationSeed(LibraryRecommendationSeedTrackDto LocalTrack, string DeezerTrackId);
+    private sealed class RecommendationAccumulator
+    {
+        public RecommendationAccumulator(int limit)
+        {
+            Limit = limit;
+            DestinationTracks = new List<RecommendationTrackDto>(limit);
+            OverflowTracks = new List<RecommendationTrackDto>(limit);
+            SeenRecommendationIds = new HashSet<string>(StringComparer.Ordinal);
+            ArtistCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            AlbumCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        }
+
+        public int Limit { get; }
+        public List<RecommendationTrackDto> DestinationTracks { get; }
+        public List<RecommendationTrackDto> OverflowTracks { get; }
+        public HashSet<string> SeenRecommendationIds { get; }
+        public Dictionary<string, int> ArtistCounts { get; }
+        public Dictionary<string, int> AlbumCounts { get; }
+        public int FailedSeedLoads { get; set; }
+    }
     private sealed record PersistDailyPoolResult(bool Success, string? ReasonCode = null)
     {
         public static PersistDailyPoolResult Ok { get; } = new(true);
@@ -761,10 +787,20 @@ public sealed class LibraryRecommendationService
             return "Recommendation generation failed in the background. Try regenerating the station.";
         }
 
-        if (reasonCodes.Contains("no_deezer_source_ids", StringComparer.Ordinal)
+        if (reasonCodes.Contains("no_seed_tracks", StringComparer.Ordinal)
             || reasonCodes.Contains("no_library_tracks", StringComparer.Ordinal))
         {
             return "No library tracks are available to seed recommendations.";
+        }
+
+        if (reasonCodes.Contains("deezer_seed_resolution_failed", StringComparer.Ordinal))
+        {
+            return "No local tracks could be identified on Deezer for recommendation seeding.";
+        }
+
+        if (reasonCodes.Contains("dedupe_removed_all", StringComparer.Ordinal))
+        {
+            return "All generated recommendation tracks already exist in the library or queue.";
         }
 
         if (reasonCodes.Contains("all_candidates_rejected_or_ignored", StringComparer.Ordinal))
@@ -970,7 +1006,12 @@ public sealed class LibraryRecommendationService
                 cancellationToken);
         }
 
-        if (!await _repository.TryStartRecommendationGenerationAsync(stateKey, reasonCode, cancellationToken))
+        var runningExpiresBeforeUtc = DateTimeOffset.UtcNow - RecommendationGenerationLease;
+        if (!await _repository.TryStartRecommendationGenerationAsync(
+                stateKey,
+                reasonCode,
+                runningExpiresBeforeUtc,
+                cancellationToken))
         {
             return false;
         }
@@ -995,7 +1036,6 @@ public sealed class LibraryRecommendationService
                     cancellationToken);
             }
 
-            await RefreshShazamScopeAsync(scope, cancellationToken);
             var dailyPool = await BuildDailyPoolAsync(scope, dayLocal, stationImageUrl, cancellationToken);
             if (dailyPool.Detail is null)
             {
@@ -1291,18 +1331,13 @@ public sealed class LibraryRecommendationService
         CancellationToken cancellationToken)
     {
         var reasonCodes = new List<string>();
-        var libraryDeezerIds = await _repository.GetLibraryDeezerTrackSourceIdsAsync(
-            scope.LibraryId,
-            scope.FolderId,
+        var orderedSeeds = await GetOrderedRecommendationSeedsAsync(
+            scope,
+            dayUtc,
             cancellationToken);
-        var libraryIdSet = new HashSet<string>(
-            libraryDeezerIds
-                .Select(NormalizeId)
-                .Where(id => !string.IsNullOrWhiteSpace(id)),
-            StringComparer.Ordinal);
-        if (libraryIdSet.Count == 0)
+        if (orderedSeeds.Count == 0)
         {
-            reasonCodes.Add("no_deezer_source_ids");
+            reasonCodes.Add("no_seed_tracks");
         }
 
         var rejectedTrackIds = await _repository.GetRecommendationRejectedTrackIdsAsync(
@@ -1311,35 +1346,36 @@ public sealed class LibraryRecommendationService
             scope.StationId,
             cancellationToken);
 
-        var deezerTracks = new List<RecommendationTrackDto>();
-        if (libraryIdSet.Count > 0)
+        List<RecommendationTrackDto> deezerTracks;
+        try
         {
-            try
+            var deezerResult = await BuildDeezerRecommendationsAsync(
+                orderedSeeds,
+                RecommendationPoolLimit,
+                cancellationToken);
+            deezerTracks = deezerResult.Tracks
+                .Select(track => NormalizeRecommendationTrack(track))
+                .Where(track => !string.IsNullOrWhiteSpace(track.Id))
+                .Where(track => !rejectedTrackIds.Contains(track.Id))
+                .ToList();
+            if (deezerResult.ResolvedSeedCount == 0)
             {
-                var deezerDetail = await _deezerRecommendations.GetDailyRecommendationsAsync(
-                    scope.LibraryId,
-                    RecommendationPoolLimit,
-                    scope.FolderId,
-                    cancellationToken);
-                deezerTracks = (deezerDetail?.Tracks ?? Array.Empty<RecommendationTrackDto>())
-                    .Select(track => NormalizeRecommendationTrack(track))
-                    .Where(track => !string.IsNullOrWhiteSpace(track.Id))
-                    .Where(track => !rejectedTrackIds.Contains(track.Id))
-                    .ToList();
-                if (deezerTracks.Count == 0)
-                {
-                    reasonCodes.Add("deezer_empty");
-                }
+                reasonCodes.Add("deezer_seed_resolution_failed");
             }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            if (deezerTracks.Count == 0)
             {
-                reasonCodes.Add("deezer_failed");
-                _logger.LogWarning(
-                    ex,
-                    "Failed to load Deezer recommendations for library {LibraryId}, folder {FolderId}.",
-                    scope.LibraryId,
-                    scope.FolderId);
+                reasonCodes.Add("deezer_empty");
             }
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            reasonCodes.Add("deezer_failed");
+            _logger.LogWarning(
+                ex,
+                "Failed to build Deezer recommendations for library {LibraryId}, folder {FolderId}.",
+                scope.LibraryId,
+                scope.FolderId);
+            deezerTracks = new List<RecommendationTrackDto>();
         }
 
         List<RecommendationTrackDto> shazamTracks;
@@ -1347,14 +1383,14 @@ public sealed class LibraryRecommendationService
         {
             shazamTracks = await BuildShazamRecommendationsAsync(
                 scope,
-                dayUtc,
+                orderedSeeds,
                 cancellationToken);
             shazamTracks = shazamTracks
                 .Where(track => !rejectedTrackIds.Contains(NormalizeId(track.Id)))
                 .ToList();
             if (shazamTracks.Count == 0)
             {
-                reasonCodes.Add(IsShazamRecommendationAvailable() ? "shazam_empty" : "shazam_unavailable");
+                reasonCodes.Add(IsShazamRecommendationAvailable() ? "shazam_no_related" : "shazam_unavailable");
             }
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -1376,6 +1412,10 @@ public sealed class LibraryRecommendationService
         merged = await FilterRecommendationCandidatesThroughDedupeAsync(scope, merged, cancellationToken);
         if (merged.Count == 0)
         {
+            if (deezerTracks.Count > 0 || shazamTracks.Count > 0)
+            {
+                reasonCodes.Add("dedupe_removed_all");
+            }
             reasonCodes.Add(EmptyPoolReason);
             return new RecommendationBuildResult(null, reasonCodes.Distinct(StringComparer.Ordinal).ToList());
         }
@@ -1395,6 +1435,511 @@ public sealed class LibraryRecommendationService
                 merged,
                 DateTimeOffset.UtcNow),
             reasonCodes.Distinct(StringComparer.Ordinal).ToList());
+    }
+
+    private async Task<List<LibraryRecommendationSeedTrackDto>> GetOrderedRecommendationSeedsAsync(
+        RecommendationScope scope,
+        DateOnly dayUtc,
+        CancellationToken cancellationToken)
+    {
+        var localTracks = await _repository.GetRecommendationSeedTracksForLibraryScopeAsync(
+            scope.LibraryId,
+            scope.FolderId,
+            cancellationToken);
+        return localTracks
+            .Where(HasUsableRecommendationSeedMetadata)
+            .OrderBy(track => ComputeDailyScore(track.TrackId.ToString(), dayUtc))
+            .ThenBy(track => track.TrackId)
+            .ToList();
+    }
+
+    private static bool HasUsableRecommendationSeedMetadata(LibraryRecommendationSeedTrackDto track)
+    {
+        return !string.IsNullOrWhiteSpace(track.DeezerTrackId)
+            || (!string.IsNullOrWhiteSpace(track.Title) && !string.IsNullOrWhiteSpace(track.Artist))
+            || !string.IsNullOrWhiteSpace(track.Isrc);
+    }
+
+    private async Task<(List<RecommendationTrackDto> Tracks, int ResolvedSeedCount)> BuildDeezerRecommendationsAsync(
+        IReadOnlyList<LibraryRecommendationSeedTrackDto> orderedSeeds,
+        int cappedLimit,
+        CancellationToken cancellationToken)
+    {
+        var resolvedSeeds = await ResolveDeezerRecommendationSeedsAsync(orderedSeeds, cancellationToken);
+        if (resolvedSeeds.Count == 0)
+        {
+            return (new List<RecommendationTrackDto>(), 0);
+        }
+
+        var localDeezerIds = resolvedSeeds
+            .Select(seed => NormalizeId(seed.DeezerTrackId))
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.Ordinal);
+        var accumulator = new RecommendationAccumulator(cappedLimit);
+        foreach (var seed in resolvedSeeds.Take(DailySeedProbeLimit))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var mixTracks = await LoadDeezerTrackMixAsync(seed.DeezerTrackId, cancellationToken);
+                AddUniqueRecommendationTracks(mixTracks, localDeezerIds, accumulator);
+                if (accumulator.DestinationTracks.Count >= cappedLimit
+                    && accumulator.OverflowTracks.Count >= cappedLimit)
+                {
+                    break;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                accumulator.FailedSeedLoads++;
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        ex,
+                        "Deezer recommendation seed load failed for local track {TrackId} / Deezer {DeezerTrackId}.",
+                        seed.LocalTrack.TrackId,
+                        seed.DeezerTrackId);
+                }
+            }
+        }
+
+        AppendOverflowRecommendationTracks(accumulator, cappedLimit);
+        return (accumulator.DestinationTracks, resolvedSeeds.Count);
+    }
+
+    private async Task<List<ResolvedRecommendationSeed>> ResolveDeezerRecommendationSeedsAsync(
+        IReadOnlyList<LibraryRecommendationSeedTrackDto> orderedSeeds,
+        CancellationToken cancellationToken)
+    {
+        var resolved = new List<ResolvedRecommendationSeed>(Math.Min(orderedSeeds.Count, DailySeedProbeLimit));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var seed in orderedSeeds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var deezerId = await ResolveDeezerSeedTrackIdAsync(seed, cancellationToken);
+            deezerId = NormalizeId(deezerId);
+            if (string.IsNullOrWhiteSpace(deezerId) || !seen.Add(deezerId))
+            {
+                continue;
+            }
+
+            resolved.Add(new ResolvedRecommendationSeed(seed, deezerId));
+            if (resolved.Count >= DailySeedProbeLimit)
+            {
+                break;
+            }
+        }
+
+        return resolved;
+    }
+
+    private async Task<string> ResolveDeezerSeedTrackIdAsync(
+        LibraryRecommendationSeedTrackDto seed,
+        CancellationToken cancellationToken)
+    {
+        var existingId = NormalizeId(seed.DeezerTrackId);
+        if (IsNumericIdentifier(existingId))
+        {
+            return existingId;
+        }
+
+        var isrcId = await TryResolveDeezerSeedByIsrcAsync(seed, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(isrcId))
+        {
+            await PersistResolvedDeezerSeedAsync(seed.TrackId, isrcId, cancellationToken);
+            return isrcId;
+        }
+
+        var metadataId = await TryResolveDeezerSeedByMetadataAsync(seed, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(metadataId))
+        {
+            await PersistResolvedDeezerSeedAsync(seed.TrackId, metadataId, cancellationToken);
+            return metadataId;
+        }
+
+        return string.Empty;
+    }
+
+    private async Task<string> TryResolveDeezerSeedByIsrcAsync(
+        LibraryRecommendationSeedTrackDto seed,
+        CancellationToken cancellationToken)
+    {
+        var isrc = NormalizeText(seed.Isrc, string.Empty);
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var track = await _deezerClient.GetTrackByIsrcAsync(isrc).WaitAsync(cancellationToken);
+            return IsValidDeezerSeedCandidate(seed, track)
+                ? NormalizeId(track.Id?.ToString())
+                : string.Empty;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer recommendation ISRC seed resolve failed for local track {TrackId}.", seed.TrackId);
+            }
+            return string.Empty;
+        }
+    }
+
+    private async Task<string> TryResolveDeezerSeedByMetadataAsync(
+        LibraryRecommendationSeedTrackDto seed,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(seed.Title) || string.IsNullOrWhiteSpace(seed.Artist))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var query = $"{seed.Artist} {seed.Title}".Trim();
+            var result = await _deezerClient.SearchTrackAsync(
+                    query,
+                    new ApiOptions { Limit = DeezerSearchLimit, Strict = true })
+                .WaitAsync(cancellationToken);
+            return SelectBestDeezerSeedCandidateId(result, seed);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer recommendation metadata seed resolve failed for local track {TrackId}.", seed.TrackId);
+            }
+            return string.Empty;
+        }
+    }
+
+    private string SelectBestDeezerSeedCandidateId(
+        DeezerSearchResult? result,
+        LibraryRecommendationSeedTrackDto seed)
+    {
+        if (result?.Data == null || result.Data.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        foreach (var item in result.Data)
+        {
+            if (!TryParseDeezerSearchCandidate(item, out var deezerId, out var candidate))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(deezerId) && IsValidDeezerSeedCandidate(seed, candidate))
+            {
+                return deezerId;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static bool IsValidDeezerSeedCandidate(LibraryRecommendationSeedTrackDto seed, ApiTrack? candidate)
+    {
+        if (candidate is null || string.IsNullOrWhiteSpace(candidate.Id?.ToString()))
+        {
+            return false;
+        }
+
+        if (HasIsrcMismatch(seed.Isrc, candidate.Isrc))
+        {
+            return false;
+        }
+
+        var sourceTitle = NormalizeMatchText(seed.Title);
+        var candidateTitle = NormalizeMatchText(BuildCandidateTitle(candidate));
+        if (!string.IsNullOrWhiteSpace(sourceTitle)
+            && ComputeTokenSimilarity(sourceTitle, candidateTitle) < ShazamDeezerMinTitleSimilarity)
+        {
+            return false;
+        }
+
+        var sourceArtist = NormalizeMatchText(seed.Artist);
+        var candidateArtist = NormalizeMatchText(candidate.Artist?.Name);
+        if (!string.IsNullOrWhiteSpace(sourceArtist)
+            && ComputeTokenSimilarity(sourceArtist, candidateArtist) < ShazamDeezerMinArtistSimilarity)
+        {
+            return false;
+        }
+
+        return !HasSeedDurationMismatch(seed.DurationMs, candidate.Duration);
+    }
+
+    private static bool HasSeedDurationMismatch(int? seedDurationMs, int candidateDurationSeconds)
+    {
+        if (seedDurationMs is not > 0 || candidateDurationSeconds <= 0)
+        {
+            return false;
+        }
+
+        var seedSeconds = (int)Math.Round(seedDurationMs.Value / 1000d);
+        return Math.Abs(seedSeconds - candidateDurationSeconds) > 5;
+    }
+
+    private async Task PersistResolvedDeezerSeedAsync(
+        long trackId,
+        string deezerId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedId = NormalizeId(deezerId);
+        if (string.IsNullOrWhiteSpace(normalizedId))
+        {
+            return;
+        }
+
+        await _repository.UpsertTrackSourceLinkAsync(
+            trackId,
+            "deezer",
+            normalizedId,
+            $"https://www.deezer.com/track/{normalizedId}",
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<RecommendationTrackDto>> LoadDeezerTrackMixAsync(
+        string sourceTrackId,
+        CancellationToken cancellationToken)
+    {
+        var response = await _deezerGatewayService
+            .GetContextualTrackMixAsync(new[] { sourceTrackId })
+            .WaitAsync(TrackMixRequestTimeout, cancellationToken);
+        if (response is null)
+        {
+            return Array.Empty<RecommendationTrackDto>();
+        }
+
+        var results = response["results"] as JObject ?? response;
+        var data = results["data"] as JArray ?? results["DATA"] as JArray;
+        if (data is null || data.Count == 0)
+        {
+            return Array.Empty<RecommendationTrackDto>();
+        }
+
+        var tracks = new List<RecommendationTrackDto>(data.Count);
+        for (var i = 0; i < data.Count; i++)
+        {
+            var mapped = MapDeezerMixTrack(data[i] as JObject, i + 1);
+            if (mapped is not null)
+            {
+                tracks.Add(mapped);
+            }
+        }
+
+        return tracks;
+    }
+
+    private static RecommendationTrackDto? MapDeezerMixTrack(JObject? track, int fallbackPosition)
+    {
+        if (track is null)
+        {
+            return null;
+        }
+
+        var id = GetJObjectString(track, "SNG_ID", "id");
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var title = GetJObjectString(track, "SNG_TITLE", "title");
+        var version = GetJObjectString(track, "VERSION", "title_version");
+        if (!string.IsNullOrWhiteSpace(version)
+            && !title.Contains(version, StringComparison.OrdinalIgnoreCase))
+        {
+            title = string.IsNullOrWhiteSpace(title) ? version : $"{title} {version}";
+        }
+
+        return NormalizeRecommendationTrack(new RecommendationTrackDto(
+            id,
+            title,
+            GetJObjectInt(track, "DURATION", "duration") ?? 0,
+            GetJObjectString(track, "ISRC", "isrc"),
+            GetJObjectInt(track, "TRACK_NUMBER", "position", "track_position") ?? fallbackPosition,
+            new RecommendationArtistDto(
+                GetJObjectString(track, "ART_ID", "artist_id"),
+                FirstNonEmpty(GetJObjectString(track, "ART_NAME", "artist_name"), UnknownArtist) ?? UnknownArtist),
+            new RecommendationAlbumDto(
+                GetJObjectString(track, "ALB_ID", "album_id"),
+                FirstNonEmpty(GetJObjectString(track, "ALB_TITLE", "album_title"), UnknownAlbum) ?? UnknownAlbum,
+                FirstNonEmpty(
+                    GetJObjectString(track, "ALB_PICTURE_MEDIUM", "album_cover_medium", "cover_medium"),
+                    BuildCoverUrl(GetJObjectString(track, "ALB_PICTURE", "album_cover"))) ?? string.Empty)));
+    }
+
+    private static string GetJObjectString(JObject source, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var token = source[key];
+            if (token is null || token.Type == JTokenType.Null)
+            {
+                continue;
+            }
+
+            var value = token.Type == JTokenType.String
+                ? token.Value<string>()
+                : token.ToString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static int? GetJObjectInt(JObject source, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var token = source[key];
+            if (token is null || token.Type == JTokenType.Null)
+            {
+                continue;
+            }
+
+            if (token.Type == JTokenType.Integer && token.Value<int>() is var number)
+            {
+                return number;
+            }
+
+            if (int.TryParse(token.ToString(), out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static void AddUniqueRecommendationTracks(
+        IReadOnlyList<RecommendationTrackDto> sourceTracks,
+        HashSet<string> normalizedLibraryIds,
+        RecommendationAccumulator accumulator)
+    {
+        foreach (var track in sourceTracks)
+        {
+            if (accumulator.DestinationTracks.Count >= accumulator.Limit
+                && accumulator.OverflowTracks.Count >= accumulator.Limit)
+            {
+                break;
+            }
+
+            TryAddRecommendationTrack(track, normalizedLibraryIds, accumulator);
+        }
+    }
+
+    private static void TryAddRecommendationTrack(
+        RecommendationTrackDto track,
+        HashSet<string> normalizedLibraryIds,
+        RecommendationAccumulator accumulator)
+    {
+        var normalizedTrackId = NormalizeId(track.Id);
+        if (string.IsNullOrWhiteSpace(normalizedTrackId)
+            || normalizedLibraryIds.Contains(normalizedTrackId)
+            || !accumulator.SeenRecommendationIds.Add(normalizedTrackId))
+        {
+            return;
+        }
+
+        if (CanAddWithDiversity(track, accumulator.ArtistCounts, accumulator.AlbumCounts))
+        {
+            accumulator.DestinationTracks.Add(track with { TrackPosition = accumulator.DestinationTracks.Count + 1 });
+            IncrementDiversityCount(GetArtistDiversityKey(track), accumulator.ArtistCounts);
+            IncrementDiversityCount(GetAlbumDiversityKey(track), accumulator.AlbumCounts);
+            return;
+        }
+
+        accumulator.OverflowTracks.Add(track);
+    }
+
+    private static void AppendOverflowRecommendationTracks(
+        RecommendationAccumulator accumulator,
+        int cappedLimit)
+    {
+        if (accumulator.DestinationTracks.Count >= cappedLimit || accumulator.OverflowTracks.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var overflowTrack in accumulator.OverflowTracks)
+        {
+            if (accumulator.DestinationTracks.Count >= cappedLimit)
+            {
+                return;
+            }
+
+            accumulator.DestinationTracks.Add(overflowTrack with { TrackPosition = accumulator.DestinationTracks.Count + 1 });
+        }
+    }
+
+    private static bool CanAddWithDiversity(
+        RecommendationTrackDto track,
+        Dictionary<string, int> artistCounts,
+        Dictionary<string, int> albumCounts)
+    {
+        var artistKey = GetArtistDiversityKey(track);
+        var albumKey = GetAlbumDiversityKey(track);
+        return GetDiversityCount(artistKey, artistCounts) < MaxArtistOccurrences
+               && GetDiversityCount(albumKey, albumCounts) < MaxAlbumOccurrences;
+    }
+
+    private static string GetArtistDiversityKey(RecommendationTrackDto track)
+    {
+        var artistId = NormalizeId(track.Artist.Id);
+        if (!string.IsNullOrWhiteSpace(artistId))
+        {
+            return $"artist:{artistId}";
+        }
+
+        var artistName = NormalizeText(track.Artist.Name, UnknownArtist);
+        return !string.IsNullOrWhiteSpace(artistName)
+               && !artistName.Equals(UnknownArtist, StringComparison.OrdinalIgnoreCase)
+            ? $"artist-name:{artistName.ToLowerInvariant()}"
+            : string.Empty;
+    }
+
+    private static string GetAlbumDiversityKey(RecommendationTrackDto track)
+    {
+        var albumId = NormalizeId(track.Album.Id);
+        if (!string.IsNullOrWhiteSpace(albumId))
+        {
+            return $"album:{albumId}";
+        }
+
+        var albumTitle = NormalizeText(track.Album.Title, UnknownAlbum);
+        return !string.IsNullOrWhiteSpace(albumTitle)
+               && !albumTitle.Equals(UnknownAlbum, StringComparison.OrdinalIgnoreCase)
+            ? $"album-title:{albumTitle.ToLowerInvariant()}"
+            : string.Empty;
+    }
+
+    private static int GetDiversityCount(string key, Dictionary<string, int> counts)
+        => string.IsNullOrWhiteSpace(key) ? 0 : counts.GetValueOrDefault(key);
+
+    private static void IncrementDiversityCount(string key, Dictionary<string, int> counts)
+    {
+        if (!string.IsNullOrWhiteSpace(key))
+        {
+            counts[key] = GetDiversityCount(key, counts) + 1;
+        }
     }
 
     private async Task<List<RecommendationTrackDto>> FilterRecommendationCandidatesThroughDedupeAsync(
@@ -1579,7 +2124,7 @@ public sealed class LibraryRecommendationService
 
     private async Task<List<RecommendationTrackDto>> BuildShazamRecommendationsAsync(
         RecommendationScope scope,
-        DateOnly dayUtc,
+        IReadOnlyList<LibraryRecommendationSeedTrackDto> orderedSeeds,
         CancellationToken cancellationToken)
     {
         if (!IsShazamRecommendationAvailable())
@@ -1587,19 +2132,22 @@ public sealed class LibraryRecommendationService
             return new List<RecommendationTrackDto>();
         }
 
-        var orderedSeeds = await GetOrderedShazamSeedTrackIdsAsync(scope, dayUtc, cancellationToken);
-        if (orderedSeeds.Count == 0)
+        var shazamSeedTrackIds = orderedSeeds
+            .Select(seed => seed.TrackId)
+            .Take(ShazamSelectedSeedLimit)
+            .ToList();
+        if (shazamSeedTrackIds.Count == 0)
         {
             return new List<RecommendationTrackDto>();
         }
 
-        await RefreshStaleShazamSeedsAsync(scope, orderedSeeds, cancellationToken);
+        await RefreshStaleShazamSeedsAsync(scope, shazamSeedTrackIds, cancellationToken);
 
         var cacheByTrackId = await _repository.GetShazamTrackCacheByTrackIdForLibraryAsync(
             scope.LibraryId,
             scope.FolderId,
             cancellationToken);
-        return BuildRecommendationsFromShazamCache(orderedSeeds, cacheByTrackId, cancellationToken);
+        return BuildRecommendationsFromShazamCache(shazamSeedTrackIds, cacheByTrackId, cancellationToken);
     }
 
     private bool IsShazamRecommendationAvailable()
@@ -1613,28 +2161,9 @@ public sealed class LibraryRecommendationService
         return false;
     }
 
-    private async Task<List<long>> GetOrderedShazamSeedTrackIdsAsync(
-        RecommendationScope scope,
-        DateOnly dayUtc,
-        CancellationToken cancellationToken)
-    {
-        var localTrackIds = await _repository.GetTrackIdsForLibraryScopeAsync(
-            scope.LibraryId,
-            scope.FolderId,
-            cancellationToken);
-        if (localTrackIds.Count == 0)
-        {
-            return new List<long>();
-        }
-
-        return localTrackIds
-            .OrderBy(trackId => ComputeDailyScore(trackId.ToString(), dayUtc))
-            .ToList();
-    }
-
     private async Task RefreshStaleShazamSeedsAsync(
         RecommendationScope scope,
-        IReadOnlyList<long> orderedSeeds,
+        IReadOnlyList<long> selectedSeedTrackIds,
         CancellationToken cancellationToken)
     {
         var staleBeforeUtc = DateTimeOffset.UtcNow - ShazamCacheTtl;
@@ -1649,19 +2178,13 @@ public sealed class LibraryRecommendationService
         }
 
         var staleSet = new HashSet<long>(staleTrackIds);
-        var inlineTargets = orderedSeeds
+        var inlineTargets = selectedSeedTrackIds
             .Where(staleSet.Contains)
-            .Take(ShazamInlineRefreshBudget)
             .ToList();
 
         if (inlineTargets.Count > 0)
         {
             await RefreshShazamCacheForTrackBatchAsync(inlineTargets, cancellationToken);
-        }
-
-        if (staleTrackIds.Count > inlineTargets.Count)
-        {
-            StartBackgroundShazamRefresh(scope, null);
         }
     }
 
@@ -1705,35 +2228,6 @@ public sealed class LibraryRecommendationService
     {
         return string.Equals(cache.Status, StatusMatched, StringComparison.OrdinalIgnoreCase)
                && cache.RelatedTracks.Count > 0;
-    }
-
-    private async Task RefreshShazamScopeAsync(
-        RecommendationScope scope,
-        CancellationToken cancellationToken)
-    {
-        if (!_shazamRecognitionService.IsAvailable)
-        {
-            return;
-        }
-
-        var staleBeforeUtc = DateTimeOffset.UtcNow - ShazamCacheTtl;
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var batch = await _repository.GetTrackIdsNeedingShazamRefreshAsync(
-                scope.LibraryId,
-                staleBeforeUtc,
-                scope.FolderId,
-                ShazamBackgroundBatchSize,
-                cancellationToken);
-            if (batch.Count == 0)
-            {
-                break;
-            }
-
-            await RefreshShazamCacheForTrackBatchAsync(batch, cancellationToken);
-        }
     }
 
     private static void TryAddShazamRelatedRecommendation(
@@ -2124,7 +2618,7 @@ public sealed class LibraryRecommendationService
         await _repository.UpsertTrackShazamCacheAsync(
             new LibraryRepository.TrackShazamCacheUpsertInput(
                 trackId,
-                StatusMatched,
+                relatedRecommendations.Count > 0 ? StatusMatched : StatusMatchedNoRelated,
                 recognizedTrack.ShazamTrackId,
                 NormalizeText(recognizedTrack.Recognition.Title, string.Empty),
                 GetRecognitionArtist(recognizedTrack.Recognition),
