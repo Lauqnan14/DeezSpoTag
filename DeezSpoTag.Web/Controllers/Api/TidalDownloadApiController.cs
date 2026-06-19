@@ -68,7 +68,7 @@ public sealed class TidalDownloadApiController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Tidal video stream lookup failed for {VideoId}.", id);
             return StatusCode(StatusCodes.Status502BadGateway, new { error = "Tidal video stream lookup failed." });

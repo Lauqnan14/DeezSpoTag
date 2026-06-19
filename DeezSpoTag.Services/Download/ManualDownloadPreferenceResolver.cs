@@ -11,7 +11,12 @@ public static class ManualDownloadPreferenceResolver
             return "auto";
         }
 
-        return DownloadSourceCatalog.NormalizeEngineOrAuto(settings.Service) ?? DownloadSourceCatalog.Auto;
+        var normalized = DownloadSourceCatalog.NormalizeEngineOrAuto(settings.Service) ?? DownloadSourceCatalog.Auto;
+        return normalized switch
+        {
+            "auto" or "amazon" or "apple" or "deezer" or "qobuz" or "tidal" => normalized,
+            _ => DownloadSourceCatalog.Auto
+        };
     }
 
     public static string ResolvePreferredQuality(

@@ -2894,7 +2894,7 @@ async function loadLibraryScanStatus() {
             libraryState.runtimeRefreshPolicy = normalizeLibraryRefreshPolicy(runtime.refreshPolicy);
         }
         applyLibraryScanStatusSuccess(elements, status, stats, selectedFolderId);
-        await refreshArtistsAfterScanStatus(status, stats);
+        await refreshArtistsDuringActiveScan(status, stats);
         return status;
     } catch (error) {
         applyLibraryScanStatusFailure(elements);
@@ -2904,7 +2904,7 @@ async function loadLibraryScanStatus() {
     }
 }
 
-async function refreshArtistsAfterScanStatus(status, stats) {
+async function refreshArtistsDuringActiveScan(status, stats) {
     const hasArtistsGrid = !!document.getElementById('artistsGrid');
     const running = !!status?.running;
     const statsArtistCount = Number(stats?.totals?.artists);
@@ -2927,7 +2927,7 @@ async function refreshArtistsAfterScanStatus(status, stats) {
         if (artistCountChanged && !libraryState.scanArtistsRefreshInFlight) {
             libraryState.scanArtistsRefreshInFlight = true;
             try {
-                await requestArtistRefresh({ force: true });
+                await refreshArtistsAfterScanCompletion();
             } finally {
                 libraryState.scanArtistsRefreshInFlight = false;
             }
@@ -3670,6 +3670,10 @@ async function requestArtistRefresh(options = {}) {
     } finally {
         libraryState.artistRefreshPromise = null;
     }
+}
+
+async function refreshArtistsAfterScanCompletion() {
+    return requestArtistRefresh({ force: true });
 }
 
 function clearArtistGridForScopedLoad() {

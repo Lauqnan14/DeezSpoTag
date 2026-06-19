@@ -322,8 +322,9 @@ public sealed partial class ShazamDiscoveryService
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex)
         {
+            System.Diagnostics.Debug.WriteLine($"Shazam port process kill skipped: {ex.Message}");
         }
     }
 

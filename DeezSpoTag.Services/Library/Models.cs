@@ -558,7 +558,11 @@ public sealed record PlaylistWatchlistDto(
     string? LastRunMessage = null,
     DateTimeOffset? NextAttemptUtc = null,
     int? ConsecutiveFailures = null,
-    int? SyncPriority = null);
+    int? SyncPriority = null,
+    int? SyncedTrackCount = null,
+    int? IncompleteTrackCount = null,
+    int? IgnoredBlockedTrackCount = null,
+    int? ReroutedTrackCount = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,

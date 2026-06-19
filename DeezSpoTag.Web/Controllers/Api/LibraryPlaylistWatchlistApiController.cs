@@ -67,33 +67,18 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var allPreferences = await _repository.GetPlaylistWatchPreferencesAsync(cancellationToken);
         var globalBlockRules = PlaylistTrackBlockRuleHelper.BuildGlobalRules(allPreferences);
-        var hydrated = new List<object>(items.Count);
+        var hydrated = new List<PlaylistWatchlistDto>(items.Count);
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var hydratedItem = HydratePlaylistVisual(item);
             var summary = await BuildPlaylistPresentationSummaryAsync(hydratedItem, allPreferences, globalBlockRules, cancellationToken);
-            hydrated.Add(new
+            hydrated.Add(hydratedItem with
             {
-                hydratedItem.Id,
-                hydratedItem.Source,
-                hydratedItem.SourceId,
-                hydratedItem.Name,
-                hydratedItem.ImageUrl,
-                hydratedItem.Description,
-                hydratedItem.TrackCount,
-                hydratedItem.CreatedAt,
-                hydratedItem.LastCheckedUtc,
-                hydratedItem.SnapshotId,
-                hydratedItem.LastRunStatus,
-                hydratedItem.LastRunMessage,
-                hydratedItem.NextAttemptUtc,
-                hydratedItem.ConsecutiveFailures,
-                hydratedItem.SyncPriority,
-                syncedTrackCount = summary.SyncedTrackCount,
-                incompleteTrackCount = summary.IncompleteTrackCount,
-                ignoredBlockedTrackCount = summary.IgnoredBlockedTrackCount,
-                reroutedTrackCount = summary.ReroutedTrackCount
+                SyncedTrackCount = summary.SyncedTrackCount,
+                IncompleteTrackCount = summary.IncompleteTrackCount,
+                IgnoredBlockedTrackCount = summary.IgnoredBlockedTrackCount,
+                ReroutedTrackCount = summary.ReroutedTrackCount
             });
         }
 

@@ -51,7 +51,7 @@ public static class FallbackPayloadNormalizer
 
         if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
         {
-            var engine = string.IsNullOrWhiteSpace(item.Engine) ? "apple" : item.Engine;
+            var engine = IsAtmosEngine(item.Engine) ? item.Engine! : "apple";
             var quality = string.IsNullOrWhiteSpace(payloadQuality)
                 ? (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase) ? "DOLBY_ATMOS" : "ATMOS")
                 : payloadQuality;
@@ -117,6 +117,10 @@ public static class FallbackPayloadNormalizer
 
         return changed;
     }
+
+    private static bool IsAtmosEngine(string? engine)
+        => string.Equals(engine, "apple", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase);
 
     public static List<FallbackPlanStep> ReadFallbackPlan(JsonObject payloadObj)
     {

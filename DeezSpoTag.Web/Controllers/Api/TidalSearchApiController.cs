@@ -70,7 +70,7 @@ public sealed class TidalSearchApiController : ControllerBase
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Tidal search failed.");
             return StatusCode(StatusCodes.Status502BadGateway, new { available = false, error = "Tidal search failed." });

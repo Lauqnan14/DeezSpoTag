@@ -401,7 +401,7 @@ public sealed class EngineFallbackCoordinator
 
         if (steps.Count == 0)
         {
-            foreach (var decoded in DownloadSourceOrder.ResolveAutoSources(settings, includeDeezer: true)
+            foreach (var decoded in DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null)
                 .Select(DownloadSourceOrder.DecodeAutoSource))
             {
                 AppendPlanStep(steps, seen, decoded.Source, decoded.Quality);
