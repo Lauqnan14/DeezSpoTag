@@ -178,6 +178,10 @@
     font-size: 12px;
 }
 
+#history-content button {
+    touch-action: manipulation;
+}
+
 .autotag-history-layout {
     display: grid;
     gap: 20px;
@@ -352,7 +356,7 @@
 
 @@media (max-width: 768px) {
     .tab-pane#history-content .card-body {
-        overflow-x: hidden;
+        overflow-x: visible;
     }
 
     .autotag-calendar-card {
@@ -365,13 +369,13 @@
     }
 
     .autotag-calendar-toolbar .btn {
-        width: 32px;
-        height: 32px;
+        width: 44px;
+        height: 44px;
         padding: 0;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        flex: 0 0 32px;
+        flex: 0 0 44px;
     }
 
     .autotag-calendar-title {
@@ -402,6 +406,32 @@
 
     .autotag-calendar-day-count {
         font-size: 9px;
+    }
+
+    .autotag-filter-toolbar {
+        display: grid;
+        gap: 10px;
+    }
+
+    .autotag-filter-toolbar .me-2 {
+        margin-right: 0 !important;
+    }
+
+    .autotag-filter-toolbar .btn-group {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+        gap: 8px;
+        width: 100%;
+    }
+
+    .autotag-filter-toolbar .btn-group > .btn {
+        min-height: 44px;
+        border-radius: 8px !important;
+        margin-left: 0 !important;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        white-space: normal;
     }
 }
 
@@ -1356,6 +1386,53 @@
 
 /* Mobile adjustments for watchlist tables */
 @@media (max-width: 768px) {
+    .autotag-history-table thead {
+        display: none;
+    }
+
+    .autotag-history-table tbody tr {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 12px;
+        border-bottom: 1px solid var(--border-secondary);
+    }
+
+    .autotag-history-table tbody td {
+        display: grid;
+        grid-template-columns: minmax(82px, 34%) minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        padding: 4px 0;
+        border: none;
+        word-break: break-word;
+    }
+
+    .autotag-history-table tbody td::before {
+        content: attr(data-label);
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+    }
+
+    .autotag-history-table tbody td[colspan] {
+        display: block;
+    }
+
+    .autotag-history-table tbody td[colspan]::before {
+        content: none;
+    }
+
+    .autotag-history-table .autotag-diff-btn {
+        min-height: 44px;
+        width: 100%;
+        justify-content: center;
+        padding: 8px 12px;
+        border-radius: 8px;
+    }
+
     .watchlist-history-table thead {
         display: none;
     }
@@ -1382,6 +1459,32 @@
         text-transform: uppercase;
         font-size: 11px;
         letter-spacing: 0.04em;
+    }
+
+    .watchlist-history-table > .d-flex {
+        display: grid !important;
+        grid-template-columns: 1fr;
+        align-items: stretch !important;
+    }
+
+    .watchlist-history-table > .d-flex .btn-group {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        width: 100%;
+    }
+
+    .watchlist-history-table > .d-flex .btn-group > .btn {
+        min-height: 44px;
+        border-radius: 8px !important;
+        margin-left: 0 !important;
+        white-space: normal;
+    }
+}
+
+@@media (max-width: 420px) {
+    .watchlist-history-table > .d-flex .btn-group {
+        grid-template-columns: 1fr;
     }
 }
 

@@ -520,12 +520,12 @@
                 ? `<button type="button" class="action-btn action-btn-sm autotag-diff-btn" data-path="${encodedPath}" data-platform="${encodedPlatform}">Diff</button>`
                 : '<span class="text-muted">--</span>';
             return `<tr>
-                <td>${escapeHtml(time)}</td>
-                <td>${escapeHtml(platform)}</td>
-                <td class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}</td>
-                <td>${escapeHtml(accuracy)}</td>
-                <td title="${escapeHtml(inner.path || "")}">${escapeHtml(track)}</td>
-                <td>${diffButton}</td>
+                <td data-label="Time">${escapeHtml(time)}</td>
+                <td data-label="Platform">${escapeHtml(platform)}</td>
+                <td data-label="Status" class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}</td>
+                <td data-label="Accuracy">${escapeHtml(accuracy)}</td>
+                <td data-label="Track" title="${escapeHtml(inner.path || "")}">${escapeHtml(track)}</td>
+                <td data-label="Diff">${diffButton}</td>
             </tr>`;
         }).join("");
     }

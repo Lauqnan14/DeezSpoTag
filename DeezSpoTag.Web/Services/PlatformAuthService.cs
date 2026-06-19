@@ -15,6 +15,7 @@ public class PlatformAuthState
     public AppleMusicAuth? AppleMusic { get; set; }
     public QobuzAuth? Qobuz { get; set; }
     public TidalAuth? Tidal { get; set; }
+    public SoulseekAuth? Soulseek { get; set; }
 }
 
 public class SpotifyConfig
@@ -119,10 +120,22 @@ public class TidalAuth
     public DateTimeOffset? ValidatedAt { get; set; }
 }
 
+public class SoulseekAuth
+{
+    public string? BaseUrl { get; set; }
+    public string? ApiKey { get; set; }
+    public string? Username { get; set; }
+    public bool ConnectionValid { get; set; }
+    public string? LastStatus { get; set; }
+    public string? LastError { get; set; }
+    public DateTimeOffset? CheckedAt { get; set; }
+}
+
 public class PlatformAuthService
 {
     private const string QobuzProtectionPurpose = "DeezSpoTag.PlatformAuth.Qobuz";
     private const string TidalProtectionPurpose = "DeezSpoTag.PlatformAuth.Tidal";
+    private const string SoulseekProtectionPurpose = "DeezSpoTag.PlatformAuth.Soulseek";
     private const string SpotifyFileName = "spotify.json";
     private const string DiscogsFileName = "discogs.json";
     private const string LastFmFileName = "lastfm.json";
@@ -132,6 +145,7 @@ public class PlatformAuthService
     private const string AppleMusicFileName = "applemusic.json";
     private const string QobuzFileName = "qobuz.json";
     private const string TidalFileName = "tidal.json";
+    private const string SoulseekFileName = "soulseek.json";
     private const string LegacyAggregateFileName = "platform-auth.json";
     private const string AutotagDirectory = "autotag";
     private const string MissingStatus = "missing";
@@ -146,6 +160,7 @@ public class PlatformAuthService
     private readonly string[] _legacyAggregateFileCandidates;
     private readonly ProtectedCredentialFileStore _qobuzCredentialStore;
     private readonly ProtectedCredentialFileStore _tidalCredentialStore;
+    private readonly ProtectedCredentialFileStore _soulseekCredentialStore;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly object _statusLock = new();
     private string? _lastStatusSignature;
@@ -178,7 +193,8 @@ public class PlatformAuthService
         JellyfinFileName,
         AppleMusicFileName,
         QobuzFileName,
-        TidalFileName
+        TidalFileName,
+        SoulseekFileName
     };
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -205,6 +221,9 @@ public class PlatformAuthService
         _tidalCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             TidalProtectionPurpose);
+        _soulseekCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            SoulseekProtectionPurpose);
     }
 
     public async Task<PlatformAuthState> LoadAsync()
@@ -275,6 +294,7 @@ public class PlatformAuthService
         await SavePlatformSectionNoLockAsync(AppleMusicFileName, state.AppleMusic);
         await SaveQobuzNoLockAsync(state.Qobuz);
         await SaveTidalNoLockAsync(state.Tidal);
+        await SaveSoulseekNoLockAsync(state.Soulseek);
         TryRetireLegacyAggregateStateNoLock();
         LogAuthStatus(state);
     }
@@ -293,7 +313,8 @@ public class PlatformAuthService
             Jellyfin = await LoadPlatformSectionNoLockAsync<JellyfinAuth>(JellyfinFileName),
             AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
             Qobuz = await LoadQobuzNoLockAsync(),
-            Tidal = await LoadTidalNoLockAsync()
+            Tidal = await LoadTidalNoLockAsync(),
+            Soulseek = await LoadSoulseekNoLockAsync()
         };
 
         if (NormalizeSpotifyBlobPaths(state))
@@ -393,6 +414,44 @@ public class PlatformAuthService
 
         await _tidalCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
         HardenCredentialFilePermissions(path, "Tidal");
+    }
+
+    private async Task<SoulseekAuth?> LoadSoulseekNoLockAsync()
+    {
+        var path = GetPlatformFilePath(SoulseekFileName);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var json = await _soulseekCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "Soulseek");
+            return string.IsNullOrWhiteSpace(json)
+                ? null
+                : JsonSerializer.Deserialize<SoulseekAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load protected Soulseek auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    private async Task SaveSoulseekNoLockAsync(SoulseekAuth? auth)
+    {
+        var path = GetPlatformFilePath(SoulseekFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        await _soulseekCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "Soulseek");
     }
 
     private void HardenQobuzCredentialFilePermissions(string path)

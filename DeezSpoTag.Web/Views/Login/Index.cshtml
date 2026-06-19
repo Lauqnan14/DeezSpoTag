@@ -7,11 +7,13 @@
     var initialPlatformAuthState = await PlatformAuthService.LoadAsync();
     var initialQobuzAuth = initialPlatformAuthState.Qobuz;
     var initialTidalAuth = initialPlatformAuthState.Tidal;
+    var initialSoulseekAuth = initialPlatformAuthState.Soulseek;
     var initialQobuzConnected =
         (!string.IsNullOrWhiteSpace(initialQobuzAuth?.AppSecret) || !string.IsNullOrWhiteSpace(initialQobuzAuth?.DownloadSecret))
         && !string.IsNullOrWhiteSpace(initialQobuzAuth?.AuthToken)
         && initialQobuzAuth.AuthTokenValid != false;
     var initialTidalConnected = initialTidalAuth?.CredentialsValid == true;
+    var initialSoulseekConnected = initialSoulseekAuth?.ConnectionValid == true;
     var initialQobuzName = string.IsNullOrWhiteSpace(initialQobuzAuth?.DisplayName)
         ? "Official Qobuz API"
         : initialQobuzAuth.DisplayName;
@@ -22,6 +24,14 @@
     var initialTidalStatus = initialTidalConnected
         ? $"{(string.IsNullOrWhiteSpace(initialTidalAuth?.CountryCode) ? "US" : initialTidalAuth.CountryCode)} | official credentials validated"
         : "No Tidal API is currently online";
+    var initialSoulseekName = string.IsNullOrWhiteSpace(initialSoulseekAuth?.Username)
+        ? "slskd"
+        : initialSoulseekAuth.Username;
+    var initialSoulseekStatus = initialSoulseekConnected
+        ? "Connected to Soulseek"
+        : string.IsNullOrWhiteSpace(initialSoulseekAuth?.LastError)
+            ? "Soulseek is not configured"
+            : initialSoulseekAuth.LastError;
 
     static string ResolveInitialQobuzStatus(QobuzAuth? auth, bool connected)
     {
@@ -76,6 +86,11 @@
         <li class="nav-item">
             <button class="nav-link" id="tidal-login-tab" data-login-target="tidal-login" type="button" role="tab" aria-selected="false">
                 <img src="/images/availability/tidal.svg" alt="Tidal" class="platform-icon" />Tidal
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="soulseek-login-tab" data-login-target="soulseek-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/soulseek.png" alt="Soulseek" class="platform-icon" />Soulseek
             </button>
         </li>
         <li class="nav-item">
@@ -350,6 +365,28 @@
                         <div id="tidalProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
                     </div>
                 </section>
+            </div>
+        </div>
+
+        <div class="tab-pane" id="soulseek-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header"><i class="material-icons">swap_vert</i>Soulseek Connection</h3>
+                <div id="soulseekLoginFormSection" class="@(initialSoulseekConnected ? "hidden" : "")">
+                    <p class="text-muted">Configure the slskd instance used by Soulseek downloads.</p>
+                    <form id="soulseekLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">slskd URL</span>
+                            <input type="text" id="soulseekBaseUrl" value="@(initialSoulseekAuth?.BaseUrl ?? "")" placeholder="http://localhost:5030" class="w-full" autocomplete="off" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">API Key</span>
+                            <input type="password" id="soulseekApiKey" placeholder="slskd API key" class="w-full" autocomplete="off" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Save</button>
+                        <p class="text-muted" id="soulseekStatus">@(!initialSoulseekConnected ? initialSoulseekStatus : "")</p>
+                    </form>
+                </div>
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "soulseekLoggedInInfo", ImageAlt = "Soulseek", ImageSrc = "/images/icons/soulseek.png", ImageCssClass = "h-20 w-20", ButtonId = "soulseekDisconnectBtn", NameId = "soulseekLoggedInName", NameFallback = initialSoulseekName, DetailId = "soulseekLoggedInStatus", DetailText = initialSoulseekStatus, WrapperCssClass = initialSoulseekConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
             </div>
         </div>
 
@@ -1478,6 +1515,16 @@ document.addEventListener('DOMContentLoaded', function() {
             matches: '/tidal',
             render: data => renderTidalInfo(data || {}),
             clear: () => clearTidalInputs()
+        },
+        soulseek: {
+            matches: '/soulseek',
+            render: (data, payload, isConnected, statusElementId) => {
+                const connected = data?.connected === true;
+                renderSoulseekInfo(data || {});
+                setSoulseekFormStatus(data || {}, statusElementId);
+                return connected;
+            },
+            clear: () => clearSoulseekInputs()
         }
     };
 
@@ -1684,6 +1731,18 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         window.setInterval(refreshTidalProviderView, 60_000);
     }
+
+    const soulseekForm = document.getElementById('soulseekLoginForm');
+    if (soulseekForm) {
+        soulseekForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await savePlatformAuth('/api/platform-auth/soulseek', {
+                baseUrl: document.getElementById('soulseekBaseUrl').value.trim(),
+                apiKey: document.getElementById('soulseekApiKey').value.trim()
+            }, 'soulseekStatus', true);
+        });
+    }
+    bindPlatformDisconnect('soulseekDisconnectBtn', '/api/platform-auth/soulseek/disconnect', 'soulseekStatus');
 
     const discogsForm = document.getElementById('discogsLoginForm');
     if (discogsForm) {
@@ -2141,6 +2200,15 @@ async function loadPlatformAuthState() {
             renderTidalInfo(data.tidal);
             togglePlatformLoginState('tidal', Boolean(data.tidal.credentialsValid));
         }
+        if (data.soulseek) {
+            document.getElementById('soulseekBaseUrl').value = data.soulseek.baseUrl || '';
+            document.getElementById('soulseekApiKey').placeholder = data.soulseek.apiKeySaved
+                ? 'Saved - leave blank to keep current API key'
+                : 'slskd API key';
+            setSoulseekFormStatus(data.soulseek, 'soulseekStatus');
+            renderSoulseekInfo(data.soulseek);
+            togglePlatformLoginState('soulseek', Boolean(data.soulseek.connected));
+        }
     } catch (error) {
         console.warn('Failed to load platform auth state', error);
     }
@@ -2430,6 +2498,11 @@ function clearTidalInputs() {
     clearElementText('tidalStatus');
 }
 
+function clearSoulseekInputs() {
+    resetFormById('soulseekLoginForm');
+    clearElementText('soulseekStatus');
+}
+
 function clearDiscogsInputs() {
     resetFormById('discogsLoginForm');
 }
@@ -2708,6 +2781,33 @@ function renderTidalInfo(auth) {
                 : 'No Tidal API is currently online';
     }
     renderTidalProviders(auth?.providers || [], auth?.publicApiOnline === true);
+}
+
+function renderSoulseekInfo(auth) {
+    const nameLabel = document.getElementById('soulseekLoggedInName');
+    const statusLabel = document.getElementById('soulseekLoggedInStatus');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.username || 'slskd';
+    }
+    if (statusLabel) {
+        statusLabel.textContent = auth?.connected
+            ? (auth?.message || 'slskd is connected to Soulseek.')
+            : (auth?.message || 'Soulseek is not connected.');
+    }
+}
+
+function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {
+    const statusLabel = document.getElementById(statusElementId);
+    if (!statusLabel) {
+        return;
+    }
+
+    if (!auth?.configured) {
+        statusLabel.textContent = 'Not configured';
+        return;
+    }
+
+    statusLabel.textContent = auth?.message || (auth?.connected ? 'Connected' : 'Not connected');
 }
 
 function renderTidalProviders(providers, publicApiOnline) {
@@ -3873,6 +3973,8 @@ function getPlatformIcon(platform) {
             return '/images/availability/qobuz.svg';
         case 'shazam':
             return '/images/icons/shazam.png';
+        case 'soulseek':
+            return '/images/icons/soulseek.png';
         default:
             return '/images/icons/deezer.png';
     }
@@ -3982,6 +4084,15 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         tidal: {
             matches: '/tidal',
             render: info => renderTidalInfo(info || {})
+        },
+        soulseek: {
+            matches: '/soulseek',
+            render: (info, rawPayload, connected, elementId) => {
+                const isConnected = info?.connected === true;
+                renderSoulseekInfo(info || {});
+                setSoulseekFormStatus(info || {}, elementId);
+                return isConnected;
+            }
         }
     };
 
@@ -4000,7 +4111,8 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         platform === 'jellyfin' ? data?.jellyfin || payload :
         platform === 'appleMusic' ? data?.appleMusic || payload :
         platform === 'qobuz' ? data?.qobuz || payload :
-        data?.tidal || payload;
+        platform === 'tidal' ? data?.tidal || payload :
+        data?.soulseek || payload;
     const effectiveConnected = binding.render(payloadForRender, payload, isConnected, statusElementId) ?? isConnected;
     togglePlatformLoginState(platform, effectiveConnected);
 }

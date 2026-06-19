@@ -1383,6 +1383,7 @@ public partial class Program
     {
         services.AddSingleton<DeezSpoTag.Web.Services.AppInstanceIdProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlatformAuthService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SoulseekConnectionService>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthQobuzCredentialProvider>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry, DeezSpoTag.Web.Services.QobuzPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthTidalCredentialProvider>();

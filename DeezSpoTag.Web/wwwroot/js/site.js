@@ -1758,6 +1758,12 @@ globalThis.DeezSpoTag = {
         } else {
             this.setPlatformState(platformStates, 'tidal', false, 'offline');
         }
+        if (authData.soulseek?.connected === true) {
+            connected.add('soulseek');
+            this.setPlatformState(platformStates, 'soulseek', true, 'slskd');
+        } else {
+            this.setPlatformState(platformStates, 'soulseek', false, authData.soulseek?.status || 'offline');
+        }
 
         return authData;
     },

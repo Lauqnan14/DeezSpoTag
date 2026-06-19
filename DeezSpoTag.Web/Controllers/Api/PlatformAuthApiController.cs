@@ -27,6 +27,7 @@ public class PlatformAuthApiController : ControllerBase
     private readonly ITidalPublicProviderRegistry _tidalPublicProviderRegistry;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly TidalDownloadService _tidalDownloadService;
+    private readonly SoulseekConnectionService _soulseekConnectionService;
     public PlatformAuthApiController(
         PlatformAuthService authService,
         DiscogsApiClient discogsApiClient,
@@ -38,7 +39,8 @@ public class PlatformAuthApiController : ControllerBase
         IQobuzDownloadService qobuzDownloadService,
         ITidalPublicProviderRegistry tidalPublicProviderRegistry,
         ITidalAccessTokenProvider tidalAccessTokenProvider,
-        TidalDownloadService tidalDownloadService)
+        TidalDownloadService tidalDownloadService,
+        SoulseekConnectionService soulseekConnectionService)
     {
         _authService = authService;
         _discogsApiClient = discogsApiClient;
@@ -51,6 +53,7 @@ public class PlatformAuthApiController : ControllerBase
         _tidalPublicProviderRegistry = tidalPublicProviderRegistry;
         _tidalAccessTokenProvider = tidalAccessTokenProvider;
         _tidalDownloadService = tidalDownloadService;
+        _soulseekConnectionService = soulseekConnectionService;
     }
 
     [HttpGet]
@@ -103,6 +106,7 @@ public class PlatformAuthApiController : ControllerBase
         }
 
         state = await RefreshQobuzAccountAsync(state, cancellationToken);
+        state = await RefreshSoulseekConnectionAsync(state, cancellationToken);
         var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
         var tidalProviders = await GetPublicTidalProvidersAsync(cancellationToken);
 
@@ -116,7 +120,8 @@ public class PlatformAuthApiController : ControllerBase
             jellyfin = state.Jellyfin,
             appleMusic = state.AppleMusic,
             qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
-            tidal = ToPublicTidal(state.Tidal, tidalProviders)
+            tidal = ToPublicTidal(state.Tidal, tidalProviders),
+            soulseek = ToPublicSoulseek(state.Soulseek)
         });
     }
 
@@ -342,6 +347,52 @@ public class PlatformAuthApiController : ControllerBase
         }
 
         return Ok(new { saved = true, tidal = ToPublicTidal(tidal, await GetPublicTidalProvidersAsync(cancellationToken)) });
+    }
+
+    [HttpPost("soulseek")]
+    public async Task<IActionResult> SaveSoulseek([FromBody] SoulseekAuth request, CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        if (request is null) return BadRequest("Soulseek connection details are required.");
+
+        var currentState = await _authService.LoadAsync();
+        var previous = currentState.Soulseek;
+        var baseUrl = request.BaseUrl?.Trim();
+        var apiKey = ResolveSubmittedSecret(request.ApiKey, previous?.ApiKey);
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return BadRequest("slskd URL is required.");
+        }
+
+        if (SoulseekConnectionService.NormalizeBaseUri(baseUrl) is null)
+        {
+            return BadRequest("slskd URL is invalid.");
+        }
+
+        var candidate = new SoulseekAuth
+        {
+            BaseUrl = baseUrl,
+            ApiKey = apiKey,
+            ConnectionValid = false,
+            LastStatus = "checking",
+            CheckedAt = DateTimeOffset.UtcNow
+        };
+
+        var check = await _soulseekConnectionService.CheckAsync(candidate, cancellationToken);
+        candidate.ConnectionValid = check.Connected;
+        candidate.Username = check.Username;
+        candidate.LastStatus = check.Status;
+        candidate.LastError = check.Connected ? null : check.Message;
+        candidate.CheckedAt = check.CheckedAt;
+
+        var soulseek = await _authService.UpdateAsync(state =>
+        {
+            state.Soulseek = candidate;
+            return state.Soulseek;
+        });
+
+        return Ok(new { saved = true, soulseek = ToPublicSoulseek(soulseek) });
     }
 
     [HttpPost("lastfm")]
@@ -606,6 +657,26 @@ public class PlatformAuthApiController : ControllerBase
         providers = providers.Providers
     };
 
+    private static object ToPublicSoulseek(SoulseekAuth? auth)
+    {
+        var configured = !string.IsNullOrWhiteSpace(auth?.BaseUrl);
+        return new
+        {
+            baseUrl = auth?.BaseUrl,
+            apiKeySaved = !string.IsNullOrWhiteSpace(auth?.ApiKey),
+            configured,
+            connected = auth?.ConnectionValid == true,
+            username = auth?.Username,
+            status = string.IsNullOrWhiteSpace(auth?.LastStatus)
+                ? (configured ? "disconnected" : "not_configured")
+                : auth!.LastStatus,
+            message = auth?.ConnectionValid == true
+                ? "slskd is connected to Soulseek."
+                : auth?.LastError ?? (configured ? "slskd is not connected." : "Soulseek is not configured."),
+            checkedAt = auth?.CheckedAt
+        };
+    }
+
     private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken)
     {
         var providers = await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken);
@@ -679,6 +750,33 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
+    private async Task<PlatformAuthState> RefreshSoulseekConnectionAsync(
+        PlatformAuthState state,
+        CancellationToken cancellationToken)
+    {
+        var soulseek = state.Soulseek;
+        if (soulseek is null || string.IsNullOrWhiteSpace(soulseek.BaseUrl))
+        {
+            return state;
+        }
+
+        var check = await _soulseekConnectionService.CheckAsync(soulseek, cancellationToken);
+        return await _authService.UpdateAsync(current =>
+        {
+            if (current.Soulseek is null)
+            {
+                return current;
+            }
+
+            current.Soulseek.ConnectionValid = check.Connected;
+            current.Soulseek.Username = check.Username ?? current.Soulseek.Username;
+            current.Soulseek.LastStatus = check.Status;
+            current.Soulseek.LastError = check.Connected ? null : check.Message;
+            current.Soulseek.CheckedAt = check.CheckedAt;
+            return current;
+        });
+    }
+
     [HttpPost("{platform}/disconnect")]
     public async Task<IActionResult> Disconnect(string platform, CancellationToken cancellationToken)
     {
@@ -737,6 +835,9 @@ public class PlatformAuthApiController : ControllerBase
                 case "tidal":
                     state.Tidal = null;
                     break;
+                case "soulseek":
+                    state.Soulseek = null;
+                    break;
             }
 
             return 0;
@@ -760,7 +861,8 @@ public class PlatformAuthApiController : ControllerBase
             or "jellyfin"
             or "applemusic"
             or "qobuz"
-            or "tidal";
+            or "tidal"
+            or "soulseek";
     }
 
     private UnauthorizedObjectResult? EnsureAccess()
