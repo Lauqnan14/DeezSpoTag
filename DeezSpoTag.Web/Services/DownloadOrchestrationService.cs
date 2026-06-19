@@ -209,6 +209,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly SemaphoreSlim _enhancementPauseLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly TimeSpan _downloadIdleDelay = TimeSpan.FromSeconds(15);
+    private readonly TimeSpan _orchestrationRecheckDelay = TimeSpan.FromSeconds(15);
     private readonly object _enhancementResumeLock = new();
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _processedCompletionByQueueItem = new(StringComparer.OrdinalIgnoreCase);
@@ -564,14 +565,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         try
         {
-            if (timeout.HasValue)
-            {
-                await _wakeSignal.WaitAsync(timeout.Value, cancellationToken);
-            }
-            else
-            {
-                await _wakeSignal.WaitAsync(cancellationToken);
-            }
+            await _wakeSignal.WaitAsync(timeout, cancellationToken);
         }
         finally
         {
@@ -579,7 +573,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private TimeSpan? GetNextWakeDelay()
+    private TimeSpan GetNextWakeDelay()
     {
         DateTimeOffset? countdownUntilUtc;
         lock (_phaseLock)
@@ -588,7 +582,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var now = DateTimeOffset.UtcNow;
-        var deadlines = new List<DateTimeOffset>(2);
+        var deadlines = new List<DateTimeOffset>(3)
+        {
+            now.Add(_orchestrationRecheckDelay)
+        };
 
         if (countdownUntilUtc.HasValue && countdownUntilUtc.Value > now)
         {
@@ -598,11 +595,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         if (_enhancementResumeNotBeforeUtc.HasValue && _enhancementResumeNotBeforeUtc.Value > now)
         {
             deadlines.Add(_enhancementResumeNotBeforeUtc.Value);
-        }
-
-        if (deadlines.Count == 0)
-        {
-            return null;
         }
 
         var nextDeadline = deadlines.Min();
