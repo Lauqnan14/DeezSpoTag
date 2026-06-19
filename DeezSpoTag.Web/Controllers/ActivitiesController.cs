@@ -330,32 +330,8 @@ public class ActivitiesController : Controller
     {
         try
         {
-            var tasks = await _queueRepository.GetTasksAsync();
-            var canceled = 0;
-            var failed = 0;
-            foreach (var task in tasks)
-            {
-                if (string.IsNullOrWhiteSpace(task.QueueUuid))
-                {
-                    continue;
-                }
-
-                if (!CanCancelActivityItem(task))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    await GetDeezSpoTagApp().CancelDownloadAsync(task.QueueUuid);
-                    canceled++;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    failed++;
-                    _logger.LogWarning(ex, "Failed to cancel download during CancelAll {Uuid}", LogSanitizer.OneLine(task.QueueUuid));
-                }
-            }
+            var tasks = await _queueRepository.GetTasksAsync(cancellationToken: HttpContext.RequestAborted);
+            var (canceled, failed) = await CancelActivityItemsAsync(tasks, "CancelAll");
 
             if (failed > 0)
             {
@@ -488,23 +464,36 @@ public class ActivitiesController : Controller
     {
         try
         {
+            var tasks = await _queueRepository.GetTasksAsync(cancellationToken: HttpContext.RequestAborted);
+            var (canceled, cancelFailed) = await CancelActivityItemsAsync(tasks, "ClearAll");
             var hidden = await _queueRepository.MarkTerminalActivitiesClearedAsync(HttpContext.RequestAborted);
             var deleted = await _queueRepository.DeleteClearableAllAsync(HttpContext.RequestAborted);
-            if (hidden > 0 || deleted > 0)
+            if (hidden > 0 || deleted > 0 || canceled > 0)
             {
                 _deezspotagListener.SendRemovedAllDownloads(null);
             }
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Cleared all downloads from queue (removed={Deleted})", deleted);
+                _logger.LogInformation(
+                    "Cleared all downloads from queue (removed={Deleted}, hidden={Hidden}, canceled={Canceled}, cancelFailed={CancelFailed})",
+                    deleted,
+                    hidden,
+                    canceled,
+                    cancelFailed);
             }
+
+            var changed = hidden > 0 || deleted > 0 || canceled > 0;
             return Json(new
             {
                 success = true,
-                message = hidden > 0 || deleted > 0 ? "All downloads cleared" : "Queue is already empty",
+                message = cancelFailed > 0
+                    ? $"Cleared queue entries and canceled {canceled} active download(s). {cancelFailed} active item(s) could not be canceled."
+                    : changed ? "All downloads cleared" : "Queue is already empty",
                 deleted,
-                hidden
+                hidden,
+                canceled,
+                cancelFailed
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -579,6 +568,45 @@ public class ActivitiesController : Controller
             or ActivityStatus.Running
             or ActivityStatus.Paused
             or ActivityStatus.Retrying;
+    }
+
+    private async Task<(int Canceled, int Failed)> CancelActivityItemsAsync(
+        IEnumerable<DownloadQueueItem> tasks,
+        string operation)
+    {
+        var canceled = 0;
+        var failed = 0;
+        var app = GetDeezSpoTagApp();
+
+        foreach (var task in tasks)
+        {
+            if (string.IsNullOrWhiteSpace(task.QueueUuid))
+            {
+                continue;
+            }
+
+            if (!CanCancelActivityItem(task))
+            {
+                continue;
+            }
+
+            try
+            {
+                await app.CancelDownloadAsync(task.QueueUuid);
+                canceled++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failed++;
+                _logger.LogWarning(
+                    ex,
+                    "Failed to cancel download during {Operation} {Uuid}",
+                    operation,
+                    LogSanitizer.OneLine(task.QueueUuid));
+            }
+        }
+
+        return (canceled, failed);
     }
 
     private static bool CanRetryActivityItem(DownloadQueueItem item)

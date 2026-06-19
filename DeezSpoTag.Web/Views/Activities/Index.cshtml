@@ -4472,8 +4472,11 @@ async function clearAllTasks() {
     updateQueueButtons();
     try {
         const payload = await ensureActionSuccess('/Activities/ClearAll');
+        const failedCount = Number(payload?.cancelFailed || 0);
         if (window.DeezSpoTag?.showNotification) {
-            window.DeezSpoTag.showNotification(payload?.message || 'Queue cleared.', 'info');
+            window.DeezSpoTag.showNotification(
+                payload?.message || 'Queue cleared.',
+                failedCount > 0 ? 'warning' : 'info');
         }
         await loadQueueFromServer({ force: true });
     } catch (error) {
