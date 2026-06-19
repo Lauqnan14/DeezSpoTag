@@ -1748,13 +1748,13 @@ globalThis.DeezSpoTag = {
         }
         if (authData.qobuz?.connected === true) {
             connected.add('qobuz');
-            this.setPlatformState(platformStates, 'qobuz', true, authData.qobuz.publicApiOnline ? 'public-api' : 'official-api');
+            this.setPlatformState(platformStates, 'qobuz', true, 'official-api');
         } else {
             this.setPlatformState(platformStates, 'qobuz', false, 'offline');
         }
         if (authData.tidal?.connected === true) {
             connected.add('tidal');
-            this.setPlatformState(platformStates, 'tidal', true, authData.tidal.publicApiOnline ? 'public-api' : 'official-api');
+            this.setPlatformState(platformStates, 'tidal', true, 'official-api');
         } else {
             this.setPlatformState(platformStates, 'tidal', false, 'offline');
         }

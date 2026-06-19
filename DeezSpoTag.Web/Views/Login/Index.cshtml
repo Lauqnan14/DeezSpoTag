@@ -80,7 +80,7 @@
         </li>
         <li class="nav-item">
             <button class="nav-link" id="qobuz-login-tab" data-login-target="qobuz-login" type="button" role="tab" aria-selected="false">
-                <img src="/images/availability/qobuz.svg" alt="Qobuz" class="platform-icon platform-icon-qobuz" />Qobuz
+                <img src="/images/icons/qobuz.png" alt="Qobuz" class="platform-icon" />Qobuz
             </button>
         </li>
         <li class="nav-item">
@@ -317,7 +317,7 @@
                         <p class="text-muted" id="qobuzStatus"></p>
                     </form>
                 </div>
-                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/availability/qobuz.svg", ImageCssClass = "h-20 w-20 platform-icon-qobuz", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = initialQobuzName, DetailId = "qobuzLoggedInStatus", DetailText = initialQobuzStatus, WrapperCssClass = initialQobuzConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/icons/qobuz.png", ImageCssClass = "h-20 w-20", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = initialQobuzName, DetailId = "qobuzLoggedInStatus", DetailText = initialQobuzStatus, WrapperCssClass = initialQobuzConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
                 <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading">
                     <div class="qobuz-provider-panel__header">
                         <div>
@@ -607,10 +607,6 @@ body {
     height: 18px;
     margin-right: 8px;
     object-fit: contain;
-}
-
-.platform-icon-qobuz {
-    filter: invert(1);
 }
 
 .qobuz-provider-panel {
@@ -1508,12 +1504,22 @@ document.addEventListener('DOMContentLoaded', function() {
         },
         qobuz: {
             matches: '/qobuz',
-            render: data => renderQobuzInfo(data || {}),
+            render: (data, payload, isConnected, statusElementId) => {
+                const connected = isQobuzLoggedIn(data);
+                setStatus(statusElementId, connected);
+                renderQobuzInfo(data || {});
+                return connected;
+            },
             clear: () => clearQobuzInputs()
         },
         tidal: {
             matches: '/tidal',
-            render: data => renderTidalInfo(data || {}),
+            render: (data, payload, isConnected, statusElementId) => {
+                const connected = isTidalLoggedIn(data);
+                setStatus(statusElementId, connected);
+                renderTidalInfo(data || {});
+                return connected;
+            },
             clear: () => clearTidalInputs()
         },
         soulseek: {
@@ -2185,9 +2191,10 @@ async function loadPlatformAuthState() {
             document.getElementById('qobuzAppSecret').placeholder = data.qobuz.appSecretSaved
                 ? 'Saved - leave blank to keep current secret'
                 : 'Qobuz App Secret';
-            setStatus('qobuzStatus', Boolean(data.qobuz.configured));
+            const qobuzConnected = isQobuzLoggedIn(data.qobuz);
+            setStatus('qobuzStatus', qobuzConnected);
             renderQobuzInfo(data.qobuz);
-            togglePlatformLoginState('qobuz', Boolean(data.qobuz.configured));
+            togglePlatformLoginState('qobuz', qobuzConnected);
         }
         if (data.tidal) {
             document.getElementById('tidalClientId').value = data.tidal.clientId || '';
@@ -2196,9 +2203,10 @@ async function loadPlatformAuthState() {
             document.getElementById('tidalRefreshToken').placeholder = data.tidal.refreshTokenSaved ? 'Saved - leave blank to keep current token' : 'Optional refresh token';
             document.getElementById('tidalUserId').value = data.tidal.userId || '';
             document.getElementById('tidalCountryCode').value = data.tidal.countryCode || 'US';
-            setStatus('tidalStatus', Boolean(data.tidal.credentialsValid));
+            const tidalConnected = isTidalLoggedIn(data.tidal);
+            setStatus('tidalStatus', tidalConnected);
             renderTidalInfo(data.tidal);
-            togglePlatformLoginState('tidal', Boolean(data.tidal.credentialsValid));
+            togglePlatformLoginState('tidal', tidalConnected);
         }
         if (data.soulseek) {
             document.getElementById('soulseekBaseUrl').value = data.soulseek.baseUrl || '';
@@ -2433,6 +2441,14 @@ function setStatus(elementId, isConnected) {
     const el = document.getElementById(elementId);
     if (!el) return;
     el.textContent = isConnected ? 'Saved' : 'Not connected';
+}
+
+function isQobuzLoggedIn(auth) {
+    return Boolean(auth?.configured && auth?.authTokenValid !== false);
+}
+
+function isTidalLoggedIn(auth) {
+    return auth?.credentialsValid === true;
 }
 
 function clearElementValue(elementId, fallbackValue = '') {
@@ -3970,7 +3986,7 @@ function getPlatformIcon(platform) {
         case 'apple-music':
             return '/images/icons/apple-music.png';
         case 'qobuz':
-            return '/images/availability/qobuz.svg';
+            return '/images/icons/qobuz.png';
         case 'shazam':
             return '/images/icons/shazam.png';
         case 'soulseek':
@@ -4079,11 +4095,21 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         },
         qobuz: {
             matches: '/qobuz',
-            render: info => renderQobuzInfo(info || {})
+            render: (info, rawPayload, connected, elementId) => {
+                const isConnected = isQobuzLoggedIn(info);
+                setStatus(elementId, isConnected);
+                renderQobuzInfo(info || {});
+                return isConnected;
+            }
         },
         tidal: {
             matches: '/tidal',
-            render: info => renderTidalInfo(info || {})
+            render: (info, rawPayload, connected, elementId) => {
+                const isConnected = isTidalLoggedIn(info);
+                setStatus(elementId, isConnected);
+                renderTidalInfo(info || {});
+                return isConnected;
+            }
         },
         soulseek: {
             matches: '/soulseek',

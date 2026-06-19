@@ -236,7 +236,7 @@ public class PlatformRegistryApiController : ControllerBase
         }
         if (string.Equals(platformId, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
         {
-            return "/images/availability/qobuz.svg";
+            return "/images/icons/qobuz.png";
         }
 
         return $"/images/icons/{platformId}.png";

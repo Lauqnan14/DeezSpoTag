@@ -622,6 +622,7 @@ public class PlatformAuthApiController : ControllerBase
         var hasAppSecret = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret);
         var hasAuthToken = !string.IsNullOrWhiteSpace(auth?.AuthToken);
         var configured = hasAppSecret && hasAuthToken;
+        var connected = configured && auth?.AuthTokenValid != false;
         return new
         {
             appId = auth?.AppId,
@@ -637,7 +638,7 @@ public class PlatformAuthApiController : ControllerBase
             authTokenValid = auth?.AuthTokenValid,
             accountRefreshedAt = auth?.AccountRefreshedAt,
             publicApiOnline = providers.Online,
-            connected = providers.Online || (configured && auth?.AuthTokenValid != false),
+            connected,
             providers = providers.Providers
         };
     }
@@ -653,7 +654,7 @@ public class PlatformAuthApiController : ControllerBase
         credentialsValid = auth?.CredentialsValid == true,
         validatedAt = auth?.ValidatedAt,
         publicApiOnline = providers.Online,
-        connected = auth?.CredentialsValid == true || providers.Online,
+        connected = auth?.CredentialsValid == true,
         providers = providers.Providers
     };
 
