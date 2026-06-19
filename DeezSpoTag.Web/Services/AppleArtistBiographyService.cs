@@ -278,7 +278,7 @@ public sealed class AppleArtistBiographyService
         return $"https://music.apple.com/{Uri.EscapeDataString(normalizedStorefront)}/artist/{Uri.EscapeDataString(id)}";
     }
 
-    private static string? ResolveAppleArtistPageBiography(string html, string id, string artistName)
+    internal static string? ResolveAppleArtistPageBiography(string html, string id, string artistName)
     {
         foreach (var decoded in EnumerateJsonLdScripts(html)
                      .Select(WebUtility.HtmlDecode)
@@ -380,8 +380,25 @@ public sealed class AppleArtistBiographyService
         }
 
         return TryGetNonEmptyString(root, DescriptionField, out var description)
+               && !IsAppleArtistPageMarketingDescription(description, artistName)
             ? NormalizeBiography(description)
             : null;
+    }
+
+    private static bool IsAppleArtistPageMarketingDescription(string description, string artistName)
+    {
+        var normalizedDescription = NormalizeBiography(description);
+        if (string.IsNullOrWhiteSpace(normalizedDescription))
+        {
+            return true;
+        }
+
+        var normalizedArtistName = NormalizeArtistName(artistName);
+        var expectedPrefix = string.IsNullOrWhiteSpace(normalizedArtistName)
+            ? "Listen to music by "
+            : $"Listen to music by {normalizedArtistName} on Apple Music.";
+        return normalizedDescription.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase)
+               && normalizedDescription.Contains("Find top songs and albums by ", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ArtistPageMatches(JsonElement root, string id, string artistName)
