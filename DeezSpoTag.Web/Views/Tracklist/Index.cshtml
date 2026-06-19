@@ -362,6 +362,7 @@
 .tracks-table col.col-quality { width: 170px; }
 .tracks-table col.col-duration { width: 72px; }
 .tracks-table col.col-availability { width: 240px; }
+.tracks-table col.col-location-status { width: 150px; }
 .tracks-table col.col-actions { width: 72px; }
 .tracks-table col.col-quick-download { width: 64px; }
 .tracks-table.tracks-table--playlistlike col.col-title { width: 360px; }
@@ -405,6 +406,13 @@
 .tracks-table td.track-availability {
     padding-left: 10px;
     padding-right: 10px;
+}
+
+.tracks-table th.track-location-status,
+.tracks-table td.track-location-status {
+    padding-left: 10px;
+    padding-right: 10px;
+    text-align: center;
 }
 
 .tracks-table th.track-actions,
@@ -656,6 +664,60 @@
 .track-availability {
     text-align: center;
     color: var(--text-muted);
+}
+
+.track-location-status {
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.track-location-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 24px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 26%, transparent);
+    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+    color: var(--text-primary);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.track-location-status-pill--target,
+.track-location-status-pill--library {
+    border-color: color-mix(in srgb, #31d07d 42%, transparent);
+    color: #31d07d;
+}
+
+.track-location-status-pill--queued {
+    border-color: color-mix(in srgb, #00c2ff 42%, transparent);
+    color: #00c2ff;
+}
+
+.track-location-status-pill--downloading,
+.track-location-status-pill--retrying {
+    border-color: color-mix(in srgb, #58a6ff 42%, transparent);
+    color: #58a6ff;
+}
+
+.track-location-status-pill--paused,
+.track-location-status-pill--cancelled {
+    border-color: color-mix(in srgb, #c9a227 42%, transparent);
+    color: #f5d76e;
+}
+
+.track-location-status-pill--failed {
+    border-color: color-mix(in srgb, #ff5f6d 42%, transparent);
+    color: #ff7a86;
+}
+
+.track-location-status-pill--blocked {
+    border-color: color-mix(in srgb, #f5b84b 42%, transparent);
+    color: #f5b84b;
 }
 
 .availability-icons {
@@ -977,8 +1039,10 @@
     /* Hide less important columns on tablet - use class selectors only */
     .tracks-table col.col-quality { width: 0; }
     .tracks-table col.col-availability { width: 0; }
+    .tracks-table col.col-location-status { width: 0; }
     .tracks-table .track-quality,
-    .tracks-table .track-availability {
+    .tracks-table .track-availability,
+    .tracks-table .track-location-status {
         display: none;
     }
 
@@ -1451,6 +1515,7 @@ let externalBatchMatchSessionId = 0;
 const externalMatchInitialBatchSize = 24;
 let monitorStatusRequestSeq = 0;
 let monitorMutationInFlight = false;
+let monitoredPlaylistTrackStatuses = new Map();
 
 function getDeezerTracklistUrl() {
     const normalizedType = String(tracklistType || '').trim().toLowerCase();
@@ -3235,6 +3300,7 @@ function renderTracklist(data, options = {}) {
     bindIgnoreButtons();
     bindRecommendationRejectButtons();
     scheduleAvailabilityChecks(tracks, isLocalSource);
+    refreshMonitoredPlaylistTrackLocationStatuses(isLocalSource);
 
     const externalSource = (tracklistSource || '').toLowerCase();
     if (externalSource && externalSource !== 'deezer') {
@@ -4940,6 +5006,149 @@ function shouldShowQuickDownloadColumn(isLocalSource) {
 
 function shouldShowQualityColumn() {
     return tracklistIsAtmosView;
+}
+
+async function refreshMonitoredPlaylistTrackLocationStatuses(isLocalSource) {
+    monitoredPlaylistTrackStatuses = new Map();
+    removeTrackLocationStatusColumn();
+    if (isLocalSource || !currentTracklistMeta?.source || !currentTracklistMeta?.sourceId || !tracklistLayoutIsPlaylistLike) {
+        return;
+    }
+
+    try {
+        const status = await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`);
+        if (status?.watching !== true) {
+            return;
+        }
+
+        const tracks = await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}/tracks`);
+        if (!Array.isArray(tracks) || tracks.length === 0) {
+            return;
+        }
+
+        tracks.forEach(track => {
+            const id = String(track?.trackSourceId || '').trim();
+            if (!id) {
+                return;
+            }
+            monitoredPlaylistTrackStatuses.set(id, {
+                status: normalizeTrackLocationStatus(track.locationStatus),
+                label: String(track.locationStatusLabel || '').trim() || resolveTrackLocationStatusLabel(track.locationStatus),
+                detail: String(track.locationStatusDetail || '').trim()
+            });
+        });
+
+        if (monitoredPlaylistTrackStatuses.size === 0) {
+            return;
+        }
+
+        ensureTrackLocationStatusColumn();
+        applyTrackLocationStatusesToRows();
+    } catch (error) {
+        console.warn('Failed to load monitored playlist track statuses.', error);
+    }
+}
+
+function ensureTrackLocationStatusColumn() {
+    const table = document.querySelector('.tracks-table');
+    if (!table || table.classList.contains('tracks-table--with-location-status')) {
+        return;
+    }
+
+    table.classList.add('tracks-table--with-location-status');
+    const colgroup = table.querySelector('colgroup');
+    const durationCol = colgroup?.querySelector('col.col-duration');
+    if (colgroup && durationCol) {
+        const col = document.createElement('col');
+        col.className = 'col-location-status';
+        durationCol.after(col);
+    }
+
+    const durationHeader = table.querySelector('thead th.track-duration');
+    if (durationHeader) {
+        const header = document.createElement('th');
+        header.className = 'track-location-status';
+        header.textContent = 'State';
+        durationHeader.after(header);
+    }
+
+    document.querySelectorAll('#tracks-table-body tr[data-track-index]').forEach(row => {
+        const durationCell = row.querySelector('td.track-duration');
+        if (!durationCell || row.querySelector('td.track-location-status')) {
+            return;
+        }
+        const cell = document.createElement('td');
+        cell.className = 'track-location-status';
+        cell.innerHTML = renderTrackLocationStatusCell(null);
+        durationCell.after(cell);
+    });
+}
+
+function removeTrackLocationStatusColumn() {
+    const table = document.querySelector('.tracks-table');
+    if (table) {
+        table.classList.remove('tracks-table--with-location-status');
+    }
+    document.querySelectorAll('col.col-location-status, th.track-location-status, td.track-location-status').forEach(element => {
+        element.remove();
+    });
+}
+
+function applyTrackLocationStatusesToRows() {
+    document.querySelectorAll('#tracks-table-body tr[data-track-index]').forEach(row => {
+        const trackId = String(row.querySelector('.track-ignore-btn')?.getAttribute('data-ignore-track-id')
+            || row.querySelector('.track-checkbox')?.dataset.trackId
+            || row.dataset.availabilityDeezerId
+            || row.dataset.spotifyId
+            || '').trim();
+        const status = trackId ? monitoredPlaylistTrackStatuses.get(trackId) : null;
+        const cell = row.querySelector('td.track-location-status');
+        if (cell) {
+            cell.innerHTML = renderTrackLocationStatusCell(status);
+        }
+    });
+}
+
+function renderTrackLocationStatusCell(status) {
+    const normalizedStatus = normalizeTrackLocationStatus(status?.status);
+    if (normalizedStatus === 'missing') {
+        return '';
+    }
+    const label = String(status?.label || '').trim() || resolveTrackLocationStatusLabel(normalizedStatus);
+    const detail = String(status?.detail || '').trim();
+    return `<span class="track-location-status-pill track-location-status-pill--${escapeHtml(normalizedStatus)}" title="${escapeHtml(detail)}">${escapeHtml(label)}</span>`;
+}
+
+function normalizeTrackLocationStatus(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    return ['target', 'library', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'missing'].includes(normalized)
+        ? normalized
+        : 'missing';
+}
+
+function resolveTrackLocationStatusLabel(status) {
+    switch (normalizeTrackLocationStatus(status)) {
+        case 'target':
+            return 'Plex library';
+        case 'library':
+            return 'Library';
+        case 'queued':
+            return 'Queued';
+        case 'downloading':
+            return 'Downloading';
+        case 'paused':
+            return 'Paused';
+        case 'retrying':
+            return 'Retrying';
+        case 'failed':
+            return 'Failed';
+        case 'cancelled':
+            return 'Cancelled';
+        case 'blocked':
+            return 'Blocked';
+        default:
+            return 'Missing';
+    }
 }
 
 function renderAvailabilityCell() {

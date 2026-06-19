@@ -1527,6 +1527,105 @@
     background: color-mix(in srgb, var(--bg-primary) 96%, transparent);
 }
 
+.watchlist-playlist-settings .playlist-track-status-section {
+    gap: 8px;
+}
+
+.watchlist-playlist-settings .playlist-track-status-header,
+.watchlist-playlist-settings .playlist-track-status-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1.5fr) minmax(140px, 1fr) minmax(120px, 0.7fr);
+    gap: 10px;
+    align-items: center;
+}
+
+.watchlist-playlist-settings .playlist-track-status-header {
+    padding: 0 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+}
+
+.watchlist-playlist-settings .playlist-track-status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: min(360px, 46dvh);
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.watchlist-playlist-settings .playlist-track-status-row {
+    min-height: 38px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent);
+    background: color-mix(in srgb, var(--bg-primary) 92%, black 8%);
+}
+
+.watchlist-playlist-settings .playlist-track-status-cell {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.watchlist-playlist-settings .playlist-track-status-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.watchlist-playlist-settings .playlist-track-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 24px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 26%, transparent);
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--bg-tertiary) 92%, transparent);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.watchlist-playlist-settings .playlist-track-status-pill--target,
+.watchlist-playlist-settings .playlist-track-status-pill--library {
+    border-color: color-mix(in srgb, #31d07d 42%, transparent);
+    color: #31d07d;
+}
+
+.watchlist-playlist-settings .playlist-track-status-pill--queued {
+    border-color: color-mix(in srgb, #00c2ff 42%, transparent);
+    color: #00c2ff;
+}
+
+.watchlist-playlist-settings .playlist-track-status-pill--downloading,
+.watchlist-playlist-settings .playlist-track-status-pill--retrying {
+    border-color: color-mix(in srgb, #58a6ff 42%, transparent);
+    color: #58a6ff;
+}
+
+.watchlist-playlist-settings .playlist-track-status-pill--paused,
+.watchlist-playlist-settings .playlist-track-status-pill--cancelled {
+    border-color: color-mix(in srgb, #c9a227 42%, transparent);
+    color: #f5d76e;
+}
+
+.watchlist-playlist-settings .playlist-track-status-pill--failed {
+    border-color: color-mix(in srgb, #ff5f6d 42%, transparent);
+    color: #ff7a86;
+}
+
+.watchlist-playlist-settings .playlist-track-status-pill--blocked {
+    border-color: color-mix(in srgb, #f5b84b 42%, transparent);
+    color: #f5b84b;
+}
+
 .watchlist-playlist-settings .routing-rules-list {
     gap: 10px;
 }
@@ -1602,6 +1701,24 @@
 }
 
 @media (max-width: 940px) {
+    .watchlist-playlist-settings .playlist-track-status-header {
+        display: none;
+    }
+
+    .watchlist-playlist-settings .playlist-track-status-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .watchlist-playlist-settings .playlist-track-status-row .playlist-track-status-cell:nth-child(2) {
+        grid-column: 1 / 2;
+    }
+
+    .watchlist-playlist-settings .playlist-track-status-row .playlist-track-status-cell:nth-child(3) {
+        grid-column: 2 / 3;
+        grid-row: 1 / 3;
+        justify-self: end;
+    }
+
     .watchlist-playlist-settings .routing-rule-columns {
         display: none;
     }

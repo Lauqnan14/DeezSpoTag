@@ -9,6 +9,7 @@ using Microsoft.Net.Http.Headers;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Queue;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -27,6 +28,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     private readonly PlaylistWatchService _playlistWatchService;
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly PlaylistVisualService _playlistVisualService;
+    private readonly DownloadQueueRepository _queueRepository;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
     private readonly PlaylistWatchHostedService? _playlistWatchHostedService;
@@ -38,6 +40,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         PlaylistSyncService playlistSyncService,
         PlaylistVisualService playlistVisualService,
         AutoTagProfileResolutionService profileResolutionService,
+        DownloadQueueRepository queueRepository,
         WatchlistFinalizationService? watchlistFinalizationService = null,
         PlaylistWatchHostedService? playlistWatchHostedService = null)
     {
@@ -47,6 +50,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         _playlistSyncService = playlistSyncService;
         _playlistVisualService = playlistVisualService;
         _profileResolutionService = profileResolutionService;
+        _queueRepository = queueRepository;
         _watchlistFinalizationService = watchlistFinalizationService;
         _playlistWatchHostedService = playlistWatchHostedService;
     }
@@ -91,18 +95,25 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         IReadOnlyList<PlaylistTrackBlockRule> globalBlockRules,
         CancellationToken cancellationToken)
     {
-        var statusSummary = await _repository.GetPlaylistWatchTrackStatusSummaryAsync(item.Source, item.SourceId, cancellationToken);
         var total = Math.Max(0, item.TrackCount ?? 0);
-        var synced = Math.Max(0, statusSummary.CompletedCount);
-        var incomplete = total > 0 && synced > 0 && synced < total
-            ? total - synced
-            : 0;
-
         var ignoredTrackIds = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(item.Source, item.SourceId, cancellationToken);
         var preference = allPreferences.FirstOrDefault(preference =>
             string.Equals(preference.Source, item.Source, StringComparison.OrdinalIgnoreCase)
             && string.Equals(preference.SourceId, item.SourceId, StringComparison.Ordinal));
         var candidates = await TryReadCachedPlaylistCandidatesAsync(item.Source, item.SourceId, cancellationToken);
+        var synced = 0;
+        if (candidates.Count > 0)
+        {
+            var availability = await _playlistSyncService.GetPlaylistAvailabilityAsync(
+                item,
+                preference,
+                candidates,
+                cancellationToken);
+            synced = Math.Max(0, availability.TargetVisibleTrackCount);
+        }
+        var incomplete = total > 0 && synced < total
+            ? total - synced
+            : 0;
 
         var blockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
         var blockedOrIgnored = new HashSet<string>(ignoredTrackIds, StringComparer.Ordinal);
@@ -1216,8 +1227,213 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             normalizedSource,
             sourceId,
             cancellationToken);
-        return Ok(candidates);
+        var playlist = (await _repository.GetPlaylistWatchlistAsync(cancellationToken))
+            .FirstOrDefault(item =>
+                string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.SourceId, sourceId, StringComparison.Ordinal));
+        if (playlist == null)
+        {
+            return Ok(candidates);
+        }
+
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
+        var availability = await _playlistSyncService.GetPlaylistAvailabilityAsync(
+            playlist,
+            preference,
+            candidates,
+            cancellationToken);
+        var availabilityByTrackId = availability.Tracks
+            .Where(static item => !string.IsNullOrWhiteSpace(item.SourceTrackId))
+            .GroupBy(static item => item.SourceTrackId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var claims = await _repository.GetPlaylistWatchDownloadClaimsForPlaylistAsync(normalizedSource, sourceId, status: null, cancellationToken);
+        var claimsByTrackId = claims
+            .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
+            .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+        var queueTasks = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var queueTasksByUuid = queueTasks.ToDictionary(static item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
+
+        return Ok(candidates.Select(candidate =>
+        {
+            var trackSourceId = candidate.TrackSourceId ?? string.Empty;
+            availabilityByTrackId.TryGetValue(trackSourceId, out var trackAvailability);
+            claimsByTrackId.TryGetValue(trackSourceId, out var trackClaims);
+            var queueTask = ResolveCurrentQueueTask(
+                normalizedSource,
+                candidate,
+                trackClaims,
+                queueTasks,
+                queueTasksByUuid);
+            var locationStatus = ResolvePlaylistTrackLocationStatus(
+                availability.Service,
+                trackAvailability,
+                queueTask);
+            return new
+            {
+                candidate.TrackSourceId,
+                candidate.Isrc,
+                candidate.Title,
+                candidate.Artist,
+                candidate.Album,
+                candidate.ReleaseYear,
+                candidate.Explicit,
+                candidate.Genres,
+                candidate.DurationMs,
+                LocationStatus = locationStatus.Status,
+                LocationStatusLabel = locationStatus.Label,
+                LocationStatusDetail = locationStatus.Detail,
+                InLocalLibrary = trackAvailability?.InLocalLibrary == true,
+                InTargetServer = trackAvailability?.InTargetServer == true,
+                TargetService = availability.Service,
+                WatchStatus = queueTask?.Status ?? string.Empty
+            };
+        }).ToList());
     }
+
+    private static PlaylistTrackLocationStatus ResolvePlaylistTrackLocationStatus(
+        string? service,
+        PlaylistSyncService.PlaylistTrackAvailability? availability,
+        DownloadQueueItem? queueTask)
+    {
+        if (availability?.Eligible == false)
+        {
+            return new PlaylistTrackLocationStatus("blocked", "Blocked", "Ignored or blocked by monitored playlist rules.");
+        }
+
+        var serviceLabel = string.Equals(service, "plex", StringComparison.OrdinalIgnoreCase)
+            ? "Plex library"
+            : string.Equals(service, "jellyfin", StringComparison.OrdinalIgnoreCase)
+                ? "Jellyfin library"
+                : "Target library";
+        if (availability?.InTargetServer == true)
+        {
+            return new PlaylistTrackLocationStatus("library", "Library", $"Downloaded and visible in {serviceLabel}.");
+        }
+
+        if (availability?.InLocalLibrary == true)
+        {
+            return new PlaylistTrackLocationStatus("library", "Library", "Downloaded into the DeezSpoTag library, not visible to the configured media server yet.");
+        }
+
+        var queueState = ResolveQueueLocationStatus(NormalizeStatusText(queueTask?.Status));
+        if (queueState != null)
+        {
+            return queueState;
+        }
+
+        return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");
+    }
+
+    private static string NormalizeStatusText(string? status)
+        => string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();
+
+    private static DownloadQueueItem? ResolveCurrentQueueTask(
+        string source,
+        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        IReadOnlyList<PlaylistWatchDownloadClaimDto>? claims,
+        IReadOnlyList<DownloadQueueItem> queueTasks,
+        IReadOnlyDictionary<string, DownloadQueueItem> queueTasksByUuid)
+    {
+        var claimedTasks = claims?
+            .Select(claim => queueTasksByUuid.GetValueOrDefault(claim.QueueUuid))
+            .Where(static task => task != null)
+            .Cast<DownloadQueueItem>()
+            .ToList();
+        var matchingTasks = claimedTasks is { Count: > 0 }
+            ? claimedTasks
+            : queueTasks.Where(task => QueueTaskMatchesCandidate(source, candidate, task)).ToList();
+
+        return matchingTasks
+            .Where(static task => ResolveQueueLocationStatus(NormalizeStatusText(task.Status)) != null)
+            .OrderBy(static task => QueueStatusPriority(task.Status))
+            .ThenByDescending(static task => task.UpdatedAt)
+            .FirstOrDefault();
+    }
+
+    private static bool QueueTaskMatchesCandidate(
+        string source,
+        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        DownloadQueueItem task)
+    {
+        if (!string.IsNullOrWhiteSpace(candidate.Isrc)
+            && string.Equals(candidate.Isrc.Trim(), task.Isrc?.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var trackSourceId = candidate.TrackSourceId?.Trim();
+        if (string.IsNullOrWhiteSpace(trackSourceId))
+        {
+            return false;
+        }
+
+        var queueSourceId = source switch
+        {
+            "deezer" => task.DeezerTrackId,
+            "spotify" => task.SpotifyTrackId,
+            "apple" or "applemusic" => task.AppleTrackId,
+            "qobuz" => ReadQueuePayloadId(task.PayloadJson, "QobuzId", "qobuzId"),
+            "tidal" => ReadQueuePayloadId(task.PayloadJson, "TidalId", "tidalId"),
+            "amazon" or "amazonmusic" => ReadQueuePayloadId(task.PayloadJson, "AmazonId", "amazonId"),
+            _ => null
+        };
+        return string.Equals(trackSourceId, queueSourceId?.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ReadQueuePayloadId(string? payloadJson, string pascalName, string camelName)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            if (root.TryGetProperty(pascalName, out var pascalValue) && pascalValue.ValueKind == JsonValueKind.String)
+            {
+                return pascalValue.GetString();
+            }
+
+            return root.TryGetProperty(camelName, out var camelValue) && camelValue.ValueKind == JsonValueKind.String
+                ? camelValue.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static int QueueStatusPriority(string? status)
+        => NormalizeStatusText(status) switch
+        {
+            "running" or "downloading" => 0,
+            "queued" or "inqueue" or "pending" or "paused" or "retrying" => 1,
+            "failed" or "canceled" or "cancelled" => 2,
+            _ => 3
+        };
+
+    private static PlaylistTrackLocationStatus? ResolveQueueLocationStatus(string? status)
+    {
+        return status switch
+        {
+            "queued" or "inqueue" or "pending" => new PlaylistTrackLocationStatus("queued", "Queued", "Waiting in the download queue."),
+            "running" or "downloading" => new PlaylistTrackLocationStatus("downloading", "Downloading", "Currently downloading."),
+            "paused" => new PlaylistTrackLocationStatus("paused", "Paused", "Queued download is paused."),
+            "retrying" => new PlaylistTrackLocationStatus("retrying", "Retrying", "Queued download is waiting for retry."),
+            "failed" => new PlaylistTrackLocationStatus("failed", "Failed", "Queued download failed."),
+            "canceled" or "cancelled" => new PlaylistTrackLocationStatus("cancelled", "Cancelled", "Queued download was cancelled."),
+            _ => null
+        };
+    }
+
+    private sealed record PlaylistTrackLocationStatus(
+        string Status,
+        string Label,
+        string Detail);
 
     public sealed record PlaylistWatchIgnoreRequest(string TrackSourceId, string? Isrc);
 

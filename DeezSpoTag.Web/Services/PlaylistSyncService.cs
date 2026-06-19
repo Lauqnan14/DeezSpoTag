@@ -125,6 +125,23 @@ public sealed class PlaylistSyncService
         long? LocalTrackId = null,
         string? TargetId = null);
 
+    public sealed record PlaylistTrackAvailability(
+        string SourceTrackId,
+        bool Eligible,
+        bool InLocalLibrary,
+        bool InTargetServer,
+        long? LocalTrackId = null,
+        string? TargetId = null);
+
+    public sealed record PlaylistAvailabilitySummary(
+        string? Service,
+        int SourceTrackCount,
+        int EligibleTrackCount,
+        int LocalTrackCount,
+        int TargetVisibleTrackCount,
+        IReadOnlyList<PlaylistTrackAvailability> Tracks,
+        string? ErrorMessage = null);
+
     public sealed record TargetPlaylistOption(
         string Id,
         string Name,
@@ -557,6 +574,93 @@ public sealed class PlaylistSyncService
             SourceTracks = eligibleTracks.Count,
             MissingTracks = unavailableCount + result.MissingTracks
         };
+    }
+
+    public async Task<PlaylistAvailabilitySummary> GetPlaylistAvailabilityAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
+        CancellationToken cancellationToken)
+    {
+        if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
+        {
+            return new PlaylistAvailabilitySummary(null, 0, 0, 0, 0, Array.Empty<PlaylistTrackAvailability>(), "Playlist not available.");
+        }
+
+        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
+        var loadResult = await LoadTracksForSyncAsync(playlist, trackCandidates, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(loadResult.ErrorMessage))
+        {
+            return new PlaylistAvailabilitySummary(service, 0, 0, 0, 0, Array.Empty<PlaylistTrackAvailability>(), loadResult.ErrorMessage);
+        }
+
+        var allTracks = loadResult.Tracks
+            .Where(static track => !string.IsNullOrWhiteSpace(track.SourceTrackId))
+            .ToList();
+        var eligibleTracks = await FilterTracksForSyncAsync(
+            playlist,
+            preference,
+            allTracks,
+            cancellationToken);
+        var eligibleIds = eligibleTracks
+            .Select(static track => track.SourceTrackId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var availableTrackRows = await ResolveAvailableTrackRowsAsync(
+            playlist.Source,
+            eligibleTracks,
+            cancellationToken);
+        var localTrackIdBySourceId = availableTrackRows
+            .Where(static row => !string.IsNullOrWhiteSpace(row.Track.SourceTrackId))
+            .GroupBy(static row => row.Track.SourceTrackId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.First().LocalTrackId, StringComparer.OrdinalIgnoreCase);
+        var targetIdBySourceId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (string.Equals(service, PlexService, StringComparison.OrdinalIgnoreCase) && availableTrackRows.Count > 0)
+        {
+            var ratingKeys = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
+                availableTrackRows
+                    .Select(static row => row.LocalTrackId)
+                    .Where(static id => id > 0)
+                    .Distinct()
+                    .ToList(),
+                cancellationToken);
+            foreach (var row in availableTrackRows)
+            {
+                if (!string.IsNullOrWhiteSpace(row.Track.SourceTrackId)
+                    && ratingKeys.TryGetValue(row.LocalTrackId, out var ratingKey)
+                    && !string.IsNullOrWhiteSpace(ratingKey))
+                {
+                    targetIdBySourceId[row.Track.SourceTrackId] = ratingKey;
+                }
+            }
+        }
+
+        var availability = allTracks
+            .Select(track =>
+            {
+                var localTrackId = localTrackIdBySourceId.TryGetValue(track.SourceTrackId, out var resolvedLocalTrackId)
+                    ? resolvedLocalTrackId
+                    : (long?)null;
+                var targetId = targetIdBySourceId.TryGetValue(track.SourceTrackId, out var resolvedTargetId)
+                    ? resolvedTargetId
+                    : null;
+                return new PlaylistTrackAvailability(
+                    track.SourceTrackId,
+                    eligibleIds.Contains(track.SourceTrackId),
+                    localTrackId.HasValue,
+                    !string.IsNullOrWhiteSpace(targetId),
+                    localTrackId,
+                    targetId);
+            })
+            .ToList();
+
+        return new PlaylistAvailabilitySummary(
+            service,
+            allTracks.Count,
+            eligibleTracks.Count,
+            localTrackIdBySourceId.Count,
+            targetIdBySourceId.Count,
+            availability);
     }
 
     private async Task<List<(SyncTrackSummary Track, long LocalTrackId)>> ResolveAvailableTrackRowsAsync(
