@@ -79,10 +79,14 @@ const libraryState = {
         biographyAppleId: null,
         tidalBiography: null,
         biographyTidalId: null,
+        qobuzBiography: null,
+        biographyQobuzId: null,
         lastFmBiography: null,
         biographyLastFmArtistName: null,
         tidalArtistId: null,
         storedTidalId: null,
+        qobuzArtistId: null,
+        storedQobuzId: null,
         atmos: [],
         localTrackVariantIndex: null,
         localTrackVariantArtistId: null,
@@ -4259,11 +4263,12 @@ async function loadAlbums(artistId) {
     libraryState.appleExtras.localTrackVariantArtistId = null;
     libraryState.appleExtras.localTrackVariantIndexPromise = null;
     const cachedUnavailable = libraryState.unavailableAlbums.get(artistIdValue);
-    const [artist, albums, appleIdData, tidalIdData] = await Promise.all([
+    const [artist, albums, appleIdData, tidalIdData, qobuzIdData] = await Promise.all([
         fetchJsonOptional(`/api/library/artists/${artistIdValue}`),
         fetchJson(buildLibraryScopedUrl(`/api/library/artists/${artistIdValue}/albums`)),
         fetchJsonOptional(`/api/library/artists/${artistIdValue}/apple-id`),
-        fetchJsonOptional(`/api/library/artists/${artistIdValue}/tidal-id`)
+        fetchJsonOptional(`/api/library/artists/${artistIdValue}/tidal-id`),
+        fetchJsonOptional(`/api/library/artists/${artistIdValue}/qobuz-id`)
     ]);
 
     let resolvedArtist = artist;
@@ -4325,14 +4330,19 @@ async function loadAlbums(artistId) {
     initSpotifyCacheControls(artistIdValue);
     const storedAppleId = appleIdData?.appleId || null;
     const storedTidalId = tidalIdData?.tidalId || null;
+    const storedQobuzId = qobuzIdData?.qobuzId || null;
     libraryState.appleExtras.storedAppleId = storedAppleId || null;
     libraryState.appleExtras.appleArtistId = storedAppleId || null;
     libraryState.appleExtras.storedTidalId = storedTidalId || null;
     libraryState.appleExtras.tidalArtistId = storedTidalId || null;
+    libraryState.appleExtras.storedQobuzId = storedQobuzId || null;
+    libraryState.appleExtras.qobuzArtistId = storedQobuzId || null;
     libraryState.appleExtras.biography = normalizeArtistBiographyForSync(resolvedArtist?.appleBiography || '') || null;
     libraryState.appleExtras.biographyAppleId = storedAppleId || null;
     libraryState.appleExtras.tidalBiography = null;
     libraryState.appleExtras.biographyTidalId = storedTidalId || null;
+    libraryState.appleExtras.qobuzBiography = null;
+    libraryState.appleExtras.biographyQobuzId = storedQobuzId || null;
     libraryState.appleExtras.lastFmBiography = null;
     libraryState.appleExtras.biographyLastFmArtistName = libraryState.currentLocalArtistName || null;
     updateArtistBiographySourceControls();
@@ -4340,14 +4350,24 @@ async function loadAlbums(artistId) {
     initAppleLazyLoad(resolvedArtist?.name, storedAppleId);
     loadAppleArtistBiography(storedAppleId);
     loadTidalArtistBiography(storedTidalId);
+    loadQobuzArtistBiography(storedQobuzId);
     loadLastFmArtistBiography(libraryState.currentLocalArtistName);
     initAppleIdEditor(artistIdValue);
     initTidalIdEditor(artistIdValue);
+    initQobuzIdEditor(artistIdValue);
     if (!storedTidalId && resolvedArtist?.name) {
         resolveAndStoreTidalArtistId(artistIdValue, resolvedArtist.name)
             .then((tidalId) => {
                 if (tidalId) {
                     loadTidalArtistBiography(tidalId);
+                }
+            });
+    }
+    if (!storedQobuzId && resolvedArtist?.name) {
+        resolveAndStoreQobuzArtistId(artistIdValue, resolvedArtist.name)
+            .then((qobuzId) => {
+                if (qobuzId) {
+                    loadQobuzArtistBiography(qobuzId);
                 }
             });
     }
@@ -6119,6 +6139,91 @@ async function resolveAndStoreTidalArtistId(artistIdValue, artistName) {
     }
 }
 
+function initQobuzIdEditor(artistIdValue) {
+    const editButton = document.getElementById('qobuzIdEdit');
+    if (!editButton || !artistIdValue || editButton.dataset.bound === 'true') return;
+    editButton.dataset.bound = 'true';
+
+    editButton.addEventListener('click', async () => {
+        if (!libraryState.appleExtras.storedQobuzId) {
+            await resolveAndStoreQobuzArtistId(artistIdValue, libraryState.currentLocalArtistName || libraryState.appleExtras.term);
+        }
+        const current = libraryState.appleExtras.storedQobuzId || '';
+        const updated = await DeezSpoTag.ui.prompt('Qobuz artist ID (numeric)', {
+            title: 'Update Qobuz Artist ID',
+            value: current,
+            placeholder: 'e.g. 123456'
+        });
+        if (updated === null) return;
+        const trimmed = updated.trim();
+        if (!trimmed) {
+            showToast('Qobuz artist ID is required.', true);
+            return;
+        }
+        if (!/^\d+$/.test(trimmed)) {
+            showToast('Qobuz artist ID should be numeric.', true);
+            return;
+        }
+
+        editButton.disabled = true;
+        try {
+            await fetchJson(`/api/library/artists/${artistIdValue}/qobuz-id`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ qobuzId: trimmed })
+            });
+            libraryState.appleExtras.storedQobuzId = trimmed;
+            libraryState.appleExtras.qobuzArtistId = trimmed;
+            libraryState.appleExtras.qobuzBiography = null;
+            libraryState.appleExtras.biographyQobuzId = trimmed;
+            updateArtistBiographySourceControls();
+            loadQobuzArtistBiography(trimmed);
+            showToast('Qobuz artist ID updated.');
+        } catch (error) {
+            showToast(`Qobuz ID update failed: ${error.message}`, true);
+        } finally {
+            editButton.disabled = false;
+        }
+    });
+}
+
+async function resolveAndStoreQobuzArtistId(artistIdValue, artistName) {
+    const normalizedArtistId = String(artistIdValue || '').trim();
+    const term = String(artistName || '').trim();
+    if (!normalizedArtistId || !term || libraryState.appleExtras.storedQobuzId) {
+        return null;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/qobuz/search?query=${encodeURIComponent(term)}&limit=10&type=artist`);
+        const artists = Array.isArray(data?.artists) ? data.artists : [];
+        if (artists.length === 0) {
+            return null;
+        }
+
+        const normalizedTerm = normalizeArtistName(term);
+        const match = artists.find(artist => normalizeArtistName(artist?.name) === normalizedTerm)
+            || artists.find(artist => normalizeArtistName(artist?.name).includes(normalizedTerm))
+            || null;
+        const qobuzId = String(match?.qobuzId || match?.id || '').trim();
+        if (!/^\d+$/.test(qobuzId)) {
+            return null;
+        }
+
+        await fetchJson(`/api/library/artists/${encodeURIComponent(normalizedArtistId)}/qobuz-id`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qobuzId })
+        });
+        libraryState.appleExtras.storedQobuzId = qobuzId;
+        libraryState.appleExtras.qobuzArtistId = qobuzId;
+        return qobuzId;
+    } catch (error) {
+        console.warn('Qobuz artist ID auto-resolve failed', error);
+        return null;
+    }
+}
+
 function getArtistVisualStorageKey(artistId) {
     return `artist-visuals:${artistId || 'unknown'}`;
 }
@@ -6425,7 +6530,7 @@ function normalizeArtistBiographyForSync(value) {
 
 function getSelectedArtistBiographySource() {
     const selected = (document.getElementById('artist-biography-source')?.value || 'spotify').toString().trim().toLowerCase();
-    if (selected === 'apple' || selected === 'tidal' || selected === 'lastfm') {
+    if (selected === 'apple' || selected === 'tidal' || selected === 'lastfm' || selected === 'qobuz') {
         return selected;
     }
     return 'spotify';
@@ -6438,6 +6543,9 @@ function getArtistBiographySourceLabel(source) {
     if (source === 'tidal') {
         return 'Tidal';
     }
+    if (source === 'qobuz') {
+        return 'Qobuz';
+    }
     return source === 'lastfm' ? 'Last.fm' : 'Spotify';
 }
 
@@ -6447,6 +6555,9 @@ function getArtistBiographyBySource(source) {
     }
     if (source === 'tidal') {
         return normalizeArtistBiographyForSync(libraryState.appleExtras?.tidalBiography || '');
+    }
+    if (source === 'qobuz') {
+        return normalizeArtistBiographyForSync(libraryState.appleExtras?.qobuzBiography || '');
     }
     if (source === 'lastfm') {
         return normalizeArtistBiographyForSync(libraryState.appleExtras?.lastFmBiography || '');
@@ -6464,9 +6575,11 @@ function updateArtistBiographySourceControls() {
     const appleOption = select.querySelector('option[value="apple"]');
     const tidalOption = select.querySelector('option[value="tidal"]');
     const lastFmOption = select.querySelector('option[value="lastfm"]');
+    const qobuzOption = select.querySelector('option[value="qobuz"]');
     const hasAppleBiography = !!getArtistBiographyBySource('apple');
     const hasTidalBiography = !!getArtistBiographyBySource('tidal');
     const hasLastFmBiography = !!getArtistBiographyBySource('lastfm');
+    const hasQobuzBiography = !!getArtistBiographyBySource('qobuz');
     if (appleOption) {
         appleOption.disabled = !hasAppleBiography;
     }
@@ -6476,6 +6589,9 @@ function updateArtistBiographySourceControls() {
     if (lastFmOption) {
         lastFmOption.disabled = !hasLastFmBiography;
     }
+    if (qobuzOption) {
+        qobuzOption.disabled = !hasQobuzBiography;
+    }
     if (select.value === 'apple' && !hasAppleBiography) {
         select.value = 'spotify';
     }
@@ -6483,6 +6599,9 @@ function updateArtistBiographySourceControls() {
         select.value = 'spotify';
     }
     if (select.value === 'lastfm' && !hasLastFmBiography) {
+        select.value = 'spotify';
+    }
+    if (select.value === 'qobuz' && !hasQobuzBiography) {
         select.value = 'spotify';
     }
 }
@@ -6553,6 +6672,36 @@ async function loadTidalArtistBiography(storedTidalId) {
             updateArtistBiographySourceControls();
         }
         console.warn('Tidal artist biography failed.', error);
+    }
+}
+
+async function loadQobuzArtistBiography(storedQobuzId) {
+    const qobuzId = (storedQobuzId || '').toString().trim();
+    libraryState.appleExtras.biographyQobuzId = qobuzId || null;
+    updateArtistBiographySourceControls();
+
+    if (!qobuzId) {
+        return;
+    }
+
+    try {
+        const data = await fetchJsonOptional(`/api/qobuz/artist/${encodeURIComponent(qobuzId)}/discography`);
+        if ((libraryState.appleExtras.biographyQobuzId || '') !== qobuzId) {
+            return;
+        }
+
+        const biography = data?.biography?.content || data?.biography?.summary || '';
+        libraryState.appleExtras.qobuzBiography = normalizeArtistBiographyForSync(biography) || null;
+        updateArtistBiographySourceControls();
+        if (getSelectedArtistBiographySource() === 'qobuz') {
+            applySelectedArtistBiographySource();
+        }
+    } catch (error) {
+        if ((libraryState.appleExtras.biographyQobuzId || '') === qobuzId) {
+            libraryState.appleExtras.qobuzBiography = null;
+            updateArtistBiographySourceControls();
+        }
+        console.warn('Qobuz artist biography failed.', error);
     }
 }
 

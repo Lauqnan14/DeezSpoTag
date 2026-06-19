@@ -14,6 +14,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     private const string SpotifySource = "spotify";
     private const string AppleSource = "apple";
     private const string TidalSource = "tidal";
+    private const string QobuzSource = "qobuz";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly SpotifyArtistService _spotifyArtistService;
@@ -318,6 +319,53 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
         return Ok(new { tidalId });
     }
 
+    [HttpGet("{id:long}/qobuz-id")]
+    public async Task<IActionResult> GetQobuzId(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return Ok(new { qobuzId = default(string) });
+        }
+
+        var qobuzId = await _repository.GetArtistSourceIdAsync(id, QobuzSource, cancellationToken);
+        return Ok(new { qobuzId });
+    }
+
+    [HttpPut("{id:long}/qobuz-id")]
+    public async Task<IActionResult> UpdateQobuzId(long id, [FromBody] QobuzIdUpdateRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.QobuzId))
+        {
+            return BadRequest("Qobuz artist ID is required.");
+        }
+
+        if (!_repository.IsConfigured)
+        {
+            return BadRequest("Library DB not configured.");
+        }
+
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound();
+        }
+
+        var qobuzId = request.QobuzId.Trim();
+        if (!qobuzId.All(char.IsDigit))
+        {
+            return BadRequest("Qobuz artist ID should be numeric.");
+        }
+
+        await _repository.UpsertArtistSourceIdAsync(id, QobuzSource, qobuzId, cancellationToken);
+
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"[qobuz] manual id set for artist {id}."));
+
+        return Ok(new { qobuzId });
+    }
+
     private async Task<IActionResult> GetCachedSpotifyArtistPageResultAsync(
         long id,
         string? spotifyId,
@@ -581,6 +629,8 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     public sealed record AppleIdUpdateRequest(string AppleId);
 
     public sealed record TidalIdUpdateRequest(string TidalId);
+
+    public sealed record QobuzIdUpdateRequest(string QobuzId);
 
     private sealed record UnmatchedSpotifyArtistDto(long ArtistId, string ArtistName);
 }
