@@ -406,6 +406,17 @@ body.autotag-col-resizing * {
     align-items: start;
 }
 
+.autotag-platform-options.is-column-layout {
+    align-items: start;
+}
+
+.autotag-platform-option-column {
+    display: grid;
+    gap: 16px;
+    align-content: start;
+    min-width: 0;
+}
+
 .autotag-platform-options .form-group {
     margin-bottom: 0;
 }

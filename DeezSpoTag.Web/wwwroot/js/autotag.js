@@ -2383,6 +2383,14 @@
             return acc;
         }, {})
     );
+    const PLATFORM_OPTIONS_COLUMN_LAYOUT_QUERY = "(min-width: 993px)";
+
+    function shouldUsePlatformOptionsColumnLayout() {
+        if (typeof globalThis.matchMedia !== "function") {
+            return true;
+        }
+        return globalThis.matchMedia(PLATFORM_OPTIONS_COLUMN_LAYOUT_QUERY).matches;
+    }
 
     function clampItunesArtResolution(value, fallback = 1000) {
         const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -2586,9 +2594,22 @@
             return;
         }
 
-        platformsForConfig.forEach((platform) => {
+        const useColumnLayout = shouldUsePlatformOptionsColumnLayout();
+        state.platformOptionsColumnLayout = useColumnLayout;
+        container.classList.toggle("is-column-layout", useColumnLayout);
+        const optionColumns = useColumnLayout
+            ? [0, 1].map(() => {
+                const column = document.createElement("div");
+                column.className = "autotag-platform-option-column";
+                container.appendChild(column);
+                return column;
+            })
+            : null;
+
+        platformsForConfig.forEach((platform, index) => {
             ensurePlatformOptionDefaults(platform.id, platform.options);
             const isEnabled = selected.has(platform.normalizedId);
+            const targetContainer = optionColumns ? optionColumns[index % optionColumns.length] : container;
 
             const section = document.createElement("section");
             section.className = "autotag-platform-option-block";
@@ -2705,14 +2726,26 @@
                 noOptions.className = "autotag-platform-no-options";
                 noOptions.textContent = "No settings are exposed for this platform.";
                 section.appendChild(noOptions);
-                container.appendChild(section);
+                targetContainer.appendChild(section);
                 return;
             }
 
             section.appendChild(optionsFields);
-            container.appendChild(section);
+            targetContainer.appendChild(section);
         });
         updateCoverMaintenanceTargetResolutionPolicyUI();
+    }
+
+    function refreshPlatformOptionsLayout() {
+        const container = el("autotag-platform-options");
+        if (!container) {
+            return;
+        }
+        const useColumnLayout = shouldUsePlatformOptionsColumnLayout();
+        if (state.platformOptionsColumnLayout === useColumnLayout) {
+            return;
+        }
+        renderPlatformOptions();
     }
 
     function loadConfigToUI() {
@@ -6956,6 +6989,8 @@
     setupDownloadTagsUi();
     setupTemplateVariableHelpers();
     initializeAutoTagStickyShell();
+    globalThis.addEventListener("resize", refreshPlatformOptionsLayout, { passive: true });
+    globalThis.addEventListener("orientationchange", refreshPlatformOptionsLayout, { passive: true });
     bindProfileTabNavigationGuards();
     bindEnhancementTabLastScanBanner();
     setActiveProfileId(loadStoredActiveProfileId(), { persist: false });
