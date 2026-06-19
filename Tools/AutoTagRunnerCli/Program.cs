@@ -82,7 +82,6 @@ internal static class Program
 
         var musicBrainzConfig = new MusicBrainzMatchConfig();
         var beatportConfig = new BeatportMatchConfig();
-        var beatsourceConfig = new BeatsourceMatchConfig();
         var bpmConfig = new BpmSupremeConfig();
         var itunesConfig = new ItunesMatchConfig();
         var deezerConfig = new DeezerConfig();
@@ -96,11 +95,9 @@ internal static class Program
             "traxsource",
             "junodownload",
             "bandcamp",
-            "beatsource",
             "bpmsupreme",
             "itunes",
-            "deezer",
-            "musixmatch"
+            "deezer"
         };
 
         var results = new Dictionary<string, int>();
@@ -123,11 +120,9 @@ internal static class Program
                         "traxsource" => await provider.GetRequiredService<TraxsourceMatcher>().MatchAsync(info, matchingConfig, extend: false, albumMeta: false, CancellationToken.None),
                         "junodownload" => await provider.GetRequiredService<JunoDownloadMatcher>().MatchAsync(info, matchingConfig, CancellationToken.None),
                         "bandcamp" => await provider.GetRequiredService<BandcampMatcher>().MatchAsync(info, matchingConfig, CancellationToken.None),
-                        "beatsource" => await provider.GetRequiredService<BeatsourceMatcher>().MatchAsync(info, matchingConfig, beatsourceConfig, CancellationToken.None),
                         "bpmsupreme" => await provider.GetRequiredService<BpmSupremeMatcher>().MatchAsync(info, matchingConfig, bpmConfig, CancellationToken.None),
                         "itunes" => await provider.GetRequiredService<ItunesMatcher>().MatchAsync(info, matchingConfig, itunesConfig, CancellationToken.None),
                         "deezer" => await provider.GetRequiredService<DeezerMatcher>().MatchAsync(info, matchingConfig, deezerConfig, CancellationToken.None),
-                        "musixmatch" => await provider.GetRequiredService<MusixmatchMatcher>().MatchAsync(info, CancellationToken.None),
                         _ => null
                     };
 
@@ -393,12 +388,9 @@ internal static class Program
         services.AddTransient<TraxsourceClient>();
         services.AddTransient<JunoDownloadClient>();
         services.AddTransient<BandcampClient>();
-        services.AddTransient<BeatsourceTokenManager>();
-        services.AddTransient<BeatsourceClient>();
         services.AddTransient<BpmSupremeClient>();
         services.AddTransient<ItunesClient>();
         services.AddTransient<DeezerClient>();
-        services.AddTransient<MusixmatchClient>();
 
         services.AddTransient<MusicBrainzMatcher>();
         services.AddTransient<BeatportMatcher>();
@@ -406,11 +398,9 @@ internal static class Program
         services.AddTransient<TraxsourceMatcher>();
         services.AddTransient<JunoDownloadMatcher>();
         services.AddTransient<BandcampMatcher>();
-        services.AddTransient<BeatsourceMatcher>();
         services.AddTransient<BpmSupremeMatcher>();
         services.AddTransient<ItunesMatcher>();
         services.AddTransient<DeezerMatcher>();
-        services.AddTransient<MusixmatchMatcher>();
     }
 
     private static string ResolveWebContentRoot()

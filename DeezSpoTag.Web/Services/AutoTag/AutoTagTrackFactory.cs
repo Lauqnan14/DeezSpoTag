@@ -111,33 +111,4 @@ internal static class AutoTagTrackFactory
         return mapped;
     }
 
-    public static AutoTagTrack FromBeatsource(BeatsourceTrackInfo track)
-    {
-        var autoTagTrack = CreateDanceTrack(new DanceTrackInput
-        {
-            Title = track.Title,
-            Version = track.Version,
-            Artists = track.Artists,
-            AlbumArtists = Array.Empty<string>(),
-            Album = track.Album,
-            Key = track.Key,
-            Bpm = track.Bpm,
-            Genres = track.Genres,
-            Art = track.Art,
-            Url = track.Url,
-            Label = track.Label,
-            CatalogNumber = track.CatalogNumber,
-            ReleaseId = track.ReleaseId,
-            Duration = track.Duration,
-            TrackNumber = null,
-            TrackTotal = null,
-            ReleaseDate = track.ReleaseDate
-        });
-
-        autoTagTrack.TrackId = track.TrackId;
-        autoTagTrack.Remixers = track.Remixers.ToList();
-        autoTagTrack.Isrc = track.Isrc;
-        autoTagTrack.ReleaseType = AutoTagReleaseCategory.Resolve(null, autoTagTrack.TrackTotal);
-        return autoTagTrack;
-    }
 }

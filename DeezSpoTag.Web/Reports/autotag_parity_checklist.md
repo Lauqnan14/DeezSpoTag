@@ -44,11 +44,6 @@ Bandcamp
 - `Done` Full track extension mirrors OneTagger flow.
 - `Verify` Bandcamp page parse remains compatible with current HTML structure.
 
-Beatsource
-- `Done` Query uses `CleanTitle`.
-- `Done` Track conversion uses the same fields as OneTagger.
-- `Verify` OAuth token refresh behavior matches OneTagger in production.
-
 BpmSupreme
 - `Done` Title suffix stripping matches OneTagger regex.
 - `Done` Query order matches OneTagger (`{clean_title} {clean_artist}`).
@@ -70,4 +65,3 @@ Suggested Validation Steps
 3. Disable `label` and `catalogNumber`, confirm Discogs main-release lookup is skipped.
 4. For Traxsource, toggle `albumArt` and confirm extension happens only when enabled.
 5. For Musixmatch, disable lyrics tags and confirm no request is made.
-

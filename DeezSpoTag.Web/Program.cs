@@ -1288,7 +1288,6 @@ public partial class Program
                 TraxsourceMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.TraxsourceMatcher>(),
                 JunoDownloadMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.JunoDownloadMatcher>(),
                 BandcampMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BandcampMatcher>(),
-                BeatsourceMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BeatsourceMatcher>(),
                 BpmSupremeMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BpmSupremeMatcher>(),
                 ItunesMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.ItunesMatcher>(),
                 SpotifyMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.SpotifyMatcher>(),
@@ -1321,7 +1320,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.MusicBrainzPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.ShazamPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.BandcampPlatform>();
-        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.BeatsourcePlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.BpmSupremePlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.ItunesPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.MusixmatchPlatform>();
@@ -1344,9 +1342,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.ShazamMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BandcampClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BandcampMatcher>();
-        services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BeatsourceClient>();
-        services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BeatsourceTokenManager>();
-        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BeatsourceMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BpmSupremeClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BpmSupremeMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.ItunesClient>();

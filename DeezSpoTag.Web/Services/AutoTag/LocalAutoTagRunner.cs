@@ -313,7 +313,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly TraxsourceMatcher _traxsourceMatcher;
     private readonly JunoDownloadMatcher _junoDownloadMatcher;
     private readonly BandcampMatcher _bandcampMatcher;
-    private readonly BeatsourceMatcher _beatsourceMatcher;
     private readonly BpmSupremeMatcher _bpmSupremeMatcher;
     private readonly ItunesMatcher _itunesMatcher;
     private readonly SpotifyMatcher _spotifyMatcher;
@@ -348,7 +347,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _traxsourceMatcher = collaborators.TraxsourceMatcher;
         _junoDownloadMatcher = collaborators.JunoDownloadMatcher;
         _bandcampMatcher = collaborators.BandcampMatcher;
-        _beatsourceMatcher = collaborators.BeatsourceMatcher;
         _bpmSupremeMatcher = collaborators.BpmSupremeMatcher;
         _itunesMatcher = collaborators.ItunesMatcher;
         _spotifyMatcher = collaborators.SpotifyMatcher;
@@ -2148,8 +2146,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 return await _junoDownloadMatcher.MatchAsync(info, context.MatchingConfig, token);
             case "bandcamp":
                 return await _bandcampMatcher.MatchAsync(info, context.MatchingConfig, token);
-            case "beatsource":
-                return await _beatsourceMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "beatsource", new BeatsourceMatchConfig()), token);
             case "bpmsupreme":
                 return await _bpmSupremeMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "bpmsupreme", new BpmSupremeConfig()), token);
             case ItunesPlatform:
@@ -6009,7 +6005,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required TraxsourceMatcher TraxsourceMatcher { get; init; }
         public required JunoDownloadMatcher JunoDownloadMatcher { get; init; }
         public required BandcampMatcher BandcampMatcher { get; init; }
-        public required BeatsourceMatcher BeatsourceMatcher { get; init; }
         public required BpmSupremeMatcher BpmSupremeMatcher { get; init; }
         public required ItunesMatcher ItunesMatcher { get; init; }
         public required SpotifyMatcher SpotifyMatcher { get; init; }

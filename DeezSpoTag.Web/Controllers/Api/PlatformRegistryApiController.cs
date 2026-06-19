@@ -31,7 +31,6 @@ public class PlatformRegistryApiController : ControllerBase
         "boomplay",
         "beatport",
         "traxsource",
-        "beatsource",
         "junodownload",
         "musicbrainz",
         "itunes",
