@@ -398,6 +398,8 @@ async function loadPlaylistBlockedRules() {
 
         if (trackRows.length === 0 && globalArtists.length === 0 && globalAlbums.length === 0 && globalTracks.length === 0) {
             container.innerHTML = '<div class="watchlist-empty-state">No blocked items configured yet.</div>';
+            container.dataset.stale = 'false';
+            container.dataset.loadState = 'ready';
             return;
         }
 
@@ -510,7 +512,10 @@ async function loadPlaylistBlockedRules() {
                 }
             });
         });
+        container.dataset.stale = 'false';
+        container.dataset.loadState = 'ready';
     } catch (error) {
+        container.dataset.loadState = 'error';
         container.innerHTML = `<div class="watchlist-empty-state">Failed to load blocked items: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
     }
 }
@@ -1355,6 +1360,55 @@ function renderPlaylistWatchlistPresentationBadges(item) {
     return `${syncBadge}${stateBadges ? `<div class="playlist-watchlist-state-badges">${stateBadges}</div>` : ''}`;
 }
 
+function cssEscape(value) {
+    if (globalThis.CSS && typeof globalThis.CSS.escape === 'function') {
+        return globalThis.CSS.escape(value);
+    }
+
+    return value.replace(/["\\]/g, '\\$&');
+}
+
+function buildPlaylistWatchlistCardSelector(source, sourceId) {
+    return `.watchlist-playlist-card-v2[data-playlist-source="${cssEscape(String(source || ''))}"][data-playlist-id="${cssEscape(String(sourceId || ''))}"]`;
+}
+
+async function loadPlaylistWatchlistPresentationSummaries(container) {
+    if (!container) {
+        return;
+    }
+
+    try {
+        const summaries = await fetchJson('/api/library/playlists/presentation-summaries');
+        if (!Array.isArray(summaries)) {
+            return;
+        }
+
+        summaries.forEach(summary => {
+            const source = String(summary?.source || '').trim();
+            const sourceId = String(summary?.sourceId || '').trim();
+            if (!source || !sourceId) {
+                return;
+            }
+
+            const card = container.querySelector(buildPlaylistWatchlistCardSelector(source, sourceId));
+            const slot = card?.querySelector('.playlist-watchlist-presentation-slot');
+            if (!slot) {
+                return;
+            }
+
+            slot.innerHTML = renderPlaylistWatchlistPresentationBadges({
+                trackCount: card.dataset.playlistTrackCount,
+                syncedTrackCount: summary.syncedTrackCount,
+                incompleteTrackCount: summary.incompleteTrackCount,
+                ignoredBlockedTrackCount: summary.ignoredBlockedTrackCount,
+                reroutedTrackCount: summary.reroutedTrackCount
+            });
+        });
+    } catch (error) {
+        console.warn('Failed to load monitored playlist presentation summaries.', error);
+    }
+}
+
 function renderPlaylistWatchlistPriorityBadge(priorityNumber) {
     return `<div class="playlist-watchlist-priority-badge" title="Sync priority ${priorityNumber}">${escapeHtml(String(priorityNumber))}</div>`;
 }
@@ -1573,13 +1627,13 @@ async function loadPlaylistWatchlist() {
                     .filter(Boolean)
                     .join(' • ')
                 : '';
-            return `<div class="watchlist-playlist-card-v2" draggable="true" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}">
+            return `<div class="watchlist-playlist-card-v2" draggable="true" data-playlist-source="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" data-playlist-track-count="${escapeHtml(String(item.trackCount ?? ''))}">
                 <button class="watchlist-card-art" type="button"
                     data-playlist-open="${escapeHtml(item.sourceId)}"
                     data-playlist-source="${escapeHtml(item.source)}">
                     ${artContent}
                     ${priorityBadge}
-                    ${presentationBadges}
+                    <div class="playlist-watchlist-presentation-slot">${presentationBadges}</div>
                 </button>
                 <div class="watchlist-action-menu watchlist-action-menu--hover">
                     <button class="watchlist-kebab-btn" type="button" title="Actions" data-playlist-menu-toggle="${escapeHtml(item.source)}" data-playlist-id="${escapeHtml(item.sourceId)}" aria-expanded="false">
@@ -1603,6 +1657,8 @@ async function loadPlaylistWatchlist() {
                 </div>
             </div>`;
         }).join('');
+
+        void loadPlaylistWatchlistPresentationSummaries(container);
 
         bindPlaylistWatchlistDragOrdering(container);
 
@@ -1812,6 +1868,7 @@ async function loadPlaylistWatchlist() {
         }).catch(() => {
             // Ignore preference hydration failures here; settings panel handles missing prefs.
         });
+        container.dataset.stale = 'false';
         container.dataset.loadState = 'ready';
     } catch (error) {
         container.dataset.loadState = 'error';
@@ -1823,35 +1880,72 @@ function bindPlaylistWatchlistTabHydration() {
     const watchlistTab = document.getElementById('watchlist-tab');
     const playlistSubTab = document.getElementById('watchlist-playlists-tab');
     const playlistPane = document.getElementById('watchlist-playlists-content');
+    const blockedSubTab = document.getElementById('watchlist-blocked-tab');
+    const blockedPane = document.getElementById('watchlist-blocked-content');
     if (!playlistPane || playlistPane.dataset.playlistHydrationBound === 'true') {
         return;
     }
 
-    const ensurePlaylistWatchlistLoaded = () => {
-        const container = document.getElementById('playlistWatchlistContainer');
-        if (!container) {
-            return;
+    const isWatchlistParentActive = () => {
+        const watchlistPane = document.getElementById('watchlist-content');
+        return watchlistPane
+            ? watchlistPane.classList.contains('active') || watchlistPane.classList.contains('show')
+            : watchlistTab?.classList.contains('active') === true;
+    };
+    const isPaneActive = (pane) => pane
+        && (pane.classList.contains('active') || pane.classList.contains('show'));
+    const shouldLoadContainer = (container) => {
+        if (!container || container.dataset.loadState === 'loading') {
+            return false;
         }
-        if (container.dataset.loadState === 'loading') {
-            return;
-        }
+
         const hasRenderableContent = container.childElementCount > 0 || container.textContent.trim().length > 0;
-        if (container.dataset.loadState !== 'ready' || !hasRenderableContent) {
-            void loadPlaylistWatchlist();
+        return container.dataset.loadState !== 'ready'
+            || container.dataset.stale === 'true'
+            || !hasRenderableContent;
+    };
+    const ensurePlaylistWatchlistLoaded = () => {
+        if (!isWatchlistParentActive() || !isPaneActive(playlistPane)) {
+            return;
         }
+
+        const container = document.getElementById('playlistWatchlistContainer');
+        if (!shouldLoadContainer(container)) {
+            return;
+        }
+
+        container.dataset.stale = 'false';
+        void loadPlaylistWatchlist();
+    };
+    const ensureBlockedWatchlistLoaded = () => {
+        if (!isWatchlistParentActive() || !isPaneActive(blockedPane)) {
+            return;
+        }
+
+        const container = document.getElementById('blockedWatchlistContainer');
+        if (!shouldLoadContainer(container)) {
+            return;
+        }
+
+        container.dataset.stale = 'false';
+        void loadPlaylistBlockedRules();
     };
 
-    watchlistTab?.addEventListener('shown.bs.tab', ensurePlaylistWatchlistLoaded);
-    playlistSubTab?.addEventListener('shown.bs.tab', ensurePlaylistWatchlistLoaded);
-
-    const watchlistTabActive = watchlistTab?.classList.contains('active') === true;
-    const playlistTabActive = playlistSubTab?.classList.contains('active') === true;
-    const playlistPaneActive = playlistPane.classList.contains('active') || playlistPane.classList.contains('show');
-    if ((watchlistTabActive && playlistTabActive) || playlistPaneActive) {
+    const ensureActiveWatchlistSubTabLoaded = () => {
         ensurePlaylistWatchlistLoaded();
-    }
+        ensureBlockedWatchlistLoaded();
+    };
+
+    watchlistTab?.addEventListener('shown.bs.tab', ensureActiveWatchlistSubTabLoaded);
+    playlistSubTab?.addEventListener('shown.bs.tab', ensurePlaylistWatchlistLoaded);
+    blockedSubTab?.addEventListener('shown.bs.tab', ensureBlockedWatchlistLoaded);
+
+    ensureActiveWatchlistSubTabLoaded();
 
     playlistPane.dataset.playlistHydrationBound = 'true';
+    if (blockedPane) {
+        blockedPane.dataset.blockedHydrationBound = 'true';
+    }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -3038,13 +3132,17 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
 }
 
 async function refreshPlaylistSettingsViewsAfterSave() {
+    const blockedPane = document.getElementById('watchlist-blocked-content');
+    const blockedPaneVisible = blockedPane
+        && (blockedPane.classList.contains('active') || blockedPane.classList.contains('show'));
+    if (!blockedPaneVisible) {
+        return;
+    }
+
     try {
-        await Promise.all([
-            loadPlaylistBlockedRules(),
-            loadPlaylistWatchlist()
-        ]);
+        await loadPlaylistBlockedRules();
     } catch (error) {
-        console.warn('Failed to refresh monitored playlist views after settings save.', error);
+        console.warn('Failed to refresh monitored playlist blocked rules after settings save.', error);
     }
 }
 

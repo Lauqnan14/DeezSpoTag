@@ -4995,10 +4995,21 @@ async function refreshLibraryViewsAfterLibraryUpdate() {
                 console.warn('Failed to refresh artist albums after library update.', error);
             }));
         }
-        if (document.getElementById('playlistWatchlistContainer')) {
+        const playlistWatchlistContainer = document.getElementById('playlistWatchlistContainer');
+        if (playlistWatchlistContainer && isMediaManagementPlaylistWatchlistActive()) {
             tasks.push(loadPlaylistWatchlist().catch(error => {
                 console.warn('Failed to refresh playlist watchlist after library update.', error);
             }));
+        } else if (playlistWatchlistContainer) {
+            playlistWatchlistContainer.dataset.stale = 'true';
+        }
+        const blockedWatchlistContainer = document.getElementById('blockedWatchlistContainer');
+        if (blockedWatchlistContainer && isMediaManagementBlockedWatchlistActive()) {
+            tasks.push(loadPlaylistBlockedRules().catch(error => {
+                console.warn('Failed to refresh blocked watchlist after library update.', error);
+            }));
+        } else if (blockedWatchlistContainer) {
+            blockedWatchlistContainer.dataset.stale = 'true';
         }
 
         if (tasks.length) {
@@ -11282,6 +11293,27 @@ function bindGlobalLibraryInteractionHandlers() {
     });
 }
 
+function isMediaManagementWatchlistPaneActive() {
+    const pane = document.getElementById('watchlist-content');
+    return pane
+        ? pane.classList.contains('active') || pane.classList.contains('show')
+        : false;
+}
+
+function isMediaManagementPlaylistWatchlistActive() {
+    const pane = document.getElementById('watchlist-playlists-content');
+    return isMediaManagementWatchlistPaneActive()
+        && !!pane
+        && (pane.classList.contains('active') || pane.classList.contains('show'));
+}
+
+function isMediaManagementBlockedWatchlistActive() {
+    const pane = document.getElementById('watchlist-blocked-content');
+    return isMediaManagementWatchlistPaneActive()
+        && !!pane
+        && (pane.classList.contains('active') || pane.classList.contains('show'));
+}
+
 function queueStandardInitialLoadTasks(targets, tasks, options = {}) {
     const skipArtists = options.skipArtists === true;
     const skipScanStatus = options.skipScanStatus === true;
@@ -11297,10 +11329,10 @@ function queueStandardInitialLoadTasks(targets, tasks, options = {}) {
     if (targets.shouldLoadWatchlist) {
         tasks.push(loadWatchlist());
     }
-    if (targets.shouldLoadPlaylistWatchlist) {
+    if (targets.shouldLoadPlaylistWatchlist && isMediaManagementPlaylistWatchlistActive()) {
         tasks.push(loadPlaylistWatchlist());
     }
-    if (targets.shouldLoadPlaylistBlockedRules) {
+    if (targets.shouldLoadPlaylistBlockedRules && isMediaManagementBlockedWatchlistActive()) {
         tasks.push(loadPlaylistBlockedRules());
     }
     if (targets.shouldLoadAlbumTracks) {

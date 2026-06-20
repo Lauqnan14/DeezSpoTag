@@ -461,6 +461,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var saveFunction = ExtractMethodBody(watchlistScript, "async function savePlaylistSettingsFromPanel");
         Assert.DoesNotContain("loadPlaylistBlockedRules()", saveFunction, StringComparison.Ordinal);
         Assert.DoesNotContain("loadPlaylistWatchlist()", saveFunction, StringComparison.Ordinal);
+        var refreshFunction = ExtractMethodBody(watchlistScript, "async function refreshPlaylistSettingsViewsAfterSave");
+        Assert.Contains("watchlist-blocked-content", refreshFunction, StringComparison.Ordinal);
+        Assert.Contains("await loadPlaylistBlockedRules();", refreshFunction, StringComparison.Ordinal);
+        Assert.DoesNotContain("loadPlaylistWatchlist()", refreshFunction, StringComparison.Ordinal);
         Assert.Contains(".app-modal-dialog.playlist-settings-modal.is-resizable", siteCss, StringComparison.Ordinal);
         Assert.Contains(".app-modal-resize-handle", siteCss, StringComparison.Ordinal);
         Assert.DoesNotContain(".app-modal-action {\n        flex: 1 1 0;", siteCss, StringComparison.Ordinal);
@@ -476,6 +480,44 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("Track state", watchlistScript, StringComparison.Ordinal);
         Assert.DoesNotContain("playlist-track-status-section", watchlistScript, StringComparison.Ordinal);
         Assert.DoesNotContain("playlist-track-status-section", libraryCss, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatchlistLoading_DoesNotEagerLoadHiddenBlockedTabOrBlindRefreshOnLibraryUpdate()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var libraryScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library.js"));
+        var watchlistScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+        var playlistController = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryPlaylistWatchlistApiController.cs"));
+
+        var initialLoadQueue = ExtractMethodBody(libraryScript, "function queueStandardInitialLoadTasks");
+        Assert.Contains("targets.shouldLoadPlaylistWatchlist && isMediaManagementPlaylistWatchlistActive()", initialLoadQueue, StringComparison.Ordinal);
+        Assert.Contains("targets.shouldLoadPlaylistBlockedRules && isMediaManagementBlockedWatchlistActive()", initialLoadQueue, StringComparison.Ordinal);
+
+        var libraryUpdateRefresh = ExtractMethodBody(libraryScript, "async function refreshLibraryViewsAfterLibraryUpdate");
+        Assert.Contains("playlistWatchlistContainer && isMediaManagementPlaylistWatchlistActive()", libraryUpdateRefresh, StringComparison.Ordinal);
+        Assert.Contains("playlistWatchlistContainer.dataset.stale = 'true';", libraryUpdateRefresh, StringComparison.Ordinal);
+        Assert.Contains("blockedWatchlistContainer && isMediaManagementBlockedWatchlistActive()", libraryUpdateRefresh, StringComparison.Ordinal);
+        Assert.Contains("blockedWatchlistContainer.dataset.stale = 'true';", libraryUpdateRefresh, StringComparison.Ordinal);
+
+        var tabHydration = ExtractMethodBody(watchlistScript, "function bindPlaylistWatchlistTabHydration");
+        Assert.Contains("watchlist-blocked-tab", tabHydration, StringComparison.Ordinal);
+        Assert.Contains("watchlist-blocked-content", tabHydration, StringComparison.Ordinal);
+        Assert.Contains("const ensureActiveWatchlistSubTabLoaded", tabHydration, StringComparison.Ordinal);
+        Assert.Contains("watchlistTab?.addEventListener('shown.bs.tab', ensureActiveWatchlistSubTabLoaded)", tabHydration, StringComparison.Ordinal);
+        Assert.Contains("blockedSubTab?.addEventListener('shown.bs.tab', ensureBlockedWatchlistLoaded)", tabHydration, StringComparison.Ordinal);
+        Assert.Contains("void loadPlaylistBlockedRules();", tabHydration, StringComparison.Ordinal);
+        Assert.Contains("!isWatchlistParentActive()", tabHydration, StringComparison.Ordinal);
+
+        var getAll = ExtractMethodBody(playlistController, "public async Task<IActionResult> GetAll");
+        Assert.DoesNotContain("BuildPlaylistPresentationSummaryAsync", getAll, StringComparison.Ordinal);
+        Assert.Contains("[HttpGet(\"presentation-summaries\")]", playlistController, StringComparison.Ordinal);
+        Assert.Contains("fetchJson('/api/library/playlists/presentation-summaries')", watchlistScript, StringComparison.Ordinal);
     }
 
     public void Dispose()
@@ -517,6 +559,13 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         var bodyStart = source.IndexOf('{', methodIndex);
         Assert.True(bodyStart >= 0, $"Missing method body start for: {methodMarker}");
+        if (bodyStart + 1 < source.Length
+            && source[bodyStart + 1] == '}'
+            && source.IndexOf('{', bodyStart + 2) is var nextBodyStart
+            && nextBodyStart >= 0)
+        {
+            bodyStart = nextBodyStart;
+        }
 
         var depth = 0;
         for (var i = bodyStart; i < source.Length; i++)

@@ -69,24 +69,38 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        var hydrated = items.Select(HydratePlaylistVisual).ToList();
+        return Ok(hydrated);
+    }
+
+    [HttpGet("presentation-summaries")]
+    public async Task<IActionResult> GetPresentationSummaries(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var allPreferences = await _repository.GetPlaylistWatchPreferencesAsync(cancellationToken);
         var globalBlockRules = PlaylistTrackBlockRuleHelper.BuildGlobalRules(allPreferences);
-        var hydrated = new List<PlaylistWatchlistDto>(items.Count);
+        var summaries = new List<object>(items.Count);
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var hydratedItem = HydratePlaylistVisual(item);
-            var summary = await BuildPlaylistPresentationSummaryAsync(hydratedItem, allPreferences, globalBlockRules, cancellationToken);
-            hydrated.Add(hydratedItem with
+            var summary = await BuildPlaylistPresentationSummaryAsync(item, allPreferences, globalBlockRules, cancellationToken);
+            summaries.Add(new
             {
-                SyncedTrackCount = summary.SyncedTrackCount,
-                IncompleteTrackCount = summary.IncompleteTrackCount,
-                IgnoredBlockedTrackCount = summary.IgnoredBlockedTrackCount,
-                ReroutedTrackCount = summary.ReroutedTrackCount
+                item.Source,
+                item.SourceId,
+                summary.SyncedTrackCount,
+                summary.IncompleteTrackCount,
+                summary.IgnoredBlockedTrackCount,
+                summary.ReroutedTrackCount
             });
         }
 
-        return Ok(hydrated);
+        return Ok(summaries);
     }
 
     private async Task<PlaylistPresentationSummary> BuildPlaylistPresentationSummaryAsync(

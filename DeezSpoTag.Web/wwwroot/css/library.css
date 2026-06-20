@@ -832,6 +832,10 @@
     pointer-events: none;
 }
 
+.playlist-watchlist-presentation-slot {
+    display: contents;
+}
+
 .playlist-watchlist-state-badges {
     position: absolute;
     left: 8px;
