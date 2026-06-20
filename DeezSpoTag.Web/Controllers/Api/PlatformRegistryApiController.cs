@@ -21,12 +21,12 @@ public class PlatformRegistryApiController : ControllerBase
     [
         "deezer",
         "spotify",
-        LastFmPlatform,
         AppleMusicPlatform,
         QobuzPlatform,
         TidalPlatform,
         SoulseekPlatform,
         "discogs",
+        LastFmPlatform,
         BpmSupremePlatform,
         "plex",
         "jellyfin",

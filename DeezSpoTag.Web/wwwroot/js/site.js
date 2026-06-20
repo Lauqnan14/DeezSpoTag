@@ -929,6 +929,7 @@ globalThis.DeezSpoTag = {
             }, 1800);
             this.startConnectedPlatformsAutoRefresh();
         }
+        this.startPublicApiStatusAutoRefresh();
         this.initializePwaInstallPrompt();
         console.log('DeezSpoTag initialized');
     },
@@ -1078,6 +1079,7 @@ globalThis.DeezSpoTag = {
     platformDisplayOrder: [],
 
     connectedPlatformsRefreshIntervalMs: 300000,
+    publicApiStatusRefreshIntervalMs: 30000,
     connectedPlatformsDeepProbeMinIntervalMs: 300000,
     connectedPlatformsCheapProbeMinIntervalMs: 30000,
     connectedPlatformsRefreshTimerId: null,
@@ -1089,6 +1091,8 @@ globalThis.DeezSpoTag = {
     connectedPlatformsLastCheapProbeAt: 0,
     connectedPlatformsHasRendered: false,
     connectedPlatformsLastRenderSignature: null,
+    publicApiStatusRefreshTimerId: null,
+    publicApiStatusRefreshInFlight: false,
     platformRegistryLoaded: false,
     platformRegistryLoadPromise: null,
 
@@ -1254,7 +1258,7 @@ globalThis.DeezSpoTag = {
 
         const states = {};
         this.getPlatformDisplayOrder(Array.from(ids)).forEach((id) => {
-            states[id] = { active: false, reason: null };
+            states[id] = { active: false, reason: null, publicApiStatus: null, publicApiOnlineCount: null };
         });
 
         return states;
@@ -1266,11 +1270,26 @@ globalThis.DeezSpoTag = {
         }
 
         if (!states[id]) {
-            states[id] = { active: false, reason: null };
+            states[id] = { active: false, reason: null, publicApiStatus: null, publicApiOnlineCount: null };
         }
 
         states[id].active = Boolean(active);
         states[id].reason = reason;
+    },
+
+    setPlatformPublicApiStatus(states, id, status, onlineCount = null) {
+        if (!states?.[id] || id !== 'qobuz') {
+            return;
+        }
+
+        const normalized = String(status || '').trim().toLowerCase();
+        states[id].publicApiStatus = ['online', 'offline', 'unknown'].includes(normalized)
+            ? normalized
+            : 'unknown';
+        const parsedCount = Number(onlineCount);
+        states[id].publicApiOnlineCount = Number.isInteger(parsedCount) && parsedCount >= 0
+            ? parsedCount
+            : null;
     },
 
     normalizeConnectedPlatformStates(platformsOrStates) {
@@ -1282,7 +1301,7 @@ globalThis.DeezSpoTag = {
 
             this.getPlatformDisplayOrder(normalizedIds).forEach((id) => {
                 if (this.platformIconMap[id]) {
-                    states[id] = { active: true, reason: null };
+                    states[id] = { active: true, reason: null, publicApiStatus: null, publicApiOnlineCount: null };
                 }
             });
             return states;
@@ -1300,7 +1319,9 @@ globalThis.DeezSpoTag = {
                 if (!merged[id]) {
                     merged[id] = {
                         active: false,
-                        reason: null
+                        reason: null,
+                        publicApiStatus: null,
+                        publicApiOnlineCount: null
                     };
                 }
                 if (value?.active === true) {
@@ -1309,6 +1330,14 @@ globalThis.DeezSpoTag = {
                 if (!merged[id].reason && value?.reason) {
                     merged[id].reason = value.reason;
                 }
+                const publicApiStatus = String(value?.publicApiStatus || '').trim().toLowerCase();
+                if (id === 'qobuz' && ['online', 'offline', 'unknown'].includes(publicApiStatus)) {
+                    merged[id].publicApiStatus = publicApiStatus;
+                    const parsedCount = Number(value?.publicApiOnlineCount);
+                    merged[id].publicApiOnlineCount = Number.isInteger(parsedCount) && parsedCount >= 0
+                        ? parsedCount
+                        : null;
+                }
             });
 
             const ids = Object.keys(merged);
@@ -1316,7 +1345,9 @@ globalThis.DeezSpoTag = {
                 const value = merged[id];
                 states[id] = {
                     active: Boolean(value?.active),
-                    reason: value?.reason || null
+                    reason: value?.reason || null,
+                    publicApiStatus: value?.publicApiStatus || null,
+                    publicApiOnlineCount: value?.publicApiOnlineCount ?? null
                 };
             });
         }
@@ -1333,12 +1364,19 @@ globalThis.DeezSpoTag = {
                 return;
             }
             this.setPlatformState(baseline, id, status?.active === true, status?.reason || null);
+            this.setPlatformPublicApiStatus(
+                baseline,
+                id,
+                status?.publicApiStatus,
+                status?.publicApiOnlineCount);
         });
         return baseline;
     },
 
     getConnectedPlatformsRenderSignature(entries) {
-        return entries.map(([id, status]) => `${id}:${status?.active === true ? 1 : 0}`).join('|');
+        return entries
+            .map(([id, status]) => `${id}:${status?.active === true ? 1 : 0}:${status?.publicApiStatus || ''}:${status?.publicApiOnlineCount ?? ''}`)
+            .join('|');
     },
 
     getCachedConnectedPlatformsSnapshot() {
@@ -1567,6 +1605,66 @@ globalThis.DeezSpoTag = {
         }
 
         this.connectedPlatformsLastCheapProbeAt = timestamp;
+    },
+
+    startPublicApiStatusAutoRefresh() {
+        if (this.publicApiStatusRefreshTimerId !== null) {
+            return;
+        }
+
+        this.refreshPublicApiSidebarStatus();
+        this.publicApiStatusRefreshTimerId = globalThis.setInterval(() => {
+            this.refreshPublicApiSidebarStatus();
+        }, this.publicApiStatusRefreshIntervalMs);
+    },
+
+    async refreshPublicApiSidebarStatus() {
+        if (document.visibilityState === 'hidden'
+            || this.publicApiStatusRefreshInFlight
+            || this.connectedPlatformsRefreshInFlight) {
+            return;
+        }
+
+        this.publicApiStatusRefreshInFlight = true;
+        try {
+            await this.ensurePlatformRegistryLoaded();
+            const response = await fetch('/api/platform-auth/public-providers/status', {
+                cache: 'no-store',
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' }
+            });
+            if (!response.ok) {
+                return;
+            }
+
+            const data = await this.parseJsonSafely(response, '/api/platform-auth/public-providers/status');
+            if (!data) {
+                return;
+            }
+
+            const selected = this.getAutoTagSelectedPlatforms();
+            const cached = this.getCachedConnectedPlatformsSnapshot();
+            const platformStates = this.resolveConnectedPlatformStates(cached, selected);
+            this.setPlatformPublicApiStatus(
+                platformStates,
+                'qobuz',
+                data.qobuz?.status,
+                data.qobuz?.onlineCount);
+
+            const connected = Object.entries(platformStates)
+                .filter(([, status]) => status?.active === true)
+                .map(([id]) => id);
+            this.setCachedConnectedPlatforms({
+                platforms: connected,
+                statuses: platformStates,
+                updatedAt: Date.now()
+            });
+            this.renderConnectedPlatforms(platformStates);
+        } catch (error) {
+            console.warn('Failed to refresh public API sidebar status', error);
+        } finally {
+            this.publicApiStatusRefreshInFlight = false;
+        }
     },
 
     startConnectedPlatformsAutoRefresh() {
@@ -1824,6 +1922,11 @@ globalThis.DeezSpoTag = {
         } else {
             this.setPlatformState(platformStates, 'qobuz', false, 'offline');
         }
+        this.setPlatformPublicApiStatus(
+            platformStates,
+            'qobuz',
+            authData.qobuz?.publicApiStatus,
+            authData.qobuz?.publicApiOnlineCount);
         if (authData.tidal?.connected === true) {
             connected.add('tidal');
             this.setPlatformState(platformStates, 'tidal', true, 'official-api');
@@ -2003,13 +2106,31 @@ globalThis.DeezSpoTag = {
             }
             const isActive = status?.active === true;
             const stateLabel = isActive ? 'Connected' : 'Not connected';
+            const publicApiStatus = id === 'qobuz'
+                && ['online', 'offline', 'unknown'].includes(status?.publicApiStatus)
+                ? status.publicApiStatus
+                : null;
+            const publicApiOnlineCount = Number.isInteger(status?.publicApiOnlineCount)
+                ? status.publicApiOnlineCount
+                : null;
+            const publicApiLabel = publicApiStatus === 'unknown'
+                ? 'Public APIs: Not checked'
+                : publicApiOnlineCount !== null
+                    ? `Public APIs online: ${publicApiOnlineCount}`
+                    : `Public APIs: ${publicApiStatus === 'online' ? 'Online' : 'Offline'}`;
             const target = this.getPlatformNavigationTarget(id);
             const wrapper = document.createElement('a');
             wrapper.className = `connected-platform-icon ${isActive ? 'connected-platform-icon--active' : 'connected-platform-icon--inactive'}`;
             wrapper.classList.add(`connected-platform-icon--platform-${id}`);
+            if (publicApiStatus) {
+                wrapper.classList.add(`connected-platform-icon--api-${publicApiStatus}`);
+            }
             wrapper.href = target.href;
-            wrapper.title = `${this.getPlatformDisplayName(id)} (${stateLabel})`;
-            wrapper.setAttribute('aria-label', `${this.getPlatformDisplayName(id)} (${stateLabel})`);
+            const statusDescription = publicApiStatus
+                ? `Account: ${stateLabel}; ${publicApiLabel}`
+                : stateLabel;
+            wrapper.title = `${this.getPlatformDisplayName(id)} (${statusDescription})`;
+            wrapper.setAttribute('aria-label', `${this.getPlatformDisplayName(id)} (${statusDescription})`);
             wrapper.addEventListener('click', () => {
                 if (target.loginTabId) {
                     this.setLoginTabPreference(target.loginTabId);

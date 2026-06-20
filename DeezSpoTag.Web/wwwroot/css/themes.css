@@ -1090,6 +1090,30 @@ textarea::placeholder {
     filter: grayscale(1);
 }
 
+.connected-platform-icon--platform-qobuz.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] {
+    opacity: 1;
+    filter: none;
+}
+
+.connected-platform-icon--platform-qobuz.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] img {
+    opacity: 0.45;
+}
+
+.connected-platform-icon--api-online {
+    border: 2px solid var(--success-color);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--success-color) 25%, transparent);
+}
+
+.connected-platform-icon--api-offline {
+    border: 2px solid var(--warning-color);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning-color) 25%, transparent);
+}
+
+.connected-platform-icon--api-unknown {
+    border-color: var(--border-primary);
+    box-shadow: none;
+}
+
 .connected-platform-icon:hover {
     transform: translateY(-1px);
 }
