@@ -396,6 +396,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             return new AutoTagRunResult(false, "stopped");
         }
+        catch (AutoTagRunPausedException ex)
+        {
+            return new AutoTagRunResult(false, $"paused: {ex.Message}");
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Local AutoTag run failed.");
@@ -500,6 +504,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             for (var fileIndex = fileStart; fileIndex < plan.FileCount; fileIndex++)
             {
                 token.ThrowIfCancellationRequested();
+                if (plan.ReviewedFiles.Contains(plan.Files[fileIndex]))
+                {
+                    continue;
+                }
+
                 var context = new AutoTagFileRunContext
                 {
                     Plan = plan,
@@ -603,13 +612,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (shazamResult.IsFatal)
         {
+            if (shazamResult.FailureKind == ShazamFailureKind.Infrastructure)
+            {
+                throw new AutoTagRunPausedException(shazamResult.Error ?? "Shazam is unavailable.");
+            }
+
             if (context.Plan.ForceShazamMatch
                 || ShouldShortCircuitOnShazamIdentifyFailure(context.Platform, context.Plan.PlatformCount))
             {
-                EmitSkippedStatus(
+                EmitReviewStatus(
                     context,
                     shazamResult.Error ?? "shazam identify failed",
-                    shazamResult.UsedShazam);
+                    shazamResult.UsedShazam,
+                    AutoTagReviewMetadata.FromSourceOnly(info));
+                context.Plan.ReviewedFiles.Add(context.File);
                 return;
             }
 
@@ -716,6 +732,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var mismatchReason = EvaluateGlobalMismatchGuard(info, match, context.Plan.MatchingConfig);
         if (!string.IsNullOrWhiteSpace(mismatchReason))
         {
+            if (string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
+            {
+                EmitReviewStatus(
+                    context,
+                    mismatchReason,
+                    usedShazamForStatus,
+                    AutoTagReviewMetadata.FromMatch(info, match.Track));
+                context.Plan.ReviewedFiles.Add(context.File);
+                return;
+            }
+
             EmitSkippedStatus(context, mismatchReason, usedShazamForStatus);
             return;
         }
@@ -1039,6 +1066,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         EmitStatus(context, "error", message, null, usedShazam);
     }
 
+    private static void EmitReviewStatus(
+        AutoTagFileRunContext context,
+        string message,
+        bool usedShazam,
+        AutoTagReviewMetadata? review)
+    {
+        EmitStatus(context, "review", message, null, usedShazam, review);
+    }
+
     private static void EmitTaggingStatus(AutoTagFileRunContext context, double? accuracy, bool usedShazam)
     {
         EmitStatus(context, "tagging", null, accuracy, usedShazam);
@@ -1054,7 +1090,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string status,
         string? message,
         double? accuracy,
-        bool usedShazam)
+        bool usedShazam,
+        AutoTagReviewMetadata? review = null)
     {
         var nextPlatformIndex = context.PlatformIndex;
         var nextFileIndex = context.FileIndex + 1;
@@ -1080,7 +1117,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 Path = context.File,
                 Message = message,
                 Accuracy = accuracy,
-                UsedShazam = usedShazam
+                UsedShazam = usedShazam,
+                ReviewReason = review?.Reason ?? message,
+                SourceTitle = review?.SourceTitle,
+                SourceArtist = review?.SourceArtist,
+                SourceIsrc = review?.SourceIsrc,
+                SourceDurationSeconds = review?.SourceDurationSeconds,
+                CandidateTitle = review?.CandidateTitle,
+                CandidateArtist = review?.CandidateArtist,
+                CandidateIsrc = review?.CandidateIsrc,
+                CandidateDurationSeconds = review?.CandidateDurationSeconds
             }
         });
     }
@@ -2666,17 +2712,29 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         token.ThrowIfCancellationRequested();
 
         var fromCache = cache.TryGetValue(filePath, out var recognized);
+        ShazamRecognitionAttempt? attempt = null;
         if (!fromCache)
         {
-            recognized = RecognizeWithShazam(filePath, token);
+            attempt = RecognizeWithShazamAttempt(filePath, token);
+            recognized = attempt?.Recognition;
             cache[filePath] = recognized;
         }
 
         if (recognized == null)
         {
+            var outcome = attempt?.Outcome ?? ShazamRecognitionOutcome.NoMatch;
+            if (outcome is ShazamRecognitionOutcome.RecognizerError or ShazamRecognitionOutcome.RecognizerUnavailable)
+            {
+                return new ShazamEnrichmentResult(
+                    false,
+                    attempt?.Error ?? "shazam unavailable",
+                    true,
+                    ShazamFailureKind.Infrastructure);
+            }
+
             if (forceShazamMatch)
             {
-                return new ShazamEnrichmentResult(false, "shazam could not identify track", true);
+                return new ShazamEnrichmentResult(false, "shazam could not identify track", true, ShazamFailureKind.NoMatch);
             }
 
             return new ShazamEnrichmentResult(false, null, false);
@@ -2862,11 +2920,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
-    private ShazamRecognitionInfo? RecognizeWithShazam(string filePath, CancellationToken token)
+    private ShazamRecognitionAttempt? RecognizeWithShazamAttempt(string filePath, CancellationToken token)
     {
         try
         {
-            return _shazamRecognitionService.Recognize(filePath, token);
+            return _shazamRecognitionService.RecognizeWithDetails(filePath, cancellationToken: token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -8089,6 +8147,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required bool ShazamConflictResolution { get; init; }
         public HashSet<string> PreSkippedFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> TaggedByAnyPlatform { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> ReviewedFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
         public int PlatformCount => EffectivePlatforms.Count;
         public int FileCount => Files.Count;
     }
@@ -8201,7 +8260,50 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public string? ProfileName { get; set; }
     }
 
-    private sealed record ShazamEnrichmentResult(bool UsedShazam, string? Error, bool IsFatal);
+    private sealed record ShazamEnrichmentResult(bool UsedShazam, string? Error, bool IsFatal, ShazamFailureKind FailureKind = ShazamFailureKind.None);
+
+    private enum ShazamFailureKind
+    {
+        None,
+        NoMatch,
+        Infrastructure
+    }
+
+    private sealed record AutoTagReviewMetadata(
+        string? Reason,
+        string? SourceTitle,
+        string? SourceArtist,
+        string? SourceIsrc,
+        double? SourceDurationSeconds,
+        string? CandidateTitle,
+        string? CandidateArtist,
+        string? CandidateIsrc,
+        double? CandidateDurationSeconds)
+    {
+        public static AutoTagReviewMetadata FromSourceOnly(AutoTagAudioInfo source)
+            => new(
+                null,
+                source.Title,
+                source.Artist,
+                source.Isrc,
+                source.DurationSeconds,
+                null,
+                null,
+                null,
+                null);
+
+        public static AutoTagReviewMetadata FromMatch(AutoTagAudioInfo source, AutoTagTrack? candidate)
+            => new(
+                null,
+                source.Title,
+                source.Artist,
+                source.Isrc,
+                source.DurationSeconds,
+                candidate?.Title,
+                candidate?.Artists.FirstOrDefault(),
+                candidate?.Isrc,
+                candidate?.Duration?.TotalSeconds);
+    }
 
     private sealed class AutoTagSeparators
     {

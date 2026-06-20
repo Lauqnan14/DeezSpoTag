@@ -1603,6 +1603,19 @@
                         </button>
                     </div>
                 </div>
+                <div class="form-group">
+                    <label for="reviewFolderPath">Review folder</label>
+                    <div class="path-picker-input">
+                        <input type="text" id="reviewFolderPath" placeholder="Select review folder">
+                        <button type="button" id="browseReviewFolderPath" class="path-picker-btn" title="Browse server folders">
+                            <i class="fas fa-folder-open"></i>
+                            <span class="visually-hidden">Browse server folders</span>
+                        </button>
+                    </div>
+                    <div class="warning-text" id="reviewFolderPathWarning">
+                        Required when Shazam flags a file for review. In Docker, mount this folder before using monitored downloads or AutoTag enrichment.
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -2080,6 +2093,22 @@ function setupEventListeners() {
             });
             if (selected) {
                 downloadLocation.value = selected;
+            }
+        });
+    }
+
+    const browseReviewFolderPath = document.getElementById('browseReviewFolderPath');
+    const reviewFolderPath = document.getElementById('reviewFolderPath');
+    if (browseReviewFolderPath && reviewFolderPath && window.DeezSpoTag?.ui?.browseServerFolder) {
+        browseReviewFolderPath.addEventListener('click', async () => {
+            const selected = await window.DeezSpoTag.ui.browseServerFolder({
+                title: 'Review Folder',
+                startPath: reviewFolderPath.value || downloadLocation?.value || '',
+                apiPath: '/api/library/folders/browse',
+                selectText: 'Use This Folder'
+            });
+            if (selected) {
+                reviewFolderPath.value = selected;
             }
         });
     }
@@ -3790,6 +3819,7 @@ function loadSettings(settings) {
     currentSettings = JSON.parse(JSON.stringify(settings));
     
     setFieldValue('downloadLocation', settings.downloadLocation);
+    setFieldValue('reviewFolderPath', settings.reviewFolderPath || '');
     
     setFieldValue('tracknameTemplate', settings.tracknameTemplate);
     setFieldValue('albumTracknameTemplate', settings.albumTracknameTemplate);
@@ -4138,6 +4168,7 @@ function collectFormData() {
     const persistedDownloadService = resolveDownloadSourceService(selectedDownloadSource);
     const formData = {
         downloadLocation: getValue('downloadLocation'),
+        reviewFolderPath: getValue('reviewFolderPath', baseSettings.reviewFolderPath || ''),
 
         tracknameTemplate: getValue('tracknameTemplate', baseSettings.tracknameTemplate || '%artist% - %title%'),
         albumTracknameTemplate: getValue('albumTracknameTemplate', baseSettings.albumTracknameTemplate || '%tracknumber% - %title%'),

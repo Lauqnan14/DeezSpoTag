@@ -598,6 +598,7 @@ public class DeezSpoTagSettingsService : ISettingsService
         var fixes = new SettingsFixTracker(fixedFields);
 
         EnsureDownloadLocation(settings, defaultSettings, fixes);
+        NormalizeReviewFolderPath(settings, fixes);
         EnsureTemplates(settings, defaultSettings, fixes);
         EnsureTagsAndMetadata(settings, defaultSettings, fixes);
         EnsureNestedSettings(settings, fixes);
@@ -632,6 +633,20 @@ public class DeezSpoTagSettingsService : ISettingsService
             settings.DownloadLocation = normalizedDownloadLocation;
             fixes.Mark(nameof(settings.DownloadLocation));
         }
+    }
+
+    private static void NormalizeReviewFolderPath(
+        DeezSpoTagSettings settings,
+        SettingsFixTracker fixes)
+    {
+        var normalized = settings.ReviewFolderPath?.Trim() ?? string.Empty;
+        if (string.Equals(normalized, settings.ReviewFolderPath, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        settings.ReviewFolderPath = normalized;
+        fixes.Mark(nameof(settings.ReviewFolderPath));
     }
 
     private static void EnsureTemplates(

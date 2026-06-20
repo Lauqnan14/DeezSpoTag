@@ -6223,6 +6223,19 @@ function initQueueRealtimeEvents() {
             setTaskActivity(taskId, message);
         }
     });
+    connection.on('toastNotification', (payload) => {
+        const message = String(payload?.message || '').trim();
+        if (!message || !window.DeezSpoTag?.showNotification) {
+            return;
+        }
+
+        const type = String(payload?.type || 'info').trim().toLowerCase();
+        const action = payload?.action && typeof payload.action === 'object'
+            ? payload.action
+            : null;
+        const options = action ? { action } : undefined;
+        window.DeezSpoTag.showNotification(message, type, options);
+    });
     connection.on('addedToQueue', () => {
         void loadQueueFromServer({ force: true });
     });

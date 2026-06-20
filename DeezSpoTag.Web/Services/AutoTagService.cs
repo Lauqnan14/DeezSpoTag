@@ -13,6 +13,8 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Utils;
@@ -20,6 +22,14 @@ using DeezSpoTag.Web.Services.CoverPort;
 using DeezSpoTag.Web.Services.AutoTag;
 
 namespace DeezSpoTag.Web.Services;
+
+public sealed class AutoTagRunPausedException : Exception
+{
+    public AutoTagRunPausedException(string message)
+        : base(message)
+    {
+    }
+}
 
 internal static class AutoTagLiterals
 {
@@ -167,6 +177,17 @@ public class TaggingStatus
     public string? Message { get; set; }
     public double? Accuracy { get; set; }
     public bool UsedShazam { get; set; }
+    public string? ReviewReason { get; set; }
+    public string? ReviewDestinationPath { get; set; }
+    public string? ReviewReportPath { get; set; }
+    public string? SourceTitle { get; set; }
+    public string? SourceArtist { get; set; }
+    public string? SourceIsrc { get; set; }
+    public double? SourceDurationSeconds { get; set; }
+    public string? CandidateTitle { get; set; }
+    public string? CandidateArtist { get; set; }
+    public string? CandidateIsrc { get; set; }
+    public double? CandidateDurationSeconds { get; set; }
 }
 
 public sealed class AutoTagResumeCheckpoint
@@ -253,6 +274,7 @@ public partial class AutoTagService
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly UserPreferencesStore _userPreferencesStore;
     private readonly ActivitiesRealtimeService _activitiesRealtime;
+    private readonly IDeezSpoTagListener _downloadEvents;
     private readonly ProtectedCredentialFileStore _oneTaggerSpotifyTokenStore;
     private readonly string _jobsDir;
     private readonly string _historyDir;
@@ -465,6 +487,7 @@ public partial class AutoTagService
         public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
         public required UserPreferencesStore UserPreferencesStore { get; init; }
         public required ActivitiesRealtimeService ActivitiesRealtime { get; init; }
+        public required IDeezSpoTagListener DownloadEvents { get; init; }
         public required IDataProtectionProvider DataProtectionProvider { get; init; }
     }
 
@@ -497,6 +520,7 @@ public partial class AutoTagService
         _profileResolutionService = collaborators.ProfileResolutionService;
         _userPreferencesStore = collaborators.UserPreferencesStore;
         _activitiesRealtime = collaborators.ActivitiesRealtime;
+        _downloadEvents = collaborators.DownloadEvents;
         _oneTaggerSpotifyTokenStore = new ProtectedCredentialFileStore(
             collaborators.DataProtectionProvider,
             "DeezSpoTag.OneTagger.SpotifyTokenCache");
@@ -2417,6 +2441,11 @@ public partial class AutoTagService
 
             if (!result.Success)
             {
+                if (TryHandlePausedStage(job, result.Error))
+                {
+                    return new StageExecutionResult(false);
+                }
+
                 job.Status = AutoTagLiterals.FailedStatus;
                 job.Error = result.Error;
                 return new StageExecutionResult(false);
@@ -2435,6 +2464,28 @@ public partial class AutoTagService
         {
             _activeJobStages.TryRemove(job.Id, out _);
         }
+    }
+
+    private bool TryHandlePausedStage(AutoTagJob job, string? error)
+    {
+        const string PausedPrefix = "paused:";
+        if (string.IsNullOrWhiteSpace(error)
+            || !error.TrimStart().StartsWith(PausedPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var message = error.TrimStart()[PausedPrefix.Length..].Trim();
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            message = "AutoTag paused.";
+        }
+
+        job.Status = AutoTagLiterals.PausedStatus;
+        job.Error = message;
+        AppendLog(job, $"autotag paused: {message}");
+        NotifyDownloadToast(message, "warning");
+        return true;
     }
 
     private static StageExecutionResult HandleStoppedStage(AutoTagJob job)
@@ -5029,6 +5080,7 @@ public partial class AutoTagService
         job.CurrentPlatform = status.Platform;
         TryCaptureTagDiff(job, status);
         ApplyIdentityReviewGuard(job, status);
+        RouteReviewFileIfNeeded(job, status);
         AppendStatusHistory(job, status);
         TrackFileOutcome(fileOutcomes, status);
         TrackEnhancedFilePath(job, stageName, status);
@@ -5099,6 +5151,190 @@ public partial class AutoTagService
             _enhancementPlexRefreshJobs.TryRemove(job.Id, out _);
         }
     }
+
+    private void RouteReviewFileIfNeeded(AutoTagJob job, TaggingStatusWrap status)
+    {
+        var statusValue = status.Status;
+        if (statusValue == null
+            || !string.Equals(statusValue.Status, AutoTagLiterals.ReviewStatus, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(status.Platform, "shazam", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(statusValue.Path))
+        {
+            return;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        var reviewFolder = settings.ReviewFolderPath?.Trim();
+        if (string.IsNullOrWhiteSpace(reviewFolder))
+        {
+            PauseForMissingReviewFolder(
+                job,
+                "Review folder is not configured. Configure it in Settings > Download Path and mount it in Docker before Shazam review handling can continue.");
+        }
+
+        var reviewRoot = ResolveReviewFolderIoPath(reviewFolder!);
+        if (!IsReviewFolderWritable(reviewRoot, out var validationError))
+        {
+            PauseForMissingReviewFolder(
+                job,
+                $"Review folder is not writable or not mounted: {validationError}. Configure it in Settings > Download Path.");
+        }
+
+        var sourcePath = DownloadPathResolver.ResolveIoPath(statusValue.Path);
+        if (!File.Exists(sourcePath))
+        {
+            PauseForMissingReviewFolder(
+                job,
+                $"Shazam flagged a file for review, but the source file no longer exists: {statusValue.Path}");
+        }
+
+        var destinationPath = ResolveReviewDestinationPath(sourcePath, reviewRoot, settings.DownloadLocation);
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        File.Move(sourcePath, destinationPath);
+
+        var reportPath = Path.ChangeExtension(destinationPath, ".review.txt");
+        File.WriteAllText(reportPath, BuildReviewReport(job, statusValue, sourcePath, destinationPath), new UTF8Encoding(false));
+        statusValue.ReviewDestinationPath = destinationPath;
+        statusValue.ReviewReportPath = reportPath;
+        AppendLog(job, $"review folder: moved Shazam-flagged file to {destinationPath}");
+    }
+
+    private void PauseForMissingReviewFolder(AutoTagJob job, string message)
+    {
+        AppendLog(job, message);
+        throw new AutoTagRunPausedException(message);
+    }
+
+    private void NotifyDownloadToast(string message, string type)
+    {
+        try
+        {
+            _downloadEvents.Send("toastNotification", new
+            {
+                message,
+                type,
+                action = new
+                {
+                    label = "Settings",
+                    href = "/Settings#download-path-settings"
+                }
+            });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to publish download toast notification.");
+        }
+    }
+
+    private static string ResolveReviewFolderIoPath(string reviewFolder)
+        => DownloadPathResolver.ResolveIoPath(reviewFolder.Trim());
+
+    private static bool IsReviewFolderWritable(string reviewRoot, out string error)
+    {
+        error = string.Empty;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(reviewRoot))
+            {
+                error = "path is empty";
+                return false;
+            }
+
+            Directory.CreateDirectory(reviewRoot);
+            var probePath = Path.Join(reviewRoot, $".deezspotag-review-probe-{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(probePath, "ok", new UTF8Encoding(false));
+            File.Delete(probePath);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static string ResolveReviewDestinationPath(string sourcePath, string reviewRoot, string downloadLocation)
+    {
+        var relativePath = Path.GetFileName(sourcePath);
+        try
+        {
+            var downloadRoot = DownloadPathResolver.ResolveIoPath(downloadLocation);
+            if (!string.IsNullOrWhiteSpace(downloadRoot)
+                && IsPathUnderRoot(sourcePath, downloadRoot))
+            {
+                relativePath = Path.GetRelativePath(downloadRoot, sourcePath);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            relativePath = Path.GetFileName(sourcePath);
+        }
+
+        var destinationPath = Path.GetFullPath(Path.Join(reviewRoot, relativePath));
+        var reviewRootFull = Path.GetFullPath(reviewRoot);
+        if (!IsPathUnderRoot(destinationPath, reviewRootFull))
+        {
+            destinationPath = Path.Join(reviewRootFull, Path.GetFileName(sourcePath));
+        }
+
+        return GetAvailableReviewPath(destinationPath);
+    }
+
+    private static string GetAvailableReviewPath(string destinationPath)
+    {
+        if (!File.Exists(destinationPath))
+        {
+            return destinationPath;
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath) ?? string.Empty;
+        var name = Path.GetFileNameWithoutExtension(destinationPath);
+        var extension = Path.GetExtension(destinationPath);
+        for (var i = 1; i < 1000; i++)
+        {
+            var candidate = Path.Join(directory, $"{name} ({i}){extension}");
+            if (!File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return Path.Join(directory, $"{name} ({Guid.NewGuid():N}){extension}");
+    }
+
+    private static string BuildReviewReport(
+        AutoTagJob job,
+        TaggingStatus status,
+        string sourcePath,
+        string destinationPath)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("DeezSpoTag AutoTag Review");
+        builder.AppendLine($"Timestamp: {DateTimeOffset.UtcNow:O}");
+        builder.AppendLine($"Job Id: {job.Id}");
+        builder.AppendLine($"Reason: {FirstNonEmpty(status.ReviewReason, status.Message, "Shazam flagged this file for review.")}");
+        builder.AppendLine($"Original path: {sourcePath}");
+        builder.AppendLine($"Review path: {destinationPath}");
+        builder.AppendLine();
+        builder.AppendLine("Source");
+        builder.AppendLine($"Title: {status.SourceTitle ?? ""}");
+        builder.AppendLine($"Artist: {status.SourceArtist ?? ""}");
+        builder.AppendLine($"ISRC: {status.SourceIsrc ?? ""}");
+        builder.AppendLine($"Duration seconds: {FormatNullableDouble(status.SourceDurationSeconds)}");
+        builder.AppendLine();
+        builder.AppendLine("Shazam candidate");
+        builder.AppendLine($"Title: {status.CandidateTitle ?? ""}");
+        builder.AppendLine($"Artist: {status.CandidateArtist ?? ""}");
+        builder.AppendLine($"ISRC: {status.CandidateIsrc ?? ""}");
+        builder.AppendLine($"Duration seconds: {FormatNullableDouble(status.CandidateDurationSeconds)}");
+        return builder.ToString();
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+
+    private static string FormatNullableDouble(double? value)
+        => value.HasValue ? value.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
 
     private static bool IsTerminalStatus(string? status)
     {

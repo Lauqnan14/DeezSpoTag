@@ -1275,6 +1275,7 @@ public partial class Program
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
                 UserPreferencesStore = sp.GetRequiredService<DeezSpoTag.Web.Services.UserPreferencesStore>(),
                 ActivitiesRealtime = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>(),
+                DownloadEvents = sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener>(),
                 DataProtectionProvider = sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators>(sp =>

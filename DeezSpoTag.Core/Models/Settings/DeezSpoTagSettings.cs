@@ -16,6 +16,7 @@ public class DeezSpoTagSettings
 
     // EXACT PORT: Core settings from deezspotag DEFAULT_SETTINGS
     public string DownloadLocation { get; set; } = GetDefaultDownloadLocation();
+    public string ReviewFolderPath { get; set; } = "";
     public string ExecuteCommand { get; set; } = "";
     public TagSettings Tags { get; set; } = new TagSettings();
 
