@@ -47,15 +47,12 @@ public class AutoPlaylistsApiController : ControllerBase
         }
 
         var playlists = await _plexApiClient.GetPlaylistsAsync(plex.Url, plex.Token, cancellationToken);
-        var allowedSectionIds = await GetAllowedMusicSectionIdsAsync(plex.Url, plex.Token, cancellationToken);
         var filtered = playlists
-            .Where(p => string.IsNullOrWhiteSpace(p.LibrarySectionId) || allowedSectionIds.Contains(p.LibrarySectionId))
             .Where(p => string.IsNullOrWhiteSpace(librarySectionId) || string.Equals(p.LibrarySectionId, librarySectionId, StringComparison.OrdinalIgnoreCase))
+            .Where(p => !string.IsNullOrWhiteSpace(p.Id))
             .ToList();
-        var payload = await Task.WhenAll(filtered.Select(async p =>
-        {
-            var libraryInfo = await ResolveLibraryInfoForPlaylistAsync(plex.Url, plex.Token, p.Id, cancellationToken);
-            return new
+        var payload = filtered
+            .Select(p => new
             {
                 id = p.Id,
                 name = p.Title,
@@ -66,10 +63,9 @@ public class AutoPlaylistsApiController : ControllerBase
                 updated = p.UpdatedAt?.ToString("MMM d, yyyy"),
                 source = "Plex",
                 coverUrl = BuildPlexImageProxyUrl(p.CoverUrl, p.UpdatedAt),
-                libraryId = libraryInfo?.Id,
-                libraryName = libraryInfo?.Name
-            };
-        }));
+                librarySectionId = p.LibrarySectionId
+            })
+            .ToArray();
 
         return Ok(new
         {
@@ -90,12 +86,6 @@ public class AutoPlaylistsApiController : ControllerBase
 
         var playlist = await _plexApiClient.GetPlaylistAsync(plex.Url, plex.Token, id, cancellationToken);
         if (playlist is null)
-        {
-            return NotFound();
-        }
-
-        var allowedSectionIds = await GetAllowedMusicSectionIdsAsync(plex.Url, plex.Token, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(playlist.LibrarySectionId) && !allowedSectionIds.Contains(playlist.LibrarySectionId))
         {
             return NotFound();
         }
@@ -234,17 +224,6 @@ public class AutoPlaylistsApiController : ControllerBase
         return (BuildPlexImageUrl(plex.Url, plex.Token, normalizedPath), null);
     }
 
-    private async Task<HashSet<string>> GetAllowedMusicSectionIdsAsync(string serverUrl, string token, CancellationToken cancellationToken)
-    {
-        var sections = await _plexApiClient.GetLibrarySectionsAsync(serverUrl, token, cancellationToken);
-        var allowed = sections
-            .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
-            .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
-            .Select(section => section.Key)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return allowed;
-    }
-
     private static string FormatDuration(long durationMs)
     {
         if (durationMs <= 0)
@@ -280,21 +259,6 @@ public class AutoPlaylistsApiController : ControllerBase
         }
 
         return new DeezSpoTag.Services.Library.LibraryDto(folder.LibraryId.Value, folder.LibraryName ?? "Library");
-    }
-
-    private async Task<DeezSpoTag.Services.Library.LibraryDto?> ResolveLibraryInfoForPlaylistAsync(
-        string serverUrl,
-        string token,
-        string playlistId,
-        CancellationToken cancellationToken)
-    {
-        if (!_libraryRepository.IsConfigured)
-        {
-            return null;
-        }
-
-        var tracks = await _plexApiClient.GetPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
-        return await ResolveLibraryInfoAsync(tracks, cancellationToken);
     }
 
     private string? BuildPlexImageProxyUrl(string? sourceUrl, DateTimeOffset? version = null)

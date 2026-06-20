@@ -249,7 +249,7 @@
                 if (playlists.length > 0) {
                     sourceEl.textContent = data.source || "Plex";
                     renderLists(playlists);
-                    loadMixes(playlists);
+                    loadMixes();
                 } else {
                     sourceEl.textContent = "";
                     renderLists([]);
@@ -262,21 +262,21 @@
             });
     }
 
-    function loadMixes(playlists) {
+    function loadMixes() {
         if (!hasPlaylistSections) {
             return;
         }
-        const libraryId = resolveLibraryId(playlists);
-        if (!libraryId) {
-            return;
-        }
-        fetch(`/api/mixes?libraryId=${encodeURIComponent(libraryId)}`, { cache: "no-store" })
-            .then((response) => response.json())
-            .then((mixes) => {
-                if (!Array.isArray(mixes)) {
-                    return;
-                }
-                mixes.forEach((mix) => {
+        resolveRecommendationLibraryIds()
+            .then((libraryIds) => Promise.all(
+                libraryIds.map((libraryId) =>
+                    fetch(`/api/mixes?libraryId=${encodeURIComponent(libraryId)}`, { cache: "no-store" })
+                        .then((response) => response.ok ? response.json() : [])
+                        .then((mixes) => ({ libraryId, mixes: Array.isArray(mixes) ? mixes : [] }))
+                        .catch(() => ({ libraryId, mixes: [] }))
+                )
+            ))
+            .then((entries) => {
+                entries.forEach((entry) => entry.mixes.forEach((mix) => {
                     autoGrid.appendChild(renderAutoCard({
                         id: mix.id,
                         name: mix.name,
@@ -284,17 +284,12 @@
                         trackCount: mix.trackCount,
                         updated: mix.generatedAtUtc,
                         source: "Auto",
-                        libraryId: mix.libraryId
+                        libraryId: mix.libraryId || entry.libraryId
                     }));
-                });
+                }));
                 autoEmpty.hidden = autoGrid.children.length > 0;
             })
             .catch(() => {});
-    }
-
-    function resolveLibraryId(playlists) {
-        const withLibrary = (playlists || []).find((item) => item.libraryId);
-        return withLibrary ? withLibrary.libraryId : null;
     }
 
     async function loadRecommendations() {
