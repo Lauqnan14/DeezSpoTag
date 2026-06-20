@@ -286,7 +286,9 @@ globalThis.DeezSpoTag = {
             dialogEl.style.removeProperty('height');
             dialogEl.style.removeProperty('transform');
 
-            if (!enabled) {
+            const mobileViewport = globalThis.matchMedia?.('(max-width: 768px)')?.matches
+                ?? globalThis.innerWidth <= 768;
+            if (!enabled || mobileViewport) {
                 return;
             }
 
@@ -497,9 +499,35 @@ globalThis.DeezSpoTag = {
             }
 
             return new Promise((resolve) => {
+                let actionInFlight = false;
+                const closeElements = Array.from(modal.querySelectorAll('[data-modal-close]'));
+
+                const setActionBusy = (busy, activeAction = null, busyLabel = '') => {
+                    actionInFlight = busy;
+                    modal.toggleAttribute('aria-busy', busy);
+                    footerEl.querySelectorAll('.app-modal-action').forEach((buttonElement) => {
+                        buttonElement.disabled = busy;
+                    });
+                    closeElements.forEach((element) => {
+                        if ('disabled' in element) {
+                            element.disabled = busy;
+                        }
+                    });
+                    if (activeAction) {
+                        if (busy) {
+                            activeAction.dataset.defaultLabel = activeAction.textContent || '';
+                            activeAction.textContent = busyLabel || 'Working...';
+                        } else {
+                            activeAction.textContent = activeAction.dataset.defaultLabel || activeAction.textContent;
+                            delete activeAction.dataset.defaultLabel;
+                        }
+                    }
+                };
+
                 const cleanup = () => {
                     modal.classList.add('hidden');
                     delete modal.dataset.open;
+                    modal.removeAttribute('aria-busy');
                     document.body.classList.remove('app-modal-open');
                     document.documentElement.classList.remove('app-modal-open');
                     modal.querySelectorAll('[data-modal-close]').forEach((el) => {
@@ -516,6 +544,9 @@ globalThis.DeezSpoTag = {
                 };
 
                 const onCancel = () => {
+                    if (actionInFlight) {
+                        return;
+                    }
                     resolve({ value: null, inputValue: inputEl ? inputEl.value : null });
                     cleanup();
                 };
@@ -545,7 +576,28 @@ globalThis.DeezSpoTag = {
                         action.classList.add('danger');
                     }
                     action.textContent = button.label;
-                    action.addEventListener('click', () => {
+                    action.addEventListener('click', async () => {
+                        if (actionInFlight) {
+                            return;
+                        }
+
+                        if (typeof button.onClick === 'function') {
+                            setActionBusy(true, action, button.busyLabel);
+                            let shouldClose = false;
+                            try {
+                                shouldClose = await button.onClick({
+                                    inputValue: inputEl ? inputEl.value : null
+                                }) !== false;
+                            } catch (error) {
+                                console.error('Modal action failed.', error);
+                            }
+
+                            if (!shouldClose) {
+                                setActionBusy(false, action);
+                                return;
+                            }
+                        }
+
                         resolve({ value: button.value, inputValue: inputEl ? inputEl.value : null });
                         cleanup();
                     });

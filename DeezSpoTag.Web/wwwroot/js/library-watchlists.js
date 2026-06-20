@@ -2294,105 +2294,8 @@ function normalizePlaylistTrackCandidate(candidate) {
         explicit,
         genres: genresRaw
             .map(value => String(value || '').trim())
-            .filter(Boolean),
-        locationStatus: normalizePlaylistTrackLocationStatus(candidate?.locationStatus),
-        locationStatusLabel: String(candidate?.locationStatusLabel || '').trim(),
-        locationStatusDetail: String(candidate?.locationStatusDetail || '').trim(),
-        inLocalLibrary: candidate?.inLocalLibrary === true,
-        inTargetServer: candidate?.inTargetServer === true,
-        targetService: String(candidate?.targetService || '').trim().toLowerCase(),
-        watchStatus: String(candidate?.watchStatus || '').trim().toLowerCase()
+            .filter(Boolean)
     };
-}
-
-function createPlaylistTrackLocationStatusSection(trackCandidatesResponse) {
-    const candidates = Array.isArray(trackCandidatesResponse)
-        ? trackCandidatesResponse.map(normalizePlaylistTrackCandidate).filter(Boolean)
-        : [];
-    const section = document.createElement('div');
-    section.className = 'playlist-settings-section playlist-track-status-section';
-    const titleRow = document.createElement('div');
-    titleRow.className = 'playlist-settings-title-row';
-    const title = document.createElement('div');
-    title.className = 'playlist-settings-section-title';
-    title.textContent = 'Track state';
-    const count = document.createElement('span');
-    count.className = 'playlist-settings-rule-count';
-    count.textContent = candidates.length === 1 ? '1 track' : `${candidates.length} tracks`;
-    titleRow.appendChild(title);
-    titleRow.appendChild(count);
-    section.appendChild(titleRow);
-
-    if (candidates.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'routing-rules-empty';
-        empty.textContent = 'No playlist tracks are available yet.';
-        section.appendChild(empty);
-        return section;
-    }
-
-    const header = document.createElement('div');
-    header.className = 'playlist-track-status-header';
-    header.innerHTML = `
-        <span>Track</span>
-        <span>Artist</span>
-        <span>State</span>
-    `;
-    const list = document.createElement('div');
-    list.className = 'playlist-track-status-list';
-    candidates.forEach(candidate => {
-        const row = document.createElement('div');
-        const status = candidate.locationStatus || 'missing';
-        const label = candidate.locationStatusLabel || resolvePlaylistTrackStatusLabel(status);
-        const detail = candidate.locationStatusDetail || '';
-        const statusContent = status === 'missing'
-            ? ''
-            : `<span class="playlist-track-status-pill playlist-track-status-pill--${escapeHtml(status)}" title="${escapeHtml(detail)}">${escapeHtml(label)}</span>`;
-        row.className = `playlist-track-status-row playlist-track-status-row--${status}`;
-        row.innerHTML = `
-            <div class="playlist-track-status-cell playlist-track-status-title">${escapeHtml(candidate.title || candidate.trackSourceId)}</div>
-            <div class="playlist-track-status-cell">${escapeHtml(candidate.artist || '')}</div>
-            <div class="playlist-track-status-cell">
-                ${statusContent}
-            </div>
-        `;
-        list.appendChild(row);
-    });
-    section.appendChild(header);
-    section.appendChild(list);
-    return section;
-}
-
-function normalizePlaylistTrackLocationStatus(value) {
-    const normalized = String(value || '').trim().toLowerCase();
-    return ['target', 'library', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'missing'].includes(normalized)
-        ? normalized
-        : 'missing';
-}
-
-function resolvePlaylistTrackStatusLabel(status) {
-    switch (String(status || '').trim().toLowerCase()) {
-        case 'target':
-            return 'Plex library';
-        case 'library':
-            return 'Library';
-        case 'queued':
-            return 'Queued';
-        case 'downloading':
-            return 'Downloading';
-        case 'paused':
-            return 'Paused';
-        case 'retrying':
-            return 'Retrying';
-        case 'failed':
-            return 'Failed';
-        case 'cancelled':
-            return 'Cancelled';
-        case 'blocked':
-            return 'Blocked';
-        default:
-            return 'Missing';
-    }
 }
 
 function addRoutingValue(routingValueIndex, field, rawValue) {
@@ -2440,7 +2343,6 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     panelIntro.className = 'playlist-settings-intro';
     panelIntro.textContent = 'Tune sync behavior, route matching tracks to folders, and block tracks you do not want synced.';
     panel.appendChild(panelIntro);
-    panel.appendChild(createPlaylistTrackLocationStatusSection(trackCandidatesResponse));
 
     const { routingValueIndex, explicitModesAvailable } =
         buildPlaylistTrackCandidateIndexes(trackCandidatesResponse);
@@ -3104,28 +3006,46 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         }
     }, 0);
 
-    const confirmed = await globalThis.DeezSpoTag.ui.showModal({
+    const settingsResult = await globalThis.DeezSpoTag.ui.showModal({
         title: `Settings — ${playlistName}`,
         message: '',
         allowHtml: false,
         dialogClass: 'is-resizable playlist-settings-modal',
         contentElement: panel,
         buttons: [
-            { label: 'Save', value: 'save', primary: true },
+            {
+                label: 'Save',
+                value: 'save',
+                primary: true,
+                busyLabel: 'Saving...',
+                onClick: () => savePlaylistSettingsFromPanel({
+                    panel,
+                    source,
+                    sourceId,
+                    playlistPrefs,
+                    prefKey,
+                    rulesList,
+                    blockRulesList
+                })
+            },
             { label: 'Cancel', value: 'cancel' }
         ]
     });
 
-    if (confirmed?.value !== 'save') return;
-    await savePlaylistSettingsFromPanel({
-        panel,
-        source,
-        sourceId,
-        playlistPrefs,
-        prefKey,
-        rulesList,
-        blockRulesList
-    });
+    if (settingsResult?.value === 'save') {
+        void refreshPlaylistSettingsViewsAfterSave();
+    }
+}
+
+async function refreshPlaylistSettingsViewsAfterSave() {
+    try {
+        await Promise.all([
+            loadPlaylistBlockedRules(),
+            loadPlaylistWatchlist()
+        ]);
+    } catch (error) {
+        console.warn('Failed to refresh monitored playlist views after settings save.', error);
+    }
 }
 
 async function savePlaylistSettingsFromPanel({
@@ -3191,10 +3111,10 @@ async function savePlaylistSettingsFromPanel({
             };
         }
         showToast('Playlist settings saved.');
-        await loadPlaylistBlockedRules();
-        await loadPlaylistWatchlist();
+        return true;
     } catch (error) {
         showToast(`Save failed: ${error.message}`, true);
+        return false;
     }
 }
 

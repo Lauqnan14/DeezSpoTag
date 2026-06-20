@@ -1531,6 +1531,61 @@ body.app-modal-open {
     background: #991b1b;
 }
 
+.app-modal-action:disabled,
+.app-modal-close:disabled {
+    cursor: wait;
+    opacity: 0.7;
+}
+
+@media (max-width: 768px) {
+    .app-modal {
+        padding:
+            max(8px, env(safe-area-inset-top))
+            max(8px, env(safe-area-inset-right))
+            max(8px, env(safe-area-inset-bottom))
+            max(8px, env(safe-area-inset-left));
+    }
+
+    .app-modal-dialog.playlist-settings-modal,
+    .app-modal-dialog.playlist-settings-modal.is-resizable {
+        position: relative !important;
+        inset: auto !important;
+        width: 100% !important;
+        min-width: 0;
+        max-width: none;
+        height: 100% !important;
+        min-height: 0;
+        max-height: none;
+        overflow: hidden;
+        resize: none;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        padding: 12px;
+        gap: 10px;
+        transform: none !important;
+    }
+
+    .app-modal-dialog.playlist-settings-modal .app-modal-body {
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        touch-action: pan-y;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .app-modal-resize-handle {
+        display: none;
+    }
+
+    .app-modal-close {
+        min-width: 48px;
+        min-height: 48px;
+    }
+
+    .app-modal-footer {
+        gap: 8px;
+    }
+}
+
 .folder-browser-modal {
     display: grid;
     gap: 12px;

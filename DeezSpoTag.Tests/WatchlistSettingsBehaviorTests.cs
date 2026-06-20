@@ -439,6 +439,45 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("RefreshPlaylistMetadataOnlyAsync", playlistController, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PlaylistSettingsModal_UsesReliableMobileActionsAndWaitsForSave()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var siteScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "site.js"));
+        var watchlistScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+        var siteCss = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "css", "site.css"));
+
+        Assert.Contains("matchMedia?.('(max-width: 768px)')", siteScript, StringComparison.Ordinal);
+        Assert.Contains("if (!enabled || mobileViewport)", siteScript, StringComparison.Ordinal);
+        Assert.Contains("typeof button.onClick === 'function'", siteScript, StringComparison.Ordinal);
+        Assert.Contains("modal.toggleAttribute('aria-busy', busy)", siteScript, StringComparison.Ordinal);
+        Assert.Contains("busyLabel: 'Saving...'", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("onClick: () => savePlaylistSettingsFromPanel", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("const settingsResult = await globalThis.DeezSpoTag.ui.showModal", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("if (settingsResult?.value === 'save')", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("void refreshPlaylistSettingsViewsAfterSave();", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("return true;", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("return false;", watchlistScript, StringComparison.Ordinal);
+        var saveFunction = ExtractMethodBody(watchlistScript, "async function savePlaylistSettingsFromPanel");
+        Assert.DoesNotContain("loadPlaylistBlockedRules()", saveFunction, StringComparison.Ordinal);
+        Assert.DoesNotContain("loadPlaylistWatchlist()", saveFunction, StringComparison.Ordinal);
+        Assert.Contains(".app-modal-dialog.playlist-settings-modal.is-resizable", siteCss, StringComparison.Ordinal);
+        Assert.Contains(".app-modal-resize-handle", siteCss, StringComparison.Ordinal);
+        Assert.DoesNotContain(".app-modal-action {\n        flex: 1 1 0;", siteCss, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistSettingsModal_DoesNotRenderTrackStateSection()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var watchlistScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+        var libraryCss = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "css", "library.css"));
+
+        Assert.DoesNotContain("Track state", watchlistScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("playlist-track-status-section", watchlistScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("playlist-track-status-section", libraryCss, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         _configScope.Dispose();
@@ -469,5 +508,33 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         }
 
         throw new InvalidOperationException("Unable to locate repository root from test output path.");
+    }
+
+    private static string ExtractMethodBody(string source, string methodMarker)
+    {
+        var methodIndex = source.IndexOf(methodMarker, StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0, $"Missing method marker: {methodMarker}");
+
+        var bodyStart = source.IndexOf('{', methodIndex);
+        Assert.True(bodyStart >= 0, $"Missing method body start for: {methodMarker}");
+
+        var depth = 0;
+        for (var i = bodyStart; i < source.Length; i++)
+        {
+            if (source[i] == '{')
+            {
+                depth++;
+            }
+            else if (source[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source.Substring(bodyStart, i - bodyStart + 1);
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"Missing method body end for: {methodMarker}");
     }
 }
