@@ -917,6 +917,7 @@ globalThis.DeezSpoTag = {
     init() {
         this.bindGlobalEvents();
         this.initializeNavigation();
+        this.updateThemedPlatformIcons();
         this.initializeCrossDeviceSync();
         if (this.isLoginRoute()) {
             // Login route should avoid expensive probes unless explicitly requested.
@@ -1155,6 +1156,77 @@ globalThis.DeezSpoTag = {
             return this.platformDisplayNames[id];
         }
         return id;
+    },
+
+    resolvePlatformIcon(platformId, fallbackIcon = '') {
+        const normalized = this.normalizePlatformId(platformId);
+        if (normalized === 'tidal') {
+            return this.isCurrentThemeLightSurface()
+                ? '/images/icons/tidal-dark.png'
+                : '/images/icons/tidal-light.png';
+        }
+
+        return fallbackIcon || this.platformIconMap[normalized] || '';
+    },
+
+    isCurrentThemeLightSurface() {
+        const root = document.documentElement;
+        const explicitTheme = String(root?.dataset?.theme || '').trim().toLowerCase();
+        if (explicitTheme === 'amoled-inverse') {
+            return true;
+        }
+
+        const styles = getComputedStyle(root);
+        const bg = styles.getPropertyValue('--bg-quaternary').trim()
+            || styles.getPropertyValue('--bg-secondary').trim();
+        const rgb = this.parseCssColor(bg);
+        if (!rgb) {
+            return false;
+        }
+
+        const luminance = (0.2126 * rgb.r) + (0.7152 * rgb.g) + (0.0722 * rgb.b);
+        return luminance > 180;
+    },
+
+    parseCssColor(value) {
+        const normalized = String(value || '').trim();
+        if (!normalized) {
+            return null;
+        }
+
+        const hex = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+        if (hex) {
+            const raw = hex[1];
+            const full = raw.length === 3
+                ? raw.split('').map(char => `${char}${char}`).join('')
+                : raw;
+            return {
+                r: parseInt(full.slice(0, 2), 16),
+                g: parseInt(full.slice(2, 4), 16),
+                b: parseInt(full.slice(4, 6), 16)
+            };
+        }
+
+        const rgb = normalized.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+        if (!rgb) {
+            return null;
+        }
+
+        return {
+            r: Number(rgb[1]),
+            g: Number(rgb[2]),
+            b: Number(rgb[3])
+        };
+    },
+
+    updateThemedPlatformIcons() {
+        document.querySelectorAll('img[data-platform-icon]').forEach((img) => {
+            const platformId = img.dataset.platformIcon;
+            const src = this.resolvePlatformIcon(platformId, img.getAttribute('src') || '');
+            if (src && img.getAttribute('src') !== src) {
+                img.setAttribute('src', src);
+            }
+        });
     },
 
     getPlatformDisplayOrder(ids) {
@@ -1944,8 +2016,9 @@ globalThis.DeezSpoTag = {
                 }
             });
             const img = document.createElement('img');
-            img.src = icon;
+            img.src = this.resolvePlatformIcon(id, icon);
             img.alt = this.getPlatformDisplayName(id);
+            img.dataset.platformIcon = id;
             img.width = 16;
             img.height = 16;
             img.decoding = 'async';
@@ -2148,6 +2221,12 @@ document.addEventListener('DOMContentLoaded', () => {
     DeezSpoTag.init();
     globalThis.addEventListener('autotagPlatformsChanged', () => {
         DeezSpoTag.loadConnectedPlatforms({ force: true, deep: false, reason: 'autotag-change' });
+    });
+    globalThis.addEventListener('themeChanged', () => {
+        DeezSpoTag.updateThemedPlatformIcons();
+    });
+    globalThis.addEventListener('themeInitialized', () => {
+        DeezSpoTag.updateThemedPlatformIcons();
     });
     globalThis.addEventListener('storage', (event) => {
         if (event.key === 'autotag-selected-platforms') {

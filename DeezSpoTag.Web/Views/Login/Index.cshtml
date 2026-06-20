@@ -23,7 +23,7 @@
         : $"Tidal user {initialTidalAuth.UserId}";
     var initialTidalStatus = initialTidalConnected
         ? $"{(string.IsNullOrWhiteSpace(initialTidalAuth?.CountryCode) ? "US" : initialTidalAuth.CountryCode)} | official credentials validated"
-        : "No Tidal API is currently online";
+        : "Tidal credentials are not connected.";
     var initialSoulseekName = string.IsNullOrWhiteSpace(initialSoulseekAuth?.Username)
         ? "slskd"
         : initialSoulseekAuth.Username;
@@ -85,7 +85,7 @@
         </li>
         <li class="nav-item">
             <button class="nav-link" id="tidal-login-tab" data-login-target="tidal-login" type="button" role="tab" aria-selected="false">
-                <img src="/images/availability/tidal.svg" alt="Tidal" class="platform-icon" />Tidal
+                <img src="/images/icons/tidal-light.png" alt="Tidal" class="platform-icon" data-platform-icon="tidal" />Tidal
             </button>
         </li>
         <li class="nav-item">
@@ -352,19 +352,7 @@
                         <p class="text-muted" id="tidalStatus"></p>
                     </form>
                 </div>
-                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "tidalLoggedInInfo", ImageAlt = "Tidal", ImageSrc = "/images/availability/tidal.svg", ImageCssClass = "h-20 w-20", ButtonId = "tidalDisconnectBtn", NameId = "tidalLoggedInName", NameFallback = initialTidalName, DetailId = "tidalLoggedInStatus", DetailText = initialTidalStatus, WrapperCssClass = initialTidalConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
-                <section class="qobuz-provider-panel" aria-labelledby="tidalProviderHeading">
-                    <div class="qobuz-provider-panel__header">
-                        <div><h4 id="tidalProviderHeading">Public API Providers</h4><p class="text-muted" id="tidalProviderSummary">Provider status has not been loaded.</p></div>
-                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="tidalProviderToggle" type="button" aria-expanded="false">Edit providers</button>
-                    </div>
-                    <div class="qobuz-provider-editor" id="tidalProviderEditor" hidden>
-                        <div class="qobuz-provider-actions">
-                            <button class="btn btn-primary action-btn" id="tidalCheckProvidersBtn" type="button">Check now</button>
-                        </div>
-                        <div id="tidalProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
-                    </div>
-                </section>
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "tidalLoggedInInfo", ImageAlt = "Tidal", ImageSrc = "/images/icons/tidal-light.png", ImageCssClass = "h-20 w-20", ButtonId = "tidalDisconnectBtn", NameId = "tidalLoggedInName", NameFallback = initialTidalName, DetailId = "tidalLoggedInStatus", DetailText = initialTidalStatus, WrapperCssClass = initialTidalConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
             </div>
         </div>
 
@@ -1726,17 +1714,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     bindPlatformDisconnect('tidalDisconnectBtn', '/api/platform-auth/tidal/disconnect', 'tidalStatus');
-    bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
-    bindAsyncClick('tidalCheckProvidersBtn', checkTidalProviders);
-    const tidalProviderRows = document.getElementById('tidalProviderRows');
-    if (tidalProviderRows) {
-        tidalProviderRows.addEventListener('change', async function(event) {
-            const toggle = event.target.closest('[data-tidal-provider-id]');
-            if (!toggle) return;
-            await setTidalProviderEnabled(toggle.dataset.tidalProviderId, toggle.checked, toggle);
-        });
-        window.setInterval(refreshTidalProviderView, 60_000);
-    }
 
     const soulseekForm = document.getElementById('soulseekLoginForm');
     if (soulseekForm) {
@@ -2788,15 +2765,17 @@ async function refreshQobuzProviderView() {
 function renderTidalInfo(auth) {
     const nameLabel = document.getElementById('tidalLoggedInName');
     const statusLabel = document.getElementById('tidalLoggedInStatus');
-    if (nameLabel) nameLabel.textContent = auth?.userId ? `Tidal user ${auth.userId}` : 'Official Tidal API';
+    const picture = document.querySelector('#tidalLoggedInInfo img');
+    if (picture) {
+        picture.dataset.platformIcon = 'tidal';
+        picture.src = getPlatformIcon('tidal');
+    }
+    if (nameLabel) nameLabel.textContent = auth?.userId ? `Tidal user ${auth.userId}` : 'Tidal account';
     if (statusLabel) {
         statusLabel.textContent = auth?.credentialsValid
             ? `${auth.countryCode || 'US'} | official credentials validated`
-            : auth?.publicApiOnline
-                ? 'Public Tidal API online'
-                : 'No Tidal API is currently online';
+            : 'Tidal credentials are not connected.';
     }
-    renderTidalProviders(auth?.providers || [], auth?.publicApiOnline === true);
 }
 
 function renderSoulseekInfo(auth) {
@@ -2807,7 +2786,7 @@ function renderSoulseekInfo(auth) {
     }
     if (statusLabel) {
         statusLabel.textContent = auth?.connected
-            ? (auth?.message || 'slskd is connected to Soulseek.')
+            ? 'Connected to Soulseek'
             : (auth?.message || 'Soulseek is not connected.');
     }
 }
@@ -2824,79 +2803,6 @@ function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {
     }
 
     statusLabel.textContent = auth?.message || (auth?.connected ? 'Connected' : 'Not connected');
-}
-
-function renderTidalProviders(providers, publicApiOnline) {
-    const container = document.getElementById('tidalProviderRows');
-    const summary = document.getElementById('tidalProviderSummary');
-    if (!container || !summary) return;
-    const rows = Array.isArray(providers) ? providers : [];
-    const enabledCount = rows.filter(provider => provider?.enabled).length;
-    const onlineCount = rows.filter(provider => provider?.enabled && provider?.status === 'online').length;
-    summary.textContent = publicApiOnline
-        ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
-        : enabledCount === 0 ? 'All public API providers are disabled.' : 'No enabled public API provider is currently confirmed online.';
-    container.replaceChildren(...rows.map(createTidalProviderRow));
-}
-
-function createTidalProviderRow(provider) {
-    const row = createQobuzProviderRow(provider);
-    const toggle = row.querySelector('[data-qobuz-provider-id]');
-    if (toggle) {
-        toggle.dataset.tidalProviderId = provider?.id || '';
-        delete toggle.dataset.qobuzProviderId;
-        toggle.setAttribute('aria-label', `${toggle.checked ? 'Disable' : 'Enable'} ${provider?.name || 'Tidal provider'}`);
-    }
-    const name = row.querySelector('.qobuz-provider-row__name');
-    if (name && !provider?.name) name.textContent = 'Tidal provider';
-    return row;
-}
-
-async function setTidalProviderEnabled(providerId, enabled, toggle) {
-    toggle.disabled = true;
-    try {
-        const response = await fetch(`/api/platform-auth/tidal/providers/${encodeURIComponent(providerId)}/enabled`, {
-            method: 'PUT', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-            body: JSON.stringify({ enabled })
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update Tidal provider'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        toggle.checked = !enabled;
-        showToast(error.message || 'Failed to update Tidal provider', 'error');
-    } finally {
-        toggle.disabled = false;
-    }
-}
-
-async function checkTidalProviders() {
-    const button = document.getElementById('tidalCheckProvidersBtn');
-    if (button) button.disabled = true;
-    try {
-        const response = await fetch('/api/platform-auth/tidal/providers/check', { method: 'POST', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Tidal provider check failed'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        showToast(error.message || 'Tidal provider check failed', 'error');
-    } finally {
-        if (button) button.disabled = false;
-    }
-}
-
-async function refreshTidalProviderView() {
-    const pane = document.getElementById('tidal-login');
-    if (document.hidden || !pane || pane.hidden) return;
-    try {
-        const response = await fetch('/api/platform-auth/tidal/providers', { cache: 'no-store', credentials: 'same-origin', headers: { Accept: 'application/json' } });
-        if (!response.ok) return;
-        const result = await response.json();
-        renderTidalProviders(result?.providers || [], result?.online === true);
-    } catch (error) {
-        console.warn('Failed to refresh Tidal provider status', error);
-    }
 }
 
 function showAppleMusic2fa(show = true) {
@@ -3987,6 +3893,10 @@ function getPlatformIcon(platform) {
             return '/images/icons/apple-music.png';
         case 'qobuz':
             return '/images/icons/qobuz.png';
+        case 'tidal':
+            return window.DeezSpoTag?.resolvePlatformIcon
+                ? window.DeezSpoTag.resolvePlatformIcon('tidal')
+                : '/images/icons/tidal-light.png';
         case 'shazam':
             return '/images/icons/shazam.png';
         case 'soulseek':
