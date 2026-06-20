@@ -464,12 +464,31 @@ public sealed class ShazamRecognitionService
             };
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        process.WaitForExit();
-        cancellationToken.ThrowIfCancellationRequested();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(40));
+        try
+        {
+            process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            TryTerminateRecognizerProcess(process);
+            return new PortedRecognizerExecution
+            {
+                State = PortedRecognizerState.Error,
+                Error = "Shazam recognizer timed out after 40 seconds."
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            TryTerminateRecognizerProcess(process);
+            throw;
+        }
 
-        var stdout = process.StandardOutput.ReadToEnd().Trim();
-        var stderr = process.StandardError.ReadToEnd().Trim();
+        var stdout = stdoutTask.GetAwaiter().GetResult().Trim();
+        var stderr = stderrTask.GetAwaiter().GetResult().Trim();
         if (process.ExitCode != 0)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -494,6 +513,26 @@ public sealed class ShazamRecognitionService
         }
 
         return ParsePortedRecognizerOutput(stdout);
+    }
+
+    private static void TryTerminateRecognizerProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // The process exited between the state check and termination.
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // The operating system already released the process.
+        }
     }
 
     private ProcessStartInfo CreateRecognizerProcessStartInfo(

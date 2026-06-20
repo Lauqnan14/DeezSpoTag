@@ -105,6 +105,7 @@ public class AutoTagJob : AutoTagRunState
     public List<EnhancementWorkflowResult> EnhancementWorkflows { get; } = new();
     public List<string> EnhancedFilePaths { get; } = new();
     public List<string> StartedPlatforms { get; } = new();
+    [System.Text.Json.Serialization.JsonIgnore]
     public Dictionary<string, AutoTagTagDiff> TagDiffs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public AutoTagResumeCheckpoint? ResumeCheckpoint { get; set; }
     public string? ResumeFromJobId { get; set; }
@@ -229,6 +230,7 @@ public partial class AutoTagService
     private readonly ConcurrentDictionary<string, byte> _enhancementPlexRefreshJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobCancellationSources = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRunIndexUpdateUtc = new(StringComparer.OrdinalIgnoreCase);
+    private AutoTagJob? _latestTerminalJob;
     private readonly ILogger<AutoTagService> _logger;
     private readonly LibraryConfigStore _activityLog;
     private readonly AuthenticatedDeezerService _deezerAuth;
@@ -286,6 +288,16 @@ public partial class AutoTagService
         @"\x1B\[[0-9;]*m",
         RegexOptions.Compiled,
         TimeSpan.FromMilliseconds(250));
+    private static readonly HashSet<string> BinaryArtworkTagKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "APIC",
+        "COVERART",
+        "COVERARTMIME",
+        "METADATA_BLOCK_PICTURE",
+        "PICTURE",
+        "WM/Picture",
+        "covr"
+    };
     private static readonly HashSet<string> RedactedConfigKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "arl",
@@ -851,9 +863,9 @@ public partial class AutoTagService
             ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim()
         };
 
-        _jobs[blockedJob.Id] = blockedJob;
         SaveJob(blockedJob);
         TrySaveLastJobId(blockedJob.Id);
+        Volatile.Write(ref _latestTerminalJob, CreateCompactTerminalJob(blockedJob));
         return blockedJob;
     }
 
@@ -879,9 +891,9 @@ public partial class AutoTagService
             ProfileName = string.IsNullOrWhiteSpace(profileName) ? null : profileName.Trim()
         };
 
-        _jobs[skippedJob.Id] = skippedJob;
         SaveJob(skippedJob);
         TrySaveLastJobId(skippedJob.Id);
+        Volatile.Write(ref _latestTerminalJob, CreateCompactTerminalJob(skippedJob));
         AppendActivityLog(skippedJob.Id, $"autotag skipped: {message}");
         return skippedJob;
     }
@@ -1274,7 +1286,10 @@ public partial class AutoTagService
         if (loaded != null)
         {
             NormalizeLoadedJobState(loaded);
-            _jobs[id] = loaded;
+            if (IsActiveJobStatus(loaded.Status))
+            {
+                _jobs[id] = loaded;
+            }
         }
 
         return loaded;
@@ -1283,7 +1298,38 @@ public partial class AutoTagService
     public AutoTagJob? GetLatestJob()
     {
         var jobId = TryGetLastJobId();
-        return string.IsNullOrWhiteSpace(jobId) ? null : GetJob(jobId);
+        if (string.IsNullOrWhiteSpace(jobId))
+        {
+            return null;
+        }
+
+        if (_jobs.TryGetValue(jobId, out var activeJob))
+        {
+            return activeJob;
+        }
+
+        var terminalJob = Volatile.Read(ref _latestTerminalJob);
+        if (string.Equals(terminalJob?.Id, jobId, StringComparison.OrdinalIgnoreCase))
+        {
+            return terminalJob;
+        }
+
+        var loaded = LoadJob(jobId);
+        if (loaded == null)
+        {
+            return null;
+        }
+
+        NormalizeLoadedJobState(loaded);
+        if (IsActiveJobStatus(loaded.Status))
+        {
+            _jobs[jobId] = loaded;
+            return loaded;
+        }
+
+        terminalJob = CreateCompactTerminalJob(loaded);
+        Volatile.Write(ref _latestTerminalJob, terminalJob);
+        return terminalJob;
     }
 
     public IReadOnlyList<AutoTagRunDaySummary> GetArchivedRunCalendar(int year, int month)
@@ -1892,6 +1938,11 @@ public partial class AutoTagService
             {
                 return false;
             }
+            NormalizeLoadedJobState(loaded);
+            if (!IsActiveJobStatus(loaded.Status))
+            {
+                return false;
+            }
             job = loaded;
             _jobs[id] = job;
         }
@@ -2031,7 +2082,60 @@ public partial class AutoTagService
             _activeJobStages.TryRemove(job.Id, out _);
             _activeJobIds.TryRemove(job.Id, out _);
             _jobCancellationSources.TryRemove(job.Id, out _);
+            if (!IsActiveJobStatus(job.Status))
+            {
+                SaveArchivedTagDiffs(job.Id, job.TagDiffs);
+                Volatile.Write(ref _latestTerminalJob, CreateCompactTerminalJob(job));
+            }
+            _jobs.TryRemove(job.Id, out _);
         }
+    }
+
+    private static bool IsActiveJobStatus(string? status)
+        => string.Equals(status, AutoTagLiterals.QueuedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.TaggingStatus, StringComparison.OrdinalIgnoreCase);
+
+    private static AutoTagJob CreateCompactTerminalJob(AutoTagJob source)
+    {
+        var compact = new AutoTagJob
+        {
+            Id = source.Id,
+            Status = source.Status,
+            StartedAt = source.StartedAt,
+            FinishedAt = source.FinishedAt,
+            ExitCode = source.ExitCode,
+            Error = source.Error,
+            Progress = source.Progress,
+            OkCount = source.OkCount,
+            ErrorCount = source.ErrorCount,
+            ReviewCount = source.ReviewCount,
+            SkippedCount = source.SkippedCount,
+            RootPath = source.RootPath,
+            Trigger = source.Trigger,
+            RunIntent = source.RunIntent,
+            ProfileId = source.ProfileId,
+            ProfileName = source.ProfileName,
+            AutoMoveSummary = source.AutoMoveSummary,
+            LastPlexRefreshEnhancedFileCount = source.LastPlexRefreshEnhancedFileCount,
+            CurrentPlatform = source.CurrentPlatform,
+            LastStatus = source.LastStatus,
+            ResumeCheckpoint = source.ResumeCheckpoint,
+            ResumeFromJobId = source.ResumeFromJobId,
+            LastActivityAt = source.LastActivityAt
+        };
+        compact.Logs.AddRange(source.Logs);
+        compact.StatusHistory.AddRange(source.StatusHistory);
+        return compact;
+    }
+
+    private static AutoTagJob CreateJobPersistenceSnapshot(AutoTagJob source)
+    {
+        var snapshot = CreateCompactTerminalJob(source);
+        snapshot.EnhancementWorkflows.AddRange(source.EnhancementWorkflows);
+        snapshot.EnhancedFilePaths.AddRange(source.EnhancedFilePaths);
+        snapshot.StartedPlatforms.AddRange(source.StartedPlatforms);
+        return snapshot;
     }
 
     private bool HasOtherActiveJobs(string jobId)
@@ -5106,6 +5210,7 @@ public partial class AutoTagService
             var diff = GetOrCreateTagDiff(job.TagDiffs, normalizedPath);
             var platformDiff = GetOrCreatePlatformDiff(diff, status.Platform, normalizedStatus, captureBefore, captureAfter);
             ApplyCapturedDiffSnapshot(diff, platformDiff, snapshot, status.Platform, normalizedStatus, captureBefore, captureAfter);
+            SaveTagDiffCheckpoint(job.Id, normalizedPath, diff);
         }
     }
 
@@ -5348,6 +5453,10 @@ public partial class AutoTagService
         var clone = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var (key, values) in tags)
         {
+            if (BinaryArtworkTagKeys.Contains(key))
+            {
+                continue;
+            }
             clone[key] = values?.ToList() ?? new List<string>();
         }
         return clone;
@@ -6611,6 +6720,33 @@ public partial class AutoTagService
 
     private string GetRunTagDiffsPath(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "tag-diffs.json");
 
+    private string GetRunTagDiffCheckpointDirectory(string jobId) => Path.Join(GetRunHistoryDirectory(jobId), "tag-diff-checkpoints");
+
+    private void SaveTagDiffCheckpoint(string jobId, string normalizedPath, AutoTagTagDiff diff)
+    {
+        try
+        {
+            var directory = GetRunTagDiffCheckpointDirectory(jobId);
+            Directory.CreateDirectory(directory);
+            var keyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedPath))).ToLowerInvariant();
+            var path = Path.Join(directory, keyHash + ".json");
+            var tempPath = path + ".tmp";
+            var payload = new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase)
+            {
+                [normalizedPath] = diff
+            };
+            File.WriteAllText(tempPath, JsonSerializer.Serialize(payload, _jsonOptions), new UTF8Encoding(false));
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to persist AutoTag tag-diff checkpoint for {JobId}", jobId);
+            }
+        }
+    }
+
     private void SaveArchivedTagDiffs(string jobId, Dictionary<string, AutoTagTagDiff>? tagDiffs)
     {
         if (string.IsNullOrWhiteSpace(jobId))
@@ -6628,6 +6764,7 @@ public partial class AutoTagService
                 GetRunTagDiffsPath(jobId),
                 JsonSerializer.Serialize(payload, _jsonOptions),
                 new UTF8Encoding(false));
+            TryDeleteDirectory(GetRunTagDiffCheckpointDirectory(jobId));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -6635,6 +6772,56 @@ public partial class AutoTagService
             {
                 _logger.LogDebug(ex, "Failed to persist archived AutoTag tag diffs for {JobId}", jobId);
             }
+        }
+    }
+
+    private Dictionary<string, AutoTagTagDiff> LoadPersistedTagDiffs(string jobId)
+    {
+        var resolved = new Dictionary<string, AutoTagTagDiff>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var path = ResolveRunFilePath(jobId, "tag-diffs.json");
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                var parsed = JsonSerializer.Deserialize<Dictionary<string, AutoTagTagDiff>>(
+                    File.ReadAllText(path, Encoding.UTF8),
+                    _jsonOptions);
+                if (parsed != null)
+                {
+                    foreach (var (pathKey, diff) in parsed)
+                    {
+                        resolved[pathKey] = diff;
+                    }
+                }
+            }
+
+            var checkpointDirectory = GetRunTagDiffCheckpointDirectory(jobId);
+            if (Directory.Exists(checkpointDirectory))
+            {
+                foreach (var checkpointPath in Directory.EnumerateFiles(checkpointDirectory, "*.json"))
+                {
+                    var checkpoint = JsonSerializer.Deserialize<Dictionary<string, AutoTagTagDiff>>(
+                        File.ReadAllText(checkpointPath, Encoding.UTF8),
+                        _jsonOptions);
+                    if (checkpoint == null)
+                    {
+                        continue;
+                    }
+                    foreach (var (pathKey, diff) in checkpoint)
+                    {
+                        resolved[pathKey] = diff;
+                    }
+                }
+            }
+            return resolved;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed to load persisted AutoTag tag diffs for {JobId}", jobId);
+            }
+            return resolved;
         }
     }
 
@@ -6956,9 +7143,8 @@ public partial class AutoTagService
         try
         {
             var path = Path.Join(_jobsDir, $"{job.Id}.json");
-            var json = JsonSerializer.Serialize(job, _jsonOptions);
+            var json = JsonSerializer.Serialize(CreateJobPersistenceSnapshot(job), _jsonOptions);
             File.WriteAllText(path, json, new UTF8Encoding(false));
-            SaveArchivedTagDiffs(job.Id, job.TagDiffs);
             SaveRunSummary(job);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -6991,7 +7177,15 @@ public partial class AutoTagService
                 utf8 = noBom;
             }
 
-            return JsonSerializer.Deserialize<AutoTagJob>(utf8, _jsonOptions);
+            var job = JsonSerializer.Deserialize<AutoTagJob>(utf8, _jsonOptions);
+            if (job != null)
+            {
+                foreach (var (pathKey, diff) in LoadPersistedTagDiffs(job.Id))
+                {
+                    job.TagDiffs[pathKey] = diff;
+                }
+            }
+            return job;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

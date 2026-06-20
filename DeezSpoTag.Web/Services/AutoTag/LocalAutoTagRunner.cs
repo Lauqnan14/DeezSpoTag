@@ -403,7 +403,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
         finally
         {
-            jobMatchCache.LastAccessUtc = DateTimeOffset.UtcNow;
+            _jobMatchCaches.TryRemove(jobId, out _);
             _jobTokens.TryRemove(jobId, out _);
         }
     }

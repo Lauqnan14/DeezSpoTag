@@ -35,6 +35,9 @@ public sealed class LastFmTagService
     // In-memory cache with TTL
     private static readonly TimeSpan TagCacheTtl = TimeSpan.FromDays(7);
     private static readonly TimeSpan SimilarCacheTtl = TimeSpan.FromDays(7);
+    private const int MaxTagCacheEntries = 10000;
+    private const int MaxSimilarArtistCacheEntries = 5000;
+    private const int MaxSimilarTrackCacheEntries = 10000;
     private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<string>?>> _tagCache = new();
     private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<string>?>> _similarArtistCache = new();
     private readonly ConcurrentDictionary<string, CacheEntry<IReadOnlyList<LastFmSimilarTrack>?>> _similarTrackCache = new();
@@ -119,7 +122,7 @@ public sealed class LastFmTagService
                     return null;
                 }
 
-                _tagCache[cacheKey] = new CacheEntry<IReadOnlyList<string>?>(null, TagCacheTtl);
+                SetCacheEntry(_tagCache, cacheKey, null, TagCacheTtl, MaxTagCacheEntries);
                 Interlocked.Increment(ref _trackTagNotFound);
                 MaybeLogTrackTagMetrics();
                 return null;
@@ -136,7 +139,7 @@ public sealed class LastFmTagService
                 .ToList();
 
             var result = tags?.Count > 0 ? tags : null;
-            _tagCache[cacheKey] = new CacheEntry<IReadOnlyList<string>?>(result, TagCacheTtl);
+            SetCacheEntry(_tagCache, cacheKey, result, TagCacheTtl, MaxTagCacheEntries);
             if (result is null)
             {
                 Interlocked.Increment(ref _trackTagEmpty);
@@ -206,7 +209,7 @@ public sealed class LastFmTagService
                     return null;
                 }
 
-                _similarArtistCache[cacheKey] = new CacheEntry<IReadOnlyList<string>?>(null, SimilarCacheTtl);
+                SetCacheEntry(_similarArtistCache, cacheKey, null, SimilarCacheTtl, MaxSimilarArtistCacheEntries);
                 return null;
             }
 
@@ -222,7 +225,7 @@ public sealed class LastFmTagService
                 .ToList();
 
             var result = names?.Count > 0 ? names : null;
-            _similarArtistCache[cacheKey] = new CacheEntry<IReadOnlyList<string>?>(result, SimilarCacheTtl);
+            SetCacheEntry(_similarArtistCache, cacheKey, result, SimilarCacheTtl, MaxSimilarArtistCacheEntries);
             return result;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -282,7 +285,7 @@ public sealed class LastFmTagService
                     return null;
                 }
 
-                _similarTrackCache[cacheKey] = new CacheEntry<IReadOnlyList<LastFmSimilarTrack>?>(null, SimilarCacheTtl);
+                SetCacheEntry(_similarTrackCache, cacheKey, null, SimilarCacheTtl, MaxSimilarTrackCacheEntries);
                 return null;
             }
 
@@ -297,7 +300,7 @@ public sealed class LastFmTagService
                 .ToList();
 
             var result = tracks?.Count > 0 ? tracks : null;
-            _similarTrackCache[cacheKey] = new CacheEntry<IReadOnlyList<LastFmSimilarTrack>?>(result, SimilarCacheTtl);
+            SetCacheEntry(_similarTrackCache, cacheKey, result, SimilarCacheTtl, MaxSimilarTrackCacheEntries);
             return result;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -422,6 +425,49 @@ public sealed class LastFmTagService
         return JunkTags.Contains(tag.Trim());
     }
 
+    private static void SetCacheEntry<T>(
+        ConcurrentDictionary<string, CacheEntry<T>> cache,
+        string key,
+        T value,
+        TimeSpan ttl,
+        int maxEntries)
+    {
+        cache[key] = new CacheEntry<T>(value, ttl);
+        TrimCache(cache, maxEntries);
+    }
+
+    private static void TrimCache<T>(ConcurrentDictionary<string, CacheEntry<T>> cache, int maxEntries)
+    {
+        if (cache.Count <= maxEntries)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var pair in cache)
+        {
+            if (pair.Value.ExpiresAtUtc <= now)
+            {
+                cache.TryRemove(pair.Key, out _);
+            }
+        }
+
+        var overflow = cache.Count - maxEntries;
+        if (overflow <= 0)
+        {
+            return;
+        }
+
+        foreach (var key in cache
+                     .OrderBy(static pair => pair.Value.ExpiresAtUtc)
+                     .Take(overflow)
+                     .Select(static pair => pair.Key)
+                     .ToList())
+        {
+            cache.TryRemove(key, out _);
+        }
+    }
+
     private static bool IsCacheableLastFmError(int errorCode)
     {
         // Cache "not found / invalid params" errors to avoid hammering Last.fm for content that doesn't exist there.
@@ -458,13 +504,13 @@ public sealed class LastFmTagService
     private sealed class CacheEntry<T>
     {
         public T Value { get; }
-        private readonly DateTimeOffset _expiresAt;
-        public bool IsExpired => DateTimeOffset.UtcNow >= _expiresAt;
+        public DateTimeOffset ExpiresAtUtc { get; }
+        public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresAtUtc;
 
         public CacheEntry(T value, TimeSpan ttl)
         {
             Value = value;
-            _expiresAt = DateTimeOffset.UtcNow.Add(ttl);
+            ExpiresAtUtc = DateTimeOffset.UtcNow.Add(ttl);
         }
     }
 

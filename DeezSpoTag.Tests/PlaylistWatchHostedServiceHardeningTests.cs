@@ -252,7 +252,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
             _playlistVisualService,
-            CreateProfileResolutionService());
+            CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var total = 220;
         for (var index = 0; index < total; index++)
@@ -363,7 +364,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
             _playlistVisualService,
-            CreateProfileResolutionService());
+            CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var rejected = await apiController.GetAll(CancellationToken.None, refreshFromSource: true);
         var badRequest = Assert.IsType<BadRequestObjectResult>(rejected);
@@ -387,7 +389,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
             _playlistVisualService,
-            CreateProfileResolutionService());
+            CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var result = await apiController.TriggerAll(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -431,7 +434,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _provider.GetRequiredService<PlaylistWatchService>(),
             playlistSyncService: null!,
             _playlistVisualService,
-            CreateProfileResolutionService());
+            CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var result = await controller.GetWatchRuntime(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);

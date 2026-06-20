@@ -258,7 +258,12 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static readonly Dictionary<string, PersistedQueryOverride> PathfinderOverrides = new Dictionary<string, PersistedQueryOverride>(StringComparer.OrdinalIgnoreCase);
 
-    private static readonly ConcurrentDictionary<string, string> IsrcCache = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private const int MaxIsrcCacheEntries = 50000;
+    private const int MaxArtistSearchEnrichmentCacheEntries = 10000;
+    private const int MaxShowCacheEntries = 512;
+    private const int MaxShowEpisodeCacheEntries = 1024;
+
+    private static readonly ConcurrentDictionary<string, (DateTimeOffset Stamp, string Isrc)> IsrcCache = new ConcurrentDictionary<string, (DateTimeOffset, string)>(StringComparer.OrdinalIgnoreCase);
 
     private static readonly ConcurrentDictionary<string, (DateTimeOffset Stamp, string? Name, string? ImageUrl)> ArtistSearchEnrichmentCache = new ConcurrentDictionary<string, (DateTimeOffset, string?, string?)>(StringComparer.OrdinalIgnoreCase);
 
@@ -702,6 +707,7 @@ public sealed class SpotifyPathfinderMetadataClient
     private static void CacheShow(string showId, SpotifyUrlMetadata metadata)
     {
         ShowCache[showId] = (DateTimeOffset.UtcNow, metadata);
+        TrimTimestampCache(ShowCache, MaxShowCacheEntries, ShowCacheTtl);
     }
 
     private static bool TryGetCachedShow(string showId, out SpotifyUrlMetadata? metadata)
@@ -724,6 +730,7 @@ public sealed class SpotifyPathfinderMetadataClient
     {
         string key = BuildShowEpisodeCacheKey(showId, offset, limit);
         ShowEpisodeCache[key] = (DateTimeOffset.UtcNow, tracks);
+        TrimTimestampCache(ShowEpisodeCache, MaxShowEpisodeCacheEntries, ShowCacheTtl);
     }
 
     private static bool TryGetCachedShowEpisodes(string showId, int offset, int limit, out List<SpotifyTrackSummary> tracks)
@@ -1066,9 +1073,9 @@ public sealed class SpotifyPathfinderMetadataClient
         List<string> uncachedTrackIds = new List<string>();
         foreach (string trackId in trackIds)
         {
-            if (IsrcCache.TryGetValue(trackId, out string? cached) && !string.IsNullOrWhiteSpace(cached))
+            if (IsrcCache.TryGetValue(trackId, out var cached) && !string.IsNullOrWhiteSpace(cached.Isrc))
             {
-                results[trackId] = cached;
+                results[trackId] = cached.Isrc;
             }
             else
             {
@@ -1093,7 +1100,8 @@ public sealed class SpotifyPathfinderMetadataClient
             {
                 return;
             }
-            IsrcCache[trackId] = isrc;
+            IsrcCache[trackId] = (DateTimeOffset.UtcNow, isrc);
+            TrimTimestampCache(IsrcCache, MaxIsrcCacheEntries, TimeSpan.Zero);
             lock (results)
             {
                 results[trackId] = isrc;
@@ -2558,6 +2566,77 @@ public sealed class SpotifyPathfinderMetadataClient
     private static void RememberArtistSearchEnrichment(string artistId, string? name, string? imageUrl)
     {
         ArtistSearchEnrichmentCache[artistId] = (DateTimeOffset.UtcNow, NormalizeOptionalText(name), NormalizeOptionalText(imageUrl));
+        TrimArtistSearchEnrichmentCache();
+    }
+
+    private static void TrimArtistSearchEnrichmentCache()
+    {
+        if (ArtistSearchEnrichmentCache.Count <= MaxArtistSearchEnrichmentCacheEntries)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var pair in ArtistSearchEnrichmentCache)
+        {
+            if (now - pair.Value.Stamp > ArtistSearchEnrichmentCacheTtl)
+            {
+                ArtistSearchEnrichmentCache.TryRemove(pair.Key, out _);
+            }
+        }
+
+        var overflow = ArtistSearchEnrichmentCache.Count - MaxArtistSearchEnrichmentCacheEntries;
+        if (overflow <= 0)
+        {
+            return;
+        }
+
+        foreach (var key in ArtistSearchEnrichmentCache
+                     .OrderBy(static pair => pair.Value.Stamp)
+                     .Take(overflow)
+                     .Select(static pair => pair.Key)
+                     .ToList())
+        {
+            ArtistSearchEnrichmentCache.TryRemove(key, out _);
+        }
+    }
+
+    private static void TrimTimestampCache<T>(
+        ConcurrentDictionary<string, (DateTimeOffset Stamp, T Data)> cache,
+        int maxEntries,
+        TimeSpan ttl)
+    {
+        if (cache.Count <= maxEntries)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (ttl > TimeSpan.Zero)
+        {
+            foreach (var pair in cache)
+            {
+                if (now - pair.Value.Stamp > ttl)
+                {
+                    cache.TryRemove(pair.Key, out _);
+                }
+            }
+        }
+
+        var overflow = cache.Count - maxEntries;
+        if (overflow <= 0)
+        {
+            return;
+        }
+
+        foreach (var key in cache
+                     .OrderBy(static pair => pair.Value.Stamp)
+                     .Take(overflow)
+                     .Select(static pair => pair.Key)
+                     .ToList())
+        {
+            cache.TryRemove(key, out _);
+        }
     }
 
     private static string? NormalizeOptionalText(string? value)

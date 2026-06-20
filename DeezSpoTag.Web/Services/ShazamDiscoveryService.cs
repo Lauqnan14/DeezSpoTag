@@ -44,12 +44,15 @@ public sealed partial class ShazamDiscoveryService
     private const string AttributesPropertyName = "attributes";
     private const string TrackType = "track";
     private const int MaxTrackLimit = 20;
+    private const int MaxSessionCardCacheEntries = 2000;
     private static readonly TimeSpan PortedDiscoverTimeout = TimeSpan.FromSeconds(25);
+    private static readonly TimeSpan SessionCardCacheTtl = TimeSpan.FromHours(12);
+    private static readonly object SessionCardCacheTrimLock = new();
 
     private readonly HttpClient _httpClient;
     private readonly ILogger<ShazamDiscoveryService> _logger;
     private readonly IWebHostEnvironment _environment;
-    private static readonly ConcurrentDictionary<string, ShazamTrackCard> SessionCardCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, SessionCardCacheEntry> SessionCardCache = new(StringComparer.OrdinalIgnoreCase);
 
     public ShazamDiscoveryService(
         HttpClient httpClient,
@@ -73,7 +76,7 @@ public sealed partial class ShazamDiscoveryService
         }
 
         trackId = trackId.Trim();
-        if (SessionCardCache.TryGetValue(trackId, out var cached))
+        if (TryGetCachedCard(trackId, out var cached))
         {
             return cached;
         }
@@ -672,17 +675,79 @@ public sealed partial class ShazamDiscoveryService
     {
         if (!string.IsNullOrWhiteSpace(card.Id))
         {
-            SessionCardCache[card.Id] = card;
+            CacheCardAlias(card.Id, card);
             if (card.Id.StartsWith(AppleMusicIdPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 var rawId = card.Id[AppleMusicIdPrefix.Length..];
                 if (!string.IsNullOrWhiteSpace(rawId))
                 {
-                    SessionCardCache[rawId] = card;
+                    CacheCardAlias(rawId, card);
                 }
             }
         }
+
+        TrimSessionCardCacheIfNeeded();
     }
+
+    private static bool TryGetCachedCard(string trackId, out ShazamTrackCard? card)
+    {
+        card = null;
+        if (!SessionCardCache.TryGetValue(trackId, out var entry))
+        {
+            return false;
+        }
+
+        if (entry.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+        {
+            SessionCardCache.TryRemove(trackId, out _);
+            return false;
+        }
+
+        card = entry.Card;
+        return true;
+    }
+
+    private static void CacheCardAlias(string key, ShazamTrackCard card)
+    {
+        SessionCardCache[key] = new SessionCardCacheEntry(card, DateTimeOffset.UtcNow.Add(SessionCardCacheTtl));
+    }
+
+    private static void TrimSessionCardCacheIfNeeded()
+    {
+        if (SessionCardCache.Count <= MaxSessionCardCacheEntries)
+        {
+            return;
+        }
+
+        lock (SessionCardCacheTrimLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var pair in SessionCardCache)
+            {
+                if (pair.Value.ExpiresAtUtc <= now)
+                {
+                    SessionCardCache.TryRemove(pair.Key, out _);
+                }
+            }
+
+            var overflow = SessionCardCache.Count - MaxSessionCardCacheEntries;
+            if (overflow <= 0)
+            {
+                return;
+            }
+
+            foreach (var key in SessionCardCache
+                         .OrderBy(static pair => pair.Value.ExpiresAtUtc)
+                         .Take(overflow)
+                         .Select(static pair => pair.Key)
+                         .ToList())
+            {
+                SessionCardCache.TryRemove(key, out _);
+            }
+        }
+    }
+
+    private sealed record SessionCardCacheEntry(ShazamTrackCard Card, DateTimeOffset ExpiresAtUtc);
 
     private static int? ParseDurationMs(string? raw)
     {

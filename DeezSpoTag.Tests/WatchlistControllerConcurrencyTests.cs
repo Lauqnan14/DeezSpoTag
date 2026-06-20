@@ -116,7 +116,8 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
             playlistWatchService: null!,
             playlistSyncService: null!,
             playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService());
+            profileResolutionService: CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var addTasks = Enumerable.Range(0, 30)
             .Select(index => controller.Add(

@@ -89,7 +89,6 @@ async def recognize_async(args: argparse.Namespace) -> Dict[str, Any]:
         "matched": matched,
         "matchesCount": len(matches) if isinstance(matches, list) else 0,
         "summary": summarize_response(response),
-        "response": response,
     }
 
 

@@ -78,7 +78,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             playlistWatchService: null!,
             playlistSyncService: null!,
             playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService());
+            profileResolutionService: CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var addResultOne = await controller.Add(
             new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
@@ -144,7 +145,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             playlistWatchService: null!,
             playlistSyncService: null!,
             playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService());
+            profileResolutionService: CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var result = await controller.Add(
             new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
@@ -169,7 +171,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             playlistWatchService: null!,
             playlistSyncService: null!,
             playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService());
+            profileResolutionService: CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var applyResult = await controller.ApplyRoutingRulesGlobally(
             "spotify",
@@ -214,7 +217,8 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             playlistWatchService: null!,
             playlistSyncService: null!,
             playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService());
+            profileResolutionService: CreateProfileResolutionService(),
+            queueRepository: null!);
 
         var applyResult = await controller.ApplyRoutingRulesGlobally(
             "spotify",

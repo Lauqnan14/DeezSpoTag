@@ -12,6 +12,7 @@ public sealed class TrackAvailabilityService
     private static readonly TimeSpan AppleSearchSuccessTtl = TimeSpan.FromHours(12);
     private static readonly TimeSpan AppleSearchMissTtl = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan AppleSearchRateLimitTtl = TimeSpan.FromMinutes(2);
+    private const int MaxAppleSearchCacheEntries = 5000;
     private static readonly SemaphoreSlim AppleSearchGate = new(1, 1);
     private static readonly ConcurrentDictionary<string, AppleSearchCacheEntry> AppleSearchCache = new(StringComparer.Ordinal);
     private static long _appleSearchPausedUntilUtcTicks;
@@ -387,6 +388,39 @@ public sealed class TrackAvailabilityService
         };
 
         AppleSearchCache[cacheKey] = new AppleSearchCacheEntry(outcome, DateTimeOffset.UtcNow.Add(ttl));
+        TrimAppleSearchCacheIfNeeded();
+    }
+
+    private static void TrimAppleSearchCacheIfNeeded()
+    {
+        if (AppleSearchCache.Count <= MaxAppleSearchCacheEntries)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var pair in AppleSearchCache)
+        {
+            if (pair.Value.ExpiresAtUtc <= now)
+            {
+                AppleSearchCache.TryRemove(pair.Key, out _);
+            }
+        }
+
+        var overflow = AppleSearchCache.Count - MaxAppleSearchCacheEntries;
+        if (overflow <= 0)
+        {
+            return;
+        }
+
+        foreach (var key in AppleSearchCache
+                     .OrderBy(static pair => pair.Value.ExpiresAtUtc)
+                     .Take(overflow)
+                     .Select(static pair => pair.Key)
+                     .ToList())
+        {
+            AppleSearchCache.TryRemove(key, out _);
+        }
     }
 
     private static AppleCandidate? TryReadAppleCandidate(object item)
