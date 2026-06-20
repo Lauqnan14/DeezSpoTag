@@ -1079,7 +1079,7 @@ globalThis.DeezSpoTag = {
     platformDisplayOrder: [],
 
     connectedPlatformsRefreshIntervalMs: 300000,
-    publicApiStatusRefreshIntervalMs: 30000,
+    publicApiStatusRefreshIntervalMs: 900000,
     connectedPlatformsDeepProbeMinIntervalMs: 300000,
     connectedPlatformsCheapProbeMinIntervalMs: 30000,
     connectedPlatformsRefreshTimerId: null,
