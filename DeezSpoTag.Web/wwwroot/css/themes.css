@@ -1112,6 +1112,11 @@ textarea::placeholder {
     height: 20px;
 }
 
+.connected-platform-icon--platform-soulseek img {
+    width: 18px;
+    height: 18px;
+}
+
 .connected-platform-icon--active img {
     filter: none;
     -webkit-filter: none;
@@ -1125,4 +1130,22 @@ textarea::placeholder {
 .connected-platform-icon--platform-lastfm.connected-platform-icon--inactive img {
     filter: grayscale(1) saturate(0) contrast(1.12) brightness(5.6);
     -webkit-filter: grayscale(1) saturate(0) contrast(1.12) brightness(5.6);
+}
+
+.connected-platform-icon--platform-soulseek.connected-platform-icon--inactive img {
+    opacity: 0;
+}
+
+.connected-platform-icon--platform-soulseek.connected-platform-icon--inactive {
+    position: relative;
+}
+
+.connected-platform-icon--platform-soulseek.connected-platform-icon--inactive::before {
+    width: 18px;
+    height: 18px;
+    position: absolute;
+    content: "";
+    background-color: var(--text-primary);
+    mask: url('/images/icons/soulseek.png') center / contain no-repeat;
+    -webkit-mask: url('/images/icons/soulseek.png') center / contain no-repeat;
 }
