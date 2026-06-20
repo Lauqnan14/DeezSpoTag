@@ -162,6 +162,82 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PlaylistWatchlist_PriorityOrder_RequiresCompleteOrder_And_FocusesFirstPlaylist()
+    {
+        var controller = new LibraryPlaylistWatchlistApiController(
+            _repository,
+            _configStore,
+            playlistWatchService: null!,
+            playlistSyncService: null!,
+            playlistVisualService: _playlistVisualService,
+            profileResolutionService: CreateProfileResolutionService(),
+            queueRepository: null!);
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "pl-one",
+            new PlaylistWatchlistMetadataInput("One", null, null, 10),
+            CancellationToken.None);
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "pl-two",
+            new PlaylistWatchlistMetadataInput("Two", null, null, 10),
+            CancellationToken.None);
+        await _repository.AddPlaylistWatchlistAsync(
+            "boomplay",
+            "pl-three",
+            new PlaylistWatchlistMetadataInput("Three", null, null, 10),
+            CancellationToken.None);
+
+        var partialResult = await controller.UpdatePriorityOrder(
+            new List<LibraryPlaylistWatchlistApiController.PlaylistWatchlistPriorityRequest>
+            {
+                new("spotify", "pl-one"),
+                new("boomplay", "pl-three")
+            },
+            CancellationToken.None);
+        var partialBadRequest = Assert.IsType<BadRequestObjectResult>(partialResult);
+        Assert.Contains("every monitored playlist", Assert.IsType<string>(partialBadRequest.Value), StringComparison.OrdinalIgnoreCase);
+
+        var result = await controller.UpdatePriorityOrder(
+            new List<LibraryPlaylistWatchlistApiController.PlaylistWatchlistPriorityRequest>
+            {
+                new("spotify", "pl-one"),
+                new("boomplay", "pl-three"),
+                new("spotify", "pl-two")
+            },
+            CancellationToken.None);
+        Assert.IsType<OkObjectResult>(result);
+
+        var playlists = await _repository.GetPlaylistWatchlistAsync(CancellationToken.None);
+        Assert.Collection(
+            playlists,
+            item =>
+            {
+                Assert.Equal("spotify", item.Source);
+                Assert.Equal("pl-one", item.SourceId);
+                Assert.Equal(1, item.SyncPriority);
+            },
+            item =>
+            {
+                Assert.Equal("boomplay", item.Source);
+                Assert.Equal("pl-three", item.SourceId);
+                Assert.Equal(2, item.SyncPriority);
+            },
+            item =>
+            {
+                Assert.Equal("spotify", item.Source);
+                Assert.Equal("pl-two", item.SourceId);
+                Assert.Equal(3, item.SyncPriority);
+            });
+
+        var scheduler = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
+        Assert.NotNull(scheduler);
+        Assert.Equal("spotify", scheduler!.ActiveSource);
+        Assert.Equal("pl-one", scheduler.ActiveSourceId);
+    }
+
+    [Fact]
     public async Task PlaylistWatchlist_Add_AppliesSavedGlobalRoutingRules()
     {
         var routeFolder = await AddEligibleFolderAsync("Route Folder", "/music/route");

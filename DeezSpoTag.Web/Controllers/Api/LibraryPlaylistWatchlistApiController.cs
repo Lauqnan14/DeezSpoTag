@@ -376,6 +376,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var existingKeys = watchlist
             .Select(item => $"{WatchlistPreferenceNormalizer.PlaylistSource(item.Source)}:{item.SourceId}")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (request.Count != existingKeys.Count)
+        {
+            return BadRequest("Playlist priority order must include every monitored playlist.");
+        }
+
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var priorities = new List<(string Source, string SourceId, int SyncPriority)>(request.Count);
         for (var index = 0; index < request.Count; index++)
@@ -408,6 +413,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         _playlistWatchHostedService?.ResetPlaylistRuntimeStateForAll(updated);
         var first = priorities[0];
         await SetPlaylistWatchSchedulerFocusAsync(first.Source, first.SourceId, cancellationToken);
+        _ = _playlistWatchHostedService?.TriggerRunOnceAsync(CancellationToken.None);
         return Ok(new
         {
             updated = priorities.Count
