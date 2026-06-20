@@ -1563,6 +1563,7 @@ public partial class Program
             "Watchlist playlist sync after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MediaServerImageCacheService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackService.Dependencies>(sp =>
             new DeezSpoTag.Web.Services.MediaServerSoundtrackService.Dependencies
             {

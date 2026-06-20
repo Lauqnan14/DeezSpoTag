@@ -14,18 +14,18 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
     private const char QuerySeparator = '?';
     private readonly MediaServerSoundtrackService _service;
     private readonly PlatformAuthService _platformAuthService;
-    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly MediaServerImageCacheService _imageCacheService;
     private readonly MediaServerLibraryPinUnlockService _pinUnlockService;
 
     public MediaServerSoundtracksApiController(
         MediaServerSoundtrackService service,
         PlatformAuthService platformAuthService,
-        IHttpClientFactory httpClientFactory,
+        MediaServerImageCacheService imageCacheService,
         MediaServerLibraryPinUnlockService pinUnlockService)
     {
         _service = service;
         _platformAuthService = platformAuthService;
-        _httpClientFactory = httpClientFactory;
+        _imageCacheService = imageCacheService;
         _pinUnlockService = pinUnlockService;
     }
 
@@ -153,17 +153,18 @@ public sealed class MediaServerSoundtracksApiController : ControllerBase
             return NotFound();
         }
 
-        var client = _httpClientFactory.CreateClient();
-        using var response = await client.GetAsync(targetUrl, cancellationToken);
-        return await ImageProxyResponseHelper.CreateImageResultAsync(
-            this,
-            response,
-            cache =>
-            {
-                cache.Private = true;
-                cache.MaxAge = TimeSpan.FromMinutes(15);
-            },
+        var result = await _imageCacheService.GetAsync(
+            normalizedServerType,
+            normalizedPath,
+            targetUrl,
             cancellationToken);
+        if (!result.Success)
+        {
+            return StatusCode((int)result.StatusCode);
+        }
+
+        Response.Headers.CacheControl = "private,max-age=86400";
+        return File(result.Bytes!, result.ContentType);
     }
 
     private string? BuildImageProxyUrl(string? serverType, string? sourceUrl)

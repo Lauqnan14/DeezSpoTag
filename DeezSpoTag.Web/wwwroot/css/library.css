@@ -4854,6 +4854,9 @@
 .alpha-jump-nav.is-visible {
     opacity: 1;
     visibility: visible;
+    pointer-events: auto;
+    touch-action: pan-y;
+    overscroll-behavior-y: contain;
 }
 
 .library-page .alpha-jump-nav {

@@ -539,6 +539,34 @@ function renderSoundtrackLoadingState(category) {
     }
 }
 
+function handleSoundtrackImageError(event) {
+    const image = event.target;
+    if (!(image instanceof HTMLImageElement) || !image.classList.contains('soundtrack-card-art')) {
+        return;
+    }
+
+    const attempt = Number.parseInt(image.dataset.soundtrackImageRetry || '0', 10) + 1;
+    if (attempt <= 2) {
+        image.dataset.soundtrackImageRetry = String(attempt);
+        const originalSource = image.dataset.soundtrackOriginalSrc || image.getAttribute('src') || '';
+        image.dataset.soundtrackOriginalSrc = originalSource;
+        globalThis.setTimeout(() => {
+            if (!image.isConnected) {
+                return;
+            }
+            const retryUrl = new URL(originalSource, globalThis.location.origin);
+            retryUrl.searchParams.set('_retry', `${attempt}-${Date.now()}`);
+            image.src = retryUrl.toString();
+        }, attempt === 1 ? 1000 : 3000);
+        return;
+    }
+
+    const placeholder = document.createElement('div');
+    placeholder.className = `${image.className} watchlist-card-art-placeholder`;
+    placeholder.innerHTML = '<i class="fa-solid fa-photo-film"></i>';
+    image.replaceWith(placeholder);
+}
+
 function renderSoundtrackTvNavigation() {
     const elements = getSoundtrackElements();
     const isTvCategory = normalizeSoundtrackCategory(soundtrackState.category) === 'tv_show';
@@ -1467,6 +1495,7 @@ function bindSoundtrackTabHandlers() {
     }
 
     if (elements.grid) {
+        elements.grid.addEventListener('error', handleSoundtrackImageError, true);
         elements.grid.addEventListener('click', async event => {
             const manualSearchButton = event.target.closest('[data-soundtrack-manual-search]');
             if (manualSearchButton) {

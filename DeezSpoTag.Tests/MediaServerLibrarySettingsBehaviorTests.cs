@@ -106,6 +106,29 @@ public sealed class MediaServerLibrarySettingsBehaviorTests
         Assert.Contains("renderCurrentSoundtrackSearchResults();", soundtrackSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void SoundtrackAlphabetNavigation_AllowsWheelAndTouchScrollingWhenVisible()
+    {
+        var libraryStyles = ReadSource("DeezSpoTag.Web", "wwwroot", "css", "library.css");
+
+        Assert.Contains(".alpha-jump-nav.is-visible", libraryStyles, StringComparison.Ordinal);
+        Assert.Contains("pointer-events: auto;", libraryStyles, StringComparison.Ordinal);
+        Assert.Contains("touch-action: pan-y;", libraryStyles, StringComparison.Ordinal);
+        Assert.Contains("overscroll-behavior-y: contain;", libraryStyles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SoundtrackPosters_RetryTransientProxyFailuresWithoutGridReload()
+    {
+        var soundtrackSource = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library-soundtracks.js");
+
+        Assert.Contains("handleSoundtrackImageError", soundtrackSource, StringComparison.Ordinal);
+        Assert.Contains("elements.grid.addEventListener('error', handleSoundtrackImageError, true)", soundtrackSource, StringComparison.Ordinal);
+        Assert.Contains("retryUrl.searchParams.set('_retry'", soundtrackSource, StringComparison.Ordinal);
+        Assert.Contains("image.replaceWith(placeholder)", soundtrackSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("loadSoundtrackItems();\n        }, attempt", soundtrackSource, StringComparison.Ordinal);
+    }
+
     private static ClaimsPrincipal CreateUser(string id)
     {
         return new ClaimsPrincipal(new ClaimsIdentity(new List<Claim>
