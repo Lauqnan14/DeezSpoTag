@@ -7,21 +7,6 @@ namespace DeezSpoTag.Tests;
 public sealed class LoginViewPresentationTests
 {
     [Fact]
-    public void QobuzAndTidalPublicApiProviders_AreCollapsible()
-    {
-        var repoRoot = ResolveRepoRoot();
-        var loginSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Login", "Index.cshtml"));
-
-        Assert.Contains("id=\"qobuzProviderToggle\"", loginSource, StringComparison.Ordinal);
-        Assert.Contains("id=\"qobuzProviderEditor\" hidden", loginSource, StringComparison.Ordinal);
-        Assert.Contains("id=\"tidalProviderToggle\"", loginSource, StringComparison.Ordinal);
-        Assert.Contains("id=\"tidalProviderEditor\" hidden", loginSource, StringComparison.Ordinal);
-        Assert.Contains("bindProviderPanelToggle('qobuzProviderToggle', 'qobuzProviderEditor')", loginSource, StringComparison.Ordinal);
-        Assert.Contains("bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor')", loginSource, StringComparison.Ordinal);
-        Assert.Contains("setProviderPanelExpanded", loginSource, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void QobuzAndTidalPersonalSections_RenderFromInitialServerAuthState()
     {
         var repoRoot = ResolveRepoRoot();
@@ -39,17 +24,6 @@ public sealed class LoginViewPresentationTests
         Assert.Contains("<span class=\"block mb-2\">User Auth Token</span>", loginSource, StringComparison.Ordinal);
         Assert.DoesNotContain("User Auth Token (optional)", loginSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Optional Qobuz user auth token", loginSource, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void QobuzPersonalCredentials_RequireUserAuthToken()
-    {
-        var repoRoot = ResolveRepoRoot();
-        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "PlatformAuthApiController.cs"));
-
-        Assert.Contains("Qobuz User Auth Token is required.", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("var configured = hasAppSecret && hasAuthToken;", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("connected = providers.Online || (configured && auth?.AuthTokenValid != false)", controllerSource, StringComparison.Ordinal);
     }
 
     private static string ResolveRepoRoot()

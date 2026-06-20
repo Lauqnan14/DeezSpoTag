@@ -21,7 +21,8 @@ public static class TrackTitleMatcher
 
     private static readonly string[] StrictVariantMarkers =
     {
-        "instrumental", "live", "acoustic", "remix", "demo", "sped up", "slowed", "nightcore"
+        "instrumental", "live", "acoustic", "remix", "demo", "sped up", "slowed", "nightcore",
+        "acapella", "a cappella", "made famous by", "made popular by", "as made famous by"
     };
 
     public static bool TitlesMatch(string? expected, string? actual)

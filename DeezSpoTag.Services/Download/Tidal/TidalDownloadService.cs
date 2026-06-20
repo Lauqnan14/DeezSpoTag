@@ -6,6 +6,7 @@ using System.Xml;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download;
@@ -13,6 +14,7 @@ using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using TagLib;
 using DeezSpoTag.Integrations.Tidal;
+using DeezSpoTag.Services.Matching;
 
 namespace DeezSpoTag.Services.Download.Tidal;
 
@@ -315,13 +317,13 @@ public sealed class TidalDownloadService
             return isrcMatch;
         }
 
-        var durationMatch = FindDurationMatch(allTracks, expectedDuration);
-        if (durationMatch != null)
+        var validatedMatch = FindValidatedMetadataMatch(allTracks, trackName, artistName, isrc, expectedDuration);
+        if (validatedMatch != null)
         {
-            return durationMatch;
+            return validatedMatch;
         }
 
-        return allTracks[0];
+        throw new InvalidOperationException("No validated Tidal track match found");
     }
 
     private static List<string> BuildSearchQueries(string trackName, string artistName)
@@ -361,15 +363,77 @@ public sealed class TidalDownloadService
         return match;
     }
 
-    private static TidalTrack? FindDurationMatch(List<TidalTrack> allTracks, int expectedDuration)
+    private TidalTrack? FindValidatedMetadataMatch(
+        List<TidalTrack> allTracks,
+        string trackName,
+        string artistName,
+        string isrc,
+        int expectedDuration)
     {
-        if (expectedDuration <= 0)
+        var source = new TrackMatchSource(
+            isrc,
+            trackName,
+            artistName,
+            Album: null,
+            expectedDuration > 0 ? expectedDuration * 1000 : null);
+        var options = new TrackCandidateValidationOptions(
+            StrictWithoutIsrc: true,
+            AllowMissingCandidateArtist: true,
+            RequireCandidateDurationWhenSourceHasDuration: true,
+            MaxIsrcDurationDifferenceMs: 20_000,
+            MaxMetadataDurationDifferenceMs: 3_000);
+
+        TidalTrack? bestTrack = null;
+        var bestScore = double.MinValue;
+        foreach (var track in allTracks.Where(static track => track.Id > 0))
         {
-            return null;
+            var validation = TrackCandidateValidator.Validate(
+                source,
+                new TrackMatchCandidate(
+                    track.Id.ToString(CultureInfo.InvariantCulture),
+                    track.Isrc,
+                    track.Title,
+                    ResolveTidalArtistName(track),
+                    track.Album?.Title,
+                    track.Duration > 0 ? track.Duration * 1000 : null),
+                options);
+            if (!validation.Accepted)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Rejected Tidal candidate id={TrackId} reason={Reason}",
+                        track.Id,
+                        validation.Reason);
+                }
+                continue;
+            }
+
+            if (validation.Score > bestScore)
+            {
+                bestScore = validation.Score;
+                bestTrack = track;
+            }
         }
 
-        const int tolerance = 3;
-        return allTracks.FirstOrDefault(track => Math.Abs(track.Duration - expectedDuration) <= tolerance);
+        return bestTrack;
+    }
+
+    private static string ResolveTidalArtistName(TidalTrack track)
+    {
+        if (!string.IsNullOrWhiteSpace(track.Artist?.Name))
+        {
+            return track.Artist.Name;
+        }
+
+        if (track.Artists is { Count: > 0 })
+        {
+            return string.Join(", ", track.Artists
+                .Select(static artist => artist.Name)
+                .Where(static name => !string.IsNullOrWhiteSpace(name)));
+        }
+
+        return string.Empty;
     }
 
     private async Task<List<TidalTrack>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken)
@@ -1785,6 +1849,27 @@ public sealed class TidalDownloadService
 
         [JsonPropertyName("duration")]
         public int Duration { get; set; }
+
+        [JsonPropertyName("artist")]
+        public TidalArtist? Artist { get; set; }
+
+        [JsonPropertyName("artists")]
+        public List<TidalArtist>? Artists { get; set; }
+
+        [JsonPropertyName("album")]
+        public TidalAlbum? Album { get; set; }
+    }
+
+    private sealed class TidalArtist
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = "";
+    }
+
+    private sealed class TidalAlbum
+    {
+        [JsonPropertyName("title")]
+        public string Title { get; set; } = "";
     }
 
     private sealed class TidalApiResponse

@@ -180,6 +180,34 @@ public sealed class QobuzTrackResolverTests
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task ResolveTrackAsync_RejectsUnrequestedVariantWithoutIsrc()
+    {
+        var service = new StubQobuzMetadataService();
+        service.SearchHandler = _ => new List<QobuzTrack>
+        {
+            new()
+            {
+                Id = 99112235,
+                Title = "Raha (Acapella)",
+                Duration = 173,
+                Performer = new QobuzArtist { Name = "Arrow Bwoy" },
+                Album = new QobuzAlbum { Title = "Focus" }
+            }
+        };
+        var resolver = CreateResolver(service);
+
+        var result = await resolver.ResolveTrackAsync(
+            isrc: null,
+            title: "Raha",
+            artist: "Arrow Bwoy",
+            album: "Focus",
+            durationMs: 173000,
+            CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
     [Theory]
     [InlineData(
         "USJZ10900031",

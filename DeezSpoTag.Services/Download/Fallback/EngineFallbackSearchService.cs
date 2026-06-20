@@ -1,8 +1,8 @@
 using System.Text.Json;
-using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Matching;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using Microsoft.Extensions.Logging;
 
@@ -368,7 +368,7 @@ public sealed class EngineFallbackSearchService
                 continue;
             }
 
-            var score = ScoreAppleCandidate(item, request);
+            var score = ScoreAppleCandidate(id, item, request);
             if (score > bestScore)
             {
                 bestScore = score;
@@ -379,7 +379,7 @@ public sealed class EngineFallbackSearchService
         return bestScore >= 65 ? bestId : null;
     }
 
-    private static int ScoreAppleCandidate(JsonElement item, EngineFallbackSearchRequest request)
+    private static int ScoreAppleCandidate(string id, JsonElement item, EngineFallbackSearchRequest request)
     {
         if (!item.TryGetProperty("attributes", out var attrs)
             || attrs.ValueKind != JsonValueKind.Object)
@@ -396,62 +396,32 @@ public sealed class EngineFallbackSearchService
             ? parsedDuration
             : 0;
 
-        if (HasConflictingIsrc(request.Isrc, isrc))
+        var validation = TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                request.Isrc,
+                request.Title,
+                request.Artist,
+                request.Album,
+                request.DurationMs),
+            new TrackMatchCandidate(
+                id,
+                isrc,
+                title,
+                artist,
+                album,
+                durationInMillis > 0 ? durationInMillis : null),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: true,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: true,
+                MaxIsrcDurationDifferenceMs: 20_000,
+                MaxMetadataDurationDifferenceMs: 8_000));
+        if (!validation.Accepted)
         {
             return 0;
         }
 
-        var titleMatch = StrictTitlesMatch(request.Title, title);
-        var artistMatch = StrictArtistsMatch(request.Artist, artist);
-        if (!titleMatch || !artistMatch)
-        {
-            return 0;
-        }
-
-        var score = 0;
-        score += 60;
-        score += 30;
-        score += ScoreTextMatch(request.Album, album, 15);
-        score += ScoreMatchingIsrc(request.Isrc, isrc);
-        var durationScore = ScoreDuration(request.DurationMs, durationInMillis);
-        if (durationScore.Rejected)
-        {
-            return 0;
-        }
-
-        score += durationScore.Score;
-
-        return score;
-    }
-
-    private static bool HasConflictingIsrc(string? expectedIsrc, string? candidateIsrc)
-        => !string.IsNullOrWhiteSpace(expectedIsrc)
-           && !string.IsNullOrWhiteSpace(candidateIsrc)
-           && !string.Equals(expectedIsrc.Trim(), candidateIsrc.Trim(), StringComparison.OrdinalIgnoreCase);
-
-    private static int ScoreMatchingIsrc(string? expectedIsrc, string? candidateIsrc)
-        => !string.IsNullOrWhiteSpace(expectedIsrc)
-           && !string.IsNullOrWhiteSpace(candidateIsrc)
-           && string.Equals(expectedIsrc.Trim(), candidateIsrc.Trim(), StringComparison.OrdinalIgnoreCase)
-            ? 50
-            : 0;
-
-    private static (int Score, bool Rejected) ScoreDuration(int? expectedDurationMs, int candidateDurationMs)
-    {
-        if (!expectedDurationMs.HasValue || expectedDurationMs.Value <= 0 || candidateDurationMs <= 0)
-        {
-            return (0, false);
-        }
-
-        var diff = Math.Abs(expectedDurationMs.Value - candidateDurationMs);
-        return diff switch
-        {
-            <= 2000 => (10, false),
-            <= 5000 => (6, false),
-            <= 10000 => (3, false),
-            > 20000 => (0, true),
-            _ => (0, false)
-        };
+        return (int)Math.Round(validation.Score * 100d);
     }
 
     private async Task<SongLinkResult?> ResolveSongLinkFromDeezerAsync(
@@ -544,21 +514,27 @@ public sealed class EngineFallbackSearchService
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Isrc)
-            && !string.IsNullOrWhiteSpace(songLink.Isrc)
-            && !string.Equals(request.Isrc.Trim(), songLink.Isrc.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        if (!string.IsNullOrWhiteSpace(songLink.SourceTitle)
-            && !StrictTitlesMatch(request.Title, songLink.SourceTitle))
-        {
-            return null;
-        }
-
-        if (!string.IsNullOrWhiteSpace(songLink.SourceArtist)
-            && !StrictArtistsMatch(request.Artist, songLink.SourceArtist))
+        var validation = TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                request.Isrc,
+                request.Title,
+                request.Artist,
+                request.Album,
+                request.DurationMs),
+            new TrackMatchCandidate(
+                candidateUrl,
+                songLink.Isrc,
+                songLink.SourceTitle,
+                songLink.SourceArtist,
+                null,
+                null),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: true,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: false,
+                MaxIsrcDurationDifferenceMs: 20_000,
+                MaxMetadataDurationDifferenceMs: 8_000));
+        if (!validation.Accepted)
         {
             return null;
         }
@@ -702,52 +678,6 @@ public sealed class EngineFallbackSearchService
             .ToList();
     }
 
-    private static bool StrictTitlesMatch(string? expected, string? actual)
-    {
-        var normalizedExpected = CleanTitle(TrackTitleMatcher.NormalizeText(expected));
-        var normalizedActual = CleanTitle(TrackTitleMatcher.NormalizeText(actual));
-        return !string.IsNullOrWhiteSpace(normalizedExpected)
-            && normalizedExpected == normalizedActual;
-    }
-
-    private static bool StrictArtistsMatch(string? expected, string? actual)
-    {
-        return TrackTitleMatcher.StrictArtistsMatch(expected, actual);
-    }
-
-    private static int ScoreTextMatch(string? expected, string? actual, int maxScore)
-    {
-        if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(actual))
-        {
-            return 0;
-        }
-
-        var normalizedExpected = NormalizeForCompare(expected);
-        var normalizedActual = NormalizeForCompare(actual);
-        if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))
-        {
-            return 0;
-        }
-
-        if (string.Equals(normalizedExpected, normalizedActual, StringComparison.OrdinalIgnoreCase))
-        {
-            return maxScore;
-        }
-
-        var expectedTokens = normalizedExpected.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var actualTokens = normalizedActual.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (expectedTokens.Length == 0 || actualTokens.Length == 0)
-        {
-            return 0;
-        }
-
-        var overlap = expectedTokens.Intersect(actualTokens, StringComparer.OrdinalIgnoreCase).Count();
-        var denominator = Math.Max(expectedTokens.Length, actualTokens.Length);
-        return denominator <= 0 || overlap <= 0
-            ? 0
-            : (int)Math.Round((double)overlap / denominator * maxScore);
-    }
-
     private static string NormalizeForCompare(string value)
     {
         return new string(value
@@ -755,39 +685,6 @@ public sealed class EngineFallbackSearchService
             .Select(ch => char.IsLetterOrDigit(ch) || char.IsWhiteSpace(ch) ? ch : ' ')
             .ToArray())
             .Trim();
-    }
-
-    private static string CleanTitle(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        return value
-            .Replace(" feat ", " ", StringComparison.Ordinal)
-            .Replace(" ft ", " ", StringComparison.Ordinal)
-            .Replace(" featuring ", " ", StringComparison.Ordinal)
-            .Trim();
-    }
-
-    private static List<string> SplitArtists(string? normalized)
-    {
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return new List<string>();
-        }
-
-        return normalized
-            .Replace(" feat ", ",", StringComparison.Ordinal)
-            .Replace(" ft ", ",", StringComparison.Ordinal)
-            .Replace(" featuring ", ",", StringComparison.Ordinal)
-            .Replace(" x ", ",", StringComparison.Ordinal)
-            .Replace(" & ", ",", StringComparison.Ordinal)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(static part => !string.IsNullOrWhiteSpace(part))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
     }
 
     private static string? TryReadString(JsonElement node, string propertyName)

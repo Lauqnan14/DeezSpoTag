@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Integrations.Qobuz;
+using DeezSpoTag.Services.Matching;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -340,28 +341,29 @@ public sealed class QobuzTrackResolver
             return null;
         }
 
-        var hasStrictTitle = StrictTitlesMatch(expectedTitle, bestTrack.Title);
-        var hasStrictArtist = StrictArtistsMatch(expectedArtist, GetTrackArtist(bestTrack));
-        var accepted = IsAcceptedResolvedTrack(new QobuzTrackAcceptanceInput(
-            bestTrack,
-            expectedIsrc,
-            expectedTitle,
-            expectedArtist,
-            expectedAlbum,
-            expectedDurationSec,
-            bestScore,
-            hasStrictTitle,
-            hasStrictArtist));
-        if (!accepted)
+        var validation = TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                expectedIsrc,
+                expectedTitle,
+                expectedArtist,
+                expectedAlbum,
+                expectedDurationSec > 0 ? expectedDurationSec * 1000 : null),
+            BuildTrackMatchCandidate(bestTrack),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: true,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: true,
+                MaxIsrcDurationDifferenceMs: 20_000,
+                MaxMetadataDurationDifferenceMs: 8_000));
+        if (!validation.Accepted)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(
-                    "Rejected Qobuz candidate id={TrackId} score={Score} titleMatch={TitleMatch} artistMatch={ArtistMatch}",
+                    "Rejected Qobuz candidate id={TrackId} reason={Reason} score={Score}",
                     bestTrack.Id,
-                    bestScore,
-                    hasStrictTitle,
-                    hasStrictArtist);
+                    validation.Reason,
+                    bestScore);
             }
             return null;
         }
@@ -377,64 +379,33 @@ public sealed class QobuzTrackResolver
         int expectedDurationSec,
         int score)
     {
-        if (!StrictTitlesMatch(expectedTitle, candidate.Title)
-            || !StrictArtistsMatch(expectedArtist, GetTrackArtist(candidate)))
-        {
-            return false;
-        }
-
-        if (expectedDurationSec > 0)
-        {
-            if (candidate.Duration <= 0)
-            {
-                return false;
-            }
-
-            if (Math.Abs(candidate.Duration - expectedDurationSec) > 10)
-            {
-                return false;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(expectedAlbum)
-            && !string.IsNullOrWhiteSpace(candidate.Album?.Title)
-            && !StrictAlbumMatches(expectedAlbum, candidate.Album.Title))
-        {
-            return false;
-        }
-
-        return score >= 14;
-    }
-
-    private sealed record QobuzTrackAcceptanceInput(
-        QobuzTrack Candidate,
-        string? ExpectedIsrc,
-        string? ExpectedTitle,
-        string? ExpectedArtist,
-        string? ExpectedAlbum,
-        int ExpectedDurationSec,
-        int BestScore,
-        bool HasStrictTitle,
-        bool HasStrictArtist);
-
-    private static bool IsAcceptedResolvedTrack(QobuzTrackAcceptanceInput input)
-    {
-        if (!string.IsNullOrWhiteSpace(input.ExpectedIsrc))
-        {
-            return input.BestScore >= (input.HasStrictTitle ? 11 : 8) && input.HasStrictArtist;
-        }
-
-        return HasAuthoritativeMetadataMatch(
-            input.Candidate,
-            input.ExpectedTitle,
-            input.ExpectedArtist,
-            input.ExpectedAlbum,
-            input.ExpectedDurationSec,
-            input.BestScore);
+        var validation = TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                null,
+                expectedTitle,
+                expectedArtist,
+                expectedAlbum,
+                expectedDurationSec > 0 ? expectedDurationSec * 1000 : null),
+            BuildTrackMatchCandidate(candidate),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: true,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: true,
+                MaxMetadataDurationDifferenceMs: 8_000));
+        return validation.Accepted && score >= 14;
     }
 
     private static QobuzTrackResolution BuildResolution(QobuzTrack track, string source, int score)
         => new(track, source, score);
+
+    private static TrackMatchCandidate BuildTrackMatchCandidate(QobuzTrack track)
+        => new(
+            track.Id > 0 ? track.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty,
+            track.ISRC,
+            track.Title,
+            GetTrackArtist(track),
+            track.Album?.Title,
+            track.Duration > 0 ? track.Duration * 1000 : null);
 
     private static int ScoreCandidate(
         QobuzTrack candidate,
@@ -683,22 +654,9 @@ public sealed class QobuzTrackResolver
             || cleanActual.Contains(cleanExpected, StringComparison.Ordinal);
     }
 
-    private static bool StrictTitlesMatch(string? expected, string? actual)
-    {
-        var normalizedExpected = NormalizeStrictComparableTitle(expected);
-        var normalizedActual = NormalizeStrictComparableTitle(actual);
-        return !string.IsNullOrWhiteSpace(normalizedExpected)
-            && normalizedExpected == normalizedActual;
-    }
-
     private static bool ArtistsMatch(string? expected, string? actual)
     {
         return TrackTitleMatcher.ArtistsMatch(expected, actual);
-    }
-
-    private static bool StrictArtistsMatch(string? expected, string? actual)
-    {
-        return TrackTitleMatcher.StrictArtistsMatch(expected, actual);
     }
 
     private static bool AlbumMatches(string? expected, string? actual)
@@ -718,27 +676,6 @@ public sealed class QobuzTrackResolver
         return normalizedExpected == normalizedActual
             || normalizedExpected.Contains(normalizedActual, StringComparison.Ordinal)
             || normalizedActual.Contains(normalizedExpected, StringComparison.Ordinal);
-    }
-
-    private static bool StrictAlbumMatches(string? expected, string? actual)
-    {
-        var normalizedExpected = NormalizeStrictComparableTitle(expected);
-        var normalizedActual = NormalizeStrictComparableTitle(actual);
-        return !string.IsNullOrWhiteSpace(normalizedExpected)
-            && !string.IsNullOrWhiteSpace(normalizedActual)
-            && string.Equals(normalizedExpected, normalizedActual, StringComparison.Ordinal);
-    }
-
-    private static string NormalizeStrictComparableTitle(string? value)
-    {
-        var normalized = CleanTitle(TrackTitleMatcher.NormalizeText(value));
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return string.Empty;
-        }
-
-        normalized = Regex.Replace(normalized, @"[^\p{L}\p{Nd}]+", " ", RegexOptions.None, RegexTimeout);
-        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout).Trim();
     }
 
     private static string GetTrackArtist(QobuzTrack track)
@@ -778,23 +715,6 @@ public sealed class QobuzTrackResolver
         }
     }
 
-    private static List<string> SplitArtists(string artists)
-    {
-        var normalized = artists
-            .Replace(" feat. ", "|", StringComparison.Ordinal)
-            .Replace(" feat ", "|", StringComparison.Ordinal)
-            .Replace(" ft. ", "|", StringComparison.Ordinal)
-            .Replace(" ft ", "|", StringComparison.Ordinal)
-            .Replace(" & ", "|", StringComparison.Ordinal)
-            .Replace(", ", "|", StringComparison.Ordinal)
-            .Replace(" and ", "|", StringComparison.Ordinal);
-
-        return normalized
-            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-    }
 }
 
 public sealed record QobuzTrackResolution(QobuzTrack Track, string Source, int Score);

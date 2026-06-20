@@ -1,13 +1,11 @@
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Core.Models.Deezer;
-using DeezSpoTag.Core.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Matching;
 
 public sealed class TrackMatchService
 {
-    private const int DurationToleranceMs = 2000;
     private const int SearchLimit = 10;
     private readonly DeezerClient _deezerClient;
     private readonly ILogger<TrackMatchService> _logger;
@@ -24,7 +22,7 @@ public sealed class TrackMatchService
 
         if (!string.IsNullOrWhiteSpace(identity.Isrc))
         {
-            var isrcMatch = await TryMatchByIsrcAsync(identity.Isrc);
+            var isrcMatch = await TryMatchByIsrcAsync(identity);
             if (isrcMatch != null)
             {
                 return isrcMatch;
@@ -33,7 +31,8 @@ public sealed class TrackMatchService
             // ISRC present but no match found: do not fallback to metadata search.
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("No Deezer ISRC match for {Isrc}; skipping metadata fallback", identity.Isrc);            }
+                _logger.LogDebug("No Deezer ISRC match for {Isrc}; skipping metadata fallback", identity.Isrc);
+            }
             return null;
         }
 
@@ -45,12 +44,18 @@ public sealed class TrackMatchService
         return await TryMatchByMetadataAsync(identity);
     }
 
-    private async Task<MatchResult?> TryMatchByIsrcAsync(string isrc)
+    private async Task<MatchResult?> TryMatchByIsrcAsync(TrackIdentity identity)
     {
         try
         {
-            var track = await _deezerClient.GetTrackByIsrcAsync(isrc);
+            var track = await _deezerClient.GetTrackByIsrcAsync(identity.Isrc);
             if (!IsValidTrack(track))
+            {
+                return null;
+            }
+
+            var validation = ValidateCandidate(identity, track);
+            if (!validation.Accepted)
             {
                 return null;
             }
@@ -67,7 +72,8 @@ public sealed class TrackMatchService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", isrc);            }
+                _logger.LogDebug(ex, "Deezer ISRC lookup failed for {Isrc}", identity.Isrc);
+            }
             return null;
         }
     }
@@ -101,12 +107,8 @@ public sealed class TrackMatchService
                     continue;
                 }
 
-                if (!IsTitleArtistMatch(identity, track))
-                {
-                    continue;
-                }
-
-                if (!IsDurationMatch(identity.DurationMs, track.Duration))
+                var validation = ValidateCandidate(identity, track);
+                if (!validation.Accepted)
                 {
                     continue;
                 }
@@ -132,7 +134,8 @@ public sealed class TrackMatchService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer metadata match failed for {Title} - {Artist}", identity.Title, identity.Artist);            }
+                _logger.LogDebug(ex, "Deezer metadata match failed for {Title} - {Artist}", identity.Title, identity.Artist);
+            }
             return null;
         }
     }
@@ -142,23 +145,29 @@ public sealed class TrackMatchService
         return track != null && !string.IsNullOrWhiteSpace(track.Id);
     }
 
-    private static bool IsTitleArtistMatch(TrackIdentity identity, ApiTrack track)
-    {
-        var candidateTitle = BuildCandidateTitle(track);
-        return TrackTitleMatcher.TitlesMatch(identity.Title, candidateTitle)
-            && TrackTitleMatcher.ArtistsMatch(identity.Artist, track.Artist?.Name ?? "");
-    }
-
-    private static bool IsDurationMatch(int? durationMs, int durationSeconds)
-    {
-        if (!durationMs.HasValue || durationSeconds <= 0)
-        {
-            return true;
-        }
-
-        var delta = Math.Abs(durationMs.Value - (durationSeconds * 1000));
-        return delta <= DurationToleranceMs;
-    }
+    private static TrackCandidateValidationResult ValidateCandidate(
+        TrackIdentity identity,
+        ApiTrack track)
+        => TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                identity.Isrc,
+                identity.Title,
+                identity.Artist,
+                identity.Album,
+                identity.DurationMs),
+            new TrackMatchCandidate(
+                track.Id,
+                track.Isrc,
+                BuildCandidateTitle(track),
+                track.Artist?.Name,
+                track.Album?.Title,
+                track.Duration > 0 ? track.Duration * 1000 : null),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: true,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: true,
+                MaxIsrcDurationDifferenceMs: 20_000,
+                MaxMetadataDurationDifferenceMs: 8_000));
 
     private static string Normalize(string value)
     {
