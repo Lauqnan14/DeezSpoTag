@@ -2100,50 +2100,19 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     }
 
     private static IEnumerable<JsonElement> ExpandContentCandidates(JsonElement contentData)
-    {
-        yield return contentData;
-
-        if (contentData.ValueKind == JsonValueKind.Object &&
-            contentData.TryGetProperty(DataKey, out var inner) &&
-            inner.ValueKind == JsonValueKind.Object)
-        {
-            yield return inner;
-
-            if (inner.TryGetProperty(DataKey, out var innerData) &&
-                innerData.ValueKind == JsonValueKind.Object)
-            {
-                yield return innerData;
-            }
-        }
-    }
+        => SpotifyContentCandidates.Expand(contentData);
 
     private static string? TryGetStringFromCandidates(IEnumerable<JsonElement> candidates, params string[] path)
-    {
-        return candidates
-            .Select(candidate => TryGetString(candidate, path))
-            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-    }
+        => SpotifyContentCandidates.FirstString(candidates, candidate => TryGetString(candidate, path));
 
     private static string? TryGetStringAtFromCandidates(IEnumerable<JsonElement> candidates, params object[] path)
-    {
-        return candidates
-            .Select(candidate => TryGetStringAt(candidate, path))
-            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-    }
+        => SpotifyContentCandidates.FirstString(candidates, candidate => TryGetStringAt(candidate, path));
 
     private static int? TryGetIntAtFromCandidates(IEnumerable<JsonElement> candidates, params object[] path)
-    {
-        return candidates
-            .Select(candidate => TryGetIntAt(candidate, path))
-            .FirstOrDefault(value => value.HasValue);
-    }
+        => SpotifyContentCandidates.FirstValue(candidates, candidate => TryGetIntAt(candidate, path));
 
     private static bool? TryGetBoolAtFromCandidates(IEnumerable<JsonElement> candidates, params object[] path)
-    {
-        return candidates
-            .Select(candidate => TryGetBoolAt(candidate, path))
-            .FirstOrDefault(value => value.HasValue);
-    }
+        => SpotifyContentCandidates.FirstValue(candidates, candidate => TryGetBoolAt(candidate, path));
 
     private static List<object> BuildHomeFeedDiagnostics(JsonDocument doc)
     {

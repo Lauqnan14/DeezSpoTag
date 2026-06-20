@@ -2985,18 +2985,17 @@ namespace DeezSpoTag.Web.Controllers
             string token,
             CancellationToken cancellationToken)
         {
-            var root = await FetchTidalJsonAsync($"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(artistId)}/toptracks?countryCode={Uri.EscapeDataString(countryCode)}&limit=30&offset=0", token, cancellationToken);
-            if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+            var response = await FetchTidalArrayAsync(
+                $"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(artistId)}/toptracks?countryCode={Uri.EscapeDataString(countryCode)}&limit=30&offset=0",
+                "items",
+                token,
+                cancellationToken);
+            if (!response.HasValue)
             {
                 return new List<Dictionary<string, object>>();
             }
 
-            if (!root.Value.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
-            {
-                return new List<Dictionary<string, object>>();
-            }
-
-            return items.EnumerateArray()
+            return response.Value.Items.EnumerateArray()
                 .Select(BuildTidalTopTrackEntry)
                 .Where(static item => item != null)
                 .ToList()!;
@@ -3008,19 +3007,18 @@ namespace DeezSpoTag.Web.Controllers
             string token,
             CancellationToken cancellationToken)
         {
-            var root = await FetchTidalJsonAsync($"https://openapi.tidal.com/v2/artists/{Uri.EscapeDataString(artistId)}/relationships/similarArtists?countryCode={Uri.EscapeDataString(countryCode)}&include=similarArtists,similarArtists.profileArt", token, cancellationToken);
-            if (!root.HasValue || root.Value.ValueKind != JsonValueKind.Object)
+            var response = await FetchTidalArrayAsync(
+                $"https://openapi.tidal.com/v2/artists/{Uri.EscapeDataString(artistId)}/relationships/similarArtists?countryCode={Uri.EscapeDataString(countryCode)}&include=similarArtists,similarArtists.profileArt",
+                "data",
+                token,
+                cancellationToken);
+            if (!response.HasValue)
             {
                 return new List<Dictionary<string, object>>();
             }
 
-            if (!root.Value.TryGetProperty("data", out var items) || items.ValueKind != JsonValueKind.Array)
-            {
-                return new List<Dictionary<string, object>>();
-            }
-
-            var included = BuildTidalOpenApiIncludedMap(root.Value);
-            return items.EnumerateArray()
+            var included = BuildTidalOpenApiIncludedMap(response.Value.Root);
+            return response.Value.Items.EnumerateArray()
                 .Select(item => BuildTidalOpenApiRelatedArtistEntry(item, included))
                 .Where(static item => item != null)
                 .ToList()!;
@@ -3057,6 +3055,24 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             return videos;
+        }
+
+        private async Task<(JsonElement Root, JsonElement Items)?> FetchTidalArrayAsync(
+            string url,
+            string arrayProperty,
+            string token,
+            CancellationToken cancellationToken)
+        {
+            var root = await FetchTidalJsonAsync(url, token, cancellationToken);
+            if (!root.HasValue
+                || root.Value.ValueKind != JsonValueKind.Object
+                || !root.Value.TryGetProperty(arrayProperty, out var items)
+                || items.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            return (root.Value, items);
         }
 
         private async Task<JsonElement?> FetchTidalJsonAsync(string url, string token, CancellationToken cancellationToken)

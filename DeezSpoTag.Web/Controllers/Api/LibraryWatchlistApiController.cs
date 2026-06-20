@@ -483,26 +483,7 @@ public class LibraryWatchlistApiController : ControllerBase
     }
 
     private async Task<HashSet<long>> GetValidFolderIdsAsync(CancellationToken cancellationToken)
-    {
-        var state = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
-        return state.FoldersById.Values
-            .Where(folder => IsWatchlistMusicDestinationFolder(folder)
-                && AutoTagProfileResolutionService.ResolveFolderProfile(state, folder.Id, folder.AutoTagProfileId) != null)
-            .Select(folder => folder.Id)
-            .ToHashSet();
-    }
-
-    private static bool IsWatchlistMusicDestinationFolder(FolderDto folder)
-    {
-        if (!folder.Enabled || string.IsNullOrWhiteSpace(folder.RootPath))
-        {
-            return false;
-        }
-
-        var desiredQuality = folder.DesiredQuality?.Trim().ToLowerInvariant() ?? string.Empty;
-        return !desiredQuality.Contains("video", StringComparison.Ordinal)
-            && !desiredQuality.Contains("podcast", StringComparison.Ordinal);
-    }
+        => await WatchlistDestinationFolderResolver.GetValidFolderIdsAsync(_profileResolutionService, cancellationToken);
 
     private IActionResult CreateAddedResponse(string artistName, object? addedEntry)
     {

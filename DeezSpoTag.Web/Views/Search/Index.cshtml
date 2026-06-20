@@ -3065,113 +3065,13 @@ async function updateLibraryStatusForTracks(items, source) {
     }
 }
 
-let searchHlsLibraryPromise = null;
-
-function loadSearchHlsLibraryAsync() {
-    if (window.Hls) {
-        return Promise.resolve(window.Hls);
-    }
-    if (searchHlsLibraryPromise) {
-        return searchHlsLibraryPromise;
-    }
-
-    searchHlsLibraryPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
-        script.async = true;
-        script.onload = () => resolve(window.Hls || null);
-        script.onerror = () => reject(new Error('Failed to load HLS player.'));
-        document.head.appendChild(script);
-    });
-    return searchHlsLibraryPromise;
-}
-
-function toSafePreviewUrl(url) {
-    const raw = String(url || '').trim();
-    if (!raw) return '';
-    if (raw.startsWith('/api/tidal/download/videos/preview')) {
-        return raw;
-    }
-    try {
-        const parsed = new URL(raw, window.location.origin);
-        return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : '';
-    } catch {
-        return '';
-    }
-}
-
-async function configureSearchVideoPreviewSource(video, safeUrl) {
-    const isHlsCandidate = safeUrl.includes('.m3u8') || safeUrl.includes('/api/tidal/download/videos/preview');
-    if (!isHlsCandidate) {
-        video.src = safeUrl;
-        return;
-    }
-
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = safeUrl;
-        return;
-    }
-
-    try {
-        const Hls = await loadSearchHlsLibraryAsync();
-        if (Hls?.isSupported?.()) {
-            const hls = new Hls();
-            video._hls = hls;
-            hls.loadSource(safeUrl);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                video.play().catch(() => {});
-            });
-            hls.on(Hls.Events.ERROR, (_event, data) => {
-                if (data?.fatal) {
-                    hls.destroy();
-                    video._hls = null;
-                    if (window.DeezSpoTag?.ui?.showToast) {
-                        window.DeezSpoTag.ui.showToast('Video preview failed.', { type: 'error' });
-                    }
-                }
-            });
-            return;
-        }
-    } catch (err) {
-        console.error('HLS preview setup failed', err);
-    }
-
-    video.src = safeUrl;
-}
-
 async function playVideoPreview(url) {
     if (!url) return;
-    const safeUrl = toSafePreviewUrl(url);
-    if (!safeUrl) {
-        if (window.DeezSpoTag?.ui?.showToast) {
-            window.DeezSpoTag.ui.showToast('Invalid preview URL.', { type: 'error' });
-        }
-        return;
-    }
-    const video = document.createElement('video');
-    video.controls = true;
-    video.autoplay = true;
-    video.playsInline = true;
-    video.style.width = '100%';
-    video.style.maxHeight = '70vh';
-
-    if (window.DeezSpoTag?.ui?.showModal) {
-        window.DeezSpoTag.ui.showModal({
-            title: 'Preview',
-            message: '',
-            contentElement: video,
-            buttons: [{ label: 'Close', value: true, primary: true }]
-        });
-    } else {
-        const w = window.open('', '_blank', 'noopener,width=640,height=360');
-        if (w) {
-            w.document.write('<title>Preview</title>');
-            w.document.body.appendChild(video);
-        }
-    }
-
-    await configureSearchVideoPreviewSource(video, safeUrl);
+    await window.DeezSpoTagVideoPreview.play(url, {
+        catchSetupError: true,
+        onInvalidUrl: () => window.DeezSpoTag?.ui?.showToast?.('Invalid preview URL.', { type: 'error' }),
+        onPlaybackError: () => window.DeezSpoTag?.ui?.showToast?.('Video preview failed.', { type: 'error' })
+    });
 }
 
 async function downloadAppleVideo(appleUrl, hasAtmos = false) {

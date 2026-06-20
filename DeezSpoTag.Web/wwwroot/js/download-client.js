@@ -1143,6 +1143,26 @@ DeezSpoTag.DownloadClient = {
         }
         return response.json();
     },
+    handleIntentTerminalResult(result, context, linkType, failureMessage) {
+        const reasonCodes = this.getReasonCodes(result);
+        const message = this.resolveApiMessage(result, 'Item was not queued.');
+        if (!this.isSkipReason(reasonCodes, message)) {
+            throw this.buildResultError(result, failureMessage);
+        }
+
+        const resolvedMessage = this.resolveSkipToastMessage(reasonCodes, message);
+        context.notify(resolvedMessage, 'warning');
+        this.logDownloadEvent('info', message);
+        this.removePendingQueueIfNeeded(context.url, context.bitrate, context.destinationId, context.options);
+        return {
+            success: false,
+            skipped: true,
+            skipCategory: this.classifySkipReason(reasonCodes, message),
+            errorMessage: message,
+            reasonCodes,
+            linkType
+        };
+    },
     handleAppleIntentResult(result, context, metadata) {
         const resolvedEngine = this.resolveEngine(result.engine, metadata?.sourceService || 'apple');
         const preferredLinkType = result.engine || context.intentContext.preferredEngine || 'apple';
@@ -1167,24 +1187,7 @@ DeezSpoTag.DownloadClient = {
         });
         if (deferredResult) return deferredResult;
 
-        const reasonCodes = this.getReasonCodes(result);
-        const message = this.resolveApiMessage(result, 'Item was not queued.');
-        if (this.isSkipReason(reasonCodes, message)) {
-            const resolvedMessage = this.resolveSkipToastMessage(reasonCodes, message);
-            context.notify(resolvedMessage, 'warning');
-            this.logDownloadEvent('info', message);
-            this.removePendingQueueIfNeeded(context.url, context.bitrate, context.destinationId, context.options);
-            return {
-                success: false,
-                skipped: true,
-                skipCategory: this.classifySkipReason(reasonCodes, message),
-                errorMessage: message,
-                reasonCodes,
-                linkType: preferredLinkType
-            };
-        }
-
-        throw this.buildResultError(result, 'Failed to add to queue');
+        return this.handleIntentTerminalResult(result, context, preferredLinkType, 'Failed to add to queue');
     },
     async tryHandleAppleDownload(context) {
         if (!this.isAppleUrl(context.url)) {
@@ -1375,24 +1378,11 @@ DeezSpoTag.DownloadClient = {
         });
         if (deferredResult) return deferredResult;
 
-        const reasonCodes = this.getReasonCodes(result);
-        const message = this.resolveApiMessage(result, 'Item was not queued.');
-        if (this.isSkipReason(reasonCodes, message)) {
-            const resolvedMessage = this.resolveSkipToastMessage(reasonCodes, message);
-            context.notify(resolvedMessage, 'warning');
-            this.logDownloadEvent('info', message);
-            this.removePendingQueueIfNeeded(context.url, context.bitrate, context.destinationId, context.options);
-            return {
-                success: false,
-                skipped: true,
-                skipCategory: this.classifySkipReason(reasonCodes, message),
-                errorMessage: message,
-                reasonCodes,
-                linkType: result.engine || 'spotify'
-            };
-        }
-
-        throw this.buildResultError(result, 'Failed to add to queue');
+        return this.handleIntentTerminalResult(
+            result,
+            context,
+            result.engine || 'spotify',
+            'Failed to add to queue');
     },
     async executeAddToQueueBySource(context) {
         const backgroundIntentResult = await this.tryHandleBackgroundIntent(context);

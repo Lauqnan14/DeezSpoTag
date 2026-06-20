@@ -302,26 +302,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private static async Task<HashSet<long>> ResolveWatchlistDestinationFolderIdsAsync(
         AutoTagProfileResolutionService profileResolutionService,
         CancellationToken cancellationToken)
-    {
-        var state = await profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
-        return state.FoldersById.Values
-            .Where(folder => IsWatchlistMusicDestinationFolder(folder)
-                && AutoTagProfileResolutionService.ResolveFolderProfile(state, folder.Id, folder.AutoTagProfileId) != null)
-            .Select(folder => folder.Id)
-            .ToHashSet();
-    }
-
-    private static bool IsWatchlistMusicDestinationFolder(FolderDto folder)
-    {
-        if (!folder.Enabled || string.IsNullOrWhiteSpace(folder.RootPath))
-        {
-            return false;
-        }
-
-        var desiredQuality = folder.DesiredQuality?.Trim().ToLowerInvariant() ?? string.Empty;
-        return !desiredQuality.Contains("video", StringComparison.Ordinal)
-            && !desiredQuality.Contains("podcast", StringComparison.Ordinal);
-    }
+        => await WatchlistDestinationFolderResolver.GetValidFolderIdsAsync(profileResolutionService, cancellationToken);
 
     private static List<WatchItem> BuildCombinedWatchItems(
         IReadOnlyList<WatchItem> playlistItems,

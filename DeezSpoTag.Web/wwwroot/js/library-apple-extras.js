@@ -991,95 +991,13 @@ function isSpotifySourceUrl(url) {
     }
 }
 
-let hlsLibraryPromise = null;
-
-function loadHlsLibraryAsync() {
-    if (globalThis.Hls) {
-        return Promise.resolve(globalThis.Hls);
-    }
-    if (hlsLibraryPromise) {
-        return hlsLibraryPromise;
-    }
-
-    hlsLibraryPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js';
-        script.async = true;
-        script.onload = () => resolve(globalThis.Hls || null);
-        script.onerror = () => reject(new Error('Failed to load HLS player.'));
-        document.head.appendChild(script);
-    });
-    return hlsLibraryPromise;
-}
-
-async function configureVideoPreviewSource(video, safeUrl) {
-    const isHlsCandidate = safeUrl.includes('.m3u8') || safeUrl.includes('/api/tidal/download/videos/preview');
-    if (!isHlsCandidate) {
-        video.src = safeUrl;
-        return;
-    }
-
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = safeUrl;
-        return;
-    }
-
-    try {
-        const Hls = await loadHlsLibraryAsync();
-        if (Hls?.isSupported?.()) {
-            const hls = new Hls();
-            video._hls = hls;
-            hls.loadSource(safeUrl);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                video.play().catch(() => {});
-            });
-            hls.on(Hls.Events.ERROR, (_event, data) => {
-                if (data?.fatal) {
-                    hls.destroy();
-                    video._hls = null;
-                    showToast('Video preview failed.', true);
-                }
-            });
-            return;
-        }
-    } catch (err) {
-        console.error('HLS preview setup failed', err);
-    }
-
-    video.src = safeUrl;
-}
-
 async function playVideoPreview(url) {
     if (!url) return;
-    const safeUrl = toSafeHttpUrl(url);
-    if (!safeUrl) {
-        showToast('Invalid preview URL.', true);
-        return;
-    }
-    const video = document.createElement('video');
-    video.controls = true;
-    video.autoplay = true;
-    video.playsInline = true;
-    video.style.width = '100%';
-    video.style.maxHeight = '70vh';
-
-    if (globalThis.DeezSpoTag?.ui?.showModal) {
-        globalThis.DeezSpoTag.ui.showModal({
-            title: 'Preview',
-            message: '',
-            contentElement: video,
-            buttons: [{ label: 'Close', value: true, primary: true }]
-        });
-    } else {
-        const w = globalThis.open('', '_blank', 'noopener,width=640,height=360');
-        if (w) {
-            w.document.title = 'Preview';
-            w.document.body.appendChild(video);
-        }
-    }
-
-    await configureVideoPreviewSource(video, safeUrl);
+    await globalThis.DeezSpoTagVideoPreview.play(url, {
+        catchSetupError: true,
+        onInvalidUrl: () => showToast('Invalid preview URL.', true),
+        onPlaybackError: () => showToast('Video preview failed.', true)
+    });
 }
 
 async function downloadAppleVideo(appleUrl, options = null) {

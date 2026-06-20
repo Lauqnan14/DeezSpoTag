@@ -777,46 +777,10 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         string playlistId,
         string token,
         CancellationToken cancellationToken)
-    {
-        var tracks = new List<object>();
-        var offset = 0;
-        var total = int.MaxValue;
-        var position = 0;
-
-        while (offset < total)
-        {
-            using var response = await SendTidalRequestAsync(
-                $"https://api.tidal.com/v1/playlists/{Uri.EscapeDataString(playlistId)}/items?countryCode=US&limit={DefaultPageSize}&offset={offset}",
-                token,
-                cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                break;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var root = doc.RootElement;
-
-            total = ResolveTidalTotalCount(root, total);
-            if (!TryGetTidalItems(root, out var itemsElement))
-            {
-                break;
-            }
-
-            var appended = AppendTidalTracks(itemsElement, tracks, ref position);
-
-            if (appended == 0)
-            {
-                break;
-            }
-
-            offset += itemsElement.GetArrayLength();
-        }
-
-        return tracks;
-    }
+        => await FetchTidalTracksAsync(
+            $"playlists/{Uri.EscapeDataString(playlistId)}/items",
+            token,
+            cancellationToken);
 
     private async Task<JsonElement?> FetchTidalEntityAsync(
         string endpoint,
@@ -843,6 +807,15 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         string albumId,
         string token,
         CancellationToken cancellationToken)
+        => await FetchTidalTracksAsync(
+            $"albums/{Uri.EscapeDataString(albumId)}/tracks",
+            token,
+            cancellationToken);
+
+    private async Task<List<object>> FetchTidalTracksAsync(
+        string endpoint,
+        string token,
+        CancellationToken cancellationToken)
     {
         var tracks = new List<object>();
         var offset = 0;
@@ -852,7 +825,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         while (offset < total)
         {
             using var response = await SendTidalRequestAsync(
-                $"https://api.tidal.com/v1/albums/{Uri.EscapeDataString(albumId)}/tracks?countryCode=US&limit={DefaultPageSize}&offset={offset}",
+                $"https://api.tidal.com/v1/{endpoint}?countryCode=US&limit={DefaultPageSize}&offset={offset}",
                 token,
                 cancellationToken);
 
@@ -1166,36 +1139,19 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     }
 
     private static string ResolveTidalPlaylistId(string? id, string? url)
-    {
-        var explicitId = (id ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(explicitId) && explicitId.Contains('-'))
-        {
-            return explicitId;
-        }
-
-        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return explicitId;
-        }
-
-        var segments = uri.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        for (var i = 0; i < segments.Length - 1; i++)
-        {
-            if (segments[i].Equals("playlist", StringComparison.OrdinalIgnoreCase))
-            {
-                return segments[i + 1];
-            }
-        }
-
-        return explicitId;
-    }
+        => ResolveTidalEntityId(id, url, "playlist", static value => value.Contains('-'));
 
     private static string ResolveTidalEntityId(string? id, string? url, string entityType)
+        => ResolveTidalEntityId(id, url, entityType, static value => value.All(char.IsDigit));
+
+    private static string ResolveTidalEntityId(
+        string? id,
+        string? url,
+        string entityType,
+        Func<string, bool> isExplicitIdValid)
     {
         var explicitId = (id ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(explicitId) && explicitId.All(char.IsDigit))
+        if (!string.IsNullOrWhiteSpace(explicitId) && isExplicitIdValid(explicitId))
         {
             return explicitId;
         }
@@ -1220,31 +1176,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     }
 
     private static string ResolveTidalMixId(string? id, string? url)
-    {
-        var explicitId = (id ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(explicitId))
-        {
-            return explicitId;
-        }
-
-        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return explicitId;
-        }
-
-        var segments = uri.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        for (var i = 0; i < segments.Length - 1; i++)
-        {
-            if (segments[i].Equals("mix", StringComparison.OrdinalIgnoreCase))
-            {
-                return segments[i + 1];
-            }
-        }
-
-        return explicitId;
-    }
+        => ResolveTidalEntityId(id, url, "mix", static _ => true);
 
     private async Task<string> FetchHtmlAsync(string url, CancellationToken cancellationToken)
     {

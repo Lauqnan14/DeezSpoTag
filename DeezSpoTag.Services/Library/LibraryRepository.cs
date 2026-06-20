@@ -4628,17 +4628,7 @@ WHERE mix_id = @mixId
             return null;
         }
 
-        var coverJson = await reader.IsDBNullAsync(5, cancellationToken) ? "[]" : reader.GetString(5);
-        var covers = System.Text.Json.JsonSerializer.Deserialize<List<string>>(coverJson) ?? new List<string>();
-        return new MixSummaryDto(
-            reader.GetString(1),
-            reader.GetString(2),
-            await reader.IsDBNullAsync(3, cancellationToken) ? string.Empty : reader.GetString(3),
-            reader.GetInt32(4),
-            covers,
-            ParseDateTimeOffsetInvariant(reader.GetString(6)),
-            ParseDateTimeOffsetInvariant(reader.GetString(7)),
-            libraryId);
+        return await ReadMixSummaryAsync(reader, libraryId, cancellationToken);
     }
 
     public async Task<IReadOnlyList<MixSummaryDto>> GetGeneratedMixCachesAsync(long plexUserId, long libraryId, CancellationToken cancellationToken = default)
@@ -4693,24 +4683,7 @@ ORDER BY generated_at_utc DESC, id DESC;";
             return null;
         }
 
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-SELECT id, mix_id, name, description, track_count, cover_urls_json, generated_at_utc, expires_at_utc
-FROM mix_cache
-WHERE mix_id = @mixId
-  AND plex_user_id = @plexUserId
-  AND library_id = @libraryId;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("mixId", mixId);
-        command.Parameters.AddWithValue("plexUserId", plexUserId);
-        command.Parameters.AddWithValue(LibraryIdField, libraryId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            return null;
-        }
-
-        return await ReadMixSummaryAsync(reader, libraryId, cancellationToken);
+        return await GetMixCacheAsync(mixId, plexUserId, libraryId, cancellationToken);
     }
 
     public async Task<long?> GetMixCacheIdAsync(string mixId, long plexUserId, long libraryId, CancellationToken cancellationToken = default)
@@ -7838,14 +7811,7 @@ ORDER BY source, source_id, track_source_id;";
         var claims = new List<PlaylistWatchDownloadClaimDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            claims.Add(new PlaylistWatchDownloadClaimDto(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt64(4),
-                reader.GetString(5),
-                await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6))));
+            claims.Add(await ReadPlaylistWatchDownloadClaimAsync(reader, cancellationToken));
         }
 
         return claims;
@@ -7878,17 +7844,26 @@ ORDER BY track_source_id, queue_uuid;";
         var claims = new List<PlaylistWatchDownloadClaimDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            claims.Add(new PlaylistWatchDownloadClaimDto(
-                reader.GetString(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt64(4),
-                reader.GetString(5),
-                await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6))));
+            claims.Add(await ReadPlaylistWatchDownloadClaimAsync(reader, cancellationToken));
         }
 
         return claims;
+    }
+
+    private static async Task<PlaylistWatchDownloadClaimDto> ReadPlaylistWatchDownloadClaimAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+    {
+        return new PlaylistWatchDownloadClaimDto(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt64(4),
+            reader.GetString(5),
+            await reader.IsDBNullAsync(6, cancellationToken)
+                ? DateTimeOffset.MinValue
+                : ParseDateTimeOffsetInvariant(reader.GetString(6)));
     }
 
     public async Task<int> UpdatePlaylistWatchDownloadClaimStatusAsync(

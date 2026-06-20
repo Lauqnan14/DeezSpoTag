@@ -6120,15 +6120,16 @@ function initTidalIdEditor(artistIdValue) {
     });
 }
 
-async function resolveAndStoreTidalArtistId(artistIdValue, artistName) {
+async function resolveAndStoreArtistPlatformId(artistIdValue, artistName, platform) {
     const normalizedArtistId = String(artistIdValue || '').trim();
     const term = String(artistName || '').trim();
-    if (!normalizedArtistId || !term || libraryState.appleExtras.storedTidalId) {
+    const storedIdKey = `stored${platform.displayName}Id`;
+    if (!normalizedArtistId || !term || libraryState.appleExtras[storedIdKey]) {
         return null;
     }
 
     try {
-        const data = await fetchJsonOptional(`/api/tidal/search?query=${encodeURIComponent(term)}&limit=10&type=artist`);
+        const data = await fetchJsonOptional(`/api/${platform.route}/search?query=${encodeURIComponent(term)}&limit=10&type=artist`);
         const artists = Array.isArray(data?.artists) ? data.artists : [];
         if (artists.length === 0) {
             return null;
@@ -6138,23 +6139,31 @@ async function resolveAndStoreTidalArtistId(artistIdValue, artistName) {
         const match = artists.find(artist => normalizeArtistName(artist?.name) === normalizedTerm)
             || artists.find(artist => normalizeArtistName(artist?.name).includes(normalizedTerm))
             || null;
-        const tidalId = String(match?.tidalId || match?.id || '').trim();
-        if (!/^\d+$/.test(tidalId)) {
+        const platformId = String(match?.[platform.idProperty] || match?.id || '').trim();
+        if (!/^\d+$/.test(platformId)) {
             return null;
         }
 
-        await fetchJson(`/api/library/artists/${encodeURIComponent(normalizedArtistId)}/tidal-id`, {
+        await fetchJson(`/api/library/artists/${encodeURIComponent(normalizedArtistId)}/${platform.route}-id`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tidalId })
+            body: JSON.stringify({ [platform.idProperty]: platformId })
         });
-        libraryState.appleExtras.storedTidalId = tidalId;
-        libraryState.appleExtras.tidalArtistId = tidalId;
-        return tidalId;
+        libraryState.appleExtras[storedIdKey] = platformId;
+        libraryState.appleExtras[`${platform.route}ArtistId`] = platformId;
+        return platformId;
     } catch (error) {
-        console.warn('Tidal artist ID auto-resolve failed', error);
+        console.warn(`${platform.displayName} artist ID auto-resolve failed`, error);
         return null;
     }
+}
+
+async function resolveAndStoreTidalArtistId(artistIdValue, artistName) {
+    return resolveAndStoreArtistPlatformId(artistIdValue, artistName, {
+        route: 'tidal',
+        displayName: 'Tidal',
+        idProperty: 'tidalId'
+    });
 }
 
 function initQobuzIdEditor(artistIdValue) {
@@ -6206,40 +6215,11 @@ function initQobuzIdEditor(artistIdValue) {
 }
 
 async function resolveAndStoreQobuzArtistId(artistIdValue, artistName) {
-    const normalizedArtistId = String(artistIdValue || '').trim();
-    const term = String(artistName || '').trim();
-    if (!normalizedArtistId || !term || libraryState.appleExtras.storedQobuzId) {
-        return null;
-    }
-
-    try {
-        const data = await fetchJsonOptional(`/api/qobuz/search?query=${encodeURIComponent(term)}&limit=10&type=artist`);
-        const artists = Array.isArray(data?.artists) ? data.artists : [];
-        if (artists.length === 0) {
-            return null;
-        }
-
-        const normalizedTerm = normalizeArtistName(term);
-        const match = artists.find(artist => normalizeArtistName(artist?.name) === normalizedTerm)
-            || artists.find(artist => normalizeArtistName(artist?.name).includes(normalizedTerm))
-            || null;
-        const qobuzId = String(match?.qobuzId || match?.id || '').trim();
-        if (!/^\d+$/.test(qobuzId)) {
-            return null;
-        }
-
-        await fetchJson(`/api/library/artists/${encodeURIComponent(normalizedArtistId)}/qobuz-id`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qobuzId })
-        });
-        libraryState.appleExtras.storedQobuzId = qobuzId;
-        libraryState.appleExtras.qobuzArtistId = qobuzId;
-        return qobuzId;
-    } catch (error) {
-        console.warn('Qobuz artist ID auto-resolve failed', error);
-        return null;
-    }
+    return resolveAndStoreArtistPlatformId(artistIdValue, artistName, {
+        route: 'qobuz',
+        displayName: 'Qobuz',
+        idProperty: 'qobuzId'
+    });
 }
 
 function getArtistVisualStorageKey(artistId) {

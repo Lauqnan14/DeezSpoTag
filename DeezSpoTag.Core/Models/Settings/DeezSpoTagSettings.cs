@@ -273,64 +273,24 @@ public class DownloadEngineOrderSettings
             Enabled = false,
             Engines = new List<DownloadEngineOrderItem>
             {
-                new()
-                {
-                    Engine = "qobuz",
-                    Enabled = true,
-                    Qualities = new List<DownloadEngineQualityItem>
-                    {
-                        new() { Quality = "27", Enabled = true },
-                        new() { Quality = "7", Enabled = true },
-                        new() { Quality = "6", Enabled = true },
-                        new() { Quality = "5", Enabled = true }
-                    }
-                },
-                new()
-                {
-                    Engine = "tidal",
-                    Enabled = true,
-                    Qualities = new List<DownloadEngineQualityItem>
-                    {
-                        new() { Quality = "HI_RES_LOSSLESS", Enabled = true },
-                        new() { Quality = "HI_RES", Enabled = true },
-                        new() { Quality = "LOSSLESS", Enabled = true },
-                        new() { Quality = "HIGH", Enabled = true },
-                        new() { Quality = "LOW", Enabled = true },
-                        new() { Quality = "DOLBY_ATMOS", Enabled = true }
-                    }
-                },
-                new()
-                {
-                    Engine = "apple",
-                    Enabled = true,
-                    Qualities = new List<DownloadEngineQualityItem>
-                    {
-                        new() { Quality = "ALAC", Enabled = true },
-                        new() { Quality = "AAC", Enabled = true },
-                        new() { Quality = "ATMOS", Enabled = true }
-                    }
-                },
-                new()
-                {
-                    Engine = "amazon",
-                    Enabled = true,
-                    Qualities = new List<DownloadEngineQualityItem>
-                    {
-                        new() { Quality = "FLAC", Enabled = true }
-                    }
-                },
-                new()
-                {
-                    Engine = "deezer",
-                    Enabled = true,
-                    Qualities = new List<DownloadEngineQualityItem>
-                    {
-                        new() { Quality = "9", Enabled = true },
-                        new() { Quality = "3", Enabled = true },
-                        new() { Quality = "1", Enabled = true }
-                    }
-                }
+                CreateEngine("qobuz", "27", "7", "6", "5"),
+                CreateEngine("tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW", "DOLBY_ATMOS"),
+                CreateEngine("apple", "ALAC", "AAC", "ATMOS"),
+                CreateEngine("amazon", "FLAC"),
+                CreateEngine("deezer", "9", "3", "1")
             }
+        };
+    }
+
+    private static DownloadEngineOrderItem CreateEngine(string engine, params string[] qualities)
+    {
+        return new DownloadEngineOrderItem
+        {
+            Engine = engine,
+            Enabled = true,
+            Qualities = qualities
+                .Select(quality => new DownloadEngineQualityItem { Quality = quality, Enabled = true })
+                .ToList()
         };
     }
 }
