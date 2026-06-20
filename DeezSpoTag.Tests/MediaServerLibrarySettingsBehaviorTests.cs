@@ -85,6 +85,27 @@ public sealed class MediaServerLibrarySettingsBehaviorTests
         Assert.Contains("allLibraries.Where(static library => !library.Ignored)", serviceSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MediaManagementSoundtracks_PreloadWithoutTabActivationRefresh()
+    {
+        var librarySource = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library.js");
+        var bootstrapSource = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library-bootstrap.js");
+        var soundtrackSource = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library-soundtracks.js");
+
+        Assert.Contains("if (targets.shouldLoadSoundtracks)", librarySource, StringComparison.Ordinal);
+        Assert.Contains("tasks.push(initializeSoundtracksTab());", librarySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("bindDeferredSoundtrackInitialization", librarySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("bindDeferredSoundtrackInitialization", bootstrapSource, StringComparison.Ordinal);
+        Assert.Contains("if (!elements.grid || soundtrackState.initialized)", soundtrackSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("renderSoundtrackLazyLoadProgress", soundtrackSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("onProgress:", soundtrackSource, StringComparison.Ordinal);
+        Assert.Contains("loading=\"lazy\" decoding=\"async\"", soundtrackSource, StringComparison.Ordinal);
+        Assert.Contains("id=\"soundtrackSearchInput\"", ReadSource("DeezSpoTag.Web", "Views", "MediaManagement", "Index.cshtml"), StringComparison.Ordinal);
+        Assert.Contains("filterSoundtrackRowsBySearch", soundtrackSource, StringComparison.Ordinal);
+        Assert.Contains("soundtrackState.itemsByCategory", soundtrackSource, StringComparison.Ordinal);
+        Assert.Contains("renderCurrentSoundtrackSearchResults();", soundtrackSource, StringComparison.Ordinal);
+    }
+
     private static ClaimsPrincipal CreateUser(string id)
     {
         return new ClaimsPrincipal(new ClaimsIdentity(new List<Claim>

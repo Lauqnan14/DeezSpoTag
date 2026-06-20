@@ -27,7 +27,6 @@ function initializeLibraryBootstrapState(targets) {
     if (targets.shouldLoadSoundtracks && typeof primePendingSoundtrackReturnState === 'function') {
         primePendingSoundtrackReturnState();
     }
-    bindDeferredSoundtrackInitialization(targets.shouldLoadSoundtracks);
     if (targets.shouldLoadArtistAlbums) {
         initializeDiscographyFilterState();
     }

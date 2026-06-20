@@ -161,6 +161,8 @@ function getSoundtrackElements() {
         libraryPills: document.getElementById('soundtrackLibraryPills'),
         refreshButton: document.getElementById('soundtrackRefreshItems'),
         syncButton: document.getElementById('soundtrackSyncLibraries'),
+        searchGroup: document.getElementById('soundtrackSearchGroup'),
+        searchInput: document.getElementById('soundtrackSearchInput'),
         status: document.getElementById('soundtrackStatus'),
         syncStatus: document.getElementById('soundtrackSyncStatus'),
         tvNav: document.getElementById('soundtrackTvNav'),
@@ -183,6 +185,58 @@ function setActiveSoundtrackCategory(category) {
         button.classList.toggle('active', active);
         button.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    syncSoundtrackSearchControl();
+}
+
+function getSoundtrackSearchQuery(category = soundtrackState.category) {
+    const normalizedCategory = normalizeSoundtrackCategory(category);
+    return String(soundtrackState.searchQueries?.[normalizedCategory] || '').trim();
+}
+
+function normalizeSoundtrackSearchValue(value) {
+    return String(value || '')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLocaleLowerCase();
+}
+
+function filterSoundtrackRowsBySearch(items, category = soundtrackState.category) {
+    const rows = Array.isArray(items) ? items : [];
+    const query = normalizeSoundtrackSearchValue(getSoundtrackSearchQuery(category));
+    if (!query) {
+        return rows;
+    }
+
+    return rows.filter(item => normalizeSoundtrackSearchValue([
+        item?.title,
+        item?.year,
+        item?.libraryName,
+        item?.serverLabel,
+        item?.serverType
+    ].filter(value => value !== null && value !== undefined).join(' ')).includes(query));
+}
+
+function syncSoundtrackSearchControl() {
+    const elements = getSoundtrackElements();
+    if (!elements.searchInput || !elements.searchGroup) {
+        return;
+    }
+
+    const category = normalizeSoundtrackCategory(soundtrackState.category);
+    const categoryLabel = category === 'tv_show' ? 'TV shows' : 'movies';
+    elements.searchGroup.hidden = category === 'tv_show' && Boolean(soundtrackState.selectedTvShow);
+    elements.searchInput.value = getSoundtrackSearchQuery(category);
+    elements.searchInput.placeholder = `Search ${categoryLabel}...`;
+    elements.searchInput.setAttribute('aria-label', `Search ${categoryLabel}`);
+}
+
+function renderCurrentSoundtrackSearchResults() {
+    const category = normalizeSoundtrackCategory(soundtrackState.category);
+    if (category === 'tv_show' && soundtrackState.selectedTvShow) {
+        return;
+    }
+
+    renderSoundtrackItems(soundtrackState.itemsByCategory?.[category] || [], category);
 }
 
 function getSoundtrackLibraries(configuration, category, serverTypeFilter) {
@@ -503,6 +557,7 @@ function renderSoundtrackTvNavigation() {
 
     if (!hasSelectedShow) {
         resetSoundtrackTvNavigation(elements);
+        syncSoundtrackSearchControl();
         return;
     }
 
@@ -513,6 +568,7 @@ function renderSoundtrackTvNavigation() {
     // Keep legacy season-pill controls hidden. TV navigation is card-based:
     // Shows -> Seasons -> Episodes.
     hideSoundtrackSeasonPills(elements);
+    syncSoundtrackSearchControl();
 }
 
 function resetSoundtrackTvNavigation(elements) {
@@ -776,7 +832,7 @@ function buildSoundtrackMovieCardMarkup(item) {
     return `<article class="soundtrack-card soundtrack-card--movie">
         <button type="button" class="soundtrack-card-poster-btn soundtrack-card-open-tracklist-btn"${openTracklistAttributes}${movieDataAttributes} aria-label="${escapeHtml(posterAriaLabel)}">
             ${image
-        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async">`
         : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-compact-disc"></i></div>`}
         </button>
         ${buildSoundtrackActionMenu(movieDataAttributes, { corner: true })}
@@ -807,7 +863,7 @@ function buildSoundtrackTvSeasonCardMarkup(season) {
         ? `<button type="button" class="soundtrack-card-media-btn" data-soundtrack-open-season="${escapeHtml(seasonId)}" aria-label="${escapeHtml(openSeasonLabel)}">`
         : '<div>'}
         ${image
-        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async">`
         : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-photo-film"></i></div>`}
         ${seasonId ? '</button>' : '</div>'}
         <div class="soundtrack-card-body">
@@ -847,7 +903,7 @@ function buildSoundtrackTvEpisodeCardMarkup(item) {
     return `<article class="soundtrack-card soundtrack-card--tv-episode">
         <button type="button" class="soundtrack-card-media-btn soundtrack-card-open-tracklist-btn"${openTracklistAttributes}${episodeManualAttributes} aria-label="${escapeHtml(episodeAriaLabel)}">
         ${image
-        ? `<img class="soundtrack-card-art soundtrack-card-art--landscape" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        ? `<img class="soundtrack-card-art soundtrack-card-art--landscape" src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async">`
         : `<div class="soundtrack-card-art soundtrack-card-art--landscape watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
         </button>
         ${buildSoundtrackActionMenu(episodeManualAttributes, { corner: true })}
@@ -881,7 +937,7 @@ function buildSoundtrackTvShowCardMarkup(item) {
         ? `<button type="button" class="soundtrack-card-media-btn"${showOpenAttributes} aria-label="${escapeHtml(showAriaLabel)}">`
         : '<div>'}
         ${image
-        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}">`
+        ? `<img class="soundtrack-card-art soundtrack-card-art--poster" src="${escapeHtml(image)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async">`
         : `<div class="soundtrack-card-art soundtrack-card-art--poster watchlist-card-art-placeholder"><i class="fa-solid fa-tv"></i></div>`}
         ${showId ? '</button>' : '</div>'}
         <div class="soundtrack-card-body">
@@ -1028,8 +1084,11 @@ function renderSoundtrackItems(items, category) {
         return;
     }
 
-    const rows = Array.isArray(items) ? items : [];
     const normalizedCategory = normalizeSoundtrackCategory(category);
+    const sourceRows = Array.isArray(items) ? items : [];
+    const rows = soundtrackState.selectedTvShow
+        ? sourceRows
+        : filterSoundtrackRowsBySearch(sourceRows, normalizedCategory);
     if (rows.length === 0) {
         renderSoundtrackEmptyState(elements, normalizedCategory, category);
         renderAlphaJumpNavigation(elements.letterNav, new Map());
@@ -1209,8 +1268,6 @@ async function loadSoundtrackLibraryItemsLazy(target, options) {
         mergeSoundtrackRows(options.merged, rows);
         offset += rows.length;
         loadedForLibrary += rows.length;
-        options.onProgress();
-
         if (rows.length < requestLimit) {
             break;
         }
@@ -1226,7 +1283,6 @@ function buildSoundtrackLazyLoadState(elements, category, requestId, targets) {
         requestId,
         targets,
         merged: new Map(),
-        completedLibraries: 0,
         batchSize: 100,
         perLibraryCap: Number.MAX_SAFE_INTEGER
     };
@@ -1236,20 +1292,6 @@ function isSoundtrackLazyLoadStale(state) {
     return state.requestId !== soundtrackState.lastItemsRequestId;
 }
 
-function updateSoundtrackLazyLoadStatus(state) {
-    if (!state.elements.status) {
-        return;
-    }
-
-    const itemCount = state.merged.size;
-    state.elements.status.textContent = `${getSoundtrackCategoryLabel(state.category)}: ${itemCount} item${getPluralSuffix(itemCount)} • ${state.completedLibraries}/${state.targets.length} libraries loaded`;
-}
-
-function renderSoundtrackLazyLoadProgress(state) {
-    renderSoundtrackItems(Array.from(state.merged.values()), state.category);
-    updateSoundtrackLazyLoadStatus(state);
-}
-
 async function loadSoundtrackTargetItemsLazy(target, state, forceServerRefresh) {
     const stale = await loadSoundtrackLibraryItemsLazy(target, {
         category: state.category,
@@ -1257,15 +1299,12 @@ async function loadSoundtrackTargetItemsLazy(target, state, forceServerRefresh) 
         perLibraryCap: state.perLibraryCap,
         forceServerRefresh,
         merged: state.merged,
-        isStale: () => isSoundtrackLazyLoadStale(state),
-        onProgress: () => renderSoundtrackLazyLoadProgress(state)
+        isStale: () => isSoundtrackLazyLoadStale(state)
     });
     if (stale) {
         return true;
     }
 
-    state.completedLibraries += 1;
-    updateSoundtrackLazyLoadStatus(state);
     return false;
 }
 
@@ -1273,12 +1312,12 @@ async function loadSoundtrackItemsLazy(configuration, category, requestId, force
     const elements = getSoundtrackElements();
     const targets = resolveSoundtrackLibraryTargets(configuration, category);
     if (targets.length === 0) {
+        soundtrackState.itemsByCategory[normalizeSoundtrackCategory(category)] = [];
         renderSoundtrackItems([], category);
         return;
     }
 
     const state = buildSoundtrackLazyLoadState(elements, category, requestId, targets);
-    updateSoundtrackLazyLoadStatus(state);
 
     for (const target of targets) {
         const stale = await loadSoundtrackTargetItemsLazy(target, state, forceServerRefresh);
@@ -1288,6 +1327,7 @@ async function loadSoundtrackItemsLazy(configuration, category, requestId, force
     }
 
     const finalRows = Array.from(state.merged.values());
+    soundtrackState.itemsByCategory[normalizeSoundtrackCategory(category)] = finalRows;
     renderSoundtrackItems(finalRows, category);
     return finalRows;
 }
@@ -1350,6 +1390,8 @@ function bindSoundtrackTabHandlers() {
         return;
     }
 
+    document.getElementById('soundtracks-tab')?.addEventListener('shown.bs.tab', applyPendingSoundtrackScrollRestore);
+
     const rememberedCategory = restoreSoundtrackCategoryPreference();
     if (rememberedCategory) {
         soundtrackState.category = rememberedCategory;
@@ -1374,6 +1416,20 @@ function bindSoundtrackTabHandlers() {
             await loadSoundtrackItems();
         });
     });
+
+    if (elements.searchInput) {
+        elements.searchInput.addEventListener('input', () => {
+            const category = normalizeSoundtrackCategory(soundtrackState.category);
+            soundtrackState.searchQueries[category] = elements.searchInput.value || '';
+            if (soundtrackState.searchTimer) {
+                globalThis.clearTimeout(soundtrackState.searchTimer);
+            }
+            soundtrackState.searchTimer = globalThis.setTimeout(() => {
+                soundtrackState.searchTimer = 0;
+                renderCurrentSoundtrackSearchResults();
+            }, 120);
+        });
+    }
 
     if (elements.serverPills) {
         elements.serverPills.addEventListener('click', async event => {
@@ -1543,18 +1599,14 @@ function bindSoundtrackTabHandlers() {
 
 async function initializeSoundtracksTab() {
     const elements = getSoundtrackElements();
-    if (!elements.grid) {
-        return;
-    }
-
-    bindSoundtrackTabHandlers();
-    renderSoundtrackTvNavigation();
-    startSoundtrackSyncStatusPolling();
-    if (soundtrackState.initialized) {
-        await loadSoundtrackItems();
+    if (!elements.grid || soundtrackState.initialized) {
         return;
     }
 
     soundtrackState.initialized = true;
+    bindSoundtrackTabHandlers();
+    renderSoundtrackTvNavigation();
+    startSoundtrackSyncStatusPolling();
     await loadSoundtrackItems();
+    applyPendingSoundtrackScrollRestore();
 }

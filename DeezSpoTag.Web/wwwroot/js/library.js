@@ -177,7 +177,10 @@ const soundtrackState = {
     backgroundRefreshAttempt: 0,
     syncStatusTimer: 0,
     syncStatusSnapshot: '',
-    syncRunning: false
+    syncRunning: false,
+    itemsByCategory: { movie: [], tv_show: [] },
+    searchQueries: { movie: '', tv_show: '' },
+    searchTimer: 0
 };
 
 const librarySpotifyArtistCacheTtlMs = 2 * 60 * 60 * 1000;
@@ -11335,6 +11338,9 @@ function queueStandardInitialLoadTasks(targets, tasks, options = {}) {
     if (targets.shouldLoadPlaylistBlockedRules && isMediaManagementBlockedWatchlistActive()) {
         tasks.push(loadPlaylistBlockedRules());
     }
+    if (targets.shouldLoadSoundtracks) {
+        tasks.push(initializeSoundtracksTab());
+    }
     if (targets.shouldLoadAlbumTracks) {
         tasks.push(loadAlbum());
     }
@@ -11347,49 +11353,6 @@ function queueStandardInitialLoadTasks(targets, tasks, options = {}) {
     if (targets.shouldLoadFavorites) {
         tasks.push(loadFavorites());
     }
-}
-
-function bindDeferredSoundtrackInitialization(shouldLoadSoundtracks) {
-    if (!shouldLoadSoundtracks) {
-        return;
-    }
-
-    const soundtrackTabButton = document.getElementById('soundtracks-tab');
-    const soundtrackTabPane = document.getElementById('soundtracks-content');
-    if (!soundtrackTabPane || soundtrackTabPane.dataset.soundtracksDeferredBound === 'true') {
-        return;
-    }
-
-    let initializationTask = null;
-    const ensureInitialized = () => {
-        if (!initializationTask) {
-            initializationTask = initializeSoundtracksTab();
-        }
-        return initializationTask;
-    };
-
-    if (soundtrackTabButton) {
-        soundtrackTabButton.addEventListener('shown.bs.tab', () => {
-            ensureInitialized().then(() => {
-                applyPendingSoundtrackScrollRestore();
-            }).catch(() => {
-                // Initializer failures are handled by the tab loader UI.
-            });
-        });
-    }
-
-    const soundtrackTabActive = soundtrackTabPane.classList.contains('active')
-        || soundtrackTabPane.classList.contains('show')
-        || soundtrackTabButton?.classList.contains('active') === true;
-    if (soundtrackTabActive) {
-        ensureInitialized().then(() => {
-            applyPendingSoundtrackScrollRestore();
-        }).catch(() => {
-            // Initializer failures are handled by the tab loader UI.
-        });
-    }
-
-    soundtrackTabPane.dataset.soundtracksDeferredBound = 'true';
 }
 
 function queueFolderAndDownloadLoadTasks(targets, tasks) {

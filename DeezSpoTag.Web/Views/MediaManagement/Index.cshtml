@@ -153,6 +153,12 @@
                     <button id="soundtrackRefreshItems" class="btn btn-secondary action-btn btn-sm" type="button">Refresh</button>
                     <button id="soundtrackSyncLibraries" class="btn btn-primary action-btn btn-sm" type="button">Sync Libraries</button>
                 </div>
+                <div id="soundtrackSearchGroup" class="soundtrack-search-group">
+                    <label class="soundtrack-search-wrapper" for="soundtrackSearchInput">
+                        <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                        <input id="soundtrackSearchInput" type="search" placeholder="Search movies..." autocomplete="off" aria-label="Search movies" />
+                    </label>
+                </div>
                 <div id="soundtrackStatus" class="auto-playlists-meta"></div>
                 <div id="soundtrackSyncStatus" class="auto-playlists-meta"></div>
                 <div id="soundtrackTvNav" class="soundtrack-tv-nav" hidden>
@@ -461,6 +467,43 @@ document.addEventListener('DOMContentLoaded', function() {
 .soundtrack-filter-group {
     display: grid;
     gap: 6px;
+}
+
+.soundtrack-search-group {
+    display: flex;
+    margin-bottom: 12px;
+}
+
+.soundtrack-search-wrapper {
+    position: relative;
+    display: block;
+    width: min(360px, 100%);
+}
+
+.soundtrack-search-wrapper i {
+    position: absolute;
+    top: 50%;
+    left: 12px;
+    color: var(--text-muted);
+    pointer-events: none;
+    transform: translateY(-50%);
+}
+
+#soundtrackSearchInput {
+    width: 100%;
+    min-height: 40px;
+    padding: 8px 14px 8px 36px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+#soundtrackSearchInput:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 24%, transparent);
 }
 
 .soundtrack-filter-label {
