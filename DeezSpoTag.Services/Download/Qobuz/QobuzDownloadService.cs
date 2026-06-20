@@ -82,12 +82,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private readonly IQobuzCredentialProvider _credentialProvider;
     private readonly IQobuzPublicProviderRegistry _publicProviderRegistry;
     private readonly ResolveProxyClient _resolveProxyClient;
-    private readonly DownloadDedupeService _dedupeService;
     private static readonly ConcurrentDictionary<string, PreferredProviderState> PreferredProviders = new(StringComparer.OrdinalIgnoreCase);
 
     public QobuzDownloadService(
         ILogger<QobuzDownloadService> logger,
-        DownloadDedupeService dedupeService,
         QobuzTrackResolver trackResolver,
         ResolveProxyClient resolveProxyClient,
         IOptions<QobuzApiConfig> qobuzOptions,
@@ -95,7 +93,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         IQobuzPublicProviderRegistry? publicProviderRegistry = null)
     {
         _logger = logger;
-        _dedupeService = dedupeService;
         _trackResolver = trackResolver;
         _resolveProxyClient = resolveProxyClient;
         _qobuzConfig = qobuzOptions.Value ?? new QobuzApiConfig();
@@ -908,26 +905,23 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     {
         var providers = await BuildProvidersAsync(trackId, qualityCode, cancellationToken);
         var preferredProvider = GetPreferredProvider(providers, qualityCode);
-        if (preferredProvider != null)
+        if (preferredProvider != null && !IsProviderCoolingDown(preferredProvider.Name))
         {
-            if (!IsProviderCoolingDown(preferredProvider.Name))
+            var preferredResolved = await TryResolveProviderAsync(preferredProvider, trackId, qualityCode, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(preferredResolved)
+                && await IsProviderStreamAcceptableAsync(
+                    preferredProvider.Name,
+                    trackId,
+                    qualityCode,
+                    preferredResolved,
+                    expectedDurationSeconds,
+                    cancellationToken))
             {
-                var preferredResolved = await TryResolveProviderAsync(preferredProvider, trackId, qualityCode, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(preferredResolved)
-                    && await IsProviderStreamAcceptableAsync(
-                        preferredProvider.Name,
-                        trackId,
-                        qualityCode,
-                        preferredResolved,
-                        expectedDurationSeconds,
-                        cancellationToken))
-                {
-                    MarkPreferredProvider(preferredProvider, qualityCode);
-                    return preferredResolved;
-                }
-
-                ClearPreferredProvider(preferredProvider, qualityCode);
+                MarkPreferredProvider(preferredProvider, qualityCode);
+                return preferredResolved;
             }
+
+            ClearPreferredProvider(preferredProvider, qualityCode);
         }
 
         providers = providers
@@ -1681,12 +1675,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
     }
 
-    private async Task EnsureFinalDestinationAllowedAsync(
+    private static async Task EnsureFinalDestinationAllowedAsync(
         QobuzDownloadRequest request,
         string outputPath,
         CancellationToken cancellationToken)
     {
-        var decision = await _dedupeService.CheckFinalDestinationAsync(
+        var decision = await DownloadDedupeService.CheckFinalDestinationAsync(
             DownloadDedupeService.FromEngineDownloadRequest(request, outputPath),
             cancellationToken);
         if (!decision.Allowed)
@@ -1902,49 +1896,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var normalized = value.Trim().ToLowerInvariant();
         normalized = Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout);
         return normalized;
-    }
-
-    private static List<string> SplitArtists(string artists)
-    {
-        var normalized = artists;
-        normalized = normalized.Replace(" feat. ", "|")
-            .Replace(" feat ", "|")
-            .Replace(" ft. ", "|")
-            .Replace(" ft ", "|")
-            .Replace(" & ", "|")
-            .Replace(" and ", "|")
-            .Replace(", ", "|")
-            .Replace(" x ", "|");
-
-        var parts = normalized.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return parts.Length == 0 ? new List<string>() : parts.ToList();
-    }
-
-    private static bool SameWordsUnordered(string a, string b)
-    {
-        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b))
-        {
-            return false;
-        }
-
-        var wordsA = a.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var wordsB = b.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (wordsA.Length != wordsB.Length || wordsA.Length == 0)
-        {
-            return false;
-        }
-
-        Array.Sort(wordsA, StringComparer.Ordinal);
-        Array.Sort(wordsB, StringComparer.Ordinal);
-        for (var i = 0; i < wordsA.Length; i++)
-        {
-            if (!string.Equals(wordsA[i], wordsB[i], StringComparison.Ordinal))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static string CleanTitle(string title)

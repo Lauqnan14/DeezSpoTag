@@ -54,7 +54,7 @@ public sealed class ResourceLifetimeRegressionTests
         var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "ShazamRecognitionService.cs"));
         var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Tools", "shazam_port", "recognize.py"));
 
-        var readIndex = service.IndexOf("process.StandardOutput.ReadToEndAsync()", StringComparison.Ordinal);
+        var readIndex = service.IndexOf("process.StandardOutput.ReadToEndAsync(CancellationToken.None)", StringComparison.Ordinal);
         var waitIndex = service.IndexOf("process.WaitForExitAsync(timeout.Token)", StringComparison.Ordinal);
         Assert.True(readIndex >= 0 && waitIndex > readIndex);
         Assert.Contains("process.Kill(entireProcessTree: true)", service, StringComparison.Ordinal);

@@ -176,14 +176,18 @@ public class DeezSpoTagQueueBackgroundService : Microsoft.Extensions.Hosting.Bac
         _lastGateReasonCode = decision.ReasonCode;
         if (!decision.Allowed)
         {
-            _logger.LogInformation(
-                "Download queue gate closed. reason={ReasonCode}, message={Message}",
-                decision.ReasonCode,
-                decision.Message);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Download queue gate closed. reason={ReasonCode}, message={Message}",
+                    decision.ReasonCode,
+                    decision.Message);
+            }
+
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(previousReasonCode))
+        if (!string.IsNullOrWhiteSpace(previousReasonCode) && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
                 "Download queue gate opened. previousReason={PreviousReasonCode}, queued={QueuedCount}",

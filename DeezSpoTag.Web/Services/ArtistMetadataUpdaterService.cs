@@ -15,7 +15,7 @@ using SixLabors.ImageSharp.Processing;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class ArtistMetadataUpdaterService : BackgroundService
+public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 {
     private static readonly TimeSpan SchedulerInterval = TimeSpan.FromMinutes(30);
     private const string SpotifyPlatform = "spotify";
@@ -1101,7 +1101,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         };
     }
 
-    private static IReadOnlyDictionary<string, JsonElement> BuildTidalIncludedMap(JsonElement root)
+    private static Dictionary<string, JsonElement> BuildTidalIncludedMap(JsonElement root)
     {
         var included = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         if (!root.TryGetProperty("included", out var includedArray) || includedArray.ValueKind != JsonValueKind.Array)
@@ -1124,7 +1124,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         return included;
     }
 
-    private static string? ResolveTidalBiography(JsonElement artistData, IReadOnlyDictionary<string, JsonElement> included)
+    private static string? ResolveTidalBiography(JsonElement artistData, Dictionary<string, JsonElement> included)
     {
         if (!TryGetRelationshipDataId(artistData, "biography", out var bioId))
         {
@@ -1148,7 +1148,7 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
         return null;
     }
 
-    private static string? ResolveTidalProfileArtId(JsonElement artistData, IReadOnlyDictionary<string, JsonElement> included)
+    private static string? ResolveTidalProfileArtId(JsonElement artistData, Dictionary<string, JsonElement> included)
     {
         if (!TryGetRelationshipDataId(artistData, "profileArt", out var profileArtId))
         {
@@ -1230,13 +1230,14 @@ public sealed class ArtistMetadataUpdaterService : BackgroundService
             return null;
         }
 
-        var match = System.Text.RegularExpressions.Regex.Match(
-            href,
-            @"images/([0-9a-fA-F]{8})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{12})/");
+        var match = TidalImageUuidRegex().Match(href);
         return match.Success
             ? string.Join('-', match.Groups.Values.Skip(1).Select(group => group.Value))
             : null;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"images/([0-9a-fA-F]{8})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{12})/")]
+    private static partial System.Text.RegularExpressions.Regex TidalImageUuidRegex();
 
     private static string? ResolveQobuzImageUrl(QobuzImage? image)
         => FirstNonEmpty(image?.Mega, image?.ExtraLarge, image?.Large, image?.Medium, image?.Small);

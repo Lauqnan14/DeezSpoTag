@@ -29,7 +29,7 @@ namespace DeezSpoTag.Web.Controllers
 {
     [Route("api")]
     [ApiController]
-    public class ApiController : ControllerBase
+    public partial class ApiController : ControllerBase
     {
         private const string TrackType = "track";
         private const string AlbumType = "album";
@@ -54,6 +54,10 @@ namespace DeezSpoTag.Web.Controllers
         private const string EpisodeType = "episode";
         private const string ReleasesField = "releases";
         private const string RelatedField = "related";
+        private const string ItemsField = "items";
+        private const string PictureField = "picture";
+        private const string TidalReleaseDateField = "releaseDate";
+        private const string ExplicitLyricsField = "explicit_lyrics";
         private const string ReleaseDateField = "release_date";
         private const string CoverUpperField = "COVER";
         private const string DescriptionUpperField = "DESCRIPTION";
@@ -977,7 +981,7 @@ namespace DeezSpoTag.Web.Controllers
 
         private static IReadOnlyList<object> TryReadAnonymousItems(object value)
         {
-            var itemsValue = TryReadAnonymousObject(value, "items");
+            var itemsValue = TryReadAnonymousObject(value, ItemsField);
             return itemsValue switch
             {
                 IReadOnlyList<object> list => list,
@@ -1740,7 +1744,7 @@ namespace DeezSpoTag.Web.Controllers
                 var pictureMd5 = data.Value<string>("SHOW_ART_MD5")
                                  ?? data.Value<string>("SHOW_PICTURE")
                                  ?? data.Value<string>(PictureUpperField)
-                                 ?? data.Value<string>("picture");
+                                 ?? data.Value<string>(PictureField);
                 var pictureXl = string.IsNullOrWhiteSpace(pictureMd5)
                     ? string.Empty
                     : $"https://e-cdns-images.dzcdn.net/images/talk/{pictureMd5}/1000x1000-000000-80-0-0.jpg";
@@ -2878,7 +2882,7 @@ namespace DeezSpoTag.Web.Controllers
                 return null;
             }
 
-            var attributes = artistData.TryGetProperty("attributes", out var attrs) && attrs.ValueKind == JsonValueKind.Object
+            var attributes = artistData.TryGetProperty(AttributesField, out var attrs) && attrs.ValueKind == JsonValueKind.Object
                 ? attrs
                 : default;
             var name = GetString(attributes, NameField) ?? "Unknown Artist";
@@ -2949,20 +2953,13 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 total = GetInt32(root.Value, "totalNumberOfItems") ?? total;
-                if (!root.Value.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                if (!root.Value.TryGetProperty(ItemsField, out var items) || items.ValueKind != JsonValueKind.Array)
                 {
                     break;
                 }
 
                 var before = result.Count;
-                foreach (var item in items.EnumerateArray())
-                {
-                    var release = BuildTidalReleaseEntry(item, filter);
-                    if (release != null)
-                    {
-                        result.Add(release);
-                    }
-                }
+                AddTidalReleaseEntries(result, items, filter);
 
                 var itemCount = items.GetArrayLength();
                 if (itemCount == 0 || result.Count == before && itemCount < 50)
@@ -2979,6 +2976,21 @@ namespace DeezSpoTag.Web.Controllers
                 .ToList();
         }
 
+        private static void AddTidalReleaseEntries(
+            List<Dictionary<string, object>> result,
+            JsonElement items,
+            string filter)
+        {
+            foreach (var item in items.EnumerateArray())
+            {
+                var release = BuildTidalReleaseEntry(item, filter);
+                if (release != null)
+                {
+                    result.Add(release);
+                }
+            }
+        }
+
         private async Task<List<Dictionary<string, object>>> FetchTidalArtistTopTracksAsync(
             string artistId,
             string countryCode,
@@ -2987,7 +2999,7 @@ namespace DeezSpoTag.Web.Controllers
         {
             var response = await FetchTidalArrayAsync(
                 $"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(artistId)}/toptracks?countryCode={Uri.EscapeDataString(countryCode)}&limit=30&offset=0",
-                "items",
+                ItemsField,
                 token,
                 cancellationToken);
             if (!response.HasValue)
@@ -3039,7 +3051,7 @@ namespace DeezSpoTag.Web.Controllers
                 return new List<Dictionary<string, object>>();
             }
 
-            if (!root.Value.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+            if (!root.Value.TryGetProperty(ItemsField, out var items) || items.ValueKind != JsonValueKind.Array)
             {
                 return new List<Dictionary<string, object>>();
             }
@@ -3112,13 +3124,13 @@ namespace DeezSpoTag.Web.Controllers
             {
                 ["id"] = id,
                 [TitleField] = ComposeTidalTitle(GetString(album, TitleField), GetString(album, "version")),
-                [ReleaseDateField] = GetString(album, "releaseDate") ?? string.Empty,
+                [ReleaseDateField] = GetString(album, TidalReleaseDateField) ?? string.Empty,
                 [NbTracksField] = GetInt32(album, "numberOfTracks") ?? 0,
-                ["explicit_lyrics"] = GetBool(album, "explicit") ?? false,
+                [ExplicitLyricsField] = GetBool(album, "explicit") ?? false,
                 [RecordTypeField] = recordType,
                 ["link"] = $"https://tidal.com/browse/album/{Uri.EscapeDataString(id)}",
-                [CoverImageType] = BuildTidalImageUrl(GetString(album, "cover")),
-                [CoverSmallField] = BuildTidalImageUrl(GetString(album, "cover"), 320),
+                [CoverImageType] = BuildTidalImageUrl(GetString(album, CoverImageType)),
+                [CoverSmallField] = BuildTidalImageUrl(GetString(album, CoverImageType), 320),
                 [SourceField] = TidalSource
             };
         }
@@ -3134,7 +3146,7 @@ namespace DeezSpoTag.Web.Controllers
             var artist = track.TryGetProperty(ArtistType, out var artistNode) ? artistNode : default;
             var album = track.TryGetProperty(AlbumType, out var albumNode) ? albumNode : default;
             var albumId = GetScalarString(album, "id") ?? id;
-            var cover = BuildTidalImageUrl(GetString(album, "cover"));
+            var cover = BuildTidalImageUrl(GetString(album, CoverImageType));
             return new Dictionary<string, object>
             {
                 ["id"] = id,
@@ -3143,7 +3155,7 @@ namespace DeezSpoTag.Web.Controllers
                 [SourceField] = TidalSource,
                 ["duration"] = GetInt32(track, DurationField) ?? 0,
                 ["isrc"] = GetString(track, "isrc") ?? string.Empty,
-                ["explicit_lyrics"] = GetBool(track, "explicit") ?? false,
+                [ExplicitLyricsField] = GetBool(track, "explicit") ?? false,
                 [ArtistType] = new Dictionary<string, object>
                 {
                     ["id"] = GetScalarString(artist, "id") ?? string.Empty,
@@ -3160,14 +3172,14 @@ namespace DeezSpoTag.Web.Controllers
                     [CoverMediumField] = cover,
                     [CoverBigField] = cover,
                     [CoverXlField] = cover,
-                    [ReleaseDateField] = GetString(album, "releaseDate") ?? string.Empty
+                    [ReleaseDateField] = GetString(album, TidalReleaseDateField) ?? string.Empty
                 }
             };
         }
 
         private static Dictionary<string, object>? BuildTidalOpenApiRelatedArtistEntry(
             JsonElement relationship,
-            IReadOnlyDictionary<string, JsonElement> included)
+            Dictionary<string, JsonElement> included)
         {
             var id = GetScalarString(relationship, "id");
             if (string.IsNullOrWhiteSpace(id))
@@ -3178,7 +3190,7 @@ namespace DeezSpoTag.Web.Controllers
             var artist = included.TryGetValue($"artists:{id}", out var includedArtist)
                 ? includedArtist
                 : relationship;
-            var attributes = artist.TryGetProperty("attributes", out var attrs) && attrs.ValueKind == JsonValueKind.Object
+            var attributes = artist.TryGetProperty(AttributesField, out var attrs) && attrs.ValueKind == JsonValueKind.Object
                 ? attrs
                 : default;
             var picture = ResolveTidalOpenApiArtworkId(artist, included, "profileArt")
@@ -3190,7 +3202,7 @@ namespace DeezSpoTag.Web.Controllers
                 ["id"] = id,
                 [NameField] = GetString(attributes, NameField) ?? string.Empty,
                 [SourceField] = TidalSource,
-                ["picture"] = pictureUrl,
+                [PictureField] = pictureUrl,
                 [PictureMediumField] = pictureUrl
             };
         }
@@ -3213,7 +3225,7 @@ namespace DeezSpoTag.Web.Controllers
                 [NameField] = ComposeTidalTitle(GetString(video, TitleField), GetString(video, "version")),
                 ["artist"] = artistName,
                 ["image"] = image,
-                ["releaseDate"] = GetString(video, "releaseDate") ?? string.Empty,
+                [TidalReleaseDateField] = GetString(video, TidalReleaseDateField) ?? string.Empty,
                 ["duration"] = GetInt32(video, DurationField) ?? 0,
                 ["durationMs"] = Math.Max(0, GetInt32(video, DurationField) ?? 0) * 1000L,
                 ["previewUrl"] = string.Empty,
@@ -3270,7 +3282,7 @@ namespace DeezSpoTag.Web.Controllers
 
         private static string? ResolveTidalOpenApiArtworkId(
             JsonElement item,
-            IReadOnlyDictionary<string, JsonElement> included,
+            Dictionary<string, JsonElement> included,
             string relationshipName)
         {
             if (!item.TryGetProperty("relationships", out var relationships)
@@ -3293,7 +3305,7 @@ namespace DeezSpoTag.Web.Controllers
                 return null;
             }
 
-            if (!artwork.TryGetProperty("attributes", out var attributes)
+            if (!artwork.TryGetProperty(AttributesField, out var attributes)
                 || attributes.ValueKind != JsonValueKind.Object
                 || !attributes.TryGetProperty("files", out var files)
                 || files.ValueKind != JsonValueKind.Array)
@@ -3314,7 +3326,7 @@ namespace DeezSpoTag.Web.Controllers
             return null;
         }
 
-        private static string ResolveTidalBiography(JsonElement artistData, IReadOnlyDictionary<string, JsonElement> included)
+        private static string ResolveTidalBiography(JsonElement artistData, Dictionary<string, JsonElement> included)
         {
             if (!artistData.TryGetProperty("relationships", out var relationships)
                 || relationships.ValueKind != JsonValueKind.Object
@@ -3336,7 +3348,7 @@ namespace DeezSpoTag.Web.Controllers
             foreach (var key in keys)
             {
                 if (!included.TryGetValue(key, out var biography)
-                    || !biography.TryGetProperty("attributes", out var attributes)
+                    || !biography.TryGetProperty(AttributesField, out var attributes)
                     || attributes.ValueKind != JsonValueKind.Object)
                 {
                     continue;
@@ -3388,13 +3400,14 @@ namespace DeezSpoTag.Web.Controllers
                 return null;
             }
 
-            var match = System.Text.RegularExpressions.Regex.Match(
-                href,
-                @"images/([0-9a-fA-F]{8})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{12})/");
+            var match = TidalImageUuidRegex().Match(href);
             return match.Success
                 ? string.Join('-', match.Groups.Values.Skip(1).Select(group => group.Value))
                 : null;
         }
+
+        [System.Text.RegularExpressions.GeneratedRegex(@"images/([0-9a-fA-F]{8})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{12})/")]
+        private static partial System.Text.RegularExpressions.Regex TidalImageUuidRegex();
 
         private static string BuildTidalImageUrl(string? imageId, int size = 750)
         {
@@ -3516,7 +3529,7 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             var title = GetPropertyOrDefaultSafe(attributes, NameField) ?? string.Empty;
-            var releaseDate = GetPropertyOrDefaultSafe(attributes, "releaseDate") ?? string.Empty;
+            var releaseDate = GetPropertyOrDefaultSafe(attributes, TidalReleaseDateField) ?? string.Empty;
             var trackCount = attributes.TryGetProperty("trackCount", out var tracksProp) && tracksProp.ValueKind == JsonValueKind.Number
                 && tracksProp.TryGetInt32(out var tracks)
                 ? tracks
@@ -3540,7 +3553,7 @@ namespace DeezSpoTag.Web.Controllers
                 [TitleField] = title,
                 [ReleaseDateField] = releaseDate,
                 [NbTracksField] = trackCount,
-                ["explicit_lyrics"] = string.Equals(contentRating, "explicit", StringComparison.OrdinalIgnoreCase),
+                [ExplicitLyricsField] = string.Equals(contentRating, "explicit", StringComparison.OrdinalIgnoreCase),
                 [RecordTypeField] = recordType,
                 ["link"] = releaseLink,
                 [CoverImageType] = cover,
@@ -4053,7 +4066,7 @@ namespace DeezSpoTag.Web.Controllers
                 [NbTracksField] = release.TryGetProperty(NbTracksField, out var tracks) ? tracks.GetInt32() : 0,
                 ["link"] = release.TryGetProperty("link", out var link) ? link.GetString() ?? string.Empty : string.Empty,
                 [RecordTypeField] = release.TryGetProperty(RecordTypeField, out var type) ? type.GetString() ?? AlbumType : AlbumType,
-                ["explicit_lyrics"] = release.TryGetProperty("explicit_lyrics", out var explicitLyrics) && explicitLyrics.GetBoolean()
+                [ExplicitLyricsField] = release.TryGetProperty(ExplicitLyricsField, out var explicitLyrics) && explicitLyrics.GetBoolean()
             };
 
             var artistIdFromRelease = release.TryGetProperty(ArtistType, out var artistElement)
@@ -4344,7 +4357,7 @@ namespace DeezSpoTag.Web.Controllers
                         null,
                         artistName,
                         null,
-                        GetString(item, "picture"),
+                        GetString(item, PictureField),
                         ArtistType,
                         true,
                         AllowApple: false),
@@ -4946,7 +4959,7 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var items = await MapHomeSectionItemsAsync(
-                    sectionObj["items"] as JArray,
+                    sectionObj[ItemsField] as JArray,
                     currentDeezerUserId,
                     currentDeezerUserName,
                     cancellationToken);
@@ -5341,7 +5354,7 @@ namespace DeezSpoTag.Web.Controllers
 
             state.Md5Image ??= item.Value<string>(ArtPictureUpperField);
             state.PictureType ??= ArtistType;
-            state.ImageOverride = ExtractUrl(item, PictureXlField, PictureBigField, PictureMediumField, "picture");
+            state.ImageOverride = ExtractUrl(item, PictureXlField, PictureBigField, PictureMediumField, PictureField);
         }
 
         private static void ApplyTrackHomeItemData(HomeItemMappingState state, JObject item)

@@ -116,7 +116,7 @@ public class TidalAuth
     public string? RefreshToken { get; set; }
     public string? UserId { get; set; }
     public string? CountryCode { get; set; }
-    public bool CredentialsValid { get; set; }
+    public bool? CredentialsValid { get; set; }
     public DateTimeOffset? ValidatedAt { get; set; }
 }
 
@@ -125,7 +125,7 @@ public class SoulseekAuth
     public string? BaseUrl { get; set; }
     public string? ApiKey { get; set; }
     public string? Username { get; set; }
-    public bool ConnectionValid { get; set; }
+    public bool? ConnectionValid { get; set; }
     public string? LastStatus { get; set; }
     public string? LastError { get; set; }
     public DateTimeOffset? CheckedAt { get; set; }

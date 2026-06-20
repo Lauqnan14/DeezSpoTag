@@ -103,7 +103,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             });
         }
 
-        private static object BuildDefaultDownloadEngineOrder()
+        private static List<DefaultDownloadEngineOrderOption> BuildDefaultDownloadEngineOrder()
         {
             var qualityCatalog = QualityCatalog.GetEngineQualityOptions();
             var sourceLabels = DownloadSourceCatalog.GetEngineOptions()
@@ -113,20 +113,29 @@ namespace DeezSpoTag.Web.Controllers.Api
                 qualityCatalog.TryGetValue(engine.Engine, out var qualityOptions);
                 var qualityLabels = (qualityOptions ?? Array.Empty<QualityCatalog.QualityOption>())
                     .ToDictionary(option => option.Value, option => option.Label, StringComparer.OrdinalIgnoreCase);
-                return new
-                {
-                    engine = engine.Engine,
-                    label = sourceLabels.TryGetValue(engine.Engine, out var label) ? label : engine.Engine,
-                    enabled = engine.Enabled,
-                    qualities = engine.Qualities.Select(quality => new
-                    {
-                        quality = quality.Quality,
-                        label = qualityLabels.TryGetValue(quality.Quality, out var qualityLabel) ? qualityLabel : quality.Quality,
-                        enabled = quality.Enabled
-                    }).ToList()
-                };
+                return new DefaultDownloadEngineOrderOption(
+                    engine.Engine,
+                    sourceLabels.TryGetValue(engine.Engine, out var label) ? label : engine.Engine,
+                    engine.Enabled,
+                    engine.Qualities
+                        .Select(quality => new DefaultDownloadQualityOrderOption(
+                            quality.Quality,
+                            qualityLabels.TryGetValue(quality.Quality, out var qualityLabel) ? qualityLabel : quality.Quality,
+                            quality.Enabled))
+                        .ToList());
             }).ToList();
         }
+
+        private sealed record DefaultDownloadEngineOrderOption(
+            [property: JsonPropertyName("engine")] string Engine,
+            [property: JsonPropertyName("label")] string Label,
+            [property: JsonPropertyName("enabled")] bool Enabled,
+            [property: JsonPropertyName("qualities")] List<DefaultDownloadQualityOrderOption> Qualities);
+
+        private sealed record DefaultDownloadQualityOrderOption(
+            [property: JsonPropertyName("quality")] string Quality,
+            [property: JsonPropertyName("label")] string Label,
+            [property: JsonPropertyName("enabled")] bool Enabled);
 
         /// <summary>
         /// Save settings - EXACT PORT from deezspotag saveSettings.ts

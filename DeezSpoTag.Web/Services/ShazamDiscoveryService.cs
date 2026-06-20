@@ -282,10 +282,11 @@ public sealed partial class ShazamDiscoveryService
             {
                 await process.WaitForExitAsync(timeoutCts.Token);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
                 TryKillProcessTree(process);
                 _logger.LogWarning(
+                    ex,
                     "Shazam port discovery timed out: mode={Mode} python={Python} script={Script}",
                     mode,
                     python,

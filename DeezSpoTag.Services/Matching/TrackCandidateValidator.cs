@@ -121,21 +121,10 @@ public static class TrackCandidateValidator
             return Reject("title_mismatch");
         }
 
-        if (HasArtist(source))
+        var artistResult = ValidateArtist(source, candidate, options);
+        if (artistResult != null)
         {
-            if (!HasArtist(candidate))
-            {
-                if (!options.AllowMissingCandidateArtist)
-                {
-                    return Reject("missing_candidate_artist");
-                }
-            }
-            else if (options.StrictWithoutIsrc
-                     ? !TrackTitleMatcher.StrictArtistsMatch(source.Artist, candidate.Artist)
-                     : !TrackTitleMatcher.ArtistsMatch(source.Artist, candidate.Artist))
-            {
-                return Reject("artist_mismatch");
-            }
+            return artistResult;
         }
 
         var durationResult = ValidateDuration(
@@ -161,6 +150,27 @@ public static class TrackCandidateValidator
         }
 
         return Accept("metadata", ComputeMetadataScore(source, candidate));
+    }
+
+    private static TrackCandidateValidationResult? ValidateArtist(
+        TrackMatchSource source,
+        TrackMatchCandidate candidate,
+        TrackCandidateValidationOptions options)
+    {
+        if (!HasArtist(source))
+        {
+            return null;
+        }
+
+        if (!HasArtist(candidate))
+        {
+            return options.AllowMissingCandidateArtist ? null : Reject("missing_candidate_artist");
+        }
+
+        var artistsMatch = options.StrictWithoutIsrc
+            ? TrackTitleMatcher.StrictArtistsMatch(source.Artist, candidate.Artist)
+            : TrackTitleMatcher.ArtistsMatch(source.Artist, candidate.Artist);
+        return artistsMatch ? null : Reject("artist_mismatch");
     }
 
     private static TrackCandidateValidationResult? ValidateDuration(

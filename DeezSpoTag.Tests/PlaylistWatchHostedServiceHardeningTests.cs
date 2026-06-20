@@ -246,14 +246,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     [Fact]
     public async Task RunOnce_HighVolumePlaylistLoad_FailFastAvoidsNoopFullSweep()
     {
-        var apiController = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            _provider.GetRequiredService<PlaylistWatchService>(),
-            playlistSyncService: null!,
-            _playlistVisualService,
-            CreateProfileResolutionService(),
-            queueRepository: null!);
+        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
 
         var total = 220;
         for (var index = 0; index < total; index++)
@@ -358,14 +351,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("spotify", "pl-cache-only", new PlaylistWatchlistMetadataInput("Cache Only", null, null, null));
 
-        var apiController = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            _provider.GetRequiredService<PlaylistWatchService>(),
-            playlistSyncService: null!,
-            _playlistVisualService,
-            CreateProfileResolutionService(),
-            queueRepository: null!);
+        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
 
         var rejected = await apiController.GetAll(CancellationToken.None, refreshFromSource: true);
         var badRequest = Assert.IsType<BadRequestObjectResult>(rejected);
@@ -383,14 +369,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("spotify", "pl-trigger-scheduled", new PlaylistWatchlistMetadataInput("Scheduled", null, null, null));
 
-        var apiController = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            _provider.GetRequiredService<PlaylistWatchService>(),
-            playlistSyncService: null!,
-            _playlistVisualService,
-            CreateProfileResolutionService(),
-            queueRepository: null!);
+        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
 
         var result = await apiController.TriggerAll(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -428,14 +407,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 FailureCount: 2),
             CancellationToken.None);
 
-        var controller = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            _provider.GetRequiredService<PlaylistWatchService>(),
-            playlistSyncService: null!,
-            _playlistVisualService,
-            CreateProfileResolutionService(),
-            queueRepository: null!);
+        var controller = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
 
         var result = await controller.GetWatchRuntime(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -562,6 +534,18 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             _repository,
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
+
+    private LibraryPlaylistWatchlistApiController CreatePlaylistWatchlistController(PlaylistWatchService playlistWatchService)
+        => new(new LibraryPlaylistWatchlistDependencies
+        {
+            Repository = _repository,
+            ConfigStore = _configStore,
+            PlaylistWatchService = playlistWatchService,
+            PlaylistSyncService = null!,
+            PlaylistVisualService = _playlistVisualService,
+            QueueRepository = null!,
+            ProfileResolutionService = CreateProfileResolutionService()
+        });
 
     private sealed class StubHostEnvironment : IHostEnvironment
     {

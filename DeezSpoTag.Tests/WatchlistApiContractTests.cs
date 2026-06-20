@@ -72,14 +72,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     [Fact]
     public async Task PlaylistWatchlist_AddStatusRemove_IsIdempotent_And_Normalized()
     {
-        var controller = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            playlistWatchService: null!,
-            playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService(),
-            queueRepository: null!);
+        var controller = CreatePlaylistWatchlistController();
 
         var addResultOne = await controller.Add(
             new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
@@ -139,14 +132,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     [Fact]
     public async Task PlaylistWatchlist_Add_InvalidRequest_ReturnsBadRequest()
     {
-        var controller = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            playlistWatchService: null!,
-            playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService(),
-            queueRepository: null!);
+        var controller = CreatePlaylistWatchlistController();
 
         var result = await controller.Add(
             new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
@@ -164,14 +150,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     [Fact]
     public async Task PlaylistWatchlist_PriorityOrder_RequiresCompleteOrder_And_FocusesFirstPlaylist()
     {
-        var controller = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            playlistWatchService: null!,
-            playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService(),
-            queueRepository: null!);
+        var controller = CreatePlaylistWatchlistController();
 
         await _repository.AddPlaylistWatchlistAsync(
             "spotify",
@@ -241,14 +220,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     public async Task PlaylistWatchlist_Add_AppliesSavedGlobalRoutingRules()
     {
         var routeFolder = await AddEligibleFolderAsync("Route Folder", "/music/route");
-        var controller = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            playlistWatchService: null!,
-            playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService(),
-            queueRepository: null!);
+        var controller = CreatePlaylistWatchlistController();
 
         var applyResult = await controller.ApplyRoutingRulesGlobally(
             "spotify",
@@ -287,14 +259,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     {
         var defaultFolder = await AddEligibleFolderAsync("Default Folder", "/music/default");
         var routeFolder = await AddEligibleFolderAsync("Route Folder", "/music/route");
-        var controller = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            playlistWatchService: null!,
-            playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService(),
-            queueRepository: null!);
+        var controller = CreatePlaylistWatchlistController();
 
         var applyResult = await controller.ApplyRoutingRulesGlobally(
             "spotify",
@@ -440,6 +405,18 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             _repository,
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
+
+    private LibraryPlaylistWatchlistApiController CreatePlaylistWatchlistController()
+        => new(new LibraryPlaylistWatchlistDependencies
+        {
+            Repository = _repository,
+            ConfigStore = _configStore,
+            PlaylistWatchService = null!,
+            PlaylistSyncService = null!,
+            PlaylistVisualService = _playlistVisualService,
+            QueueRepository = null!,
+            ProfileResolutionService = CreateProfileResolutionService()
+        });
 
     private sealed class StubHostEnvironment : IHostEnvironment
     {

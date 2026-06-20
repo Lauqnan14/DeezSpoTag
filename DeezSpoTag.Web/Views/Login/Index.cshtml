@@ -14,24 +14,39 @@
         && initialQobuzAuth.AuthTokenValid != false;
     var initialTidalConnected = initialTidalAuth?.CredentialsValid == true;
     var initialSoulseekConnected = initialSoulseekAuth?.ConnectionValid == true;
-    var initialQobuzName = string.IsNullOrWhiteSpace(initialQobuzAuth?.DisplayName)
-        ? "Official Qobuz API"
-        : initialQobuzAuth.DisplayName;
+    var initialQobuzName = ResolveDisplayName(initialQobuzAuth?.DisplayName, "Official Qobuz API");
     var initialQobuzStatus = ResolveInitialQobuzStatus(initialQobuzAuth, initialQobuzConnected);
-    var initialTidalName = string.IsNullOrWhiteSpace(initialTidalAuth?.UserId)
-        ? "Official Tidal API"
-        : $"Tidal user {initialTidalAuth.UserId}";
-    var initialTidalStatus = initialTidalConnected
-        ? $"{(string.IsNullOrWhiteSpace(initialTidalAuth?.CountryCode) ? "US" : initialTidalAuth.CountryCode)} | official credentials validated"
-        : "Tidal credentials are not connected.";
-    var initialSoulseekName = string.IsNullOrWhiteSpace(initialSoulseekAuth?.Username)
-        ? "slskd"
-        : initialSoulseekAuth.Username;
-    var initialSoulseekStatus = initialSoulseekConnected
-        ? "Connected to Soulseek"
-        : string.IsNullOrWhiteSpace(initialSoulseekAuth?.LastError)
-            ? "Soulseek is not configured"
-            : initialSoulseekAuth.LastError;
+    var initialTidalName = ResolveTidalName(initialTidalAuth?.UserId);
+    var initialTidalStatus = ResolveInitialTidalStatus(initialTidalAuth, initialTidalConnected);
+    var initialSoulseekName = ResolveDisplayName(initialSoulseekAuth?.Username, "slskd");
+    var initialSoulseekStatus = ResolveInitialSoulseekStatus(initialSoulseekAuth, initialSoulseekConnected);
+
+    static string ResolveDisplayName(string? value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value;
+
+    static string ResolveTidalName(string? userId)
+        => string.IsNullOrWhiteSpace(userId) ? "Official Tidal API" : $"Tidal user {userId}";
+
+    static string ResolveInitialTidalStatus(TidalAuth? auth, bool connected)
+    {
+        if (!connected)
+        {
+            return "Tidal credentials are not connected.";
+        }
+
+        var countryCode = string.IsNullOrWhiteSpace(auth?.CountryCode) ? "US" : auth.CountryCode;
+        return $"{countryCode} | official credentials validated";
+    }
+
+    static string ResolveInitialSoulseekStatus(SoulseekAuth? auth, bool connected)
+    {
+        if (connected)
+        {
+            return "Connected to Soulseek";
+        }
+
+        return string.IsNullOrWhiteSpace(auth?.LastError) ? "Soulseek is not configured" : auth.LastError;
+    }
 
     static string ResolveInitialQobuzStatus(QobuzAuth? auth, bool connected)
     {
@@ -42,12 +57,8 @@
 
         if (auth?.AuthTokenValid == true)
         {
-            var country = string.IsNullOrWhiteSpace(auth.Country)
-                ? (string.IsNullOrWhiteSpace(auth.Zone) ? "Country unavailable" : auth.Zone)
-                : auth.Country;
-            var subscription = string.IsNullOrWhiteSpace(auth.CredentialLabel)
-                ? auth.SubscriptionOffer
-                : auth.CredentialLabel;
+            var country = ResolveDisplayName(auth.Country, ResolveDisplayName(auth.Zone, "Country unavailable"));
+            var subscription = ResolveDisplayName(auth.CredentialLabel, auth.SubscriptionOffer ?? string.Empty);
             return string.IsNullOrWhiteSpace(subscription) ? country : $"{country} | {subscription}";
         }
 

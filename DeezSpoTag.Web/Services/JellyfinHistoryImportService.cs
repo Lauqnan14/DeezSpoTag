@@ -76,12 +76,15 @@ public sealed class JellyfinHistoryImportService
             stats.Inserted++;
         }
 
-        _logger.LogInformation(
-            "Imported {Count} Jellyfin history entries. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
-            stats.Inserted,
-            stats.ResolvedByFilePath,
-            stats.ResolvedByMetadata,
-            stats.Unresolved);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Imported {Count} Jellyfin history entries. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
+                stats.Inserted,
+                stats.ResolvedByFilePath,
+                stats.ResolvedByMetadata,
+                stats.Unresolved);
+        }
 
         return stats.Inserted;
     }

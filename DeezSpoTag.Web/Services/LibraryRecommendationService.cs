@@ -34,6 +34,7 @@ public sealed class LibraryRecommendationService
 
     public const string RecommendationSource = "recommendations";
     public const string RecommendationSourceId = "daily-rotation";
+    private const string DeezerSource = "deezer";
     private const string StatusMatched = "matched";
     private const string StatusMatchedNoRelated = "matched_no_related";
     private const string StatusMatchedNoDeezerResolution = "matched_no_deezer_resolution";
@@ -1406,7 +1407,7 @@ public sealed class LibraryRecommendationService
         }
 
         var merged = MergeRotating(
-            OrderDeterministically(deezerTracks, dayUtc, "deezer"),
+            OrderDeterministically(deezerTracks, dayUtc, DeezerSource),
             OrderDeterministically(shazamTracks, dayUtc, "shazam"),
             RecommendationPoolLimit,
             dayUtc);
@@ -1628,7 +1629,7 @@ public sealed class LibraryRecommendationService
         }
     }
 
-    private string SelectBestDeezerSeedCandidateId(
+    private static string SelectBestDeezerSeedCandidateId(
         DeezerSearchResult? result,
         LibraryRecommendationSeedTrackDto seed)
     {
@@ -1708,7 +1709,7 @@ public sealed class LibraryRecommendationService
 
         await _repository.UpsertTrackSourceLinkAsync(
             trackId,
-            "deezer",
+            DeezerSource,
             normalizedId,
             $"https://www.deezer.com/track/{normalizedId}",
             cancellationToken: cancellationToken);
@@ -2414,9 +2415,7 @@ public sealed class LibraryRecommendationService
             trackId,
             deezerResolveCache,
             cancellationToken);
-        var status = relatedRecommendations.Count > 0
-            ? StatusMatched
-            : similarCards.Count > 0 ? StatusMatchedNoDeezerResolution : StatusMatchedNoRelated;
+        var status = ResolveShazamSimilarStatus(relatedRecommendations.Count, similarCards.Count);
         var failureReason = status switch
         {
             StatusMatchedNoDeezerResolution => "Shazam similar tracks did not resolve to Deezer tracks.",
@@ -2681,7 +2680,7 @@ public sealed class LibraryRecommendationService
         }
     }
 
-    private static IReadOnlyList<ShazamTrackCard> MergeShazamSimilarCards(
+    private static List<ShazamTrackCard> MergeShazamSimilarCards(
         IReadOnlyList<ShazamTrackCard> relatedCards,
         IReadOnlyList<ShazamTrackCard> searchCards,
         RecognizedShazamTrack recognizedTrack)
@@ -2692,6 +2691,16 @@ public sealed class LibraryRecommendationService
         AddShazamSimilarCards(relatedCards, output, seen, matchedIdentity);
         AddShazamSimilarCards(searchCards, output, seen, matchedIdentity);
         return output;
+    }
+
+    private static string ResolveShazamSimilarStatus(int relatedRecommendationCount, int similarCardCount)
+    {
+        if (relatedRecommendationCount > 0)
+        {
+            return StatusMatched;
+        }
+
+        return similarCardCount > 0 ? StatusMatchedNoDeezerResolution : StatusMatchedNoRelated;
     }
 
     private static void AddShazamSimilarCards(
@@ -3236,7 +3245,7 @@ public sealed class LibraryRecommendationService
             return false;
         }
 
-        if (string.Equals(uri.Scheme, "deezer", StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(uri.Scheme, DeezerSource, StringComparison.OrdinalIgnoreCase)
             && string.Equals(uri.Host, "track", StringComparison.OrdinalIgnoreCase))
         {
             var deezerPath = uri.AbsolutePath.Trim('/');
@@ -3337,7 +3346,7 @@ public sealed class LibraryRecommendationService
             : deezerUrl;
         await _repository.UpsertTrackSourceLinkAsync(
             trackId,
-            "deezer",
+            DeezerSource,
             deezerId,
             resolvedDeezerUrl,
             cancellationToken: cancellationToken);

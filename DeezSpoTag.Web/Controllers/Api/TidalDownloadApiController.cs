@@ -24,12 +24,10 @@ public sealed class TidalDownloadApiController : ControllerBase
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly DownloadDedupeService _dedupeService;
-    private readonly TidalDownloadService _tidalDownloadService;
     private readonly ILogger<TidalDownloadApiController> _logger;
 
     public TidalDownloadApiController(
         DownloadControllerServices services,
-        TidalDownloadService tidalDownloadService,
         ILogger<TidalDownloadApiController> logger)
     {
         _queueRepository = services.QueueRepository;
@@ -39,7 +37,6 @@ public sealed class TidalDownloadApiController : ControllerBase
         _spotifyIdResolver = services.SpotifyIdResolver;
         _libraryRepository = services.LibraryRepository;
         _dedupeService = services.DedupeService;
-        _tidalDownloadService = tidalDownloadService;
         _logger = logger;
     }
 
@@ -50,30 +47,6 @@ public sealed class TidalDownloadApiController : ControllerBase
     [HttpPost("videos/download")]
     public async Task<IActionResult> EnqueueVideo([FromBody] TidalDownloadBatchRequest request)
         => await EnqueueCoreAsync(request, forceVideo: true);
-
-    [HttpGet("videos/preview")]
-    public async Task<IActionResult> PreviewVideo([FromQuery] long id, CancellationToken cancellationToken)
-    {
-        if (id <= 0)
-        {
-            return BadRequest(new { error = "Invalid Tidal video ID." });
-        }
-
-        try
-        {
-            var streamUrl = await _tidalDownloadService.ResolveVideoStreamUrlAsync(id, cancellationToken);
-            return Redirect(streamUrl);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(ex, "Tidal video stream lookup failed for {VideoId}.", id);
-            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Tidal video stream lookup failed." });
-        }
-    }
 
     private async Task<IActionResult> EnqueueCoreAsync(TidalDownloadBatchRequest request, bool forceVideo)
     {
@@ -197,6 +170,48 @@ public sealed class TidalDownloadApiController : ControllerBase
         return match.Groups["id"].Value;
     }
 
+}
+
+[ApiController]
+[Route("api/tidal/download/videos")]
+[Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
+public sealed class TidalVideoPreviewApiController : ControllerBase
+{
+    private readonly TidalDownloadService _tidalDownloadService;
+    private readonly ILogger<TidalVideoPreviewApiController> _logger;
+
+    public TidalVideoPreviewApiController(
+        TidalDownloadService tidalDownloadService,
+        ILogger<TidalVideoPreviewApiController> logger)
+    {
+        _tidalDownloadService = tidalDownloadService;
+        _logger = logger;
+    }
+
+    [HttpGet("preview")]
+    public async Task<IActionResult> PreviewVideo([FromQuery] long id, CancellationToken cancellationToken)
+    {
+        if (id <= 0)
+        {
+            return BadRequest(new { error = "Invalid Tidal video ID." });
+        }
+
+        try
+        {
+            var streamUrl = await _tidalDownloadService.ResolveVideoStreamUrlAsync(id, cancellationToken);
+            return Redirect(streamUrl);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Tidal video stream lookup failed for {VideoId}.", id);
+            return StatusCode(StatusCodes.Status502BadGateway, new { error = "Tidal video stream lookup failed." });
+        }
+    }
 }
 
 public sealed class TidalDownloadBatchRequest : EngineDownloadBatchRequestBase

@@ -36,37 +36,22 @@ public static class FallbackPayloadNormalizer
             return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
-        if (payloadAutoSources.Count > 0)
+        if (TryResolveAutoSources(item, payloadQuality, payloadAutoSources, payloadFallbackPlan, out var autoSourceState))
         {
-            var normalizedAutoSources = NormalizeEncodedSources(payloadAutoSources);
-            if (normalizedAutoSources.Count > 0)
-            {
-                var firstStep = DecodeOrDefault(normalizedAutoSources[0], item.Engine, payloadQuality);
-                var normalizedFallbackPlan = ShouldReuseFallbackPlan(payloadFallbackPlan, normalizedAutoSources)
-                    ? payloadFallbackPlan
-                    : BuildDirectUrlPlanFromAutoSources(normalizedAutoSources);
-                return new CanonicalFallbackState(normalizedAutoSources, normalizedFallbackPlan, firstStep);
-            }
+            return autoSourceState;
         }
 
         if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
         {
             var engine = IsAtmosEngine(item.Engine) ? item.Engine! : "apple";
-            var quality = string.IsNullOrWhiteSpace(payloadQuality)
-                ? (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase) ? "DOLBY_ATMOS" : "ATMOS")
-                : payloadQuality;
+            var quality = ResolveAtmosQuality(engine, payloadQuality);
             var firstStep = new DownloadSourceOrder.AutoSourceStep(engine, quality);
             return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
-        if (payloadFallbackPlan.Count > 0)
+        if (TryResolveFallbackPlan(item, payloadQuality, payloadFallbackPlan, out var planState))
         {
-            var normalizedAutoSources = NormalizePlanSources(payloadFallbackPlan);
-            if (normalizedAutoSources.Count > 0)
-            {
-                var firstStep = DecodeOrDefault(normalizedAutoSources[0], item.Engine, payloadQuality);
-                return new CanonicalFallbackState(normalizedAutoSources, payloadFallbackPlan, firstStep);
-            }
+            return planState;
         }
 
         var effectiveSettings = ResolveFallbackSettings(settings, payloadObj);
@@ -88,6 +73,66 @@ public static class FallbackPayloadNormalizer
             })
             .ToList();
         return new CanonicalFallbackState(resolvedAutoSources, resolvedFallbackPlan, resolvedFirstStep);
+    }
+
+    private static bool TryResolveAutoSources(
+        DownloadQueueItem item,
+        string? payloadQuality,
+        List<string> payloadAutoSources,
+        List<FallbackPlanStep> payloadFallbackPlan,
+        out CanonicalFallbackState state)
+    {
+        state = default!;
+        if (payloadAutoSources.Count == 0)
+        {
+            return false;
+        }
+
+        var normalizedAutoSources = NormalizeEncodedSources(payloadAutoSources);
+        if (normalizedAutoSources.Count == 0)
+        {
+            return false;
+        }
+
+        var firstStep = DecodeOrDefault(normalizedAutoSources[0], item.Engine, payloadQuality);
+        var normalizedFallbackPlan = ShouldReuseFallbackPlan(payloadFallbackPlan, normalizedAutoSources)
+            ? payloadFallbackPlan
+            : BuildDirectUrlPlanFromAutoSources(normalizedAutoSources);
+        state = new CanonicalFallbackState(normalizedAutoSources, normalizedFallbackPlan, firstStep);
+        return true;
+    }
+
+    private static bool TryResolveFallbackPlan(
+        DownloadQueueItem item,
+        string? payloadQuality,
+        List<FallbackPlanStep> payloadFallbackPlan,
+        out CanonicalFallbackState state)
+    {
+        state = default!;
+        if (payloadFallbackPlan.Count == 0)
+        {
+            return false;
+        }
+
+        var normalizedAutoSources = NormalizePlanSources(payloadFallbackPlan);
+        if (normalizedAutoSources.Count == 0)
+        {
+            return false;
+        }
+
+        var firstStep = DecodeOrDefault(normalizedAutoSources[0], item.Engine, payloadQuality);
+        state = new CanonicalFallbackState(normalizedAutoSources, payloadFallbackPlan, firstStep);
+        return true;
+    }
+
+    private static string ResolveAtmosQuality(string engine, string? payloadQuality)
+    {
+        if (!string.IsNullOrWhiteSpace(payloadQuality))
+        {
+            return payloadQuality;
+        }
+
+        return string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase) ? "DOLBY_ATMOS" : "ATMOS";
     }
 
     private static DeezSpoTagSettings ResolveFallbackSettings(DeezSpoTagSettings settings, JsonObject payloadObj)

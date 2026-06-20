@@ -140,7 +140,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
         try
         {
             var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance);
-            var decision = await service.CheckFinalDestinationAsync(new DownloadDedupeRequest
+            var decision = await DownloadDedupeService.CheckFinalDestinationAsync(new DownloadDedupeRequest
             {
                 TrackTitle = "Track",
                 TrackArtist = "Artist",
@@ -165,7 +165,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
         try
         {
             var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance);
-            var decision = await service.CheckFinalDestinationAsync(new DownloadDedupeRequest
+            var decision = await DownloadDedupeService.CheckFinalDestinationAsync(new DownloadDedupeRequest
             {
                 TrackTitle = "Track",
                 TrackArtist = "Artist",

@@ -20,8 +20,6 @@ namespace DeezSpoTag.Services.Library;
 [SuppressMessage("Major Code Smell", "S1192", Justification = "SQL statements intentionally embed domain literals for stable query plans and readability.")]
 public sealed class LibraryRepository
 {
-    private const string FolderContentMusic = "music";
-    private const string FolderContentAtmos = "atmos";
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
 
@@ -6158,33 +6156,51 @@ SELECT id,
 FROM playlist_watchlist
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
-        PlaylistWatchlistDto item;
+        var item = await ReadPlaylistWatchlistEntryAsync(
+            connection,
+            transaction,
+            selectSql,
+            normalizedSource,
+            normalizedSourceId,
+            cancellationToken);
+        if (item is null)
         {
-            await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
-            selectCommand.Parameters.AddWithValue(SourceField, normalizedSource);
-            selectCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-            await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken))
-            {
-                await transaction.RollbackAsync(cancellationToken);
-                return null;
-            }
-
-            var created = await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7));
-            item = new PlaylistWatchlistDto(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
-                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
-                created,
-                SyncPriority: await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetInt32(8));
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
         }
 
         await transaction.CommitAsync(cancellationToken);
         return item;
+    }
+
+    private static async Task<PlaylistWatchlistDto?> ReadPlaylistWatchlistEntryAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string selectSql,
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
+        selectCommand.Parameters.AddWithValue(SourceField, source);
+        selectCommand.Parameters.AddWithValue(SourceIdField, sourceId);
+        await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var created = await reader.IsDBNullAsync(7, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(7));
+        return new PlaylistWatchlistDto(
+            reader.GetInt64(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
+            created,
+            SyncPriority: await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetInt32(8));
     }
 
     private static async Task<bool> PlaylistWatchlistEntryExistsAsync(
@@ -10616,32 +10632,6 @@ WHERE source = @source
 
     private static string BuildAlbumKey(string artistName, string albumTitle)
         => $"{artistName}|{albumTitle}";
-
-    private static string ResolveFolderContentType(string? desiredQuality)
-    {
-        var normalized = (desiredQuality ?? string.Empty).Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return FolderContentMusic;
-        }
-
-        if (normalized.Contains("atmos", StringComparison.Ordinal))
-        {
-            return FolderContentAtmos;
-        }
-
-        if (normalized.Contains(FolderContentVideo, StringComparison.Ordinal))
-        {
-            return FolderContentVideo;
-        }
-
-        if (normalized.Contains(FolderContentPodcast, StringComparison.Ordinal))
-        {
-            return FolderContentPodcast;
-        }
-
-        return FolderContentMusic;
-    }
 
     private static bool HaveRoutingRulesChanged(
         IReadOnlyList<PlaylistTrackRoutingRule>? current,

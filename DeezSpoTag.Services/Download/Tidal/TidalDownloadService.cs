@@ -32,6 +32,7 @@ public sealed class TidalDownloadService
     private const string TidalPublicCountryCode = "US";
     private const string TidalPublicLocale = "en_US";
     private const string TidalPublicDeviceType = "BROWSER";
+    private static readonly string[] PlaylistLineSeparators = { "\r\n", "\n" };
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -47,17 +48,14 @@ public sealed class TidalDownloadService
     private readonly TidalApiProviderSource _providerSource;
     private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
     private readonly ITidalAccessTokenProvider _accessTokenProvider;
-    private readonly DownloadDedupeService _dedupeService;
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
-        DownloadDedupeService dedupeService,
         TidalApiProviderSource providerSource,
         ITidalAccessTokenProvider accessTokenProvider,
         SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
     {
         _logger = logger;
-        _dedupeService = dedupeService;
         _providerSource = providerSource;
         _accessTokenProvider = accessTokenProvider;
         _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
@@ -816,12 +814,12 @@ public sealed class TidalDownloadService
         await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
     }
 
-    private async Task EnsureFinalDestinationAllowedAsync(
+    private static async Task EnsureFinalDestinationAllowedAsync(
         TidalDownloadRequest request,
         string outputPath,
         CancellationToken cancellationToken)
     {
-        var decision = await _dedupeService.CheckFinalDestinationAsync(
+        var decision = await DownloadDedupeService.CheckFinalDestinationAsync(
             DownloadDedupeService.FromEngineDownloadRequest(request, outputPath),
             cancellationToken);
         if (!decision.Allowed)
@@ -1572,7 +1570,7 @@ public sealed class TidalDownloadService
 
         if (allowRefresh)
         {
-            await _providerSource.RefreshAsync(force: true, cancellationToken);
+            await TidalApiProviderSource.RefreshAsync(force: true, cancellationToken);
             return await GetDownloadUrlCandidatesAsync(trackId, quality, allowRefresh: false, cancellationToken);
         }
 
@@ -1643,7 +1641,7 @@ public sealed class TidalDownloadService
         }
 
         var lines = playlist
-            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+            .Split(PlaylistLineSeparators, StringSplitOptions.None)
             .Select(static line => line.Trim())
             .ToList();
 
@@ -1737,7 +1735,7 @@ public sealed class TidalDownloadService
         return string.Empty;
     }
 
-    private async Task DownloadVideoStreamWithFfmpegAsync(
+    private static async Task DownloadVideoStreamWithFfmpegAsync(
         string streamUrl,
         string outputPath,
         Func<double, double, Task>? progressCallback,
@@ -1824,7 +1822,11 @@ public sealed class TidalDownloadService
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 stopwatch.Stop();
-                _logger.LogDebug(ex, "Tidal public provider health check failed for {Provider}", provider);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Tidal public provider health check failed for {Provider}", provider);
+                }
+
                 await _providerSource.RememberFailureAsync(provider, "transient", stopwatch.ElapsedMilliseconds, cancellationToken);
             }
         }

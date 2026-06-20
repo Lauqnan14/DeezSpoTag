@@ -196,7 +196,7 @@ function getSoundtrackSearchQuery(category = soundtrackState.category) {
 function normalizeSoundtrackSearchValue(value) {
     return String(value || '')
         .normalize('NFKD')
-        .replace(/[\u0300-\u036f]/g, '')
+        .replaceAll(/[\u0300-\u036f]/g, '')
         .toLocaleLowerCase();
 }
 
@@ -1329,11 +1329,7 @@ async function loadSoundtrackTargetItemsLazy(target, state, forceServerRefresh) 
         merged: state.merged,
         isStale: () => isSoundtrackLazyLoadStale(state)
     });
-    if (stale) {
-        return true;
-    }
-
-    return false;
+    return Boolean(stale);
 }
 
 async function loadSoundtrackItemsLazy(configuration, category, requestId, forceServerRefresh = false) {

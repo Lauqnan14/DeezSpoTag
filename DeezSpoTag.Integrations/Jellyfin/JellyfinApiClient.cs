@@ -10,6 +10,8 @@ public class JellyfinApiClient
 {
     private const string EmbyTokenHeader = "X-Emby-Token";
     private const string OverviewProperty = "Overview";
+    private const string RecursiveQuerySegment = "?Recursive=true";
+    private const string RecursiveQueryParameter = "&Recursive=true";
     private const int JellyfinTimeTicksPerMillisecond = 10_000;
     private readonly HttpClient _httpClient;
 
@@ -194,7 +196,7 @@ public class JellyfinApiClient
             query.Clear();
             query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
             query.Append($"?ParentId={Uri.EscapeDataString(libraryId)}");
-            query.Append("&Recursive=true");
+            query.Append(RecursiveQueryParameter);
             query.Append("&SortBy=SortName");
             query.Append("&SortOrder=Ascending");
             query.Append("&IncludeItemTypes=Movie,Series");
@@ -249,7 +251,7 @@ public class JellyfinApiClient
         var query = new StringBuilder();
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
         query.Append($"?ParentId={Uri.EscapeDataString(libraryId)}");
-        query.Append("&Recursive=true");
+        query.Append(RecursiveQueryParameter);
         query.Append("&SortBy=DateCreated");
         query.Append("&SortOrder=Descending");
         query.Append("&IncludeItemTypes=Movie,Series");
@@ -339,7 +341,7 @@ public class JellyfinApiClient
 
         var query = new StringBuilder();
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
-        query.Append("?Recursive=true");
+        query.Append(RecursiveQuerySegment);
         query.Append("&IncludeItemTypes=Audio");
         query.Append("&Fields=RunTimeTicks,AlbumArtists,Artists");
         query.Append("&Limit=25");
@@ -383,7 +385,7 @@ public class JellyfinApiClient
 
         var query = new StringBuilder();
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
-        query.Append("?Recursive=true");
+        query.Append(RecursiveQuerySegment);
         query.Append("&IncludeItemTypes=Audio");
         query.Append("&Filters=IsPlayed");
         query.Append("&SortBy=DatePlayed");
@@ -433,7 +435,7 @@ public class JellyfinApiClient
 
         var query = new StringBuilder();
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
-        query.Append("?Recursive=true");
+        query.Append(RecursiveQuerySegment);
         query.Append("&IncludeItemTypes=Playlist");
         query.Append("&Limit=200");
         query.Append($"&SearchTerm={Uri.EscapeDataString(playlistName)}");
@@ -474,7 +476,7 @@ public class JellyfinApiClient
 
         var query = new StringBuilder();
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
-        query.Append("?Recursive=true");
+        query.Append(RecursiveQuerySegment);
         query.Append("&IncludeItemTypes=Playlist");
         query.Append("&SortBy=SortName");
         query.Append("&SortOrder=Ascending");

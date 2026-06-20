@@ -30,7 +30,9 @@ public sealed class DownloadQueueWakeSignalTests
         signal.Pulse();
         signal.Pulse();
 
+        var startedAt = DateTimeOffset.UtcNow;
         await signal.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None);
+        Assert.True(DateTimeOffset.UtcNow - startedAt < TimeSpan.FromSeconds(1));
     }
 
     [Fact]

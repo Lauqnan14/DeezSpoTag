@@ -888,7 +888,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         return state?.LastCheckedUtc;
     }
 
-    private WatchItem? ResolveActivePlaylistItem(
+    private static WatchItem? ResolveActivePlaylistItem(
         IReadOnlyList<WatchItem> playlistItems,
         WatchlistSchedulerStateDto? state)
     {
@@ -936,7 +936,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             && now - state.ActiveStartedUtc.Value > TimeSpan.FromSeconds(Math.Max(60, intervalSeconds));
     }
 
-    private WatchItem? ResolveNextPlaylistItem(IReadOnlyList<WatchItem> playlistItems)
+    private static WatchItem? ResolveNextPlaylistItem(IReadOnlyList<WatchItem> playlistItems)
     {
         if (playlistItems.Count == 0)
         {
@@ -946,7 +946,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         return playlistItems.FirstOrDefault(item => item.Kind == PlaylistKind && item.Playlist != null);
     }
 
-    private async Task<WatchItem?> AdvanceToNextPlaylistAsync(
+    private static async Task<WatchItem?> AdvanceToNextPlaylistAsync(
         IReadOnlyList<WatchItem> playlistItems,
         LibraryRepository repository,
         WatchItem? currentItem,

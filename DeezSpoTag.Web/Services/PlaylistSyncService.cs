@@ -11,6 +11,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PlaylistSyncService
 {
+    private const string PlaylistNotAvailableMessage = "Playlist not available.";
     private sealed record PlexConnection(string Url, string Token, string MachineIdentifier);
     private sealed record JellyfinConnection(string Url, string ApiKey, string UserId);
 
@@ -430,7 +431,7 @@ public sealed class PlaylistSyncService
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
-            return PlaylistSyncResult.Failed("Playlist not available.");
+            return PlaylistSyncResult.Failed(PlaylistNotAvailableMessage);
         }
 
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
@@ -478,7 +479,7 @@ public sealed class PlaylistSyncService
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
-            return PlaylistSyncResult.Failed("Playlist not available.");
+            return PlaylistSyncResult.Failed(PlaylistNotAvailableMessage);
         }
 
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
@@ -584,7 +585,7 @@ public sealed class PlaylistSyncService
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
-            return new PlaylistAvailabilitySummary(null, 0, 0, 0, 0, Array.Empty<PlaylistTrackAvailability>(), "Playlist not available.");
+            return new PlaylistAvailabilitySummary(null, 0, 0, 0, 0, Array.Empty<PlaylistTrackAvailability>(), PlaylistNotAvailableMessage);
         }
 
         var service = await ResolveTargetServiceAsync(preference, cancellationToken);
@@ -740,7 +741,7 @@ public sealed class PlaylistSyncService
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
-            return PlaylistSyncResult.Failed("Playlist not available.");
+            return PlaylistSyncResult.Failed(PlaylistNotAvailableMessage);
         }
 
         if (!ShouldSyncPlaylistArtwork(preference))

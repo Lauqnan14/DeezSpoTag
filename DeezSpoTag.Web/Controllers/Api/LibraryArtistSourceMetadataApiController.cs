@@ -15,6 +15,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     private const string AppleSource = "apple";
     private const string TidalSource = "tidal";
     private const string QobuzSource = "qobuz";
+    private const string LibraryDbNotConfiguredMessage = "Library DB not configured.";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly SpotifyArtistService _spotifyArtistService;
@@ -162,7 +163,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            return BadRequest("Library DB not configured.");
+            return BadRequest(LibraryDbNotConfiguredMessage);
         }
 
         var artist = await _repository.GetArtistAsync(id, cancellationToken);
@@ -204,7 +205,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 
         if (!_repository.IsConfigured)
         {
-            return BadRequest("Library DB not configured.");
+            return BadRequest(LibraryDbNotConfiguredMessage);
         }
 
         var artist = await _repository.GetArtistAsync(id, cancellationToken);
@@ -257,7 +258,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 
         if (!_repository.IsConfigured)
         {
-            return BadRequest("Library DB not configured.");
+            return BadRequest(LibraryDbNotConfiguredMessage);
         }
 
         var appleId = request.AppleId.Trim();
@@ -294,7 +295,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 
         if (!_repository.IsConfigured)
         {
-            return BadRequest("Library DB not configured.");
+            return BadRequest(LibraryDbNotConfiguredMessage);
         }
 
         var artist = await _repository.GetArtistAsync(id, cancellationToken);
@@ -341,7 +342,7 @@ public sealed class LibraryArtistSourceMetadataApiController : ControllerBase
 
         if (!_repository.IsConfigured)
         {
-            return BadRequest("Library DB not configured.");
+            return BadRequest(LibraryDbNotConfiguredMessage);
         }
 
         var artist = await _repository.GetArtistAsync(id, cancellationToken);

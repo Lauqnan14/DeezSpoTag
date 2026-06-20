@@ -18,6 +18,7 @@ public sealed class TidalSearchApiController : ControllerBase
     private const string PlaylistType = "playlist";
     private const string VideoType = "video";
     private const string AtmosType = "atmos";
+    private const string ArtistProperty = "artist";
     private const string TitleProperty = "title";
     private static readonly HashSet<string> AllowedTypes = new(StringComparer.Ordinal)
     {
@@ -234,17 +235,6 @@ public sealed class TidalSearchApiController : ControllerBase
         return await client.SendAsync(request, cancellationToken);
     }
 
-    private async Task<HttpResponseMessage> SendTidalRequestAsync(
-        string requestUrl,
-        string token,
-        CancellationToken cancellationToken)
-    {
-        var client = _httpClientFactory.CreateClient();
-        using var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        return await client.SendAsync(request, cancellationToken);
-    }
-
     private static List<JsonElement> ExtractSearchItems(JsonElement root, string endpointType)
     {
         if (TryGetItemsArray(root, out var directItems))
@@ -325,10 +315,10 @@ public sealed class TidalSearchApiController : ControllerBase
     {
         var id = GetAnyString(item, "id");
         var url = GetString(item, "url");
-        var artist = item.TryGetProperty("artist", out var artistNode)
+        var artist = item.TryGetProperty(ArtistProperty, out var artistNode)
             ? GetString(artistNode, "name")
             : string.Empty;
-        var artistId = item.TryGetProperty("artist", out artistNode)
+        var artistId = item.TryGetProperty(ArtistProperty, out artistNode)
             ? GetAnyString(artistNode, "id")
             : string.Empty;
         var albumTitle = string.Empty;
@@ -374,10 +364,10 @@ public sealed class TidalSearchApiController : ControllerBase
     {
         var id = GetAnyString(item, "id");
         var url = GetString(item, "url");
-        var artist = item.TryGetProperty("artist", out var artistNode)
+        var artist = item.TryGetProperty(ArtistProperty, out var artistNode)
             ? GetString(artistNode, "name")
             : string.Empty;
-        var artistId = item.TryGetProperty("artist", out artistNode)
+        var artistId = item.TryGetProperty(ArtistProperty, out artistNode)
             ? GetAnyString(artistNode, "id")
             : string.Empty;
         if (string.IsNullOrWhiteSpace(url) && !string.IsNullOrWhiteSpace(id))
@@ -414,10 +404,10 @@ public sealed class TidalSearchApiController : ControllerBase
             url = $"https://tidal.com/browse/video/{Uri.EscapeDataString(id)}";
         }
 
-        var artist = item.TryGetProperty("artist", out var artistNode)
+        var artist = item.TryGetProperty(ArtistProperty, out var artistNode)
             ? GetString(artistNode, "name")
             : GetString(item, "artistName");
-        var artistId = item.TryGetProperty("artist", out artistNode)
+        var artistId = item.TryGetProperty(ArtistProperty, out artistNode)
             ? GetAnyString(artistNode, "id")
             : string.Empty;
 

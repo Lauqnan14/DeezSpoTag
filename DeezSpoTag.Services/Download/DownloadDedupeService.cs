@@ -89,7 +89,7 @@ public sealed class DownloadDedupeService
             : DownloadDedupeDecision.AllowedDecision;
     }
 
-    public Task<DownloadDedupeDecision> CheckFinalDestinationAsync(
+    public static Task<DownloadDedupeDecision> CheckFinalDestinationAsync(
         DownloadDedupeRequest request,
         CancellationToken cancellationToken = default)
     {

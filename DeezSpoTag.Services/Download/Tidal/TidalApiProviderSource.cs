@@ -22,7 +22,7 @@ public sealed class TidalApiProviderSource
         return RotateUrls(enabledUrls, _lastUsedUrl);
     }
 
-    public Task<IReadOnlyList<string>> RefreshAsync(bool force, CancellationToken cancellationToken)
+    public static Task<IReadOnlyList<string>> RefreshAsync(bool force, CancellationToken cancellationToken)
     {
         _ = force;
         _ = cancellationToken;

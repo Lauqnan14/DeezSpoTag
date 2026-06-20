@@ -64,15 +64,12 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     private readonly ILogger<AmazonDownloadService> _logger;
     private readonly HttpClient _client;
     private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
-    private readonly DownloadDedupeService _dedupeService;
 
     public AmazonDownloadService(
         ILogger<AmazonDownloadService> logger,
-        DownloadDedupeService dedupeService,
         SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
     {
         _logger = logger;
-        _dedupeService = dedupeService;
         _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
         _client = new HttpClient
         {
@@ -801,14 +798,14 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         return newPath;
     }
 
-    private async Task EnsureExpectedFinalDestinationsAllowedAsync(
+    private static async Task EnsureExpectedFinalDestinationsAllowedAsync(
         AmazonDownloadRequest request,
         IReadOnlyList<string> expectedPaths,
         CancellationToken cancellationToken)
     {
         foreach (var expectedPath in expectedPaths)
         {
-            var decision = await _dedupeService.CheckFinalDestinationAsync(
+            var decision = await DownloadDedupeService.CheckFinalDestinationAsync(
                 DownloadDedupeService.FromEngineDownloadRequest(request, expectedPath),
                 cancellationToken);
             if (!decision.Allowed)
@@ -818,11 +815,11 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
     }
 
-    private async Task EnsureFinalDestinationAllowedAsync(
+    private static async Task EnsureFinalDestinationAllowedAsync(
         RenameAndTagRequest request,
         string outputPath)
     {
-        var decision = await _dedupeService.CheckFinalDestinationAsync(
+        var decision = await DownloadDedupeService.CheckFinalDestinationAsync(
             new DownloadDedupeRequest
             {
                 Isrc = request.Isrc,

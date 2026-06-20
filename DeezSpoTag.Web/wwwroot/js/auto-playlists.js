@@ -22,8 +22,8 @@
         const text = String(value || "");
         let hash = 0;
         for (let index = 0; index < text.length; index += 1) {
-            hash = ((hash << 5) - hash) + text.charCodeAt(index);
-            hash |= 0;
+            hash = ((hash << 5) - hash) + text.codePointAt(index);
+            hash = Math.trunc(hash);
         }
         return Math.abs(hash);
     };

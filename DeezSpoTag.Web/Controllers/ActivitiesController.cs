@@ -484,12 +484,16 @@ public class ActivitiesController : Controller
             }
 
             var changed = hidden > 0 || deleted > 0 || canceled > 0;
+            var message = changed ? "All downloads cleared" : "Queue is already empty";
+            if (cancelFailed > 0)
+            {
+                message = $"Cleared queue entries and canceled {canceled} active download(s). {cancelFailed} active item(s) could not be canceled.";
+            }
+
             return Json(new
             {
                 success = true,
-                message = cancelFailed > 0
-                    ? $"Cleared queue entries and canceled {canceled} active download(s). {cancelFailed} active item(s) could not be canceled."
-                    : changed ? "All downloads cleared" : "Queue is already empty",
+                message,
                 deleted,
                 hidden,
                 canceled,

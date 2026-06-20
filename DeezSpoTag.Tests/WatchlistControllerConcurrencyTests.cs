@@ -110,14 +110,7 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
     [Fact]
     public async Task PlaylistWatchlist_ConcurrentAddAndRemove_SameKey_RemainsConsistent()
     {
-        var controller = new LibraryPlaylistWatchlistApiController(
-            _repository,
-            _configStore,
-            playlistWatchService: null!,
-            playlistSyncService: null!,
-            playlistVisualService: _playlistVisualService,
-            profileResolutionService: CreateProfileResolutionService(),
-            queueRepository: null!);
+        var controller = CreatePlaylistWatchlistController();
 
         var addTasks = Enumerable.Range(0, 30)
             .Select(index => controller.Add(
@@ -163,6 +156,18 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
             _repository,
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
+
+    private LibraryPlaylistWatchlistApiController CreatePlaylistWatchlistController()
+        => new(new LibraryPlaylistWatchlistDependencies
+        {
+            Repository = _repository,
+            ConfigStore = _configStore,
+            PlaylistWatchService = null!,
+            PlaylistSyncService = null!,
+            PlaylistVisualService = _playlistVisualService,
+            QueueRepository = null!,
+            ProfileResolutionService = CreateProfileResolutionService()
+        });
 
     private sealed class StubHostEnvironment : IHostEnvironment
     {

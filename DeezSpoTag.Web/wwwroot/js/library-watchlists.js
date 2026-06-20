@@ -1341,23 +1341,32 @@ function renderPlaylistWatchlistPresentationBadges(item) {
     const ignoredBlockedTrackCount = toNonNegativeCount(item.ignoredBlockedTrackCount);
     const reroutedTrackCount = toNonNegativeCount(item.reroutedTrackCount);
     const hasIncompleteSync = incompleteTrackCount > 0 && syncedTrackCount > 0 && totalTrackCount > syncedTrackCount;
-    const syncBadge = hasIncompleteSync
-        ? `<div class="library-badge library-badge--partial playlist-watchlist-sync-badge" title="Partially synced: ${syncedTrackCount}/${totalTrackCount} tracks">${escapeHtml(`${syncedTrackCount}/${totalTrackCount}`)}</div>`
-        : '';
+    const syncBadge = hasIncompleteSync ? renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) : '';
     const stateBadges = [
-        ignoredBlockedTrackCount > 0
-            ? `<span class="playlist-watchlist-state-badge playlist-watchlist-state-badge--blocked" title="${ignoredBlockedTrackCount} ignored or blocked track${ignoredBlockedTrackCount === 1 ? '' : 's'}"><i class="fa-solid fa-ban"></i></span>`
-            : '',
-        reroutedTrackCount > 0
-            ? `<span class="playlist-watchlist-state-badge playlist-watchlist-state-badge--rerouted" title="${reroutedTrackCount} rerouted track${reroutedTrackCount === 1 ? '' : 's'}"><i class="fa-solid fa-route"></i></span>`
-            : ''
+        renderPlaylistWatchlistStateBadge(ignoredBlockedTrackCount, 'blocked', 'ignored or blocked track', 'fa-ban'),
+        renderPlaylistWatchlistStateBadge(reroutedTrackCount, 'rerouted', 'rerouted track', 'fa-route')
     ].filter(Boolean).join('');
 
     if (!syncBadge && !stateBadges) {
         return '';
     }
 
-    return `${syncBadge}${stateBadges ? `<div class="playlist-watchlist-state-badges">${stateBadges}</div>` : ''}`;
+    const stateBadgeGroup = stateBadges ? `<div class="playlist-watchlist-state-badges">${stateBadges}</div>` : '';
+    return `${syncBadge}${stateBadgeGroup}`;
+}
+
+function renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) {
+    const label = `${syncedTrackCount}/${totalTrackCount}`;
+    return `<div class="library-badge library-badge--partial playlist-watchlist-sync-badge" title="Partially synced: ${label} tracks">${escapeHtml(label)}</div>`;
+}
+
+function renderPlaylistWatchlistStateBadge(count, state, label, icon) {
+    if (count <= 0) {
+        return '';
+    }
+
+    const pluralSuffix = count === 1 ? '' : 's';
+    return `<span class="playlist-watchlist-state-badge playlist-watchlist-state-badge--${state}" title="${count} ${label}${pluralSuffix}"><i class="fa-solid ${icon}"></i></span>`;
 }
 
 function cssEscape(value) {
@@ -1365,7 +1374,7 @@ function cssEscape(value) {
         return globalThis.CSS.escape(value);
     }
 
-    return value.replace(/["\\]/g, '\\$&');
+    return value.replaceAll(/["\\]/g, String.raw`\$&`);
 }
 
 function buildPlaylistWatchlistCardSelector(source, sourceId) {

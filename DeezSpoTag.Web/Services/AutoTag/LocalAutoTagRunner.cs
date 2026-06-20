@@ -5618,7 +5618,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return track.Other.TryGetValue(key, out var values) && values.Count > 0;
     }
 
-    private static bool HasReleaseTypeTagEnabled(ISet<string> enabledTags)
+    private static bool HasReleaseTypeTagEnabled(HashSet<string> enabledTags)
         => enabledTags.Contains(ReleaseTypeTag) || enabledTags.Contains(OtherTagsTag);
 
     private static void EnsureReleaseCategory(AutoTagTrack track)

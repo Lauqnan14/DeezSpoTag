@@ -29,11 +29,12 @@ function decodeBiographyEntities(value) {
             return namedEntities.get(normalized);
         }
 
-        const numericValue = normalized.startsWith('#x')
-            ? Number.parseInt(normalized.slice(2), 16)
-            : normalized.startsWith('#')
-                ? Number.parseInt(normalized.slice(1), 10)
-                : Number.NaN;
+        let numericValue = Number.NaN;
+        if (normalized.startsWith('#x')) {
+            numericValue = Number.parseInt(normalized.slice(2), 16);
+        } else if (normalized.startsWith('#')) {
+            numericValue = Number.parseInt(normalized.slice(1), 10);
+        }
 
         if (!Number.isFinite(numericValue) || numericValue <= 0 || numericValue > 0x10ffff) {
             return match;

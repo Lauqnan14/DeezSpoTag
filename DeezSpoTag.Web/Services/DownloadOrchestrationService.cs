@@ -1308,11 +1308,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
             if (refresh.IsComplete)
             {
-                _logger.LogInformation(
-                    "Post-download media-server refresh requested after finalizing destination folder {DestinationFolderId}: files={FileCount}, refreshedServers={RefreshedServers}.",
-                    group.DestinationFolderId,
-                    finalizedAudioPaths.Count,
-                    refresh.RefreshedServerCount);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation(
+                        "Post-download media-server refresh requested after finalizing destination folder {DestinationFolderId}: files={FileCount}, refreshedServers={RefreshedServers}.",
+                        group.DestinationFolderId,
+                        finalizedAudioPaths.Count,
+                        refresh.RefreshedServerCount);
+                }
+
                 return;
             }
 

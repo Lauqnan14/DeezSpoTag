@@ -118,6 +118,26 @@ public sealed class MelodayService
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex FeaturingParentheticalRegex = CreateRegex(@"(\(|\[)\s*(feat\.?|ft\.?|featuring).*?(\)|\])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex FeaturingInlineRegex = CreateRegex(@"\b(feat\.?|ft\.?|featuring)\s+[^\-\(\[]+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private sealed record RunModeContext(
+        MediaServerTarget Target,
+        LibraryDto Library,
+        IReadOnlyList<long> HistoryTrackIds,
+        IReadOnlyList<long> BalancedHistorical,
+        SimilarTrackContext SimilarContext,
+        string PeriodName,
+        MelodayPeriod Period,
+        string? Username,
+        long HistoryUserId);
+
+    private sealed record PlaylistSyncContext(
+        MediaServerTarget Target,
+        string Title,
+        string Description,
+        IReadOnlyList<long> OrderedTrackIds,
+        SimilarTrackContext SimilarContext,
+        MelodayOptions TitleOptions,
+        string PeriodName);
     private static readonly Regex DashVersionRegex = CreateRegex(@"\s-\s.*(mix|dub|remix|edit|version)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex TrailingSpaceOrHyphenRegex = CreateRegex(@"[\s-]+$", RegexOptions.Compiled);
     private static readonly Regex MultiWhitespaceRegex = CreateRegex(@"\s+", RegexOptions.Compiled);
@@ -265,21 +285,20 @@ public sealed class MelodayService
             liveMetadataByTrackId,
             cancellationToken);
         var requestedModes = ResolveRunModes(effective.Mode);
+        var runModeContext = new RunModeContext(
+            target,
+            library,
+            historyTrackIds,
+            balancedHistorical,
+            similarContext,
+            periodName,
+            period,
+            username,
+            historyUserId);
         var results = new List<MelodayRunResult>();
         foreach (var mode in requestedModes)
         {
-            results.Add(await RunModeAsync(
-                mode,
-                target,
-                library,
-                historyTrackIds,
-                balancedHistorical,
-                similarContext,
-                periodName,
-                period,
-                username,
-                historyUserId,
-                cancellationToken));
+            results.Add(await RunModeAsync(mode, runModeContext, cancellationToken));
         }
 
         var successful = results.Where(static result => result.Success).ToList();
@@ -298,94 +317,81 @@ public sealed class MelodayService
 
     private async Task<MelodayRunResult> RunModeAsync(
         string mode,
-        MediaServerTarget target,
-        LibraryDto library,
-        IReadOnlyList<long> historyTrackIds,
-        IReadOnlyList<long> balancedHistorical,
-        SimilarTrackContext similarContext,
-        string periodName,
-        MelodayPeriod period,
-        string? username,
-        long historyUserId,
+        RunModeContext context,
         CancellationToken cancellationToken)
     {
         var finalTracks = string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase)
-            ? await BuildDirectTrackSelectionAsync(historyTrackIds, balancedHistorical, library.Id, similarContext)
-            : await BuildSonicTrackSelectionAsync(historyTrackIds, balancedHistorical, library.Id, similarContext);
+            ? await BuildDirectTrackSelectionAsync(context.HistoryTrackIds, context.BalancedHistorical, context.Library.Id, context.SimilarContext)
+            : await BuildSonicTrackSelectionAsync(context.HistoryTrackIds, context.BalancedHistorical, context.Library.Id, context.SimilarContext);
 
         if (finalTracks.Count == 0)
         {
             return new MelodayRunResult(false, $"No tracks available for Meloday {GetModeLabel(mode)}.", null);
         }
 
-        var selectedTrackIds = finalTracks.Take(similarContext.Options.MaxTracks).ToList();
+        var selectedTrackIds = finalTracks.Take(context.SimilarContext.Options.MaxTracks).ToList();
         var orderedTrackIds = string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase)
-            ? OrderTracksDirect(selectedTrackIds, period, similarContext.LiveMetadataByTrackId)
+            ? OrderTracksDirect(selectedTrackIds, context.Period, context.SimilarContext.LiveMetadataByTrackId)
             : await OrderTracksSonicAsync(
                 selectedTrackIds,
-                period,
-                target.Plex,
-                similarContext.Options,
-                similarContext.RatingKeyByTrackId,
-                similarContext.LiveMetadataByTrackId,
+                context.Period,
+                context.Target.Plex,
+                context.SimilarContext.Options,
+                context.SimilarContext.RatingKeyByTrackId,
+                context.SimilarContext.LiveMetadataByTrackId,
                 cancellationToken);
 
         var persistedMetadata = (await _libraryRepository.GetPlexTrackMetadataAsync(orderedTrackIds, cancellationToken))
             .ToDictionary(entry => entry.TrackId);
 
         var optionsForTitle = CloneOptionsWithPlaylistPrefix(
-            similarContext.Options,
-            $"{similarContext.Options.PlaylistPrefix} {GetModeLabel(mode)}");
+            context.SimilarContext.Options,
+            $"{context.SimilarContext.Options.PlaylistPrefix} {GetModeLabel(mode)}");
         var (title, description) = BuildTitleAndDescription(new PlaylistDescriptionContext(
             optionsForTitle,
-            periodName,
-            period,
+            context.PeriodName,
+            context.Period,
             orderedTrackIds,
-            similarContext.LiveMetadataByTrackId,
+            context.SimilarContext.LiveMetadataByTrackId,
             persistedMetadata,
-            username,
+            context.Username,
             DateTimeOffset.Now));
 
         var mixCacheId = await _libraryRepository.UpsertMixCacheAsync(
             new LibraryRepository.MixCacheUpsertInput(
-                BuildMelodayMixId(mode, target.Service),
-                historyUserId,
-                library.Id,
+                BuildMelodayMixId(mode, context.Target.Service),
+                context.HistoryUserId,
+                context.Library.Id,
                 title,
                 description,
                 Array.Empty<string>(),
                 orderedTrackIds.Count,
                 DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow.AddMinutes(Math.Max(5, similarContext.Options.UpdateIntervalMinutes))),
+                DateTimeOffset.UtcNow.AddMinutes(Math.Max(5, context.SimilarContext.Options.UpdateIntervalMinutes))),
             cancellationToken);
         await _libraryRepository.ReplaceMixItemsAsync(mixCacheId, orderedTrackIds, cancellationToken);
 
         var targetPlaylistId = await TrySyncTargetPlaylistAsync(
-            target,
-            title,
-            description,
-            orderedTrackIds,
-            similarContext,
-            optionsForTitle,
-            periodName,
+            new PlaylistSyncContext(
+                context.Target,
+                title,
+                description,
+                orderedTrackIds,
+                context.SimilarContext,
+                optionsForTitle,
+                context.PeriodName),
             cancellationToken);
 
         if (string.IsNullOrWhiteSpace(targetPlaylistId))
         {
-            return new MelodayRunResult(true, $"Meloday {GetModeLabel(mode)} was created in the app but was not synced to {target.Service}.", null);
+            return new MelodayRunResult(true, $"Meloday {GetModeLabel(mode)} was created in the app but was not synced to {context.Target.Service}.", null);
         }
 
         return new MelodayRunResult(true, $"Meloday {GetModeLabel(mode)} playlist updated.", targetPlaylistId);
     }
 
     private async Task<string?> TrySyncTargetPlaylistAsync(
-        MediaServerTarget target,
-        string title,
-        string description,
-        IReadOnlyList<long> orderedTrackIds,
-        SimilarTrackContext context,
-        MelodayOptions titleOptions,
-        string periodName,
+        PlaylistSyncContext context,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -393,9 +399,9 @@ public sealed class MelodayService
 
         try
         {
-            return target.IsPlex
-                ? await SyncMelodayToPlexAsync(target, title, description, orderedTrackIds, context, titleOptions, periodName, timeout.Token)
-                : await SyncMelodayToJellyfinAsync(target, title, description, orderedTrackIds, timeout.Token);
+            return context.Target.IsPlex
+                ? await SyncMelodayToPlexAsync(context, timeout.Token)
+                : await SyncMelodayToJellyfinAsync(context.Target, context.Title, context.Description, context.OrderedTrackIds, timeout.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -403,12 +409,12 @@ public sealed class MelodayService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Meloday target sync failed for {TargetService}.", target.Service);
+            _logger.LogWarning(ex, "Meloday target sync failed for {TargetService}.", context.Target.Service);
             return null;
         }
     }
 
-    private static IReadOnlyList<string> ResolveRunModes(string mode)
+    private static string[] ResolveRunModes(string mode)
     {
         return MelodayModes.Normalize(mode) switch
         {
@@ -489,25 +495,18 @@ public sealed class MelodayService
     }
 
     private async Task<string?> SyncMelodayToPlexAsync(
-        MediaServerTarget target,
-        string title,
-        string description,
-        IReadOnlyList<long> orderedTrackIds,
-        SimilarTrackContext context,
-        MelodayOptions titleOptions,
-        string periodName,
+        PlaylistSyncContext context,
         CancellationToken cancellationToken)
     {
-        var plex = target.Plex;
+        var plex = context.Target.Plex;
         if (plex is null || string.IsNullOrWhiteSpace(plex.Url) || string.IsNullOrWhiteSpace(plex.Token))
         {
             return null;
         }
 
         var ratingKeyList = await ResolvePlexRatingKeysForSyncAsync(
-            plex,
-            orderedTrackIds,
-            context.RatingKeyByTrackId,
+            context.OrderedTrackIds,
+            context.SimilarContext.RatingKeyByTrackId,
             cancellationToken);
         if (ratingKeyList.Count == 0)
         {
@@ -530,9 +529,9 @@ public sealed class MelodayService
             plex.Url,
             plex.Token,
             machineId,
-            title,
+            context.Title,
             ratingKeyList,
-            options: new PlexApiClient.PlaylistUpsertOptions(ExistingTitlePrefix: titleOptions.PlaylistPrefix),
+            options: new PlexApiClient.PlaylistUpsertOptions(ExistingTitlePrefix: context.TitleOptions.PlaylistPrefix),
             cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(playlistId))
         {
@@ -543,11 +542,11 @@ public sealed class MelodayService
             plex.Url,
             plex.Token,
             playlistId,
-            title,
-            description,
+            context.Title,
+            context.Description,
             cancellationToken);
 
-        var posterUrl = await TryGenerateCoverAsync(titleOptions, periodName, title, cancellationToken);
+        var posterUrl = await TryGenerateCoverAsync(context.TitleOptions, context.PeriodName, context.Title, cancellationToken);
         if (!string.IsNullOrWhiteSpace(posterUrl))
         {
             await _plexApiClient.UpdatePlaylistPosterAsync(
@@ -562,7 +561,6 @@ public sealed class MelodayService
     }
 
     private async Task<List<string>> ResolvePlexRatingKeysForSyncAsync(
-        PlexAuth plex,
         IReadOnlyList<long> orderedTrackIds,
         Dictionary<long, string> ratingKeyByTrackId,
         CancellationToken cancellationToken)
@@ -1490,8 +1488,8 @@ public sealed class MelodayService
         return output;
     }
 
-    private static IReadOnlyList<long> OrderTracksDirect(
-        IReadOnlyList<long> trackIds,
+    private static List<long> OrderTracksDirect(
+        List<long> trackIds,
         MelodayPeriod period,
         Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId)
     {
@@ -1569,12 +1567,12 @@ public sealed class MelodayService
         return Math.Clamp((bpm - 77d) / 77d, 0d, 1d);
     }
 
-    private static double CosineSimilarity(IReadOnlyList<double> left, IReadOnlyList<double> right)
+    private static double CosineSimilarity(double[] left, double[] right)
     {
         var dot = 0d;
         var leftMagnitude = 0d;
         var rightMagnitude = 0d;
-        var count = Math.Min(left.Count, right.Count);
+        var count = Math.Min(left.Length, right.Length);
         for (var index = 0; index < count; index++)
         {
             dot += left[index] * right[index];
@@ -1604,38 +1602,8 @@ public sealed class MelodayService
             return trackIds;
         }
 
-        var sortedByLastViewed = trackIds
-            .OrderBy(trackId => liveMetadataByTrackId.TryGetValue(trackId, out var metadata) && metadata.LastViewedAtUtc.HasValue
-                ? metadata.LastViewedAtUtc.Value
-                : DateTimeOffset.MaxValue)
-            .ToList();
-
-        long? firstTrackId = sortedByLastViewed
-            .Cast<long?>()
-            .FirstOrDefault(trackId =>
-                trackId.HasValue &&
-                liveMetadataByTrackId.TryGetValue(trackId.Value, out var metadata) &&
-                metadata.LastViewedAtUtc.HasValue &&
-                period.Hours.Contains(metadata.LastViewedAtUtc.Value.Hour));
-        long? lastTrackId = sortedByLastViewed
-            .AsEnumerable()
-            .Reverse()
-            .Cast<long?>()
-            .FirstOrDefault(trackId =>
-                trackId.HasValue &&
-                liveMetadataByTrackId.TryGetValue(trackId.Value, out var metadata) &&
-                metadata.LastViewedAtUtc.HasValue &&
-                period.Hours.Contains(metadata.LastViewedAtUtc.Value.Hour));
-
-        if (!firstTrackId.HasValue && sortedByLastViewed.Count > 0)
-        {
-            firstTrackId = sortedByLastViewed[0];
-        }
-
-        if (!lastTrackId.HasValue && sortedByLastViewed.Count > 0)
-        {
-            lastTrackId = sortedByLastViewed[^1];
-        }
+        var sortedByLastViewed = SortTracksByLastViewed(trackIds, liveMetadataByTrackId);
+        var (firstTrackId, lastTrackId) = ResolveOrderAnchors(sortedByLastViewed, period, liveMetadataByTrackId);
 
         var middle = trackIds
             .Where(trackId => trackId != firstTrackId && trackId != lastTrackId)
@@ -1650,6 +1618,32 @@ public sealed class MelodayService
                 ratingKeyByTrackId,
                 cancellationToken);
 
+        var ordered = BuildOrderedTrackList(firstTrackId, sortedMiddle, lastTrackId);
+
+        if (ordered.Count == 0)
+        {
+            return trackIds;
+        }
+
+        return ordered
+            .Distinct()
+            .Take(options.MaxTracks)
+            .ToList();
+    }
+
+    private static List<long> SortTracksByLastViewed(
+        List<long> trackIds,
+        Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId)
+    {
+        return trackIds
+            .OrderBy(trackId => liveMetadataByTrackId.TryGetValue(trackId, out var metadata) && metadata.LastViewedAtUtc.HasValue
+                ? metadata.LastViewedAtUtc.Value
+                : DateTimeOffset.MaxValue)
+            .ToList();
+    }
+
+    private static List<long> BuildOrderedTrackList(long? firstTrackId, List<long> sortedMiddle, long? lastTrackId)
+    {
         var ordered = new List<long>();
         if (firstTrackId.HasValue)
         {
@@ -1663,16 +1657,40 @@ public sealed class MelodayService
             ordered.Add(lastTrackId.Value);
         }
 
-        if (ordered.Count == 0)
+        return ordered;
+    }
+
+    private static (long? FirstTrackId, long? LastTrackId) ResolveOrderAnchors(
+        List<long> sortedByLastViewed,
+        MelodayPeriod period,
+        Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId)
+    {
+        if (sortedByLastViewed.Count == 0)
         {
-            return trackIds;
+            return (null, null);
         }
 
-        return ordered
-            .Distinct()
-            .Take(options.MaxTracks)
-            .ToList();
+        var firstTrackId = sortedByLastViewed
+            .Cast<long?>()
+            .FirstOrDefault(trackId => IsPeriodTrack(trackId, period, liveMetadataByTrackId))
+            ?? sortedByLastViewed[0];
+        var lastTrackId = sortedByLastViewed
+            .AsEnumerable()
+            .Reverse()
+            .Cast<long?>()
+            .FirstOrDefault(trackId => IsPeriodTrack(trackId, period, liveMetadataByTrackId))
+            ?? sortedByLastViewed[^1];
+        return (firstTrackId, lastTrackId);
     }
+
+    private static bool IsPeriodTrack(
+        long? trackId,
+        MelodayPeriod period,
+        Dictionary<long, PlexTrackMetadata> liveMetadataByTrackId)
+        => trackId.HasValue
+           && liveMetadataByTrackId.TryGetValue(trackId.Value, out var metadata)
+           && metadata.LastViewedAtUtc.HasValue
+           && period.Hours.Contains(metadata.LastViewedAtUtc.Value.Hour);
 
     private async Task<List<long>> SortBySonicSimilarityGreedyAsync(
         List<long> trackIds,

@@ -2926,7 +2926,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             : $"{defaultLabel} {normalizedType}:{normalizedName}";
     }
 
-    private QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
+    private static QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
     {
         var preferredEngine = ResolveAutomaticPreferredEngine(input.PreferredEngine);
         return new QueueWatchOptions(
@@ -2934,7 +2934,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             input.WatchlistSource,
             input.WatchlistPlaylistId,
             preferredEngine,
-            ResolveDownloadEngineOrder(input.PreferredEngine, preferredEngine, input.DownloadEngineOrder),
+            ResolveDownloadEngineOrder(preferredEngine, input.DownloadEngineOrder),
             input.DownloadVariantMode,
             input.AtmosDestinationFolderId,
             input.RuleSet?.RoutingRules,
@@ -2942,8 +2942,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             input.WatchlistOrigin);
     }
 
-    private DownloadEngineOrderSettings? ResolveDownloadEngineOrder(
-        string? itemPreferredEngine,
+    private static DownloadEngineOrderSettings? ResolveDownloadEngineOrder(
         string? resolvedPreferredEngine,
         DownloadEngineOrderSettings? itemDownloadEngineOrder)
     {
@@ -2955,7 +2954,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return itemDownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
     }
 
-    private string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
+    private static string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
     {
         var normalizedItemEngine = NormalizePreferredEngine(itemPreferredEngine);
         if (!string.IsNullOrWhiteSpace(normalizedItemEngine))

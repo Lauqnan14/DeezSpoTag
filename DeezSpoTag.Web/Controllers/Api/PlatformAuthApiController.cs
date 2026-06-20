@@ -10,6 +10,22 @@ using DeezSpoTag.Services.Download.Tidal;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
+public sealed class PlatformAuthApiDependencies
+{
+    public required PlatformAuthService AuthService { get; init; }
+    public required DiscogsApiClient DiscogsApiClient { get; init; }
+    public required PlexApiClient PlexApiClient { get; init; }
+    public required JellyfinApiClient JellyfinApiClient { get; init; }
+    public required AppleMusicWrapperService AppleWrapperService { get; init; }
+    public required QobuzAccountProfileService QobuzAccountProfileService { get; init; }
+    public required IQobuzPublicProviderRegistry QobuzPublicProviderRegistry { get; init; }
+    public required IQobuzDownloadService QobuzDownloadService { get; init; }
+    public required ITidalPublicProviderRegistry TidalPublicProviderRegistry { get; init; }
+    public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
+    public required TidalDownloadService TidalDownloadService { get; init; }
+    public required SoulseekConnectionService SoulseekConnectionService { get; init; }
+}
+
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/platform-auth")]
@@ -28,32 +44,20 @@ public class PlatformAuthApiController : ControllerBase
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly TidalDownloadService _tidalDownloadService;
     private readonly SoulseekConnectionService _soulseekConnectionService;
-    public PlatformAuthApiController(
-        PlatformAuthService authService,
-        DiscogsApiClient discogsApiClient,
-        PlexApiClient plexApiClient,
-        JellyfinApiClient jellyfinApiClient,
-        AppleMusicWrapperService appleWrapperService,
-        QobuzAccountProfileService qobuzAccountProfileService,
-        IQobuzPublicProviderRegistry qobuzPublicProviderRegistry,
-        IQobuzDownloadService qobuzDownloadService,
-        ITidalPublicProviderRegistry tidalPublicProviderRegistry,
-        ITidalAccessTokenProvider tidalAccessTokenProvider,
-        TidalDownloadService tidalDownloadService,
-        SoulseekConnectionService soulseekConnectionService)
+    public PlatformAuthApiController(PlatformAuthApiDependencies dependencies)
     {
-        _authService = authService;
-        _discogsApiClient = discogsApiClient;
-        _plexApiClient = plexApiClient;
-        _jellyfinApiClient = jellyfinApiClient;
-        _appleWrapperService = appleWrapperService;
-        _qobuzAccountProfileService = qobuzAccountProfileService;
-        _qobuzPublicProviderRegistry = qobuzPublicProviderRegistry;
-        _qobuzDownloadService = qobuzDownloadService;
-        _tidalPublicProviderRegistry = tidalPublicProviderRegistry;
-        _tidalAccessTokenProvider = tidalAccessTokenProvider;
-        _tidalDownloadService = tidalDownloadService;
-        _soulseekConnectionService = soulseekConnectionService;
+        _authService = dependencies.AuthService;
+        _discogsApiClient = dependencies.DiscogsApiClient;
+        _plexApiClient = dependencies.PlexApiClient;
+        _jellyfinApiClient = dependencies.JellyfinApiClient;
+        _appleWrapperService = dependencies.AppleWrapperService;
+        _qobuzAccountProfileService = dependencies.QobuzAccountProfileService;
+        _qobuzPublicProviderRegistry = dependencies.QobuzPublicProviderRegistry;
+        _qobuzDownloadService = dependencies.QobuzDownloadService;
+        _tidalPublicProviderRegistry = dependencies.TidalPublicProviderRegistry;
+        _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
+        _tidalDownloadService = dependencies.TidalDownloadService;
+        _soulseekConnectionService = dependencies.SoulseekConnectionService;
     }
 
     [HttpGet]
@@ -138,7 +142,12 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        var updated = await _tidalPublicProviderRegistry.SetEnabledAsync(providerId, request.Enabled, cancellationToken);
+        if (request.Enabled is not { } enabled)
+        {
+            return BadRequest("Enabled is required.");
+        }
+
+        var updated = await _tidalPublicProviderRegistry.SetEnabledAsync(providerId, enabled, cancellationToken);
         return updated is null ? NotFound("Unknown Tidal provider.") : Ok(ToPublicTidalProvider(updated));
     }
 
@@ -167,7 +176,12 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        var updated = await _qobuzPublicProviderRegistry.SetEnabledAsync(providerId, request.Enabled, cancellationToken);
+        if (request.Enabled is not { } enabled)
+        {
+            return BadRequest("Enabled is required.");
+        }
+
+        var updated = await _qobuzPublicProviderRegistry.SetEnabledAsync(providerId, enabled, cancellationToken);
         return updated is null ? NotFound("Unknown Qobuz provider.") : Ok(ToPublicProvider(updated));
     }
 
@@ -677,6 +691,22 @@ public class PlatformAuthApiController : ControllerBase
     private static object ToPublicSoulseek(SoulseekAuth? auth)
     {
         var configured = !string.IsNullOrWhiteSpace(auth?.BaseUrl);
+        var status = auth?.LastStatus;
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            status = configured ? "disconnected" : "not_configured";
+        }
+
+        var message = auth?.LastError;
+        if (auth?.ConnectionValid == true)
+        {
+            message = "slskd is connected to Soulseek.";
+        }
+        else if (string.IsNullOrWhiteSpace(message))
+        {
+            message = configured ? "slskd is not connected." : "Soulseek is not configured.";
+        }
+
         return new
         {
             baseUrl = auth?.BaseUrl,
@@ -684,12 +714,8 @@ public class PlatformAuthApiController : ControllerBase
             configured,
             connected = auth?.ConnectionValid == true,
             username = auth?.Username,
-            status = string.IsNullOrWhiteSpace(auth?.LastStatus)
-                ? (configured ? "disconnected" : "not_configured")
-                : auth!.LastStatus,
-            message = auth?.ConnectionValid == true
-                ? "slskd is connected to Soulseek."
-                : auth?.LastError ?? (configured ? "slskd is not connected." : "Soulseek is not configured."),
+            status,
+            message,
             checkedAt = auth?.CheckedAt
         };
     }
@@ -711,7 +737,7 @@ public class PlatformAuthApiController : ControllerBase
     private static QobuzProviderView ToPublicProvider(QobuzPublicProvider provider)
         => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
 
-    public sealed record QobuzProviderEnabledRequest(bool Enabled);
+    public sealed record QobuzProviderEnabledRequest(bool? Enabled);
     private sealed record QobuzProviderSummary(bool Online, int OnlineCount, string Status, QobuzProviderView[] Providers);
     private sealed record QobuzProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
 
@@ -729,7 +755,7 @@ public class PlatformAuthApiController : ControllerBase
     private static TidalProviderView ToPublicTidalProvider(TidalPublicProvider provider)
         => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs);
 
-    public sealed record TidalProviderEnabledRequest(bool Enabled);
+    public sealed record TidalProviderEnabledRequest(bool? Enabled);
     private sealed record TidalProviderSummary(bool Online, string Status, TidalProviderView[] Providers);
     private sealed record TidalProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs);
 

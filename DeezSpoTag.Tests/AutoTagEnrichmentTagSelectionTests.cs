@@ -28,6 +28,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     private static readonly string[] RequestedYearAndArtistTags = ["year", "artist"];
     private static readonly string[] ItunesPlatformOnly = ["itunes"];
     private static readonly string[] ExpectedReleaseDateOnly = ["releaseDate"];
+    private static readonly string[] ExpectedManualLyricsTags = ["lyrics", "syncedLyrics", "ttmlLyrics"];
 
     [Fact]
     public void ResolveEnrichmentRequestedTags_DownloadEnrichment_UsesOnlyEnrichmentTags()
@@ -138,7 +139,7 @@ public sealed class AutoTagEnrichmentTagSelectionTests
         };
 
         var actual = Assert.IsType<List<string>>(method!.Invoke(null, new object?[] { root }));
-        Assert.Equal(new[] { "lyrics", "syncedLyrics", "ttmlLyrics" }, actual);
+        Assert.Equal(ExpectedManualLyricsTags, actual);
     }
 
     [Fact]

@@ -1385,6 +1385,22 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AppInstanceIdProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlatformAuthService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SoulseekConnectionService>();
+        services.AddScoped<DeezSpoTag.Web.Controllers.Api.PlatformAuthApiDependencies>(sp =>
+            new DeezSpoTag.Web.Controllers.Api.PlatformAuthApiDependencies
+            {
+                AuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
+                DiscogsApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>(),
+                PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
+                JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
+                AppleWrapperService = sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>(),
+                QobuzAccountProfileService = sp.GetRequiredService<DeezSpoTag.Web.Services.QobuzAccountProfileService>(),
+                QobuzPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry>(),
+                QobuzDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService>(),
+                TidalPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalPublicProviderRegistry>(),
+                TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
+                TidalDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>(),
+                SoulseekConnectionService = sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekConnectionService>()
+            });
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthQobuzCredentialProvider>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry, DeezSpoTag.Web.Services.QobuzPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthTidalCredentialProvider>();
@@ -1553,6 +1569,19 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchHostedService>();
+        services.AddScoped<DeezSpoTag.Web.Controllers.Api.LibraryPlaylistWatchlistDependencies>(sp =>
+            new DeezSpoTag.Web.Controllers.Api.LibraryPlaylistWatchlistDependencies
+            {
+                Repository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+                ConfigStore = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
+                PlaylistWatchService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistWatchService>(),
+                PlaylistSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncService>(),
+                PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
+                QueueRepository = sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>(),
+                ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
+                WatchlistFinalizationService = sp.GetService<DeezSpoTag.Web.Services.WatchlistFinalizationService>(),
+                PlaylistWatchHostedService = sp.GetService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>()
+            });
         AddDeferredHostedService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>(
             services,
             StartupWorkerCategory.Deferred,

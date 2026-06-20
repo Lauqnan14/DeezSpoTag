@@ -4283,32 +4283,10 @@ async function loadAlbums(artistId) {
         showToast('Artist details missing. Showing albums only.', true);
     }
 
-    libraryState.artistVisuals.preferredAvatarPath = (resolvedArtist?.preferredImagePath || '').toString().trim() || null;
-    libraryState.artistVisuals.preferredBackgroundPath = (resolvedArtist?.preferredBackgroundPath || '').toString().trim() || null;
-
-    const artistName = document.getElementById('artistName');
-    if (artistName && resolvedArtist) {
-        artistName.textContent = resolvedArtist.name;
-    }
+    applyLocalArtistHeader(resolvedArtist);
     libraryState.currentLocalArtistName = (resolvedArtist?.name || '').trim();
     loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistIdValue, appleIdData?.appleId || null);
-    const spotifyIdEl = document.getElementById('artistSpotifyId');
-    if (spotifyIdEl && resolvedArtist) {
-        spotifyIdEl.removeAttribute('href');
-        spotifyIdEl.style.display = 'none';
-    }
-
-    const avatarEl = document.getElementById('artistAvatar');
-    if (avatarEl && resolvedArtist?.preferredImagePath) {
-        const avatarPath = appendCacheKey(`/api/library/image?path=${encodeURIComponent(resolvedArtist.preferredImagePath)}&size=320`);
-        setArtistAvatarImageElement(avatarEl, avatarPath, resolvedArtist.name || 'Artist', true);
-    }
-
-    const bgEl = document.querySelector('.artist-page');
-    if (bgEl && libraryState.artistVisuals.preferredBackgroundPath) {
-        const backgroundUrl = appendCacheKey(buildLibraryImageUrl(libraryState.artistVisuals.preferredBackgroundPath));
-        applyArtistHeroBackgroundImage(backgroundUrl, true);
-    }
+    hideLocalArtistSpotifyLink(resolvedArtist);
 
     const available = albums.filter(album => (album.localFolders || []).length > 0);
     indexDeezerAlbums(available);
@@ -4335,34 +4313,18 @@ async function loadAlbums(artistId) {
 
     initSpotifyAvatarFetch(artistIdValue);
     initSpotifyCacheControls(artistIdValue);
-    const storedAppleId = appleIdData?.appleId || null;
-    const storedTidalId = tidalIdData?.tidalId || null;
-    const storedQobuzId = qobuzIdData?.qobuzId || null;
-    libraryState.appleExtras.storedAppleId = storedAppleId || null;
-    libraryState.appleExtras.appleArtistId = storedAppleId || null;
-    libraryState.appleExtras.storedTidalId = storedTidalId || null;
-    libraryState.appleExtras.tidalArtistId = storedTidalId || null;
-    libraryState.appleExtras.storedQobuzId = storedQobuzId || null;
-    libraryState.appleExtras.qobuzArtistId = storedQobuzId || null;
-    libraryState.appleExtras.biography = normalizeArtistBiographyForSync(resolvedArtist?.appleBiography || '') || null;
-    libraryState.appleExtras.biographyAppleId = storedAppleId || null;
-    libraryState.appleExtras.tidalBiography = null;
-    libraryState.appleExtras.biographyTidalId = storedTidalId || null;
-    libraryState.appleExtras.qobuzBiography = null;
-    libraryState.appleExtras.biographyQobuzId = storedQobuzId || null;
-    libraryState.appleExtras.lastFmBiography = null;
-    libraryState.appleExtras.biographyLastFmArtistName = libraryState.currentLocalArtistName || null;
+    const storedIds = applyStoredArtistExternalIds(resolvedArtist, appleIdData, tidalIdData, qobuzIdData);
     updateArtistBiographySourceControls();
     bindArtistMediaSourceControls(artistIdValue);
-    initAppleLazyLoad(resolvedArtist?.name, storedAppleId);
-    loadAppleArtistBiography(storedAppleId);
-    loadTidalArtistBiography(storedTidalId);
-    loadQobuzArtistBiography(storedQobuzId);
+    initAppleLazyLoad(resolvedArtist?.name, storedIds.appleId);
+    loadAppleArtistBiography(storedIds.appleId);
+    loadTidalArtistBiography(storedIds.tidalId);
+    loadQobuzArtistBiography(storedIds.qobuzId);
     loadLastFmArtistBiography(libraryState.currentLocalArtistName);
     initAppleIdEditor(artistIdValue);
     initTidalIdEditor(artistIdValue);
     initQobuzIdEditor(artistIdValue);
-    if (!storedTidalId && resolvedArtist?.name) {
+    if (!storedIds.tidalId && resolvedArtist?.name) {
         resolveAndStoreTidalArtistId(artistIdValue, resolvedArtist.name)
             .then((tidalId) => {
                 if (tidalId) {
@@ -4370,7 +4332,7 @@ async function loadAlbums(artistId) {
                 }
             });
     }
-    if (!storedQobuzId && resolvedArtist?.name) {
+    if (!storedIds.qobuzId && resolvedArtist?.name) {
         resolveAndStoreQobuzArtistId(artistIdValue, resolvedArtist.name)
             .then((qobuzId) => {
                 if (qobuzId) {
@@ -4378,6 +4340,60 @@ async function loadAlbums(artistId) {
                 }
             });
     }
+}
+
+function applyLocalArtistHeader(resolvedArtist) {
+    libraryState.artistVisuals.preferredAvatarPath = (resolvedArtist?.preferredImagePath || '').toString().trim() || null;
+    libraryState.artistVisuals.preferredBackgroundPath = (resolvedArtist?.preferredBackgroundPath || '').toString().trim() || null;
+
+    const artistName = document.getElementById('artistName');
+    if (artistName && resolvedArtist) {
+        artistName.textContent = resolvedArtist.name;
+    }
+
+    const avatarEl = document.getElementById('artistAvatar');
+    if (avatarEl && resolvedArtist?.preferredImagePath) {
+        const avatarPath = appendCacheKey(`/api/library/image?path=${encodeURIComponent(resolvedArtist.preferredImagePath)}&size=320`);
+        setArtistAvatarImageElement(avatarEl, avatarPath, resolvedArtist.name || 'Artist', true);
+    }
+
+    const bgEl = document.querySelector('.artist-page');
+    if (bgEl && libraryState.artistVisuals.preferredBackgroundPath) {
+        const backgroundUrl = appendCacheKey(buildLibraryImageUrl(libraryState.artistVisuals.preferredBackgroundPath));
+        applyArtistHeroBackgroundImage(backgroundUrl, true);
+    }
+}
+
+function hideLocalArtistSpotifyLink(resolvedArtist) {
+    const spotifyIdEl = document.getElementById('artistSpotifyId');
+    if (spotifyIdEl && resolvedArtist) {
+        spotifyIdEl.removeAttribute('href');
+        spotifyIdEl.style.display = 'none';
+    }
+}
+
+function applyStoredArtistExternalIds(resolvedArtist, appleIdData, tidalIdData, qobuzIdData) {
+    const storedIds = {
+        appleId: appleIdData?.appleId || null,
+        tidalId: tidalIdData?.tidalId || null,
+        qobuzId: qobuzIdData?.qobuzId || null
+    };
+
+    libraryState.appleExtras.storedAppleId = storedIds.appleId || null;
+    libraryState.appleExtras.appleArtistId = storedIds.appleId || null;
+    libraryState.appleExtras.storedTidalId = storedIds.tidalId || null;
+    libraryState.appleExtras.tidalArtistId = storedIds.tidalId || null;
+    libraryState.appleExtras.storedQobuzId = storedIds.qobuzId || null;
+    libraryState.appleExtras.qobuzArtistId = storedIds.qobuzId || null;
+    libraryState.appleExtras.biography = normalizeArtistBiographyForSync(resolvedArtist?.appleBiography || '') || null;
+    libraryState.appleExtras.biographyAppleId = storedIds.appleId || null;
+    libraryState.appleExtras.tidalBiography = null;
+    libraryState.appleExtras.biographyTidalId = storedIds.tidalId || null;
+    libraryState.appleExtras.qobuzBiography = null;
+    libraryState.appleExtras.biographyQobuzId = storedIds.qobuzId || null;
+    libraryState.appleExtras.lastFmBiography = null;
+    libraryState.appleExtras.biographyLastFmArtistName = libraryState.currentLocalArtistName || null;
+    return storedIds;
 }
 
 function renderSpotifyArtistUnavailable(reason = 'Spotify artist data unavailable.') {

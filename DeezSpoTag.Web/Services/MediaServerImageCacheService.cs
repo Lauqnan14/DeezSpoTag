@@ -12,6 +12,7 @@ public sealed record MediaServerImageResult(byte[]? Bytes, string ContentType, H
 
 public sealed class MediaServerImageCacheService
 {
+    private const string OctetStreamContentType = "application/octet-stream";
     private const int MaximumAttempts = 3;
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromDays(30);
     private static readonly TimeSpan MinimumRequestInterval = TimeSpan.FromMilliseconds(125);
@@ -69,8 +70,12 @@ public sealed class MediaServerImageCacheService
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
-                _logger.LogDebug(ex, "Media-server image request failed for {ServerType}.", serverType);
-                return stale ?? new MediaServerImageResult(null, "application/octet-stream", HttpStatusCode.BadGateway);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Media-server image request failed for {ServerType}.", serverType);
+                }
+
+                return stale ?? new MediaServerImageResult(null, OctetStreamContentType, HttpStatusCode.BadGateway);
             }
         }
         finally
@@ -100,7 +105,7 @@ public sealed class MediaServerImageCacheService
                         response.StatusCode);
                 }
 
-                lastResult = new MediaServerImageResult(null, "application/octet-stream", response.StatusCode);
+                lastResult = new MediaServerImageResult(null, OctetStreamContentType, response.StatusCode);
                 if (response.StatusCode != HttpStatusCode.TooManyRequests || attempt == MaximumAttempts)
                 {
                     return lastResult;
@@ -111,7 +116,7 @@ public sealed class MediaServerImageCacheService
                 await Task.Delay(ClampRetryDelay(retryDelay), cancellationToken);
             }
 
-            return lastResult ?? new MediaServerImageResult(null, "application/octet-stream", HttpStatusCode.BadGateway);
+            return lastResult ?? new MediaServerImageResult(null, OctetStreamContentType, HttpStatusCode.BadGateway);
         }
         finally
         {
@@ -160,7 +165,11 @@ public sealed class MediaServerImageCacheService
         }
         catch (IOException ex)
         {
-            _logger.LogDebug(ex, "Failed reading media-server image cache entry {CachePath}.", cachePath);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Failed reading media-server image cache entry {CachePath}.", cachePath);
+            }
+
             return null;
         }
     }
@@ -223,6 +232,6 @@ public sealed class MediaServerImageCacheService
         {
             return "image/gif";
         }
-        return "application/octet-stream";
+        return OctetStreamContentType;
     }
 }

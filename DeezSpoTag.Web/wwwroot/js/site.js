@@ -1250,20 +1250,20 @@ globalThis.DeezSpoTag = {
             return null;
         }
 
-        const hex = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+        const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(normalized);
         if (hex) {
             const raw = hex[1];
             const full = raw.length === 3
                 ? raw.split('').map(char => `${char}${char}`).join('')
                 : raw;
             return {
-                r: parseInt(full.slice(0, 2), 16),
-                g: parseInt(full.slice(2, 4), 16),
-                b: parseInt(full.slice(4, 6), 16)
+                r: Number.parseInt(full.slice(0, 2), 16),
+                g: Number.parseInt(full.slice(2, 4), 16),
+                b: Number.parseInt(full.slice(4, 6), 16)
             };
         }
 
-        const rgb = normalized.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+        const rgb = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/i.exec(normalized);
         if (!rgb) {
             return null;
         }
@@ -1944,55 +1944,72 @@ globalThis.DeezSpoTag = {
             return null;
         }
 
-        if (authData.discogs?.token) {
-            connected.add('discogs');
-            this.setPlatformState(platformStates, 'discogs', true, 'token');
-        }
+        this.applyCredentialPlatformStatus(authData, connected, platformStates);
+        this.applyStreamingPlatformStatus(authData, connected, platformStates);
+
+        return authData;
+    },
+
+    applyCredentialPlatformStatus(authData, connected, platformStates) {
+        this.applySimpleCredentialState(authData.discogs?.token, connected, platformStates, 'discogs', 'token');
 
         const lastFmApiKey = typeof authData.lastFm?.apiKey === 'string'
             ? authData.lastFm.apiKey.trim()
             : '';
-        if (authData.lastFm?.hasApiKey === true || lastFmApiKey.length > 0) {
-            connected.add('lastfm');
-            this.setPlatformState(platformStates, 'lastfm', true, 'api-key');
-        }
-        if (authData.bpmSupreme?.email && authData.bpmSupreme?.password) {
-            connected.add('bpmsupreme');
-            this.setPlatformState(platformStates, 'bpmsupreme', true, 'credentials');
-        }
-        if (authData.plex?.url && authData.plex?.token) {
-            connected.add('plex');
-            this.setPlatformState(platformStates, 'plex', true, 'credentials');
-        }
-        if (authData.jellyfin?.url && (authData.jellyfin?.apiKey || authData.jellyfin?.username)) {
-            connected.add('jellyfin');
-            this.setPlatformState(platformStates, 'jellyfin', true, 'credentials');
-        }
-        if (authData.qobuz?.connected === true) {
-            connected.add('qobuz');
-            this.setPlatformState(platformStates, 'qobuz', true, 'official-api');
-        } else {
-            this.setPlatformState(platformStates, 'qobuz', false, 'offline');
-        }
+        this.applySimpleCredentialState(
+            authData.lastFm?.hasApiKey === true || lastFmApiKey.length > 0,
+            connected,
+            platformStates,
+            'lastfm',
+            'api-key');
+
+        this.applySimpleCredentialState(
+            authData.bpmSupreme?.email && authData.bpmSupreme?.password,
+            connected,
+            platformStates,
+            'bpmsupreme',
+            'credentials');
+        this.applySimpleCredentialState(authData.plex?.url && authData.plex?.token, connected, platformStates, 'plex', 'credentials');
+        this.applySimpleCredentialState(
+            authData.jellyfin?.url && (authData.jellyfin?.apiKey || authData.jellyfin?.username),
+            connected,
+            platformStates,
+            'jellyfin',
+            'credentials');
+    },
+
+    applyStreamingPlatformStatus(authData, connected, platformStates) {
+        this.applyConnectedFlagState(authData.qobuz?.connected === true, connected, platformStates, 'qobuz', 'official-api', 'offline');
         this.setPlatformPublicApiStatus(
             platformStates,
             'qobuz',
             authData.qobuz?.publicApiStatus,
             authData.qobuz?.publicApiOnlineCount);
-        if (authData.tidal?.connected === true) {
-            connected.add('tidal');
-            this.setPlatformState(platformStates, 'tidal', true, 'official-api');
-        } else {
-            this.setPlatformState(platformStates, 'tidal', false, 'offline');
+        this.applyConnectedFlagState(authData.tidal?.connected === true, connected, platformStates, 'tidal', 'official-api', 'offline');
+        this.applyConnectedFlagState(
+            authData.soulseek?.connected === true,
+            connected,
+            platformStates,
+            'soulseek',
+            'slskd',
+            authData.soulseek?.status || 'offline');
+    },
+
+    applySimpleCredentialState(hasCredential, connected, platformStates, platform, detail) {
+        if (hasCredential) {
+            connected.add(platform);
+            this.setPlatformState(platformStates, platform, true, detail);
         }
-        if (authData.soulseek?.connected === true) {
-            connected.add('soulseek');
-            this.setPlatformState(platformStates, 'soulseek', true, 'slskd');
-        } else {
-            this.setPlatformState(platformStates, 'soulseek', false, authData.soulseek?.status || 'offline');
+    },
+
+    applyConnectedFlagState(isConnected, connected, platformStates, platform, connectedDetail, disconnectedDetail) {
+        if (isConnected) {
+            connected.add(platform);
+            this.setPlatformState(platformStates, platform, true, connectedDetail);
+            return;
         }
 
-        return authData;
+        this.setPlatformState(platformStates, platform, false, disconnectedDetail);
     },
 
     async resolveWrapperReadiness(appleWrapperResponse, appleWrapperOk, authData) {
@@ -2165,11 +2182,13 @@ globalThis.DeezSpoTag = {
             const publicApiOnlineCount = Number.isInteger(status?.publicApiOnlineCount)
                 ? status.publicApiOnlineCount
                 : null;
-            const publicApiLabel = publicApiStatus === 'unknown'
-                ? 'Public APIs: Not checked'
-                : publicApiOnlineCount !== null
-                    ? `Public APIs online: ${publicApiOnlineCount}`
-                    : `Public APIs: ${publicApiStatus === 'online' ? 'Online' : 'Offline'}`;
+            let publicApiLabel = 'Public APIs: Not checked';
+            if (publicApiStatus !== 'unknown' && publicApiOnlineCount !== null) {
+                publicApiLabel = `Public APIs online: ${publicApiOnlineCount}`;
+            } else if (publicApiStatus !== 'unknown') {
+                const statusLabel = publicApiStatus === 'online' ? 'Online' : 'Offline';
+                publicApiLabel = `Public APIs: ${statusLabel}`;
+            }
             const target = this.getPlatformNavigationTarget(id);
             const wrapper = document.createElement('a');
             wrapper.className = `connected-platform-icon ${isActive ? 'connected-platform-icon--active' : 'connected-platform-icon--inactive'}`;

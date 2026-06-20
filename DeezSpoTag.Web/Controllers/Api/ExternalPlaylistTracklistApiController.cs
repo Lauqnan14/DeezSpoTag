@@ -17,6 +17,11 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     private const string TidalSource = "tidal";
     private const string QobuzSource = "qobuz";
     private const string BandcampSource = "bandcamp";
+    private const string ArtistType = "artist";
+    private const string AlbumType = "album";
+    private const string MixType = "mix";
+    private const string PlaylistType = "playlist";
+    private const string TrackType = "track";
     private const string MetadataTitleKey = "title";
     private const string MetadataDescriptionKey = "description";
     private const string MetadataImageKey = "image";
@@ -40,7 +45,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         [FromQuery] string? source,
         [FromQuery] string? url,
         [FromQuery] string? id = null,
-        [FromQuery] string type = "playlist",
+        [FromQuery] string type = PlaylistType,
         CancellationToken cancellationToken = default)
     {
         var normalizedType = (type ?? string.Empty).Trim().ToLowerInvariant();
@@ -56,12 +61,12 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
 
         if (string.Equals(normalizedSource, TidalSource, StringComparison.Ordinal))
         {
-            if (normalizedType != "artist" && normalizedType != "mix" && normalizedType != "track" && normalizedType != "album" && normalizedType != "playlist")
+            if (normalizedType != ArtistType && normalizedType != MixType && normalizedType != TrackType && normalizedType != AlbumType && normalizedType != PlaylistType)
             {
                 return BadRequest(new { available = false, error = $"Unsupported type '{type}'." });
             }
         }
-        else if (!string.Equals(normalizedType, "playlist", StringComparison.OrdinalIgnoreCase))
+        else if (!string.Equals(normalizedType, PlaylistType, StringComparison.OrdinalIgnoreCase))
         {
             return BadRequest(new { available = false, error = $"Unsupported type '{type}'." });
         }
@@ -79,10 +84,10 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             {
                 payload = normalizedType switch
                 {
-                    "artist" => await BuildTidalArtistTopTracksAsync(ResolveTidalEntityId(id, playlistUrl, "artist"), playlistUrl, cancellationToken),
-                    "mix" => await BuildTidalMixTracklistAsync(ResolveTidalMixId(id, playlistUrl), playlistUrl, cancellationToken),
-                    "track" => await BuildTidalTrackTracklistAsync(ResolveTidalEntityId(id, playlistUrl, "track"), playlistUrl, cancellationToken),
-                    "album" => await BuildTidalAlbumTracklistAsync(ResolveTidalEntityId(id, playlistUrl, "album"), playlistUrl, cancellationToken),
+                    ArtistType => await BuildTidalArtistTopTracksAsync(ResolveTidalEntityId(id, playlistUrl, ArtistType), playlistUrl, cancellationToken),
+                    MixType => await BuildTidalMixTracklistAsync(ResolveTidalMixId(id, playlistUrl), playlistUrl, cancellationToken),
+                    TrackType => await BuildTidalTrackTracklistAsync(ResolveTidalEntityId(id, playlistUrl, TrackType), playlistUrl, cancellationToken),
+                    AlbumType => await BuildTidalAlbumTracklistAsync(ResolveTidalEntityId(id, playlistUrl, AlbumType), playlistUrl, cancellationToken),
                     _ => await BuildTidalPlaylistTracklistAsync(ResolveTidalPlaylistId(id, playlistUrl), playlistUrl, cancellationToken)
                 };
             }
@@ -272,7 +277,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         }
 
         var coverUrl = BuildTidalImageUrl(GetString(artistNode.Value, "picture"));
-        var normalizedArtistUrl = BuildTidalEntityUrl(artistId, artistUrl, "artist");
+        var normalizedArtistUrl = BuildTidalEntityUrl(artistId, artistUrl, ArtistType);
         return new
         {
             id = artistId,
@@ -363,7 +368,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         }
 
         var coverUrl = BuildTidalImageUrl(GetString(albumNode.Value, "cover"));
-        var normalizedAlbumUrl = BuildTidalEntityUrl(albumId, albumUrl, "album");
+        var normalizedAlbumUrl = BuildTidalEntityUrl(albumId, albumUrl, AlbumType);
         return new
         {
             id = albumId,
@@ -901,20 +906,13 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
 
             foreach (var module in modules.EnumerateArray())
             {
-                var type = GetString(module, "type");
-                if (string.Equals(type, "MIX_HEADER", StringComparison.OrdinalIgnoreCase)
-                    && module.TryGetProperty("mix", out var mix)
-                    && mix.ValueKind == JsonValueKind.Object)
+                if (TryGetTidalMixHeader(module, out var mix))
                 {
                     mixHeader = mix.Clone();
                     continue;
                 }
 
-                if (string.Equals(type, "TRACK_LIST", StringComparison.OrdinalIgnoreCase)
-                    && module.TryGetProperty("pagedList", out var pagedList)
-                    && pagedList.ValueKind == JsonValueKind.Object
-                    && pagedList.TryGetProperty("items", out var items)
-                    && items.ValueKind == JsonValueKind.Array)
+                if (TryGetTidalMixTrackItems(module, out var items))
                 {
                     itemsElement = items.Clone();
                 }
@@ -922,6 +920,27 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         }
 
         return mixHeader.ValueKind == JsonValueKind.Object && itemsElement.ValueKind == JsonValueKind.Array;
+    }
+
+    private static bool TryGetTidalMixHeader(JsonElement module, out JsonElement mix)
+    {
+        mix = default;
+        return string.Equals(GetString(module, "type"), "MIX_HEADER", StringComparison.OrdinalIgnoreCase)
+            && module.TryGetProperty("mix", out mix)
+            && mix.ValueKind == JsonValueKind.Object;
+    }
+
+    private static bool TryGetTidalMixTrackItems(JsonElement module, out JsonElement items)
+    {
+        items = default;
+        if (!string.Equals(GetString(module, "type"), "TRACK_LIST", StringComparison.OrdinalIgnoreCase)
+            || !module.TryGetProperty("pagedList", out var pagedList)
+            || pagedList.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        return pagedList.TryGetProperty("items", out items) && items.ValueKind == JsonValueKind.Array;
     }
 
     private static string ResolveTidalMixImageUrl(JsonElement mixHeader)
@@ -1139,7 +1158,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
     }
 
     private static string ResolveTidalPlaylistId(string? id, string? url)
-        => ResolveTidalEntityId(id, url, "playlist", static value => value.Contains('-'));
+        => ResolveTidalEntityId(id, url, PlaylistType, static value => value.Contains('-'));
 
     private static string ResolveTidalEntityId(string? id, string? url, string entityType)
         => ResolveTidalEntityId(id, url, entityType, static value => value.All(char.IsDigit));

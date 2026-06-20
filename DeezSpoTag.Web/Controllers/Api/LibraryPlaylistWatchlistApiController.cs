@@ -13,6 +13,19 @@ using DeezSpoTag.Services.Download.Queue;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
+public sealed class LibraryPlaylistWatchlistDependencies
+{
+    public required LibraryRepository Repository { get; init; }
+    public required LibraryConfigStore ConfigStore { get; init; }
+    public required PlaylistWatchService PlaylistWatchService { get; init; }
+    public required PlaylistSyncService PlaylistSyncService { get; init; }
+    public required PlaylistVisualService PlaylistVisualService { get; init; }
+    public required DownloadQueueRepository QueueRepository { get; init; }
+    public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
+    public WatchlistFinalizationService? WatchlistFinalizationService { get; init; }
+    public PlaylistWatchHostedService? PlaylistWatchHostedService { get; init; }
+}
+
 [Route("api/library/playlists")]
 [ApiController]
 [Authorize]
@@ -33,26 +46,17 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
     private readonly PlaylistWatchHostedService? _playlistWatchHostedService;
 
-    public LibraryPlaylistWatchlistApiController(
-        LibraryRepository repository,
-        LibraryConfigStore configStore,
-        PlaylistWatchService playlistWatchService,
-        PlaylistSyncService playlistSyncService,
-        PlaylistVisualService playlistVisualService,
-        AutoTagProfileResolutionService profileResolutionService,
-        DownloadQueueRepository queueRepository,
-        WatchlistFinalizationService? watchlistFinalizationService = null,
-        PlaylistWatchHostedService? playlistWatchHostedService = null)
+    public LibraryPlaylistWatchlistApiController(LibraryPlaylistWatchlistDependencies dependencies)
     {
-        _repository = repository;
-        _configStore = configStore;
-        _playlistWatchService = playlistWatchService;
-        _playlistSyncService = playlistSyncService;
-        _playlistVisualService = playlistVisualService;
-        _profileResolutionService = profileResolutionService;
-        _queueRepository = queueRepository;
-        _watchlistFinalizationService = watchlistFinalizationService;
-        _playlistWatchHostedService = playlistWatchHostedService;
+        _repository = dependencies.Repository;
+        _configStore = dependencies.ConfigStore;
+        _playlistWatchService = dependencies.PlaylistWatchService;
+        _playlistSyncService = dependencies.PlaylistSyncService;
+        _playlistVisualService = dependencies.PlaylistVisualService;
+        _profileResolutionService = dependencies.ProfileResolutionService;
+        _queueRepository = dependencies.QueueRepository;
+        _watchlistFinalizationService = dependencies.WatchlistFinalizationService;
+        _playlistWatchHostedService = dependencies.PlaylistWatchHostedService;
     }
 
     [HttpGet]
@@ -133,22 +137,18 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var blockedOrIgnored = new HashSet<string>(ignoredTrackIds, StringComparer.Ordinal);
         if (blockRules is { Count: > 0 } && candidates.Count > 0)
         {
-            foreach (var candidate in candidates)
+            foreach (var candidate in candidates.Where(candidate =>
+                         !string.IsNullOrWhiteSpace(candidate.TrackSourceId)
+                         && PlaylistTrackBlockRuleMatcher.FindMatch(
+                             candidate.Title,
+                             candidate.Artist,
+                             candidate.Album,
+                             candidate.Genres,
+                             candidate.Explicit,
+                             ResolveCandidateReleaseDate(candidate),
+                             blockRules) != null))
             {
-                if (PlaylistTrackBlockRuleMatcher.FindMatch(
-                        candidate.Title,
-                        candidate.Artist,
-                        candidate.Album,
-                        candidate.Genres,
-                        candidate.Explicit,
-                        ResolveCandidateReleaseDate(candidate),
-                        blockRules) != null)
-                {
-                    if (!string.IsNullOrWhiteSpace(candidate.TrackSourceId))
-                    {
-                        blockedOrIgnored.Add(candidate.TrackSourceId);
-                    }
-                }
+                blockedOrIgnored.Add(candidate.TrackSourceId!);
             }
         }
 
@@ -1321,11 +1321,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return new PlaylistTrackLocationStatus("blocked", "Blocked", "Ignored or blocked by monitored playlist rules.");
         }
 
-        var serviceLabel = string.Equals(service, "plex", StringComparison.OrdinalIgnoreCase)
-            ? "Plex library"
-            : string.Equals(service, "jellyfin", StringComparison.OrdinalIgnoreCase)
-                ? "Jellyfin library"
-                : "Target library";
+        var serviceLabel = ResolveServiceLabel(service);
         if (availability?.InTargetServer == true)
         {
             return new PlaylistTrackLocationStatus("library", "Library", $"Downloaded and visible in {serviceLabel}.");
@@ -1344,6 +1340,14 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");
     }
+
+    private static string ResolveServiceLabel(string? service)
+        => service?.Trim().ToLowerInvariant() switch
+        {
+            "plex" => "Plex library",
+            "jellyfin" => "Jellyfin library",
+            _ => "Target library"
+        };
 
     private static string NormalizeStatusText(string? status)
         => string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();

@@ -9,6 +9,8 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
 {
     private const string ProtectionPurpose = "DeezSpoTag.Tidal.PublicProviders";
     private const string FileName = "tidal-public-providers.json";
+    private const string DisabledStatus = "disabled";
+    private const string UnknownStatus = "unknown";
     private static readonly TimeSpan HealthFreshness = TimeSpan.FromMinutes(30);
     private readonly ProtectedCredentialFileStore _store;
     private readonly string _path;
@@ -48,7 +50,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             var provider = state.Providers.FirstOrDefault(item => string.Equals(item.Id, providerId, StringComparison.OrdinalIgnoreCase));
             if (provider is null) return null;
             provider.Enabled = enabled;
-            provider.Status = enabled ? "unknown" : "disabled";
+            provider.Status = enabled ? UnknownStatus : DisabledStatus;
             await SaveNoLockAsync(state, cancellationToken);
             return ToPublicProvider(provider);
         }
@@ -77,7 +79,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
                 return;
             }
             var now = DateTimeOffset.UtcNow;
-            provider.Status = provider.Enabled ? status : "disabled";
+            provider.Status = provider.Enabled ? status : DisabledStatus;
             provider.LastCheckedAt = now;
             provider.LastSuccessAt = status == "online" ? now : provider.LastSuccessAt;
             provider.FailureCategory = category;
@@ -156,13 +158,13 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             DisplayName = definition.DisplayName,
             Endpoint = definition.Endpoint,
             Enabled = true,
-            Status = "unknown"
+            Status = UnknownStatus
         };
 
     private static TidalPublicProvider ToPublicProvider(ProviderState provider)
     {
-        var status = provider.Enabled ? provider.Status : "disabled";
-        if (provider.Enabled && provider.LastCheckedAt.HasValue && DateTimeOffset.UtcNow - provider.LastCheckedAt.Value > HealthFreshness) status = "unknown";
+        var status = provider.Enabled ? provider.Status : DisabledStatus;
+        if (provider.Enabled && provider.LastCheckedAt.HasValue && DateTimeOffset.UtcNow - provider.LastCheckedAt.Value > HealthFreshness) status = UnknownStatus;
         return new TidalPublicProvider(provider.Id, provider.DisplayName, provider.Endpoint, provider.Enabled, status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs);
     }
 
@@ -184,7 +186,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         public string DisplayName { get; set; } = string.Empty;
         public string Endpoint { get; set; } = string.Empty;
         public bool Enabled { get; set; }
-        public string Status { get; set; } = "unknown";
+        public string Status { get; set; } = UnknownStatus;
         public DateTimeOffset? LastCheckedAt { get; set; }
         public DateTimeOffset? LastSuccessAt { get; set; }
         public string? FailureCategory { get; set; }
