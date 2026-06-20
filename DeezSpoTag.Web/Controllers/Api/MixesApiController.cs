@@ -13,39 +13,30 @@ public class MixesApiController : ControllerBase
     private readonly PlatformAuthService _authService;
     private readonly LibraryRepository _libraryRepository;
     private readonly MixService _mixService;
-    private readonly MixSyncService _mixSyncService;
 
     public MixesApiController(
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
-        MixService mixService,
-        MixSyncService mixSyncService)
+        MixService mixService)
     {
         _authService = authService;
         _libraryRepository = libraryRepository;
         _mixService = mixService;
-        _mixSyncService = mixSyncService;
     }
 
     [HttpGet]
-    public async Task<IActionResult> GetMixes([FromQuery] long libraryId, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetMixes([FromQuery] long? libraryId, CancellationToken cancellationToken)
     {
-        if (libraryId <= 0)
-        {
-            return BadRequest("libraryId is required.");
-        }
-
         var plexUserId = await PlexUserIdResolver.ResolveAsync(_authService, _libraryRepository, cancellationToken);
         if (plexUserId is null)
         {
             return BadRequest("Plex user not configured.");
         }
 
-        var mixes = await _mixService.GetMixesAsync(plexUserId.Value, libraryId, cancellationToken);
-        foreach (var mix in mixes)
-        {
-            await _mixSyncService.SyncMixAsync(mix, plexUserId.Value, cancellationToken);
-        }
+        var requestedLibraryId = libraryId.GetValueOrDefault();
+        var mixes = requestedLibraryId > 0
+            ? await _mixService.GetMixesAsync(plexUserId.Value, requestedLibraryId, cancellationToken)
+            : await _mixService.GetMixesAsync(plexUserId.Value, cancellationToken);
         return Ok(mixes);
     }
 
@@ -69,7 +60,6 @@ public class MixesApiController : ControllerBase
             return NotFound();
         }
 
-        await _mixSyncService.SyncMixAsync(mix.Summary, plexUserId.Value, cancellationToken);
         return Ok(mix);
     }
 }

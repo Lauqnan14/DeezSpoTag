@@ -367,6 +367,55 @@ public class JellyfinApiClient
             .ToList();
     }
 
+    public async Task<List<JellyfinHistoryItem>> GetAudioPlayHistoryAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        int limit = 500,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId))
+        {
+            return new List<JellyfinHistoryItem>();
+        }
+
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append("?Recursive=true");
+        query.Append("&IncludeItemTypes=Audio");
+        query.Append("&Filters=IsPlayed");
+        query.Append("&SortBy=DatePlayed");
+        query.Append("&SortOrder=Descending");
+        query.Append("&Fields=Path,RunTimeTicks,UserData,Artists,Album");
+        query.Append($"&Limit={Math.Clamp(limit, 1, 2000)}");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinHistoryItem>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        var items = payload?.Items ?? new List<JellyfinMediaItem>();
+        return items
+            .Where(static item => !string.IsNullOrWhiteSpace(item.Id) && item.UserData?.LastPlayedDate is not null)
+            .Select(static item => new JellyfinHistoryItem(
+                item.Id!,
+                item.Name ?? string.Empty,
+                ResolveArtistText(item),
+                item.Album ?? string.Empty,
+                item.Path,
+                item.UserData!.LastPlayedDate!.Value,
+                item.RunTimeTicks.HasValue
+                    ? (int?)Math.Min(item.RunTimeTicks.Value / JellyfinTimeTicksPerMillisecond, int.MaxValue)
+                    : null))
+            .ToList();
+    }
+
     public async Task<string?> FindPlaylistIdByNameAsync(
         string serverUrl,
         string apiKey,
@@ -1005,6 +1054,21 @@ public sealed class JellyfinMediaItem
 
     [JsonPropertyName("PlaylistItemId")]
     public string? PlaylistItemId { get; set; }
+
+    [JsonPropertyName("Album")]
+    public string? Album { get; set; }
+
+    [JsonPropertyName("Path")]
+    public string? Path { get; set; }
+
+    [JsonPropertyName("UserData")]
+    public JellyfinUserData? UserData { get; set; }
+}
+
+public sealed class JellyfinUserData
+{
+    [JsonPropertyName("LastPlayedDate")]
+    public DateTimeOffset? LastPlayedDate { get; set; }
 }
 
 public sealed record JellyfinAudioTrack(
@@ -1016,3 +1080,12 @@ public sealed record JellyfinAudioTrack(
 public sealed record JellyfinPlaylistEntry(
     string ItemId,
     string PlaylistEntryId);
+
+public sealed record JellyfinHistoryItem(
+    string ItemId,
+    string Title,
+    string Artist,
+    string Album,
+    string? FilePath,
+    DateTimeOffset PlayedAtUtc,
+    int? DurationMs);

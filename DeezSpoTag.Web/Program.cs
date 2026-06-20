@@ -1714,7 +1714,7 @@ public partial class Program
             StartupWorkerCategory.Deferred,
             "Library recommendation automation after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.PlexHistoryImportService>();
-        services.AddSingleton<DeezSpoTag.Web.Services.MixSyncService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.JellyfinHistoryImportService>();
         services.AddSingleton<DeezSpoTag.Web.Services.VibeAnalysisSettingsStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>(

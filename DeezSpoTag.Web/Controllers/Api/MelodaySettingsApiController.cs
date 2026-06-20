@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Authorize]
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
+[Microsoft.AspNetCore.Mvc.IgnoreAntiforgeryToken]
 public sealed class MelodaySettingsApiController : ControllerBase
 {
     private readonly MelodaySettingsStore _store;
@@ -48,6 +49,7 @@ public sealed class MelodaySettingsApiController : ControllerBase
             SonicSimilarLimit = MelodayClamp.PositiveOrDefault(request.SonicSimilarLimit, _defaults.SonicSimilarLimit, 1, 50),
             SonicSimilarityDistance = MelodayClamp.PositiveOrDefault(request.SonicSimilarityDistance, _defaults.SonicSimilarityDistance, 0.05d, 1d),
             UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(request.UpdateIntervalMinutes, _defaults.UpdateIntervalMinutes, 5, 1440),
+            Mode = MelodayModes.Normalize(request.Mode),
             MoodMapPath = _defaults.MoodMapPath,
             CoversPath = _defaults.CoversPath,
             FontsPath = _defaults.FontsPath,

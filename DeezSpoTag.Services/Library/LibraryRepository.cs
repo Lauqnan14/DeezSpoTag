@@ -75,7 +75,8 @@ public sealed class LibraryRepository
         string? PlexRatingKey,
         DateTimeOffset PlayedAtUtc,
         int? DurationMs,
-        string? MetadataJson);
+        string? MetadataJson,
+        string Source = "plex");
 
     public sealed record MixCacheUpsertInput(
         string MixId,
@@ -2442,7 +2443,7 @@ LIMIT 1;";
 INSERT OR IGNORE INTO play_history
     (library_id, plex_user_id, track_id, plex_track_key, plex_rating_key, played_at_utc, play_duration_ms, source, metadata_json)
 VALUES
-    (@libraryId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @playedAtUtc, @{DurationMsField}, 'plex', @metadataJson);";
+    (@libraryId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @playedAtUtc, @{DurationMsField}, @source, @metadataJson);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, (object?)input.LibraryId ?? DBNull.Value);
         command.Parameters.AddWithValue("plexUserId", input.PlexUserId);
@@ -2451,6 +2452,7 @@ VALUES
         command.Parameters.AddWithValue("plexRatingKey", (object?)input.PlexRatingKey ?? DBNull.Value);
         command.Parameters.AddWithValue("playedAtUtc", input.PlayedAtUtc.ToString("O"));
         command.Parameters.AddWithValue(DurationMsField, (object?)input.DurationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue("source", string.IsNullOrWhiteSpace(input.Source) ? "plex" : input.Source.Trim().ToLowerInvariant());
         command.Parameters.AddWithValue("metadataJson", (object?)input.MetadataJson ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -4639,8 +4641,85 @@ WHERE mix_id = @mixId
             libraryId);
     }
 
+    public async Task<IReadOnlyList<MixSummaryDto>> GetGeneratedMixCachesAsync(long plexUserId, long libraryId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id, mix_id, name, description, track_count, cover_urls_json, generated_at_utc, expires_at_utc
+FROM mix_cache
+WHERE plex_user_id = @plexUserId
+  AND library_id = @libraryId
+  AND mix_id NOT IN ('top-tracks', 'rediscover', 'library-shuffle')
+ORDER BY generated_at_utc DESC, id DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("plexUserId", plexUserId);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var mixes = new List<MixSummaryDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            mixes.Add(await ReadMixSummaryAsync(reader, libraryId, cancellationToken));
+        }
+
+        return mixes;
+    }
+
+    public async Task<IReadOnlyList<MixSummaryDto>> GetGeneratedMixCachesAsync(long plexUserId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id, mix_id, name, description, track_count, cover_urls_json, generated_at_utc, expires_at_utc, library_id
+FROM mix_cache
+WHERE plex_user_id = @plexUserId
+  AND mix_id NOT IN ('top-tracks', 'rediscover', 'library-shuffle')
+ORDER BY generated_at_utc DESC, id DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("plexUserId", plexUserId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var mixes = new List<MixSummaryDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var libraryId = await reader.IsDBNullAsync(8, cancellationToken) ? 0 : reader.GetInt64(8);
+            mixes.Add(await ReadMixSummaryAsync(reader, libraryId, cancellationToken));
+        }
+
+        return mixes;
+    }
+
+    public async Task<MixSummaryDto?> GetGeneratedMixCacheAsync(string mixId, long plexUserId, long libraryId, CancellationToken cancellationToken = default)
+    {
+        if (IsRemovedHardcodedMixId(mixId))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id, mix_id, name, description, track_count, cover_urls_json, generated_at_utc, expires_at_utc
+FROM mix_cache
+WHERE mix_id = @mixId
+  AND plex_user_id = @plexUserId
+  AND library_id = @libraryId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("mixId", mixId);
+        command.Parameters.AddWithValue("plexUserId", plexUserId);
+        command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return await ReadMixSummaryAsync(reader, libraryId, cancellationToken);
+    }
+
     public async Task<long?> GetMixCacheIdAsync(string mixId, long plexUserId, long libraryId, CancellationToken cancellationToken = default)
     {
+        if (IsRemovedHardcodedMixId(mixId))
+        {
+            return null;
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT id
@@ -4659,6 +4738,26 @@ WHERE mix_id = @mixId
         }
         return Convert.ToInt64(result);
     }
+
+    private static async Task<MixSummaryDto> ReadMixSummaryAsync(SqliteDataReader reader, long libraryId, CancellationToken cancellationToken)
+    {
+        var coverJson = await reader.IsDBNullAsync(5, cancellationToken) ? "[]" : reader.GetString(5);
+        var covers = System.Text.Json.JsonSerializer.Deserialize<List<string>>(coverJson) ?? new List<string>();
+        return new MixSummaryDto(
+            reader.GetString(1),
+            reader.GetString(2),
+            await reader.IsDBNullAsync(3, cancellationToken) ? string.Empty : reader.GetString(3),
+            reader.GetInt32(4),
+            covers,
+            ParseDateTimeOffsetInvariant(reader.GetString(6)),
+            ParseDateTimeOffsetInvariant(reader.GetString(7)),
+            libraryId);
+    }
+
+    private static bool IsRemovedHardcodedMixId(string? mixId)
+        => string.Equals(mixId, "top-tracks", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(mixId, "rediscover", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(mixId, "library-shuffle", StringComparison.OrdinalIgnoreCase);
 
     public async Task<long> UpsertMixCacheAsync(
         MixCacheUpsertInput input,

@@ -2548,14 +2548,42 @@ async function loadMixTracklist() {
 
 function mapMixTracklist(payload) {
     const tracks = mapLibraryStyleTracks(payload.tracks);
+    const coverUrl = resolveMelodayMixCoverUrl(payload.summary);
 
     return {
         title: payload.summary?.name || 'Mix',
         description: payload.summary?.description || '',
         creator: { name: 'Auto Mix' },
+        cover_xl: coverUrl,
+        cover_big: coverUrl,
+        picture_xl: coverUrl,
+        picture_big: coverUrl,
+        picture: coverUrl,
         nb_tracks: payload.summary?.trackCount || tracks.length,
         tracks
     };
+}
+
+function stableTracklistHash(value) {
+    const text = String(value || '');
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+        hash = ((hash << 5) - hash) + text.charCodeAt(index);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+}
+
+function resolveMelodayMixCoverUrl(summary) {
+    const covers = Array.isArray(summary?.coverUrls)
+        ? summary.coverUrls.map(normalizeCoverUrl).filter(Boolean)
+        : [];
+    if (covers.length > 0) {
+        return covers[0];
+    }
+
+    const coverIndex = (stableTracklistHash(`${summary?.id || ''}|${summary?.name || ''}`) % 18) + 1;
+    return `/images/meloday/${coverIndex}.jpg`;
 }
 
 async function loadRadioTracklist() {

@@ -40,7 +40,14 @@ function melodayFetch(url, options) {
 async function melodayFetchJson(url, options) {
     const response = await melodayFetch(url, options);
     if (!response.ok) {
-        const message = await response.text();
+        const text = await response.text();
+        let message = text;
+        try {
+            const payload = text ? JSON.parse(text) : null;
+            message = payload?.message || payload?.error || payload?.title || text;
+        } catch {
+            message = text;
+        }
         throw new Error(message || `Request failed: ${response.status}`);
     }
     return response.json();
@@ -66,7 +73,8 @@ let melodayLastLogRun = null;
 const melodayDefaults = {
     maxTracks: 50,
     historyLookbackDays: 30,
-    excludePlayedDays: 4
+    excludePlayedDays: 4,
+    mode: 'sonic'
 };
 
 function melodayLog(level, message, timestamp) {
@@ -105,7 +113,8 @@ async function loadMelodayStatus() {
             const tracks = status.maxTracks ?? melodayDefaults.maxTracks;
             const lookback = status.historyLookbackDays ?? melodayDefaults.historyLookbackDays;
             const exclude = status.excludePlayedDays ?? melodayDefaults.excludePlayedDays;
-            settingsSummaryEl.textContent = `Tracks: ${tracks} • Lookback: ${lookback}d • Exclude: ${exclude}d`;
+            const mode = melodayFormatMode(status.mode || melodayDefaults.mode);
+            settingsSummaryEl.textContent = `Mode: ${mode} • Tracks: ${tracks} • Lookback: ${lookback}d • Exclude: ${exclude}d`;
         }
         if (status.lastRunUtc && status.lastRunUtc !== melodayLastLogRun) {
             melodayLog('info', `Meloday run at ${melodayFormatTimestamp(status.lastRunUtc)}`, status.lastRunUtc);
@@ -134,6 +143,32 @@ function melodayParseNumber(value, fallback) {
     return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function melodayNormalizeMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'direct' || normalized === 'both') {
+        return normalized;
+    }
+    return 'sonic';
+}
+
+function melodayFormatMode(value) {
+    const normalized = melodayNormalizeMode(value);
+    if (normalized === 'direct') return 'Direct';
+    if (normalized === 'both') return 'Both';
+    return 'Sonic';
+}
+
+function melodaySetMode(value) {
+    const normalized = melodayNormalizeMode(value);
+    document.querySelectorAll('input[name="meloday-mode"]').forEach((input) => {
+        input.checked = input.value === normalized;
+    });
+}
+
+function melodayGetMode() {
+    return melodayNormalizeMode(document.querySelector('input[name="meloday-mode"]:checked')?.value || melodayDefaults.mode);
+}
+
 async function loadMelodaySettings() {
     const enabledEl = document.getElementById('meloday-enabled');
     if (!enabledEl) {
@@ -154,6 +189,7 @@ async function loadMelodaySettings() {
         const similarityDistance = document.getElementById('meloday-similarity-distance');
         const similarLimit = document.getElementById('meloday-similar-limit');
         const historicalRatio = document.getElementById('meloday-historical-ratio');
+        melodaySetMode(settings.mode || melodayDefaults.mode);
 
         if (libraryName) libraryName.value = settings.libraryName || '';
         if (playlistPrefix) playlistPrefix.value = settings.playlistPrefix || '';
@@ -181,7 +217,8 @@ function buildMelodayPayload(enabledOverride) {
         updateIntervalMinutes: melodayParseNumber(document.getElementById('meloday-update-minutes')?.value, 30),
         sonicSimilarityDistance: melodayParseNumber(document.getElementById('meloday-similarity-distance')?.value, 0.35),
         sonicSimilarLimit: melodayParseNumber(document.getElementById('meloday-similar-limit')?.value, 8),
-        historicalRatio: melodayParseNumber(document.getElementById('meloday-historical-ratio')?.value, 0.3)
+        historicalRatio: melodayParseNumber(document.getElementById('meloday-historical-ratio')?.value, 0.3),
+        mode: melodayGetMode()
     };
 }
 
@@ -267,18 +304,32 @@ async function saveMelodayEnabled(enabled) {
 
 async function runMeloday() {
     const button = document.getElementById('runMeloday');
+    const lastMessageEl = document.getElementById('melodayLastMessage');
     if (!button) {
         return;
     }
     button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = 'Running...';
+    if (lastMessageEl) {
+        lastMessageEl.textContent = 'Saving settings and running Meloday...';
+    }
     try {
-        await melodayFetchJson('/api/meloday/run', { method: 'POST' });
+        const payload = buildMelodayPayload();
+        await melodayFetchJson('/api/meloday/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        melodayState.settings = { ...payload };
+
+        const result = await melodayFetchJson('/api/meloday/run', { method: 'POST' });
         if (typeof notifyActivity === 'function') {
-            notifyActivity('Meloday playlist updated.');
+            notifyActivity(result?.message || 'Meloday playlist updated.');
         } else if (typeof showToast === 'function') {
-            showToast('Meloday playlist updated.');
+            showToast(result?.message || 'Meloday playlist updated.');
         }
-        melodayLog('info', 'Meloday playlist updated.');
+        melodayLog('info', result?.message || 'Meloday playlist updated.');
         await loadMelodayStatus();
     } catch (error) {
         if (typeof notifyActivity === 'function') {
@@ -286,8 +337,12 @@ async function runMeloday() {
         } else if (typeof showToast === 'function') {
             showToast(`Meloday failed: ${error.message}`, true);
         }
+        if (lastMessageEl) {
+            lastMessageEl.textContent = error.message || 'Meloday failed.';
+        }
         melodayLog('error', `Meloday failed: ${error.message}`);
     } finally {
+        button.textContent = originalText || 'Run Meloday';
         button.disabled = false;
     }
 }

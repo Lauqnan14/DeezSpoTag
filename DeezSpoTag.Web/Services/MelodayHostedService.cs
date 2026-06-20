@@ -90,7 +90,7 @@ public sealed class MelodayHostedService : BackgroundService
             return;
         }
 
-        var result = await _melodayService.RunAsync(stoppingToken);
+        var result = await _melodayService.RunAsync(refreshHistory: true, stoppingToken);
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Meloday update: {Message}", result.Message);

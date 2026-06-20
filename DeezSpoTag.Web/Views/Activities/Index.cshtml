@@ -1694,6 +1694,46 @@
     color: var(--text-muted);
 }
 
+.media-operations-tab .meloday-mode-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 28%, var(--border-secondary));
+    border-radius: 14px;
+    background: var(--bg-secondary);
+}
+
+.media-operations-tab .meloday-mode-option {
+    position: relative;
+}
+
+.media-operations-tab .meloday-mode-option input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.media-operations-tab .meloday-mode-option span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 72px;
+    min-height: 32px;
+    padding: 6px 12px;
+    border-radius: 10px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.media-operations-tab .meloday-mode-option input:checked + span {
+    background: color-mix(in srgb, var(--primary-color) 18%, transparent);
+    color: var(--primary-color);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 60%, transparent);
+}
+
 .media-operations-tab .vibe-analysis-settings .form-control {
     min-width: 180px;
     background: var(--bg-secondary);
@@ -3055,6 +3095,20 @@
                                             <span class="slider" aria-hidden="true"></span>
                                         </span>
                                     </div>
+                                    <div class="meloday-mode-control" role="radiogroup" aria-label="Meloday mode">
+                                        <label class="meloday-mode-option">
+                                            <input type="radio" name="meloday-mode" value="direct" />
+                                            <span>Direct</span>
+                                        </label>
+                                        <label class="meloday-mode-option">
+                                            <input type="radio" name="meloday-mode" value="sonic" />
+                                            <span>Sonic</span>
+                                        </label>
+                                        <label class="meloday-mode-option">
+                                            <input type="radio" name="meloday-mode" value="both" />
+                                            <span>Both</span>
+                                        </label>
+                                    </div>
                                     <div class="tool-card-action-group">
                                         <button id="runMeloday" class="action-btn action-btn-sm" type="button">Run Meloday</button>
                                         <button id="saveMelodaySettings" class="action-btn action-btn-sm" type="button">Save Settings</button>
@@ -3301,7 +3355,7 @@ const activityLazyScripts = new Map();
 const activityLazyScriptUrls = {
     autoTagStatus: '@Url.Content("~/js/autotag-status.js")',
     watchlistHistory: '@Url.Content("~/js/watchlist-history.js")',
-    meloday: '@Url.Content("~/js/meloday.js")'
+    meloday: '@AssetUrl.Versioned(ViewContext, Url, "~/js/meloday.js")'
 };
 const activityCsrfUnsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const activityNativeFetch = globalThis.fetch.bind(globalThis);

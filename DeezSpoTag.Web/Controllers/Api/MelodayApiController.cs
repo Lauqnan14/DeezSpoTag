@@ -8,8 +8,10 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Authorize]
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
+[Microsoft.AspNetCore.Mvc.IgnoreAntiforgeryToken]
 public class MelodayApiController : ControllerBase
 {
+    private static readonly TimeSpan ManualRunTimeout = TimeSpan.FromSeconds(60);
     private readonly MelodayService _melodayService;
 
     public MelodayApiController(MelodayService melodayService)
@@ -20,7 +22,19 @@ public class MelodayApiController : ControllerBase
     [HttpPost("run")]
     public async Task<IActionResult> Run(CancellationToken cancellationToken)
     {
-        var result = await _melodayService.RunAsync(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(ManualRunTimeout);
+
+        MelodayRunResult result;
+        try
+        {
+            result = await _melodayService.RunAsync(refreshHistory: false, timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return StatusCode(StatusCodes.Status408RequestTimeout, new { message = "Meloday run timed out before completion." });
+        }
+
         if (!result.Success)
         {
             return BadRequest(new { message = result.Message });

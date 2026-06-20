@@ -16,6 +16,45 @@
     }
 
     const formatCount = (count) => `${count} playlist${count === 1 ? "" : "s"}`;
+    const MELODAY_COVER_COUNT = 18;
+
+    const stableHash = (value) => {
+        const text = String(value || "");
+        let hash = 0;
+        for (let index = 0; index < text.length; index += 1) {
+            hash = ((hash << 5) - hash) + text.charCodeAt(index);
+            hash |= 0;
+        }
+        return Math.abs(hash);
+    };
+
+    const resolveMelodayCoverUrl = (playlist) => {
+        const covers = Array.isArray(playlist?.coverUrls) ? playlist.coverUrls.filter(Boolean) : [];
+        if (covers.length > 0) {
+            return covers[0];
+        }
+
+        const coverIndex = (stableHash(`${playlist?.id || ""}|${playlist?.name || ""}`) % MELODAY_COVER_COUNT) + 1;
+        return `/images/meloday/${coverIndex}.jpg`;
+    };
+
+    const formatUpdated = (value) => {
+        if (!value) {
+            return "Recently updated";
+        }
+
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return String(value);
+        }
+
+        return date.toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+            year: "numeric"
+        });
+    };
+
     const uniquePositiveNumbers = (values) => {
         const seen = new Set();
         const output = [];
@@ -132,34 +171,60 @@
 
     const renderAutoCard = (playlist) => {
         const card = document.createElement("div");
-        card.className = "auto-tool-card";
-        card.addEventListener("click", () => openTracklist(playlist.id, "mix", playlist.libraryId));
+        card.className = "watchlist-playlist-card-v2 meloday-playlist-card";
 
-        const header = document.createElement("div");
-        header.className = "auto-tool-header";
+        const artButton = document.createElement("button");
+        artButton.className = "watchlist-card-art";
+        artButton.type = "button";
+        artButton.addEventListener("click", () => openTracklist(playlist.id, "mix", playlist.libraryId));
 
-        const title = document.createElement("h3");
-        title.className = "auto-tool-title";
-        title.textContent = playlist.name || "Untitled auto playlist";
+        const img = document.createElement("img");
+        img.src = resolveMelodayCoverUrl(playlist);
+        img.alt = playlist.name || "Meloday playlist";
+        img.addEventListener("error", () => {
+            img.remove();
+            if (!artButton.querySelector(".watchlist-card-art-placeholder")) {
+                const placeholder = document.createElement("div");
+                placeholder.className = "watchlist-card-art-placeholder";
+                const icon = document.createElement("i");
+                icon.className = "fa-solid fa-music";
+                placeholder.appendChild(icon);
+                artButton.appendChild(placeholder);
+            }
+        });
+        artButton.appendChild(img);
 
         const badge = document.createElement("span");
-        badge.className = "auto-tool-badge";
-        badge.textContent = playlist.source || "Auto";
-        header.append(title, badge);
+        badge.className = "playlist-watchlist-priority-badge meloday-playlist-badge";
+        badge.textContent = "M";
+        badge.title = "Meloday";
+        artButton.appendChild(badge);
 
-        const desc = document.createElement("p");
-        desc.className = "auto-tool-desc";
-        desc.textContent = playlist.description || "Generated from listening history.";
+        const stats = document.createElement("div");
+        stats.className = "watchlist-card-stats";
+        const generated = document.createElement("div");
+        generated.className = "watchlist-card-stat";
+        generated.textContent = formatUpdated(playlist.updated);
+        stats.appendChild(generated);
+        artButton.appendChild(stats);
+
+        const strip = document.createElement("div");
+        strip.className = "watchlist-card-strip";
+
+        const title = document.createElement("div");
+        title.className = "watchlist-card-name";
+        title.textContent = playlist.name || "Untitled Meloday playlist";
 
         const meta = document.createElement("div");
-        meta.className = "auto-tool-meta";
-        const trackCount = document.createElement("span");
-        trackCount.textContent = `${playlist.trackCount || 0} tracks`;
-        const updated = document.createElement("span");
-        updated.textContent = playlist.updated || "Recently updated";
-        meta.append(trackCount, updated);
+        meta.className = "watchlist-card-meta";
+        meta.textContent = `${playlist.trackCount || 0} tracks`;
 
-        card.append(header, desc, meta);
+        const description = document.createElement("div");
+        description.className = "watchlist-card-meta meloday-playlist-description";
+        description.textContent = playlist.description || "Generated from listening history.";
+
+        strip.append(title, meta, description);
+        card.append(artButton, strip);
         return card;
     };
 
@@ -246,19 +311,15 @@
                 if (data?.warning) {
                     setWarning(data.warning);
                 }
-                if (playlists.length > 0) {
-                    sourceEl.textContent = data.source || "Plex";
-                    renderLists(playlists);
-                    loadMixes();
-                } else {
-                    sourceEl.textContent = "";
-                    renderLists([]);
-                }
+                sourceEl.textContent = playlists.length > 0 ? data.source || "Plex" : "";
+                renderLists(playlists);
+                loadMixes();
             })
             .catch(() => {
                 setWarning("Failed to load playlists.");
                 sourceEl.textContent = "";
                 renderLists([]);
+                loadMixes();
             });
     }
 
@@ -266,30 +327,33 @@
         if (!hasPlaylistSections) {
             return;
         }
-        resolveRecommendationLibraryIds()
-            .then((libraryIds) => Promise.all(
-                libraryIds.map((libraryId) =>
-                    fetch(`/api/mixes?libraryId=${encodeURIComponent(libraryId)}`, { cache: "no-store" })
-                        .then((response) => response.ok ? response.json() : [])
-                        .then((mixes) => ({ libraryId, mixes: Array.isArray(mixes) ? mixes : [] }))
-                        .catch(() => ({ libraryId, mixes: [] }))
-                )
-            ))
-            .then((entries) => {
-                entries.forEach((entry) => entry.mixes.forEach((mix) => {
-                    autoGrid.appendChild(renderAutoCard({
-                        id: mix.id,
-                        name: mix.name,
-                        description: mix.description,
-                        trackCount: mix.trackCount,
-                        updated: mix.generatedAtUtc,
-                        source: "Auto",
-                        libraryId: mix.libraryId || entry.libraryId
-                    }));
-                }));
+        fetch("/api/mixes", { cache: "no-store" })
+            .then((response) => response.ok ? response.json() : [])
+            .then((mixes) => {
+                autoGrid.innerHTML = "";
+                if (Array.isArray(mixes)) {
+                    mixes.forEach((mix) => {
+                        if (!mix?.id || !mix?.libraryId) {
+                            return;
+                        }
+                        autoGrid.appendChild(renderAutoCard({
+                            id: mix.id,
+                            name: mix.name,
+                            description: mix.description,
+                            trackCount: mix.trackCount,
+                            updated: mix.generatedAtUtc,
+                            source: "Auto",
+                            coverUrls: mix.coverUrls,
+                            libraryId: mix.libraryId
+                        }));
+                    });
+                }
                 autoEmpty.hidden = autoGrid.children.length > 0;
             })
-            .catch(() => {});
+            .catch(() => {
+                autoGrid.innerHTML = "";
+                autoEmpty.hidden = false;
+            });
     }
 
     async function loadRecommendations() {
@@ -324,9 +388,20 @@
         try {
             const folderResponse = await fetch("/api/library/folders?includeDisabled=false&contentType=stereo", { cache: "no-store" });
             const folders = folderResponse.ok ? await folderResponse.json() : [];
-            return uniquePositiveNumbers((Array.isArray(folders) ? folders : []).map((item) => item?.libraryId));
+            const folderLibraryIds = uniquePositiveNumbers((Array.isArray(folders) ? folders : []).map((item) => item?.libraryId));
+            if (folderLibraryIds.length > 0) {
+                return folderLibraryIds;
+            }
         } catch (error) {
             console.warn("Failed to load recommendation folder scope.", error);
+        }
+
+        try {
+            const libraryResponse = await fetch("/api/library/libraries", { cache: "no-store" });
+            const libraries = libraryResponse.ok ? await libraryResponse.json() : [];
+            return uniquePositiveNumbers((Array.isArray(libraries) ? libraries : []).map((item) => item?.id));
+        } catch (error) {
+            console.warn("Failed to load library scope.", error);
         }
 
         return [];

@@ -146,9 +146,37 @@
 }
 
 .auto-tools-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--art-card-size), var(--art-card-size)));
+    gap: 16px;
+    justify-content: start;
+}
+
+.meloday-playlist-card {
+    cursor: pointer;
+}
+
+.meloday-playlist-card .watchlist-card-art {
+    border-radius: 12px;
+    margin: 0 0 10px;
+}
+
+.meloday-playlist-card .watchlist-card-strip {
+    padding: 0 4px;
+    gap: 4px;
+}
+
+.meloday-playlist-badge {
+    background: rgba(3, 105, 161, 0.88);
+}
+
+.meloday-playlist-description {
+    display: -webkit-box;
+    white-space: normal;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-height: 1.35;
 }
 
 .auto-tools-grid--recommendations {
