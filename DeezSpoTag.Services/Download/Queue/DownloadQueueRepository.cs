@@ -38,6 +38,7 @@ public sealed class DownloadQueueRepository
     private const string MoveStatusBlocked = "blocked";
     private const string StatusFailed = "failed";
     private const string MoveStatusFailed = StatusFailed;
+    private const string StereoContentType = "stereo";
     private const string MoveStatusNotRequired = "not_required";
     private const string EnrichmentStatusPending = "pending";
     private const string EnrichmentStatusRunning = "running";
@@ -1710,6 +1711,10 @@ WHERE (
     AND (
         @contentType IS NULL
         OR lower(content_type) = lower(@contentType)
+        OR (
+            lower(@contentType) = '" + StereoContentType + @"'
+            AND NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
+        )
     )
 ORDER BY
     CASE
@@ -1870,7 +1875,14 @@ WHERE (
         (@destinationFolderId IS NULL AND destination_folder_id IS NULL)
         OR destination_folder_id = @destinationFolderId
       )
-  AND (@contentType IS NULL OR lower(content_type) = lower(@contentType))
+  AND (
+        @contentType IS NULL
+        OR lower(content_type) = lower(@contentType)
+        OR (
+            lower(@contentType) = '" + StereoContentType + @"'
+            AND NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
+        )
+      )
 ORDER BY updated_at DESC
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
@@ -1911,7 +1923,14 @@ WHERE lower(engine) = lower(@engine)
         (@destinationFolderId IS NULL AND destination_folder_id IS NULL)
         OR destination_folder_id = @destinationFolderId
       )
-  AND (@contentType IS NULL OR lower(content_type) = lower(@contentType))
+  AND (
+        @contentType IS NULL
+        OR lower(content_type) = lower(@contentType)
+        OR (
+            lower(@contentType) = '" + StereoContentType + @"'
+            AND NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
+        )
+      )
 ORDER BY updated_at DESC
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
@@ -2792,24 +2811,108 @@ public sealed class DuplicateLookupRequest : DownloadIdentityLookupRequest
     public string? ArtistPrimaryName { get; init; }
 
     public static DuplicateLookupRequest FromQueueItem(DownloadQueueItem item)
-        => new()
+    {
+        using var payloadDocument = TryParsePayload(item.PayloadJson);
+        var payload = payloadDocument?.RootElement;
+        return new DuplicateLookupRequest
         {
-            Isrc = item.Isrc,
-            DeezerTrackId = item.DeezerTrackId,
-            DeezerAlbumId = item.DeezerAlbumId,
-            DeezerArtistId = item.DeezerArtistId,
-            SpotifyTrackId = item.SpotifyTrackId,
-            SpotifyAlbumId = item.SpotifyAlbumId,
-            SpotifyArtistId = item.SpotifyArtistId,
-            AppleTrackId = item.AppleTrackId,
-            AppleAlbumId = item.AppleAlbumId,
-            AppleArtistId = item.AppleArtistId,
+            Isrc = FirstNonEmpty(item.Isrc, ReadPayloadString(payload, "Isrc", "isrc")),
+            DeezerTrackId = FirstNonEmpty(item.DeezerTrackId, ReadPayloadString(payload, "DeezerId", "deezerId", "DeezerTrackId", "deezerTrackId")),
+            DeezerAlbumId = FirstNonEmpty(item.DeezerAlbumId, ReadPayloadString(payload, "DeezerAlbumId", "deezerAlbumId")),
+            DeezerArtistId = FirstNonEmpty(item.DeezerArtistId, ReadPayloadString(payload, "DeezerArtistId", "deezerArtistId")),
+            SpotifyTrackId = FirstNonEmpty(item.SpotifyTrackId, ReadPayloadString(payload, "SpotifyId", "spotifyId", "SpotifyTrackId", "spotifyTrackId")),
+            SpotifyAlbumId = FirstNonEmpty(item.SpotifyAlbumId, ReadPayloadString(payload, "SpotifyAlbumId", "spotifyAlbumId")),
+            SpotifyArtistId = FirstNonEmpty(item.SpotifyArtistId, ReadPayloadString(payload, "SpotifyArtistId", "spotifyArtistId")),
+            AppleTrackId = FirstNonEmpty(item.AppleTrackId, ReadPayloadString(payload, "AppleId", "appleId", "AppleTrackId", "appleTrackId")),
+            AppleAlbumId = FirstNonEmpty(item.AppleAlbumId, ReadPayloadString(payload, "AppleAlbumId", "appleAlbumId")),
+            AppleArtistId = FirstNonEmpty(item.AppleArtistId, ReadPayloadString(payload, "AppleArtistId", "appleArtistId")),
+            QobuzTrackId = ReadPayloadString(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId"),
+            TidalTrackId = ReadPayloadString(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId"),
+            AmazonTrackId = ReadPayloadString(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId"),
             ArtistName = item.ArtistName,
             TrackTitle = item.TrackTitle,
-            DurationMs = item.DurationMs,
-            DestinationFolderId = item.DestinationFolderId,
-            ContentType = item.ContentType
+            DurationMs = item.DurationMs ?? ReadPayloadInt(payload, "DurationMs", "durationMs"),
+            DestinationFolderId = item.DestinationFolderId ?? ReadPayloadLong(payload, "DestinationFolderId", "destinationFolderId"),
+            ContentType = FirstNonEmpty(item.ContentType, ReadPayloadString(payload, "ContentType", "contentType"))
         };
+    }
+
+    private static JsonDocument? TryParsePayload(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonDocument.Parse(payloadJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ReadPayloadString(JsonElement? root, params string[] names)
+    {
+        if (root?.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var name in names)
+        {
+            if (root.Value.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                var text = value.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static int? ReadPayloadInt(JsonElement? root, params string[] names)
+    {
+        var value = ReadPayloadLong(root, names);
+        return value is >= int.MinValue and <= int.MaxValue ? (int)value.Value : null;
+    }
+
+    private static long? ReadPayloadLong(JsonElement? root, params string[] names)
+    {
+        if (root?.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var name in names)
+        {
+            if (!root.Value.TryGetProperty(name, out var value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var numeric))
+            {
+                return numeric;
+            }
+
+            if (value.ValueKind == JsonValueKind.String
+                && long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim();
 }
 
 public sealed class MetadataLookupRequest

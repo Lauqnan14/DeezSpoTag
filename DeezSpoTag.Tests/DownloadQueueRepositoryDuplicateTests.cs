@@ -206,6 +206,82 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task EnqueueAsync_BlocksDuplicateWhenEngineTrackIdExistsOnlyInPayload()
+    {
+        await using var context = await CreateContextAsync();
+        const string existingPayloadJson = """
+            {
+              "QobuzId":"123456",
+              "ContentType":""
+            }
+            """;
+        const string duplicatePayloadJson = """
+            {
+              "QobuzId":"123456",
+              "ContentType":"stereo"
+            }
+            """;
+
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                queueUuid: "existing-qobuz-payload-id",
+                artist: "Stored Artist",
+                title: "Stored Title",
+                destinationFolderId: 12) with
+            {
+                ContentType = null,
+                PayloadJson = existingPayloadJson
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+
+        var inserted = await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                queueUuid: "duplicate-qobuz-payload-id",
+                artist: "Incoming Artist",
+                title: "Incoming Title",
+                destinationFolderId: 12) with
+            {
+                ContentType = "stereo",
+                PayloadJson = duplicatePayloadJson
+            },
+            CancellationToken.None);
+
+        Assert.Null(inserted);
+    }
+
+    [Fact]
+    public async Task ExistsDuplicateAsync_TreatsBlankQueueContentTypeAsStereo()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                queueUuid: "blank-content-stereo-row",
+                artist: "Same Artist",
+                title: "Same Track",
+                destinationFolderId: 14) with
+            {
+                ContentType = null,
+                DurationMs = 180000
+            },
+            skipDuplicateCheck: true,
+            CancellationToken.None);
+
+        var exists = await context.QueueRepository.ExistsDuplicateAsync(
+            new DuplicateLookupRequest
+            {
+                ArtistName = "Same Artist",
+                TrackTitle = "Same Track",
+                DestinationFolderId = 14,
+                ContentType = "stereo",
+                DurationMs = 180500
+            },
+            CancellationToken.None);
+
+        Assert.True(exists);
+    }
+
+    [Fact]
     public async Task ExistsDuplicateAsync_MatchesCompletedRowEvenWhenPayloadFileIsMissing()
     {
         await using var context = await CreateContextAsync();
