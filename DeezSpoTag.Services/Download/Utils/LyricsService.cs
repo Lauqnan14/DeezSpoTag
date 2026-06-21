@@ -223,7 +223,7 @@ public class LyricsService
         }
     }
 
-    private readonly record struct LyricsOutputRequirements(bool WantsRichLyrics, bool WantsPlainLyrics);
+    private readonly record struct LyricsOutputRequirements(bool WantsTimedLyrics, bool WantsTtmlLyrics, bool WantsPlainLyrics);
 
     private static bool ShouldReturnResolvedLyrics(
         LyricsResolutionState state,
@@ -235,7 +235,13 @@ public class LyricsService
             return false;
         }
 
-        if (requirements.WantsRichLyrics
+        if (requirements.WantsTtmlLyrics
+            && string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
+        {
+            return false;
+        }
+
+        if (requirements.WantsTimedLyrics
             && !HasLyricsLines(lyrics.SyncedLyrics)
             && string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
         {
@@ -261,8 +267,7 @@ public class LyricsService
     {
         return provider switch
         {
-            AppleProvider => await ResolveLoadedLyricsOrNullAsync(
-                () => _appleLyricsService.ResolveLyricsForTrackAsync(track, settings, cancellationToken)),
+            AppleProvider => await ResolveAppleProviderLyricsAsync(track, settings, cancellationToken),
             DeezerProvider => await TryResolveDeezerProviderLyricsAsync(track, settings, state, cancellationToken),
             SpotifyProvider => await ResolveLoadedLyricsOrNullAsync(
                 () => ResolveSpotifyLyricsAsync(track, settings, cancellationToken)),
@@ -357,11 +362,12 @@ public class LyricsService
     private static LyricsOutputRequirements ResolveOutputRequirements(DeezSpoTagSettings settings)
     {
         var selectedTypes = ParseSelectedLyricsTypes(settings);
-        var wantsRichLyrics = settings.SyncedLyrics
+        var wantsTimedLyrics = settings.SyncedLyrics
             && (selectedTypes.Contains(LyricsType) || selectedTypes.Contains(SyllableLyricsType));
+        var wantsTtmlLyrics = wantsTimedLyrics && ShouldOutputTtmlBySettings(settings);
         var wantsPlainLyrics = settings.SaveLyrics
             && selectedTypes.Contains(UnsyncedLyricsType);
-        return new LyricsOutputRequirements(wantsRichLyrics, wantsPlainLyrics);
+        return new LyricsOutputRequirements(wantsTimedLyrics, wantsTtmlLyrics, wantsPlainLyrics);
     }
 
     private static LrclibLyricsService.LrclibRequestOptions? BuildLrclibRequestOptions(
@@ -448,6 +454,280 @@ public class LyricsService
         };
     }
 
+    private async Task<LyricsBase?> ResolveAppleProviderLyricsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var appleLyrics = await ResolveLoadedLyricsOrNullAsync(
+            () => _appleLyricsService.ResolveLyricsForTrackAsync(track, settings, cancellationToken));
+        if (appleLyrics != null)
+        {
+            return appleLyrics;
+        }
+
+        return await ResolvePaxsenixAppleLyricsFallbackAsync(track, cancellationToken);
+    }
+
+    private Task<LyricsBase?> ResolvePaxsenixAppleLyricsFallbackAsync(
+        Track track,
+        CancellationToken cancellationToken)
+    {
+        return ResolvePaxsenixLyricsFallbackAsync(track, AppleProvider, "Apple Music", cancellationToken);
+    }
+
+    private Task<LyricsBase?> ResolvePaxsenixMusixmatchLyricsFallbackAsync(
+        Track track,
+        CancellationToken cancellationToken)
+    {
+        return ResolvePaxsenixLyricsFallbackAsync(track, MusixmatchProvider, "Musixmatch", cancellationToken);
+    }
+
+    private async Task<LyricsBase?> ResolvePaxsenixLyricsFallbackAsync(
+        Track track,
+        string source,
+        string sourceName,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(track.Title))
+        {
+            return null;
+        }
+
+        var artist = ResolveMusixmatchArtist(track);
+        if (string.IsNullOrWhiteSpace(artist))
+        {
+            return null;
+        }
+
+        using var payload = await FetchPaxsenixLyricsPayloadAsync(track, artist, source, sourceName, cancellationToken);
+        if (payload == null)
+        {
+            return null;
+        }
+
+        var lyrics = ParsePaxsenixLyricsPayload(payload.RootElement);
+        return lyrics.IsLoaded() ? lyrics : null;
+    }
+
+    private async Task<JsonDocument?> FetchPaxsenixLyricsPayloadAsync(
+        Track track,
+        string artist,
+        string source,
+        string sourceName,
+        CancellationToken cancellationToken)
+    {
+        var title = track.Title?.Trim() ?? string.Empty;
+        var query = new Dictionary<string, string?>
+        {
+            ["provider"] = source,
+            ["source"] = source,
+            ["title"] = title,
+            ["artist"] = artist,
+            ["track"] = title,
+            ["track_name"] = title,
+            ["artist_name"] = artist,
+            ["q"] = $"{artist} {title}".Trim()
+        };
+        if (!string.IsNullOrWhiteSpace(track.Album?.Title))
+        {
+            query["album"] = track.Album.Title;
+            query["album_name"] = track.Album.Title;
+        }
+        if (track.Duration > 0)
+        {
+            query["duration"] = track.Duration.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        var queryString = string.Join("&", query
+            .Where(static pair => !string.IsNullOrWhiteSpace(pair.Value))
+            .Select(static pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value!)}"));
+        var url = $"https://lyrics.paxsenix.org/lyrics?{queryString}";
+
+        try
+        {
+            using var client = _httpClientFactory.CreateClient(LyricsClientName);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation(UserAgentHeader, DefaultSpotifyWebPlayerUserAgent);
+            request.Headers.TryAddWithoutValidation("Accept", ApplicationJson);
+
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug("Paxsenix {Source} lyrics fallback request failed with status {StatusCode}", sourceName, response.StatusCode);
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Paxsenix {Source} lyrics fallback request failed.", sourceName);
+            return null;
+        }
+    }
+
+    private static LyricsBase ParsePaxsenixLyricsPayload(JsonElement root)
+    {
+        var lyrics = new LyricsSource();
+        if (TryFindStringByName(root, IsTtmlPropertyName, out var ttml)
+            && LooksLikeTtml(ttml))
+        {
+            lyrics.TtmlLyrics = ttml;
+        }
+
+        if (TryFindStringByName(root, IsSyncedLyricsPropertyName, out var syncedText))
+        {
+            lyrics.SyncedLyrics = ParseLrcLines(syncedText);
+        }
+
+        if (TryFindStringByName(root, IsPlainLyricsPropertyName, out var plainText))
+        {
+            lyrics.UnsyncedLyrics = plainText;
+        }
+
+        if (string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics)
+            && TryFindStringArrayByName(root, IsPlainLyricsPropertyName, out var plainLines))
+        {
+            lyrics.UnsyncedLyrics = string.Join('\n', plainLines);
+        }
+
+        return lyrics;
+    }
+
+    private static bool TryFindStringByName(JsonElement element, Func<string, bool> namePredicate, out string value)
+    {
+        value = string.Empty;
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (namePredicate(property.Name) && property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        value = property.Value.GetString() ?? string.Empty;
+                        return !string.IsNullOrWhiteSpace(value);
+                    }
+                    if (TryFindStringByName(property.Value, namePredicate, out value))
+                    {
+                        return true;
+                    }
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (TryFindStringByName(item, namePredicate, out value))
+                    {
+                        return true;
+                    }
+                }
+                break;
+        }
+
+        return false;
+    }
+
+    private static bool TryFindStringArrayByName(JsonElement element, Func<string, bool> namePredicate, out List<string> values)
+    {
+        values = new List<string>();
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (namePredicate(property.Name) && property.Value.ValueKind == JsonValueKind.Array)
+                {
+                    var lines = property.Value.EnumerateArray()
+                        .Where(static item => item.ValueKind == JsonValueKind.String)
+                        .Select(static item => item.GetString())
+                        .Where(static line => !string.IsNullOrWhiteSpace(line))
+                        .Cast<string>()
+                        .ToList();
+                    if (lines.Count > 0)
+                    {
+                        values = lines;
+                        return true;
+                    }
+                }
+                if (TryFindStringArrayByName(property.Value, namePredicate, out values))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindStringArrayByName(item, namePredicate, out values))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsTtmlPropertyName(string name)
+    {
+        var normalized = NormalizeJsonName(name);
+        return normalized is "ttml" or "ttmllyrics" or "ttmlpayload" or "applettml";
+    }
+
+    private static bool IsSyncedLyricsPropertyName(string name)
+    {
+        var normalized = NormalizeJsonName(name);
+        return normalized is "syncedlyrics" or "synced" or "lrc" or "lrclib" or "richsync";
+    }
+
+    private static bool IsPlainLyricsPropertyName(string name)
+    {
+        var normalized = NormalizeJsonName(name);
+        return normalized is "lyrics" or "plainlyrics" or "unsyncedlyrics" or "unsynced" or "text";
+    }
+
+    private static string NormalizeJsonName(string name)
+        => new(name.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private static bool LooksLikeTtml(string value)
+        => value.Contains("<tt", StringComparison.OrdinalIgnoreCase)
+           && value.Contains("</tt>", StringComparison.OrdinalIgnoreCase);
+
+    private static List<SynchronizedLyric> ParseLrcLines(string value)
+    {
+        var lines = new List<SynchronizedLyric>();
+        foreach (var rawLine in value.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var match = Regex.Match(rawLine, @"^\[(?<min>\d{1,2}):(?<sec>\d{2})(?:[.:](?<frac>\d{1,3}))?\](?<text>.*)$", RegexOptions.None, TimeSpan.FromMilliseconds(200));
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var minutes = int.Parse(match.Groups["min"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            var seconds = int.Parse(match.Groups["sec"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            var fraction = match.Groups["frac"].Success ? match.Groups["frac"].Value : "0";
+            var milliseconds = fraction.Length switch
+            {
+                1 => int.Parse(fraction, System.Globalization.CultureInfo.InvariantCulture) * 100,
+                2 => int.Parse(fraction, System.Globalization.CultureInfo.InvariantCulture) * 10,
+                _ => int.Parse(fraction[..Math.Min(3, fraction.Length)], System.Globalization.CultureInfo.InvariantCulture)
+            };
+            var offsetMs = (minutes * 60 + seconds) * 1000 + milliseconds;
+            var text = match.Groups["text"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            lines.Add(new SynchronizedLyric(text, SynchronizedLyric.BuildLrcTimestamp(offsetMs), offsetMs));
+        }
+
+        return lines;
+    }
+
     private async Task<LyricsBase> ResolveMusixmatchLyricsAsync(Track track, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(track.Title))
@@ -464,7 +744,8 @@ public class LyricsService
         var body = await FetchMusixmatchLyricsPayloadAsync(track.Title, artist, cancellationToken);
         if (body == null)
         {
-            return LyricsNew.CreateError("No Musixmatch lyrics payload");
+            return await ResolvePaxsenixMusixmatchLyricsFallbackAsync(track, cancellationToken)
+                ?? LyricsNew.CreateError("No Musixmatch lyrics payload");
         }
 
         var validation = ValidateMusixmatchPayload(track, body);
@@ -478,7 +759,8 @@ public class LyricsService
                     validation.Reason);
             }
 
-            return LyricsNew.CreateError($"Musixmatch lyrics identity rejected: {validation.Reason}");
+            return await ResolvePaxsenixMusixmatchLyricsFallbackAsync(track, cancellationToken)
+                ?? LyricsNew.CreateError($"Musixmatch lyrics identity rejected: {validation.Reason}");
         }
 
         var output = new LyricsSource();
@@ -500,7 +782,8 @@ public class LyricsService
             return output;
         }
 
-        return LyricsNew.CreateError("No lyrics available from Musixmatch");
+        return await ResolvePaxsenixMusixmatchLyricsFallbackAsync(track, cancellationToken)
+            ?? LyricsNew.CreateError("No lyrics available from Musixmatch");
     }
 
     private static string ResolveMusixmatchArtist(Track track)

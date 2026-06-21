@@ -108,6 +108,26 @@ Use the `Login` page to configure platform credentials.
   - `media-user-token` cookie value can be set.
   - `media-user-token` is required for AAC-LC downloads and Apple lyrics workflows.
 
+### Qobuz
+
+- `Qobuz Credentials`:
+  - `Qobuz user auth token` is required.
+  - `Qobuz App Secret` is required.
+
+### TIDAL
+
+- `Tidal Credentials`:
+  - `Client ID` is required.
+  - `Client Secret` is required.
+  - `User ID` is optional.
+
+### Soulseek
+
+- `Soulseek Connection`:
+  - `slskd URL` is required.
+  - `slskd API key` can be set if your slskd instance requires one.
+- Soulseek is being carefully integrated into the app and will take a while before it is fully functional.
+
 ### Discogs
 
 - `Token` is required.
@@ -153,6 +173,7 @@ sudo mkdir -p \
   /path/to/deezspotag/apple-wrapper/data \
   /path/to/deezspotag/apple-wrapper/session \
   /path/to/downloads \
+  /path/to/review \
   /path/to/library
 
 sudo chown -R <PUID>:<PGID> /path/to/deezspotag/data
@@ -190,8 +211,10 @@ If your host uses Compose v1, replace `docker compose` with `docker-compose`.
 - `APPLE_WRAPPER_SESSION_PATH` - Apple wrapper login/session cache
 - `DEEZSPOTAG_APPLE_WRAPPER_CONTROL_MODE` (`shared` recommended)
 - `DOWNLOADS_PATH` - completed downloads
+- `REVIEW_PATH` - review folder for files flagged by Shazam due to conflicting information.
 - `LIBRARY_PATH` - existing media library root
 
+For a more in-depth setup and usage guide, see the [DeezSpoTag Wiki](https://github.com/Lauqnan14/DeezSpoTag/wiki).
 
 ## Security Notes
 

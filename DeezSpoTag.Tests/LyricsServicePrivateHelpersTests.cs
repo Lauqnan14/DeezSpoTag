@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -221,7 +224,8 @@ public sealed class LyricsServicePrivateHelpersTests
 
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
 
-        AssertRequirement(requirements, "WantsRichLyrics", expected: true);
+        AssertRequirement(requirements, "WantsTimedLyrics", expected: true);
+        AssertRequirement(requirements, "WantsTtmlLyrics", expected: false);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: false);
     }
 
@@ -238,7 +242,8 @@ public sealed class LyricsServicePrivateHelpersTests
 
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
 
-        AssertRequirement(requirements, "WantsRichLyrics", expected: false);
+        AssertRequirement(requirements, "WantsTimedLyrics", expected: false);
+        AssertRequirement(requirements, "WantsTtmlLyrics", expected: false);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
     }
 
@@ -255,8 +260,72 @@ public sealed class LyricsServicePrivateHelpersTests
 
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
 
-        AssertRequirement(requirements, "WantsRichLyrics", expected: true);
+        AssertRequirement(requirements, "WantsTimedLyrics", expected: true);
+        AssertRequirement(requirements, "WantsTtmlLyrics", expected: true);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
+    }
+
+    [Theory]
+    [InlineData("ttml", true)]
+    [InlineData("both", true)]
+    [InlineData("lrc", false)]
+    public void ShouldSaveTtml_UsesRawAppleTtml_WhenTtmlOutputIsRequested(string format, bool expected)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcType = "lyrics",
+            LrcFormat = format
+        };
+        var appleLyrics = new LyricsSource
+        {
+            TtmlLyrics = "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"00:00:01.000\">Line</p></div></body></tt>"
+        };
+
+        var result = InvokeStatic<bool>("ShouldSaveTtml", settings, appleLyrics);
+
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_WritesTtmlSidecar_FromRawAppleTtml()
+    {
+        var service = (LyricsService)RuntimeHelpers.GetUninitializedObject(typeof(LyricsService));
+        typeof(LyricsService)
+            .GetField("_logger", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, NullLogger<LyricsService>.Instance);
+        var directory = Path.Combine(Path.GetTempPath(), $"deezspotag-ttml-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                LrcType = "lyrics",
+                LrcFormat = "ttml"
+            };
+            var lyrics = new LyricsSource
+            {
+                TtmlLyrics = "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"00:00:01.000\">Apple line</p></div></body></tt>"
+            };
+            var track = new Track
+            {
+                Id = "apple-ttml-test",
+                Title = "Apple TTML Test",
+                ArtistString = "Apple Artist"
+            };
+            var paths = (directory, "apple-ttml-test", directory, directory, directory);
+
+            await service.SaveLyricsAsync(lyrics, track, paths, settings);
+
+            var ttmlPath = Path.Combine(directory, "apple-ttml-test.ttml");
+            Assert.True(File.Exists(ttmlPath));
+            Assert.Contains("Apple line", await File.ReadAllTextAsync(ttmlPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [Fact]

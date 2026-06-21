@@ -45,6 +45,7 @@ services:
     volumes:
       - /path/to/deezspotag/data:/data
       - /path/to/downloads:/downloads
+      - /path/to/review:/review
       - /path/to/music/library:/library
       - /path/to/apple-wrapper/data:/apple-wrapper/data
       - /path/to/apple-wrapper/session:/apple-wrapper/session
