@@ -1863,7 +1863,7 @@ async function loadPlaylistWatchlist() {
                 if (!source || !sourceId) return;
                 button.disabled = true;
                 try {
-                    await openPlaylistSettingsPanel(source, sourceId, playlistName);
+                    await openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefsPromise);
                 } catch (error) {
                     showToast(`Playlist settings failed to load: ${error?.message || 'Unknown error'}`, true);
                 } finally {
@@ -2422,9 +2422,12 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
 
     const prefKey = `${source}:${sourceId}`;
+    const resolvedPlaylistPrefs = playlistPrefs && typeof playlistPrefs.then === 'function'
+        ? await playlistPrefs
+        : playlistPrefs;
     const serverPrefs = normalizePlaylistPreferenceMap(
-        playlistPrefs && typeof playlistPrefs === 'object'
-            ? playlistPrefs
+        resolvedPlaylistPrefs && typeof resolvedPlaylistPrefs === 'object'
+            ? resolvedPlaylistPrefs
             : await hydrateSinglePlaylistPreference(source, sourceId));
     const localPlaylistPrefs = getStoredPreferences('playlistWatchlist');
     const stored = {
@@ -2432,11 +2435,12 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         ...localPlaylistPrefs[prefKey]
     };
 
-    // Load routing rules, blocked track rules, and available playlist tracks in parallel.
-    const [existingRules, existingBlockRules, trackCandidatesResponse] = await Promise.all([
+    const trackCandidatesPromise = fetchJson(
+        `/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/tracks`)
+        .catch(() => null);
+    const [existingRules, existingBlockRules] = await Promise.all([
         fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/routing-rules`).catch(() => []),
-        fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/ignore-rules`).catch(() => []),
-        fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/tracks`).catch(() => null)
+        fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/ignore-rules`).catch(() => [])
     ]);
 
     const panel = document.createElement('div');
@@ -2448,7 +2452,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     panel.appendChild(panelIntro);
 
     const { routingValueIndex, explicitModesAvailable } =
-        buildPlaylistTrackCandidateIndexes(trackCandidatesResponse);
+        buildPlaylistTrackCandidateIndexes([]);
 
     const routingFieldValues = {
         artist: Array.from(routingValueIndex.artist.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
@@ -3109,6 +3113,25 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         }
     }, 0);
 
+    void trackCandidatesPromise.then(trackCandidatesResponse => {
+        const hydratedIndexes = buildPlaylistTrackCandidateIndexes(trackCandidatesResponse);
+        const hydratedValues = {
+            artist: Array.from(hydratedIndexes.routingValueIndex.artist.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+            title: Array.from(hydratedIndexes.routingValueIndex.title.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+            album: Array.from(hydratedIndexes.routingValueIndex.album.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+            genre: Array.from(hydratedIndexes.routingValueIndex.genre.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+            year: Array.from(hydratedIndexes.routingValueIndex.year.values()).sort((a, b) => Number(b) - Number(a))
+        };
+        Object.entries(hydratedValues).forEach(([field, values]) => {
+            routingFieldValues[field] = values;
+        });
+        explicitModesAvailable.clear();
+        hydratedIndexes.explicitModesAvailable.forEach(mode => explicitModesAvailable.add(mode));
+        panel.querySelectorAll('.rr-field, .br-field').forEach(fieldSelect => {
+            fieldSelect.dispatchEvent(new Event('change'));
+        });
+    });
+
     const settingsResult = await globalThis.DeezSpoTag.ui.showModal({
         title: `Settings — ${playlistName}`,
         message: '',
@@ -3125,7 +3148,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
                     panel,
                     source,
                     sourceId,
-                    playlistPrefs,
+                    playlistPrefs: resolvedPlaylistPrefs,
                     prefKey,
                     rulesList,
                     blockRulesList

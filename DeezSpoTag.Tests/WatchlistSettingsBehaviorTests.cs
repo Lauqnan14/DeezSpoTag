@@ -454,6 +454,13 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("busyLabel: 'Saving...'", watchlistScript, StringComparison.Ordinal);
         Assert.Contains("onClick: () => savePlaylistSettingsFromPanel", watchlistScript, StringComparison.Ordinal);
         Assert.Contains("const settingsResult = await globalThis.DeezSpoTag.ui.showModal", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefsPromise)", watchlistScript, StringComparison.Ordinal);
+        var openSettingsFunction = ExtractMethodBody(watchlistScript, "async function openPlaylistSettingsPanel");
+        Assert.Contains("const trackCandidatesPromise = fetchJson(", openSettingsFunction, StringComparison.Ordinal);
+        Assert.DoesNotContain("trackCandidatesResponse] = await Promise.all", openSettingsFunction, StringComparison.Ordinal);
+        Assert.True(
+            openSettingsFunction.IndexOf("const settingsResult = await globalThis.DeezSpoTag.ui.showModal", StringComparison.Ordinal)
+            < openSettingsFunction.IndexOf("if (settingsResult?.value === 'save')", StringComparison.Ordinal));
         Assert.Contains("if (settingsResult?.value === 'save')", watchlistScript, StringComparison.Ordinal);
         Assert.Contains("void refreshPlaylistSettingsViewsAfterSave();", watchlistScript, StringComparison.Ordinal);
         Assert.Contains("return true;", watchlistScript, StringComparison.Ordinal);
