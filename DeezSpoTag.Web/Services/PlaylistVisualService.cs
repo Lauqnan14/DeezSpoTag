@@ -160,6 +160,34 @@ public sealed class PlaylistVisualService
             .ToList();
     }
 
+    public async Task<string?> StoreUploadedVisualAsync(
+        string source,
+        string sourceId,
+        byte[] bytes,
+        string? contentType,
+        CancellationToken cancellationToken)
+    {
+        if (bytes.Length == 0)
+        {
+            return null;
+        }
+
+        var visualDir = GetVisualDirectory(source, sourceId);
+        Directory.CreateDirectory(visualDir);
+
+        var extension = ResolveImageExtension(contentType, null);
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var fileName = $"cover-{hash}{extension}";
+        var targetPath = Path.Join(visualDir, fileName);
+        if (!File.Exists(targetPath))
+        {
+            await File.WriteAllBytesAsync(targetPath, bytes, cancellationToken);
+        }
+
+        SetActiveVisual(source, sourceId, fileName);
+        return BuildVisualUrl(source, sourceId, File.GetLastWriteTimeUtc(targetPath));
+    }
+
     public static bool IsManagedVisualUrl(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))

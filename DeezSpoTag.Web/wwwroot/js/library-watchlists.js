@@ -1981,6 +1981,214 @@ function buildMergeTextSection(title, element, hintText) {
     return section;
 }
 
+function buildMergeArtworkSection(items) {
+    const section = document.createElement('div');
+    section.className = 'playlist-settings-section merge-artwork-section';
+    section.innerHTML = '<div class="playlist-settings-section-title">Merged playlist artwork</div>';
+
+    const state = {
+        selectedMode: 'source',
+        selectedKey: '',
+        uploadDataUrl: null,
+        uploadFileName: '',
+        options: new Map(),
+        optionInputs: [],
+        uploadInput: null
+    };
+
+    const sourceGrid = document.createElement('div');
+    sourceGrid.className = 'merge-artwork-grid';
+
+    items.forEach(item => {
+        const imageUrl = String(item?.imageUrl || '').trim();
+        if (!isManagedPlaylistVisualUrl(imageUrl)) {
+            return;
+        }
+
+        const key = buildMergeArtworkKey(item);
+        if (!key || state.options.has(key)) {
+            return;
+        }
+
+        const option = {
+            key,
+            source: String(item.source || '').trim(),
+            sourceId: String(item.sourceId || '').trim(),
+            imageUrl,
+            name: String(item.name || 'Playlist').trim()
+        };
+        state.options.set(key, option);
+
+        const label = document.createElement('label');
+        label.className = 'merge-artwork-option';
+        label.dataset.mergeArtworkKey = key;
+
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'mergeArtworkChoice';
+        radio.className = 'form-check-input';
+        radio.value = key;
+        radio.addEventListener('change', () => {
+            if (radio.checked) {
+                state.selectedMode = 'source';
+                state.selectedKey = key;
+            }
+        });
+
+        const image = document.createElement('img');
+        image.src = imageUrl;
+        image.alt = option.name;
+        image.loading = 'lazy';
+        image.decoding = 'async';
+
+        const caption = document.createElement('span');
+        caption.textContent = option.name;
+
+        label.appendChild(radio);
+        label.appendChild(image);
+        label.appendChild(caption);
+        sourceGrid.appendChild(label);
+        state.optionInputs.push(radio);
+
+        if (!state.selectedKey) {
+            state.selectedKey = key;
+            radio.checked = true;
+        }
+    });
+
+    if (state.options.size > 0) {
+        section.appendChild(sourceGrid);
+    }
+
+    const uploadWrap = document.createElement('div');
+    uploadWrap.className = 'merge-artwork-upload';
+
+    const uploadLabel = document.createElement('label');
+    uploadLabel.className = 'merge-target-row';
+    const uploadRadio = document.createElement('input');
+    uploadRadio.type = 'radio';
+    uploadRadio.name = 'mergeArtworkChoice';
+    uploadRadio.className = 'form-check-input';
+    uploadRadio.addEventListener('change', () => {
+        if (uploadRadio.checked) {
+            state.selectedMode = 'upload';
+        }
+    });
+    const uploadText = document.createElement('div');
+    uploadText.className = 'merge-target-label';
+    uploadText.textContent = 'Use custom artwork from this device';
+    uploadLabel.appendChild(uploadRadio);
+    uploadLabel.appendChild(uploadText);
+
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/jpeg,image/png,image/webp,image/gif';
+    fileInput.className = 'form-control';
+    state.uploadInput = fileInput;
+
+    const preview = document.createElement('div');
+    preview.className = 'merge-artwork-upload-preview';
+    preview.textContent = 'No custom artwork selected.';
+
+    fileInput.addEventListener('change', () => {
+        const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+        if (!file) {
+            state.uploadDataUrl = null;
+            state.uploadFileName = '';
+            preview.textContent = 'No custom artwork selected.';
+            return;
+        }
+
+        if (!file.type || !file.type.startsWith('image/')) {
+            showToast('Select a valid image file for merged playlist artwork.', true);
+            fileInput.value = '';
+            return;
+        }
+
+        if (file.size > 8 * 1024 * 1024) {
+            showToast('Merged playlist artwork must be 8 MB or smaller.', true);
+            fileInput.value = '';
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            state.uploadDataUrl = typeof reader.result === 'string' ? reader.result : null;
+            state.uploadFileName = file.name || '';
+            state.selectedMode = 'upload';
+            uploadRadio.checked = true;
+            preview.innerHTML = state.uploadDataUrl
+                ? `<img src="${escapeHtml(state.uploadDataUrl)}" alt="${escapeHtml(state.uploadFileName || 'Custom artwork')}"><span>${escapeHtml(state.uploadFileName || 'Custom artwork')}</span>`
+                : 'No custom artwork selected.';
+        };
+        reader.onerror = () => {
+            state.uploadDataUrl = null;
+            state.uploadFileName = '';
+            showToast('Failed to read selected artwork file.', true);
+        };
+        reader.readAsDataURL(file);
+    });
+
+    uploadWrap.appendChild(uploadLabel);
+    uploadWrap.appendChild(fileInput);
+    uploadWrap.appendChild(preview);
+    section.appendChild(uploadWrap);
+
+    if (state.options.size === 0) {
+        state.selectedMode = 'upload';
+        uploadRadio.checked = true;
+    }
+
+    return { artworkSection: section, artworkState: state };
+}
+
+function buildMergeArtworkKey(item) {
+    const source = String(item?.source || '').trim();
+    const sourceId = String(item?.sourceId || '').trim();
+    return source && sourceId ? `${source}:${sourceId}` : '';
+}
+
+function isManagedPlaylistVisualUrl(value) {
+    const url = String(value || '').trim().toLowerCase();
+    return url.includes('/api/library/playlists/') && url.includes('/visual');
+}
+
+function syncMergeArtworkAvailability(sourceList, artworkState) {
+    if (!artworkState || !sourceList) {
+        return;
+    }
+
+    const selectedKeys = new Set(Array.from(sourceList.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(input => `${String(input.dataset.mergeSource || '').trim()}:${String(input.dataset.mergeSourceId || '').trim()}`));
+    let firstEnabledInput = null;
+    artworkState.optionInputs.forEach(input => {
+        const enabled = selectedKeys.has(input.value);
+        input.disabled = !enabled;
+        input.closest('.merge-artwork-option')?.classList.toggle('is-disabled', !enabled);
+        if (enabled && !firstEnabledInput) {
+            firstEnabledInput = input;
+        }
+    });
+
+    if (artworkState.selectedMode === 'source' && !selectedKeys.has(artworkState.selectedKey)) {
+        if (firstEnabledInput) {
+            firstEnabledInput.checked = true;
+            artworkState.selectedKey = firstEnabledInput.value;
+        } else {
+            artworkState.selectedKey = '';
+            artworkState.selectedMode = 'upload';
+            if (artworkState.uploadInput) {
+                const uploadRadio = artworkState.uploadInput
+                    .closest('.merge-artwork-upload')
+                    ?.querySelector('input[type="radio"]');
+                if (uploadRadio) {
+                    uploadRadio.checked = true;
+                }
+            }
+        }
+    }
+}
+
 function buildMergeTargetRow(label, checked) {
     const row = document.createElement('label');
     row.className = 'merge-target-row';
@@ -2062,7 +2270,7 @@ function collectSelectedMergePlaylists(sourceList) {
         .filter(item => item.source && item.sourceId);
 }
 
-function validateMergeSelection(selectedPlaylists, controls) {
+function validateMergeSelection(selectedPlaylists, controls, artworkState) {
     if (selectedPlaylists.length < 2) {
         showToast('Select at least two monitored playlists to merge.', true);
         return false;
@@ -2087,14 +2295,25 @@ function validateMergeSelection(selectedPlaylists, controls) {
         return false;
     }
 
+    if (artworkState?.selectedMode === 'upload' && !artworkState.uploadDataUrl) {
+        showToast('Select a custom artwork image or choose one of the playlist covers.', true);
+        return false;
+    }
+
     return true;
 }
 
-function buildMergePayload(selectedPlaylists, inputs, controls) {
+function buildMergePayload(selectedPlaylists, inputs, controls, artworkState) {
+    const selectedArtwork = artworkState?.selectedMode === 'source'
+        ? artworkState.options.get(artworkState.selectedKey)
+        : null;
     return {
         playlists: selectedPlaylists,
         name: String(inputs.nameInput.value || '').trim(),
         description: String(inputs.descriptionInput.value || '').trim(),
+        artworkDataUrl: artworkState?.selectedMode === 'upload' ? artworkState.uploadDataUrl : null,
+        artworkSource: selectedArtwork ? selectedArtwork.source : null,
+        artworkSourceId: selectedArtwork ? selectedArtwork.sourceId : null,
         syncMode: inputs.syncModeSelect.value || 'mirror',
         syncToPlex: controls.plexCheck.checked,
         syncToJellyfin: controls.jellyfinCheck.checked,
@@ -2123,6 +2342,11 @@ async function openPlaylistMergePanel(items) {
 
     const { sourceSection, sourceList } = buildMergeSourceSection(items);
     panel.appendChild(sourceSection);
+
+    const { artworkSection, artworkState } = buildMergeArtworkSection(items);
+    panel.appendChild(artworkSection);
+    sourceList.addEventListener('change', () => syncMergeArtworkAvailability(sourceList, artworkState));
+    syncMergeArtworkAvailability(sourceList, artworkState);
 
     const nameInput = document.createElement('input');
     nameInput.className = 'form-control';
@@ -2241,14 +2465,15 @@ async function openPlaylistMergePanel(items) {
     }
 
     const selectedPlaylists = collectSelectedMergePlaylists(sourceList);
-    if (!validateMergeSelection(selectedPlaylists, mergeControls)) {
+    if (!validateMergeSelection(selectedPlaylists, mergeControls, artworkState)) {
         return;
     }
 
     const payload = buildMergePayload(
         selectedPlaylists,
         { nameInput, descriptionInput, syncModeSelect },
-        mergeControls);
+        mergeControls,
+        artworkState);
 
     try {
         const result = await fetchJson('/api/library/playlists/merge-sync', {

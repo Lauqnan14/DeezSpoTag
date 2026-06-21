@@ -11,6 +11,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PlaylistSyncService
 {
+    private const int MaxUploadedMergeArtworkBytes = 8 * 1024 * 1024;
     private const string PlaylistNotAvailableMessage = "Playlist not available.";
     private sealed record PlexConnection(string Url, string Token, string MachineIdentifier);
     private sealed record JellyfinConnection(string Url, string ApiKey, string UserId);
@@ -96,6 +97,9 @@ public sealed class PlaylistSyncService
     public sealed record PlaylistMergeSyncRequest(
         string? PlaylistName,
         string? Description,
+        string? ArtworkDataUrl,
+        string? ArtworkSource,
+        string? ArtworkSourceId,
         string? SourceUsername,
         string? SyncMode,
         bool SyncToPlex,
@@ -174,14 +178,18 @@ public sealed class PlaylistSyncService
         }
 
         var now = DateTimeOffset.UtcNow;
+        var mergedSourceId = Guid.NewGuid().ToString("N");
+        var selectedArtworkUrl = await ResolveMergedPlaylistArtworkUrlAsync(
+            mergedSourceId,
+            request,
+            selectedSources,
+            cancellationToken);
         var mergedPlaylist = new PlaylistWatchlistDto(
             Id: 0,
             Source: "merged",
-            SourceId: Guid.NewGuid().ToString("N"),
+            SourceId: mergedSourceId,
             Name: ResolveMergedPlaylistName(request.PlaylistName),
-            ImageUrl: selectedSources
-                .Select(source => source.Playlist.ImageUrl)
-                .FirstOrDefault(static imageUrl => !string.IsNullOrWhiteSpace(imageUrl)),
+            ImageUrl: selectedArtworkUrl,
             Description: BuildMergedPlaylistDescription(
                 request.Description,
                 selectedSources.Select(source => source.Playlist),
@@ -221,6 +229,109 @@ public sealed class PlaylistSyncService
             mergedTracks.Count,
             targets);
     }
+
+    private async Task<string?> ResolveMergedPlaylistArtworkUrlAsync(
+        string mergedSourceId,
+        PlaylistMergeSyncRequest request,
+        IReadOnlyList<PlaylistMergeSourceInput> selectedSources,
+        CancellationToken cancellationToken)
+    {
+        var uploadedArtwork = TryParseUploadedArtwork(request.ArtworkDataUrl);
+        if (uploadedArtwork is not null)
+        {
+            return await _playlistVisualService.StoreUploadedVisualAsync(
+                "merged",
+                mergedSourceId,
+                uploadedArtwork.Value.Bytes,
+                uploadedArtwork.Value.ContentType,
+                cancellationToken);
+        }
+
+        var selectedStoredArtwork = ResolveSelectedSourceArtwork(request, selectedSources);
+        if (selectedStoredArtwork is not null)
+        {
+            var bytes = await File.ReadAllBytesAsync(selectedStoredArtwork.FilePath, cancellationToken);
+            return await _playlistVisualService.StoreUploadedVisualAsync(
+                "merged",
+                mergedSourceId,
+                bytes,
+                selectedStoredArtwork.ContentType,
+                cancellationToken);
+        }
+
+        return null;
+    }
+
+    private PlaylistVisualService.StoredPlaylistVisual? ResolveSelectedSourceArtwork(
+        PlaylistMergeSyncRequest request,
+        IReadOnlyList<PlaylistMergeSourceInput> selectedSources)
+    {
+        if (string.IsNullOrWhiteSpace(request.ArtworkSource) || string.IsNullOrWhiteSpace(request.ArtworkSourceId))
+        {
+            return null;
+        }
+
+        var source = request.ArtworkSource.Trim();
+        var sourceId = request.ArtworkSourceId.Trim();
+        var isSelectedPlaylist = selectedSources.Any(candidate =>
+            string.Equals(candidate.Playlist.Source, source, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(candidate.Playlist.SourceId, sourceId, StringComparison.OrdinalIgnoreCase));
+        if (!isSelectedPlaylist)
+        {
+            return null;
+        }
+
+        var visual = _playlistVisualService.GetStoredVisual(source, sourceId);
+        return visual is not null && File.Exists(visual.FilePath) ? visual : null;
+    }
+
+    private static UploadedMergeArtwork? TryParseUploadedArtwork(string? dataUrl)
+    {
+        if (string.IsNullOrWhiteSpace(dataUrl))
+        {
+            return null;
+        }
+
+        var trimmed = dataUrl.Trim();
+        const string prefix = "data:";
+        var commaIndex = trimmed.IndexOf(',', StringComparison.Ordinal);
+        if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || commaIndex <= prefix.Length)
+        {
+            return null;
+        }
+
+        var metadata = trimmed[prefix.Length..commaIndex];
+        var metadataParts = metadata.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var contentType = metadataParts.FirstOrDefault(static part => part.StartsWith("image/", StringComparison.OrdinalIgnoreCase));
+        if (!IsAllowedMergeArtworkContentType(contentType)
+            || !metadataParts.Any(static part => part.Equals("base64", StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        try
+        {
+            var bytes = Convert.FromBase64String(trimmed[(commaIndex + 1)..]);
+            return bytes.Length is > 0 and <= MaxUploadedMergeArtworkBytes
+                ? new UploadedMergeArtwork(bytes, contentType!)
+                : null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsAllowedMergeArtworkContentType(string? contentType)
+    {
+        return contentType is not null
+            && (contentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase)
+                || contentType.Equals("image/png", StringComparison.OrdinalIgnoreCase)
+                || contentType.Equals("image/webp", StringComparison.OrdinalIgnoreCase)
+                || contentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private readonly record struct UploadedMergeArtwork(byte[] Bytes, string ContentType);
 
     public async Task<IReadOnlyList<TargetPlaylistOption>> GetTargetPlaylistsAsync(
         string target,
