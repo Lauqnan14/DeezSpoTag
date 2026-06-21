@@ -243,6 +243,9 @@ public sealed class LibraryDbService
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "last_run_message", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "next_attempt_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "consecutive_failures", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "ignored_blocked_track_count", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "rerouted_track_count", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "presentation_updated_at", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "description", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "sync_priority", IntegerType, cancellationToken);
         await BackfillPlaylistWatchlistPrioritiesAsync(connection, cancellationToken);

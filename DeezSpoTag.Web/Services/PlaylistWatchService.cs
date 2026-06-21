@@ -634,6 +634,12 @@ public sealed class PlaylistWatchService
             nextAttemptUtc: null,
             consecutiveFailures: null,
             cancellationToken);
+        await _libraryRepository.UpdatePlaylistWatchPresentationSummaryAsync(
+            source,
+            sourceId,
+            selection.IgnoredCount + selection.BlockedCount,
+            CountReroutedTracks(candidates, preference?.RoutingRules),
+            cancellationToken);
         return new PlaylistReconciliationResult(
             success,
             ResolveReconciliationMessage(queueResult, success),
@@ -684,6 +690,29 @@ public sealed class PlaylistWatchService
             candidates,
             force,
             cancellationToken);
+    }
+
+    private static int CountReroutedTracks(
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        IReadOnlyList<PlaylistTrackRoutingRule>? routingRules)
+    {
+        if (routingRules is not { Count: > 0 })
+        {
+            return 0;
+        }
+
+        return candidates.Count(candidate => routingRules.Any(rule =>
+            PlaylistTrackBlockRuleMatcher.RuleMatches(
+                new PlaylistTrackBlockRuleMatcher.TrackRuleMatchInput(
+                    candidate.Title,
+                    candidate.Artist,
+                    candidate.Album,
+                    candidate.Genres,
+                    candidate.Explicit,
+                    candidate.ReleaseYear?.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                rule.ConditionField,
+                rule.ConditionOperator,
+                rule.ConditionValue)));
     }
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(

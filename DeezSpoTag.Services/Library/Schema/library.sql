@@ -405,6 +405,9 @@ CREATE TABLE IF NOT EXISTS playlist_watch_state (
     last_run_message TEXT,
     next_attempt_utc TEXT,
     consecutive_failures INTEGER,
+    ignored_blocked_track_count INTEGER,
+    rerouted_track_count INTEGER,
+    presentation_updated_at TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );

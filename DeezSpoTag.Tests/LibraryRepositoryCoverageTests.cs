@@ -35,6 +35,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
 
     private string _tempRoot = string.Empty;
     private string _dbPath = string.Empty;
+    private IConfiguration _configuration = default!;
     private LibraryRepository _repository = default!;
 
     public async Task InitializeAsync()
@@ -43,17 +44,17 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Directory.CreateDirectory(_tempRoot);
 
         _dbPath = Path.Join(_tempRoot, "library.db");
-        var configuration = new ConfigurationBuilder()
+        _configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:Library"] = $"Data Source={_dbPath}"
             })
             .Build();
 
-        var dbService = new LibraryDbService(configuration, NullLogger<LibraryDbService>.Instance);
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
         await dbService.EnsureSchemaAsync();
 
-        _repository = new LibraryRepository(configuration, NullLogger<LibraryRepository>.Instance);
+        _repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
     }
 
     public Task DisposeAsync()
@@ -408,6 +409,32 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.NotNull(watchState);
         Assert.Equal("snap-1", watchState!.SnapshotId);
 
+        await _repository.UpdatePlaylistWatchPresentationSummaryAsync(
+            "spotify",
+            "pl-123",
+            ignoredBlockedTrackCount: 2,
+            reroutedTrackCount: 3);
+        var summarizedWatchlist = await _repository.GetPlaylistWatchlistAsync();
+        var summarizedPlaylist = Assert.Single(summarizedWatchlist, item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, summarizedPlaylist.SyncedTrackCount);
+        Assert.Equal(25, summarizedPlaylist.IncompleteTrackCount);
+        Assert.Equal(2, summarizedPlaylist.IgnoredBlockedTrackCount);
+        Assert.Equal(3, summarizedPlaylist.ReroutedTrackCount);
+
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                Source: "spotify",
+                SourceId: "pl-123",
+                SnapshotId: "snap-2",
+                TrackCount: 25,
+                BatchNextOffset: null,
+                BatchProcessingSnapshotId: null,
+                LastCheckedUtc: DateTimeOffset.UtcNow));
+        var preservedSummary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, preservedSummary.SyncedTrackCount);
+
         await _repository.UpsertPlaylistTrackCandidateCacheAsync(
             source: " Spotify ",
             sourceId: " pl-123 ",
@@ -431,6 +458,16 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var completedTrackIds = await _repository.GetPlaylistWatchTrackIdsAsync("spotify", "pl-123");
         Assert.Contains("dz-song-1", completedTrackIds);
         Assert.DoesNotContain("dz-song-2", completedTrackIds);
+        var restartedRepository = new LibraryRepository(
+            _configuration,
+            NullLogger<LibraryRepository>.Instance);
+        var summaryAfterRestart = Assert.Single(
+            await restartedRepository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(24, summaryAfterRestart.IncompleteTrackCount);
+        Assert.Equal(2, summaryAfterRestart.IgnoredBlockedTrackCount);
+        Assert.Equal(3, summaryAfterRestart.ReroutedTrackCount);
 
         await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
             " SPOTIFY ",
@@ -540,6 +577,10 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             PlayedAtUtc: now.AddMinutes(-2),
             DurationMs: 190000,
             MetadataJson: "{}"));
+
+        Assert.Equal(
+            now.AddMinutes(-2),
+            await _repository.GetLatestPlayHistoryUtcAsync(plexUserId, "plex"));
 
         var topTrackIds = await _repository.GetTopTrackIdsAsync(plexUserId, seeded.LibraryId, 3);
         Assert.Equal(trackOne, topTrackIds[0]);

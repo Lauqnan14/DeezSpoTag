@@ -670,12 +670,12 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
-        foreach (var track in eligibleTracks)
+        var localTrackIds = await ResolveLocalTrackIdsAsync(source, eligibleTracks, cancellationToken);
+        for (var index = 0; index < eligibleTracks.Count; index++)
         {
-            var localTrackId = await ResolveLocalTrackIdAsync(source, track, cancellationToken);
-            if (localTrackId.HasValue)
+            if (localTrackIds[index] > 0)
             {
-                availableTrackRows.Add((track, localTrackId.Value));
+                availableTrackRows.Add((eligibleTracks[index], localTrackIds[index]));
             }
         }
 
@@ -802,71 +802,6 @@ public sealed class PlaylistSyncService
             JellyfinService => await CheckJellyfinTrackReadyAsync(localTrackId.Value, track, cancellationToken),
             _ => new PlaylistTrackSyncReadiness(false, true, UnsupportedPlaylistSyncTargetMessage, service, localTrackId)
         };
-    }
-
-    public async Task<PlaylistTrackSyncReadiness> CheckPlaylistReadyForAutomaticSyncAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (candidates.Count == 0)
-        {
-            return new PlaylistTrackSyncReadiness(false, true, "Playlist has no track candidates.");
-        }
-
-        var eligibleTracks = await FilterTracksForSyncAsync(
-            playlist,
-            preference,
-            candidates.Select(ToSyncTrackSummary).ToList(),
-            cancellationToken);
-        var eligibleIds = eligibleTracks
-            .Select(static track => track.SourceTrackId)
-            .Where(static id => !string.IsNullOrWhiteSpace(id))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (eligibleIds.Count == 0)
-        {
-            return new PlaylistTrackSyncReadiness(false, true, "No eligible tracks after blocked/ignored filtering.");
-        }
-
-        var checkedLocalTracks = 0;
-        var missingLocalTracks = 0;
-        foreach (var track in candidates
-            .Where(candidate => eligibleIds.Contains(candidate.TrackSourceId))
-            .Select(ToSyncTrackSummary))
-        {
-            var localTrackId = await ResolveLocalTrackIdAsync(playlist.Source, track, cancellationToken);
-            if (!localTrackId.HasValue)
-            {
-                missingLocalTracks++;
-                continue;
-            }
-
-            checkedLocalTracks++;
-            var readiness = await CheckTargetTrackReadyAsync(preference, track, localTrackId.Value, cancellationToken);
-            if (!readiness.Ready)
-            {
-                return readiness;
-            }
-        }
-
-        if (checkedLocalTracks == 0)
-        {
-            return new PlaylistTrackSyncReadiness(
-                false,
-                false,
-                "No eligible playlist tracks are visible in the DeezSpoTag library yet.");
-        }
-
-        if (missingLocalTracks > 0)
-        {
-            return new PlaylistTrackSyncReadiness(
-                false,
-                false,
-                $"{missingLocalTracks} eligible playlist track(s) are not visible in the DeezSpoTag library yet.");
-        }
-
-        return new PlaylistTrackSyncReadiness(true, false, "All eligible playlist tracks are visible in the target server.");
     }
 
     private async Task<PlaylistTrackSyncReadiness> CheckTargetTrackReadyAsync(
@@ -1683,13 +1618,61 @@ public sealed class PlaylistSyncService
         IReadOnlyList<SyncTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
-        var orderedTrackIds = new List<long>(tracks.Count);
+        return await ResolveLocalTrackIdsAsync(playlistSource, tracks, cancellationToken);
+    }
+
+    private async Task<List<long>> ResolveLocalTrackIdsAsync(
+        string playlistSource,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        CancellationToken cancellationToken)
+    {
+        var isrcValues = tracks
+            .Select(static track => track.Isrc)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var normalizedSource = NormalizeSource(playlistSource);
+        var sourceIds = tracks
+            .Select(static track => track.SourceTrackId)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var byIsrc = isrcValues.Count == 0
+            ? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+            : await _libraryRepository.GetTrackIdsBySourceIdsAsync(IsrcSource, isrcValues, cancellationToken);
+        var bySource = string.IsNullOrWhiteSpace(normalizedSource) || sourceIds.Count == 0
+            ? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+            : await _libraryRepository.GetTrackIdsBySourceIdsAsync(normalizedSource, sourceIds, cancellationToken);
+
+        var resolved = new List<long>(tracks.Count);
         foreach (var track in tracks)
         {
-            orderedTrackIds.Add(await ResolveLocalTrackIdAsync(playlistSource, track, cancellationToken) ?? 0L);
+            var isrc = track.Isrc?.Trim();
+            if (!string.IsNullOrWhiteSpace(isrc) && byIsrc.TryGetValue(isrc, out var isrcTrackId))
+            {
+                resolved.Add(isrcTrackId);
+                continue;
+            }
+
+            var sourceId = track.SourceTrackId.Trim();
+            if (!string.IsNullOrWhiteSpace(sourceId) && bySource.TryGetValue(sourceId, out var sourceTrackId))
+            {
+                resolved.Add(sourceTrackId);
+                continue;
+            }
+
+            var metadataTrackId = await _libraryRepository.FindLocalTrackIdByMetadataAsync(
+                track.Name,
+                track.Artists,
+                track.Album,
+                track.DurationMs,
+                cancellationToken);
+            resolved.Add(metadataTrackId ?? 0L);
         }
 
-        return orderedTrackIds;
+        return resolved;
     }
 
     private async Task<long?> ResolveLocalTrackIdAsync(

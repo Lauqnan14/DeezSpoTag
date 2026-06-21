@@ -5,6 +5,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PlexHistoryImportService
 {
+    private static readonly TimeSpan ImportOverlap = TimeSpan.FromMinutes(1);
     private readonly PlexApiClient _plexApiClient;
     private readonly PlatformAuthService _authService;
     private readonly LibraryRepository _libraryRepository;
@@ -41,7 +42,16 @@ public sealed class PlexHistoryImportService
             cancellationToken);
 
         var history = await _plexApiClient.GetHistoryAsync(plex.Url, plex.Token, cancellationToken);
-        var knownRatingKeys = history
+        var latestImportedUtc = await _libraryRepository.GetLatestPlayHistoryUtcAsync(
+            plexUserId,
+            "plex",
+            cancellationToken);
+        var importFromUtc = latestImportedUtc?.Subtract(ImportOverlap);
+        var pendingHistory = history
+            .Where(static item => item.ViewedAtUtc is not null)
+            .Where(item => !importFromUtc.HasValue || item.ViewedAtUtc!.Value >= importFromUtc.Value)
+            .ToList();
+        var knownRatingKeys = pendingHistory
             .Select(item => item.RatingKey?.Trim())
             .Where(key => !string.IsNullOrWhiteSpace(key))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -56,7 +66,7 @@ public sealed class PlexHistoryImportService
         var metadataLookupCache = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
         var ratingKeyUpserts = new List<PlexTrackMetadataUpsertDto>();
 
-        foreach (var item in history.Where(static item => item.ViewedAtUtc is not null))
+        foreach (var item in pendingHistory)
         {
             var trackId = await ResolveTrackIdAsync(item, trackIdsByRatingKey, metadataLookupCache, stats, cancellationToken);
             var libraryId = await ResolveLibraryIdAsync(item.FilePath, cancellationToken);
@@ -75,8 +85,9 @@ public sealed class PlexHistoryImportService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Imported {Count} Plex history entries. resolvedByPath={ResolvedByPath} resolvedByRatingKey={ResolvedByRatingKey} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
+                "Processed {Count} incremental Plex history entries from {FetchedCount} fetched. resolvedByPath={ResolvedByPath} resolvedByRatingKey={ResolvedByRatingKey} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
                 stats.Inserted,
+                history.Count,
                 stats.ResolvedByFilePath,
                 stats.ResolvedByRatingKey,
                 stats.ResolvedByMetadata,
@@ -180,7 +191,7 @@ public sealed class PlexHistoryImportService
                 plexUserId,
                 libraryId,
                 trackId,
-                item.FilePath,
+                string.IsNullOrWhiteSpace(item.FilePath) ? item.RatingKey : item.FilePath,
                 item.RatingKey,
                 item.ViewedAtUtc!.Value,
                 item.DurationMs > 0 ? (int?)item.DurationMs : null,

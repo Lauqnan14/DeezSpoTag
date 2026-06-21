@@ -2455,6 +2455,26 @@ VALUES
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<DateTimeOffset?> GetLatestPlayHistoryUtcAsync(
+        long plexUserId,
+        string source,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT MAX(played_at_utc)
+FROM play_history
+WHERE plex_user_id = @plexUserId
+  AND source = @source;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("plexUserId", plexUserId);
+        command.Parameters.AddWithValue("source", string.IsNullOrWhiteSpace(source) ? "plex" : source.Trim().ToLowerInvariant());
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is string text && !string.IsNullOrWhiteSpace(text)
+            ? ParseDateTimeOffsetInvariant(text)
+            : null;
+    }
+
     public async Task<IReadOnlyList<long>> GetTopTrackIdsAsync(long plexUserId, long libraryId, int limit, CancellationToken cancellationToken = default)
     {
         const string sql = @"
@@ -6046,11 +6066,23 @@ SELECT id,
        pws.last_run_message,
        pws.next_attempt_utc,
        pws.consecutive_failures,
-       pw.sync_priority
+       pw.sync_priority,
+       COALESCE(track_summary.completed_count, 0),
+       pws.ignored_blocked_track_count,
+       pws.rerouted_track_count
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
    AND pws.source_id = pw.source_id
+LEFT JOIN (
+    SELECT source,
+           source_id,
+           SUM(CASE WHEN lower(status) IN ('completed', 'complete') THEN 1 ELSE 0 END) AS completed_count
+    FROM playlist_watch_track
+    GROUP BY source, source_id
+) track_summary
+    ON track_summary.source = pw.source
+   AND track_summary.source_id = pw.source_id
 ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE 0 END,
          pw.sync_priority ASC,
          pw.created_at DESC;";
@@ -6076,7 +6108,13 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
                 await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11),
                 await reader.IsDBNullAsync(12, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(12)),
                 await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetInt32(13),
-                await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetInt32(14)));
+                await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetInt32(14),
+                SyncedTrackCount: await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetInt32(15),
+                IncompleteTrackCount: await reader.IsDBNullAsync(15, cancellationToken) || await reader.IsDBNullAsync(6, cancellationToken)
+                    ? null
+                    : Math.Max(0, reader.GetInt32(6) - reader.GetInt32(15)),
+                IgnoredBlockedTrackCount: await reader.IsDBNullAsync(16, cancellationToken) ? null : reader.GetInt32(16),
+                ReroutedTrackCount: await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetInt32(17)));
         }
 
         return items;
@@ -6578,6 +6616,44 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("lastRunMessage", (object?)input.LastRunMessage ?? DBNull.Value);
         command.Parameters.AddWithValue("nextAttemptUtc", input.NextAttemptUtc?.ToString("O") ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("consecutiveFailures", (object?)input.ConsecutiveFailures ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdatePlaylistWatchPresentationSummaryAsync(
+        string source,
+        string sourceId,
+        int ignoredBlockedTrackCount,
+        int reroutedTrackCount,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO playlist_watch_state (
+    source,
+    source_id,
+    ignored_blocked_track_count,
+    rerouted_track_count,
+    presentation_updated_at)
+VALUES (
+    @source,
+    @sourceId,
+    @ignoredBlockedTrackCount,
+    @reroutedTrackCount,
+    CURRENT_TIMESTAMP)
+ON CONFLICT(source, source_id) DO UPDATE SET
+    ignored_blocked_track_count = excluded.ignored_blocked_track_count,
+    rerouted_track_count = excluded.rerouted_track_count,
+    presentation_updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("ignoredBlockedTrackCount", Math.Max(0, ignoredBlockedTrackCount));
+        command.Parameters.AddWithValue("reroutedTrackCount", Math.Max(0, reroutedTrackCount));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

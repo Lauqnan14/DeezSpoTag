@@ -523,8 +523,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         var getAll = ExtractMethodBody(playlistController, "public async Task<IActionResult> GetAll");
         Assert.DoesNotContain("BuildPlaylistPresentationSummaryAsync", getAll, StringComparison.Ordinal);
-        Assert.Contains("[HttpGet(\"presentation-summaries\")]", playlistController, StringComparison.Ordinal);
-        Assert.Contains("fetchJson('/api/library/playlists/presentation-summaries')", watchlistScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("[HttpGet(\"presentation-summaries\")]", playlistController, StringComparison.Ordinal);
+        Assert.DoesNotContain("fetchJson('/api/library/playlists/presentation-summaries')", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("renderPlaylistWatchlistPresentationBadges(item)", watchlistScript, StringComparison.Ordinal);
     }
 
     public void Dispose()

@@ -1369,55 +1369,6 @@ function renderPlaylistWatchlistStateBadge(count, state, label, icon) {
     return `<span class="playlist-watchlist-state-badge playlist-watchlist-state-badge--${state}" title="${count} ${label}${pluralSuffix}"><i class="fa-solid ${icon}"></i></span>`;
 }
 
-function cssEscape(value) {
-    if (globalThis.CSS && typeof globalThis.CSS.escape === 'function') {
-        return globalThis.CSS.escape(value);
-    }
-
-    return value.replaceAll(/["\\]/g, String.raw`\$&`);
-}
-
-function buildPlaylistWatchlistCardSelector(source, sourceId) {
-    return `.watchlist-playlist-card-v2[data-playlist-source="${cssEscape(String(source || ''))}"][data-playlist-id="${cssEscape(String(sourceId || ''))}"]`;
-}
-
-async function loadPlaylistWatchlistPresentationSummaries(container) {
-    if (!container) {
-        return;
-    }
-
-    try {
-        const summaries = await fetchJson('/api/library/playlists/presentation-summaries');
-        if (!Array.isArray(summaries)) {
-            return;
-        }
-
-        summaries.forEach(summary => {
-            const source = String(summary?.source || '').trim();
-            const sourceId = String(summary?.sourceId || '').trim();
-            if (!source || !sourceId) {
-                return;
-            }
-
-            const card = container.querySelector(buildPlaylistWatchlistCardSelector(source, sourceId));
-            const slot = card?.querySelector('.playlist-watchlist-presentation-slot');
-            if (!slot) {
-                return;
-            }
-
-            slot.innerHTML = renderPlaylistWatchlistPresentationBadges({
-                trackCount: card.dataset.playlistTrackCount,
-                syncedTrackCount: summary.syncedTrackCount,
-                incompleteTrackCount: summary.incompleteTrackCount,
-                ignoredBlockedTrackCount: summary.ignoredBlockedTrackCount,
-                reroutedTrackCount: summary.reroutedTrackCount
-            });
-        });
-    } catch (error) {
-        console.warn('Failed to load monitored playlist presentation summaries.', error);
-    }
-}
-
 function renderPlaylistWatchlistPriorityBadge(priorityNumber) {
     return `<div class="playlist-watchlist-priority-badge" title="Sync priority ${priorityNumber}">${escapeHtml(String(priorityNumber))}</div>`;
 }
@@ -1666,8 +1617,6 @@ async function loadPlaylistWatchlist() {
                 </div>
             </div>`;
         }).join('');
-
-        void loadPlaylistWatchlistPresentationSummaries(container);
 
         bindPlaylistWatchlistDragOrdering(container);
 
