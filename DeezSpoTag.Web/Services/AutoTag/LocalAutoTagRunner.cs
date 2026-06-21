@@ -620,12 +620,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             if (context.Plan.ForceShazamMatch
                 || ShouldShortCircuitOnShazamIdentifyFailure(context.Platform, context.Plan.PlatformCount))
             {
-                EmitReviewStatus(
-                    context,
-                    shazamResult.Error ?? "shazam identify failed",
-                    shazamResult.UsedShazam,
-                    AutoTagReviewMetadata.FromSourceOnly(info));
-                context.Plan.ReviewedFiles.Add(context.File);
+                EmitSkippedStatus(context, shazamResult.Error ?? "shazam identify failed", shazamResult.UsedShazam);
                 return;
             }
 
@@ -2702,7 +2697,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (forceShazamMatch)
             {
-                return new ShazamEnrichmentResult(false, "shazam unavailable", true);
+                return new ShazamEnrichmentResult(
+                    false,
+                    "shazam unavailable",
+                    true,
+                    ShazamFailureKind.Infrastructure);
             }
 
             // Degrade gracefully when optional Shazam fallback is unavailable.
@@ -2932,7 +2931,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 _logger.LogDebug(ex, "Shazam recognize failed for {File}", SanitizeLogValue(filePath));
             }
-            return null;
+            return new ShazamRecognitionAttempt
+            {
+                Outcome = ShazamRecognitionOutcome.RecognizerError,
+                Error = ex.Message
+            };
         }
     }
 

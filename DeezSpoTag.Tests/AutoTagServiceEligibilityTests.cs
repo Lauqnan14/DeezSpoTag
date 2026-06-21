@@ -51,6 +51,37 @@ public sealed class AutoTagServiceEligibilityTests
     }
 
     [Fact]
+    public void HasShazamReviewCandidate_RejectsUnavailableStatusWithoutCandidate()
+    {
+        var result = InvokeStatic<bool>(
+            "HasShazamReviewCandidate",
+            new TaggingStatus
+            {
+                Status = "review",
+                Message = "shazam unavailable",
+                SourceTitle = "16 - Gangster",
+                SourceArtist = "Unknown"
+            });
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void HasShazamReviewCandidate_AcceptsCandidateConflict()
+    {
+        var result = InvokeStatic<bool>(
+            "HasShazamReviewCandidate",
+            new TaggingStatus
+            {
+                Status = "review",
+                SourceTitle = "Wrong Song",
+                CandidateTitle = "Correct Song"
+            });
+
+        Assert.True(result);
+    }
+
+    [Fact]
     public void HasEligibleInputFiles_ReturnsTrueWhenTargetFilesContainSupportedInScopeAudioFile()
     {
         var root = Path.Combine(Path.GetTempPath(), $"autotag-targets-{Guid.NewGuid():N}");

@@ -352,7 +352,9 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
 
         Assert.Contains("if (config.ForceShazam || (hasShazamConfig && shazamConfig.ForceMatch))", source, StringComparison.Ordinal);
         Assert.Contains("if (context.Plan.ForceShazamMatch", source, StringComparison.Ordinal);
-        Assert.Contains("return new ShazamEnrichmentResult(false, \"shazam unavailable\", true)", source, StringComparison.Ordinal);
+        Assert.Contains("ShazamFailureKind.Infrastructure", source, StringComparison.Ordinal);
+        Assert.Contains("EmitSkippedStatus(context, shazamResult.Error ?? \"shazam identify failed\", shazamResult.UsedShazam)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("EmitReviewStatus(\n                    context,\n                    shazamResult.Error ?? \"shazam identify failed\"", source, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] pathParts)

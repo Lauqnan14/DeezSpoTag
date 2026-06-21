@@ -5163,6 +5163,14 @@ public partial class AutoTagService
             return;
         }
 
+        if (!HasShazamReviewCandidate(statusValue))
+        {
+            AppendLog(
+                job,
+                $"review folder: ignored Shazam review status without candidate metadata for {statusValue.Path}; file remains in place.");
+            return;
+        }
+
         var settings = _settingsService.LoadSettings();
         var reviewFolder = settings.ReviewFolderPath?.Trim();
         if (string.IsNullOrWhiteSpace(reviewFolder))
@@ -5251,6 +5259,14 @@ public partial class AutoTagService
             error = ex.Message;
             return false;
         }
+    }
+
+    private static bool HasShazamReviewCandidate(TaggingStatus status)
+    {
+        return !string.IsNullOrWhiteSpace(status.CandidateTitle)
+            || !string.IsNullOrWhiteSpace(status.CandidateArtist)
+            || !string.IsNullOrWhiteSpace(status.CandidateIsrc)
+            || status.CandidateDurationSeconds.HasValue;
     }
 
     private static string ResolveReviewDestinationPath(string sourcePath, string reviewRoot, string downloadLocation)
