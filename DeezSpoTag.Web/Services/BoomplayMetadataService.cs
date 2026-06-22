@@ -3497,7 +3497,7 @@ public sealed class BoomplayMetadataService
             return new BoomplaySessionSnapshot(false, null, null, "anon");
         }
 
-        var userAgent = string.IsNullOrWhiteSpace(auth.UserAgent) ? null : auth.UserAgent.Trim();
+        var userAgent = string.IsNullOrWhiteSpace(auth!.UserAgent) ? null : auth.UserAgent.Trim();
         return new BoomplaySessionSnapshot(true, cookie, userAgent, $"auth:{ComputeSessionCacheKey(cookie)}");
     }
 

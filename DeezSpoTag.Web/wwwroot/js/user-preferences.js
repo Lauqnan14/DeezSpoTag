@@ -19,6 +19,7 @@ globalThis.UserPrefs = (function () {
         'deezspotag-theme':                     'theme',
         'sidebarCollapsed':                      'sidebarCollapsed',
         'tabs-preference-enabled':               'tabsPreferenceEnabled',
+        'deezspotag-disabled-login-platforms':   'disabledLoginPlatforms',
         'pwa-prompt-dismissed':                  'pwaPromptDismissedAt',
         'autotag-selected-platforms':            'autoTagSelectedPlatforms',
         'autotag-preferences':                   'autoTagPreferences',
@@ -53,16 +54,17 @@ globalThis.UserPrefs = (function () {
         _dirty = false;
         try {
             const body = JSON.stringify(payload);
-            if (useBeacon && globalThis.navigator && typeof globalThis.navigator.sendBeacon === 'function') {
-                const blob = new Blob([body], { type: 'application/json' });
-                if (globalThis.navigator.sendBeacon('/api/user-preferences', blob)) {
-                    return;
-                }
+            const headers = { 'Content-Type': 'application/json' };
+            const token = globalThis.document
+                ?.querySelector('meta[name="deezspotag-csrf-token"]')
+                ?.getAttribute('content');
+            if (token) {
+                headers.RequestVerificationToken = token;
             }
 
             await fetch('/api/user-preferences', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body,
                 credentials: 'same-origin',
                 keepalive: useBeacon

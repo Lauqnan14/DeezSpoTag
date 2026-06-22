@@ -766,6 +766,45 @@
     text-align: center;
 }
 
+.login-tab-control-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.login-tab-control-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+}
+
+.login-tab-control-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.login-tab-control-label img {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+}
+
+.login-tab-control-fixed {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
 .lyrics-order-hint,
 .artwork-order-hint {
     font-size: 12px;
@@ -1587,6 +1626,19 @@
             </div>
         </div>
 
+        <div class="settings-section" id="login-tab-settings">
+            <div class="settings-header">
+                <span class="material-icons">login</span>
+                Login Tabs
+            </div>
+            <div class="settings-content">
+                <p class="secondary-text">
+                    Choose which optional login tabs are shown. Deezer and Spotify remain available.
+                </p>
+                <div id="loginTabControlList" class="login-tab-control-list" aria-live="polite"></div>
+            </div>
+        </div>
+
         <div class="settings-section" id="download-path-settings">
             <div class="settings-header">
                 <span class="material-icons">folder</span>
@@ -1654,6 +1706,8 @@ let mediaServerLibraryAutoSaveInFlight = false;
 let mediaServerLibraryAutoSavePending = false;
 const APPLE_NOTIFICATION_MODE_KEY = 'apple-download-notification-mode';
 const DOWNLOAD_SOURCE_SETTING_KEY = 'deezspotag-download-source-updated';
+const DISABLED_LOGIN_PLATFORMS_KEY = 'deezspotag-disabled-login-platforms';
+const FIXED_LOGIN_PLATFORMS = new Set(['deezer', 'spotify']);
 const engineQualityOptions = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
     DeezSpoTag.Services.Download.QualityCatalog.GetEngineQualityOptions()
         .ToDictionary(
@@ -1674,6 +1728,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initDownloadEngineOrderCollapse();
     initLibraryFolderDestinationDropdowns();
     initSecondarySourceControls();
+    initLoginTabControls();
     setupArtworkFallbackOrder();
     initializeSettingsTooltips();
     bindMediaServerLibraryPinActions();
@@ -1976,6 +2031,133 @@ function escapeHtml(text) {
         .replaceAll('>', '&gt;')
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
+}
+
+function normalizeLoginPlatformId(id) {
+    const normalized = String(id || '').trim().toLowerCase().replace(/-login$/, '').replace(/[^a-z0-9]/g, '');
+    const aliases = {
+        applemusic: 'applemusic',
+        bpmsupreme: 'bpmsupreme',
+        lastfm: 'lastfm',
+        junodownload: 'junodownload'
+    };
+    return aliases[normalized] || normalized;
+}
+
+function readDisabledLoginPlatforms() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(DISABLED_LOGIN_PLATFORMS_KEY) || '[]');
+        if (!Array.isArray(parsed)) {
+            return new Set();
+        }
+
+        return new Set(parsed
+            .map(normalizeLoginPlatformId)
+            .filter(id => id && !FIXED_LOGIN_PLATFORMS.has(id)));
+    } catch {
+        return new Set();
+    }
+}
+
+function writeDisabledLoginPlatforms(disabledPlatforms) {
+    const values = Array.from(disabledPlatforms || [])
+        .map(normalizeLoginPlatformId)
+        .filter(id => id && !FIXED_LOGIN_PLATFORMS.has(id))
+        .sort();
+    localStorage.setItem(DISABLED_LOGIN_PLATFORMS_KEY, JSON.stringify(values));
+    if (window.UserPrefs) {
+        window.UserPrefs.set('disabledLoginPlatforms', values);
+        void window.UserPrefs.flush(false);
+    }
+    window.dispatchEvent(new CustomEvent('deezspotag:login-tabs-updated', {
+        detail: {
+            disabledPlatforms: values
+        }
+    }));
+}
+
+async function initLoginTabControls() {
+    const list = document.getElementById('loginTabControlList');
+    if (!list) {
+        return;
+    }
+
+    list.innerHTML = '<p class="secondary-text">Loading login tabs...</p>';
+    try {
+        const response = await fetch('/api/platform-registry', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const registry = await response.json();
+        renderLoginTabControls(Array.isArray(registry) ? registry : []);
+    } catch (error) {
+        console.warn('Failed to load login tab controls.', error);
+        list.innerHTML = '<p class="server-library-empty">Failed to load login tabs.</p>';
+    }
+}
+
+function renderLoginTabControls(registry) {
+    const list = document.getElementById('loginTabControlList');
+    if (!list) {
+        return;
+    }
+
+    const platforms = registry
+        .filter(entry => entry?.requiresAuth === true && entry?.loginTabId)
+        .map(entry => ({
+            id: normalizeLoginPlatformId(entry.id),
+            name: String(entry.name || entry.id || '').trim(),
+            icon: String(entry.icon || '').trim()
+        }))
+        .filter(entry => entry.id && entry.name);
+
+    if (platforms.length === 0) {
+        list.innerHTML = '<p class="server-library-empty">No login tabs available.</p>';
+        return;
+    }
+
+    const disabled = readDisabledLoginPlatforms();
+    list.innerHTML = platforms.map(platform => {
+        const fixed = FIXED_LOGIN_PLATFORMS.has(platform.id);
+        const inputId = `loginTabToggle_${platform.id.replace(/[^a-z0-9_-]/g, '_')}`;
+        return `
+            <div class="login-tab-control-item" data-login-platform="${escapeHtml(platform.id)}">
+                <label class="login-tab-control-label" for="${escapeHtml(inputId)}">
+                    ${platform.icon ? `<img src="${escapeHtml(platform.icon)}" alt="">` : ''}
+                    <span>${escapeHtml(platform.name)}</span>
+                </label>
+                ${fixed
+                    ? '<span class="login-tab-control-fixed">Always shown</span>'
+                    : `<span class="switch">
+                        <input type="checkbox" id="${escapeHtml(inputId)}" class="login-tab-visibility-toggle" data-login-platform="${escapeHtml(platform.id)}" ${disabled.has(platform.id) ? '' : 'checked'}>
+                        <span class="slider"></span>
+                    </span>`}
+            </div>
+        `;
+    }).join('');
+
+    list.querySelectorAll('.login-tab-visibility-toggle').forEach(input => {
+        input.addEventListener('change', () => {
+            const nextDisabled = readDisabledLoginPlatforms();
+            const platformId = normalizeLoginPlatformId(input.dataset.loginPlatform);
+            if (!platformId || FIXED_LOGIN_PLATFORMS.has(platformId)) {
+                return;
+            }
+
+            if (input.checked) {
+                nextDisabled.delete(platformId);
+            } else {
+                nextDisabled.add(platformId);
+            }
+
+            writeDisabledLoginPlatforms(nextDisabled);
+        });
+    });
 }
 
 function setupEventListeners() {

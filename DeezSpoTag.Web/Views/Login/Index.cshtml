@@ -615,6 +615,10 @@ body {
     color: var(--primary-color);
 }
 
+.fixed-footer .login-tab-disabled {
+    display: none !important;
+}
+
 .fixed-footer .tab-pane {
     color: var(--text-primary);
 }
@@ -1448,6 +1452,22 @@ let appleMusicSettingsCache = null;
 let connectedPlatformsRefreshTimer = null;
 let connectedPlatformsRefreshOptions = null;
 const LOGIN_TAB_STORAGE_KEY = 'deezspotag-login-active-tab';
+const DISABLED_LOGIN_PLATFORMS_KEY = 'deezspotag-disabled-login-platforms';
+const FIXED_LOGIN_PLATFORMS = new Set(['deezer', 'spotify']);
+const LOGIN_TAB_PLATFORM_MAP = {
+    'deezer-login': 'deezer',
+    'spotify-login': 'spotify',
+    'apple-music-login': 'applemusic',
+    'qobuz-login': 'qobuz',
+    'tidal-login': 'tidal',
+    'soulseek-login': 'soulseek',
+    'discogs-login': 'discogs',
+    'lastfm-login': 'lastfm',
+    'bpmsupreme-login': 'bpmsupreme',
+    'boomplay-login': 'boomplay',
+    'plex-login': 'plex',
+    'jellyfin-login': 'jellyfin'
+};
 let spotifyConfigRequested = false;
 let spotifyConfigLoadSequence = 0;
 let spotifyBlobGenerationInFlight = false;
@@ -1935,9 +1955,87 @@ function setLoginTabsVisible(visible) {
     }
 }
 
+function normalizeLoginPlatformId(id) {
+    const normalized = String(id || '').trim().toLowerCase().replace(/-login$/, '').replace(/[^a-z0-9]/g, '');
+    const aliases = {
+        applemusic: 'applemusic',
+        bpmsupreme: 'bpmsupreme',
+        lastfm: 'lastfm',
+        junodownload: 'junodownload'
+    };
+    return aliases[normalized] || normalized;
+}
+
+function readDisabledLoginPlatforms() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(DISABLED_LOGIN_PLATFORMS_KEY) || '[]');
+        if (!Array.isArray(parsed)) {
+            return new Set();
+        }
+
+        return new Set(parsed
+            .map(normalizeLoginPlatformId)
+            .filter(id => id && !FIXED_LOGIN_PLATFORMS.has(id)));
+    } catch {
+        return new Set();
+    }
+}
+
+function getLoginPlatformForTab(tabId) {
+    return LOGIN_TAB_PLATFORM_MAP[tabId] || '';
+}
+
+function getDisabledLoginTabSet() {
+    const disabledPlatforms = readDisabledLoginPlatforms();
+    const disabledTabs = new Set();
+    Object.entries(LOGIN_TAB_PLATFORM_MAP).forEach(([tabId, platformId]) => {
+        if (!FIXED_LOGIN_PLATFORMS.has(platformId) && disabledPlatforms.has(platformId)) {
+            disabledTabs.add(tabId);
+        }
+    });
+    return disabledTabs;
+}
+
+function isLoginTabEnabled(tabId) {
+    const platformId = getLoginPlatformForTab(tabId);
+    if (!platformId || FIXED_LOGIN_PLATFORMS.has(platformId)) {
+        return true;
+    }
+
+    return !readDisabledLoginPlatforms().has(platformId);
+}
+
+function applyLoginTabVisibilityPreference() {
+    const disabledTabs = getDisabledLoginTabSet();
+    document.querySelectorAll('#platformLoginTabs [data-login-target]').forEach((trigger) => {
+        const tabId = trigger.getAttribute('data-login-target') || '';
+        const hidden = disabledTabs.has(tabId);
+        const navItem = trigger.closest('.nav-item');
+        trigger.hidden = hidden;
+        trigger.disabled = hidden;
+        trigger.classList.toggle('login-tab-disabled', hidden);
+        trigger.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+        if (navItem) {
+            navItem.hidden = hidden;
+            navItem.classList.toggle('login-tab-disabled', hidden);
+        }
+    });
+
+    document.querySelectorAll('#platformLoginTabsContent .tab-pane').forEach((pane) => {
+        const hidden = disabledTabs.has(pane.id);
+        pane.dataset.loginTabDisabled = hidden ? 'true' : 'false';
+        pane.classList.toggle('login-tab-disabled', hidden);
+        if (hidden) {
+            pane.classList.remove('active', 'show');
+            pane.hidden = true;
+            pane.setAttribute('aria-hidden', 'true');
+        }
+    });
+}
+
 function isValidLoginTabId(tabId) {
     if (!tabId) return false;
-    return Boolean(document.querySelector(`#platformLoginTabsContent .tab-pane#${tabId}`));
+    return Boolean(document.querySelector(`#platformLoginTabsContent .tab-pane#${tabId}`)) && isLoginTabEnabled(tabId);
 }
 
 function getLoginTabFromLocation() {
@@ -1954,9 +2052,12 @@ function getLoginTabFromLocation() {
             spotify: 'spotify-login',
             applemusic: 'apple-music-login',
             qobuz: 'qobuz-login',
+            tidal: 'tidal-login',
+            soulseek: 'soulseek-login',
             discogs: 'discogs-login',
             lastfm: 'lastfm-login',
             bpmsupreme: 'bpmsupreme-login',
+            boomplay: 'boomplay-login',
             plex: 'plex-login',
             jellyfin: 'jellyfin-login'
         };
@@ -2065,7 +2166,9 @@ function initializeLoginTabs() {
         return;
     }
 
-    const triggers = tabList.querySelectorAll('[data-login-target]');
+    applyLoginTabVisibilityPreference();
+    const triggers = Array.from(tabList.querySelectorAll('[data-login-target]'))
+        .filter(trigger => !trigger.hidden && !trigger.disabled);
     triggers.forEach((trigger) => {
         trigger.addEventListener('click', () => {
             const tabId = trigger.getAttribute('data-login-target') || '';
@@ -2079,7 +2182,7 @@ function initializeLoginTabs() {
     });
 
     const preferredTabId = getPreferredLoginTabId();
-    const preferredTrigger = document.querySelector(`#platformLoginTabs [data-login-target="${preferredTabId}"]`) || triggers[0];
+    const preferredTrigger = triggers.find(trigger => trigger.getAttribute('data-login-target') === preferredTabId) || triggers[0];
     if (!preferredTrigger) {
         setLoginTabsVisible(true);
         return;
@@ -2107,6 +2210,13 @@ function setActiveLoginTab(tabId) {
 
     const panes = document.querySelectorAll('#platformLoginTabsContent .tab-pane');
     panes.forEach((pane) => {
+        if (pane.dataset.loginTabDisabled === 'true') {
+            pane.classList.remove('active', 'show');
+            pane.hidden = true;
+            pane.setAttribute('aria-hidden', 'true');
+            return;
+        }
+
         const isActive = pane.id === tabId;
         pane.classList.toggle('active', isActive);
         pane.classList.toggle('show', isActive);

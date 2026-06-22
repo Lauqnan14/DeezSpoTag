@@ -156,6 +156,7 @@ public sealed class UserPreferencesDto
     public string Theme { get; set; } = "blue";
     public bool SidebarCollapsed { get; set; } = false;
     public bool TabsPreferenceEnabled { get; set; } = true;
+    public List<string> DisabledLoginPlatforms { get; set; } = new();
     public long? PwaPromptDismissedAt { get; set; }
 
     // AutoTag
