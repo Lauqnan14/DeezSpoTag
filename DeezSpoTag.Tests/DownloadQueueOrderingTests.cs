@@ -42,6 +42,53 @@ public sealed class DownloadQueueOrderingTests
     }
 
     [Fact]
+    public async Task DequeueNextAsync_DoesNotSkipEarlierQueuedItemForAnotherEngine()
+    {
+        await using var context = CreateContext();
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-deezer-head", engine: "deezer"), CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-qobuz-later", engine: "qobuz"), CancellationToken.None);
+
+        var qobuzBeforeHead = await context.QueueRepository.DequeueNextAsync(
+            "qobuz",
+            newestFirst: false,
+            CancellationToken.None);
+        var globalHead = await context.QueueRepository.DequeueNextAnyAsync(
+            newestFirst: false,
+            CancellationToken.None);
+        var qobuzAfterHead = await context.QueueRepository.DequeueNextAsync(
+            "qobuz",
+            newestFirst: false,
+            CancellationToken.None);
+
+        Assert.Null(qobuzBeforeHead);
+        Assert.NotNull(globalHead);
+        Assert.Equal("queue-deezer-head", globalHead!.QueueUuid);
+        Assert.NotNull(qobuzAfterHead);
+        Assert.Equal("queue-qobuz-later", qobuzAfterHead!.QueueUuid);
+    }
+
+    [Fact]
+    public async Task DequeueNextAnyAsync_DoesNotSkipEarlierResolvingItem()
+    {
+        await using var context = CreateContext();
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-resolving-head", payloadJson: "{}"), CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-later"), CancellationToken.None);
+        var claimed = await context.QueueRepository.TryUpdateQueuedPayloadIfCurrentAsync(
+            "queue-resolving-head",
+            "{}",
+            "{}",
+            status: "resolving",
+            cancellationToken: CancellationToken.None);
+
+        var next = await context.QueueRepository.DequeueNextAnyAsync(
+            newestFirst: false,
+            CancellationToken.None);
+
+        Assert.True(claimed);
+        Assert.Null(next);
+    }
+
+    [Fact]
     public async Task RecoverInterruptedPreResolutionAsync_RequeuesResolvingItemForDownload()
     {
         await using var context = CreateContext();
@@ -104,12 +151,16 @@ public sealed class DownloadQueueOrderingTests
         return new TestContext(tempRoot, queueRepository);
     }
 
-    private static DownloadQueueItem CreateQueueItem(string queueUuid, string status = "queued")
+    private static DownloadQueueItem CreateQueueItem(
+        string queueUuid,
+        string status = "queued",
+        string engine = "deezer",
+        string? payloadJson = null)
     {
         return new DownloadQueueItem(
             Id: 0,
             QueueUuid: queueUuid,
-            Engine: "deezer",
+            Engine: engine,
             ArtistName: "Artist",
             TrackTitle: queueUuid,
             Isrc: null,
@@ -128,7 +179,7 @@ public sealed class DownloadQueueOrderingTests
             QueueOrder: null,
             ContentType: "stereo",
             Status: status,
-            PayloadJson: null,
+            PayloadJson: payloadJson,
             Progress: 0,
             Downloaded: 0,
             Failed: 0,

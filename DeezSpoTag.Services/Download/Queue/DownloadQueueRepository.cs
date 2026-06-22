@@ -745,15 +745,23 @@ WHERE queue_uuid = @queueUuid
         var orderBy = newestFirst ? "DESC" : "ASC";
         var queueOrderBy = newestFirst ? "DESC" : "ASC";
         return $@"
+WITH queue_head AS (
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
 	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
-	WHERE status = 'queued'
-  {extraWhereClause}
+	WHERE status IN ('queued', 'resolving')
 ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
-LIMIT 1;";
+LIMIT 1
+)
+SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+FROM queue_head
+WHERE status = 'queued'
+  {extraWhereClause};";
     }
 
     private static string BuildActivitiesQueueSql()
