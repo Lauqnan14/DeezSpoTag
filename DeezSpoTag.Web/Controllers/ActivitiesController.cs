@@ -430,13 +430,13 @@ public class ActivitiesController : Controller
 
             if (!CanRetryActivityItem(item))
             {
-                return BadRequest("Only failed or canceled downloads can be retried");
+                return BadRequest("Only failed, canceled, or partially failed completed downloads can be retried");
             }
 
             var retryQueued = await GetDeezSpoTagApp().RetryDownloadAsync(request.Uuid, HttpContext.RequestAborted);
             if (!retryQueued)
             {
-                return BadRequest("Retry blocked: invalid payload for this download.");
+                return BadRequest("Retry blocked: this download does not have a valid queue payload.");
             }
 
             var updated = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
@@ -444,11 +444,11 @@ public class ActivitiesController : Controller
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
-                    "Retried download with fallback reset: {Uuid} (engine={Engine})",
+                    "Retried download: {Uuid} (engine={Engine})",
                     LogSanitizer.OneLine(request.Uuid),
                     LogSanitizer.OneLine(resolvedEngine));
             }
-            _activityLog.Info($"Retry queued (fallback reset): {request.Uuid} engine={resolvedEngine}");
+            _activityLog.Info($"Retry queued: {request.Uuid} engine={resolvedEngine}");
             return Json(new { success = true, message = "Download retry initiated successfully", originalUuid = request.Uuid, newUuid = request.Uuid, engine = resolvedEngine });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

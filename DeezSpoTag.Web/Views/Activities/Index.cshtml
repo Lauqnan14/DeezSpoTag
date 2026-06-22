@@ -574,12 +574,11 @@
     border-radius: 12px;
     padding: 16px;
     margin-bottom: 12px;
-    transition: border-color 0.2s ease, transform 0.2s ease;
+    transition: border-color 0.2s ease;
 }
 
 .downloads-tab .task-card:hover {
     border-color: var(--primary-color);
-    transform: translateX(4px);
 }
 
 .downloads-tab .task-header {
@@ -3513,9 +3512,7 @@ function resolveAutoScrollTask(taskList) {
         return null;
     }
 
-    return taskList.find(task => task.status === 'running')
-        || taskList.find(task => task.status === 'queued' || task.status === 'retrying' || task.status === 'paused')
-        || taskList[0];
+    return taskList.find(task => task.status === 'running') || null;
 }
 
 function updateQueueButtons() {
@@ -5039,80 +5036,49 @@ function updateToggleQueueUi(state) {
     }
 }
 
-function retryTask(taskId) {
-    const target = tasks.find(task => task.taskId === taskId);
-    if (target) {
-        if (target._retryInFlight || target._actionInFlight) {
-            return;
-        }
-        target._retryPreviousStatus = target.status;
-	        target._retryPreviousError = target.error;
-	        target._retryInFlight = true;
-	        target._actionInFlight = true;
-	        target.status = 'retrying';
-	        target.progress = 0;
-	        target.error = null;
-	        resetQueueProgressCache(taskId);
-	        scheduleRenderTasks();
-	        updateStats();
-	    }
+async function retryTask(taskId) {
+    const target = beginTaskAction(taskId);
+    if (!target) {
+        return;
+    }
 
-    activityFetch('/Activities/RetryFailed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uuid: taskId })
-    })
-        .then(async response => {
-            const contentType = response.headers.get('content-type') || '';
-            const isJson = contentType.includes('application/json');
-            const data = isJson ? await response.json() : await response.text();
-            if (!response.ok || (data && typeof data === 'object' && data.success === false)) {
-                const message = (data && typeof data === 'object' ? (data.error || data.message) : data) || 'Retry failed';
-                throw new Error(message);
-            }
-            return data;
-        })
-        .then((data) => {
-            const target = tasks.find(task => task.taskId === taskId);
-            const updatedId = data?.newUuid || taskId;
-            if (target) {
-	                target.taskId = updatedId;
-	                target.status = 'queued';
-	                target.progress = 0;
-	                target.failed = 0;
-	                target.error = null;
-                target._retryInFlight = false;
-                target._actionInFlight = false;
-                delete target._retryPreviousError;
-                delete target._retryPreviousStatus;
-	                if (data?.engine) {
-	                    target.engine = data.engine;
-	                }
-	                resetQueueProgressCache(taskId);
-	                resetQueueProgressCache(updatedId);
-	            }
-            scheduleRenderTasks();
-            updateStats();
-            loadQueueFromServer({ force: true });
-        })
-        .catch(error => {
-            if (target) {
-                target.status = target._retryPreviousStatus || 'failed';
-                target.error = target._retryPreviousError || target.error || null;
-                target._retryInFlight = false;
-                target._actionInFlight = false;
-                delete target._retryPreviousError;
-                delete target._retryPreviousStatus;
-                scheduleRenderTasks();
-                updateStats();
-            }
-            const notifier = window.DeezSpoTag?.Download?.showNotification
-                || window.DeezSpoTag?.showNotification;
-            if (notifier) {
-                notifier(error.message || 'Retry failed', 'warning');
-            }
-            console.error(`Failed to retry task ${taskId}:`, error);
-        });
+    const previousStatus = target.status;
+    const previousError = target.error;
+    target._retryInFlight = true;
+    target.status = 'retrying';
+    target.progress = 0;
+    target.error = null;
+    resetQueueProgressCache(taskId);
+    scheduleRenderTasks();
+    updateStats();
+
+    try {
+        const payload = await ensureJsonActionSuccess('/Activities/RetryFailed', { uuid: taskId });
+        const updatedId = payload?.newUuid || taskId;
+        target.taskId = updatedId;
+        target.status = 'queued';
+        target.progress = 0;
+        target.failed = 0;
+        target.error = null;
+        if (payload?.engine) {
+            target.engine = payload.engine;
+        }
+        resetQueueProgressCache(taskId);
+        resetQueueProgressCache(updatedId);
+        scheduleRenderTasks();
+        updateStats();
+        await loadQueueFromServer({ force: true });
+    } catch (error) {
+        target.status = previousStatus || 'failed';
+        target.error = previousError || target.error || null;
+        scheduleRenderTasks();
+        updateStats();
+        console.error(`Failed to retry task ${taskId}:`, error);
+        showDownloadActionError(error?.message, 'Retry failed.');
+    } finally {
+        target._retryInFlight = false;
+        endTaskAction(target);
+    }
 }
 
 async function deleteFailedTask(taskId) {
@@ -6408,6 +6374,8 @@ async function ensureJsonActionSuccess(url, body) {
     if (payload && payload.success === false) {
         throw new Error(payload.error || payload.message || 'Request failed.');
     }
+
+    return payload;
 }
 
 function deriveQueueState(taskList) {

@@ -751,7 +751,7 @@ WITH queue_head AS (
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
 	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
-	WHERE status IN ('queued', 'resolving')
+	WHERE status = 'queued'
 ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
 LIMIT 1
 )
@@ -760,7 +760,7 @@ SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, 
        duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
        status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 FROM queue_head
-WHERE status = 'queued'
+WHERE 1 = 1
   {extraWhereClause};";
     }
 

@@ -478,33 +478,39 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
         var firstStepEngine = queueItem.Engine ?? string.Empty;
         var firstStepQuality = string.Empty;
+        var updatedPayloadForWatchlist = string.Empty;
 
-        if (!string.IsNullOrWhiteSpace(queueItem.PayloadJson))
+        if (string.IsNullOrWhiteSpace(queueItem.PayloadJson))
         {
-            try
-            {
-                if (JsonNode.Parse(queueItem.PayloadJson) is JsonObject payloadObj)
-                {
-                    var settings = _settingsService.LoadSettings();
-                    var canonicalState = FallbackPayloadNormalizer.ResolveCanonicalState(queueItem, settings, payloadObj);
-                    _ = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, canonicalState, resetIndexAndHistory: true);
-                    ResetPayloadRetryState(payloadObj);
+            _logger.LogWarning("Manual retry blocked for {QueueUuid}: queue payload is missing.", uuid);
+            return false;
+        }
 
-                    var updatedPayload = payloadObj.ToJsonString();
-                    await _queueRepository.UpdatePayloadAsync(uuid, updatedPayload, cancellationToken);
+        JsonObject payloadObj;
+        try
+        {
+            payloadObj = JsonNode.Parse(queueItem.PayloadJson) as JsonObject
+                ?? throw new JsonException("Queue payload root is not an object.");
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Manual retry blocked for {QueueUuid}: queue payload is invalid.", uuid);
+            return false;
+        }
 
-                    firstStepEngine = canonicalState.FirstStep.Source;
-                    firstStepQuality = canonicalState.FirstStep.Quality ?? string.Empty;
-                    if (!string.IsNullOrWhiteSpace(firstStepEngine))
-                    {
-                        await _queueRepository.UpdateEngineAsync(uuid, firstStepEngine, cancellationToken);
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                // Keep retry best-effort for legacy payloads that cannot be normalized.
-            }
+        var settings = _settingsService.LoadSettings();
+        var canonicalState = FallbackPayloadNormalizer.ResolveCanonicalState(queueItem, settings, payloadObj);
+        _ = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, canonicalState, resetIndexAndHistory: true);
+        ResetPayloadRetryState(payloadObj);
+
+        updatedPayloadForWatchlist = payloadObj.ToJsonString();
+        await _queueRepository.UpdatePayloadAsync(uuid, updatedPayloadForWatchlist, cancellationToken);
+
+        firstStepEngine = canonicalState.FirstStep.Source;
+        firstStepQuality = canonicalState.FirstStep.Quality ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(firstStepEngine))
+        {
+            await _queueRepository.UpdateEngineAsync(uuid, firstStepEngine, cancellationToken);
         }
 
         _retryScheduler.Clear(uuid);
@@ -520,7 +526,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return false;
         }
 
-        await UpdateWatchlistTrackStatusAsync(queueItem.PayloadJson ?? string.Empty, "queued", cancellationToken);
+        await UpdateWatchlistTrackStatusAsync(updatedPayloadForWatchlist, "queued", cancellationToken);
         Listener?.Send(UpdateQueueEvent, new
         {
             uuid,
