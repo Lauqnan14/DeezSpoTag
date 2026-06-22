@@ -50,8 +50,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private static readonly TimeSpan StreamProbeTimeout = TimeSpan.FromSeconds(3);
     private const int ProviderHttpMaxAttempts = 2;
     private const int DownloadUrlResolutionMaxAttempts = 2;
+    private const int MaxConcurrentProviderResolutions = 2;
     private const int StreamProbeReadLimitBytes = 64 * 1024;
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
     private static readonly string[] ProviderUrlPropertyNames = ["url", "download_url", "link"];
     private const string MusicDlUserAgent = "QobuzDL/1.0";
     private static readonly (int Start, int End)[] ExtendedLatinRanges =
@@ -89,14 +91,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         QobuzTrackResolver trackResolver,
         ResolveProxyClient resolveProxyClient,
         IOptions<QobuzApiConfig> qobuzOptions,
-        IQobuzCredentialProvider? credentialProvider = null,
+        IQobuzCredentialProvider credentialProvider,
         IQobuzPublicProviderRegistry? publicProviderRegistry = null)
     {
         _logger = logger;
         _trackResolver = trackResolver;
         _resolveProxyClient = resolveProxyClient;
         _qobuzConfig = qobuzOptions.Value ?? new QobuzApiConfig();
-        _credentialProvider = credentialProvider ?? new OptionsQobuzCredentialProvider(qobuzOptions);
+        _credentialProvider = credentialProvider;
         _publicProviderRegistry = publicProviderRegistry
             ?? throw new ArgumentNullException(nameof(publicProviderRegistry));
         _apiClient = new HttpClient
@@ -274,8 +276,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     public async Task CheckPublicProvidersAsync(CancellationToken cancellationToken)
     {
-        var providers = await BuildProvidersAsync(ProviderHealthCheckTrackId, "6", cancellationToken);
-        foreach (var provider in providers.Where(provider => provider.Id != "official"))
+        var providers = await BuildPublicProvidersAsync(ProviderHealthCheckTrackId, "6", cancellationToken);
+        foreach (var provider in providers)
         {
             cancellationToken.ThrowIfCancellationRequested();
             await TryResolveProviderAsync(provider, ProviderHealthCheckTrackId, "6", cancellationToken);
@@ -551,6 +553,17 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         foreach (var qualityCode in qualityOrder)
         {
+            var officialAttempt = await TryDownloadWithOfficialCredentialsAsync(
+                trackId,
+                qualityCode,
+                request,
+                outputPath,
+                cancellationToken);
+            if (officialAttempt.Succeeded)
+            {
+                return;
+            }
+
             var providers = await BuildOrderedProvidersAsync(trackId, qualityCode, cancellationToken);
             foreach (var provider in providers)
             {
@@ -582,6 +595,47 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
     private sealed record ProviderDownloadAttempt(bool Succeeded, Exception? Failure);
+
+    private async Task<ProviderDownloadAttempt> TryDownloadWithOfficialCredentialsAsync(
+        long trackId,
+        string qualityCode,
+        QobuzDownloadRequest request,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        var downloadUrl = await TryResolveOfficialStreamUrlAsync(trackId, qualityCode, cancellationToken);
+        if (string.IsNullOrWhiteSpace(downloadUrl))
+        {
+            return new ProviderDownloadAttempt(false, null);
+        }
+
+        try
+        {
+            request.Quality = qualityCode;
+            await NotifySelectedQualityAsync(request, qualityCode);
+            await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
+            {
+                DownloadUrl = downloadUrl,
+                OutputPath = outputPath,
+                Request = request
+            }, cancellationToken);
+            return new ProviderDownloadAttempt(true, null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            DownloadFileUtilities.TryDeleteFile(outputPath);
+            _logger.LogWarning(
+                ex,
+                "Qobuz official credentials stream failed for track {TrackId} quality {Quality}; trying public providers.",
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
+            return new ProviderDownloadAttempt(false, ex);
+        }
+    }
 
     private async Task<ProviderDownloadAttempt> TryDownloadWithProviderAsync(
         ProviderCandidate provider,
@@ -646,7 +700,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private async Task<ProviderCandidate[]> BuildOrderedProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
     {
-        var providers = (await BuildProvidersAsync(trackId, qualityCode, cancellationToken)).ToList();
+        var providers = (await BuildPublicProvidersAsync(trackId, qualityCode, cancellationToken)).ToList();
         var preferredProvider = GetPreferredProvider(providers, qualityCode);
         if (preferredProvider == null)
         {
@@ -903,7 +957,20 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         int expectedDurationSeconds,
         CancellationToken cancellationToken)
     {
-        var providers = await BuildProvidersAsync(trackId, qualityCode, cancellationToken);
+        var officialResolved = await TryResolveOfficialStreamUrlAsync(trackId, qualityCode, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(officialResolved)
+            && await IsProviderStreamAcceptableAsync(
+                "Qobuz Official",
+                trackId,
+                qualityCode,
+                officialResolved,
+                expectedDurationSeconds,
+                cancellationToken))
+        {
+            return officialResolved;
+        }
+
+        var providers = await BuildPublicProvidersAsync(trackId, qualityCode, cancellationToken);
         var preferredProvider = GetPreferredProvider(providers, qualityCode);
         if (preferredProvider != null && !IsProviderCoolingDown(preferredProvider.Name))
         {
@@ -934,33 +1001,20 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return null;
         }
 
-        using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var pending = providers
-            .ToDictionary(
-                provider => provider.Id,
-                provider => (Provider: provider, Task: TryResolveProviderAsync(provider, trackId, qualityCode, raceCts.Token)),
-                StringComparer.OrdinalIgnoreCase);
-
-        while (pending.Count > 0)
+        foreach (var provider in providers)
         {
-            var completed = await Task.WhenAny(pending.Values.Select(static pair => pair.Task));
-            var completedPair = pending.First(pair => ReferenceEquals(pair.Value.Task, completed));
-            var completedKey = completedPair.Key;
-            var completedProvider = completedPair.Value.Provider;
-            pending.Remove(completedKey);
-
-            var resolved = await completed;
+            cancellationToken.ThrowIfCancellationRequested();
+            var resolved = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
             if (!string.IsNullOrWhiteSpace(resolved)
                 && await IsProviderStreamAcceptableAsync(
-                    completedKey,
+                    provider.Name,
                     trackId,
                     qualityCode,
                     resolved,
                     expectedDurationSeconds,
                     cancellationToken))
             {
-                MarkPreferredProvider(completedProvider, qualityCode);
-                await raceCts.CancelAsync();
+                MarkPreferredProvider(provider, qualityCode);
                 return resolved;
             }
         }
@@ -1040,6 +1094,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         CancellationToken cancellationToken)
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await ProviderResolutionGate.WaitAsync(cancellationToken);
         try
         {
             var resolved = await provider.ResolveAsync(cancellationToken);
@@ -1102,6 +1157,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 trackId,
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
             return null;
+        }
+        finally
+        {
+            ProviderResolutionGate.Release();
         }
     }
 
@@ -1269,12 +1328,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return fragments.Any(fragment => message.Contains(fragment, StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task<ProviderCandidate[]> BuildProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
+    private async Task<ProviderCandidate[]> BuildPublicProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
     {
-        var providers = new List<ProviderCandidate>
-        {
-            new("official", "Qobuz Official", "official", ct => TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, ct))
-        };
+        var providers = new List<ProviderCandidate>();
         foreach (var provider in await _publicProviderRegistry.GetProvidersAsync(cancellationToken))
         {
             if (!provider.Enabled)
@@ -1290,6 +1346,35 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             });
         }
         return providers.ToArray();
+    }
+
+    private async Task<string?> TryResolveOfficialStreamUrlAsync(
+        long trackId,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
+        await ProviderResolutionGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Qobuz official credentials failed for track {TrackId} quality {Quality}; trying public providers.",
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
+            return null;
+        }
+        finally
+        {
+            ProviderResolutionGate.Release();
+        }
     }
 
     private async Task<string?> TryGetOfficialQobuzStreamUrlAsync(

@@ -98,7 +98,6 @@ public static class DownloadServiceExtensions
         services.AddSingleton<Download.Tidal.TidalApiProviderSource>();
 
         services.AddOptions<QobuzApiConfig>();
-        services.TryAddSingleton<IQobuzCredentialProvider, OptionsQobuzCredentialProvider>();
         services.AddHttpClient<IQobuzApiClient, QobuzApiClient>();
         services.AddSingleton<QobuzArtistService>();
         services.AddSingleton<IQobuzMetadataService, QobuzMetadataService>();
