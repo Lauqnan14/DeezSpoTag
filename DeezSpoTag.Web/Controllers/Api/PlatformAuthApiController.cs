@@ -125,7 +125,8 @@ public class PlatformAuthApiController : ControllerBase
             appleMusic = state.AppleMusic,
             qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
             tidal = ToPublicTidal(state.Tidal, tidalProviders),
-            soulseek = ToPublicSoulseek(state.Soulseek)
+            soulseek = ToPublicSoulseek(state.Soulseek),
+            boomplay = ToPublicBoomplay(state.Boomplay)
         });
     }
 
@@ -420,6 +421,46 @@ public class PlatformAuthApiController : ControllerBase
         });
 
         return Ok(new { saved = true, soulseek = ToPublicSoulseek(soulseek) });
+    }
+
+    [HttpPost("boomplay")]
+    public async Task<IActionResult> SaveBoomplay([FromBody] BoomplayAuth request)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        if (request is null) return BadRequest("Boomplay session details are required.");
+
+        var currentState = await _authService.LoadAsync();
+        var previous = currentState.Boomplay;
+        var cookie = ResolveSubmittedSecret(request.Cookie, previous?.Cookie);
+        if (string.IsNullOrWhiteSpace(cookie))
+        {
+            return BadRequest("Boomplay cookie is required.");
+        }
+
+        var userAgent = string.IsNullOrWhiteSpace(request.UserAgent)
+            ? previous?.UserAgent
+            : request.UserAgent.Trim();
+        var displayName = string.IsNullOrWhiteSpace(request.DisplayName)
+            ? "Boomplay session"
+            : request.DisplayName.Trim();
+
+        var boomplay = await _authService.UpdateAsync(state =>
+        {
+            state.Boomplay = new BoomplayAuth
+            {
+                Cookie = cookie,
+                UserAgent = userAgent,
+                DisplayName = displayName,
+                SessionValid = true,
+                LastStatus = "session_saved",
+                SavedAt = DateTimeOffset.UtcNow
+            };
+
+            return state.Boomplay;
+        });
+
+        return Ok(new { saved = true, boomplay = ToPublicBoomplay(boomplay) });
     }
 
     [HttpPost("lastfm")]
@@ -720,6 +761,27 @@ public class PlatformAuthApiController : ControllerBase
         };
     }
 
+    private static object ToPublicBoomplay(BoomplayAuth? auth)
+    {
+        var configured = !string.IsNullOrWhiteSpace(auth?.Cookie);
+        var status = auth?.LastStatus;
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            status = configured ? "session_saved" : "not_configured";
+        }
+
+        return new
+        {
+            cookieSaved = configured,
+            configured,
+            connected = configured && auth?.SessionValid != false,
+            userAgent = auth?.UserAgent,
+            displayName = auth?.DisplayName,
+            status,
+            savedAt = auth?.SavedAt
+        };
+    }
+
     private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken)
     {
         var providers = await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken);
@@ -909,6 +971,9 @@ public class PlatformAuthApiController : ControllerBase
                 case "soulseek":
                     state.Soulseek = null;
                     break;
+                case "boomplay":
+                    state.Boomplay = null;
+                    break;
             }
 
             return 0;
@@ -933,7 +998,8 @@ public class PlatformAuthApiController : ControllerBase
             or "applemusic"
             or "qobuz"
             or "tidal"
-            or "soulseek";
+            or "soulseek"
+            or "boomplay";
     }
 
     private UnauthorizedObjectResult? EnsureAccess()

@@ -7422,6 +7422,47 @@ WHERE source = @source AND source_id = @sourceId;";
         return await QueryPlaylistWatchTrackSourceIdsAsync(sql, source, sourceId, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<PlaylistWatchTrackStatusDto>> GetPlaylistWatchTrackStatusesAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return Array.Empty<PlaylistWatchTrackStatusDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT track_source_id,
+       status,
+       COALESCE(created_at, '') AS updated_at
+FROM playlist_watch_track
+WHERE source = @source AND source_id = @sourceId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var statuses = new List<PlaylistWatchTrackStatusDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var trackSourceId = await reader.IsDBNullAsync(0, cancellationToken) ? string.Empty : reader.GetString(0);
+            if (string.IsNullOrWhiteSpace(trackSourceId))
+            {
+                continue;
+            }
+
+            var status = await reader.IsDBNullAsync(1, cancellationToken) ? string.Empty : reader.GetString(1);
+            var updatedAtText = await reader.IsDBNullAsync(2, cancellationToken) ? string.Empty : reader.GetString(2);
+            var updatedAt = string.IsNullOrWhiteSpace(updatedAtText)
+                ? DateTimeOffset.MinValue
+                : ParseDateTimeOffsetInvariant(updatedAtText);
+            statuses.Add(new PlaylistWatchTrackStatusDto(trackSourceId, status, updatedAt));
+        }
+
+        return statuses;
+    }
+
     public async Task<HashSet<string>> GetPlaylistWatchIgnoredTrackIdsBySourceAsync(
         string source,
         CancellationToken cancellationToken = default)

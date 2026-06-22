@@ -15,8 +15,8 @@ public sealed class BoomplayDeezerMatchConsolidationTests
         var matchService = ReadSource("DeezSpoTag.Web", "Services", "BoomplayDeezerMatchService.cs");
         var tracklistView = ReadSource("DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml");
 
-        Assert.Contains("BoomplayDeezerMatchService _boomplayDeezerMatchService", boomplayController, StringComparison.Ordinal);
-        Assert.Contains("_boomplayDeezerMatchService.ResolveTrackAsync", boomplayController, StringComparison.Ordinal);
+        Assert.DoesNotContain("BoomplayDeezerMatchService _boomplayDeezerMatchService", boomplayController, StringComparison.Ordinal);
+        Assert.DoesNotContain("_boomplayDeezerMatchService.ResolveTrackAsync", boomplayController, StringComparison.Ordinal);
         Assert.Contains("BoomplayDeezerMatchService _boomplayDeezerMatchService", resolveController, StringComparison.Ordinal);
         Assert.Contains("_boomplayDeezerMatchService.ResolveAsync", resolveController, StringComparison.Ordinal);
 
@@ -31,6 +31,8 @@ public sealed class BoomplayDeezerMatchConsolidationTests
         Assert.DoesNotContain("DeezerResolvedMetadata", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildDeezerResolutionCacheKey", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("playlist/tracks/stream", boomplayController, StringComparison.Ordinal);
+        Assert.DoesNotContain("playlist/metadata", boomplayController, StringComparison.Ordinal);
+        Assert.DoesNotContain("playlist/tracks", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("playlist/tracks/stream", tracklistView, StringComparison.Ordinal);
         Assert.DoesNotContain("loadBoomplayPlaylistTracksStream", tracklistView, StringComparison.Ordinal);
         Assert.DoesNotContain("EventSource", tracklistView, StringComparison.Ordinal);

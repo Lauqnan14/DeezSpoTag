@@ -170,6 +170,66 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(new { watching });
     }
 
+    [HttpGet("snapshot/{source}/{sourceId}")]
+    public async Task<IActionResult> GetSnapshotTracklist(string source, string sourceId, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            return BadRequest("Playlist source id is required.");
+        }
+
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
+        var normalizedSourceId = sourceId.Trim();
+        var playlist = (await _repository.GetPlaylistWatchlistAsync(cancellationToken))
+            .FirstOrDefault(item =>
+                string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.SourceId, normalizedSourceId, StringComparison.Ordinal));
+        if (playlist is null)
+        {
+            return Ok(new { available = false });
+        }
+
+        playlist = HydratePlaylistVisual(playlist);
+        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, normalizedSourceId, cancellationToken);
+        var candidates = DeserializeCachedPlaylistCandidates(cache?.CandidatesJson);
+        var statusByTrackId = (await _repository.GetPlaylistWatchTrackStatusesAsync(normalizedSource, normalizedSourceId, cancellationToken))
+            .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
+            .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.OrderByDescending(item => item.UpdatedAt).First(),
+                StringComparer.OrdinalIgnoreCase);
+        var tracklist = new
+        {
+            id = playlist.SourceId,
+            title = playlist.Name,
+            description = playlist.Description ?? string.Empty,
+            creator = new { name = playlist.Source },
+            picture = playlist.ImageUrl ?? string.Empty,
+            picture_big = playlist.ImageUrl ?? string.Empty,
+            picture_xl = playlist.ImageUrl ?? string.Empty,
+            nb_tracks = playlist.TrackCount ?? candidates.Count,
+            tracks = candidates.Select((candidate, index) =>
+                MapCachedPlaylistTrack(normalizedSource, candidate, index, statusByTrackId)).ToList()
+        };
+
+        return Ok(new
+        {
+            available = true,
+            source = playlist.Source,
+            sourceId = playlist.SourceId,
+            tracklist,
+            lastCheckedUtc = playlist.LastCheckedUtc,
+            lastRunStatus = playlist.LastRunStatus,
+            lastRunMessage = playlist.LastRunMessage
+        });
+    }
+
     public sealed record PlaylistWatchlistRequest(string Source, string SourceId, string Name, string? ImageUrl, string? Description, int? TrackCount);
     public sealed record PlaylistWatchlistPriorityRequest(string Source, string SourceId);
 
@@ -1329,6 +1389,106 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string Status,
         string Label,
         string Detail);
+
+    private static IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> DeserializeCachedPlaylistCandidates(string? candidatesJson)
+    {
+        if (string.IsNullOrWhiteSpace(candidatesJson))
+        {
+            return Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+        }
+
+        try
+        {
+            var candidates = JsonSerializer.Deserialize<List<PlaylistWatchService.PlaylistTrackCandidate>>(candidatesJson);
+            return candidates ?? (IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>)Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+        }
+    }
+
+    private static object MapCachedPlaylistTrack(
+        string source,
+        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        int index,
+        IReadOnlyDictionary<string, PlaylistWatchTrackStatusDto> statusByTrackId)
+    {
+        var trackSourceId = candidate.TrackSourceId ?? string.Empty;
+        statusByTrackId.TryGetValue(trackSourceId, out var watchStatus);
+        var locationStatus = ResolveCachedTrackLocationStatus(watchStatus?.Status);
+        var sourceUrl = BuildSourceTrackUrl(source, trackSourceId);
+        return new
+        {
+            id = trackSourceId,
+            sourceTrackId = trackSourceId,
+            title = candidate.Title,
+            artist = candidate.Artist,
+            artists = candidate.Artist,
+            album = new
+            {
+                title = candidate.Album,
+                cover_medium = candidate.CoverUrl ?? string.Empty
+            },
+            isrc = candidate.Isrc ?? string.Empty,
+            durationMs = candidate.DurationMs ?? 0,
+            explicit_lyrics = candidate.Explicit == true,
+            genres = candidate.Genres,
+            track_position = index + 1,
+            link = sourceUrl,
+            sourceUrl,
+            spotifyId = string.Equals(source, "spotify", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            appleId = string.Equals(source, "apple", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            tidalId = string.Equals(source, "tidal", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            qobuzId = string.Equals(source, "qobuz", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            amazonId = string.Equals(source, "amazon", StringComparison.OrdinalIgnoreCase) || string.Equals(source, "amazonmusic", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            deezerId = string.Equals(source, "deezer", StringComparison.OrdinalIgnoreCase) ? trackSourceId : string.Empty,
+            locationStatus = new
+            {
+                status = locationStatus.Status,
+                label = locationStatus.Label,
+                detail = locationStatus.Detail
+            },
+            watchStatus = watchStatus?.Status ?? string.Empty
+        };
+    }
+
+    private static PlaylistTrackLocationStatus ResolveCachedTrackLocationStatus(string? status)
+    {
+        var normalized = NormalizeStatusText(status);
+        if (normalized is "completed" or "complete")
+        {
+            return new PlaylistTrackLocationStatus("library", "Library", "Downloaded and synced by the monitored playlist state.");
+        }
+
+        var queueState = ResolveQueueLocationStatus(normalized);
+        if (queueState != null)
+        {
+            return queueState;
+        }
+
+        return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");
+    }
+
+    private static string BuildSourceTrackUrl(string source, string trackSourceId)
+    {
+        if (string.IsNullOrWhiteSpace(trackSourceId))
+        {
+            return string.Empty;
+        }
+
+        var escaped = Uri.EscapeDataString(trackSourceId);
+        return source.Trim().ToLowerInvariant() switch
+        {
+            "deezer" => $"https://www.deezer.com/track/{escaped}",
+            "spotify" => $"https://open.spotify.com/track/{escaped}",
+            "tidal" => $"https://tidal.com/track/{escaped}",
+            "qobuz" => $"https://www.qobuz.com/track/{escaped}",
+            "apple" => $"https://music.apple.com/song/{escaped}",
+            "boomplay" => $"https://www.boomplay.com/songs/{escaped}",
+            _ => string.Empty
+        };
+    }
 
     public sealed record PlaylistWatchIgnoreRequest(string TrackSourceId, string? Isrc);
 

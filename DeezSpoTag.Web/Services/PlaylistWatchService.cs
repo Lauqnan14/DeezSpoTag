@@ -186,7 +186,8 @@ public sealed class PlaylistWatchService
         int? ReleaseYear,
         int? DurationMs,
         bool? Explicit,
-        IReadOnlyList<string> Genres);
+        IReadOnlyList<string> Genres,
+        string? CoverUrl = null);
 
     private sealed record LivePlaylistSnapshot(
         IReadOnlyList<PlaylistTrackCandidate> Candidates,
@@ -1552,7 +1553,7 @@ public sealed class PlaylistWatchService
 
         var playlist = string.Equals(sourceId, "trending-songs", StringComparison.OrdinalIgnoreCase)
             ? await _boomplayMetadataService.GetTrendingSongsAsync(includeTracks: false, cancellationToken)
-            : await _boomplayMetadataService.GetPlaylistAsync(sourceId, includeTracks: false, cancellationToken);
+            : await _boomplayMetadataService.GetPlaylistAsync(sourceId, cancellationToken);
         if (playlist == null)
         {
             return new LivePlaylistSnapshotMetadata();
@@ -1831,7 +1832,8 @@ public sealed class PlaylistWatchService
                     track.ReleaseDate,
                     track.DurationMs,
                     track.Explicit,
-                    track.Genres));
+                    track.Genres,
+                    track.ImageUrl));
             if (candidates.Count >= maxCandidates)
             {
                 return !page.HasMore
@@ -1868,7 +1870,8 @@ public sealed class PlaylistWatchService
                     track.ReleaseDate,
                     track.DurationMs,
                     track.Explicit,
-                    track.Genres));
+                    track.Genres,
+                    track.ImageUrl));
         }
     }
 
@@ -1935,7 +1938,8 @@ public sealed class PlaylistWatchService
             releaseYear,
             seed.DurationMs,
             seed.ExplicitFlag,
-            NormalizeGenres(seed.Genres)));
+            NormalizeGenres(seed.Genres),
+            EmptyToNull(seed.CoverUrl)));
     }
 
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetDeezerTrackCandidatesAsync(
@@ -1975,7 +1979,8 @@ public sealed class PlaylistWatchService
                 ParseFirstYear(track.PhysicalReleaseDate, track.DigitalReleaseDate),
                 track.Duration > 0 ? track.Duration * 1000 : null,
                 track.ExplicitLyrics,
-                Array.Empty<string>()));
+                Array.Empty<string>(),
+                EmptyToNull(BuildDeezerCoverUrl(track.AlbPicture))));
         }
 
         return candidates;
@@ -1990,7 +1995,8 @@ public sealed class PlaylistWatchService
         string? ReleaseDate,
         int? DurationMs,
         bool? ExplicitFlag,
-        IReadOnlyList<string>? Genres);
+        IReadOnlyList<string>? Genres,
+        string? CoverUrl = null);
 
     private async Task<LivePlaylistSnapshot> GetSmartTracklistSnapshotAsync(
         string sourceId,
@@ -2282,7 +2288,8 @@ public sealed class PlaylistWatchService
                 ParseFirstYear(track.Intent.ReleaseDate),
                 track.Intent.DurationMs > 0 ? track.Intent.DurationMs : null,
                 track.Intent.Explicit,
-                NormalizeGenres(track.Intent.Genres)));
+                NormalizeGenres(track.Intent.Genres),
+                EmptyToNull(track.Intent.Cover)));
         }
 
         return candidates;
@@ -2565,7 +2572,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         BoomplayPlaylistMetadata? playlist = string.Equals(playlistId, "trending-songs", StringComparison.OrdinalIgnoreCase)
             ? await _boomplayMetadataService.GetTrendingSongsAsync(includeTracks: false, cancellationToken)
-            : await _boomplayMetadataService.GetPlaylistAsync(playlistId, includeTracks: false, cancellationToken);
+            : await _boomplayMetadataService.GetPlaylistAsync(playlistId, cancellationToken);
 
         if (playlist == null)
         {

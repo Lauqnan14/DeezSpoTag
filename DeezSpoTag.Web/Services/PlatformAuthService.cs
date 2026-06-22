@@ -16,6 +16,7 @@ public class PlatformAuthState
     public QobuzAuth? Qobuz { get; set; }
     public TidalAuth? Tidal { get; set; }
     public SoulseekAuth? Soulseek { get; set; }
+    public BoomplayAuth? Boomplay { get; set; }
 }
 
 public class SpotifyConfig
@@ -131,11 +132,22 @@ public class SoulseekAuth
     public DateTimeOffset? CheckedAt { get; set; }
 }
 
+public class BoomplayAuth
+{
+    public string? Cookie { get; set; }
+    public string? UserAgent { get; set; }
+    public string? DisplayName { get; set; }
+    public bool? SessionValid { get; set; }
+    public string? LastStatus { get; set; }
+    public DateTimeOffset? SavedAt { get; set; }
+}
+
 public class PlatformAuthService
 {
     private const string QobuzProtectionPurpose = "DeezSpoTag.PlatformAuth.Qobuz";
     private const string TidalProtectionPurpose = "DeezSpoTag.PlatformAuth.Tidal";
     private const string SoulseekProtectionPurpose = "DeezSpoTag.PlatformAuth.Soulseek";
+    private const string BoomplayProtectionPurpose = "DeezSpoTag.PlatformAuth.Boomplay";
     private const string SpotifyFileName = "spotify.json";
     private const string DiscogsFileName = "discogs.json";
     private const string LastFmFileName = "lastfm.json";
@@ -146,6 +158,7 @@ public class PlatformAuthService
     private const string QobuzFileName = "qobuz.json";
     private const string TidalFileName = "tidal.json";
     private const string SoulseekFileName = "soulseek.json";
+    private const string BoomplayFileName = "boomplay.json";
     private const string LegacyAggregateFileName = "platform-auth.json";
     private const string AutotagDirectory = "autotag";
     private const string MissingStatus = "missing";
@@ -161,6 +174,7 @@ public class PlatformAuthService
     private readonly ProtectedCredentialFileStore _qobuzCredentialStore;
     private readonly ProtectedCredentialFileStore _tidalCredentialStore;
     private readonly ProtectedCredentialFileStore _soulseekCredentialStore;
+    private readonly ProtectedCredentialFileStore _boomplayCredentialStore;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly object _statusLock = new();
     private string? _lastStatusSignature;
@@ -173,7 +187,8 @@ public class PlatformAuthService
         bool BpmSupremeConfigured,
         bool PlexConfigured,
         bool JellyfinConfigured,
-        bool AppleConfigured);
+        bool AppleConfigured,
+        bool BoomplayConfigured);
     private readonly record struct AuthStatusLogFields(
         string SpotifyAccount,
         string SpotifyBlob,
@@ -182,7 +197,8 @@ public class PlatformAuthService
         string BpmSupreme,
         string Plex,
         string Jellyfin,
-        string AppleMusic);
+        string AppleMusic,
+        string Boomplay);
     private static readonly string[] PlatformFileNames =
     {
         SpotifyFileName,
@@ -194,7 +210,8 @@ public class PlatformAuthService
         AppleMusicFileName,
         QobuzFileName,
         TidalFileName,
-        SoulseekFileName
+        SoulseekFileName,
+        BoomplayFileName
     };
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -224,6 +241,9 @@ public class PlatformAuthService
         _soulseekCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             SoulseekProtectionPurpose);
+        _boomplayCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            BoomplayProtectionPurpose);
     }
 
     public async Task<PlatformAuthState> LoadAsync()
@@ -295,6 +315,7 @@ public class PlatformAuthService
         await SaveQobuzNoLockAsync(state.Qobuz);
         await SaveTidalNoLockAsync(state.Tidal);
         await SaveSoulseekNoLockAsync(state.Soulseek);
+        await SaveBoomplayNoLockAsync(state.Boomplay);
         TryRetireLegacyAggregateStateNoLock();
         LogAuthStatus(state);
     }
@@ -314,7 +335,8 @@ public class PlatformAuthService
             AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
             Qobuz = await LoadQobuzNoLockAsync(),
             Tidal = await LoadTidalNoLockAsync(),
-            Soulseek = await LoadSoulseekNoLockAsync()
+            Soulseek = await LoadSoulseekNoLockAsync(),
+            Boomplay = await LoadBoomplayNoLockAsync()
         };
 
         if (NormalizeSpotifyBlobPaths(state))
@@ -452,6 +474,44 @@ public class PlatformAuthService
 
         await _soulseekCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
         HardenCredentialFilePermissions(path, "Soulseek");
+    }
+
+    private async Task<BoomplayAuth?> LoadBoomplayNoLockAsync()
+    {
+        var path = GetPlatformFilePath(BoomplayFileName);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var json = await _boomplayCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "Boomplay");
+            return string.IsNullOrWhiteSpace(json)
+                ? null
+                : JsonSerializer.Deserialize<BoomplayAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load protected Boomplay auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    private async Task SaveBoomplayNoLockAsync(BoomplayAuth? auth)
+    {
+        var path = GetPlatformFilePath(BoomplayFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        await _boomplayCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "Boomplay");
     }
 
     private void HardenQobuzCredentialFilePermissions(string path)
@@ -686,7 +746,7 @@ public class PlatformAuthService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic}",
+                "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic} Boomplay={Boomplay}",
                 logFields.SpotifyAccount,
                 logFields.SpotifyBlob,
                 logFields.Discogs,
@@ -694,7 +754,8 @@ public class PlatformAuthService
                 logFields.BpmSupreme,
                 logFields.Plex,
                 logFields.Jellyfin,
-                logFields.AppleMusic);
+                logFields.AppleMusic,
+                logFields.Boomplay);
         }
     }
 
@@ -714,7 +775,8 @@ public class PlatformAuthService
             IsBpmSupremeConfigured(state.BpmSupreme),
             IsPlexConfigured(state.Plex),
             IsJellyfinConfigured(state.Jellyfin),
-            state.AppleMusic?.WrapperReady == true);
+            state.AppleMusic?.WrapperReady == true,
+            IsBoomplayConfigured(state.Boomplay));
     }
 
     private static string BuildAuthStatusSignature(AuthStatusSnapshot snapshot)
@@ -728,7 +790,8 @@ public class PlatformAuthService
             $"BpmSupreme:{(snapshot.BpmSupremeConfigured ? PresentStatus : MissingStatus)}|" +
             $"Plex:{(snapshot.PlexConfigured ? PresentStatus : MissingStatus)}|" +
             $"Jellyfin:{(snapshot.JellyfinConfigured ? PresentStatus : MissingStatus)}|" +
-            $"AppleMusic:{(snapshot.AppleConfigured ? "ready" : MissingStatus)}";
+            $"AppleMusic:{(snapshot.AppleConfigured ? "ready" : MissingStatus)}|" +
+            $"Boomplay:{(snapshot.BoomplayConfigured ? PresentStatus : MissingStatus)}";
     }
 
     private static AuthStatusLogFields BuildAuthStatusLogFields(AuthStatusSnapshot snapshot)
@@ -741,7 +804,8 @@ public class PlatformAuthService
             BpmSupreme: ResolveStatus(snapshot.BpmSupremeConfigured),
             Plex: ResolveStatus(snapshot.PlexConfigured),
             Jellyfin: ResolveStatus(snapshot.JellyfinConfigured),
-            AppleMusic: snapshot.AppleConfigured ? "ready" : MissingStatus);
+            AppleMusic: snapshot.AppleConfigured ? "ready" : MissingStatus,
+            Boomplay: ResolveStatus(snapshot.BoomplayConfigured));
     }
 
     private static string ResolveStatus(string? value)
@@ -780,6 +844,12 @@ public class PlatformAuthService
         return jellyfin != null
                && !string.IsNullOrWhiteSpace(jellyfin.ApiKey)
                && !string.IsNullOrWhiteSpace(jellyfin.Url);
+    }
+
+    private static bool IsBoomplayConfigured(BoomplayAuth? boomplay)
+    {
+        return boomplay != null
+               && !string.IsNullOrWhiteSpace(boomplay.Cookie);
     }
 
     private bool NormalizeSpotifyBlobPaths(PlatformAuthState state)

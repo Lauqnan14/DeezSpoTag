@@ -1976,6 +1976,12 @@ globalThis.DeezSpoTag = {
             platformStates,
             'jellyfin',
             'credentials');
+        this.applySimpleCredentialState(
+            authData.boomplay?.connected === true || authData.boomplay?.cookieSaved === true,
+            connected,
+            platformStates,
+            'boomplay',
+            'session');
     },
 
     applyStreamingPlatformStatus(authData, connected, platformStates) {

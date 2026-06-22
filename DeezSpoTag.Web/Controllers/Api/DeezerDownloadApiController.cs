@@ -1078,7 +1078,7 @@ namespace DeezSpoTag.Web.Controllers.Api
 
         private async Task<List<DownloadIntent>> ExpandBoomplayPlaylistAsync(string id, CancellationToken cancellationToken)
         {
-            var playlist = await _boomplayMetadataService.GetPlaylistAsync(id, includeTracks: true, cancellationToken);
+            var playlist = await _boomplayMetadataService.GetPlaylistAsync(id, cancellationToken);
             if (playlist == null)
             {
                 return new List<DownloadIntent>();

@@ -8,18 +8,22 @@
     var initialQobuzAuth = initialPlatformAuthState.Qobuz;
     var initialTidalAuth = initialPlatformAuthState.Tidal;
     var initialSoulseekAuth = initialPlatformAuthState.Soulseek;
+    var initialBoomplayAuth = initialPlatformAuthState.Boomplay;
     var initialQobuzConnected =
         (!string.IsNullOrWhiteSpace(initialQobuzAuth?.AppSecret) || !string.IsNullOrWhiteSpace(initialQobuzAuth?.DownloadSecret))
         && !string.IsNullOrWhiteSpace(initialQobuzAuth?.AuthToken)
         && initialQobuzAuth.AuthTokenValid != false;
     var initialTidalConnected = initialTidalAuth?.CredentialsValid == true;
     var initialSoulseekConnected = initialSoulseekAuth?.ConnectionValid == true;
+    var initialBoomplayConnected = !string.IsNullOrWhiteSpace(initialBoomplayAuth?.Cookie) && initialBoomplayAuth?.SessionValid != false;
     var initialQobuzName = ResolveDisplayName(initialQobuzAuth?.DisplayName, "Official Qobuz API");
     var initialQobuzStatus = ResolveInitialQobuzStatus(initialQobuzAuth, initialQobuzConnected);
     var initialTidalName = ResolveTidalName(initialTidalAuth?.UserId);
     var initialTidalStatus = ResolveInitialTidalStatus(initialTidalAuth, initialTidalConnected);
     var initialSoulseekName = ResolveDisplayName(initialSoulseekAuth?.Username, "slskd");
     var initialSoulseekStatus = ResolveInitialSoulseekStatus(initialSoulseekAuth, initialSoulseekConnected);
+    var initialBoomplayName = ResolveDisplayName(initialBoomplayAuth?.DisplayName, "Boomplay session");
+    var initialBoomplayStatus = ResolveInitialBoomplayStatus(initialBoomplayAuth, initialBoomplayConnected);
 
     static string ResolveDisplayName(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value;
@@ -46,6 +50,16 @@
         }
 
         return string.IsNullOrWhiteSpace(auth?.LastError) ? "Soulseek is not configured" : auth.LastError;
+    }
+
+    static string ResolveInitialBoomplayStatus(BoomplayAuth? auth, bool connected)
+    {
+        if (connected)
+        {
+            return "Boomplay session saved";
+        }
+
+        return string.IsNullOrWhiteSpace(auth?.LastStatus) ? "Boomplay is not configured" : auth.LastStatus;
     }
 
     static string ResolveInitialQobuzStatus(QobuzAuth? auth, bool connected)
@@ -117,6 +131,11 @@
         <li class="nav-item">
             <button class="nav-link" id="bpmsupreme-login-tab" data-login-target="bpmsupreme-login" type="button" role="tab" aria-selected="false">
                 <img src="/images/icons/bpmsupreme.png" alt="BPM Supreme" class="platform-icon" />BPM Supreme
+            </button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" id="boomplay-login-tab" data-login-target="boomplay-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/boomplay.png" alt="Boomplay" class="platform-icon" />Boomplay
             </button>
         </li>
         <li class="nav-item">
@@ -465,6 +484,34 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "bpmLoggedInInfo", ImageId = "bpmLoggedInPicture", ImageAlt = "BPM Supreme Profile", ButtonId = "bpmDisconnectBtn", NameId = "bpmLoggedInName", NameFallback = "BPM Supreme account" })
+            </div>
+        </div>
+
+        <div class="tab-pane" id="boomplay-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">music_video</i>Boomplay Session
+                </h3>
+                <div id="boomplayLoginFormSection" class="@(initialBoomplayConnected ? "hidden" : "")">
+                    <p class="text-muted">Save a logged-in Boomplay browser session for playlist access.</p>
+                    <form id="boomplayLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Cookie</span>
+                            <input type="password" id="boomplayCookie" placeholder="Boomplay Cookie header" class="w-full" autocomplete="off" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">User Agent</span>
+                            <input type="text" id="boomplayUserAgent" value="@(initialBoomplayAuth?.UserAgent ?? "")" placeholder="Leave blank to use the app default" class="w-full" autocomplete="off" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Label</span>
+                            <input type="text" id="boomplayDisplayName" value="@(initialBoomplayAuth?.DisplayName ?? "")" placeholder="Boomplay session" class="w-full" autocomplete="off" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Save</button>
+                        <p class="text-muted" id="boomplayStatus">@(!initialBoomplayConnected ? initialBoomplayStatus : "")</p>
+                    </form>
+                </div>
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "boomplayLoggedInInfo", ImageAlt = "Boomplay", ImageSrc = "/images/icons/boomplay.png", ImageCssClass = "h-20 w-20", ButtonId = "boomplayDisconnectBtn", NameId = "boomplayLoggedInName", NameFallback = initialBoomplayName, DetailId = "boomplayLoggedInStatus", DetailText = initialBoomplayStatus, WrapperCssClass = initialBoomplayConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
             </div>
         </div>
 
@@ -1530,6 +1577,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 return connected;
             },
             clear: () => clearSoulseekInputs()
+        },
+        boomplay: {
+            matches: '/boomplay',
+            render: (data, payload, isConnected, statusElementId) => {
+                const connected = data?.connected === true;
+                renderBoomplayInfo(data || {});
+                setBoomplayFormStatus(data || {}, statusElementId);
+                return connected;
+            },
+            clear: () => clearBoomplayInputs()
         }
     };
 
@@ -1737,6 +1794,19 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     bindPlatformDisconnect('soulseekDisconnectBtn', '/api/platform-auth/soulseek/disconnect', 'soulseekStatus');
+
+    const boomplayForm = document.getElementById('boomplayLoginForm');
+    if (boomplayForm) {
+        boomplayForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            await savePlatformAuth('/api/platform-auth/boomplay', {
+                cookie: document.getElementById('boomplayCookie').value.trim(),
+                userAgent: document.getElementById('boomplayUserAgent').value.trim(),
+                displayName: document.getElementById('boomplayDisplayName').value.trim()
+            }, 'boomplayStatus', true);
+        });
+    }
+    bindPlatformDisconnect('boomplayDisconnectBtn', '/api/platform-auth/boomplay/disconnect', 'boomplayStatus');
 
     const discogsForm = document.getElementById('discogsLoginForm');
     if (discogsForm) {
@@ -2205,6 +2275,16 @@ async function loadPlatformAuthState() {
             renderSoulseekInfo(data.soulseek);
             togglePlatformLoginState('soulseek', Boolean(data.soulseek.connected));
         }
+        if (data.boomplay) {
+            document.getElementById('boomplayCookie').placeholder = data.boomplay.cookieSaved
+                ? 'Saved - leave blank to keep current cookie'
+                : 'Boomplay Cookie header';
+            document.getElementById('boomplayUserAgent').value = data.boomplay.userAgent || '';
+            document.getElementById('boomplayDisplayName').value = data.boomplay.displayName || '';
+            setBoomplayFormStatus(data.boomplay, 'boomplayStatus');
+            renderBoomplayInfo(data.boomplay);
+            togglePlatformLoginState('boomplay', Boolean(data.boomplay.connected));
+        }
     } catch (error) {
         console.warn('Failed to load platform auth state', error);
     }
@@ -2507,6 +2587,11 @@ function clearSoulseekInputs() {
     clearElementText('soulseekStatus');
 }
 
+function clearBoomplayInputs() {
+    resetFormById('boomplayLoginForm');
+    clearElementText('boomplayStatus');
+}
+
 function clearDiscogsInputs() {
     resetFormById('discogsLoginForm');
 }
@@ -2802,6 +2887,19 @@ function renderSoulseekInfo(auth) {
     }
 }
 
+function renderBoomplayInfo(auth) {
+    const nameLabel = document.getElementById('boomplayLoggedInName');
+    const statusLabel = document.getElementById('boomplayLoggedInStatus');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.displayName || 'Boomplay session';
+    }
+    if (statusLabel) {
+        statusLabel.textContent = auth?.connected
+            ? 'Boomplay session saved'
+            : (auth?.status || 'Boomplay is not configured.');
+    }
+}
+
 function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {
     const statusLabel = document.getElementById(statusElementId);
     if (!statusLabel) {
@@ -2814,6 +2912,20 @@ function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {
     }
 
     statusLabel.textContent = auth?.message || (auth?.connected ? 'Connected' : 'Not connected');
+}
+
+function setBoomplayFormStatus(auth, statusElementId = 'boomplayStatus') {
+    const statusLabel = document.getElementById(statusElementId);
+    if (!statusLabel) {
+        return;
+    }
+
+    if (!auth?.configured) {
+        statusLabel.textContent = 'Not configured';
+        return;
+    }
+
+    statusLabel.textContent = auth?.connected ? 'Boomplay session saved' : (auth?.status || 'Not connected');
 }
 
 function showAppleMusic2fa(show = true) {
@@ -3912,6 +4024,8 @@ function getPlatformIcon(platform) {
             return '/images/icons/shazam.png';
         case 'soulseek':
             return '/images/icons/soulseek.png';
+        case 'boomplay':
+            return '/images/icons/boomplay.png';
         default:
             return '/images/icons/deezer.png';
     }
@@ -4040,6 +4154,15 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
                 setSoulseekFormStatus(info || {}, elementId);
                 return isConnected;
             }
+        },
+        boomplay: {
+            matches: '/boomplay',
+            render: (info, rawPayload, connected, elementId) => {
+                const isConnected = info?.connected === true;
+                renderBoomplayInfo(info || {});
+                setBoomplayFormStatus(info || {}, elementId);
+                return isConnected;
+            }
         }
     };
 
@@ -4059,6 +4182,7 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         platform === 'appleMusic' ? data?.appleMusic || payload :
         platform === 'qobuz' ? data?.qobuz || payload :
         platform === 'tidal' ? data?.tidal || payload :
+        platform === 'boomplay' ? data?.boomplay || payload :
         data?.soulseek || payload;
     const effectiveConnected = binding.render(payloadForRender, payload, isConnected, statusElementId) ?? isConnected;
     togglePlatformLoginState(platform, effectiveConnected);

@@ -255,8 +255,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("Math.Min(100, maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("GetBoomplayPlaylistWatchDataAsync", source, StringComparison.Ordinal);
-        Assert.Contains("GetPlaylistAsync(playlistId, includeTracks: false, cancellationToken)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetPlaylistAsync(playlistId, includeTracks: true, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("GetPlaylistAsync(playlistId, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPlaylistAsync(playlistId, includeTracks:", source, StringComparison.Ordinal);
         Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
         Assert.Contains("HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson)", source, StringComparison.Ordinal);
         Assert.Contains("if (forceMediaServerSync)", source, StringComparison.Ordinal);

@@ -650,6 +650,11 @@ public sealed record PlaylistTrackCandidateCacheDto(
     string CandidatesJson,
     DateTimeOffset UpdatedAt);
 
+public sealed record PlaylistWatchTrackStatusDto(
+    string TrackSourceId,
+    string Status,
+    DateTimeOffset UpdatedAt);
+
 public sealed record PlaylistWatchTrackInsert(string TrackSourceId, string? Isrc);
 
 public sealed record PlaylistWatchDownloadClaimDto(
