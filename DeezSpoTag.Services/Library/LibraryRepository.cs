@@ -863,15 +863,25 @@ VALUES (@timestampUtc, @level, @message);";
     {
         await EnsureScanRowAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await SetForeignKeysAsync(connection, enabled: false, cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var artistsRemoved = await CountRowsAsync(connection, transaction, ArtistType, cancellationToken);
+            var albumsRemoved = await CountRowsAsync(connection, transaction, AlbumType, cancellationToken);
+            var tracksRemoved = await CountRowsAsync(connection, transaction, TrackType, cancellationToken);
 
-        var artistsRemoved = await CountRowsAsync(connection, transaction, ArtistType, cancellationToken);
-        var albumsRemoved = await CountRowsAsync(connection, transaction, AlbumType, cancellationToken);
-        var tracksRemoved = await CountRowsAsync(connection, transaction, TrackType, cancellationToken);
-
-        const string sql = @"
+            const string sql = @"
+DELETE FROM track_analysis;
+DELETE FROM track_genre;
 DELETE FROM track_local;
+DELETE FROM track_mood;
+DELETE FROM track_other_tag;
+DELETE FROM track_plex_metadata;
+DELETE FROM track_remixer;
+DELETE FROM track_shazam_cache;
 DELETE FROM album_local;
+DELETE FROM track_style;
 DELETE FROM audio_file;
 DELETE FROM track_source;
 DELETE FROM album_source;
@@ -881,9 +891,6 @@ DELETE FROM album;
 DELETE FROM artist;
 DELETE FROM match_candidate;
 DELETE FROM scan_job;
-DELETE FROM library_log;
-DELETE FROM artist_page_cache;
-DELETE FROM artist_page_genre;
 UPDATE library_scan_state
 SET last_run_utc = NULL,
     artist_count = 0,
@@ -892,10 +899,20 @@ SET last_run_utc = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = 1;";
 
-        await using var command = new SqliteCommand(sql, connection, transaction);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-        return new LibraryClearResultDto(artistsRemoved, albumsRemoved, tracksRemoved);
+            await using var command = new SqliteCommand(sql, connection, transaction);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new LibraryClearResultDto(artistsRemoved, albumsRemoved, tracksRemoved);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+        finally
+        {
+            await SetForeignKeysAsync(connection, enabled: true, cancellationToken);
+        }
     }
 
     public async Task<LibraryClearResultDto> ClearFolderLocalContentAsync(long folderId, CancellationToken cancellationToken = default)
@@ -1017,9 +1034,13 @@ WHERE folder_id = @folderId;";
         CancellationToken cancellationToken)
     {
         const string selectSql = @"
-SELECT id, path
-FROM audio_file
-WHERE @folderId IS NULL OR folder_id = @folderId;";
+SELECT af.id,
+       af.path,
+       af.relative_path,
+       f.root_path
+FROM audio_file af
+JOIN folder f ON f.id = af.folder_id
+WHERE @folderId IS NULL OR af.folder_id = @folderId;";
         await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
         selectCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
@@ -1190,7 +1211,10 @@ WHERE af.folder_id = @folderId;";
 
     private static async Task<bool> AudioFileExistsAsync(SqliteDataReader reader, CancellationToken cancellationToken)
     {
-        var path = await reader.IsDBNullAsync(1, cancellationToken) ? string.Empty : reader.GetString(1);
+        var path = BuildAbsolutePath(
+            await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
+            await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+            await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1));
         if (string.IsNullOrWhiteSpace(path))
         {
             return false;
@@ -1250,6 +1274,16 @@ WHERE id IN (SELECT id FROM missing_audio_file);";
         CancellationToken cancellationToken)
     {
         await using var command = new SqliteCommand(sql, connection, transaction);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task SetForeignKeysAsync(
+        SqliteConnection connection,
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        var sql = enabled ? "PRAGMA foreign_keys=ON;" : "PRAGMA foreign_keys=OFF;";
+        await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -10530,6 +10564,7 @@ ON CONFLICT DO NOTHING;";
     private static async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         const string pragmas = @"
+PRAGMA foreign_keys=ON;
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 PRAGMA busy_timeout=30000;";

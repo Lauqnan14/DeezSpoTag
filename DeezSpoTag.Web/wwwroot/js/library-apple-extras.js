@@ -1194,44 +1194,30 @@ async function cleanupMissingLibraryFiles() {
 }
 
 async function clearLibraryData() {
-    const selectedFolder = getSelectedLibraryViewFolder();
-    const selectedFolderId = selectedFolder ? Number(selectedFolder.id) : null;
-    const scopeLabel = selectedFolder?.displayName || 'Library';
     try {
-        const confirmed = await confirmClearLibraryData(selectedFolder, scopeLabel);
+        const confirmed = await confirmClearLibraryData();
         if (!confirmed) {
             return;
         }
-        showToast(selectedFolder ? `Clearing ${scopeLabel} metadata...` : 'Clearing library metadata...');
+        showToast('Clearing library metadata...');
         const clearButton = document.getElementById('clearLibrary');
         if (clearButton instanceof HTMLButtonElement) {
             clearButton.disabled = true;
         }
-        const params = new URLSearchParams();
-        if (selectedFolderId !== null) {
-            params.set('folderId', String(selectedFolderId));
-        }
-        const suffix = params.toString();
-        const url = suffix
-            ? `/api/library/maintenance/clear?${suffix}`
-            : '/api/library/maintenance/clear';
-        const result = await fetchJson(url, { method: 'POST' });
+        const result = await fetchJson('/api/library/maintenance/clear', { method: 'POST' });
         if (result?.ok === false) {
             showToast('Library DB not configured.', true);
             return;
         }
         const counts = getClearLibraryCounts(result);
-        showToast(buildClearLibrarySummaryMessage(selectedFolder, scopeLabel, counts));
+        resetLibraryLandingAfterClear();
+        showToast(buildClearLibrarySummaryMessage(counts));
         if (globalThis.DeezSpoTag?.ui?.alert) {
             await DeezSpoTag.ui.alert(
-                buildClearLibraryAlertMessage(selectedFolder, scopeLabel, counts),
-                { title: selectedFolder ? `${scopeLabel} Cleared` : 'Library Cleared' }
+                buildClearLibraryAlertMessage(counts),
+                { title: 'Library Cleared' }
             );
         }
-        await Promise.all([loadLibraryScanStatus(), requestArtistRefresh({ force: true })]);
-        setTimeout(() => {
-            void runLocalScan(false, false);
-        }, 1200);
     } catch (error) {
         console.error('clearLibraryData error:', error);
         showToast(`Clear failed: ${error.message}`, true);
@@ -1243,19 +1229,49 @@ async function clearLibraryData() {
     }
 }
 
-function getClearLibraryConfirmMessage(selectedFolder, scopeLabel) {
-    return selectedFolder
-        ? `Clear indexed metadata only for ${scopeLabel}? Your music files will not be deleted.`
-        : 'Clear all library metadata? Your music files will not be deleted.';
+function resetLibraryLandingAfterClear() {
+    if (libraryState.artistLoadAbortController) {
+        libraryState.artistLoadAbortController.abort();
+        libraryState.artistLoadAbortController = null;
+    }
+    libraryState.artistLoadRequestId += 1;
+    libraryState.artistRefreshPromise = null;
+    libraryState.artistRefreshQueued = false;
+    libraryState.allArtists = [];
+    libraryState.filteredArtists = [];
+    libraryState.localArtistIndex.clear();
+    libraryState.artistFolderScopeId = null;
+    libraryState.artistLoadedScopeKey = '';
+    const viewSelect = document.getElementById('libraryViewSelect');
+    if (viewSelect) {
+        viewSelect.value = 'main';
+    }
+    setStoredLibraryViewSelection('main');
+    syncLibraryScopeInLocationBar('main');
+    updateLibraryResultsMeta(0, 0);
+    renderArtistGrid([]);
+    renderAlphaJumpNavigation(document.getElementById('libraryLetterNav'), new Map());
+    const artistCount = document.getElementById('libraryArtistCount');
+    const albumCount = document.getElementById('libraryAlbumCount');
+    const trackCount = document.getElementById('libraryTrackCount');
+    const lastScan = document.getElementById('libraryLastScan');
+    if (artistCount) artistCount.textContent = '0';
+    if (albumCount) albumCount.textContent = '0';
+    if (trackCount) trackCount.textContent = '0';
+    if (lastScan) lastScan.textContent = 'Library metadata cleared';
 }
 
-async function confirmClearLibraryData(selectedFolder, scopeLabel) {
-    const message = getClearLibraryConfirmMessage(selectedFolder, scopeLabel);
+function getClearLibraryConfirmMessage() {
+    return 'Clear all library metadata? Your music files will not be deleted.';
+}
+
+async function confirmClearLibraryData() {
+    const message = getClearLibraryConfirmMessage();
     try {
         if (globalThis.DeezSpoTag?.ui?.confirm) {
             return await DeezSpoTag.ui.confirm(message, {
-                title: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
-                okText: selectedFolder ? `Clear ${scopeLabel}` : 'Clear Library',
+                title: 'Clear Library',
+                okText: 'Clear Library',
                 cancelText: 'Cancel'
             });
         }
@@ -1274,17 +1290,11 @@ function getClearLibraryCounts(result) {
     };
 }
 
-function buildClearLibrarySummaryMessage(selectedFolder, scopeLabel, counts) {
-    if (selectedFolder) {
-        return `${scopeLabel} cleared: ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, ${counts.tracksRemoved.toLocaleString()} tracks removed.`;
-    }
+function buildClearLibrarySummaryMessage(counts) {
     return `Library cleared: ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, ${counts.tracksRemoved.toLocaleString()} tracks removed.`;
 }
 
-function buildClearLibraryAlertMessage(selectedFolder, scopeLabel, counts) {
-    if (selectedFolder) {
-        return `Removed ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, and ${counts.tracksRemoved.toLocaleString()} tracks from ${scopeLabel}.`;
-    }
+function buildClearLibraryAlertMessage(counts) {
     return `Removed ${counts.artistsRemoved.toLocaleString()} artists, ${counts.albumsRemoved.toLocaleString()} albums, and ${counts.tracksRemoved.toLocaleString()} tracks.`;
 }
 

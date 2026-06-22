@@ -1,5 +1,4 @@
 using DeezSpoTag.Services.Library;
-using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 
@@ -12,14 +11,10 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public class LibraryArtistsApiController : ControllerBase
 {
     private readonly LibraryRepository _repository;
-    private readonly DeezSpoTag.Web.Services.LibraryConfigStore _configStore;
 
-    public LibraryArtistsApiController(
-        LibraryRepository repository,
-        DeezSpoTag.Web.Services.LibraryConfigStore configStore)
+    public LibraryArtistsApiController(LibraryRepository repository)
     {
         _repository = repository;
-        _configStore = configStore;
     }
 
     [HttpGet]
@@ -34,15 +29,21 @@ public class LibraryArtistsApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            var localArtists = (await _configStore.GetLocalArtistsAsync()).Select(localArtist => new
+            if (page.HasValue || pageSize.HasValue)
             {
-                localArtist.Id,
-                localArtist.Name,
-                AvailableLocally = true,
-                PreferredImagePath = localArtist.ImagePath,
-                PreferredBackgroundPath = localArtist.BackgroundImagePath
-            });
-            return Ok(localArtists);
+                var safePage = Math.Max(1, page ?? 1);
+                var safePageSize = Math.Clamp(pageSize ?? 300, 1, 1000);
+                return Ok(new
+                {
+                    items = Array.Empty<ArtistDto>(),
+                    totalCount = 0,
+                    page = safePage,
+                    pageSize = safePageSize,
+                    hasMore = false
+                });
+            }
+
+            return Ok(Array.Empty<ArtistDto>());
         }
 
         if (page.HasValue || pageSize.HasValue)
@@ -77,8 +78,7 @@ public class LibraryArtistsApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            var localAlbums = await _configStore.GetLocalAlbumsAsync(id);
-            return Ok(localAlbums);
+            return Ok(Array.Empty<AlbumDto>());
         }
 
         var dbAlbums = await _repository.GetArtistAlbumsAsync(id, folderId, cancellationToken);
@@ -90,12 +90,7 @@ public class LibraryArtistsApiController : ControllerBase
     {
         if (!_repository.IsConfigured)
         {
-            var localArtist = (await _configStore.GetLocalArtistsAsync()).FirstOrDefault(item => item.Id == id);
-            if (localArtist is null)
-            {
-                return NotFound();
-            }
-            return Ok(new { localArtist.Id, localArtist.Name, PreferredImagePath = localArtist.ImagePath, PreferredBackgroundPath = localArtist.BackgroundImagePath });
+            return NotFound();
         }
 
         var dbArtist = await _repository.GetArtistAsync(id, cancellationToken);
