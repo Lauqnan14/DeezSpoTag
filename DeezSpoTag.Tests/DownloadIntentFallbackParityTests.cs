@@ -3,6 +3,7 @@ using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -83,6 +84,35 @@ public sealed class DownloadIntentFallbackParityTests
         Assert.Equal(sources, resolved);
     }
 
+    [Fact]
+    public void ResolveVisibleQueueEngine_UsesCustomOrderBeforeRecommendationSeedSource()
+    {
+        var settings = CreateCustomQobuzOnlySettings();
+        var intent = new DownloadIntent
+        {
+            PreferredEngine = "auto",
+            SourceService = "deezer",
+            SourceUrl = "https://www.deezer.com/track/123",
+            DeezerId = "123",
+            Title = "Seed Track",
+            Artist = "Seed Artist"
+        };
+
+        var engine = InvokeResolveVisibleQueueEngine(intent, settings, isPodcastIntent: false);
+
+        Assert.Equal("qobuz", engine);
+    }
+
+    [Fact]
+    public void ResolvePreferredQuality_UsesFirstEnabledCustomQuality()
+    {
+        var settings = CreateCustomQobuzOnlySettings();
+
+        var quality = InvokeResolvePreferredQuality(settings, "qobuz");
+
+        Assert.Equal("7", quality);
+    }
+
     private static DeezSpoTagSettings CreateAutoSettings()
     {
         return new DeezSpoTagSettings
@@ -96,6 +126,27 @@ public sealed class DownloadIntentFallbackParityTests
                 PreferredAudioProfile = "ALAC"
             }
         };
+    }
+
+    private static DeezSpoTagSettings CreateCustomQobuzOnlySettings()
+    {
+        var settings = CreateAutoSettings();
+        settings.QobuzQuality = "27";
+        settings.DownloadEngineOrder = DownloadEngineOrderSettings.CreateDefault();
+        settings.DownloadEngineOrder.Enabled = true;
+
+        var qobuz = settings.DownloadEngineOrder.Engines.Single(engine => engine.Engine == "qobuz");
+        foreach (var quality in qobuz.Qualities)
+        {
+            quality.Enabled = quality.Quality == "7" || quality.Quality == "6";
+        }
+
+        foreach (var engine in settings.DownloadEngineOrder.Engines.Where(engine => engine.Engine != "qobuz"))
+        {
+            engine.Enabled = false;
+        }
+
+        return settings;
     }
 
     private static List<string> InvokeBuildFallbackPlanSources(
@@ -139,5 +190,30 @@ public sealed class DownloadIntentFallbackParityTests
         var result = method!.Invoke(null, new object[] { sources, settings, allowCrossEngineFallback, engine, tracker });
         Assert.NotNull(result);
         return Assert.IsAssignableFrom<List<string>>(result);
+    }
+
+    private static string InvokeResolveVisibleQueueEngine(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        bool isPodcastIntent)
+    {
+        var method = typeof(DownloadIntentService).GetMethod(
+            "ResolveVisibleQueueEngine",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object[] { intent, settings, isPodcastIntent });
+        return Assert.IsType<string>(result);
+    }
+
+    private static string? InvokeResolvePreferredQuality(DeezSpoTagSettings settings, string engine)
+    {
+        var method = typeof(DownloadIntentService).GetMethod(
+            "ResolvePreferredQuality",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, new object[] { settings, engine });
+        return Assert.IsType<string>(result);
     }
 }

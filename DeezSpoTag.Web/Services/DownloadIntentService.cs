@@ -4930,6 +4930,20 @@ public sealed class DownloadIntentService
         }
 
         var normalized = engine.Trim().ToLowerInvariant();
+        if (settings.DownloadEngineOrder?.Enabled == true)
+        {
+            var configured = DownloadSourceOrder.ResolveEngineQualitySources(settings, normalized, requestedQuality: null, strict: false);
+            var firstConfiguredQuality = configured
+                .Select(DownloadSourceOrder.DecodeAutoSource)
+                .Where(source => string.Equals(source.Source, normalized, StringComparison.OrdinalIgnoreCase))
+                .Select(source => source.Quality)
+                .FirstOrDefault(quality => !string.IsNullOrWhiteSpace(quality));
+            if (!string.IsNullOrWhiteSpace(firstConfiguredQuality))
+            {
+                return firstConfiguredQuality;
+            }
+        }
+
         string? preferred = normalized switch
         {
             ApplePlatform => settings.AppleMusic?.PreferredAudioProfile,
@@ -5235,6 +5249,19 @@ public sealed class DownloadIntentService
             return normalizedPreferredEngine;
         }
 
+        var targetQuality = string.IsNullOrWhiteSpace(intent.Quality) ? null : intent.Quality;
+        var shouldUseConfiguredOrder = string.Equals(normalizedPreferredEngine, AutoService, StringComparison.OrdinalIgnoreCase)
+            || settings.DownloadEngineOrder?.Enabled == true
+            || IsAutoService(settings.Service);
+        if (shouldUseConfiguredOrder)
+        {
+            var configuredSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
+            if (configuredSources.Count > 0)
+            {
+                return DownloadSourceOrder.DecodeAutoSource(configuredSources[0]).Source;
+            }
+        }
+
         var sourceServiceEngine = NormalizeEngineName(intent.SourceService);
         if (IsKnownDownloadEngine(sourceServiceEngine))
         {
@@ -5247,7 +5274,6 @@ public sealed class DownloadIntentService
             return sourceUrlEngine;
         }
 
-        var targetQuality = string.IsNullOrWhiteSpace(intent.Quality) ? null : intent.Quality;
         var autoSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
         return autoSources.Count == 0
             ? string.Empty
