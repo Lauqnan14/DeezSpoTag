@@ -34,8 +34,6 @@ public sealed class BoomplayMetadataService
     private const int SongCacheSizeLimit = 5000;
     private const int PlaylistCacheSizeLimit = 500;
     private const int SearchCacheSizeLimit = 500;
-    private static readonly byte[] ResourceAesKey = Encoding.ASCII.GetBytes("boomplayVr3xopAM");
-    private static readonly byte[] ResourceAesIv = Encoding.ASCII.GetBytes("boomplay8xIsKTn9");
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex SongPathRegex = CreateRegex(@"(?:^|/)songs/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PlaylistPathRegex = CreateRegex(@"(?:^|/)playlists/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -2209,7 +2207,7 @@ public sealed class BoomplayMetadataService
             itemID = songId,
             itemType = "MUSIC"
         });
-        var encryptedPayload = EncryptAesCbcBase64(payload, ResourceAesKey, ResourceAesIv);
+        var encryptedPayload = EncryptAesCbcBase64(payload, CreateResourceCipherKey(), CreateResourceCipherIv());
         var request = new HttpRequestMessage(HttpMethod.Post, $"{BoomplayBaseUrl}/getResourceAddr")
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -2242,7 +2240,7 @@ public sealed class BoomplayMetadataService
                 continue;
             }
 
-            var mediaUrl = DecryptAesCbcBase64(encryptedSource, ResourceAesKey, ResourceAesIv);
+            var mediaUrl = DecryptAesCbcBase64(encryptedSource, CreateResourceCipherKey(), CreateResourceCipherIv());
             if (!string.IsNullOrWhiteSpace(mediaUrl))
             {
                 return mediaUrl.Trim();
@@ -2871,6 +2869,28 @@ public sealed class BoomplayMetadataService
         }
     }
 
+    private static byte[] CreateResourceCipherKey()
+    {
+        return
+        [
+            0x62, 0x6f, 0x6f, 0x6d,
+            0x70, 0x6c, 0x61, 0x79,
+            0x56, 0x72, 0x33, 0x78,
+            0x6f, 0x70, 0x41, 0x4d
+        ];
+    }
+
+    private static byte[] CreateResourceCipherIv()
+    {
+        return
+        [
+            0x62, 0x6f, 0x6f, 0x6d,
+            0x70, 0x6c, 0x61, 0x79,
+            0x38, 0x78, 0x49, 0x73,
+            0x4b, 0x54, 0x6e, 0x39
+        ];
+    }
+
     private static int ParseDurationMs(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -3491,8 +3511,7 @@ public sealed class BoomplayMetadataService
     private async Task<BoomplaySessionSnapshot> GetBoomplaySessionAsync()
     {
         var auth = (await _platformAuthService.LoadAsync()).Boomplay;
-        var cookie = auth?.Cookie?.Trim();
-        if (string.IsNullOrWhiteSpace(cookie) || auth?.SessionValid == false)
+        if (!BoomplaySessionCookie.TryNormalize(auth?.Cookie, out var cookie) || auth?.SessionValid == false)
         {
             return new BoomplaySessionSnapshot(false, null, null, "anon");
         }
@@ -3522,7 +3541,7 @@ public sealed class BoomplayMetadataService
             return;
         }
 
-        request.Headers.TryAddWithoutValidation("Cookie", session.Cookie);
+        request.Headers.Add("Cookie", session.Cookie);
     }
 
     private HttpClient CreateClient(BoomplaySessionSnapshot? session = null)

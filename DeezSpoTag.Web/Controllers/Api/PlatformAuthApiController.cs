@@ -432,10 +432,10 @@ public class PlatformAuthApiController : ControllerBase
 
         var currentState = await _authService.LoadAsync();
         var previous = currentState.Boomplay;
-        var cookie = ResolveSubmittedSecret(request.Cookie, previous?.Cookie);
-        if (string.IsNullOrWhiteSpace(cookie))
+        var submittedCookie = ResolveSubmittedSecret(request.Cookie, previous?.Cookie);
+        if (!BoomplaySessionCookie.TryNormalize(submittedCookie, out var cookie))
         {
-            return BadRequest("Boomplay cookie is required.");
+            return BadRequest("A valid Boomplay Cookie header is required.");
         }
 
         var userAgent = string.IsNullOrWhiteSpace(request.UserAgent)
