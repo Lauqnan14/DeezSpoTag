@@ -61,19 +61,27 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     }
 
     public Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken)
-        => UpdateHealthAsync(endpoint, "online", null, responseTimeMs, cancellationToken);
+        => UpdateHealthAsync(endpoint, "online", null, responseTimeMs, null, cancellationToken);
 
     public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken)
-        => UpdateHealthAsync(endpoint, ResolveFailureStatus(category), category, responseTimeMs, cancellationToken);
+        => UpdateHealthAsync(endpoint, ResolveFailureStatus(category), category, responseTimeMs, ResolveCooldown(category), cancellationToken);
 
-    private async Task UpdateHealthAsync(string endpoint, string status, string? category, long responseTimeMs, CancellationToken cancellationToken)
+    private async Task UpdateHealthAsync(
+        string endpoint,
+        string status,
+        string? category,
+        long responseTimeMs,
+        DateTimeOffset? cooldownUntil,
+        CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             var state = await LoadNoLockAsync(cancellationToken);
             var normalized = NormalizeEndpoint(endpoint);
-            var provider = state.Providers.FirstOrDefault(item => string.Equals(item.Endpoint, normalized, StringComparison.OrdinalIgnoreCase));
+            var provider = state.Providers.FirstOrDefault(item => string.Equals(item.Id, normalized, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.Endpoint, normalized, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.HealthEndpoint, normalized, StringComparison.OrdinalIgnoreCase));
             if (provider is null)
             {
                 return;
@@ -85,6 +93,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             provider.FailureCategory = category;
             provider.FailureMessage = ResolveFailureMessage(category);
             provider.ResponseTimeMs = Math.Max(0, responseTimeMs);
+            provider.CooldownUntil = cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
         }
         finally
@@ -123,12 +132,12 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     private static bool ReconcileDefaults(RegistryState state)
     {
         var definitions = TidalPublicProviderDefaults.Providers;
-        var allowedEndpoints = definitions.Select(static definition => definition.Endpoint).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var changed = state.Providers.RemoveAll(provider => !allowedEndpoints.Contains(provider.Endpoint)) > 0;
+        var allowedIds = definitions.Select(static definition => definition.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var changed = state.Providers.RemoveAll(provider => !allowedIds.Contains(provider.Id)) > 0;
 
         foreach (var definition in definitions)
         {
-            var existing = state.Providers.FirstOrDefault(provider => string.Equals(provider.Endpoint, definition.Endpoint, StringComparison.OrdinalIgnoreCase));
+            var existing = state.Providers.FirstOrDefault(provider => string.Equals(provider.Id, definition.Id, StringComparison.OrdinalIgnoreCase));
             if (existing is null)
             {
                 state.Providers.Add(CreateState(definition));
@@ -136,17 +145,23 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
                 continue;
             }
 
-            if (existing.Id != definition.Id || existing.DisplayName != definition.DisplayName || existing.Endpoint != definition.Endpoint)
+            if (existing.DisplayName != definition.DisplayName
+                || existing.Kind != definition.Kind
+                || existing.Endpoint != definition.Endpoint
+                || existing.HealthEndpoint != definition.HealthEndpoint
+                || existing.HealthServiceKey != definition.HealthServiceKey)
             {
-                existing.Id = definition.Id;
                 existing.DisplayName = definition.DisplayName;
+                existing.Kind = definition.Kind;
                 existing.Endpoint = definition.Endpoint;
+                existing.HealthEndpoint = definition.HealthEndpoint;
+                existing.HealthServiceKey = definition.HealthServiceKey;
                 changed = true;
             }
         }
 
         state.Providers = definitions
-            .Select(definition => state.Providers.Single(provider => string.Equals(provider.Endpoint, definition.Endpoint, StringComparison.OrdinalIgnoreCase)))
+            .Select(definition => state.Providers.Single(provider => string.Equals(provider.Id, definition.Id, StringComparison.OrdinalIgnoreCase)))
             .ToList();
         return changed;
     }
@@ -156,7 +171,10 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         {
             Id = definition.Id,
             DisplayName = definition.DisplayName,
+            Kind = definition.Kind,
             Endpoint = definition.Endpoint,
+            HealthEndpoint = definition.HealthEndpoint,
+            HealthServiceKey = definition.HealthServiceKey,
             Enabled = true,
             Status = UnknownStatus
         };
@@ -165,16 +183,40 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     {
         var status = provider.Enabled ? provider.Status : DisabledStatus;
         if (provider.Enabled && provider.LastCheckedAt.HasValue && DateTimeOffset.UtcNow - provider.LastCheckedAt.Value > HealthFreshness) status = UnknownStatus;
-        return new TidalPublicProvider(provider.Id, provider.DisplayName, provider.Endpoint, provider.Enabled, status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs);
+        return new TidalPublicProvider(
+            provider.Id,
+            provider.DisplayName,
+            provider.Kind,
+            provider.Endpoint,
+            provider.HealthEndpoint,
+            provider.HealthServiceKey,
+            provider.Enabled,
+            status,
+            provider.LastCheckedAt,
+            provider.LastSuccessAt,
+            provider.FailureCategory,
+            provider.FailureMessage,
+            provider.ResponseTimeMs,
+            provider.CooldownUntil);
     }
 
     private static string NormalizeEndpoint(string? endpoint) => (endpoint ?? string.Empty).Trim().TrimEnd('/');
-    private static string ResolveFailureStatus(string category) => category is "timeout" or "transient" ? "degraded" : "offline";
+    private static string ResolveFailureStatus(string category) => category switch
+    {
+        "rate_limited" => "rate_limited",
+        "timeout" or "transient" => "degraded",
+        _ => "offline"
+    };
+    private static DateTimeOffset? ResolveCooldown(string category)
+        => category is "rate_limited" or "offline" or "empty_response"
+            ? DateTimeOffset.UtcNow.AddMinutes(15)
+            : null;
     private static string? ResolveFailureMessage(string? category) => category switch
     {
         null => null,
         "timeout" => "Provider check timed out.",
         "empty_response" => "Provider returned no usable stream manifest.",
+        "rate_limited" => "Provider is rate limited.",
         "transient" => "Provider is temporarily unavailable.",
         _ => "Provider is unavailable."
     };
@@ -184,7 +226,10 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     {
         public string Id { get; set; } = string.Empty;
         public string DisplayName { get; set; } = string.Empty;
+        public string Kind { get; set; } = TidalPublicProviderDefaults.LegacyProviderKind;
         public string Endpoint { get; set; } = string.Empty;
+        public string? HealthEndpoint { get; set; }
+        public string? HealthServiceKey { get; set; }
         public bool Enabled { get; set; }
         public string Status { get; set; } = UnknownStatus;
         public DateTimeOffset? LastCheckedAt { get; set; }
@@ -192,5 +237,6 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         public string? FailureCategory { get; set; }
         public string? FailureMessage { get; set; }
         public long? ResponseTimeMs { get; set; }
+        public DateTimeOffset? CooldownUntil { get; set; }
     }
 }

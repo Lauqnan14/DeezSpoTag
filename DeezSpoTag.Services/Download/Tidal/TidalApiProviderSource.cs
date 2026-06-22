@@ -14,12 +14,16 @@ public sealed class TidalApiProviderSource
     }
 
     public async Task<IReadOnlyList<string>> GetRotatedProvidersAsync(CancellationToken cancellationToken)
-    {
-        var enabledUrls = (await _providerRegistry.GetProvidersAsync(cancellationToken))
-            .Where(static provider => provider.Enabled)
+        => (await GetRotatedProviderRecordsAsync(cancellationToken))
             .Select(static provider => provider.Endpoint)
+            .ToArray();
+
+    public async Task<IReadOnlyList<TidalPublicProvider>> GetRotatedProviderRecordsAsync(CancellationToken cancellationToken)
+    {
+        var enabledProviders = (await _providerRegistry.GetProvidersAsync(cancellationToken))
+            .Where(static provider => provider.Enabled)
             .ToList();
-        return RotateUrls(enabledUrls, _lastUsedUrl);
+        return RotateProviders(enabledProviders, _lastUsedUrl);
     }
 
     public static Task<IReadOnlyList<string>> RefreshAsync(bool force, CancellationToken cancellationToken)
@@ -28,6 +32,9 @@ public sealed class TidalApiProviderSource
         _ = cancellationToken;
         return Task.FromResult(TidalPublicProviderDefaults.Endpoints);
     }
+
+    public async Task RememberSuccessAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
+        => await RememberSuccessAsync(provider.Endpoint, cancellationToken);
 
     public async Task RememberSuccessAsync(string providerUrl, CancellationToken cancellationToken)
     {
@@ -53,8 +60,14 @@ public sealed class TidalApiProviderSource
         }
     }
 
+    public Task RememberFailureAsync(TidalPublicProvider provider, string category, long responseTimeMs, CancellationToken cancellationToken)
+        => _providerRegistry.RecordFailureAsync(provider.Id, category, responseTimeMs, cancellationToken);
+
     public Task RememberFailureAsync(string providerUrl, string category, long responseTimeMs, CancellationToken cancellationToken)
         => _providerRegistry.RecordFailureAsync(providerUrl, category, responseTimeMs, cancellationToken);
+
+    public Task RememberHealthSuccessAsync(TidalPublicProvider provider, long responseTimeMs, CancellationToken cancellationToken)
+        => _providerRegistry.RecordSuccessAsync(provider.Id, responseTimeMs, cancellationToken);
 
     public Task RememberHealthSuccessAsync(string providerUrl, long responseTimeMs, CancellationToken cancellationToken)
         => _providerRegistry.RecordSuccessAsync(providerUrl, responseTimeMs, cancellationToken);
@@ -98,6 +111,48 @@ public sealed class TidalApiProviderSource
         for (var index = 0; index <= lastIndex; index++)
         {
             rotated.Add(urls[index]);
+        }
+
+        return rotated;
+    }
+
+    private static List<TidalPublicProvider> RotateProviders(List<TidalPublicProvider> providers, string? lastUsedUrl)
+    {
+        if (providers.Count < 2)
+        {
+            return [.. providers];
+        }
+
+        var normalizedLastUsed = NormalizeUrl(lastUsedUrl);
+        if (string.IsNullOrWhiteSpace(normalizedLastUsed))
+        {
+            return [.. providers];
+        }
+
+        var lastIndex = -1;
+        for (var index = 0; index < providers.Count; index++)
+        {
+            if (string.Equals(NormalizeUrl(providers[index].Endpoint), normalizedLastUsed, StringComparison.OrdinalIgnoreCase))
+            {
+                lastIndex = index;
+                break;
+            }
+        }
+
+        if (lastIndex < 0)
+        {
+            return [.. providers];
+        }
+
+        var rotated = new List<TidalPublicProvider>(providers.Count);
+        for (var index = lastIndex + 1; index < providers.Count; index++)
+        {
+            rotated.Add(providers[index]);
+        }
+
+        for (var index = 0; index <= lastIndex; index++)
+        {
+            rotated.Add(providers[index]);
         }
 
         return rotated;

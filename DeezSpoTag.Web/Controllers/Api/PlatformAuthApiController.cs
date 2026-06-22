@@ -202,9 +202,11 @@ public class PlatformAuthApiController : ControllerBase
         if (gate != null) return gate;
 
         var qobuz = await GetPublicQobuzProvidersAsync(cancellationToken);
+        var tidal = await GetPublicTidalProvidersAsync(cancellationToken);
         return Ok(new
         {
-            qobuz = new { status = qobuz.Status, onlineCount = qobuz.OnlineCount }
+            qobuz = new { status = qobuz.Status, onlineCount = qobuz.OnlineCount },
+            tidal = new { status = tidal.Status, onlineCount = tidal.OnlineCount }
         });
     }
 
@@ -725,6 +727,7 @@ public class PlatformAuthApiController : ControllerBase
         validatedAt = auth?.ValidatedAt,
         publicApiOnline = providers.Online,
         publicApiStatus = providers.Status,
+        publicApiOnlineCount = providers.OnlineCount,
         connected = auth?.CredentialsValid == true,
         providers = providers.Providers
     };
@@ -807,19 +810,21 @@ public class PlatformAuthApiController : ControllerBase
     {
         var providers = (await _tidalPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicTidalProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
-        var online = enabledProviders.Any(static provider => provider.Status == "online");
+        var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
+        var online = onlineCount > 0;
         return new TidalProviderSummary(
             online,
+            onlineCount,
             ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked)),
             providers);
     }
 
     private static TidalProviderView ToPublicTidalProvider(TidalPublicProvider provider)
-        => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs);
+        => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
 
     public sealed record TidalProviderEnabledRequest(bool? Enabled);
-    private sealed record TidalProviderSummary(bool Online, string Status, TidalProviderView[] Providers);
-    private sealed record TidalProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs);
+    private sealed record TidalProviderSummary(bool Online, int OnlineCount, string Status, TidalProviderView[] Providers);
+    private sealed record TidalProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
 
     private static bool IsChecked(QobuzProviderView provider)
         => provider.LastCheckedAt.HasValue && provider.Status != "unknown";

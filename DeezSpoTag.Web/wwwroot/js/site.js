@@ -1330,7 +1330,7 @@ globalThis.DeezSpoTag = {
     },
 
     setPlatformPublicApiStatus(states, id, status, onlineCount = null) {
-        if (!states?.[id] || id !== 'qobuz') {
+        if (!states?.[id] || !['qobuz', 'tidal'].includes(id)) {
             return;
         }
 
@@ -1383,7 +1383,7 @@ globalThis.DeezSpoTag = {
                     merged[id].reason = value.reason;
                 }
                 const publicApiStatus = String(value?.publicApiStatus || '').trim().toLowerCase();
-                if (id === 'qobuz' && ['online', 'offline', 'unknown'].includes(publicApiStatus)) {
+                if (['qobuz', 'tidal'].includes(id) && ['online', 'offline', 'unknown'].includes(publicApiStatus)) {
                     merged[id].publicApiStatus = publicApiStatus;
                     const parsedCount = Number(value?.publicApiOnlineCount);
                     merged[id].publicApiOnlineCount = Number.isInteger(parsedCount) && parsedCount >= 0
@@ -1702,6 +1702,11 @@ globalThis.DeezSpoTag = {
                 'qobuz',
                 data.qobuz?.status,
                 data.qobuz?.onlineCount);
+            this.setPlatformPublicApiStatus(
+                platformStates,
+                'tidal',
+                data.tidal?.status,
+                data.tidal?.onlineCount);
 
             const connected = Object.entries(platformStates)
                 .filter(([, status]) => status?.active === true)
@@ -1992,6 +1997,11 @@ globalThis.DeezSpoTag = {
             authData.qobuz?.publicApiStatus,
             authData.qobuz?.publicApiOnlineCount);
         this.applyConnectedFlagState(authData.tidal?.connected === true, connected, platformStates, 'tidal', 'official-api', 'offline');
+        this.setPlatformPublicApiStatus(
+            platformStates,
+            'tidal',
+            authData.tidal?.publicApiStatus,
+            authData.tidal?.publicApiOnlineCount);
         this.applyConnectedFlagState(
             authData.soulseek?.connected === true,
             connected,
@@ -2181,7 +2191,7 @@ globalThis.DeezSpoTag = {
             }
             const isActive = status?.active === true;
             const stateLabel = isActive ? 'Connected' : 'Not connected';
-            const publicApiStatus = id === 'qobuz'
+            const publicApiStatus = ['qobuz', 'tidal'].includes(id)
                 && ['online', 'offline', 'unknown'].includes(status?.publicApiStatus)
                 ? status.publicApiStatus
                 : null;

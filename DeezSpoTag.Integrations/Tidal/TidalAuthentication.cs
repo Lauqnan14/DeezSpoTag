@@ -26,14 +26,18 @@ public interface ITidalAccessTokenProvider
 public sealed record TidalPublicProvider(
     string Id,
     string DisplayName,
+    string Kind,
     string Endpoint,
+    string? HealthEndpoint,
+    string? HealthServiceKey,
     bool Enabled,
     string Status,
     DateTimeOffset? LastCheckedAt,
     DateTimeOffset? LastSuccessAt,
     string? FailureCategory,
     string? FailureMessage,
-    long? ResponseTimeMs);
+    long? ResponseTimeMs,
+    DateTimeOffset? CooldownUntil);
 
 public interface ITidalPublicProviderRegistry
 {
@@ -43,27 +47,42 @@ public interface ITidalPublicProviderRegistry
     Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken);
 }
 
-public sealed record TidalPublicProviderDefinition(string Id, string DisplayName, string Endpoint);
+public sealed record TidalPublicProviderDefinition(
+    string Id,
+    string DisplayName,
+    string Kind,
+    string Endpoint,
+    string? HealthEndpoint,
+    string? HealthServiceKey);
 
 public static class TidalPublicProviderDefaults
 {
-    private static readonly (string Id, string DisplayName, string EncodedEndpoint)[] EncodedProviders =
+    public const string LegacyProviderKind = "legacy";
+    public const string ZarzProviderKind = "zarz";
+
+    private static readonly (string Id, string DisplayName, string Kind, string EncodedEndpoint, string? EncodedHealthEndpoint, string? HealthServiceKey)[] EncodedProviders =
     [
-        ("geeked", "Geeked", "aHR0cHM6Ly9oaWZpLmdlZWtlZC53dGY="),
-        ("pink-hamster", "Pink Hamster", "aHR0cHM6Ly9oaWZpLnAxbmtoYW1zdGVyLnh5eg=="),
-        ("qqdl-vogel", "QQDL Vogel", "aHR0cHM6Ly92b2dlbC5xcWRsLnNpdGU="),
-        ("spotisaver-one", "SpotiSaver One", "aHR0cHM6Ly9oaWZpLW9uZS5zcG90aXNhdmVyLm5ldA=="),
-        ("spotisaver-two", "SpotiSaver Two", "aHR0cHM6Ly9oaWZpLXR3by5zcG90aXNhdmVyLm5ldA=="),
-        ("kinoplus", "KinoPlus", "aHR0cHM6Ly90aWRhbC5raW5vcGx1cy5vbmxpbmU="),
-        ("binimum", "Binimum", "aHR0cHM6Ly90aWRhbC1hcGkuYmluaW11bS5vcmc=")
+        ("zarz", "Zarz", ZarzProviderKind, "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvZGwvdGlkMg==", "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvaGVhbHRo", "tidal"),
+        ("geeked", "Geeked", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLmdlZWtlZC53dGY=", null, null),
+        ("pink-hamster", "Pink Hamster", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLnAxbmtoYW1zdGVyLnh5eg==", null, null),
+        ("qqdl-vogel", "QQDL Vogel", LegacyProviderKind, "aHR0cHM6Ly92b2dlbC5xcWRsLnNpdGU=", null, null),
+        ("spotisaver-one", "SpotiSaver One", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLW9uZS5zcG90aXNhdmVyLm5ldA==", null, null),
+        ("spotisaver-two", "SpotiSaver Two", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLXR3by5zcG90aXNhdmVyLm5ldA==", null, null),
+        ("kinoplus", "KinoPlus", LegacyProviderKind, "aHR0cHM6Ly90aWRhbC5raW5vcGx1cy5vbmxpbmU=", null, null),
+        ("binimum", "Binimum", LegacyProviderKind, "aHR0cHM6Ly90aWRhbC1hcGkuYmluaW11bS5vcmc=", null, null)
     ];
 
     public static IReadOnlyList<TidalPublicProviderDefinition> Providers { get; } = EncodedProviders
         .Select(static provider => new TidalPublicProviderDefinition(
             provider.Id,
             provider.DisplayName,
-            Encoding.UTF8.GetString(Convert.FromBase64String(provider.EncodedEndpoint))))
+            provider.Kind,
+            Decode(provider.EncodedEndpoint),
+            string.IsNullOrWhiteSpace(provider.EncodedHealthEndpoint) ? null : Decode(provider.EncodedHealthEndpoint),
+            provider.HealthServiceKey))
         .ToArray();
 
     public static IReadOnlyList<string> Endpoints { get; } = Providers.Select(static provider => provider.Endpoint).ToArray();
+
+    private static string Decode(string encoded) => Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
 }

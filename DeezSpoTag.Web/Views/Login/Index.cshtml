@@ -383,6 +383,21 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "tidalLoggedInInfo", ImageAlt = "Tidal", ImageSrc = "/images/icons/tidal-light.png", ImageCssClass = "h-20 w-20", ButtonId = "tidalDisconnectBtn", NameId = "tidalLoggedInName", NameFallback = initialTidalName, DetailId = "tidalLoggedInStatus", DetailText = initialTidalStatus, WrapperCssClass = initialTidalConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
+                <section class="qobuz-provider-panel" aria-labelledby="tidalProviderHeading">
+                    <div class="qobuz-provider-panel__header">
+                        <div>
+                            <h4 id="tidalProviderHeading">Public API Providers</h4>
+                            <p class="text-muted" id="tidalProviderSummary">Provider status has not been loaded.</p>
+                        </div>
+                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="tidalProviderToggle" type="button" aria-expanded="false">Edit providers</button>
+                    </div>
+                    <div class="qobuz-provider-editor" id="tidalProviderEditor" hidden>
+                        <div class="qobuz-provider-actions">
+                            <button class="btn btn-primary action-btn" id="tidalCheckProvidersBtn" type="button">Check now</button>
+                        </div>
+                        <div id="tidalProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                    </div>
+                </section>
             </div>
         </div>
 
@@ -1787,6 +1802,18 @@ document.addEventListener('DOMContentLoaded', function() {
         window.setInterval(refreshQobuzProviderView, 60_000);
     }
 
+    bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
+    bindAsyncClick('tidalCheckProvidersBtn', checkTidalProviders);
+    const tidalProviderRows = document.getElementById('tidalProviderRows');
+    if (tidalProviderRows) {
+        tidalProviderRows.addEventListener('change', async function(event) {
+            const toggle = event.target.closest('[data-tidal-provider-id]');
+            if (!toggle) return;
+            await setTidalProviderEnabled(toggle.dataset.tidalProviderId, toggle.checked, toggle);
+        });
+        window.setInterval(refreshTidalProviderView, 60_000);
+    }
+
     const tidalForm = document.getElementById('tidalLoginForm');
     if (tidalForm) {
         tidalForm.addEventListener('submit', async function(e) {
@@ -2968,6 +2995,91 @@ async function refreshQobuzProviderView() {
     }
 }
 
+function renderTidalProviders(providers, publicApiOnline) {
+    const container = document.getElementById('tidalProviderRows');
+    const summary = document.getElementById('tidalProviderSummary');
+    if (!container || !summary) return;
+
+    const rows = Array.isArray(providers) ? providers : [];
+    const enabledCount = rows.filter(provider => provider?.enabled).length;
+    const onlineCount = rows.filter(provider => provider?.enabled && provider?.status === 'online').length;
+    summary.textContent = publicApiOnline
+        ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
+        : enabledCount === 0
+            ? 'All public API providers are disabled.'
+            : 'No enabled public API provider is currently confirmed online.';
+
+    container.replaceChildren(...rows.map(createTidalProviderRow));
+}
+
+function createTidalProviderRow(provider) {
+    const row = createQobuzProviderRow(provider);
+    const toggle = row.querySelector('[data-qobuz-provider-id]');
+    if (toggle) {
+        toggle.dataset.tidalProviderId = provider?.id || '';
+        delete toggle.dataset.qobuzProviderId;
+        toggle.setAttribute('aria-label', `${toggle.checked ? 'Disable' : 'Enable'} ${provider?.name || 'Tidal provider'}`);
+    }
+    return row;
+}
+
+async function setTidalProviderEnabled(providerId, enabled, toggle) {
+    toggle.disabled = true;
+    try {
+        const response = await fetch(`/api/platform-auth/tidal/providers/${encodeURIComponent(providerId)}/enabled`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update Tidal provider'));
+        await loadPlatformAuthState();
+        refreshConnectedPlatformsSidebar();
+    } catch (error) {
+        toggle.checked = !enabled;
+        showToast(error.message || 'Failed to update Tidal provider', 'error');
+    } finally {
+        toggle.disabled = false;
+    }
+}
+
+async function checkTidalProviders() {
+    const button = document.getElementById('tidalCheckProvidersBtn');
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch('/api/platform-auth/tidal/providers/check', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Tidal provider check failed'));
+        await loadPlatformAuthState();
+        refreshConnectedPlatformsSidebar();
+    } catch (error) {
+        showToast(error.message || 'Tidal provider check failed', 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+async function refreshTidalProviderView() {
+    const tidalPane = document.getElementById('tidal-login');
+    if (document.hidden || !tidalPane || tidalPane.hidden) return;
+
+    try {
+        const response = await fetch('/api/platform-auth/tidal/providers', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) return;
+        const result = await response.json();
+        renderTidalProviders(result?.providers || [], result?.online === true);
+    } catch (error) {
+        console.warn('Failed to refresh Tidal provider status', error);
+    }
+}
+
 function renderTidalInfo(auth) {
     const nameLabel = document.getElementById('tidalLoggedInName');
     const statusLabel = document.getElementById('tidalLoggedInStatus');
@@ -2982,6 +3094,7 @@ function renderTidalInfo(auth) {
             ? `${auth.countryCode || 'US'} | official credentials validated`
             : 'Tidal credentials are not connected.';
     }
+    renderTidalProviders(auth?.providers || [], auth?.publicApiOnline === true);
 }
 
 function renderSoulseekInfo(auth) {

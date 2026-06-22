@@ -32,8 +32,10 @@ public sealed class TidalDownloadService
     private const string TidalPublicCountryCode = "US";
     private const string TidalPublicLocale = "en_US";
     private const string TidalPublicDeviceType = "BROWSER";
+    private const int MaxConcurrentProviderResolutions = 2;
     private static readonly string[] PlaylistLineSeparators = { "\r\n", "\n" };
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -691,6 +693,112 @@ public sealed class TidalDownloadService
     {
         return await FetchManifestFromLegacyTrackEndpointAsync(apiBase, trackId, quality, cancellationToken)
             ?? await FetchManifestFromTrackManifestsEndpointAsync(apiBase, trackId, quality, cancellationToken);
+    }
+
+    private async Task<string?> FetchManifestFromProviderAsync(
+        TidalPublicProvider provider,
+        long trackId,
+        string quality,
+        CancellationToken cancellationToken)
+    {
+        await ProviderResolutionGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (string.Equals(provider.Kind, TidalPublicProviderDefaults.ZarzProviderKind, StringComparison.OrdinalIgnoreCase))
+            {
+                return await FetchManifestFromZarzAsync(provider.Endpoint, trackId, quality, cancellationToken);
+            }
+
+            return await FetchManifestFromApiAsync(provider.Endpoint, trackId, quality, cancellationToken);
+        }
+        finally
+        {
+            ProviderResolutionGate.Release();
+        }
+    }
+
+    private async Task<string?> FetchManifestFromZarzAsync(
+        string endpoint,
+        long trackId,
+        string quality,
+        CancellationToken cancellationToken)
+    {
+        var normalizedQuality = NormalizeTidalDownloadQuality(quality);
+        if (string.Equals(normalizedQuality, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase))
+        {
+            return await FetchAtmosManifestFromZarzAsync(endpoint, trackId, cancellationToken);
+        }
+
+        var payload = new
+        {
+            id = trackId.ToString(CultureInfo.InvariantCulture),
+            quality = normalizedQuality
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload, SerializerOptions), Encoding.UTF8, "application/json")
+        };
+        request.Headers.TryAddWithoutValidation("User-Agent", "SpotiFLAC-Mobile/4.6.0");
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        using var response = await _client.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Tidal Zarz provider returned HTTP {(int)response.StatusCode}.");
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            throw new InvalidOperationException("Tidal Zarz provider returned an empty response.");
+        }
+
+        if (BodyContainsPreviewAsset(body))
+        {
+            throw new InvalidOperationException("Tidal Zarz provider returned a preview asset.");
+        }
+
+        return TryParseManifest(body, out var manifest) ? manifest : null;
+    }
+
+    private async Task<string?> FetchAtmosManifestFromZarzAsync(
+        string endpoint,
+        long trackId,
+        CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            id = trackId.ToString(CultureInfo.InvariantCulture),
+            endpoint = "manifests",
+            formats = new[] { "EAC3_JOC" }
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload, SerializerOptions), Encoding.UTF8, "application/json")
+        };
+        request.Headers.TryAddWithoutValidation("User-Agent", "SpotiFLAC-Mobile/4.6.0");
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        using var response = await _client.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Tidal Zarz Atmos provider returned HTTP {(int)response.StatusCode}.");
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!TryExtractZarzAtmosManifestUri(body, out var manifestUri))
+        {
+            throw new InvalidOperationException("Tidal Zarz Atmos provider did not return a manifest URI.");
+        }
+
+        using var manifestResponse = await _client.GetAsync(manifestUri, cancellationToken);
+        if (!manifestResponse.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Tidal Zarz Atmos manifest fetch returned HTTP {(int)manifestResponse.StatusCode}.");
+        }
+
+        var manifestText = await manifestResponse.Content.ReadAsStringAsync(cancellationToken);
+        return string.IsNullOrWhiteSpace(manifestText)
+            ? null
+            : ManifestPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifestText));
     }
 
     private async Task<string?> FetchManifestFromLegacyTrackEndpointAsync(
@@ -1530,41 +1638,58 @@ public sealed class TidalDownloadService
         bool allowRefresh,
         CancellationToken cancellationToken)
     {
-        var apis = await _providerSource.GetRotatedProvidersAsync(cancellationToken);
-        if (apis.Count == 0)
+        var providers = await _providerSource.GetRotatedProviderRecordsAsync(cancellationToken);
+        if (providers.Count == 0)
         {
             throw new InvalidOperationException("Tidal API pool is empty");
         }
 
-        var manifestResults = await Task.WhenAll(apis.Select(async api =>
+        var manifests = new List<string>();
+        foreach (var provider in providers)
         {
+            if (IsProviderCoolingDown(provider))
+            {
+                continue;
+            }
+
             var stopwatch = Stopwatch.StartNew();
-            var manifest = await FetchManifestFromApiAsync(api, trackId, quality, cancellationToken);
-            stopwatch.Stop();
-            if (string.IsNullOrWhiteSpace(manifest))
+            try
             {
-                await _providerSource.RememberFailureAsync(api, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
+                var manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
+                stopwatch.Stop();
+                if (string.IsNullOrWhiteSpace(manifest))
+                {
+                    await _providerSource.RememberFailureAsync(provider, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
+                    continue;
+                }
+
+                await _providerSource.RememberHealthSuccessAsync(provider, stopwatch.ElapsedMilliseconds, cancellationToken);
+                await _providerSource.RememberSuccessAsync(provider, cancellationToken);
+                manifests.Add(manifest.Trim());
+                break;
             }
-            else
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                await _providerSource.RememberHealthSuccessAsync(api, stopwatch.ElapsedMilliseconds, cancellationToken);
+                throw;
             }
-            return new { Api = api, Manifest = manifest };
-        }));
-        var manifests = manifestResults
-            .Select(result => result.Manifest?.Trim())
-            .Where(static manifest => !string.IsNullOrWhiteSpace(manifest))
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                stopwatch.Stop();
+                await _providerSource.RememberFailureAsync(provider, ClassifyProviderFailure(ex), stopwatch.ElapsedMilliseconds, cancellationToken);
+                _logger.LogWarning(
+                    ex,
+                    "Tidal public provider {Provider} failed for track {TrackId} quality {Quality}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.DisplayName),
+                    trackId,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(quality));
+            }
+        }
+
+        manifests = manifests
             .Distinct(StringComparer.Ordinal)
-            .Cast<string>()
             .ToList();
         if (manifests.Count > 0)
         {
-            var successfulProvider = manifestResults.FirstOrDefault(result => !string.IsNullOrWhiteSpace(result.Manifest))?.Api;
-            if (!string.IsNullOrWhiteSpace(successfulProvider))
-            {
-                await _providerSource.RememberSuccessAsync(successfulProvider, cancellationToken);
-            }
-
             return manifests;
         }
 
@@ -1796,16 +1921,18 @@ public sealed class TidalDownloadService
     {
         const long healthTrackId = 251380836;
         const string healthQuality = "LOSSLESS";
-        var providers = await _providerSource.GetRotatedProvidersAsync(cancellationToken);
+        var providers = await _providerSource.GetRotatedProviderRecordsAsync(cancellationToken);
         foreach (var provider in providers)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                var manifest = await FetchManifestFromApiAsync(provider, healthTrackId, healthQuality, cancellationToken);
+                var healthy = !string.IsNullOrWhiteSpace(provider.HealthEndpoint)
+                    ? await CheckProviderHealthEndpointAsync(provider, cancellationToken)
+                    : !string.IsNullOrWhiteSpace(await FetchManifestFromProviderAsync(provider, healthTrackId, healthQuality, cancellationToken));
                 stopwatch.Stop();
-                if (string.IsNullOrWhiteSpace(manifest))
+                if (!healthy)
                 {
                     await _providerSource.RememberFailureAsync(provider, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
                 }
@@ -1824,12 +1951,207 @@ public sealed class TidalDownloadService
                 stopwatch.Stop();
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Tidal public provider health check failed for {Provider}", provider);
+                    _logger.LogDebug(ex, "Tidal public provider health check failed for {Provider}", provider.DisplayName);
                 }
 
-                await _providerSource.RememberFailureAsync(provider, "transient", stopwatch.ElapsedMilliseconds, cancellationToken);
+                await _providerSource.RememberFailureAsync(provider, ClassifyProviderFailure(ex), stopwatch.ElapsedMilliseconds, cancellationToken);
             }
         }
+    }
+
+    private async Task<bool> CheckProviderHealthEndpointAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
+    {
+        using var response = await _client.GetAsync(provider.HealthEndpoint, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return false;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(provider.HealthServiceKey))
+        {
+            return true;
+        }
+
+        using var document = JsonDocument.Parse(body);
+        if (!document.RootElement.TryGetProperty("services", out var services)
+            || services.ValueKind != JsonValueKind.Object
+            || !services.TryGetProperty(provider.HealthServiceKey, out var service)
+            || service.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (service.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True)
+        {
+            return true;
+        }
+
+        if (service.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.Number)
+        {
+            return status.GetInt32() is >= 200 and < 300;
+        }
+
+        return false;
+    }
+
+    private static bool IsProviderCoolingDown(TidalPublicProvider provider)
+        => provider.CooldownUntil.HasValue && provider.CooldownUntil.Value > DateTimeOffset.UtcNow;
+
+    private static string ClassifyProviderFailure(Exception exception)
+    {
+        var message = exception.Message;
+        if (message.Contains("429", StringComparison.OrdinalIgnoreCase)) return "rate_limited";
+        if (exception is TimeoutException or HttpRequestException || message.Contains("timed out", StringComparison.OrdinalIgnoreCase)) return "timeout";
+        if (message.Contains("preview", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("missing manifest", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("no data", StringComparison.OrdinalIgnoreCase))
+        {
+            return "empty_response";
+        }
+
+        return "transient";
+    }
+
+    private static bool BodyContainsPreviewAsset(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return TryFindStringProperty(document.RootElement, "assetPresentation", out var assetPresentation)
+                && string.Equals(assetPresentation, "PREVIEW", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return body.Contains("PREVIEW", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static bool TryExtractZarzAtmosManifestUri(string body, out string manifestUri)
+    {
+        manifestUri = string.Empty;
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!TryFindStringProperty(document.RootElement, "uri", out var uri)
+                || string.IsNullOrWhiteSpace(uri))
+            {
+                return false;
+            }
+
+            if (TryFindStringArrayProperty(document.RootElement, "formats", out var formats)
+                && !formats.Any(static format => string.Equals(format, "EAC3_JOC", StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            manifestUri = uri;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryFindStringProperty(JsonElement element, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind == JsonValueKind.String)
+                {
+                    value = property.Value.GetString() ?? string.Empty;
+                    return !string.IsNullOrWhiteSpace(value);
+                }
+
+                if (TryFindStringProperty(property.Value, propertyName, out value))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindStringProperty(item, propertyName, out value))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryFindStringArrayProperty(JsonElement element, string propertyName, out IReadOnlyList<string> values)
+    {
+        values = Array.Empty<string>();
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind == JsonValueKind.Array)
+                {
+                    values = property.Value.EnumerateArray()
+                        .Where(static item => item.ValueKind == JsonValueKind.String)
+                        .Select(static item => item.GetString() ?? string.Empty)
+                        .Where(static item => !string.IsNullOrWhiteSpace(item))
+                        .ToArray();
+                    return true;
+                }
+
+                if (TryFindStringArrayProperty(property.Value, propertyName, out values))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindStringArrayProperty(item, propertyName, out values))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static string NormalizeTidalDownloadQuality(string? quality)
+    {
+        var normalized = (quality ?? string.Empty).Trim().ToUpperInvariant();
+        return normalized switch
+        {
+            "" => "LOSSLESS",
+            "HI_RES" => "HI_RES_LOSSLESS",
+            "MAX_HI_RES" => "HI_RES_LOSSLESS",
+            "ATMOS" => "DOLBY_ATMOS",
+            _ => normalized
+        };
     }
 
     private sealed class TidalSearchResponse
