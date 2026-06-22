@@ -591,7 +591,7 @@ namespace DeezSpoTag.Web.Controllers
         /// Download album/playlist action (FIXED: Now properly uses settings and download queue)
         /// </summary>
         [HttpPost]
-        public async Task<IActionResult> Download(string id, string type, int bitrate = 0)
+        public async Task<IActionResult> Download(string id, string type)
         {
             if (!ModelState.IsValid)
             {
@@ -620,7 +620,7 @@ namespace DeezSpoTag.Web.Controllers
                     return BadRequest("Unsupported Deezer type.");
                 }
 
-                var queued = await EnqueueDeezerUrlsViaIntentAsync(new[] { url }, settings, bitrate);
+                var queued = await EnqueueDeezerUrlsViaIntentAsync(new[] { url }, settings);
                 return DeezerQueueActionResultHelper.FromQueued(this, queued);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -653,7 +653,7 @@ namespace DeezSpoTag.Web.Controllers
                     .ToArray();
 
                 var settings = _settingsService.LoadSettings();
-                var queued = await EnqueueDeezerUrlsViaIntentAsync(urls, settings, request.Bitrate);
+                var queued = await EnqueueDeezerUrlsViaIntentAsync(urls, settings);
                 if (queued.Count == 0)
                 {
                     return Json(new { success = false, message = "Nothing queued." });
@@ -670,18 +670,15 @@ namespace DeezSpoTag.Web.Controllers
 
         private async Task<List<Dictionary<string, object>>> EnqueueDeezerUrlsViaIntentAsync(
             IEnumerable<string> urls,
-            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-            int requestedBitrate)
+            DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
         {
             var preferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);
-            var quality = ManualDownloadPreferenceResolver.ResolvePreferredQuality(settings, preferredEngine, requestedBitrate);
             var queued = new List<Dictionary<string, object>>();
             foreach (var intent in urls.Select(url => new DownloadIntent
                      {
                          SourceService = DeezerSource,
                          SourceUrl = url,
                          PreferredEngine = preferredEngine,
-                         Quality = quality,
                          ContentType = "music"
                      }))
             {

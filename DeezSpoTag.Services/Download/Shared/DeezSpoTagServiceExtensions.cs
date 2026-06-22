@@ -57,7 +57,6 @@ public static class DeezSpoTagServiceExtensions
         services.AddScoped<DeezSpoTag.Services.Download.Utils.BitrateSelector>();
         services.AddSingleton<EngineProcessorCommonDependencies>();
 
-        services.AddScoped<QualityFallbackManager>();
         services.AddScoped<CommandExecutionService>();
         services.AddScoped<DeezSpoTagLoggingService>();
 

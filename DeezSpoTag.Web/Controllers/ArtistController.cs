@@ -34,7 +34,7 @@ public class ArtistController : Controller
     /// Download artist action
     /// </summary>
     [HttpPost]
-    public async Task<IActionResult> Download(string id, int bitrate = 0)
+    public async Task<IActionResult> Download(string id)
     {
         if (!ModelState.IsValid)
         {
@@ -50,14 +50,12 @@ public class ArtistController : Controller
 
             var settings = _settingsService.LoadSettings();
             var preferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);
-            var quality = ManualDownloadPreferenceResolver.ResolvePreferredQuality(settings, preferredEngine, bitrate);
             var url = $"https://www.deezer.com/artist/{id}";
             var intent = new DownloadIntent
             {
                 SourceService = "deezer",
                 SourceUrl = url,
                 PreferredEngine = preferredEngine,
-                Quality = quality,
                 ContentType = "music"
             };
             var result = await _intentService.EnqueueManualAsync(intent, CancellationToken.None);

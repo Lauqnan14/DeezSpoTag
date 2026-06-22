@@ -404,6 +404,7 @@ public sealed class DownloadIntentService
             settings,
             engine,
             string.IsNullOrWhiteSpace(intent.Quality) ? ResolvePreferredQuality(settings, engine) : intent.Quality);
+        selectedQuality = ResolveEnabledDownloadQuality(settings, engine, selectedQuality);
         var useMultiQuality = IsMultiQualityDualEnabled(settings.MultiQuality);
         var destinationRouting = await ResolveDestinationRoutingAsync(
             intent,
@@ -489,6 +490,7 @@ public sealed class DownloadIntentService
         var useMultiQuality = IsMultiQualityDualEnabled(multiQuality);
         var engine = resolvedTarget.Engine;
         var selectedQuality = ApplyResolvedQuality(intent, settings, engine, resolvedTarget.SelectedQuality);
+        selectedQuality = ResolveEnabledDownloadQuality(settings, engine, selectedQuality);
         LogResolvedIntentMapping(resolvedTarget.Resolution, engine);
         var autoSources = resolvedTarget.AutoSources;
         var availability = routing.Availability;
@@ -631,6 +633,7 @@ public sealed class DownloadIntentService
         var state = resolution.State!;
         var target = state.ResolvedTarget;
         var selectedQuality = ApplyResolvedQuality(intent, state.Settings, target.Engine, target.SelectedQuality);
+        selectedQuality = ResolveEnabledDownloadQuality(state.Settings, target.Engine, selectedQuality);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             intent,
             state.Settings,
@@ -1745,14 +1748,6 @@ public sealed class DownloadIntentService
         {
             intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);
         }
-
-        if (string.IsNullOrWhiteSpace(intent.Quality))
-        {
-            intent.Quality = ManualDownloadPreferenceResolver.ResolvePreferredQuality(
-                settings,
-                intent.PreferredEngine,
-            DownloadSourceOrder.DeezerFlac);
-        }
     }
 
     private static void ApplyIntentDownloadEngineOrder(DownloadIntent intent, DeezSpoTagSettings settings)
@@ -1900,6 +1895,7 @@ public sealed class DownloadIntentService
         autoSources = PrioritizeAutoSourcesByHealth(autoSources, settings, intentRequestsAuto, normalizedPreferredEngine);
         var preferredEngine = ResolvePreferredEngine(normalizedPreferredEngine, intentRequestsAuto, appleOnlyRequired, preparation.IsPodcastIntent, autoSources);
         targetQuality = NormalizeTargetQuality(intent, settings, preferredEngine, targetQuality, explicitStereoRequest, useAtmosStereoDual);
+        targetQuality = ResolveEnabledDownloadQuality(settings, preferredEngine, targetQuality);
         if (useAtmosStereoDual)
         {
             autoSources = RemoveAtmosAutoSources(autoSources);
@@ -2244,11 +2240,6 @@ public sealed class DownloadIntentService
 
     private string? ApplyResolvedQuality(DownloadIntent intent, DeezSpoTagSettings settings, string engine, string? selectedQuality)
     {
-        if (IsMusicIntent(intent) && !IsAppleAtmosOnlyRequest(engine, selectedQuality))
-        {
-            return ApplyMusicResolvedQuality(settings, engine, selectedQuality);
-        }
-
         if (!IsMusicIntent(intent))
         {
             return ResolveNonMusicResolvedQuality(intent, selectedQuality);
@@ -2257,21 +2248,37 @@ public sealed class DownloadIntentService
         return selectedQuality;
     }
 
-    private string? ApplyMusicResolvedQuality(DeezSpoTagSettings settings, string engine, string? selectedQuality)
+    private static string? ResolveEnabledDownloadQuality(DeezSpoTagSettings settings, string? engine, string? selectedQuality)
     {
-        var preflight = QualityFallbackManager.ApplyQualityFallback(engine, selectedQuality, settings);
-        if (string.IsNullOrWhiteSpace(preflight.SelectedQuality))
+        if (settings.DownloadEngineOrder?.Enabled != true || string.IsNullOrWhiteSpace(engine))
         {
             return selectedQuality;
         }
 
-        if (preflight.FallbackApplied)
+        var enabledQualities = DownloadSourceOrder.ResolveEngineQualitySources(
+                settings,
+                engine,
+                requestedQuality: null,
+                strict: false)
+            .Select(DownloadSourceOrder.DecodeAutoSource)
+            .Where(step => string.Equals(step.Source, engine, StringComparison.OrdinalIgnoreCase))
+            .Select(step => step.Quality)
+            .Where(quality => !string.IsNullOrWhiteSpace(quality))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (enabledQualities.Count == 0)
         {
-            var requested = string.IsNullOrWhiteSpace(preflight.RequestedQuality) ? AutoService : preflight.RequestedQuality;
-            _activityLog.Info($"Preflight quality fallback: engine={engine} requested={requested} selected={preflight.SelectedQuality} reason={preflight.Reason ?? "fallback"}");
+            return null;
         }
 
-        return preflight.SelectedQuality;
+        if (!string.IsNullOrWhiteSpace(selectedQuality)
+            && enabledQualities.Any(quality => string.Equals(quality, selectedQuality, StringComparison.OrdinalIgnoreCase)))
+        {
+            return selectedQuality;
+        }
+
+        return enabledQualities[0];
     }
 
     private static string? ResolveNonMusicResolvedQuality(DownloadIntent intent, string? selectedQuality)
@@ -4932,16 +4939,11 @@ public sealed class DownloadIntentService
         var normalized = engine.Trim().ToLowerInvariant();
         if (settings.DownloadEngineOrder?.Enabled == true)
         {
-            var configured = DownloadSourceOrder.ResolveEngineQualitySources(settings, normalized, requestedQuality: null, strict: false);
-            var firstConfiguredQuality = configured
+            return DownloadSourceOrder.ResolveEngineQualitySources(settings, normalized, requestedQuality: null, strict: false)
                 .Select(DownloadSourceOrder.DecodeAutoSource)
                 .Where(source => string.Equals(source.Source, normalized, StringComparison.OrdinalIgnoreCase))
                 .Select(source => source.Quality)
                 .FirstOrDefault(quality => !string.IsNullOrWhiteSpace(quality));
-            if (!string.IsNullOrWhiteSpace(firstConfiguredQuality))
-            {
-                return firstConfiguredQuality;
-            }
         }
 
         string? preferred = normalized switch

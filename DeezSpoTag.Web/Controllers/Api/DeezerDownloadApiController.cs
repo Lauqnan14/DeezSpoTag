@@ -847,19 +847,12 @@ namespace DeezSpoTag.Web.Controllers.Api
                 var preferredEngine = string.Equals(inferredContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)
                     ? DeezerSource
                     : ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);
-                var quality = string.Equals(inferredContentType, DownloadContentTypes.Podcast, StringComparison.OrdinalIgnoreCase)
-                    ? DownloadSourceOrder.ResolveDeezerBitrate(settings, DownloadSourceOrder.DeezerFlac).ToString()
-                    : ManualDownloadPreferenceResolver.ResolvePreferredQuality(
-                        settings,
-                        preferredEngine,
-                        DownloadSourceOrder.DeezerFlac);
 
                 var intent = new DownloadIntent
                 {
                     SourceService = DeezerSource,
                     SourceUrl = request.Url,
                     PreferredEngine = preferredEngine,
-                    Quality = quality,
                     ContentType = inferredContentType
                 };
 
@@ -1209,14 +1202,6 @@ namespace DeezSpoTag.Web.Controllers.Api
             if (string.IsNullOrWhiteSpace(intent.PreferredEngine))
             {
                 intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);
-            }
-
-            if (string.IsNullOrWhiteSpace(intent.Quality))
-            {
-                intent.Quality = ManualDownloadPreferenceResolver.ResolvePreferredQuality(
-                    settings,
-                    intent.PreferredEngine,
-                    DownloadSourceOrder.DeezerFlac);
             }
         }
 
