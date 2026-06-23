@@ -39,7 +39,10 @@ public sealed class DownloadEngineArtworkHelperTests
                 Logger: NullLogger.Instance),
             CancellationToken.None);
 
-        Assert.Empty(result);
+        Assert.Single(result);
+        Assert.Equal(
+            "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/x/y/z/cover.jpg/640x640bb.jpg",
+            result[0]);
     }
 
     [Fact]
@@ -70,7 +73,10 @@ public sealed class DownloadEngineArtworkHelperTests
                 Logger: NullLogger.Instance),
             CancellationToken.None);
 
-        Assert.Empty(result);
+        Assert.Single(result);
+        Assert.Equal(
+            "https://cdn-images.dzcdn.net/images/cover/example/1000x1000.jpg",
+            result[0]);
     }
 
     [Fact]

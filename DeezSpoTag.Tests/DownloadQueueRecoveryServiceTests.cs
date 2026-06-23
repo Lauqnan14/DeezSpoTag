@@ -208,6 +208,23 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             HttpClientFactory = new StubHttpClientFactory(new StubHttpMessageHandler(request =>
             {
                 var requestUri = request.RequestUri?.ToString() ?? string.Empty;
+                if (requestUri.Contains("api.song.link/v1-alpha.1/links", StringComparison.OrdinalIgnoreCase))
+                {
+                    const string songLinkJson = """
+{
+  "linksByPlatform": {
+    "spotify": { "url": "https://open.spotify.com/track/2f2ksxHYvYxfL8M4L4sKcA" },
+    "amazonMusic": { "url": "https://music.amazon.com/albums/B0TEST?trackAsin=B0TRACK" }
+  }
+}
+""";
+
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(songLinkJson)
+                    };
+                }
+
                 if (!requestUri.Contains("api.deezer.com/track/3094483121", StringComparison.OrdinalIgnoreCase))
                 {
                     return new HttpResponseMessage(HttpStatusCode.NotFound);

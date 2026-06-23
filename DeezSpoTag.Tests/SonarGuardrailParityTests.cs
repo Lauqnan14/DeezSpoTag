@@ -195,18 +195,16 @@ public sealed class SonarGuardrailParityTests
     public void AppleAtmosArtworkPrefetch_UsesSharedArtworkPreferenceFallbackAndDoesNotSkipArtistOnCoverFailure()
     {
         var root = FindRepoRoot();
-        var processorPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Apple", "AppleEngineProcessor.cs");
-        Assert.True(File.Exists(processorPath), $"File not found: {processorPath}");
+        var helperPath = Path.Combine(root, "DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+        Assert.True(File.Exists(helperPath), $"File not found: {helperPath}");
 
-        var source = File.ReadAllText(processorPath);
-        Assert.Contains("ResolvePrefetchCoverUrlsAsync(", source, StringComparison.Ordinal);
+        var source = File.ReadAllText(helperPath);
         Assert.Contains("DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(", source, StringComparison.Ordinal);
-        Assert.Contains("SavePrefetchCoverArtworkWithFallbackAsync(context, coverName, token)", source, StringComparison.Ordinal);
-        Assert.Contains("foreach (var coverUrl in context.CoverUrls)", source, StringComparison.Ordinal);
-        Assert.Contains("var failureReasons = new List<string>();", source, StringComparison.Ordinal);
-        Assert.Contains("failureReasons.Add(\"Album artwork download failed.\");", source, StringComparison.Ordinal);
-        Assert.Contains("failureReasons.Add(\"Artist artwork download failed.\");", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("return new PrefetchArtworkResult(false, \"Album artwork URL could not be resolved.\");", source, StringComparison.Ordinal);
+        Assert.Contains("RunArtworkPrefetchAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("TrySavePrimaryArtworkAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("TrySaveArtistArtworkAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("return new PrefetchArtworkResult(false, \"Album artwork download failed.\");", source, StringComparison.Ordinal);
+        Assert.Contains("new PrefetchArtworkResult(false, \"Artist artwork download failed.\");", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveCoverUrlWithFallbackAsync(", source, StringComparison.Ordinal);
     }
 

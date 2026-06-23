@@ -119,8 +119,13 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
     }
 
     [Fact]
-    public void ApplyResolvedLyricsForTagging_FillsUnsyncedAndSyncedWhenMissing()
+    public void HydrateLyricsFromSidecars_FillsUnsyncedAndSyncedWhenMissing()
     {
+        using var tmp = new TemporaryDirectory();
+        var outputPath = Path.Join(tmp.Path, "track.flac");
+        File.WriteAllText(Path.Join(tmp.Path, "track.lrc"), "[00:01.00]Line 1\n[00:02.00]Line 2\n");
+        File.WriteAllText(Path.Join(tmp.Path, "track.txt"), "Plain lyrics");
+
         var track = new Track
         {
             Title = "Song",
@@ -133,17 +138,8 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
             Lyrics = true,
             SyncedLyrics = true
         };
-        var lyrics = new LyricsSource
-        {
-            UnsyncedLyrics = "Plain lyrics",
-            SyncedLyrics =
-            [
-                new SynchronizedLyric("Line 1", "[00:01.00]", 1000),
-                new SynchronizedLyric("Line 2", "[00:02.00]", 2000)
-            ]
-        };
 
-        GetStaticMethod("ApplyResolvedLyricsForTagging").Invoke(null, [track, tagSettings, lyrics]);
+        GetStaticMethod("HydrateLyricsFromSidecars").Invoke(null, [track, outputPath, tagSettings]);
 
         Assert.Equal("Plain lyrics", track.Lyrics.Unsync);
         Assert.NotEmpty(track.Lyrics.Sync);

@@ -521,6 +521,7 @@ public sealed class EngineFallbackSearchService
         SongLinkResult? currentSongLink,
         SongLinkResult? candidateSongLink)
     {
+        ApplyRequestIdentityIfMissing(request, candidateSongLink);
         var candidateUrl = GetValidatedEngineUrl(candidateSongLink, request);
         if (!string.IsNullOrWhiteSpace(candidateUrl) || currentSongLink == null)
         {
@@ -528,6 +529,26 @@ public sealed class EngineFallbackSearchService
         }
 
         return (null, currentSongLink);
+    }
+
+    private static void ApplyRequestIdentityIfMissing(
+        EngineFallbackSearchRequest request,
+        SongLinkResult? candidateSongLink)
+    {
+        if (candidateSongLink == null)
+        {
+            return;
+        }
+
+        candidateSongLink.Isrc = string.IsNullOrWhiteSpace(candidateSongLink.Isrc)
+            ? request.Isrc
+            : candidateSongLink.Isrc;
+        candidateSongLink.SourceTitle = string.IsNullOrWhiteSpace(candidateSongLink.SourceTitle)
+            ? request.Title
+            : candidateSongLink.SourceTitle;
+        candidateSongLink.SourceArtist = string.IsNullOrWhiteSpace(candidateSongLink.SourceArtist)
+            ? request.Artist
+            : candidateSongLink.SourceArtist;
     }
 
     private static string? GetValidatedEngineUrl(SongLinkResult? songLink, EngineFallbackSearchRequest request)
