@@ -1441,6 +1441,9 @@ const tracklistExternalUrl = @Html.Raw(System.Text.Json.JsonSerializer.Serialize
 const tracklistType = '@Html.Raw(type)';
 const tracklistSource = '@Html.Raw(ViewData["Source"] ?? "deezer")';
 const tracklistQuery = new URLSearchParams(window.location.search);
+const tracklistRequestedQuality = String(tracklistQuery.get('quality') || '').trim();
+const tracklistRequestsTidalAtmos = (tracklistSource || '').toLowerCase() === 'tidal'
+    && tracklistRequestedQuality.toUpperCase() === 'DOLBY_ATMOS';
 const tracklistDiscoverAvatar = tracklistQuery.get('discoverAvatar') || '';
 const tracklistDiscoverHero = tracklistQuery.get('discoverHero') || '';
 const requestSource = '@Html.Raw(ViewData["Source"] ?? "")';
@@ -1936,7 +1939,8 @@ function updateTracklistLayoutState(tracks) {
     useUnifiedTracklistView = shouldUseUnifiedTracklistView(tracks);
     tracklistLayoutIsPlaylistLike = useUnifiedTracklistView || tracklistType !== 'album';
     const source = (requestSource || tracklistSource || '').toLowerCase();
-    tracklistIsAtmosView = source === 'apple' && Array.isArray(tracks) && tracks.some(track => track?.hasAtmos);
+    tracklistIsAtmosView = (source === 'apple' && Array.isArray(tracks) && tracks.some(track => track?.hasAtmos))
+        || (source === 'tidal' && tracklistRequestsTidalAtmos);
     tracklistIsVideoView = source === 'apple' && Array.isArray(tracks) && tracks.some(track => track?.isVideo);
     refreshDestinationSelectorLayoutState();
 }
@@ -4934,6 +4938,13 @@ function shouldShowQualityColumn() {
     return tracklistIsAtmosView;
 }
 
+function isAtmosTrackRow(track) {
+    return track?.hasAtmos === true
+        || track?.hasAtmos === 'true'
+        || track?.hasAtmos === 1
+        || (tracklistRequestsTidalAtmos && (tracklistSource || '').toLowerCase() === 'tidal');
+}
+
 async function refreshMonitoredPlaylistTrackLocationStatuses(isLocalSource) {
     monitoredPlaylistTrackStatuses = new Map();
     removeTrackLocationStatusColumn();
@@ -6026,6 +6037,9 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                                data-track-content-type="${isPodcastShow ? 'podcast' : 'track'}"
 	                           data-track-source="${rowSourceAttr}"
 	                           data-spotify-id="${spotifyId || ''}"
+	                           data-tidal-id="${escapeHtml(platformIds.tidalId || '')}"
+	                           data-qobuz-id="${escapeHtml(platformIds.qobuzId || '')}"
+	                           data-amazon-id="${escapeHtml(platformIds.amazonId || '')}"
 	                           data-track-link="${track.link || track.sourceUrl || track.appleUrl || ''}"
 	                           data-track-title="${escapeHtml(track.title || '')}"
 	                           data-track-artist="${escapeHtml(artistName || '')}"
@@ -6038,7 +6052,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                                data-track-token="${escapeHtml(playbackContext?.trackToken || '')}"
                                data-md5-origin="${escapeHtml(playbackContext?.md5origin || '')}"
                                data-media-version="${escapeHtml(playbackContext?.mv || '')}"
-                           data-track-has-atmos="${track.hasAtmos ? 'true' : 'false'}"
+                           data-track-has-atmos="${isAtmosTrackRow(track) ? 'true' : 'false'}"
                            data-track-has-apple-digital-master="${track.hasAppleDigitalMaster ? 'true' : 'false'}"
                            data-track-is-video="${track.isVideo ? 'true' : 'false'}"
                            data-track-duration-ms="${durationSeconds > 0 ? durationSeconds * 1000 : 0}"
@@ -6126,7 +6140,7 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
 }
 
 function renderQualityCell(track) {
-    if (!track.hasAtmos) return '';
+    if (!isAtmosTrackRow(track)) return '';
     const depth = track.bitDepth || '24B';
     const rate = track.sampleRate || '48kHz';
     const qualityText = [depth, rate].filter(Boolean).join(' · ');
@@ -7009,8 +7023,11 @@ async function downloadTracks(trackElements, triggerButton) {
                 const resolvedSourceUrl = source === 'deezer'
                     ? (availabilityUrl || deezerTrackUrl || sourceUrl)
                     : (availabilityUrl || sourceUrl);
-                const spotifyId = (trackElement.dataset.spotifyId || '').trim();
-                const isrc = (trackElement.dataset.trackIsrc || '').trim();
+	                const spotifyId = (trackElement.dataset.spotifyId || '').trim();
+	                const tidalId = (trackElement.dataset.tidalId || '').trim();
+	                const qobuzId = (trackElement.dataset.qobuzId || '').trim();
+	                const amazonId = (trackElement.dataset.amazonId || '').trim();
+	                const isrc = (trackElement.dataset.trackIsrc || '').trim();
                 const durationMs = parseInt(trackElement.dataset.trackDurationMs || '0', 10);
                 const position = parseInt(trackElement.dataset.trackPosition || '0', 10);
                 const normalizedSource = source;
@@ -7026,10 +7043,13 @@ async function downloadTracks(trackElements, triggerButton) {
                         : '',
                     isrc: isrc || undefined,
                     cover: trackElement.dataset.trackCover || '',
-                    durationMs: Number.isFinite(durationMs) ? durationMs : 0,
-                    position: Number.isFinite(position) ? position : 0,
-                    allowQualityUpgrade: true
-                };
+	                    durationMs: Number.isFinite(durationMs) ? durationMs : 0,
+	                    position: Number.isFinite(position) ? position : 0,
+	                    tidalId: tidalId || undefined,
+	                    qobuzId: qobuzId || undefined,
+	                    amazonId: amazonId || undefined,
+	                    allowQualityUpgrade: true
+	                };
 
                 if (source === 'spotify') {
                     const spotifyUrl = resolvedSourceUrl || (spotifyId ? `https://open.spotify.com/track/${spotifyId}` : '');
@@ -7103,10 +7123,20 @@ async function downloadTracks(trackElements, triggerButton) {
 
                 if (source === 'tidal' || source === 'amazon' || source === 'deezer') {
                     if (resolvedSourceUrl) {
+                        const isTidalAtmosRequest = source === 'tidal' && tracklistRequestsTidalAtmos;
                         requests.push({
                             url: resolvedSourceUrl,
                             destinationFolderId: stereoDestinationFolderId,
-                            metadata: source === 'deezer'
+                            metadata: isTidalAtmosRequest
+                                ? {
+                                    ...metadata,
+                                    sourceService: 'tidal',
+                                    sourceUrl: resolvedSourceUrl,
+                                    contentType: 'atmos',
+                                    hasAtmos: true,
+                                    quality: 'DOLBY_ATMOS'
+                                }
+                                : source === 'deezer'
                                 ? {
                                     ...metadata,
                                     sourceService: 'deezer',

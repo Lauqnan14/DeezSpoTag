@@ -1,5 +1,6 @@
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Core.Models.Settings;
 using Microsoft.Extensions.Logging;
 
@@ -77,66 +78,12 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
             return payload.AmazonId.Trim();
         }
 
-        var fromSource = TryExtractAmazonTrackId(payload.SourceUrl);
+        var fromSource = EngineLinkParser.TryExtractAmazonTrackId(payload.SourceUrl, TimeSpan.FromMilliseconds(250));
         if (!string.IsNullOrWhiteSpace(fromSource))
         {
             return fromSource;
         }
 
-        return TryExtractAmazonTrackId(payload.Url) ?? string.Empty;
-    }
-
-    private static string? TryExtractAmazonTrackId(string? url)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return null;
-        }
-
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
-        {
-            return null;
-        }
-
-        return TryExtractTrackAsinFromQuery(parsed.Query)
-            ?? TryExtractTrackIdFromPath(parsed.AbsolutePath);
-    }
-
-    private static string? TryExtractTrackAsinFromQuery(string? query)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return null;
-        }
-
-        var token = query.TrimStart('?')
-            .Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(value => value.Split('=', 2, StringSplitOptions.TrimEntries))
-            .FirstOrDefault(pair =>
-                pair.Length == 2 &&
-                pair[0].Equals("trackAsin", StringComparison.OrdinalIgnoreCase));
-
-        if (token == null || token.Length != 2)
-        {
-            return null;
-        }
-
-        var value = Uri.UnescapeDataString(token[1]);
-        return string.IsNullOrWhiteSpace(value) ? null : value;
-    }
-
-    private static string? TryExtractTrackIdFromPath(string absolutePath)
-    {
-        var segments = absolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var trackIndex = Array.FindIndex(segments, segment =>
-            segment.Equals("tracks", StringComparison.OrdinalIgnoreCase));
-        if (trackIndex < 0 || trackIndex >= segments.Length - 1)
-        {
-            return null;
-        }
-
-        var candidate = segments[trackIndex + 1];
-        return string.IsNullOrWhiteSpace(candidate) ? null : candidate;
+        return EngineLinkParser.TryExtractAmazonTrackId(payload.Url, TimeSpan.FromMilliseconds(250)) ?? string.Empty;
     }
 }

@@ -13,12 +13,17 @@ public sealed record EngineFallbackSearchRequest(
     string SourceUrl,
     string SpotifyId,
     string AppleId,
+    string QobuzId,
+    string TidalId,
+    string AmazonId,
     string? Isrc,
     string Title,
     string Artist,
     string Album,
     int? DurationMs,
     string DeezerId,
+    string Quality,
+    string ContentType,
     string Storefront,
     string Language,
     string? MediaUserToken,
@@ -99,6 +104,18 @@ public sealed class EngineFallbackSearchService
             && !string.IsNullOrWhiteSpace(normalizedDeezerId))
         {
             return new EngineFallbackSearchResult($"https://www.deezer.com/track/{normalizedDeezerId}", "deezer-id");
+        }
+
+        if (string.Equals(request.Engine, QobuzEngine, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(request.QobuzId))
+        {
+            return new EngineFallbackSearchResult($"https://play.qobuz.com/track/{Uri.EscapeDataString(request.QobuzId.Trim())}", "qobuz-id");
+        }
+
+        if (string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(request.TidalId))
+        {
+            return new EngineFallbackSearchResult($"https://tidal.com/browse/track/{Uri.EscapeDataString(request.TidalId.Trim())}", "tidal-id");
         }
 
         var appleUrl = await TryBuildAppleFallbackUrlAsync(request, cancellationToken);
@@ -190,13 +207,25 @@ public sealed class EngineFallbackSearchService
         var durationSeconds = request.DurationMs.HasValue && request.DurationMs.Value > 0
             ? (int)Math.Round(request.DurationMs.Value / 1000d)
             : 0;
-        return await _tidalDownloadService.ResolveTrackUrlAsync(
-            request.Title,
-            request.Artist,
-            request.Isrc ?? string.Empty,
-            durationSeconds,
-            cancellationToken);
+        return IsAtmosRequest(request)
+            ? await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
+                request.Title,
+                request.Artist,
+                request.Isrc ?? string.Empty,
+                durationSeconds,
+                cancellationToken)
+            : await _tidalDownloadService.ResolveTrackUrlAsync(
+                request.Title,
+                request.Artist,
+                request.Isrc ?? string.Empty,
+                durationSeconds,
+                cancellationToken);
     }
+
+    private static bool IsAtmosRequest(EngineFallbackSearchRequest request)
+        => string.Equals(request.ContentType?.Trim(), "atmos", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(request.Quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(request.Quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase);
 
     private async Task<string?> TryBuildAppleFallbackUrlAsync(
         EngineFallbackSearchRequest request,

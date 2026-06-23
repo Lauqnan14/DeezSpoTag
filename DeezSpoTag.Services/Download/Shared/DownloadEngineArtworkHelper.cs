@@ -13,8 +13,6 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 public static class DownloadEngineArtworkHelper
 {
-    private const string MzStaticHost = "mzstatic.com";
-
     public sealed record StandardAudioCoverResolveRequest(
         DeezSpoTagSettings Settings,
         AppleMusicCatalogService? AppleCatalog,
@@ -36,12 +34,9 @@ public static class DownloadEngineArtworkHelper
         string OutputPath,
         Track Track,
         DeezSpoTagSettings Settings,
-        string? CoverUrl,
         string EmbedPrefix,
-        ImageDownloader ImageDownloader,
         AudioTagger AudioTagger,
-        ILogger Logger,
-        IReadOnlyList<string>? CoverUrls = null);
+        ILogger Logger);
 
     public sealed record ArtistImageResolveRequest(
         AppleMusicCatalogService? AppleCatalog,
@@ -68,14 +63,6 @@ public static class DownloadEngineArtworkHelper
         ILogger Logger,
         bool SingleJpegForNonApple = false);
 
-    public static async Task<string?> ResolveStandardAudioCoverUrlAsync(
-        StandardAudioCoverResolveRequest request,
-        CancellationToken cancellationToken)
-    {
-        var coverUrls = await ResolveStandardAudioCoverUrlsAsync(request, cancellationToken);
-        return coverUrls.Count > 0 ? coverUrls[0] : null;
-    }
-
     public static async Task<IReadOnlyList<string>> ResolveStandardAudioCoverUrlsAsync(
         StandardAudioCoverResolveRequest request,
         CancellationToken cancellationToken)
@@ -83,6 +70,8 @@ public static class DownloadEngineArtworkHelper
         var fallbackOrder = ArtworkFallbackHelper.ResolveOrder(request.Settings);
         var coverUrls = new List<string>();
         var rejectCompilationAlbumCandidate = ShouldRejectCompilationArtworkForRequest(request);
+
+        AddCoverUrl(coverUrls, request.PayloadCover);
 
         foreach (var fallback in fallbackOrder)
         {
@@ -128,30 +117,24 @@ public static class DownloadEngineArtworkHelper
                     break;
             }
 
-            if (!string.IsNullOrWhiteSpace(coverUrl))
-            {
-                var normalizedCoverUrl = coverUrl.Trim();
-                if (!coverUrls.Contains(normalizedCoverUrl, StringComparer.OrdinalIgnoreCase))
-                {
-                    coverUrls.Add(normalizedCoverUrl);
-                }
-            }
-        }
-
-        // Payload-provided cover URL is only a fallback when artwork fallback is explicitly enabled
-        // with more than one configured source. A single-source preference must stay strict.
-        if (request.Settings.ArtworkFallbackEnabled
-            && fallbackOrder.Count > 1
-            && !string.IsNullOrWhiteSpace(request.PayloadCover))
-        {
-            var normalizedPayloadCover = request.PayloadCover.Trim();
-            if (!coverUrls.Contains(normalizedPayloadCover, StringComparer.OrdinalIgnoreCase))
-            {
-                coverUrls.Add(normalizedPayloadCover);
-            }
+            AddCoverUrl(coverUrls, coverUrl);
         }
 
         return coverUrls;
+    }
+
+    private static void AddCoverUrl(List<string> coverUrls, string? coverUrl)
+    {
+        if (string.IsNullOrWhiteSpace(coverUrl))
+        {
+            return;
+        }
+
+        var normalizedCoverUrl = coverUrl.Trim();
+        if (!coverUrls.Contains(normalizedCoverUrl, StringComparer.OrdinalIgnoreCase))
+        {
+            coverUrls.Add(normalizedCoverUrl);
+        }
     }
 
     private static bool ShouldRejectCompilationArtworkForRequest(StandardAudioCoverResolveRequest request)
@@ -173,9 +156,6 @@ public static class DownloadEngineArtworkHelper
         AudioTagWithCoverRequest request,
         CancellationToken cancellationToken)
     {
-        var coverUrls = NormalizeCoverUrls(request);
-        await TryEmbedCoverAsync(request, coverUrls, cancellationToken);
-
         try
         {
             await request.AudioTagger.TagTrackAsync(request.OutputPath, request.Track, request.Settings);
@@ -187,90 +167,6 @@ public static class DownloadEngineArtworkHelper
                 $"{request.EmbedPrefix} tagging failed for '{request.OutputPath}'.",
                 ex);
         }
-    }
-
-    private static List<string> NormalizeCoverUrls(AudioTagWithCoverRequest request)
-    {
-        var coverUrls = request.CoverUrls?
-            .Where(url => !string.IsNullOrWhiteSpace(url))
-            .Select(url => url!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList() ?? new List<string>();
-        if (coverUrls.Count == 0 && !string.IsNullOrWhiteSpace(request.CoverUrl))
-        {
-            coverUrls.Add(request.CoverUrl.Trim());
-        }
-
-        return coverUrls;
-    }
-
-    private static async Task TryEmbedCoverAsync(
-        AudioTagWithCoverRequest request,
-        List<string> coverUrls,
-        CancellationToken cancellationToken)
-    {
-        if (request.Settings.Tags?.Cover != true
-            || coverUrls.Count == 0
-            || request.Track.Album == null)
-        {
-            return;
-        }
-
-        var embedSize = request.Settings.EmbedMaxQualityCover
-            ? request.Settings.LocalArtworkSize
-            : request.Settings.EmbeddedArtworkSize;
-        foreach (var coverUrl in coverUrls)
-        {
-            var downloadedCover = await DownloadEmbeddedCoverAsync(request, coverUrl, embedSize, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(downloadedCover))
-            {
-                request.Track.Album.EmbeddedCoverPath = downloadedCover;
-                return;
-            }
-        }
-    }
-
-    private static async Task<string?> DownloadEmbeddedCoverAsync(
-        AudioTagWithCoverRequest request,
-        string coverUrl,
-        int embedSize,
-        CancellationToken cancellationToken)
-    {
-        var isAppleCover = coverUrl.Contains(MzStaticHost, StringComparison.OrdinalIgnoreCase);
-        var embedPath = Path.Join(Path.GetTempPath(), $"{request.EmbedPrefix}-embed-{Guid.NewGuid():N}{ResolveEmbeddedCoverExtension(request, coverUrl, isAppleCover)}");
-        if (isAppleCover)
-        {
-            return await AppleQueueHelpers.DownloadAppleArtworkAsync(
-                request.ImageDownloader,
-                new AppleQueueHelpers.AppleArtworkDownloadRequest
-                {
-                    RawUrl = coverUrl,
-                    OutputPath = embedPath,
-                    Settings = request.Settings,
-                    Size = embedSize,
-                    Overwrite = request.Settings.OverwriteFile,
-                    PreferMaxQuality = true,
-                    Logger = request.Logger
-                },
-                cancellationToken);
-        }
-
-        return await request.ImageDownloader.DownloadImageAsync(
-            coverUrl,
-            embedPath,
-            request.Settings.OverwriteFile,
-            true,
-            cancellationToken);
-    }
-
-    private static string ResolveEmbeddedCoverExtension(AudioTagWithCoverRequest request, string coverUrl, bool isAppleCover)
-    {
-        if (isAppleCover)
-        {
-            return $".{AppleQueueHelpers.GetAppleArtworkExtension(coverUrl, AppleQueueHelpers.GetAppleArtworkFormat(request.Settings))}";
-        }
-
-        return coverUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? ".png" : ".jpg";
     }
 
     public static async Task<string?> ResolveArtistImageUrlAsync(

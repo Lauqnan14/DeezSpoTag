@@ -552,9 +552,19 @@ public sealed class DownloadDedupeService
     private static string? ResolveIntentSourceId(DownloadIntent intent, string source)
     {
         return FirstNonEmpty(
+            ReadStringProperty(intent, ResolveIntentSourcePropertyName(source)),
             ExtractSourceTrackId(intent.SourceUrl, source),
             ExtractSourceTrackId(intent.Url, source));
     }
+
+    private static string ResolveIntentSourcePropertyName(string source)
+        => source.ToLowerInvariant() switch
+        {
+            QobuzPlatform => "QobuzId",
+            TidalPlatform => "TidalId",
+            AmazonPlatform or AmazonMusicPlatform => "AmazonId",
+            _ => string.Empty
+        };
 
     private static string? ReadStringProperty(object instance, string propertyName)
     {

@@ -76,6 +76,9 @@ internal static class RequestBuilderCommon
         request.SpotifyDiscNumber = item.SpotifyDiscNumber;
         request.SpotifyTotalTracks = item.SpotifyTotalTracks;
         request.SpotifyId = item.SpotifyId;
+        request.QobuzId = item.QobuzId;
+        request.TidalId = item.TidalId;
+        request.AmazonId = item.AmazonId;
         request.ServiceUrl = item.SourceUrl;
         request.RequestedLocalQualityRank = ResolveRequestedLocalQualityRank(item.Quality);
     }

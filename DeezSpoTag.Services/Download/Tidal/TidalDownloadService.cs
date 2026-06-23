@@ -81,6 +81,13 @@ public sealed class TidalDownloadService
 
         Directory.CreateDirectory(request.OutputDir);
         string? tidalUrl = request.ServiceUrl;
+        if (string.IsNullOrWhiteSpace(tidalUrl)
+            && long.TryParse(request.TidalId, out var tidalTrackId)
+            && tidalTrackId > 0)
+        {
+            tidalUrl = BuildTidalTrackListenUrl(tidalTrackId);
+        }
+
         if (string.IsNullOrWhiteSpace(tidalUrl) && !string.IsNullOrWhiteSpace(request.SpotifyId))
         {
             tidalUrl = await GetTidalUrlFromSpotifyAsync(request.SpotifyId, cancellationToken);
@@ -99,10 +106,11 @@ public sealed class TidalDownloadService
             catch (Exception ex) when (ex is HttpRequestException || ex is InvalidOperationException)
             {
                 _logger.LogWarning(ex, "Tidal URL download failed. Url={Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(tidalUrl));
+                throw new InvalidOperationException($"Tidal URL download failed: {ex.Message}", ex);
             }
         }
 
-        throw new InvalidOperationException("Tidal download requires a valid service URL or Spotify ID for native link regeneration.");
+        throw new InvalidOperationException("Tidal download requires a valid Tidal ID, service URL, or Spotify ID for native link regeneration.");
     }
 
     public Task<string> ResolveVideoStreamUrlAsync(long videoId, CancellationToken cancellationToken)
@@ -240,7 +248,8 @@ public sealed class TidalDownloadService
             UseAlbumTrackNumber = request.UseAlbumTrackNumber,
             Sanitize = value => DownloadFileUtilities.SanitizeFilename(value)
         };
-        var outputPath = AudioFilePathHelper.BuildOutputPath(outputPathContext, ".flac");
+        var isAtmosRequest = IsTidalAtmosRequest(request);
+        var outputPath = AudioFilePathHelper.BuildOutputPath(outputPathContext, isAtmosRequest ? ".m4a" : ".flac");
         await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
 
         var candidateUrls = await GetDownloadUrlCandidatesAsync(trackInfo.Id, request.Quality, cancellationToken);
@@ -249,6 +258,7 @@ public sealed class TidalDownloadService
             candidateUrls,
             outputPath,
             expectedDurationSeconds,
+            isAtmosRequest,
             progressCallback,
             cancellationToken);
         return outputPath;
@@ -994,7 +1004,7 @@ public sealed class TidalDownloadService
     {
         if (url.StartsWith(ManifestPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            await DownloadFromManifestAsync(url.Substring(ManifestPrefix.Length), outputPath, progressCallback, cancellationToken);
+            await DownloadFromManifestAsync(url, outputPath, preserveManifestAudio: false, progressCallback, cancellationToken);
             return;
         }
 
@@ -1023,6 +1033,7 @@ public sealed class TidalDownloadService
         IReadOnlyList<string> candidateUrls,
         string outputPath,
         int expectedDurationSeconds,
+        bool preserveManifestAudio,
         Func<double, double, Task>? progressCallback,
         CancellationToken cancellationToken)
     {
@@ -1035,8 +1046,8 @@ public sealed class TidalDownloadService
                 : $"{outputPath}.candidate-{index + 1}.tmp";
             try
             {
-                await DownloadFileAsync(candidateUrl, candidateOutputPath, progressCallback, cancellationToken);
-                if (IsDurationAcceptable(candidateOutputPath, expectedDurationSeconds, out var actualDurationSeconds))
+                await DownloadManifestCandidateAsync(candidateUrl, candidateOutputPath, preserveManifestAudio, progressCallback, cancellationToken);
+                if (IsDownloadedCandidateAcceptable(candidateOutputPath, expectedDurationSeconds, preserveManifestAudio, out var actualDurationSeconds))
                 {
                     if (!string.Equals(candidateOutputPath, outputPath, StringComparison.Ordinal))
                     {
@@ -1078,6 +1089,27 @@ public sealed class TidalDownloadService
         throw new InvalidOperationException("Tidal download failed before any audio candidate completed.");
     }
 
+    private async Task DownloadManifestCandidateAsync(
+        string candidateUrl,
+        string candidateOutputPath,
+        bool preserveManifestAudio,
+        Func<double, double, Task>? progressCallback,
+        CancellationToken cancellationToken)
+    {
+        if (candidateUrl.StartsWith(ManifestPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            await DownloadFromManifestAsync(candidateUrl, candidateOutputPath, preserveManifestAudio, progressCallback, cancellationToken);
+            return;
+        }
+
+        if (preserveManifestAudio)
+        {
+            throw new InvalidOperationException("Tidal Atmos download requires an Atmos manifest; direct stereo assets are not accepted.");
+        }
+
+        await DownloadFileAsync(candidateUrl, candidateOutputPath, progressCallback, cancellationToken);
+    }
+
     private static void DeleteCandidateArtifacts(string candidateOutputPath)
     {
         DownloadFileUtilities.TryDeleteFile(candidateOutputPath);
@@ -1089,12 +1121,23 @@ public sealed class TidalDownloadService
         }
     }
 
-    private async Task DownloadFromManifestAsync(string manifestB64, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
+    private async Task DownloadFromManifestAsync(
+        string manifestB64,
+        string outputPath,
+        bool preserveManifestAudio,
+        Func<double, double, Task>? progressCallback,
+        CancellationToken cancellationToken)
     {
-        var (directUrl, initUrl, mediaUrls, mimeType) = ParseManifest(manifestB64);
+        var manifest = ParseManifest(manifestB64);
+        if (preserveManifestAudio && !IsAtmosManifest(manifest))
+        {
+            throw new InvalidOperationException("Tidal Atmos manifest validation failed; provider returned a non-Atmos asset.");
+        }
+
+        var (directUrl, initUrl, mediaUrls, mimeType) = manifest;
         if (!string.IsNullOrWhiteSpace(directUrl))
         {
-            if (IsLikelyFlacMimeType(mimeType) || string.IsNullOrWhiteSpace(mimeType))
+            if (preserveManifestAudio || IsLikelyFlacMimeType(mimeType) || string.IsNullOrWhiteSpace(mimeType))
             {
                 await DownloadFileAsync(directUrl, outputPath, progressCallback, cancellationToken);
                 return;
@@ -1111,7 +1154,7 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Invalid manifest");
         }
 
-        var tempPath = outputPath + ".m4a.tmp";
+        var tempPath = preserveManifestAudio ? outputPath : outputPath + ".m4a.tmp";
         await using var output = IOFile.Create(tempPath);
         var totalSegments = 1 + mediaUrls.Count;
         var completed = 0;
@@ -1139,6 +1182,11 @@ public sealed class TidalDownloadService
         }
 
         output.Close();
+        if (preserveManifestAudio)
+        {
+            return;
+        }
+
         await ConvertTempToFlacAsync(tempPath, outputPath, cancellationToken);
     }
 
@@ -1150,17 +1198,23 @@ public sealed class TidalDownloadService
         await stream.CopyToAsync(output, cancellationToken);
     }
 
-    private static (string DirectUrl, string InitUrl, List<string> MediaUrls, string MimeType) ParseManifest(string manifestPayload)
+    private static TidalManifestInfo ParseManifest(string manifestPayload)
     {
         var manifestStr = TryDecodeManifest(manifestPayload);
         if (TryParseBtsManifest(manifestStr, out var btsManifest))
         {
-            return btsManifest;
+            return btsManifest with { RawText = manifestStr };
         }
 
-        if (TryParseDashTemplate(manifestStr, out var initUrl, out var mediaTemplate, out var startNumber, out var segmentCount, out var dashMimeType))
+        if (TryParseDashTemplate(manifestStr, out var initUrl, out var mediaTemplate, out var startNumber, out var segmentCount, out var dashMimeType, out var dashCodecs))
         {
-            return ("", initUrl, BuildDashMediaUrls(mediaTemplate, startNumber, segmentCount), dashMimeType);
+            return new TidalManifestInfo(
+                string.Empty,
+                initUrl,
+                BuildDashMediaUrls(mediaTemplate, startNumber, segmentCount),
+                dashMimeType,
+                dashCodecs,
+                manifestStr);
         }
 
         return ParseDashFallbackManifest(manifestStr);
@@ -1168,9 +1222,9 @@ public sealed class TidalDownloadService
 
     private static bool TryParseBtsManifest(
         string manifestStr,
-        out (string DirectUrl, string InitUrl, List<string> MediaUrls, string MimeType) manifest)
+        out TidalManifestInfo manifest)
     {
-        manifest = default;
+        manifest = TidalManifestInfo.Empty;
         if (!manifestStr.StartsWith('{'))
         {
             return false;
@@ -1182,7 +1236,13 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("No URLs in manifest");
         }
 
-        manifest = (bts.Urls[0], "", new List<string>(), bts.MimeType ?? "");
+        manifest = new TidalManifestInfo(
+            bts.Urls[0],
+            string.Empty,
+            new List<string>(),
+            bts.MimeType ?? string.Empty,
+            bts.Codecs ?? string.Empty,
+            manifestStr);
         return true;
     }
 
@@ -1198,7 +1258,7 @@ public sealed class TidalDownloadService
         return mediaUrls;
     }
 
-    private static (string DirectUrl, string InitUrl, List<string> MediaUrls, string MimeType) ParseDashFallbackManifest(string manifestStr)
+    private static TidalManifestInfo ParseDashFallbackManifest(string manifestStr)
     {
         var initRe = MatchWithTimeout(manifestStr, "initialization=\"([^\"]+)\"");
         var mediaRe = MatchWithTimeout(manifestStr, "media=\"([^\"]+)\"");
@@ -1216,7 +1276,13 @@ public sealed class TidalDownloadService
             mediaUrlsFallback.Add(ReplaceNumberPlaceholder(mediaFallback, i + 1));
         }
 
-        return ("", initFallback, mediaUrlsFallback, ExtractDashMimeType(manifestStr));
+        return new TidalManifestInfo(
+            string.Empty,
+            initFallback,
+            mediaUrlsFallback,
+            ExtractDashMimeType(manifestStr),
+            ExtractDashCodecs(manifestStr),
+            manifestStr);
     }
 
     private static int CountFallbackSegments(string manifestStr)
@@ -1246,13 +1312,15 @@ public sealed class TidalDownloadService
         out string mediaTemplate,
         out int startNumber,
         out int segmentCount,
-        out string mimeType)
+        out string mimeType,
+        out string codecs)
     {
         initUrl = string.Empty;
         mediaTemplate = string.Empty;
         startNumber = 1;
         segmentCount = 0;
         mimeType = string.Empty;
+        codecs = string.Empty;
 
         try
         {
@@ -1262,7 +1330,7 @@ public sealed class TidalDownloadService
             };
             doc.LoadXml(manifestXml);
 
-            var (selectedTemplate, selectedMime) = SelectBestAudioSegmentTemplate(doc);
+            var (selectedTemplate, selectedMime, selectedCodecs) = SelectBestAudioSegmentTemplate(doc);
 
             if (selectedTemplate == null)
             {
@@ -1274,9 +1342,10 @@ public sealed class TidalDownloadService
                 return false;
             }
 
-            (initUrl, mediaTemplate, startNumber, segmentCount, mimeType) = BuildDashTemplateMetadata(
+            (initUrl, mediaTemplate, startNumber, segmentCount, mimeType, codecs) = BuildDashTemplateMetadata(
                 selectedTemplate,
                 selectedMime,
+                selectedCodecs,
                 manifestXml);
             return !string.IsNullOrWhiteSpace(initUrl) && !string.IsNullOrWhiteSpace(mediaTemplate);
         }
@@ -1286,13 +1355,13 @@ public sealed class TidalDownloadService
         }
     }
 
-    private static (XmlNode? Template, string? MimeType) SelectBestAudioSegmentTemplate(XmlDocument doc)
+    private static (XmlNode? Template, string? MimeType, string? Codecs) SelectBestAudioSegmentTemplate(XmlDocument doc)
     {
-        var selection = new DashTemplateSelection(null, int.MinValue, null);
+        var selection = new DashTemplateSelection(null, int.MinValue, null, null);
         var adaptationSets = doc.SelectNodes("//*[local-name()='AdaptationSet']");
         if (adaptationSets == null)
         {
-            return (null, null);
+            return (null, null, null);
         }
 
         foreach (XmlNode adaptationSet in adaptationSets)
@@ -1300,7 +1369,7 @@ public sealed class TidalDownloadService
             selection = TrySelectAudioTemplateFromAdaptationSet(adaptationSet, selection);
         }
 
-        return (selection.Template, selection.MimeType);
+        return (selection.Template, selection.MimeType, selection.Codecs);
     }
 
     private static DashTemplateSelection TrySelectAudioTemplateFromAdaptationSet(
@@ -1336,7 +1405,7 @@ public sealed class TidalDownloadService
             return selection;
         }
 
-        return new DashTemplateSelection(adaptationTemplate, 0, adaptationMime);
+        return new DashTemplateSelection(adaptationTemplate, 0, adaptationMime, string.Empty);
     }
 
     private static DashTemplateSelection TrySelectAudioRepresentationTemplate(
@@ -1360,7 +1429,7 @@ public sealed class TidalDownloadService
             || (!string.IsNullOrWhiteSpace(mimeCandidate)
                 && mimeCandidate.Contains(AudioKeyword, StringComparison.OrdinalIgnoreCase))
             || (!string.IsNullOrWhiteSpace(representationCodecs)
-                && representationCodecs.Contains("flac", StringComparison.OrdinalIgnoreCase));
+                && IsAudioCodec(representationCodecs));
         if (!representationLooksAudio)
         {
             return selection;
@@ -1372,14 +1441,15 @@ public sealed class TidalDownloadService
             return selection;
         }
 
-        return new DashTemplateSelection(templateNode, bandwidth, mimeCandidate);
+        return new DashTemplateSelection(templateNode, bandwidth, mimeCandidate, representationCodecs);
     }
 
-    private readonly record struct DashTemplateSelection(XmlNode? Template, int Bandwidth, string? MimeType);
+    private readonly record struct DashTemplateSelection(XmlNode? Template, int Bandwidth, string? MimeType, string? Codecs);
 
-    private static (string InitUrl, string MediaTemplate, int StartNumber, int SegmentCount, string MimeType) BuildDashTemplateMetadata(
+    private static (string InitUrl, string MediaTemplate, int StartNumber, int SegmentCount, string MimeType, string Codecs) BuildDashTemplateMetadata(
         XmlNode selectedTemplate,
         string? selectedMime,
+        string? selectedCodecs,
         string manifestXml)
     {
         var initUrl = DecodeXmlUrl(selectedTemplate.Attributes?["initialization"]?.Value ?? string.Empty);
@@ -1405,7 +1475,11 @@ public sealed class TidalDownloadService
             ? selectedMime
             : ExtractDashMimeType(manifestXml);
 
-        return (initUrl, mediaTemplate, startNumber, segmentCount, mimeType);
+        var codecs = !string.IsNullOrWhiteSpace(selectedCodecs)
+            ? selectedCodecs
+            : ExtractDashCodecs(manifestXml);
+
+        return (initUrl, mediaTemplate, startNumber, segmentCount, mimeType, codecs);
     }
 
     private static int CountDashSegments(XmlNode node)
@@ -1495,15 +1569,68 @@ public sealed class TidalDownloadService
             : string.Empty;
     }
 
+    private static string ExtractDashCodecs(string manifestXml)
+    {
+        if (string.IsNullOrWhiteSpace(manifestXml))
+        {
+            return string.Empty;
+        }
+
+        var codecMatches = MatchesWithTimeout(manifestXml, "codecs=\"([^\"]+)\"", RegexOptions.IgnoreCase);
+        return codecMatches.Count > 0 && codecMatches[0].Groups.Count > 1
+            ? codecMatches[0].Groups[1].Value
+            : string.Empty;
+    }
+
+    private static bool IsAudioCodec(string codec)
+    {
+        return codec.Contains("flac", StringComparison.OrdinalIgnoreCase)
+            || codec.Contains("ec-3", StringComparison.OrdinalIgnoreCase)
+            || codec.Contains("eac3", StringComparison.OrdinalIgnoreCase)
+            || codec.Contains("mp4a", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsLikelyFlacMimeType(string mimeType)
     {
         return !string.IsNullOrWhiteSpace(mimeType)
             && mimeType.Contains("flac", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsTidalAtmosRequest(TidalDownloadRequest request)
+    {
+        return string.Equals(NormalizeTidalDownloadQuality(request.Quality), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAtmosManifest(TidalManifestInfo manifest)
+    {
+        return ContainsAtmosSignal(manifest.MimeType)
+            || ContainsAtmosSignal(manifest.Codecs)
+            || ContainsAtmosSignal(manifest.RawText);
+    }
+
+    private static bool ContainsAtmosSignal(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && (value.Contains("EAC3_JOC", StringComparison.OrdinalIgnoreCase)
+                || value.Contains("DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)
+                || value.Contains("ATMOS", StringComparison.OrdinalIgnoreCase)
+                || value.Contains("JOC", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static int ResolveExpectedDurationSeconds(int requestDurationSeconds, int trackInfoDurationSeconds)
     {
         return requestDurationSeconds > 0 ? requestDurationSeconds : Math.Max(0, trackInfoDurationSeconds);
+    }
+
+    private static bool IsDownloadedCandidateAcceptable(
+        string filePath,
+        int expectedDurationSeconds,
+        bool preserveManifestAudio,
+        out double actualDurationSeconds)
+    {
+        return preserveManifestAudio
+            ? IsAtmosDurationAcceptable(filePath, expectedDurationSeconds, out actualDurationSeconds)
+            : IsDurationAcceptable(filePath, expectedDurationSeconds, out actualDurationSeconds);
     }
 
     private static bool IsDurationAcceptable(string filePath, int expectedDurationSeconds, out double actualDurationSeconds)
@@ -1532,7 +1659,123 @@ public sealed class TidalDownloadService
         }
     }
 
+    private static bool IsAtmosDurationAcceptable(string filePath, int expectedDurationSeconds, out double actualDurationSeconds)
+    {
+        actualDurationSeconds = 0;
+        if (expectedDurationSeconds <= 0 || !IOFile.Exists(filePath))
+        {
+            return true;
+        }
+
+        if (!TryReadFfprobeAtmosAudio(filePath, out actualDurationSeconds))
+        {
+            return false;
+        }
+
+        var allowedDelta = Math.Max(5d, expectedDurationSeconds * 0.12d);
+        return Math.Abs(actualDurationSeconds - expectedDurationSeconds) <= allowedDelta;
+    }
+
+    private static bool TryReadFfprobeAtmosAudio(string filePath, out double durationSeconds)
+    {
+        durationSeconds = 0;
+        var ffprobePath = ResolveFfprobePath();
+        if (string.IsNullOrWhiteSpace(ffprobePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var startInfo = ExternalToolProcessStartInfo.CreateRedirected(ffprobePath);
+            startInfo.ArgumentList.Add("-v");
+            startInfo.ArgumentList.Add("error");
+            startInfo.ArgumentList.Add("-select_streams");
+            startInfo.ArgumentList.Add("a:0");
+            startInfo.ArgumentList.Add("-show_entries");
+            startInfo.ArgumentList.Add("stream=codec_name,codec_tag_string:format=duration");
+            startInfo.ArgumentList.Add("-of");
+            startInfo.ArgumentList.Add("json");
+            startInfo.ArgumentList.Add(filePath);
+
+            using var process = Process.Start(startInfo);
+            if (process == null)
+            {
+                return false;
+            }
+
+            var stdout = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(5000))
+            {
+                TryKillProcess(process);
+                return false;
+            }
+
+            if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
+            {
+                return false;
+            }
+
+            using var doc = JsonDocument.Parse(stdout);
+            return TryReadAtmosProbe(doc.RootElement, out durationSeconds);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadAtmosProbe(JsonElement root, out double durationSeconds)
+    {
+        durationSeconds = 0;
+        if (!root.TryGetProperty("streams", out var streams) || streams.GetArrayLength() == 0)
+        {
+            return false;
+        }
+
+        var stream = streams[0];
+        var codec = stream.TryGetProperty("codec_name", out var codecElement)
+            ? codecElement.GetString()
+            : string.Empty;
+        var codecTag = stream.TryGetProperty("codec_tag_string", out var codecTagElement)
+            ? codecTagElement.GetString()
+            : string.Empty;
+        if (!IsAtmosAudioCodec(codec) && !IsAtmosAudioCodec(codecTag))
+        {
+            return false;
+        }
+
+        if (!root.TryGetProperty("format", out var format)
+            || !format.TryGetProperty("duration", out var durationElement)
+            || !double.TryParse(durationElement.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out durationSeconds))
+        {
+            return false;
+        }
+
+        return durationSeconds > 0;
+    }
+
+    private static bool IsAtmosAudioCodec(string? codec)
+    {
+        return !string.IsNullOrWhiteSpace(codec)
+            && (codec.Contains("eac3", StringComparison.OrdinalIgnoreCase)
+                || codec.Contains("ec-3", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void TryKillProcess(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+        }
+    }
+
     private static string? ResolveFfmpegPath() => ExternalToolResolver.ResolveFfmpegPath();
+
+    private static string? ResolveFfprobePath() => ExternalToolResolver.ResolveFfprobePath();
 
     private static async Task ConvertTempToFlacAsync(
         string tempPath,
@@ -1697,6 +1940,11 @@ public sealed class TidalDownloadService
         if (string.IsNullOrWhiteSpace(payload))
         {
             return "";
+        }
+
+        if (payload.StartsWith(ManifestPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            payload = payload[ManifestPrefix.Length..];
         }
 
         try
@@ -2313,5 +2561,30 @@ public sealed class TidalDownloadService
 
         [JsonPropertyName("urls")]
         public List<string> Urls { get; set; } = new();
+    }
+
+    private sealed record TidalManifestInfo(
+        string DirectUrl,
+        string InitUrl,
+        List<string> MediaUrls,
+        string MimeType,
+        string Codecs,
+        string RawText)
+    {
+        public static readonly TidalManifestInfo Empty = new(
+            string.Empty,
+            string.Empty,
+            new List<string>(),
+            string.Empty,
+            string.Empty,
+            string.Empty);
+
+        public void Deconstruct(out string directUrl, out string initUrl, out List<string> mediaUrls, out string mimeType)
+        {
+            directUrl = DirectUrl;
+            initUrl = InitUrl;
+            mediaUrls = MediaUrls;
+            mimeType = MimeType;
+        }
     }
 }

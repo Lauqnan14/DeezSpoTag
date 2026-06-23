@@ -19,6 +19,9 @@ public abstract class EngineDownloadRequestBase
     public int SpotifyDiscNumber { get; set; }
     public int SpotifyTotalTracks { get; set; }
     public string SpotifyId { get; set; } = "";
+    public string QobuzId { get; set; } = "";
+    public string TidalId { get; set; } = "";
+    public string AmazonId { get; set; } = "";
     public string ServiceUrl { get; set; } = "";
     public int? RequestedLocalQualityRank { get; set; }
 }

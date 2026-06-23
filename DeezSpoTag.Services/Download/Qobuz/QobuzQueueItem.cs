@@ -12,7 +12,6 @@ public sealed class QobuzQueueItem : EngineQueueItemBase
         SourceService = "qobuz";
     }
 
-    public string QobuzId { get; set; } = "";
     public string QobuzResolutionSource { get; set; } = "";
     public int? QobuzResolutionScore { get; set; }
     public string QobuzRequestedQuality { get; set; } = "";
@@ -31,7 +30,6 @@ public sealed class QobuzQueueItem : EngineQueueItemBase
             MapStatusForUi(Status),
             new Dictionary<string, object?>
             {
-                ["qobuzId"] = QobuzId,
                 ["qobuzResolutionSource"] = QobuzResolutionSource,
                 ["qobuzResolutionScore"] = QobuzResolutionScore,
                 ["qobuzRequestedQuality"] = QobuzRequestedQuality,

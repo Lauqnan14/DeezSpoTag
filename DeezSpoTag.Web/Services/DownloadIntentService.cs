@@ -754,6 +754,9 @@ public sealed class DownloadIntentService
             AppleId = FirstNonEmpty(
                 ReadPayloadString(payload, "AppleId", "appleId"),
                 item.AppleTrackId) ?? string.Empty,
+            QobuzId = ReadPayloadStringAny(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId") ?? string.Empty,
+            TidalId = ReadPayloadStringAny(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId") ?? string.Empty,
+            AmazonId = ReadPayloadStringAny(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId") ?? string.Empty,
             Isrc = FirstNonEmpty(
                 ReadPayloadString(payload, "Isrc", "isrc"),
                 item.Isrc) ?? string.Empty,
@@ -778,6 +781,21 @@ public sealed class DownloadIntentService
         var node = payload[pascalKey] ?? payload[camelKey];
         var value = node?.ToString();
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    [ExcludeFromCodeCoverage]
+    private static string? ReadPayloadStringAny(JsonObject payload, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var value = payload[key]?.ToString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
     }
 
     [ExcludeFromCodeCoverage]
@@ -876,6 +894,9 @@ public sealed class DownloadIntentService
             SourceUrl = source.SourceUrl,
             SpotifyId = source.SpotifyId,
             DeezerId = source.DeezerId,
+            QobuzId = source.QobuzId,
+            TidalId = source.TidalId,
+            AmazonId = source.AmazonId,
             Isrc = source.Isrc,
             Title = source.Title,
             Artist = source.Artist,
@@ -897,6 +918,21 @@ public sealed class DownloadIntentService
         if (string.IsNullOrWhiteSpace(intent.SpotifyId))
         {
             intent.SpotifyId = TryExtractSpotifyId(intent.SourceUrl) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.QobuzId))
+        {
+            intent.QobuzId = TryExtractQobuzTrackId(intent.SourceUrl)?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.TidalId))
+        {
+            intent.TidalId = TryExtractTidalTrackId(intent.SourceUrl) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.AmazonId))
+        {
+            intent.AmazonId = EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout) ?? string.Empty;
         }
 
         var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
@@ -1310,18 +1346,29 @@ public sealed class DownloadIntentService
 
     private async Task<EngineEnqueueOutcome> EnqueueTidalAsync(EngineEnqueueRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.ResolvedSourceUrl))
+        var sourceUrl = request.ResolvedSourceUrl ?? request.Intent.SourceUrl ?? string.Empty;
+        var tidalId = FirstNonEmpty(request.Intent.TidalId, TryExtractTidalTrackId(sourceUrl));
+        if (string.IsNullOrWhiteSpace(tidalId))
+        {
+            sourceUrl = await ResolveTidalUrlForQueueAsync(request, request.CancellationToken) ?? string.Empty;
+            tidalId = TryExtractTidalTrackId(sourceUrl);
+        }
+
+        if (string.IsNullOrWhiteSpace(tidalId))
         {
             return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Tidal URL unavailable for this track.", Engine = request.Engine },
+                new DownloadIntentResult { Success = false, Message = "Tidal track ID unavailable for this track.", Engine = request.Engine },
                 0);
         }
 
+        sourceUrl = BuildTidalTrackUrl(tidalId);
+        request.Intent.TidalId = tidalId;
+        var selectedQuality = ResolveTidalQueueQuality(request);
         var payload = new TidalQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            request.ResolvedSourceUrl,
+            sourceUrl,
             string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
-            ResolveContentType(request.Intent.ContentType, request.ResolvedSourceUrl, TrackType, request.Intent.HasAtmos, request.SelectedQuality),
+            ResolveContentType(request.Intent.ContentType, sourceUrl, TrackType, request.Intent.HasAtmos, selectedQuality),
             request.FallbackInfo.AutoSources,
             request.FallbackInfo.AutoIndex,
             request.FallbackInfo.FallbackPlan,
@@ -1329,7 +1376,8 @@ public sealed class DownloadIntentService
             request.DurationSeconds,
             request.PrimaryDestinationFolderId,
             request.UseAtmosStereoDual ? StereoType : string.Empty));
-        payload.Quality = request.SelectedQuality ?? request.Settings.TidalQuality ?? "HI_RES_LOSSLESS";
+        payload.Quality = selectedQuality;
+        payload.TidalId = tidalId;
         ApplyIntentMetadata(payload, request.Intent);
 
         var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
@@ -1363,6 +1411,46 @@ public sealed class DownloadIntentService
         var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
         return new EngineEnqueueOutcome(null, skipped);
     }
+
+    private async Task<string?> ResolveTidalUrlForQueueAsync(
+        EngineEnqueueRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (IsAtmosQuality(request.SelectedQuality)
+            || string.Equals(request.Intent.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
+        {
+            return await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
+                request.Intent.Title ?? string.Empty,
+                request.Intent.Artist ?? string.Empty,
+                request.Intent.Isrc ?? string.Empty,
+                request.DurationSeconds,
+                cancellationToken);
+        }
+
+        return await _tidalDownloadService.ResolveTrackUrlAsync(
+            request.Intent.Title ?? string.Empty,
+            request.Intent.Artist ?? string.Empty,
+            request.Intent.Isrc ?? string.Empty,
+            request.DurationSeconds,
+            cancellationToken);
+    }
+
+    private static string BuildTidalTrackUrl(string tidalId)
+        => $"https://tidal.com/browse/track/{Uri.EscapeDataString(tidalId)}";
+
+    private static string ResolveTidalQueueQuality(EngineEnqueueRequest request)
+    {
+        if (IsAtmosQuality(request.SelectedQuality)
+            || string.Equals(request.Intent.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
+        {
+            return TidalAtmosQuality;
+        }
+
+        return request.SelectedQuality ?? request.Settings.TidalQuality ?? "HI_RES_LOSSLESS";
+    }
+
+    private static string BuildQobuzTrackUrl(string qobuzId)
+        => $"https://play.qobuz.com/track/{Uri.EscapeDataString(qobuzId)}";
 
     private async Task<EngineEnqueueOutcome> EnqueueAppleAsync(EngineEnqueueRequest request)
     {
@@ -1473,20 +1561,28 @@ public sealed class DownloadIntentService
 
     private async Task<EngineEnqueueOutcome> EnqueueQobuzAsync(EngineEnqueueRequest request)
     {
-        var hasQobuzUrl = !string.IsNullOrWhiteSpace(request.ResolvedSourceUrl)
-            && request.ResolvedSourceUrl.Contains(QobuzDomain, StringComparison.OrdinalIgnoreCase);
-        if (!hasQobuzUrl && !IsrcValidator.IsValid(request.Intent.Isrc))
+        var sourceUrl = request.ResolvedSourceUrl ?? request.Intent.SourceUrl ?? string.Empty;
+        var qobuzId = FirstNonEmpty(request.Intent.QobuzId, TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));
+        if (string.IsNullOrWhiteSpace(qobuzId))
+        {
+            sourceUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(request.Intent, request.CancellationToken) ?? string.Empty;
+            qobuzId = TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (string.IsNullOrWhiteSpace(qobuzId))
         {
             return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Valid ISRC required for Qobuz downloads.", Engine = request.Engine },
+                new DownloadIntentResult { Success = false, Message = "Qobuz track ID unavailable for this track.", Engine = request.Engine },
                 0);
         }
 
+        sourceUrl = BuildQobuzTrackUrl(qobuzId);
+        request.Intent.QobuzId = qobuzId;
         var payload = new QobuzQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            request.ResolvedSourceUrl ?? string.Empty,
+            sourceUrl,
             string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
-            ResolveContentType(request.Intent.ContentType, request.ResolvedSourceUrl, TrackType, request.Intent.HasAtmos, request.SelectedQuality),
+            ResolveContentType(request.Intent.ContentType, sourceUrl, TrackType, request.Intent.HasAtmos, request.SelectedQuality),
             request.FallbackInfo.AutoSources,
             request.FallbackInfo.AutoIndex,
             request.FallbackInfo.FallbackPlan,
@@ -1495,6 +1591,7 @@ public sealed class DownloadIntentService
             request.PrimaryDestinationFolderId,
             request.UseAtmosStereoDual ? StereoType : string.Empty));
         payload.Quality = request.SelectedQuality ?? request.Settings.QobuzQuality ?? "27";
+        payload.QobuzId = qobuzId;
         ApplyIntentMetadata(payload, request.Intent);
 
         var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
@@ -2430,6 +2527,12 @@ public sealed class DownloadIntentService
     {
         var bootstrap = BootstrapIntentResolution(intent);
         var sourceUrl = bootstrap.SourceUrl;
+        var directIdentityResult = TryResolveDirectEngineIdentity(intent, engine, sourceUrl);
+        if (directIdentityResult.HasValue)
+        {
+            return directIdentityResult.Value;
+        }
+
         var directResult = TryResolveDirectIntentSource(engine, sourceUrl, bootstrap.NormalizedDeezerId, bootstrap.IsPodcastIntent);
         if (directResult.HasValue)
         {
@@ -3933,6 +4036,38 @@ public sealed class DownloadIntentService
         return !string.IsNullOrWhiteSpace(sourceUrl) && IsServiceUrlMatch(sourceUrl, engine)
             ? (engine, sourceUrl, string.Empty, "direct")
             : null;
+    }
+
+    private static (string Engine, string? SourceUrl, string Message, string MappingSource)? TryResolveDirectEngineIdentity(
+        DownloadIntent intent,
+        string engine,
+        string sourceUrl)
+    {
+        if (string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            var tidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl));
+            return string.IsNullOrWhiteSpace(tidalId)
+                ? null
+                : (engine, BuildTidalTrackUrl(tidalId), string.Empty, "tidal-id");
+        }
+
+        if (string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            var qobuzId = FirstNonEmpty(intent.QobuzId, TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));
+            return string.IsNullOrWhiteSpace(qobuzId)
+                ? null
+                : (engine, BuildQobuzTrackUrl(qobuzId), string.Empty, "qobuz-id");
+        }
+
+        if (string.Equals(engine, AmazonPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            var amazonId = FirstNonEmpty(intent.AmazonId, EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout));
+            return string.IsNullOrWhiteSpace(amazonId)
+                ? null
+                : (engine, sourceUrl, string.Empty, "amazon-id");
+        }
+
+        return null;
     }
 
     private async Task<(string Engine, string? SourceUrl, string Message, string MappingSource)?> TryResolveIsrcIntentSourceAsync(
@@ -6165,6 +6300,9 @@ public sealed class DownloadIntentService
         p.Url = ResolveIntentString(intent.Url, p.Url);
         p.Barcode = ResolveIntentString(intent.Barcode, p.Barcode);
         p.AppleId = ResolveIntentString(intent.AppleId, p.AppleId);
+        p.QobuzId = ResolveIntentString(intent.QobuzId, p.QobuzId);
+        p.TidalId = ResolveIntentString(intent.TidalId, p.TidalId);
+        p.AmazonId = ResolveIntentString(intent.AmazonId, p.AmazonId);
         ApplyWatchlistMetadata(payload, intent);
         ApplyIntentAudioFeaturesToStereoPayload(payload, intent);
     }
@@ -6528,6 +6666,9 @@ public sealed class DownloadIntentService
             ? payload.DeezerId
             : intent.DeezerId ?? string.Empty;
         payload.AppleId = intent.AppleId ?? string.Empty;
+        payload.QobuzId = FirstNonEmpty(intent.QobuzId, TryExtractQobuzTrackId(context.SourceUrl)?.ToString(CultureInfo.InvariantCulture)) ?? string.Empty;
+        payload.TidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(context.SourceUrl)) ?? string.Empty;
+        payload.AmazonId = FirstNonEmpty(intent.AmazonId, EngineLinkParser.TryExtractAmazonTrackId(context.SourceUrl, RegexTimeout)) ?? string.Empty;
         payload.ContentType = context.ContentType;
         payload.Cover = intent.Cover ?? string.Empty;
         payload.AutoSources = context.AutoSources;

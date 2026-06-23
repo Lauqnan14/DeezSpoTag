@@ -12,6 +12,11 @@ public static class QobuzRequestBuilder
             item.Quality,
             settings.QobuzQuality,
             "6");
+        if (string.IsNullOrWhiteSpace(request.TrackUrl) && !string.IsNullOrWhiteSpace(request.QobuzId))
+        {
+            request.TrackUrl = $"https://play.qobuz.com/track/{Uri.EscapeDataString(request.QobuzId)}";
+        }
+
         request.AllowQualityFallback = settings.FallbackBitrate
             && !string.Equals(settings.Service, "auto", StringComparison.OrdinalIgnoreCase);
         return request;

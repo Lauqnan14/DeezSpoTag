@@ -1,5 +1,6 @@
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Apple;
@@ -24,6 +25,9 @@ public sealed class EngineFallbackCoordinator
         string SourceUrl,
         string SpotifyId,
         string AppleId,
+        string QobuzId,
+        string TidalId,
+        string AmazonId,
         string Isrc,
         string DeezerId,
         string Title,
@@ -49,12 +53,17 @@ public sealed class EngineFallbackCoordinator
         string SourceUrl,
         string SpotifyId,
         string AppleId,
+        string QobuzId,
+        string TidalId,
+        string AmazonId,
         string? Isrc,
         string Title,
         string Artist,
         string Album,
         int? DurationMs,
         string DeezerId,
+        string Quality,
+        string ContentType,
         string Storefront,
         string Language,
         string? MediaUserToken,
@@ -90,6 +99,9 @@ public sealed class EngineFallbackCoordinator
             SourceUrl: payload.SourceUrl,
             SpotifyId: payload.SpotifyId,
             AppleId: payload.AppleId,
+            QobuzId: payload.QobuzId,
+            TidalId: payload.TidalId,
+            AmazonId: payload.AmazonId,
             Isrc: payload.Isrc,
             DeezerId: payload.DeezerId,
             Title: payload.Title,
@@ -240,12 +252,17 @@ public sealed class EngineFallbackCoordinator
             SourceUrl: request.SourceUrl,
             SpotifyId: resolvedSpotifyId ?? request.SpotifyId,
             AppleId: request.AppleId,
+            QobuzId: request.QobuzId,
+            TidalId: request.TidalId,
+            AmazonId: request.AmazonId,
             Isrc: resolvedIsrc,
             Title: request.Title,
             Artist: request.Artist,
             Album: request.Album,
             DurationMs: request.DurationMs,
             DeezerId: request.DeezerId,
+            Quality: request.Quality,
+            ContentType: request.ContentType,
             Storefront: settings.AppleMusic?.Storefront ?? string.Empty,
             Language: settings.DeezerLanguage ?? string.Empty,
             MediaUserToken: settings.AppleMusic?.MediaUserToken,
@@ -277,15 +294,14 @@ public sealed class EngineFallbackCoordinator
         var resolvedUrl = await ResolveSourceUrlAsync(
             context.ResolutionRequest with { Engine = step.Source },
             cancellationToken);
-        var canAdvanceWithoutResolvedUrl = CanAdvanceWithoutResolvedUrl(step.Source, context.SpotifyId, request, context.ResolvedIsrc);
-        if (string.IsNullOrWhiteSpace(resolvedUrl) && !canAdvanceWithoutResolvedUrl)
+        if (string.IsNullOrWhiteSpace(resolvedUrl))
         {
             _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (no resolvable URL)");
             return false;
         }
 
         context.Mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
-        TrySetResolvedAppleId(context.PayloadForSerialization, step.Source, resolvedUrl);
+        TrySetResolvedEngineId(context.PayloadForSerialization, step.Source, resolvedUrl);
         context.Mutators.ApplyStep((step.Source, step.Quality, stepIndex));
         var requeued = await PersistAdvancedFallbackStateAsync(
             request.QueueUuid,
@@ -302,17 +318,42 @@ public sealed class EngineFallbackCoordinator
         return true;
     }
 
-    private static void TrySetResolvedAppleId(object payloadForSerialization, string source, string? resolvedUrl)
+    private static void TrySetResolvedEngineId(object payloadForSerialization, string source, string? resolvedUrl)
     {
-        if (!string.Equals(source, AppleEngine, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(resolvedUrl))
         {
             return;
         }
 
-        var resolvedAppleId = AppleIdParser.TryExtractFromUrl(resolvedUrl);
-        if (!string.IsNullOrWhiteSpace(resolvedAppleId))
+        if (string.Equals(source, AppleEngine, StringComparison.OrdinalIgnoreCase))
         {
-            TrySetAppleId(payloadForSerialization, resolvedAppleId);
+            var resolvedAppleId = AppleIdParser.TryExtractFromUrl(resolvedUrl);
+            if (!string.IsNullOrWhiteSpace(resolvedAppleId))
+            {
+                TrySetStringProperty(payloadForSerialization, "AppleId", resolvedAppleId);
+            }
+
+            return;
+        }
+
+        if (string.Equals(source, QobuzEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            var resolvedQobuzId = EngineLinkParser.TryExtractQobuzTrackId(resolvedUrl);
+            if (!string.IsNullOrWhiteSpace(resolvedQobuzId))
+            {
+                TrySetStringProperty(payloadForSerialization, "QobuzId", resolvedQobuzId);
+            }
+
+            return;
+        }
+
+        if (string.Equals(source, "tidal", StringComparison.OrdinalIgnoreCase))
+        {
+            var resolvedTidalId = EngineLinkParser.TryExtractTidalTrackId(resolvedUrl);
+            if (!string.IsNullOrWhiteSpace(resolvedTidalId))
+            {
+                TrySetStringProperty(payloadForSerialization, "TidalId", resolvedTidalId);
+            }
         }
     }
 
@@ -454,12 +495,17 @@ public sealed class EngineFallbackCoordinator
                 request.SourceUrl,
                 request.SpotifyId,
                 request.AppleId,
+                request.QobuzId,
+                request.TidalId,
+                request.AmazonId,
                 request.Isrc,
                 request.Title,
                 request.Artist,
                 request.Album,
                 request.DurationMs,
                 request.DeezerId,
+                request.Quality,
+                request.ContentType,
                 request.Storefront,
                 request.Language,
                 request.MediaUserToken,
@@ -467,41 +513,6 @@ public sealed class EngineFallbackCoordinator
                 request.FallbackSearchEnabled),
             cancellationToken);
         return result.ResolvedUrl;
-    }
-
-    private static bool CanAdvanceWithoutResolvedUrl(
-        string engine,
-        string? spotifyId,
-        FallbackAdvanceRequest request,
-        string? resolvedIsrc)
-    {
-        if (string.IsNullOrWhiteSpace(engine))
-        {
-            return false;
-        }
-
-        if (string.Equals(engine, QobuzEngine, StringComparison.OrdinalIgnoreCase))
-        {
-            // Qobuz has an internal strict metadata resolver; do not block it only because SongLink/ISRC is missing.
-            return !string.IsNullOrWhiteSpace(resolvedIsrc)
-                || (!string.IsNullOrWhiteSpace(request.Title) && !string.IsNullOrWhiteSpace(request.Artist));
-        }
-
-        if (string.Equals(engine, "amazon", StringComparison.OrdinalIgnoreCase))
-        {
-            // Amazon path can resolve from Spotify ID when URL is missing.
-            return !string.IsNullOrWhiteSpace(spotifyId);
-        }
-
-        if (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase))
-        {
-            // Tidal path can resolve from Spotify ID or from metadata in-engine.
-            return !string.IsNullOrWhiteSpace(spotifyId)
-                || !string.IsNullOrWhiteSpace(resolvedIsrc)
-                || (!string.IsNullOrWhiteSpace(request.Title) && !string.IsNullOrWhiteSpace(request.Artist));
-        }
-
-        return false;
     }
 
     private static void TrySetIsrc(object payload, string isrc)
@@ -522,34 +533,23 @@ public sealed class EngineFallbackCoordinator
 
     private static void TrySetSpotifyId(object payload, string spotifyId)
     {
-        if (string.IsNullOrWhiteSpace(spotifyId))
-        {
-            return;
-        }
-
-        var property = payload.GetType().GetProperty("SpotifyId");
-        if (property == null || !property.CanWrite)
-        {
-            return;
-        }
-
-        property.SetValue(payload, spotifyId);
+        TrySetStringProperty(payload, "SpotifyId", spotifyId);
     }
 
-    private static void TrySetAppleId(object payload, string appleId)
+    private static void TrySetStringProperty(object payload, string propertyName, string value)
     {
-        if (string.IsNullOrWhiteSpace(appleId))
+        if (string.IsNullOrWhiteSpace(value))
         {
             return;
         }
 
-        var property = payload.GetType().GetProperty("AppleId");
-        if (property == null || !property.CanWrite)
+        var property = payload.GetType().GetProperty(propertyName);
+        if (property == null || !property.CanWrite || property.PropertyType != typeof(string))
         {
             return;
         }
 
-        property.SetValue(payload, appleId);
+        property.SetValue(payload, value.Trim());
     }
 
     private static void TrySetDeezerBitrate(object payload, string source, string? quality)

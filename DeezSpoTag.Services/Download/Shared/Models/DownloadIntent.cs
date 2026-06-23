@@ -11,6 +11,9 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public string SourceUrl { get; set; } = "";
     public string SpotifyId { get; set; } = "";
     public string DeezerId { get; set; } = "";
+    public string QobuzId { get; set; } = "";
+    public string TidalId { get; set; } = "";
+    public string AmazonId { get; set; } = "";
     public string DeezerAlbumId { get; set; } = "";
     public string DeezerArtistId { get; set; } = "";
     public string Isrc { get; set; } = "";

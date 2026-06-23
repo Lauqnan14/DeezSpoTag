@@ -36,17 +36,14 @@ public static class FallbackPayloadNormalizer
             return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
+        if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
+        {
+            return ResolveAtmosOnlyState(item, payloadQuality, payloadAutoSources, payloadFallbackPlan);
+        }
+
         if (TryResolveAutoSources(item, payloadQuality, payloadAutoSources, payloadFallbackPlan, out var autoSourceState))
         {
             return autoSourceState;
-        }
-
-        if (Shared.DownloadEngineSettingsHelper.IsAtmosOnlyPayload(contentType, payloadQuality))
-        {
-            var engine = IsAtmosEngine(item.Engine) ? item.Engine! : "apple";
-            var quality = ResolveAtmosQuality(engine, payloadQuality);
-            var firstStep = new DownloadSourceOrder.AutoSourceStep(engine, quality);
-            return BuildSingleStepFallback(firstStep, DirectUrlResolution);
         }
 
         if (TryResolveFallbackPlan(item, payloadQuality, payloadFallbackPlan, out var planState))
@@ -125,6 +122,44 @@ public static class FallbackPayloadNormalizer
         return true;
     }
 
+    private static CanonicalFallbackState ResolveAtmosOnlyState(
+        DownloadQueueItem item,
+        string? payloadQuality,
+        List<string> payloadAutoSources,
+        List<FallbackPlanStep> payloadFallbackPlan)
+    {
+        var normalizedAutoSources = NormalizeEncodedSources(payloadAutoSources)
+            .Where(IsEncodedAtmosSource)
+            .ToList();
+
+        var normalizedFallbackPlan = payloadFallbackPlan
+            .Where(step => IsAtmosStep(step.Engine, step.Quality))
+            .ToList();
+
+        if (normalizedAutoSources.Count == 0 && normalizedFallbackPlan.Count > 0)
+        {
+            normalizedAutoSources = NormalizePlanSources(normalizedFallbackPlan)
+                .Where(IsEncodedAtmosSource)
+                .ToList();
+        }
+
+        if (normalizedAutoSources.Count == 0)
+        {
+            var engine = IsAtmosEngine(item.Engine) ? item.Engine! : "apple";
+            var quality = ResolveAtmosQuality(engine, payloadQuality);
+            var firstStep = new DownloadSourceOrder.AutoSourceStep(engine, quality);
+            return BuildSingleStepFallback(firstStep, DirectUrlResolution);
+        }
+
+        if (normalizedFallbackPlan.Count == 0 || !ShouldReuseFallbackPlan(normalizedFallbackPlan, normalizedAutoSources))
+        {
+            normalizedFallbackPlan = BuildDirectUrlPlanFromAutoSources(normalizedAutoSources);
+        }
+
+        var firstAtmosStep = DecodeOrDefault(normalizedAutoSources[0], item.Engine, payloadQuality);
+        return new CanonicalFallbackState(normalizedAutoSources, normalizedFallbackPlan, firstAtmosStep);
+    }
+
     private static string ResolveAtmosQuality(string engine, string? payloadQuality)
     {
         if (!string.IsNullOrWhiteSpace(payloadQuality))
@@ -166,6 +201,18 @@ public static class FallbackPayloadNormalizer
     private static bool IsAtmosEngine(string? engine)
         => string.Equals(engine, "apple", StringComparison.OrdinalIgnoreCase)
            || string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsEncodedAtmosSource(string encodedSource)
+    {
+        var step = DownloadSourceOrder.DecodeAutoSource(encodedSource);
+        return IsAtmosStep(step.Source, step.Quality);
+    }
+
+    private static bool IsAtmosStep(string? engine, string? quality)
+        => (string.Equals(engine, "apple", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase))
+           || (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase));
 
     public static List<FallbackPlanStep> ReadFallbackPlan(JsonObject payloadObj)
     {

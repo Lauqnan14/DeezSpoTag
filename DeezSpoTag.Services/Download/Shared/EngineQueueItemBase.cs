@@ -27,6 +27,9 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string Barcode { get; set; } = "";
     public string DeezerId { get; set; } = "";
     public string AppleId { get; set; } = "";
+    public string QobuzId { get; set; } = "";
+    public string TidalId { get; set; } = "";
+    public string AmazonId { get; set; } = "";
     public string ContentType { get; set; } = "";
     public string WatchlistSource { get; set; } = "";
     public string WatchlistPlaylistId { get; set; } = "";
@@ -93,7 +96,10 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["resolvedSourceUrl"] = ResolvedSourceUrl,
             ["resolvedQuality"] = ResolvedQuality,
             ["resolvedAutoIndex"] = ResolvedAutoIndex,
-            ["resolutionError"] = ResolutionError
+            ["resolutionError"] = ResolutionError,
+            ["qobuzId"] = QobuzId,
+            ["tidalId"] = TidalId,
+            ["amazonId"] = AmazonId
         };
 
         if (extra != null)

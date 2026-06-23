@@ -61,6 +61,8 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                     }
                     catch (Exception ex) when (!cancellationToken.IsCancellationRequested
                                                && settings.FallbackBitrate
+                                               && !IsTidalAtmosQuality(tidalRequest.Quality)
+                                               && !IsTidalAtmosQuality(payload.Quality)
                                                && ShouldUseInEngineQualityFallback(payload))
                     {
                         var fallbackQuality = EngineQualityFallback.GetNextLowerQuality(EngineName, tidalRequest.Quality);
@@ -75,24 +77,7 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                         return await DownloadWithQualityAsync(fallbackQuality);
                     }
                 },
-                async (payload, cancellationToken) =>
-                {
-                    if (!string.IsNullOrWhiteSpace(payload.SourceUrl) || !string.IsNullOrWhiteSpace(payload.SpotifyId))
-                    {
-                        return;
-                    }
-
-                    var resolvedUrl = await _tidalDownloader.ResolveTrackUrlAsync(
-                        payload.Title ?? string.Empty,
-                        payload.Artist ?? string.Empty,
-                        payload.Isrc ?? string.Empty,
-                        payload.DurationSeconds,
-                        cancellationToken);
-                    if (!string.IsNullOrWhiteSpace(resolvedUrl))
-                    {
-                        payload.SourceUrl = resolvedUrl;
-                    }
-                },
+                null,
                 request => $"Download start: {item.QueueUuid} engine=tidal quality={((TidalDownloadRequest)request).Quality}",
                 payload => payload.Title,
                 static payload => payload.ToQueuePayload()),
@@ -103,6 +88,10 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
     {
         return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
     }
+
+    private static bool IsTidalAtmosQuality(string? quality)
+        => string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase);
 
     private static string ResolveTidalSourceId(TidalQueueItem payload)
     {

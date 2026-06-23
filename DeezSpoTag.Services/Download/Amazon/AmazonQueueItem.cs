@@ -12,8 +12,6 @@ public sealed class AmazonQueueItem : EngineQueueItemBase
         SourceService = "amazon";
     }
 
-    public string AmazonId { get; set; } = "";
-
     [JsonIgnore]
     public AmazonDownloadStatus Status { get; set; } = AmazonDownloadStatus.Queued;
 

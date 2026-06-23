@@ -1159,56 +1159,23 @@ public static partial class EngineAudioPostDownloadHelper
     {
         SynchronizeTrackWithPayloadForTagging(request.Context.Track, request.Payload);
 
-        var imageDownloader = request.Scope.GetRequiredService<ImageDownloader>();
         var audioTagger = request.Scope.GetRequiredService<AudioTagger>();
-        var lyricsService = request.Scope.GetRequiredService<LyricsService>();
-        var spotifyArtworkResolver = request.Scope.GetService<ISpotifyArtworkResolver>();
-        var spotifyIdResolver = request.Scope.GetService<ISpotifyIdResolver>();
-        var httpClientFactory = request.Scope.GetService<IHttpClientFactory>();
-        var appleCatalog = request.Scope.GetService<AppleMusicCatalogService>();
-        var deezerClient = request.Scope.GetService<DeezerClient>();
-
-        IReadOnlyList<string> coverUrls = Array.Empty<string>();
-        string? coverUrl = null;
+        var pathProcessor = request.Scope.GetRequiredService<EnhancedPathTemplateProcessor>();
         if (ShouldAllowPlaylistCover(request.Payload, request.Settings))
         {
-            coverUrls = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
-                new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
-                    request.Settings,
-                    appleCatalog,
-                    httpClientFactory,
-                    spotifyArtworkResolver,
-                    spotifyIdResolver,
-                    deezerClient,
-                    request.AppleCoverLookupIdOverride ?? request.Payload.AppleId,
-                    request.Payload.Title,
-                    request.Payload.Artist,
-                    request.Payload.Album,
-                    request.Payload.CollectionType,
-                    request.Payload.DeezerId,
-                    request.Payload.Cover,
-                    request.Payload.Isrc,
-                    request.Logger),
-                cancellationToken);
-            if (coverUrls.Count > 0)
-            {
-                coverUrl = coverUrls[0];
-            }
+            ApplyPrefetchedEmbeddedCoverPath(request, pathProcessor);
         }
 
-        await EnsureLyricsForTaggingAsync(request, lyricsService, cancellationToken);
+        EnsureLyricsForTagging(request);
 
         await DownloadEngineArtworkHelper.TagAudioWithResolvedCoverAsync(
             new DownloadEngineArtworkHelper.AudioTagWithCoverRequest(
                 request.OutputPath,
                 request.Context.Track,
                 request.Settings,
-                coverUrl,
                 request.Engine,
-                imageDownloader,
                 audioTagger,
-                request.Logger,
-                coverUrls),
+                request.Logger),
             cancellationToken);
 
         UpdateAudioPayloadFiles(request.Payload, request.Context.PathResult, request.OutputPath);
@@ -1319,10 +1286,53 @@ public static partial class EngineAudioPostDownloadHelper
         }
     }
 
-    private static async Task EnsureLyricsForTaggingAsync(
+    private static void ApplyPrefetchedEmbeddedCoverPath(
         PostDownloadSettingsRequest request,
-        LyricsService lyricsService,
-        CancellationToken cancellationToken)
+        EnhancedPathTemplateProcessor pathProcessor)
+    {
+        if (request.Context.Track.Album == null || request.Settings.Tags?.Cover != true)
+        {
+            return;
+        }
+
+        var coverPath = ResolvePrefetchedAlbumCoverPath(request, pathProcessor);
+        if (string.IsNullOrWhiteSpace(coverPath))
+        {
+            return;
+        }
+
+        request.Context.Track.Album.EmbeddedCoverPath = coverPath;
+    }
+
+    private static string? ResolvePrefetchedAlbumCoverPath(
+        PostDownloadSettingsRequest request,
+        EnhancedPathTemplateProcessor pathProcessor)
+    {
+        var coverPath = DownloadPathResolver.ResolveIoPath(request.Context.PathResult.CoverPath ?? request.Context.PathResult.FilePath);
+        if (string.IsNullOrWhiteSpace(coverPath))
+        {
+            return null;
+        }
+
+        var coverName = pathProcessor.GenerateAlbumName(
+            request.Settings.CoverImageTemplate,
+            request.Context.Track.Album,
+            request.Settings,
+            request.Context.Track.Playlist);
+
+        foreach (var format in AppleQueueHelpers.GetArtworkOutputFormats(request.Settings))
+        {
+            var candidate = Path.Join(coverPath, $"{coverName}.{format}");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static void EnsureLyricsForTagging(PostDownloadSettingsRequest request)
     {
         if (!LyricsSettingsPolicy.CanFetchLyrics(request.Settings))
         {
@@ -1341,20 +1351,6 @@ public static partial class EngineAudioPostDownloadHelper
         try
         {
             HydrateLyricsFromSidecars(track, request.OutputPath, tagSettings);
-
-            if (HasRequiredLyricsAlready(track, tagSettings))
-            {
-                return;
-            }
-
-            var lyricsSettings = BuildLyricsResolveSettings(request.Settings, tagSettings);
-            var lyrics = await lyricsService.ResolveLyricsAsync(track, lyricsSettings, cancellationToken);
-            if (lyrics == null || !string.IsNullOrWhiteSpace(lyrics.ErrorMessage))
-            {
-                return;
-            }
-
-            ApplyResolvedLyricsForTagging(track, tagSettings, lyrics);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1560,62 +1556,10 @@ public static partial class EngineAudioPostDownloadHelper
                 .Where(text => !string.IsNullOrWhiteSpace(text)));
     }
 
-    private static bool HasRequiredLyricsAlready(Track track, TagSettings tagSettings)
-    {
-        var hasUnsynced = !string.IsNullOrWhiteSpace(track.Lyrics?.Unsync);
-        var hasSynced = HasSyncedLyrics(track);
-        return (!tagSettings.Lyrics || hasUnsynced) && (!tagSettings.SyncedLyrics || hasSynced);
-    }
-
     private static bool HasSyncedLyrics(Track track)
     {
         return !string.IsNullOrWhiteSpace(track.Lyrics?.Sync)
             || (track.Lyrics?.SyncID3?.Count ?? 0) > 0;
-    }
-
-    private static void ApplyResolvedLyricsForTagging(
-        Track track,
-        TagSettings tagSettings,
-        LyricsBase lyrics)
-    {
-        track.Lyrics ??= new Lyrics(track.LyricsId ?? "0");
-
-        if (tagSettings.Lyrics
-            && string.IsNullOrWhiteSpace(track.Lyrics.Unsync)
-            && !string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))
-        {
-            track.Lyrics.Unsync = lyrics.UnsyncedLyrics;
-        }
-
-        if (tagSettings.SyncedLyrics && !HasSyncedLyrics(track) && lyrics.IsSynced())
-        {
-            track.Lyrics.Sync = lyrics.GenerateLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title);
-            var syncedLines = lyrics.SyncedLyrics?
-                .Where(line => line != null && line.IsValid())
-                .Select(line => new SyncLyric
-                {
-                    Timestamp = Math.Max(0, line!.Milliseconds),
-                    Text = line.Text ?? string.Empty
-                })
-                .ToList();
-
-            if (syncedLines is { Count: > 0 })
-            {
-                track.Lyrics.SyncID3 = syncedLines;
-            }
-        }
-
-        if (tagSettings.Lyrics
-            && string.IsNullOrWhiteSpace(track.Lyrics.Unsync)
-            && HasSyncedLyrics(track))
-        {
-            track.Lyrics.Unsync = ConvertSyncedLyricsToUnsynced(track.Lyrics.SyncID3);
-        }
-    }
-
-    private static DeezSpoTagSettings BuildLyricsResolveSettings(DeezSpoTagSettings settings, TagSettings tagSettings)
-    {
-        return LyricsResolveSettingsBuilder.Build(settings, tagSettings);
     }
 
     public static async Task QueueParallelPostDownloadPrefetchAsync(
@@ -2659,7 +2603,7 @@ public static partial class EngineAudioPostDownloadHelper
     {
         var allowPlaylistCover = ShouldAllowPlaylistCover(request.Payload, request.Settings);
         return new PrefetchRequirements(
-            allowPlaylistCover && request.Settings.SaveArtwork,
+            allowPlaylistCover && (request.Settings.SaveArtwork || request.Settings.Tags?.Cover == true),
             allowPlaylistCover && request.Settings.SaveAnimatedArtwork,
             request.Settings.SaveArtworkArtist,
             ShouldSaveLyrics(request.Settings));

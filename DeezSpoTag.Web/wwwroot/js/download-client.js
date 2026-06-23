@@ -806,6 +806,12 @@ DeezSpoTag.DownloadClient = {
         const metadata = options?.metadata && typeof options.metadata === 'object'
             ? options.metadata
             : null;
+        const metadataContentType = String(metadata?.contentType || '').trim().toLowerCase();
+        const metadataQuality = String(metadata?.quality || '').trim();
+        const intentQuality = metadataQuality
+            || (sourceService === 'tidal' && metadataContentType === 'atmos'
+                ? 'DOLBY_ATMOS'
+                : intentContext.preferredQuality || undefined);
         const response = await this.apiFetch('/api/download/intent', {
             method: 'POST',
             headers: {
@@ -818,9 +824,12 @@ DeezSpoTag.DownloadClient = {
                     sourceService,
                     sourceUrl: sourceUrl || undefined,
                     isrc: isrc || metadata?.isrc || undefined,
+                    tidalId: metadata?.tidalId || undefined,
+                    qobuzId: metadata?.qobuzId || undefined,
+                    amazonId: metadata?.amazonId || undefined,
                     preferredEngine: intentContext.preferredEngine || undefined,
-                    quality: intentContext.preferredQuality || undefined,
-                    contentType: metadata?.contentType || undefined,
+                    quality: intentQuality,
+                    contentType: metadataContentType || undefined,
                     hasAtmos: metadata?.hasAtmos === true || metadata?.hasAtmos === 'true',
                     title: metadata?.title || undefined,
                     artist: metadata?.artist || undefined,

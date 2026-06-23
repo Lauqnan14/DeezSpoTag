@@ -12,8 +12,6 @@ public sealed class TidalQueueItem : EngineQueueItemBase
         SourceService = "tidal";
     }
 
-    public string TidalId { get; set; } = "";
-
     [JsonIgnore]
     public TidalDownloadStatus Status { get; set; } = TidalDownloadStatus.Queued;
 
