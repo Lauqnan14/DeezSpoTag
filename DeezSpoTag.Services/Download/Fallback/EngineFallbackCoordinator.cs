@@ -8,10 +8,6 @@ namespace DeezSpoTag.Services.Download.Fallback;
 
 public sealed class EngineFallbackCoordinator
 {
-    public sealed class OptionalServices
-    {
-        public IDownloadApiHealthTracker? ApiHealthTracker { get; init; }
-    }
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
@@ -20,7 +16,6 @@ public sealed class EngineFallbackCoordinator
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
     private readonly EngineFallbackSearchService _fallbackSearchService;
     private readonly IActivityLogWriter _activityLog;
-    private readonly IDownloadApiHealthTracker _apiHealthTracker;
     private sealed record FallbackAdvanceRequest(
         string QueueUuid,
         string CurrentEngine,
@@ -37,6 +32,7 @@ public sealed class EngineFallbackCoordinator
         int? DurationMs,
         string Quality,
         string ContentType,
+        QueueSourceSettingsSnapshot SourceSettingsSnapshot,
         List<FallbackPlanStep> FallbackPlan);
     private sealed record FallbackPayloadMutators(
         Action<(string Source, string? Quality, int Index)> ApplyStep,
@@ -70,16 +66,13 @@ public sealed class EngineFallbackCoordinator
         DeezSpoTagSettingsService settingsService,
         DeezerIsrcResolver deezerIsrcResolver,
         EngineFallbackSearchService fallbackSearchService,
-        IActivityLogWriter activityLog,
-        OptionalServices? optionalServices = null)
+        IActivityLogWriter activityLog)
     {
-        optionalServices ??= new OptionalServices();
         _queueRepository = queueRepository;
         _settingsService = settingsService;
         _deezerIsrcResolver = deezerIsrcResolver;
         _fallbackSearchService = fallbackSearchService;
         _activityLog = activityLog;
-        _apiHealthTracker = optionalServices.ApiHealthTracker ?? new DownloadApiHealthTracker();
     }
 
     public Task<bool> TryAdvanceAsync<TPayload>(
@@ -105,6 +98,7 @@ public sealed class EngineFallbackCoordinator
             DurationMs: payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : (int?)null,
             Quality: payload.Quality,
             ContentType: payload.ContentType,
+            SourceSettingsSnapshot: payload.SourceSettingsSnapshot,
             FallbackPlan: payload.FallbackPlan);
 
         var mutators = new FallbackPayloadMutators(
@@ -132,7 +126,7 @@ public sealed class EngineFallbackCoordinator
         object payloadForSerialization,
         CancellationToken cancellationToken)
     {
-        var settings = _settingsService.LoadSettings();
+        var settings = ResolveEffectiveSettings(request);
         var planSteps = BuildPlanSteps(request, settings);
 
         var resolvedIsrc = await ResolveIsrcForFallbackAsync(request, cancellationToken);
@@ -142,7 +136,6 @@ public sealed class EngineFallbackCoordinator
         }
 
         var nextIndex = ResolveNextPlanIndex(planSteps, request);
-        planSteps = PrioritizeRemainingPlanSteps(planSteps, nextIndex, settings);
         mutators.ApplyAutoSources(EncodePlanSteps(planSteps));
         var userCountry = settings.DeezerCountry;
         var resolvedSpotifyId = await ResolveSpotifyIdForFallbackAsync(request, userCountry, cancellationToken);
@@ -192,33 +185,12 @@ public sealed class EngineFallbackCoordinator
             .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Source, step.Quality))
             .ToList();
 
-    private List<(string Source, string? Quality)> PrioritizeRemainingPlanSteps(
-        List<(string Source, string? Quality)> planSteps,
-        int nextIndex,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    private DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings ResolveEffectiveSettings(FallbackAdvanceRequest request)
     {
-        if (planSteps.Count <= 1 || nextIndex >= planSteps.Count - 1)
-        {
-            return planSteps;
-        }
-
-        if (string.Equals(settings.Service?.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
-        {
-            return planSteps;
-        }
-
-        var completedSteps = nextIndex > 0
-            ? planSteps.Take(nextIndex).ToList()
-            : new List<(string Source, string? Quality)>();
-        var prioritizedRemaining = _apiHealthTracker
-            .PrioritizeSources(EncodePlanSteps(planSteps.Skip(nextIndex).ToList()))
-            .Select(DownloadSourceOrder.DecodeAutoSource)
-            .Where(static step => !string.IsNullOrWhiteSpace(step.Source))
-            .Select(static step => (step.Source, step.Quality))
-            .ToList();
-
-        completedSteps.AddRange(prioritizedRemaining);
-        return completedSteps;
+        var liveSettings = _settingsService.LoadSettings();
+        return request.SourceSettingsSnapshot?.HasValues == true
+            ? request.SourceSettingsSnapshot.ApplyTo(liveSettings)
+            : liveSettings;
     }
 
     private async Task<string?> ResolveIsrcForFallbackAsync(
@@ -401,15 +373,6 @@ public sealed class EngineFallbackCoordinator
             }
         }
 
-        if (!atmosOnly && IsAutoOrCustomSourceOrder(settings))
-        {
-            foreach (var decoded in DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null)
-                .Select(DownloadSourceOrder.DecodeAutoSource))
-            {
-                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality, atmosOnly);
-            }
-        }
-
         if (steps.Count == 0 && !atmosOnly)
         {
             foreach (var decoded in DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null)
@@ -421,10 +384,6 @@ public sealed class EngineFallbackCoordinator
 
         return steps;
     }
-
-    private static bool IsAutoOrCustomSourceOrder(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
-        => string.Equals(settings.Service?.Trim(), "auto", StringComparison.OrdinalIgnoreCase)
-           || settings.DownloadEngineOrder?.Enabled == true;
 
     private static bool IsAtmosRequest(FallbackAdvanceRequest request)
         => string.Equals(request.ContentType?.Trim(), "atmos", StringComparison.OrdinalIgnoreCase)
@@ -523,8 +482,9 @@ public sealed class EngineFallbackCoordinator
 
         if (string.Equals(engine, QobuzEngine, StringComparison.OrdinalIgnoreCase))
         {
-            // Qobuz path can proceed with ISRC-only resolution.
-            return !string.IsNullOrWhiteSpace(resolvedIsrc);
+            // Qobuz has an internal strict metadata resolver; do not block it only because SongLink/ISRC is missing.
+            return !string.IsNullOrWhiteSpace(resolvedIsrc)
+                || (!string.IsNullOrWhiteSpace(request.Title) && !string.IsNullOrWhiteSpace(request.Artist));
         }
 
         if (string.Equals(engine, "amazon", StringComparison.OrdinalIgnoreCase))

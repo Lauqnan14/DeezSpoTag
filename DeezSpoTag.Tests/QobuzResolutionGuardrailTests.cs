@@ -69,6 +69,35 @@ public sealed class QobuzResolutionGuardrailTests
         Assert.Contains("Rejected Qobuz mapped URL that did not match requested track", downloadIntentService, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DownloadRouting_DoesNotUseAvailabilityAsHardEngineGate()
+    {
+        var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
+
+        Assert.DoesNotContain("FilterAutoSourcesByAvailability", downloadIntentService, StringComparison.Ordinal);
+        Assert.DoesNotContain("reason = \"unavailable\";", downloadIntentService, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalAtmosSecondaryQueue_IsProofOnly()
+    {
+        var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
+        var tidalAtmosMethodStart = downloadIntentService.IndexOf(
+            "private async Task<bool> TryEnqueueTidalAtmosSecondaryAsync",
+            StringComparison.Ordinal);
+        var nextMethodStart = downloadIntentService.IndexOf(
+            "private static string[] ResolveAtmosEngineOrder",
+            StringComparison.Ordinal);
+        Assert.True(tidalAtmosMethodStart >= 0);
+        Assert.True(nextMethodStart > tidalAtmosMethodStart);
+
+        var tidalAtmosMethod = downloadIntentService[tidalAtmosMethodStart..nextMethodStart];
+
+        Assert.Contains("ResolveAtmosTrackUrlAsync", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("if (string.IsNullOrWhiteSpace(tidalAtmosUrl))", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveIntentAsync", tidalAtmosMethod, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

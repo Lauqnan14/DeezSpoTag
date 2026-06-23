@@ -16,7 +16,11 @@ public sealed class QueueSourceSettingsSnapshot
     public string? QobuzQuality { get; set; }
     public string? ApplePreferredAudioProfile { get; set; }
     public bool? FallbackBitrate { get; set; }
+    public bool? FallbackSearch { get; set; }
     public bool? StrictEngineQuality { get; set; }
+    public string? DeezerCountry { get; set; }
+    public string? DeezerLanguage { get; set; }
+    public MultiQualityDownloadSettings? MultiQuality { get; set; }
     public DownloadEngineOrderSettings? DownloadEngineOrder { get; set; }
 
     public bool HasValues =>
@@ -26,7 +30,11 @@ public sealed class QueueSourceSettingsSnapshot
         || !string.IsNullOrWhiteSpace(QobuzQuality)
         || !string.IsNullOrWhiteSpace(ApplePreferredAudioProfile)
         || FallbackBitrate.HasValue
+        || FallbackSearch.HasValue
         || StrictEngineQuality.HasValue
+        || !string.IsNullOrWhiteSpace(DeezerCountry)
+        || !string.IsNullOrWhiteSpace(DeezerLanguage)
+        || MultiQuality != null
         || DownloadEngineOrder != null;
 
     public static QueueSourceSettingsSnapshot Capture(DeezSpoTagSettings? settings)
@@ -40,32 +48,42 @@ public sealed class QueueSourceSettingsSnapshot
             QobuzQuality = NormalizeString(settings.QobuzQuality),
             ApplePreferredAudioProfile = NormalizeString(settings.AppleMusic?.PreferredAudioProfile),
             FallbackBitrate = settings.FallbackBitrate,
+            FallbackSearch = settings.FallbackSearch,
             StrictEngineQuality = settings.StrictEngineQuality,
+            DeezerCountry = NormalizeString(settings.DeezerCountry),
+            DeezerLanguage = NormalizeString(settings.DeezerLanguage),
+            MultiQuality = CloneMultiQuality(settings.MultiQuality),
             DownloadEngineOrder = CloneDownloadEngineOrder(settings.DownloadEngineOrder)
         };
     }
 
     public DeezSpoTagSettings ApplyTo(DeezSpoTagSettings? fallbackSettings)
     {
-        var fallback = fallbackSettings ?? new DeezSpoTagSettings();
-        var fallbackApple = fallback.AppleMusic ?? new AppleMusicSettings();
-
-        return new DeezSpoTagSettings
+        var effective = fallbackSettings ?? new DeezSpoTagSettings();
+        effective.AppleMusic ??= new AppleMusicSettings();
+        effective.Service = Service ?? effective.Service;
+        effective.MaxBitrate = MaxBitrate ?? effective.MaxBitrate;
+        effective.TidalQuality = TidalQuality ?? effective.TidalQuality;
+        effective.QobuzQuality = QobuzQuality ?? effective.QobuzQuality;
+        effective.FallbackBitrate = FallbackBitrate ?? effective.FallbackBitrate;
+        effective.FallbackSearch = FallbackSearch ?? effective.FallbackSearch;
+        effective.StrictEngineQuality = StrictEngineQuality ?? effective.StrictEngineQuality;
+        effective.DeezerCountry = DeezerCountry ?? effective.DeezerCountry;
+        effective.DeezerLanguage = DeezerLanguage ?? effective.DeezerLanguage;
+        if (!string.IsNullOrWhiteSpace(ApplePreferredAudioProfile))
         {
-            Service = Service ?? fallback.Service,
-            MaxBitrate = MaxBitrate ?? fallback.MaxBitrate,
-            TidalQuality = TidalQuality ?? fallback.TidalQuality,
-            QobuzQuality = QobuzQuality ?? fallback.QobuzQuality,
-            FallbackBitrate = FallbackBitrate ?? fallback.FallbackBitrate,
-            StrictEngineQuality = StrictEngineQuality ?? fallback.StrictEngineQuality,
-            DownloadEngineOrder = DownloadEngineOrder == null
-                ? fallback.DownloadEngineOrder
-                : CloneDownloadEngineOrder(DownloadEngineOrder),
-            AppleMusic = new AppleMusicSettings
-            {
-                PreferredAudioProfile = ApplePreferredAudioProfile ?? fallbackApple.PreferredAudioProfile
-            }
-        };
+            effective.AppleMusic.PreferredAudioProfile = ApplePreferredAudioProfile;
+        }
+        if (MultiQuality != null)
+        {
+            effective.MultiQuality = CloneMultiQuality(MultiQuality)!;
+        }
+        if (DownloadEngineOrder != null)
+        {
+            effective.DownloadEngineOrder = CloneDownloadEngineOrder(DownloadEngineOrder);
+        }
+
+        return effective;
     }
 
     public static QueueSourceSettingsSnapshot? ReadFromPayload(JsonObject payloadObj)
@@ -89,7 +107,11 @@ public sealed class QueueSourceSettingsSnapshot
             QobuzQuality = ReadString(snapshotObj, "QobuzQuality", "qobuzQuality"),
             ApplePreferredAudioProfile = ReadString(snapshotObj, "ApplePreferredAudioProfile", "applePreferredAudioProfile"),
             FallbackBitrate = ReadBool(snapshotObj, "FallbackBitrate", "fallbackBitrate"),
+            FallbackSearch = ReadBool(snapshotObj, "FallbackSearch", "fallbackSearch"),
             StrictEngineQuality = ReadBool(snapshotObj, "StrictEngineQuality", "strictEngineQuality"),
+            DeezerCountry = ReadString(snapshotObj, "DeezerCountry", "deezerCountry"),
+            DeezerLanguage = ReadString(snapshotObj, "DeezerLanguage", "deezerLanguage"),
+            MultiQuality = ReadMultiQuality(snapshotObj),
             DownloadEngineOrder = ReadDownloadEngineOrder(snapshotObj)
         };
 
@@ -114,9 +136,46 @@ public sealed class QueueSourceSettingsSnapshot
         }
     }
 
+    private static MultiQualityDownloadSettings? ReadMultiQuality(JsonObject obj)
+    {
+        var node = obj[nameof(MultiQuality)] ?? obj["multiQuality"];
+        if (node == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return node.Deserialize<MultiQualityDownloadSettings>();
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return null;
+        }
+    }
+
     private static DownloadEngineOrderSettings CloneDownloadEngineOrder(DownloadEngineOrderSettings? settings)
     {
         return DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(settings);
+    }
+
+    private static MultiQualityDownloadSettings? CloneMultiQuality(MultiQualityDownloadSettings? settings)
+    {
+        if (settings == null)
+        {
+            return null;
+        }
+
+        return new MultiQualityDownloadSettings
+        {
+            Enabled = settings.Enabled,
+            SecondaryEnabled = settings.SecondaryEnabled,
+            PrimaryDestinationFolderId = settings.PrimaryDestinationFolderId,
+            SecondaryDestinationFolderId = settings.SecondaryDestinationFolderId,
+            AtmosEngine = settings.AtmosEngine,
+            AtmosSearchFallback = settings.AtmosSearchFallback,
+            AtmosDownloadFallback = settings.AtmosDownloadFallback
+        };
     }
 
     private static string? ReadString(JsonObject obj, params string[] keys)

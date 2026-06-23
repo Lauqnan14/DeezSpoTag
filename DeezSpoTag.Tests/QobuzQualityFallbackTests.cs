@@ -3,6 +3,7 @@ using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.Shared;
 using System.Text.Json;
 using Xunit;
 
@@ -133,6 +134,48 @@ public sealed class QobuzQualityFallbackTests
         Assert.Contains("\"qobuzMaximumSamplingRate\":44.1", json);
         Assert.Contains("\"qobuzCatalogQuality\":\"6\"", json);
         Assert.Contains("\"qobuzQualityDecisionReason\":\"catalog_quality_lower_than_requested\"", json);
+    }
+
+    [Fact]
+    public void ToQueuePayload_IncludesSourceSettingsSnapshot()
+    {
+        var payload = new QobuzQueueItem
+        {
+            Id = "queue-1",
+            Title = "Track",
+            Artist = "Artist",
+            Quality = "27",
+            SourceSettingsSnapshot = QueueSourceSettingsSnapshot.Capture(new DeezSpoTagSettings
+            {
+                Service = "custom",
+                QobuzQuality = "27",
+                FallbackSearch = true,
+                DownloadEngineOrder = new DownloadEngineOrderSettings
+                {
+                    Enabled = true,
+                    Engines = new List<DownloadEngineOrderItem>
+                    {
+                        new()
+                        {
+                            Engine = "qobuz",
+                            Enabled = true,
+                            Qualities = new List<DownloadEngineQualityItem>
+                            {
+                                new() { Quality = "27", Enabled = true }
+                            }
+                        }
+                    }
+                }
+            })
+        };
+
+        var json = JsonSerializer.Serialize(payload.ToQueuePayload());
+
+        Assert.Contains("\"sourceSettingsSnapshot\"", json);
+        Assert.Contains("\"Service\":\"custom\"", json);
+        Assert.Contains("\"QobuzQuality\":\"27\"", json);
+        Assert.Contains("\"FallbackSearch\":true", json);
+        Assert.Contains("\"DownloadEngineOrder\"", json);
     }
 
     private static List<string> InvokeGetQualityFallbackOrder(string quality, bool allowQualityFallback)

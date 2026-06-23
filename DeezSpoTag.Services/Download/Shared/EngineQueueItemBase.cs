@@ -86,6 +86,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["fallbackPlan"] = FallbackPlan,
             ["fallbackHistory"] = FallbackHistory,
             ["fallbackQueuedExternally"] = FallbackQueuedExternally,
+            ["sourceSettingsSnapshot"] = SourceSettingsSnapshot,
             ["resolutionStatus"] = ResolutionStatus,
             ["resolvedAtUtc"] = ResolvedAtUtc,
             ["resolvedEngine"] = ResolvedEngine,

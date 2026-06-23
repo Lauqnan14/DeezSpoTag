@@ -10,6 +10,7 @@ using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Caching.Memory;
@@ -24,70 +25,26 @@ public sealed class EngineFallbackCoordinatorParityTests
     {
         "deezer|9",
         "qobuz|27",
-        "tidal|HI_RES_LOSSLESS",
-        "apple|ALAC",
-        "qobuz|7",
-        "tidal|HI_RES",
-        "qobuz|6",
-        "tidal|LOSSLESS",
-        "amazon|FLAC",
-        "apple|AAC",
-        "qobuz|5",
-        "tidal|HIGH",
-        "deezer|3",
-        "deezer|1",
-        "tidal|LOW"
+        "tidal|HI_RES_LOSSLESS"
     };
     private static readonly string[] ExpectedMixedSteps = { "qobuz|27", "deezer|9", "deezer|3", "tidal|LOSSLESS" };
     private static readonly string[] ExpectedAutoSteps =
     {
         "qobuz|27",
         "tidal|HI_RES_LOSSLESS",
-        "deezer|9",
-        "apple|ALAC",
-        "qobuz|7",
-        "tidal|HI_RES",
-        "qobuz|6",
-        "tidal|LOSSLESS",
-        "amazon|FLAC",
-        "apple|AAC",
-        "qobuz|5",
-        "tidal|HIGH",
-        "deezer|3",
-        "deezer|1",
-        "tidal|LOW"
+        "deezer|9"
     };
     private static readonly string[] ExpectedAutoPlusFallbackPlanSteps =
     {
         "qobuz|27",
         "tidal|HI_RES_LOSSLESS",
         "apple|ALAC",
-        "qobuz|7",
-        "tidal|HI_RES",
-        "qobuz|6",
-        "tidal|LOSSLESS",
-        "amazon|FLAC",
-        "deezer|9",
-        "apple|AAC",
-        "qobuz|5",
-        "tidal|HIGH",
-        "deezer|3",
-        "deezer|1",
-        "tidal|LOW"
+        "qobuz|7"
     };
     private static readonly string[] ExpectedForcedDeezerFallbackSteps = { "deezer|9", "deezer|3", "deezer|1" };
     private static readonly string[] ExpectedCustomFallbackSteps = { "apple|ALAC", "qobuz|6" };
-    private static readonly string[] ExpectedCanonicalAutoRemainingSteps =
-    {
-        "qobuz|27",
-        "tidal|HI_RES_LOSSLESS",
-        "apple|ALAC",
-        "qobuz|7",
-        "qobuz|6"
-    };
-
     [Fact]
-    public void BuildPlanSteps_PrefersAutoSources_ThenAppendsFallbackPlan()
+    public void BuildPlanSteps_UsesQueuedSourcesOnly_ThenQueuedFallbackPlan()
     {
         var fallbackPlan = new List<FallbackPlanStep>
         {
@@ -102,7 +59,7 @@ public sealed class EngineFallbackCoordinatorParityTests
     }
 
     [Fact]
-    public void BuildPlanSteps_UsesAutoSourcesOrder_WhenFallbackPlanIsStale()
+    public void BuildPlanSteps_UsesAutoSourcesOrder_WithoutAppendingLiveSettings()
     {
         var fallbackPlan = new List<FallbackPlanStep>
         {
@@ -241,26 +198,6 @@ public sealed class EngineFallbackCoordinatorParityTests
     }
 
     [Fact]
-    public void PrioritizeRemainingPlanSteps_KeepsCanonicalOrder_WhenServiceIsAuto()
-    {
-        var tracker = new DownloadApiHealthTracker();
-        tracker.ReportSuccess("qobuz");
-        var settings = new DeezSpoTagSettings { Service = "auto" };
-        var planSteps = new List<(string Source, string? Quality)>
-        {
-            ("qobuz", "27"),
-            ("tidal", "HI_RES_LOSSLESS"),
-            ("apple", "ALAC"),
-            ("qobuz", "7"),
-            ("qobuz", "6")
-        };
-
-        var steps = InvokePrioritizeRemainingPlanSteps(planSteps, nextIndex: 1, settings, tracker);
-
-        Assert.Equal(ExpectedCanonicalAutoRemainingSteps, steps);
-    }
-
-    [Fact]
     public void FindStepIndex_UsesEngineAndQuality_ForRetryResumeProgress()
     {
         var autoSources = new List<string>
@@ -348,6 +285,7 @@ public sealed class EngineFallbackCoordinatorParityTests
             null,
             string.Empty,
             "stereo",
+            new QueueSourceSettingsSnapshot(),
             fallbackPlan);
         Assert.NotNull(request);
 
@@ -366,33 +304,6 @@ public sealed class EngineFallbackCoordinatorParityTests
         var result = method!.Invoke(null, new[] { planSteps, engine, quality });
         Assert.NotNull(result);
         return (int)result!;
-    }
-
-    private static List<string> InvokePrioritizeRemainingPlanSteps(
-        List<(string Source, string? Quality)> planSteps,
-        int nextIndex,
-        DeezSpoTagSettings settings,
-        IDownloadApiHealthTracker tracker)
-    {
-        var method = typeof(EngineFallbackCoordinator).GetMethod(
-            "PrioritizeRemainingPlanSteps",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(method);
-
-        var coordinator = new EngineFallbackCoordinator(
-            queueRepository: null!,
-            settingsService: null!,
-            deezerIsrcResolver: null!,
-            fallbackSearchService: null!,
-            activityLog: new NullActivityLogWriter(),
-            optionalServices: new EngineFallbackCoordinator.OptionalServices
-            {
-                ApiHealthTracker = tracker
-            });
-        var result = method!.Invoke(coordinator, new object[] { planSteps, nextIndex, settings });
-        Assert.NotNull(result);
-        Assert.IsAssignableFrom<System.Collections.IEnumerable>(result);
-        return ((System.Collections.IEnumerable)result!).Cast<object>().Select(ToStepString).ToList();
     }
 
     private static string ToStepString(object step)
