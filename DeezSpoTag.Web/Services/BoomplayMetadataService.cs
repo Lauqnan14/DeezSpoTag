@@ -976,6 +976,8 @@ public sealed class BoomplayMetadataService
             return null;
         }
 
+        var safePlaylistId = DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId);
+
         try
         {
             var client = CreateClient();
@@ -1008,7 +1010,7 @@ public sealed class BoomplayMetadataService
             {
                 _logger.LogWarning(
                     "Boomplay playlist {PlaylistId} official snapshot count differs from declared count ({FetchedCount}/{DeclaredCount}); visible playlist rows remain the source of truth.",
-                    playlistId,
+                    safePlaylistId,
                     tracks.Count,
                     declaredCount);
             }
@@ -1021,7 +1023,7 @@ public sealed class BoomplayMetadataService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Boomplay official playlist fetch failed for {PlaylistId}.", playlistId);
+            _logger.LogWarning(ex, "Boomplay official playlist fetch failed for {PlaylistId}.", safePlaylistId);
             return null;
         }
     }

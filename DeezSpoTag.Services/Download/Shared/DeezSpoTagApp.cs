@@ -479,10 +479,11 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         var firstStepEngine = queueItem.Engine ?? string.Empty;
         var firstStepQuality = string.Empty;
         var updatedPayloadForWatchlist = string.Empty;
+        var safeUuid = DeezSpoTag.Core.Security.LogSanitizer.OneLine(uuid);
 
         if (string.IsNullOrWhiteSpace(queueItem.PayloadJson))
         {
-            _logger.LogWarning("Manual retry blocked for {QueueUuid}: queue payload is missing.", uuid);
+            _logger.LogWarning("Manual retry blocked for {QueueUuid}: queue payload is missing.", safeUuid);
             return false;
         }
 
@@ -494,7 +495,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Manual retry blocked for {QueueUuid}: queue payload is invalid.", uuid);
+            _logger.LogWarning(ex, "Manual retry blocked for {QueueUuid}: queue payload is invalid.", safeUuid);
             return false;
         }
 
