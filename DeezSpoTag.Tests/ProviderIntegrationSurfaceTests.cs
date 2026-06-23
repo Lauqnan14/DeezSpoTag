@@ -28,8 +28,9 @@ public sealed class ProviderIntegrationSurfaceTests
             trackResolver: null!,
             resolveProxyClient: null!,
             Options.Create(new QobuzApiConfig()),
+            credentialProvider: new StubQobuzCredentialProvider(),
             publicProviderRegistry: registry);
-        var method = typeof(QobuzDownloadService).GetMethod("BuildProvidersAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+        var method = typeof(QobuzDownloadService).GetMethod("BuildPublicProvidersAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
         Assert.NotNull(method);
 
@@ -45,7 +46,6 @@ public sealed class ProviderIntegrationSurfaceTests
             .Cast<string>()
             .ToArray();
 
-        Assert.Contains("Qobuz Official", names);
         Assert.Contains("Enabled provider", names);
         Assert.DoesNotContain("Disabled provider", names);
     }
@@ -61,6 +61,12 @@ public sealed class ProviderIntegrationSurfaceTests
         public Task<QobuzPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken) => Task.FromResult<QobuzPublicProvider?>(null);
         public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task RecordFailureAsync(string providerId, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class StubQobuzCredentialProvider : IQobuzCredentialProvider
+    {
+        public Task<QobuzOfficialCredentials> GetCredentialsAsync(CancellationToken cancellationToken)
+            => Task.FromResult(new QobuzOfficialCredentials("app-id", "auth-token", "app-secret"));
     }
 
     [Fact]

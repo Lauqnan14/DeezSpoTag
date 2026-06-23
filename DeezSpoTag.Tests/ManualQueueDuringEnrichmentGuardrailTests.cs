@@ -240,10 +240,8 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.Contains("HasRunnableDownloadsAsync", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("if (hasRunnableDownloads)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("SetPhase(OrchestrationPhase.Downloading);", orchestrationSource, StringComparison.Ordinal);
-        Assert.Contains(
-            "WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying');",
-            queueSource,
-            StringComparison.Ordinal);
+        Assert.Contains("WHERE lower(status) IN ('inqueue', 'running', 'downloading', 'retrying')", queueSource, StringComparison.Ordinal);
+        Assert.Contains("OR (lower(status) = 'queued' AND \" + QueuedItemReadyForDownloadSqlCondition + @\")", queueSource, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] pathParts)

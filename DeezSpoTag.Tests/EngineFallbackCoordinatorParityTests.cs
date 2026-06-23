@@ -20,10 +20,61 @@ namespace DeezSpoTag.Tests;
 
 public sealed class EngineFallbackCoordinatorParityTests
 {
-    private static readonly string[] ExpectedAutoThenFallbackSteps = { "deezer|9", "qobuz|27", "tidal|HI_RES_LOSSLESS" };
+    private static readonly string[] ExpectedAutoThenFallbackSteps =
+    {
+        "deezer|9",
+        "qobuz|27",
+        "tidal|HI_RES_LOSSLESS",
+        "apple|ALAC",
+        "qobuz|7",
+        "tidal|HI_RES",
+        "qobuz|6",
+        "tidal|LOSSLESS",
+        "amazon|FLAC",
+        "apple|AAC",
+        "qobuz|5",
+        "tidal|HIGH",
+        "deezer|3",
+        "deezer|1",
+        "tidal|LOW"
+    };
     private static readonly string[] ExpectedMixedSteps = { "qobuz|27", "deezer|9", "deezer|3", "tidal|LOSSLESS" };
-    private static readonly string[] ExpectedAutoSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "deezer|9" };
-    private static readonly string[] ExpectedAutoPlusFallbackPlanSteps = { "qobuz|27", "tidal|HI_RES_LOSSLESS", "apple|ALAC", "qobuz|7" };
+    private static readonly string[] ExpectedAutoSteps =
+    {
+        "qobuz|27",
+        "tidal|HI_RES_LOSSLESS",
+        "deezer|9",
+        "apple|ALAC",
+        "qobuz|7",
+        "tidal|HI_RES",
+        "qobuz|6",
+        "tidal|LOSSLESS",
+        "amazon|FLAC",
+        "apple|AAC",
+        "qobuz|5",
+        "tidal|HIGH",
+        "deezer|3",
+        "deezer|1",
+        "tidal|LOW"
+    };
+    private static readonly string[] ExpectedAutoPlusFallbackPlanSteps =
+    {
+        "qobuz|27",
+        "tidal|HI_RES_LOSSLESS",
+        "apple|ALAC",
+        "qobuz|7",
+        "tidal|HI_RES",
+        "qobuz|6",
+        "tidal|LOSSLESS",
+        "amazon|FLAC",
+        "deezer|9",
+        "apple|AAC",
+        "qobuz|5",
+        "tidal|HIGH",
+        "deezer|3",
+        "deezer|1",
+        "tidal|LOW"
+    };
     private static readonly string[] ExpectedForcedDeezerFallbackSteps = { "deezer|9", "deezer|3", "deezer|1" };
     private static readonly string[] ExpectedCustomFallbackSteps = { "apple|ALAC", "qobuz|6" };
     private static readonly string[] ExpectedCanonicalAutoRemainingSteps =
@@ -279,7 +330,28 @@ public sealed class EngineFallbackCoordinatorParityTests
             BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
 
-        var result = method!.Invoke(null, new object[] { fallbackPlan, autoSources, settings });
+        var requestType = method.GetParameters()[0].ParameterType;
+        var request = Activator.CreateInstance(
+            requestType,
+            "queue-test",
+            settings.Service ?? "auto",
+            autoSources,
+            0,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            "Title",
+            "Artist",
+            "Album",
+            null,
+            string.Empty,
+            "stereo",
+            fallbackPlan);
+        Assert.NotNull(request);
+
+        var result = method!.Invoke(null, new object[] { request!, settings });
         Assert.NotNull(result);
         return result!;
     }

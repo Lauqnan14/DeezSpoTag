@@ -68,7 +68,7 @@ public sealed class DownloadQueueOrderingTests
     }
 
     [Fact]
-    public async Task DequeueNextAnyAsync_DoesNotSkipEarlierResolvingItem()
+    public async Task DequeueNextAnyAsync_SkipsEarlierResolvingItem()
     {
         await using var context = CreateContext();
         await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-resolving-head", payloadJson: "{}"), CancellationToken.None);
@@ -85,7 +85,8 @@ public sealed class DownloadQueueOrderingTests
             CancellationToken.None);
 
         Assert.True(claimed);
-        Assert.Null(next);
+        Assert.NotNull(next);
+        Assert.Equal("queue-later", next!.QueueUuid);
     }
 
     [Fact]

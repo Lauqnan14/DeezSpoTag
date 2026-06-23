@@ -50,19 +50,20 @@ public sealed class DownloadQueueRequestAbortGuardrailTests
         var tracklistSource = ReadSource("DeezSpoTag.Web", "Controllers", "TracklistController.cs");
         var artistSource = ReadSource("DeezSpoTag.Web", "Controllers", "ArtistController.cs");
         var deezerApiSource = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "DeezerDownloadApiController.cs");
+        var downloadIntentSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadIntentService.cs");
         var resolverSource = ReadSource("DeezSpoTag.Services", "Download", "ManualDownloadPreferenceResolver.cs");
 
         Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings)", tracklistSource, StringComparison.Ordinal);
-        Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredQuality(settings, preferredEngine", tracklistSource, StringComparison.Ordinal);
         Assert.DoesNotContain("PreferredEngine = DeezerSource", tracklistSource, StringComparison.Ordinal);
 
         Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings)", artistSource, StringComparison.Ordinal);
-        Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredQuality(settings, preferredEngine", artistSource, StringComparison.Ordinal);
         Assert.DoesNotContain("PreferredEngine = \"deezer\"", artistSource, StringComparison.Ordinal);
 
         Assert.Contains("ApplyManualDownloadPreferenceIfMissing(intent, request.Settings)", deezerApiSource, StringComparison.Ordinal);
         Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings)", deezerApiSource, StringComparison.Ordinal);
         Assert.Contains("PreferredEngine = preferredEngine", deezerApiSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyManualDownloadPreferenceIfMissing(intent, settings)", downloadIntentSource, StringComparison.Ordinal);
+        Assert.Contains("intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);", downloadIntentSource, StringComparison.Ordinal);
         Assert.Contains("settings.DownloadEngineOrder?.Enabled == true", resolverSource, StringComparison.Ordinal);
         Assert.Contains("\"auto\" or \"amazon\" or \"apple\" or \"deezer\" or \"qobuz\" or \"tidal\"", resolverSource, StringComparison.Ordinal);
     }

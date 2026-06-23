@@ -21,10 +21,11 @@ public sealed class TidalApiProviderSourceTests
 
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(7, providers.Count);
+        Assert.Equal(8, providers.Count);
         Assert.DoesNotContain(providers, provider => provider.Contains("monochrome", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(providers, provider => provider.Contains("squid", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal("https://hifi.geeked.wtf", providers[0]);
+        Assert.Equal("https://api.zarz.moe/v1/dl/tid2", providers[0]);
+        Assert.Contains("https://hifi.geeked.wtf", providers);
         Assert.Contains("https://hifi-one.spotisaver.net", providers);
         Assert.Contains("https://hifi-two.spotisaver.net", providers);
     }
@@ -54,7 +55,7 @@ public sealed class TidalApiProviderSourceTests
         _ = await service.GetRotatedProvidersAsync(CancellationToken.None);
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
 
-        string[] expectedNames = ["Geeked", "Pink Hamster", "QQDL Vogel", "SpotiSaver One", "SpotiSaver Two", "KinoPlus", "Binimum"];
+        string[] expectedNames = ["Zarz", "Geeked", "Pink Hamster", "QQDL Vogel", "SpotiSaver One", "SpotiSaver Two", "KinoPlus", "Binimum"];
         Assert.Equal(expectedNames, providers.Select(provider => provider.DisplayName).ToArray());
     }
 
@@ -70,7 +71,7 @@ public sealed class TidalApiProviderSourceTests
         await registry.SetEnabledAsync("geeked", false, CancellationToken.None);
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(6, providers.Count);
+        Assert.Equal(7, providers.Count);
         Assert.DoesNotContain("https://hifi.geeked.wtf", providers);
     }
 
@@ -79,7 +80,21 @@ public sealed class TidalApiProviderSourceTests
     private sealed class InMemoryProviderRegistry : ITidalPublicProviderRegistry
     {
         private readonly List<TidalPublicProvider> _providers = TidalPublicProviderDefaults.Providers
-            .Select(definition => new TidalPublicProvider(definition.Id, definition.DisplayName, definition.Endpoint, true, "unknown", null, null, null, null, null))
+            .Select(definition => new TidalPublicProvider(
+                definition.Id,
+                definition.DisplayName,
+                definition.Kind,
+                definition.Endpoint,
+                definition.HealthEndpoint,
+                definition.HealthServiceKey,
+                true,
+                "unknown",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null))
             .ToList();
 
         public Task<IReadOnlyList<TidalPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
