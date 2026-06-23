@@ -48,6 +48,12 @@ public sealed class DownloadQueueRepository
     private const string EnrichmentStatusInterrupted = "interrupted";
     private const string EnrichmentStatusNotRequired = "not_required";
     private const string CompletedQueueStatusSqlCondition = "lower(status) IN ('completed', 'complete')";
+    private const string ResolutionStatusSql = "lower(CASE WHEN json_valid(payload) THEN COALESCE(CAST(json_extract(payload, '$.ResolutionStatus') AS TEXT), CAST(json_extract(payload, '$.resolutionStatus') AS TEXT), '') ELSE '' END)";
+    private const string QueuedItemReadyForDownloadSqlCondition = @"
+(
+    " + ResolutionStatusSql + @" = ''
+    OR " + ResolutionStatusSql + @" NOT IN ('pending', 'resolving', 'failed')
+)";
     private const string UpdateDownloadTaskSqlPrefix = "\nUPDATE " + DownloadTaskTable;
     private readonly string _connectionString;
     private readonly DownloadStagingCleanupService? _stagingCleanupService;
@@ -415,7 +421,8 @@ WHERE status IN ('queued', 'resolving');";
         const string sql = @"
 SELECT COUNT(*)
 FROM download_task
-WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying');";
+WHERE lower(status) IN ('inqueue', 'running', 'downloading', 'retrying')
+   OR (lower(status) = 'queued' AND " + QueuedItemReadyForDownloadSqlCondition + @");";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 0 : Convert.ToInt32(result);
@@ -467,7 +474,8 @@ LIMIT 1;";
         const string sql = @"
 SELECT 1
 FROM download_task
-WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'retrying')
+WHERE lower(status) IN ('inqueue', 'running', 'downloading', 'retrying')
+   OR (lower(status) = 'queued' AND " + QueuedItemReadyForDownloadSqlCondition + @")
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
@@ -645,9 +653,20 @@ WHERE status = 'paused';";
         const string sql = @"
 UPDATE download_task
 SET status = 'queued',
+    payload = CASE
+        WHEN json_valid(payload) THEN json_set(
+            payload,
+            '$.ResolutionStatus', 'pending',
+            '$.resolutionStatus', 'pending',
+            '$.ResolutionError', '',
+            '$.resolutionError', ''
+        )
+        ELSE payload
+    END,
     error = NULL,
     updated_at = CURRENT_TIMESTAMP
-WHERE status = 'resolving';";
+WHERE status = 'resolving'
+   OR (status = 'queued' AND " + ResolutionStatusSql + @" = 'resolving');";
         await using var command = new SqliteCommand(sql, connection);
         var affected = await command.ExecuteNonQueryAsync(cancellationToken);
         if (affected > 0)
@@ -752,6 +771,7 @@ WITH queue_head AS (
 	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
 	FROM download_task
 	WHERE status = 'queued'
+      AND {QueuedItemReadyForDownloadSqlCondition}
 ORDER BY (queue_order IS NULL), queue_order {queueOrderBy}, created_at {orderBy}, id {orderBy}
 LIMIT 1
 )

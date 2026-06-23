@@ -2504,6 +2504,12 @@ public static partial class EngineAudioPostDownloadHelper
             : payload.Id ?? string.Empty;
     }
 
+    private static bool CanProcessAtmosPayload(string? engineName)
+    {
+        return string.Equals(engineName, "apple", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(engineName, "tidal", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static async Task<TPayload?> InitializeQueueItemAsync<TPayload>(
         DownloadQueueItem queueItem,
         string? payloadJson,
@@ -2520,9 +2526,10 @@ public static partial class EngineAudioPostDownloadHelper
             return null;
         }
 
-        if (DownloadEngineSettingsHelper.IsAtmosOnlyPayload(payload.ContentType, payload.Quality))
+        if (DownloadEngineSettingsHelper.IsAtmosOnlyPayload(payload.ContentType, payload.Quality)
+            && !CanProcessAtmosPayload(context.EngineName))
         {
-            const string message = "Atmos payload must be processed by Apple engine.";
+            const string message = "Atmos payload must be processed by Apple Music or Tidal.";
             context.ActivityLog.Warn($"Atmos guard blocked non-Apple processing: {queueItem.QueueUuid} engine={context.EngineName}");
             var advanced = await context.TryAdvanceAsync(
                 queueItem.QueueUuid,

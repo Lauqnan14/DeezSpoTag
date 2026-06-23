@@ -173,6 +173,39 @@ public sealed class TidalDownloadService
         }
     }
 
+    public async Task<string?> ResolveAtmosTrackUrlAsync(
+        string trackTitle,
+        string artistName,
+        string isrc,
+        int expectedDuration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trackInfo = await SearchAtmosTrackByMetadataWithIsrcAsync(
+                trackTitle,
+                artistName,
+                isrc,
+                expectedDuration,
+                cancellationToken);
+            if (trackInfo == null || trackInfo.Id <= 0)
+            {
+                return null;
+            }
+
+            return BuildTidalTrackListenUrl(trackInfo.Id);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Tidal Atmos metadata resolution failed for {Title} - {Artist}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
+            return null;
+        }
+    }
+
     private async Task<string> DownloadByUrlAsync(
         TidalDownloadRequest request,
         string tidalUrl,
@@ -324,6 +357,56 @@ public sealed class TidalDownloadService
         }
 
         throw new InvalidOperationException("No validated Tidal track match found");
+    }
+
+    private async Task<TidalTrack> SearchAtmosTrackByMetadataWithIsrcAsync(
+        string trackName,
+        string artistName,
+        string isrc,
+        int expectedDuration,
+        CancellationToken cancellationToken)
+    {
+        var queries = BuildSearchQueries(trackName, artistName);
+        var allTracks = new List<TidalTrack>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var query in queries)
+        {
+            if (!seen.Add(query))
+            {
+                continue;
+            }
+
+            var result = await SearchTracksAsync(query, 100, cancellationToken);
+            if (result.Count > 0)
+            {
+                allTracks.AddRange(result.Where(HasTidalAtmosMode));
+            }
+        }
+
+        if (allTracks.Count == 0)
+        {
+            throw new InvalidOperationException("No Tidal Atmos tracks found");
+        }
+
+        var isrcMatch = FindIsrcMatch(allTracks, isrc);
+        if (isrcMatch != null)
+        {
+            return isrcMatch;
+        }
+
+        var validatedMatch = FindValidatedMetadataMatch(allTracks, trackName, artistName, isrc, expectedDuration);
+        if (validatedMatch != null)
+        {
+            return validatedMatch;
+        }
+
+        throw new InvalidOperationException("No validated Tidal Atmos track match found");
+    }
+
+    private static bool HasTidalAtmosMode(TidalTrack track)
+    {
+        return track.AudioModes?.Any(static mode =>
+            string.Equals(mode, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)) == true;
     }
 
     private static List<string> BuildSearchQueries(string trackName, string artistName)
@@ -2182,6 +2265,9 @@ public sealed class TidalDownloadService
 
         [JsonPropertyName("album")]
         public TidalAlbum? Album { get; set; }
+
+        [JsonPropertyName("audioModes")]
+        public List<string>? AudioModes { get; set; }
     }
 
     private sealed class TidalArtist

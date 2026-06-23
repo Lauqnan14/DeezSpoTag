@@ -36,6 +36,7 @@ public sealed class EngineFallbackCoordinator
         string Album,
         int? DurationMs,
         string Quality,
+        string ContentType,
         List<FallbackPlanStep> FallbackPlan);
     private sealed record FallbackPayloadMutators(
         Action<(string Source, string? Quality, int Index)> ApplyStep,
@@ -103,6 +104,7 @@ public sealed class EngineFallbackCoordinator
             Album: payload.Album,
             DurationMs: payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : (int?)null,
             Quality: payload.Quality,
+            ContentType: payload.ContentType,
             FallbackPlan: payload.FallbackPlan);
 
         var mutators = new FallbackPayloadMutators(
@@ -131,7 +133,7 @@ public sealed class EngineFallbackCoordinator
         CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
-        var planSteps = BuildPlanSteps(request.FallbackPlan, request.AutoSources, settings);
+        var planSteps = BuildPlanSteps(request, settings);
 
         var resolvedIsrc = await ResolveIsrcForFallbackAsync(request, cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolvedIsrc))
@@ -376,46 +378,65 @@ public sealed class EngineFallbackCoordinator
     }
 
     private static List<(string Source, string? Quality)> BuildPlanSteps(
-        List<FallbackPlanStep> fallbackPlan,
-        List<string> autoSources,
+        FallbackAdvanceRequest request,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
         var steps = new List<(string Source, string? Quality)>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var atmosOnly = IsAtmosRequest(request);
 
-        if (autoSources != null && autoSources.Count > 0)
+        if (request.AutoSources != null && request.AutoSources.Count > 0)
         {
-            foreach (var decoded in autoSources.Select(DownloadSourceOrder.DecodeAutoSource))
+            foreach (var decoded in request.AutoSources.Select(DownloadSourceOrder.DecodeAutoSource))
             {
-                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality);
+                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality, atmosOnly);
             }
         }
 
-        if (fallbackPlan != null && fallbackPlan.Count > 0)
+        if (request.FallbackPlan != null && request.FallbackPlan.Count > 0)
         {
-            foreach (var step in fallbackPlan)
+            foreach (var step in request.FallbackPlan)
             {
-                AppendPlanStep(steps, seen, step.Engine, step.Quality);
+                AppendPlanStep(steps, seen, step.Engine, step.Quality, atmosOnly);
             }
         }
 
-        if (steps.Count == 0)
+        if (!atmosOnly && IsAutoOrCustomSourceOrder(settings))
         {
             foreach (var decoded in DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null)
                 .Select(DownloadSourceOrder.DecodeAutoSource))
             {
-                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality);
+                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality, atmosOnly);
+            }
+        }
+
+        if (steps.Count == 0 && !atmosOnly)
+        {
+            foreach (var decoded in DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null)
+                .Select(DownloadSourceOrder.DecodeAutoSource))
+            {
+                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality, atmosOnly);
             }
         }
 
         return steps;
     }
 
+    private static bool IsAutoOrCustomSourceOrder(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+        => string.Equals(settings.Service?.Trim(), "auto", StringComparison.OrdinalIgnoreCase)
+           || settings.DownloadEngineOrder?.Enabled == true;
+
+    private static bool IsAtmosRequest(FallbackAdvanceRequest request)
+        => string.Equals(request.ContentType?.Trim(), "atmos", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(request.Quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(request.Quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase);
+
     private static void AppendPlanStep(
         List<(string Source, string? Quality)> steps,
         HashSet<string> seen,
         string? source,
-        string? quality)
+        string? quality,
+        bool atmosOnly = false)
     {
         if (string.IsNullOrWhiteSpace(source))
         {
@@ -424,12 +445,23 @@ public sealed class EngineFallbackCoordinator
 
         var normalizedSource = source.Trim();
         var normalizedQuality = string.IsNullOrWhiteSpace(quality) ? null : quality.Trim();
+        if (atmosOnly && !IsAtmosStep(normalizedSource, normalizedQuality))
+        {
+            return;
+        }
+
         var key = DownloadSourceOrder.EncodeAutoSource(normalizedSource, normalizedQuality);
         if (seen.Add(key))
         {
             steps.Add((normalizedSource, normalizedQuality));
         }
     }
+
+    private static bool IsAtmosStep(string source, string? quality)
+        => (string.Equals(source, AppleEngine, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase))
+           || (string.Equals(source, "tidal", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase));
 
     private static int FindStepIndex(List<(string Source, string? Quality)> autoSources, string engine, string quality)
     {

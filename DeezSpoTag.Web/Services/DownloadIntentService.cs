@@ -410,7 +410,7 @@ public sealed class DownloadIntentService
             intent,
             settings,
             useMultiQuality,
-            useAtmosStereoDual: false,
+            useAtmosStereoDual: useMultiQuality && IsMusicIntent(intent) && !IsVideoIntent(intent),
             engine,
             cancellationToken);
         if (destinationRouting.Failure != null)
@@ -427,6 +427,7 @@ public sealed class DownloadIntentService
 
         var payload = BuildVisiblePreResolutionPayload(intent, settings, engine, selectedQuality);
         var requestedQualityRank = ParseRequestedQualityRank(selectedQuality ?? intent.Quality);
+        var queued = new List<string>();
         var enqueueDecision = await EnqueueItemAsync(
             payload,
             blockRules,
@@ -448,7 +449,15 @@ public sealed class DownloadIntentService
         }
 
         var queueUuid = enqueueDecision.QueueUuid ?? payload.Id;
+        queued.Add(queueUuid);
         NotifyQueueAdded(payload);
+        await TryEnqueueVisibleAtmosSecondaryAsync(
+            intent,
+            settings,
+            destinationRouting,
+            blockRules,
+            queued,
+            cancellationToken);
         if (IsMusicIntent(intent))
         {
             _orchestrationService.MarkDownloadQueued();
@@ -458,8 +467,8 @@ public sealed class DownloadIntentService
         {
             Success = true,
             Engine = engine,
-            Queued = new List<string> { queueUuid },
-            Message = "Queued 1 item(s)."
+            Queued = queued,
+            Message = $"Queued {queued.Count} item(s)."
         };
     }
 
@@ -613,11 +622,17 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken)
     {
         var intent = BuildIntentFromQueueItem(item);
+        if (string.Equals(item.Engine, TidalPlatform, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(item.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
+        {
+            return await ResolveQueuedTidalAtmosPayloadAsync(item, intent, cancellationToken);
+        }
+
         var resolution = await TryPrepareEnqueueResolutionAsync(
             intent,
             preferIsrcOnly: false,
             allowManualQueueDuringEnrichment: false,
-            allowAutomaticSecondaryQuality: true,
+            allowAutomaticSecondaryQuality: false,
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -667,6 +682,47 @@ public sealed class DownloadIntentService
             DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
             ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+    }
+
+    [ExcludeFromCodeCoverage]
+    private async Task<QueuePreResolutionPayload.ResolutionResult> ResolveQueuedTidalAtmosPayloadAsync(
+        DownloadQueueItem item,
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        var durationMs = intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs;
+        var durationSeconds = durationMs.HasValue && durationMs.Value > 0
+            ? (int)Math.Round(durationMs.Value / 1000d)
+            : 0;
+        var sourceUrl = await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
+            intent.Title ?? string.Empty,
+            intent.Artist ?? string.Empty,
+            intent.Isrc ?? string.Empty,
+            durationSeconds,
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return new QueuePreResolutionPayload.ResolutionResult(
+                TidalPlatform,
+                null,
+                null,
+                null,
+                null,
+                "Tidal Atmos track not found for ISRC or metadata.");
+        }
+
+        return new QueuePreResolutionPayload.ResolutionResult(
+            TidalPlatform,
+            sourceUrl,
+            TidalAtmosQuality,
+            0,
+            Array.Empty<FallbackPlanStep>(),
+            null,
+            Isrc: intent.Isrc,
+            SpotifyId: intent.SpotifyId,
+            DurationMs: durationMs,
+            DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
+            ContentType: DownloadContentTypes.Atmos);
     }
 
     [ExcludeFromCodeCoverage]
@@ -1069,8 +1125,7 @@ public sealed class DownloadIntentService
         }
 
         var payloadSources = allowCrossEngineFallback
-            ? DownloadSourceOrder.CollapseAutoSourcesByService(
-                BuildFallbackPlanSources(autoSources, settings, engine, quality))
+            ? ResolveCrossEngineFallbackSources(intent, autoSources, settings, engine, quality)
             : DownloadSourceOrder.ResolveEngineQualitySources(
                 settings,
                 engine,
@@ -1100,6 +1155,36 @@ public sealed class DownloadIntentService
         var index = DownloadSourceOrder.FindAutoIndex(payloadSources, engine, quality);
         var clampedIndex = payloadSources.Count == 0 ? 0 : Math.Max(0, Math.Min(index, payloadSources.Count - 1));
         return (plan, payloadSources, clampedIndex);
+    }
+
+    private static List<string> ResolveCrossEngineFallbackSources(
+        DownloadIntent intent,
+        List<string> autoSources,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        string engine,
+        string? quality)
+    {
+        if (IsAtmosSourceRequest(intent.ContentType, quality))
+        {
+            return DownloadSourceOrder.CollapseAutoSourcesByService(autoSources)
+                .Where(IsAtmosEncodedSource)
+                .ToList();
+        }
+
+        return DownloadSourceOrder.CollapseAutoSourcesByService(
+            BuildFallbackPlanSources(autoSources, settings, engine, quality));
+    }
+
+    private static bool IsAtmosSourceRequest(string? contentType, string? quality)
+        => string.Equals(contentType?.Trim(), DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase)
+           || IsAtmosQuality(quality);
+
+    private static bool IsAtmosEncodedSource(string encodedSource)
+    {
+        var decoded = DownloadSourceOrder.DecodeAutoSource(encodedSource);
+        return IsAtmosSourceRequest(null, decoded.Quality)
+            && (string.Equals(decoded.Source, ApplePlatform, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(decoded.Source, TidalPlatform, StringComparison.OrdinalIgnoreCase));
     }
 
     private static PrimaryPayloadEnqueueContext CreatePrimaryEnqueueContext(EngineEnqueueRequest request)
@@ -5286,19 +5371,20 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         DeezSpoTagSettings settings,
         string engine,
-        string? selectedQuality)
+        string? selectedQuality,
+        string? contentTypeOverride = null,
+        long? destinationFolderIdOverride = null)
     {
-        var contentType = ResolveContentType(
-            intent.ContentType,
-            intent.SourceUrl,
-            string.IsNullOrWhiteSpace(intent.Album) ? TrackType : AlbumType,
-            intent.HasAtmos,
-            selectedQuality);
-        var autoSources = DownloadSourceOrder.ResolveEngineQualitySources(
-            settings,
-            engine,
-            selectedQuality,
-            strict: UseStrictQualityFallback(settings, engine, selectedQuality));
+        var contentType = string.IsNullOrWhiteSpace(contentTypeOverride)
+            ? ResolveContentType(
+                intent.ContentType,
+                intent.SourceUrl,
+                string.IsNullOrWhiteSpace(intent.Album) ? TrackType : AlbumType,
+                intent.HasAtmos,
+                selectedQuality)
+            : contentTypeOverride;
+        var autoSources = ResolveVisiblePreResolutionSources(intent, settings, engine, selectedQuality, contentType);
+        var selectedAutoIndex = DownloadSourceOrder.FindAutoIndex(autoSources, engine, selectedQuality);
         var fallbackPlan = BuildFallbackPlanFromSources(intent, autoSources, settings.FallbackSearch);
         var durationSeconds = intent.DurationMs > 0 ? (int)Math.Round(intent.DurationMs / 1000d) : 0;
         var payload = CreateQueuePayloadForEngine(engine);
@@ -5307,18 +5393,54 @@ public sealed class DownloadIntentService
             string.IsNullOrWhiteSpace(intent.Album) ? TrackType : AlbumType,
             contentType,
             autoSources,
-            0,
+            Math.Max(0, selectedAutoIndex),
             fallbackPlan,
             intent.ReleaseDate ?? string.Empty,
             durationSeconds,
-            intent.DestinationFolderId,
-            string.Empty));
+            destinationFolderIdOverride ?? intent.DestinationFolderId,
+            string.Equals(contentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase)
+                ? AtmosQuality
+                : string.Empty));
         payload.Engine = engine;
         payload.SourceService = string.IsNullOrWhiteSpace(intent.SourceService) ? engine : intent.SourceService;
         payload.Quality = selectedQuality ?? ResolvePreferredQuality(settings, engine) ?? string.Empty;
         payload.ResolutionStatus = QueuePreResolutionPayload.Pending;
         ApplyIntentMetadataForPayload(payload, intent);
         return payload;
+    }
+
+    private static List<string> ResolveVisiblePreResolutionSources(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        string engine,
+        string? selectedQuality,
+        string? contentType)
+    {
+        if (IsAtmosSourceRequest(contentType, selectedQuality))
+        {
+            return BuildAtmosAutoSources(settings.MultiQuality, settings.MultiQuality?.AtmosDownloadFallback == true);
+        }
+
+        var useCrossEngineOrder = IsMusicIntent(intent)
+            && !IsVideoIntent(intent)
+            && (IsAutoService(settings.Service) || settings.DownloadEngineOrder?.Enabled == true);
+        if (useCrossEngineOrder)
+        {
+            var sources = DownloadSourceOrder.ResolveQualityAutoSources(
+                settings,
+                includeDeezer: true,
+                targetQuality: selectedQuality);
+            if (sources.Count > 0)
+            {
+                return sources;
+            }
+        }
+
+        return DownloadSourceOrder.ResolveEngineQualitySources(
+            settings,
+            engine,
+            selectedQuality,
+            strict: UseStrictQualityFallback(settings, engine, selectedQuality));
     }
 
     private static EngineQueueItemBase CreateQueuePayloadForEngine(string engine)
@@ -5717,12 +5839,21 @@ public sealed class DownloadIntentService
         long secondaryDestinationFolderId)
     {
         const string secondaryQuality = TidalAtmosQuality;
-        var candidate = await ResolveIntentAsync(
-            request.Intent,
-            TidalPlatform,
-            request.PreferIsrcOnly,
-            request.Availability,
+        var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
+        var tidalAtmosUrl = await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
+            request.Intent.Title ?? string.Empty,
+            request.Intent.Artist ?? string.Empty,
+            request.Intent.Isrc ?? string.Empty,
+            durationSeconds,
             request.CancellationToken);
+        (string Engine, string? SourceUrl, string Message, string MappingSource) candidate = !string.IsNullOrWhiteSpace(tidalAtmosUrl)
+            ? (TidalPlatform, tidalAtmosUrl, string.Empty, "tidal-atmos-search")
+            : await ResolveIntentAsync(
+                request.Intent,
+                TidalPlatform,
+                request.PreferIsrcOnly,
+                request.Availability,
+                request.CancellationToken);
         if (!string.IsNullOrWhiteSpace(candidate.Message) && candidate.Engine == string.Empty)
         {
             _activityLog.Warn($"Secondary Atmos mapping skipped: {candidate.Message}");
@@ -5746,7 +5877,6 @@ public sealed class DownloadIntentService
             UseAtmosStereoDual: false,
             AutoSources: autoSources,
             Availability: request.Availability));
-        var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
         var payload = new TidalQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
             candidate.SourceUrl,
@@ -5760,6 +5890,7 @@ public sealed class DownloadIntentService
             secondaryDestinationFolderId,
             AtmosQuality));
         payload.Quality = secondaryQuality;
+        payload.TidalId = TryExtractTidalTrackId(candidate.SourceUrl) ?? string.Empty;
         payload.Id = Guid.NewGuid().ToString("N");
         payload.QualityBucket = AtmosQuality;
         ApplyIntentMetadata(payload, request.Intent);
@@ -5811,6 +5942,29 @@ public sealed class DownloadIntentService
 
     private static string ResolveAtmosQualityForEngine(string engine)
         => string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase) ? TidalAtmosQuality : AtmosQualityUpper;
+
+    private static string? TryExtractTidalTrackId(string? sourceUrl)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrl)
+            || !Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
+            || !parsed.Host.Contains("tidal.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var segments = parsed.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (segments[i].Equals("track", StringComparison.OrdinalIgnoreCase)
+                && long.TryParse(segments[i + 1], out var trackId)
+                && trackId > 0)
+            {
+                return trackId.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        return null;
+    }
 
     private async Task<(AppleQueueItem Payload, bool IsVideo)> BuildApplePayloadBaseAsync(
         DownloadIntent intent,
@@ -6487,6 +6641,61 @@ public sealed class DownloadIntentService
         }
 
         return enqueueDecision.Success ? 0 : 1;
+    }
+
+    private async Task TryEnqueueVisibleAtmosSecondaryAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        DestinationRoutingResult destinationRouting,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
+        List<string> queued,
+        CancellationToken cancellationToken)
+    {
+        if (!IsMultiQualityDualEnabled(settings.MultiQuality)
+            || !IsMusicIntent(intent)
+            || IsVideoIntent(intent)
+            || !destinationRouting.SecondaryDestinationFolderId.HasValue)
+        {
+            return;
+        }
+
+        var secondaryEngine = ResolveAtmosEngineOrder(
+            settings.MultiQuality,
+            settings.MultiQuality?.AtmosSearchFallback == true)[0];
+        var secondaryQuality = ResolveAtmosQualityForEngine(secondaryEngine);
+        var payload = BuildVisiblePreResolutionPayload(
+            intent,
+            settings,
+            secondaryEngine,
+            secondaryQuality,
+            DownloadContentTypes.Atmos,
+            destinationRouting.SecondaryDestinationFolderId);
+        payload.SourceUrl = string.Empty;
+        payload.ContentType = DownloadContentTypes.Atmos;
+        payload.QualityBucket = AtmosQuality;
+        payload.Quality = secondaryQuality;
+        payload.Engine = secondaryEngine;
+        payload.SourceService = secondaryEngine;
+
+        if (payload is TidalQueueItem tidal)
+        {
+            tidal.TidalId = string.Empty;
+        }
+
+        var enqueueDecision = await EnqueueItemAsync(
+            payload,
+            blockRules,
+            intent.AllowQualityUpgrade,
+            ParseRequestedQualityRank(secondaryQuality),
+            initialStatus: "queued",
+            cancellationToken);
+        if (!enqueueDecision.Success)
+        {
+            return;
+        }
+
+        queued.Add(enqueueDecision.QueueUuid ?? payload.Id);
+        NotifyQueueAdded(payload);
     }
 
     private void NotifyQueueAdded(EngineQueueItemBase payload)
