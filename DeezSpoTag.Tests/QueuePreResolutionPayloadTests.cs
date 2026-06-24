@@ -58,6 +58,9 @@ public sealed class QueuePreResolutionPayloadTests
                 DeezerId: "359542303",
                 SpotifyId: "spotify-track",
                 AppleId: "apple-track",
+                QobuzId: "123",
+                TidalId: "456",
+                AmazonId: "B0TEST1234",
                 DurationMs: 205000,
                 DestinationFolderId: 1,
                 ContentType: "stereo"),
@@ -73,6 +76,12 @@ public sealed class QueuePreResolutionPayloadTests
         Assert.Equal("359542303", payload["DeezerId"]?.ToString());
         Assert.Equal("spotify-track", payload["SpotifyId"]?.ToString());
         Assert.Equal("apple-track", payload["AppleId"]?.ToString());
+        Assert.Equal("123", payload["QobuzId"]?.ToString());
+        Assert.Equal("123", payload["qobuzId"]?.ToString());
+        Assert.Equal("456", payload["TidalId"]?.ToString());
+        Assert.Equal("456", payload["tidalId"]?.ToString());
+        Assert.Equal("B0TEST1234", payload["AmazonId"]?.ToString());
+        Assert.Equal("B0TEST1234", payload["amazonId"]?.ToString());
         Assert.Equal("205000", payload["DurationMs"]?.ToString());
         Assert.Equal("1", payload["DestinationFolderId"]?.ToString());
         Assert.Equal("stereo", payload["ContentType"]?.ToString());

@@ -668,6 +668,16 @@ public sealed class DownloadIntentService
             sourceUrl = intent.SourceUrl;
         }
 
+        var qobuzId = FirstNonEmpty(
+            intent.QobuzId,
+            TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));
+        var tidalId = FirstNonEmpty(
+            intent.TidalId,
+            TryExtractTidalTrackId(sourceUrl));
+        var amazonId = FirstNonEmpty(
+            intent.AmazonId,
+            EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout));
+
         return new QueuePreResolutionPayload.ResolutionResult(
             string.IsNullOrWhiteSpace(target.Engine) ? item.Engine : target.Engine,
             sourceUrl,
@@ -681,6 +691,9 @@ public sealed class DownloadIntentService
             DeezerArtistId: intent.DeezerArtistId,
             SpotifyId: intent.SpotifyId,
             AppleId: intent.AppleId,
+            QobuzId: qobuzId,
+            TidalId: tidalId,
+            AmazonId: amazonId,
             DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
             ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
@@ -722,6 +735,7 @@ public sealed class DownloadIntentService
             null,
             Isrc: intent.Isrc,
             SpotifyId: intent.SpotifyId,
+            TidalId: FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl)),
             DurationMs: durationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
             ContentType: DownloadContentTypes.Atmos);
@@ -5492,9 +5506,41 @@ public sealed class DownloadIntentService
         payload.Engine = engine;
         payload.SourceService = string.IsNullOrWhiteSpace(intent.SourceService) ? engine : intent.SourceService;
         payload.Quality = selectedQuality ?? ResolvePreferredQuality(settings, engine) ?? string.Empty;
-        payload.ResolutionStatus = QueuePreResolutionPayload.Pending;
         ApplyIntentMetadataForPayload(payload, intent);
+        ApplyVisiblePayloadResolutionState(payload);
         return payload;
+    }
+
+    private static void ApplyVisiblePayloadResolutionState(EngineQueueItemBase payload)
+    {
+        var sourceUrl = payload.SourceUrl ?? string.Empty;
+        var hasDirectIdentity = payload.Engine switch
+        {
+            TidalPlatform => !string.IsNullOrWhiteSpace(payload.TidalId)
+                || IsServiceUrlMatch(sourceUrl, TidalPlatform),
+            QobuzPlatform => !string.IsNullOrWhiteSpace(payload.QobuzId)
+                || IsServiceUrlMatch(sourceUrl, QobuzPlatform),
+            AmazonPlatform => !string.IsNullOrWhiteSpace(payload.AmazonId)
+                || IsServiceUrlMatch(sourceUrl, AmazonPlatform),
+            ApplePlatform => !string.IsNullOrWhiteSpace(payload.AppleId)
+                || IsServiceUrlMatch(sourceUrl, ApplePlatform),
+            DeezerPlatform => !string.IsNullOrWhiteSpace(payload.DeezerId)
+                || IsServiceUrlMatch(sourceUrl, DeezerPlatform),
+            _ => false
+        };
+
+        if (!hasDirectIdentity)
+        {
+            payload.ResolutionStatus = QueuePreResolutionPayload.Pending;
+            return;
+        }
+
+        payload.ResolutionStatus = QueuePreResolutionPayload.Resolved;
+        payload.ResolvedAtUtc = DateTimeOffset.UtcNow;
+        payload.ResolvedEngine = payload.Engine;
+        payload.ResolvedSourceUrl = payload.SourceUrl;
+        payload.ResolvedQuality = payload.Quality;
+        payload.ResolvedAutoIndex = payload.AutoIndex;
     }
 
     private static List<string> ResolveVisiblePreResolutionSources(
@@ -6534,9 +6580,11 @@ public sealed class DownloadIntentService
                 || IsServiceUrlMatch(sourceUrl ?? string.Empty, DeezerPlatform),
             ApplePlatform => !string.IsNullOrWhiteSpace(identity.AppleTrackId)
                 || IsServiceUrlMatch(sourceUrl ?? string.Empty, ApplePlatform),
-            TidalPlatform => IsServiceUrlMatch(sourceUrl ?? string.Empty, TidalPlatform),
-            AmazonPlatform => IsServiceUrlMatch(sourceUrl ?? string.Empty, AmazonPlatform),
-            QobuzPlatform => !string.IsNullOrWhiteSpace(identity.Isrc)
+            TidalPlatform => !string.IsNullOrWhiteSpace(identity.TidalTrackId)
+                || IsServiceUrlMatch(sourceUrl ?? string.Empty, TidalPlatform),
+            AmazonPlatform => !string.IsNullOrWhiteSpace(identity.AmazonTrackId)
+                || IsServiceUrlMatch(sourceUrl ?? string.Empty, AmazonPlatform),
+            QobuzPlatform => !string.IsNullOrWhiteSpace(identity.QobuzTrackId)
                 || IsServiceUrlMatch(sourceUrl ?? string.Empty, QobuzPlatform),
             _ => true
         };

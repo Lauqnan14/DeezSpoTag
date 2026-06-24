@@ -12,6 +12,8 @@ public sealed class EngineFallbackCoordinator
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
+    private const string TidalEngine = "tidal";
+    private const string AmazonEngine = "amazon";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
@@ -347,14 +349,60 @@ public sealed class EngineFallbackCoordinator
             return;
         }
 
-        if (string.Equals(source, "tidal", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(source, TidalEngine, StringComparison.OrdinalIgnoreCase))
         {
             var resolvedTidalId = EngineLinkParser.TryExtractTidalTrackId(resolvedUrl);
             if (!string.IsNullOrWhiteSpace(resolvedTidalId))
             {
                 TrySetStringProperty(payloadForSerialization, "TidalId", resolvedTidalId);
             }
+
+            return;
         }
+
+        if (string.Equals(source, AmazonEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            var resolvedAmazonId = EngineLinkParser.TryExtractAmazonTrackId(resolvedUrl, TimeSpan.FromMilliseconds(250));
+            if (!string.IsNullOrWhiteSpace(resolvedAmazonId))
+            {
+                TrySetStringProperty(payloadForSerialization, "AmazonId", resolvedAmazonId);
+            }
+
+            return;
+        }
+
+        if (string.Equals(source, DeezerEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            var resolvedDeezerId = TryExtractDeezerTrackId(resolvedUrl);
+            if (!string.IsNullOrWhiteSpace(resolvedDeezerId))
+            {
+                TrySetStringProperty(payloadForSerialization, "DeezerId", resolvedDeezerId);
+            }
+        }
+    }
+
+    private static string? TryExtractDeezerTrackId(string? resolvedUrl)
+    {
+        if (string.IsNullOrWhiteSpace(resolvedUrl)
+            || !Uri.TryCreate(resolvedUrl, UriKind.Absolute, out var parsed)
+            || !parsed.Host.Contains("deezer.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var segments = parsed.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (!segments[i].Equals("track", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var candidate = Uri.UnescapeDataString(segments[i + 1]).Trim();
+            return candidate.All(char.IsDigit) ? candidate : null;
+        }
+
+        return null;
     }
 
     private async Task<bool> PersistAdvancedFallbackStateAsync(
