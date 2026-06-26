@@ -106,9 +106,9 @@ public sealed class DownloadQueueRepository
             var queueOrder = item.QueueOrder ?? await GetNextQueueOrderAsync(connection, cancellationToken);
             const string sql = @"
 	INSERT OR IGNORE INTO " + DownloadTaskTable + @"
-	    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status, status, payload, progress, downloaded, failed, error, created_at, updated_at)
+	    (queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id, spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id, qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id, duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status, status, payload, progress, downloaded, failed, error, created_at, updated_at)
 	VALUES
-	    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @enrichmentStatus, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+	    (@queueUuid, @engine, @artistName, @trackTitle, @isrc, @deezerTrackId, @deezerAlbumId, @deezerArtistId, @spotifyTrackId, @spotifyAlbumId, @spotifyArtistId, @appleTrackId, @appleAlbumId, @appleArtistId, @qobuzTrackId, @qobuzAlbumId, @qobuzArtistId, @tidalTrackId, @tidalAlbumId, @tidalArtistId, @amazonTrackId, @amazonAlbumId, @amazonArtistId, @durationMs, @destinationFolderId, @qualityRank, @queueOrder, @contentType, @moveStatus, @enrichmentStatus, @status, @payload, @progress, @downloaded, @failed, @error, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 SELECT CASE
     WHEN changes() = 0 THEN NULL
 	    ELSE last_insert_rowid()
@@ -161,7 +161,7 @@ SELECT CASE
 
         var queueOrder = requeueToFront
             ? await GetFrontQueueOrderAsync(connection, newestFirst, cancellationToken)
-            : await GetNextQueueOrderAsync(connection, cancellationToken);
+            : await GetExistingQueueOrderAsync(connection, queueUuid, cancellationToken);
         const string sql = UpdateDownloadTaskSqlPrefix + @"
 SET status = 'queued',
     error = NULL,
@@ -261,7 +261,8 @@ WHERE queue_uuid = @queueUuid;";
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
        duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 FROM download_task
 WHERE queue_uuid = @queueUuid
 LIMIT 1;";
@@ -324,7 +325,8 @@ LIMIT 1;";
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
        duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 FROM download_task
 WHERE (@engine IS NULL OR engine = @engine)
 ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
@@ -369,7 +371,8 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+	       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 	FROM download_task
 	WHERE status = 'running'
   AND updated_at <= datetime('now', '-' || @ageSeconds || ' seconds')
@@ -768,7 +771,8 @@ WITH queue_head AS (
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+	       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 	FROM download_task
 	WHERE status = 'queued'
       AND {QueuedItemReadyForDownloadSqlCondition}
@@ -778,7 +782,8 @@ LIMIT 1
 SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
        spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
        duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 FROM queue_head
 WHERE 1 = 1
   {extraWhereClause};";
@@ -790,30 +795,13 @@ WHERE 1 = 1
 	id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json";
+	status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+	qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id";
 
-        const string activeStatuses = "'resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying'";
         return @"
-WITH active_items AS (
-	SELECT 0 AS activity_sort_group, " + selectedColumns + @"
-	FROM download_task
-	WHERE lower(status) IN (" + activeStatuses + @")
-	  AND activities_cleared_at IS NULL
-),
-terminal_items AS (
-	SELECT 1 AS activity_sort_group, " + selectedColumns + @"
-	FROM download_task
-	WHERE lower(status) NOT IN (" + activeStatuses + @")
-	  AND activities_cleared_at IS NULL
-	ORDER BY updated_at DESC, id DESC
-	LIMIT @terminalLimit
-)
 SELECT " + selectedColumns + @"
-FROM (
-	SELECT activity_sort_group, " + selectedColumns + @" FROM active_items
-	UNION ALL
-	SELECT activity_sort_group, " + selectedColumns + @" FROM terminal_items
-)
+FROM download_task
+WHERE activities_cleared_at IS NULL
 ORDER BY CASE WHEN queue_order IS NULL THEN id ELSE queue_order END ASC,
          created_at ASC,
          id ASC;";
@@ -852,10 +840,58 @@ WHERE id = @id;";
         const string sql = @"
 UPDATE download_task
 SET payload = @payload,
+    qobuz_track_id = CASE
+        WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.QobuzId'), json_extract(@payload, '$.qobuzId'))), ''), qobuz_track_id)
+        ELSE qobuz_track_id
+    END,
+    tidal_track_id = CASE
+        WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.TidalId'), json_extract(@payload, '$.tidalId'))), ''), tidal_track_id)
+        ELSE tidal_track_id
+    END,
+    amazon_track_id = CASE
+        WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.AmazonId'), json_extract(@payload, '$.amazonId'))), ''), amazon_track_id)
+        ELSE amazon_track_id
+    END,
     lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
+        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdatePayloadAndEngineAsync(
+        string queueUuid,
+        string engine,
+        string payloadJson,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, payloadJson);
+        const string sql = @"
+UPDATE download_task
+SET engine = @engine,
+    payload = @payload,
+    qobuz_track_id = CASE
+        WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.QobuzId'), json_extract(@payload, '$.qobuzId'))), ''), qobuz_track_id)
+        ELSE qobuz_track_id
+    END,
+    tidal_track_id = CASE
+        WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.TidalId'), json_extract(@payload, '$.tidalId'))), ''), tidal_track_id)
+        ELSE tidal_track_id
+    END,
+    amazon_track_id = CASE
+        WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.AmazonId'), json_extract(@payload, '$.amazonId'))), ''), amazon_track_id)
+        ELSE amazon_track_id
+    END,
+    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("engine", engine);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
         command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
@@ -932,6 +968,15 @@ SET payload = @payload,
     apple_track_id = COALESCE(NULLIF(@appleTrackId, ''), apple_track_id),
     apple_album_id = COALESCE(NULLIF(@appleAlbumId, ''), apple_album_id),
     apple_artist_id = COALESCE(NULLIF(@appleArtistId, ''), apple_artist_id),
+    qobuz_track_id = COALESCE(NULLIF(@qobuzTrackId, ''), qobuz_track_id),
+    qobuz_album_id = COALESCE(NULLIF(@qobuzAlbumId, ''), qobuz_album_id),
+    qobuz_artist_id = COALESCE(NULLIF(@qobuzArtistId, ''), qobuz_artist_id),
+    tidal_track_id = COALESCE(NULLIF(@tidalTrackId, ''), tidal_track_id),
+    tidal_album_id = COALESCE(NULLIF(@tidalAlbumId, ''), tidal_album_id),
+    tidal_artist_id = COALESCE(NULLIF(@tidalArtistId, ''), tidal_artist_id),
+    amazon_track_id = COALESCE(NULLIF(@amazonTrackId, ''), amazon_track_id),
+    amazon_album_id = COALESCE(NULLIF(@amazonAlbumId, ''), amazon_album_id),
+    amazon_artist_id = COALESCE(NULLIF(@amazonArtistId, ''), amazon_artist_id),
     duration_ms = COALESCE(@durationMs, duration_ms),
     destination_folder_id = @destinationFolderId,
     quality_rank = COALESCE(@qualityRank, quality_rank),
@@ -1250,6 +1295,15 @@ WHERE queue_uuid = @queueUuid;";
     apple_track_id = @appleTrackId,
     apple_album_id = @appleAlbumId,
     apple_artist_id = @appleArtistId,
+    qobuz_track_id = @qobuzTrackId,
+    qobuz_album_id = @qobuzAlbumId,
+    qobuz_artist_id = @qobuzArtistId,
+    tidal_track_id = @tidalTrackId,
+    tidal_album_id = @tidalAlbumId,
+    tidal_artist_id = @tidalArtistId,
+    amazon_track_id = @amazonTrackId,
+    amazon_album_id = @amazonAlbumId,
+    amazon_artist_id = @amazonArtistId,
     duration_ms = @durationMs,
     destination_folder_id = @destinationFolderId,
     quality_rank = @qualityRank,
@@ -1642,7 +1696,8 @@ SELECT EXISTS(
 		SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 		       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 		       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-		       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+		       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+		       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 	FROM download_task
 WHERE (
         (
@@ -1704,28 +1759,43 @@ WHERE (
         OR (
             @qobuzTrackId IS NOT NULL
             AND @qobuzTrackId <> ''
-            AND json_valid(payload)
             AND (
-                lower(json_extract(payload, '$.QobuzId')) = lower(@qobuzTrackId)
-                OR lower(json_extract(payload, '$.qobuzId')) = lower(@qobuzTrackId)
+                lower(qobuz_track_id) = lower(@qobuzTrackId)
+                OR (
+                    json_valid(payload)
+                    AND (
+                        lower(json_extract(payload, '$.QobuzId')) = lower(@qobuzTrackId)
+                        OR lower(json_extract(payload, '$.qobuzId')) = lower(@qobuzTrackId)
+                    )
+                )
             )
         )
         OR (
             @tidalTrackId IS NOT NULL
             AND @tidalTrackId <> ''
-            AND json_valid(payload)
             AND (
-                lower(json_extract(payload, '$.TidalId')) = lower(@tidalTrackId)
-                OR lower(json_extract(payload, '$.tidalId')) = lower(@tidalTrackId)
+                lower(tidal_track_id) = lower(@tidalTrackId)
+                OR (
+                    json_valid(payload)
+                    AND (
+                        lower(json_extract(payload, '$.TidalId')) = lower(@tidalTrackId)
+                        OR lower(json_extract(payload, '$.tidalId')) = lower(@tidalTrackId)
+                    )
+                )
             )
         )
         OR (
             @amazonTrackId IS NOT NULL
             AND @amazonTrackId <> ''
-            AND json_valid(payload)
             AND (
-                lower(json_extract(payload, '$.AmazonId')) = lower(@amazonTrackId)
-                OR lower(json_extract(payload, '$.amazonId')) = lower(@amazonTrackId)
+                lower(amazon_track_id) = lower(@amazonTrackId)
+                OR (
+                    json_valid(payload)
+                    AND (
+                        lower(json_extract(payload, '$.AmazonId')) = lower(@amazonTrackId)
+                        OR lower(json_extract(payload, '$.amazonId')) = lower(@amazonTrackId)
+                    )
+                )
             )
         )
         OR (
@@ -1794,7 +1864,10 @@ ORDER BY
         return EqualsNormalizedIsrc(request.Isrc, item.Isrc)
             || EqualsNormalizedId(request.DeezerTrackId, item.DeezerTrackId)
             || EqualsNormalizedId(request.SpotifyTrackId, item.SpotifyTrackId)
-            || EqualsNormalizedId(request.AppleTrackId, item.AppleTrackId);
+            || EqualsNormalizedId(request.AppleTrackId, item.AppleTrackId)
+            || EqualsNormalizedId(request.QobuzTrackId, item.QobuzTrackId)
+            || EqualsNormalizedId(request.TidalTrackId, item.TidalTrackId)
+            || EqualsNormalizedId(request.AmazonTrackId, item.AmazonTrackId);
     }
 
     private static bool HasPayloadStrongIdentityMatch(DuplicateLookupRequest request, DownloadQueueItem item)
@@ -1888,7 +1961,8 @@ ORDER BY
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+	       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 	FROM download_task
 WHERE (
         lower(artist_name) = lower(@artistName)
@@ -1942,7 +2016,8 @@ LIMIT 1;";
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+	       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 	FROM download_task
 WHERE lower(engine) = lower(@engine)
   AND lower(artist_name) = lower(@artistName)
@@ -1992,7 +2067,8 @@ LIMIT 1;";
 	SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
 	       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
 	       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
-	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json
+	       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+	       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
 	FROM download_task
 WHERE lower(engine) = lower(@engine)
   AND lower(deezer_track_id) = lower(@deezerTrackId)
@@ -2038,6 +2114,15 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
     apple_track_id TEXT,
     apple_album_id TEXT,
     apple_artist_id TEXT,
+    qobuz_track_id TEXT,
+    qobuz_album_id TEXT,
+    qobuz_artist_id TEXT,
+    tidal_track_id TEXT,
+    tidal_album_id TEXT,
+    tidal_artist_id TEXT,
+    amazon_track_id TEXT,
+    amazon_album_id TEXT,
+    amazon_artist_id TEXT,
     duration_ms INTEGER,
     destination_folder_id INTEGER,
     move_status TEXT,
@@ -2074,6 +2159,15 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureColumnAsync(connection, DownloadTaskTable, "apple_track_id", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "apple_album_id", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "apple_artist_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "qobuz_track_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "qobuz_album_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "qobuz_artist_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "tidal_track_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "tidal_album_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "tidal_artist_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "amazon_track_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "amazon_album_id", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "amazon_artist_id", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "lyrics_status", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "file_extension", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "bitrate_kbps", "INTEGER", cancellationToken);
@@ -2139,6 +2233,18 @@ SET isrc = CASE
         WHEN NULLIF(trim(COALESCE(apple_track_id, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.AppleId'), json_extract(payload, '$.appleId'), '')), ''))
         ELSE apple_track_id
     END,
+    qobuz_track_id = CASE
+        WHEN NULLIF(trim(COALESCE(qobuz_track_id, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.QobuzId'), json_extract(payload, '$.qobuzId'), '')), ''))
+        ELSE qobuz_track_id
+    END,
+    tidal_track_id = CASE
+        WHEN NULLIF(trim(COALESCE(tidal_track_id, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.TidalId'), json_extract(payload, '$.tidalId'), '')), ''))
+        ELSE tidal_track_id
+    END,
+    amazon_track_id = CASE
+        WHEN NULLIF(trim(COALESCE(amazon_track_id, '')), '') IS NULL THEN lower(NULLIF(trim(COALESCE(json_extract(payload, '$.AmazonId'), json_extract(payload, '$.amazonId'), '')), ''))
+        ELSE amazon_track_id
+    END,
     duration_ms = CASE
         WHEN duration_ms IS NULL AND COALESCE(json_extract(payload, '$.DurationMs'), json_extract(payload, '$.durationMs'), 0) > 0
             THEN CAST(COALESCE(json_extract(payload, '$.DurationMs'), json_extract(payload, '$.durationMs')) AS INTEGER)
@@ -2161,6 +2267,9 @@ WHERE json_valid(payload)
         OR NULLIF(trim(COALESCE(deezer_track_id, '')), '') IS NULL
         OR NULLIF(trim(COALESCE(spotify_track_id, '')), '') IS NULL
         OR NULLIF(trim(COALESCE(apple_track_id, '')), '') IS NULL
+        OR NULLIF(trim(COALESCE(qobuz_track_id, '')), '') IS NULL
+        OR NULLIF(trim(COALESCE(tidal_track_id, '')), '') IS NULL
+        OR NULLIF(trim(COALESCE(amazon_track_id, '')), '') IS NULL
         OR duration_ms IS NULL
         OR destination_folder_id IS NULL
         OR NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
@@ -2193,6 +2302,9 @@ CREATE INDEX IF NOT EXISTS idx_download_task_spotify_artist ON " + DownloadTaskT
 CREATE INDEX IF NOT EXISTS idx_download_task_apple_track ON " + DownloadTaskTable + @" (apple_track_id);
 CREATE INDEX IF NOT EXISTS idx_download_task_apple_album ON " + DownloadTaskTable + @" (apple_album_id);
 CREATE INDEX IF NOT EXISTS idx_download_task_apple_artist ON " + DownloadTaskTable + @" (apple_artist_id);
+CREATE INDEX IF NOT EXISTS idx_download_task_qobuz_track ON " + DownloadTaskTable + @" (qobuz_track_id);
+CREATE INDEX IF NOT EXISTS idx_download_task_tidal_track ON " + DownloadTaskTable + @" (tidal_track_id);
+CREATE INDEX IF NOT EXISTS idx_download_task_amazon_track ON " + DownloadTaskTable + @" (amazon_track_id);
 CREATE INDEX IF NOT EXISTS idx_download_task_destination_folder ON " + DownloadTaskTable + @" (destination_folder_id);
 CREATE INDEX IF NOT EXISTS idx_download_task_artist_title_duration ON " + DownloadTaskTable + @" (artist_name, track_title, duration_ms);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_download_task_queue_uuid ON " + DownloadTaskTable + @" (queue_uuid);";
@@ -2655,10 +2767,34 @@ LIMIT 1;";
         command.Parameters.AddWithValue(prefix + "appleTrackId", (object?)NormalizeId(item.AppleTrackId) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "appleAlbumId", (object?)NormalizeId(item.AppleAlbumId) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "appleArtistId", (object?)NormalizeId(item.AppleArtistId) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "qobuzTrackId", (object?)(NormalizeId(item.QobuzTrackId) ?? ResolvePayloadIdentity(item.PayloadJson, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "qobuzAlbumId", (object?)(NormalizeId(item.QobuzAlbumId) ?? ResolvePayloadIdentity(item.PayloadJson, "QobuzAlbumId", "qobuzAlbumId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "qobuzArtistId", (object?)(NormalizeId(item.QobuzArtistId) ?? ResolvePayloadIdentity(item.PayloadJson, "QobuzArtistId", "qobuzArtistId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "tidalTrackId", (object?)(NormalizeId(item.TidalTrackId) ?? ResolvePayloadIdentity(item.PayloadJson, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "tidalAlbumId", (object?)(NormalizeId(item.TidalAlbumId) ?? ResolvePayloadIdentity(item.PayloadJson, "TidalAlbumId", "tidalAlbumId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "tidalArtistId", (object?)(NormalizeId(item.TidalArtistId) ?? ResolvePayloadIdentity(item.PayloadJson, "TidalArtistId", "tidalArtistId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "amazonTrackId", (object?)(NormalizeId(item.AmazonTrackId) ?? ResolvePayloadIdentity(item.PayloadJson, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "amazonAlbumId", (object?)(NormalizeId(item.AmazonAlbumId) ?? ResolvePayloadIdentity(item.PayloadJson, "AmazonAlbumId", "amazonAlbumId")) ?? DBNull.Value);
+        command.Parameters.AddWithValue(prefix + "amazonArtistId", (object?)(NormalizeId(item.AmazonArtistId) ?? ResolvePayloadIdentity(item.PayloadJson, "AmazonArtistId", "amazonArtistId")) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "durationMs", (object?)item.DurationMs ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "destinationFolderId", (object?)item.DestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "qualityRank", (object?)item.QualityRank ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "contentType", (object?)NormalizeId(item.ContentType) ?? DBNull.Value);
+    }
+
+    private static string? ResolvePayloadIdentity(string? payloadJson, params string[] keys)
+    {
+        var payload = QueuePreResolutionPayload.ParseOrEmpty(payloadJson);
+        foreach (var key in keys)
+        {
+            var value = NormalizeId(payload[key]?.ToString());
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
     }
 
     private static async Task<int> GetNextQueueOrderAsync(
@@ -2671,6 +2807,24 @@ FROM " + DownloadTaskTable + @";";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 1 : Convert.ToInt32(result);
+    }
+
+    private static async Task<int> GetExistingQueueOrderAsync(
+        SqliteConnection connection,
+        string queueUuid,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT queue_order
+FROM download_task
+WHERE queue_uuid = @queueUuid
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull
+            ? await GetNextQueueOrderAsync(connection, cancellationToken)
+            : Convert.ToInt32(result);
     }
 
     private static async Task<int> GetFrontQueueOrderAsync(
@@ -2697,7 +2851,7 @@ WHERE queue_order IS NOT NULL;";
         var payloadJson = GetNullableString(reader, 23);
         var createdAt = ParseTimestampOrUtcNow(GetNullableString(reader, 28));
         var updatedAt = ParseTimestampOrUtcNow(GetNullableString(reader, 29));
-        return new DownloadQueueItem(
+        var item = new DownloadQueueItem(
             reader.GetInt64(0),
             GetNullableString(reader, 1) ?? string.Empty,
             reader.GetString(2),
@@ -2730,6 +2884,21 @@ WHERE queue_order IS NOT NULL;";
             updatedAt,
             GetNullableString(reader, 30)
         );
+
+        return reader.FieldCount < 40
+            ? item
+            : item with
+            {
+                QobuzTrackId = GetNullableString(reader, 31),
+                QobuzAlbumId = GetNullableString(reader, 32),
+                QobuzArtistId = GetNullableString(reader, 33),
+                TidalTrackId = GetNullableString(reader, 34),
+                TidalAlbumId = GetNullableString(reader, 35),
+                TidalArtistId = GetNullableString(reader, 36),
+                AmazonTrackId = GetNullableString(reader, 37),
+                AmazonAlbumId = GetNullableString(reader, 38),
+                AmazonArtistId = GetNullableString(reader, 39)
+            };
     }
 
     private static string? GetNullableString(SqliteDataReader reader, int ordinal)
@@ -2854,9 +3023,9 @@ public sealed class DuplicateLookupRequest : DownloadIdentityLookupRequest
             AppleTrackId = FirstNonEmpty(item.AppleTrackId, ReadPayloadString(payload, "AppleId", "appleId", "AppleTrackId", "appleTrackId")),
             AppleAlbumId = FirstNonEmpty(item.AppleAlbumId, ReadPayloadString(payload, "AppleAlbumId", "appleAlbumId")),
             AppleArtistId = FirstNonEmpty(item.AppleArtistId, ReadPayloadString(payload, "AppleArtistId", "appleArtistId")),
-            QobuzTrackId = ReadPayloadString(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId"),
-            TidalTrackId = ReadPayloadString(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId"),
-            AmazonTrackId = ReadPayloadString(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId"),
+            QobuzTrackId = FirstNonEmpty(item.QobuzTrackId, ReadPayloadString(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId")),
+            TidalTrackId = FirstNonEmpty(item.TidalTrackId, ReadPayloadString(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId")),
+            AmazonTrackId = FirstNonEmpty(item.AmazonTrackId, ReadPayloadString(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId")),
             ArtistName = item.ArtistName,
             TrackTitle = item.TrackTitle,
             DurationMs = item.DurationMs ?? ReadPayloadInt(payload, "DurationMs", "durationMs"),
@@ -2985,6 +3154,16 @@ public sealed record DownloadQueueItem(
     DateTimeOffset UpdatedAt,
     string? FinalDestinationsJson = null)
 {
+    public string? QobuzTrackId { get; init; }
+    public string? QobuzAlbumId { get; init; }
+    public string? QobuzArtistId { get; init; }
+    public string? TidalTrackId { get; init; }
+    public string? TidalAlbumId { get; init; }
+    public string? TidalArtistId { get; init; }
+    public string? AmazonTrackId { get; init; }
+    public string? AmazonAlbumId { get; init; }
+    public string? AmazonArtistId { get; init; }
+
     public DownloadQueueItem(
         long Id,
         string QueueUuid,

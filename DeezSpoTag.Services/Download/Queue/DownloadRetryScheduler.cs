@@ -105,7 +105,6 @@ public sealed class DownloadRetryScheduler
                 continue;
             }
 
-            await ResetFallbackStateAsync(item);
             var requeued = await _queueRepository.RequeueAsync(
                 request.QueueUuid,
                 QueueRequeueOrigin.AutoRetry,
@@ -191,34 +190,4 @@ public sealed class DownloadRetryScheduler
         return true;
     }
 
-    private async Task ResetFallbackStateAsync(DownloadQueueItem item)
-    {
-        if (string.IsNullOrWhiteSpace(item.PayloadJson))
-        {
-            return;
-        }
-
-        try
-        {
-            var settings = _settingsService.LoadSettings();
-            var payloadNode = JsonNode.Parse(item.PayloadJson);
-            if (payloadNode is not JsonObject payloadObj)
-            {
-                return;
-            }
-
-            var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, settings, payloadObj);
-            var changed = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, state, resetIndexAndHistory: true);
-            if (changed)
-            {
-                await _queueRepository.UpdatePayloadAsync(item.QueueUuid, payloadObj.ToJsonString());
-            }
-
-            await _queueRepository.UpdateEngineAsync(item.QueueUuid, state.FirstStep.Source);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to reset fallback state for {QueueUuid}", item.QueueUuid);
-        }
-    }
 }

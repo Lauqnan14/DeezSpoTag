@@ -510,7 +510,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
-    public async Task GetActivitiesTasksAsync_KeepsAllActiveAndLimitsTerminalRows()
+    public async Task GetActivitiesTasksAsync_RendersAllVisibleRowsInFifoOrder()
     {
         await using var context = await CreateContextAsync();
         await context.QueueRepository.EnqueueAsync(
@@ -534,12 +534,12 @@ public sealed class DownloadQueueRepositoryDuplicateTests
 
         Assert.Contains("active-queued-visible", queueUuids);
         Assert.Contains("active-running-visible", queueUuids);
+        Assert.Contains("terminal-old", queueUuids);
         Assert.Contains("terminal-middle", queueUuids);
         Assert.Contains("terminal-new", queueUuids);
-        Assert.DoesNotContain("terminal-old", queueUuids);
-        Assert.Equal(4, queueUuids.Count);
+        Assert.Equal(5, queueUuids.Count);
         Assert.Equal(
-            ["terminal-middle", "terminal-new", "active-queued-visible", "active-running-visible"],
+            ["terminal-old", "terminal-middle", "terminal-new", "active-queued-visible", "active-running-visible"],
             queueUuids);
     }
 

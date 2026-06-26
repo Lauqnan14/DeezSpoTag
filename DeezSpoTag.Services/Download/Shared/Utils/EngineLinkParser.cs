@@ -4,6 +4,8 @@ namespace DeezSpoTag.Services.Download.Shared.Utils;
 
 public static class EngineLinkParser
 {
+    public static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+
     public static string? TryExtractSpotifyTrackId(string? sourceUrl, TimeSpan regexTimeout)
     {
         if (string.IsNullOrWhiteSpace(sourceUrl))
@@ -19,7 +21,7 @@ public static class EngineLinkParser
     {
         if (string.IsNullOrWhiteSpace(sourceUrl)
             || !Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
-            || !parsed.Host.Contains("qobuz.com", StringComparison.OrdinalIgnoreCase))
+            || !IsHostOrSubdomain(parsed.Host, "qobuz.com"))
         {
             return null;
         }
@@ -43,7 +45,7 @@ public static class EngineLinkParser
     {
         if (string.IsNullOrWhiteSpace(sourceUrl)
             || !Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
-            || !parsed.Host.Contains("tidal.com", StringComparison.OrdinalIgnoreCase))
+            || !IsHostOrSubdomain(parsed.Host, "tidal.com"))
         {
             return null;
         }
@@ -65,19 +67,14 @@ public static class EngineLinkParser
 
     public static string? TryNormalizeAmazonUrl(string? sourceUrl)
     {
-        if (string.IsNullOrWhiteSpace(sourceUrl))
+        if (string.IsNullOrWhiteSpace(sourceUrl)
+            || !Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
+            || !IsAmazonHost(parsed.Host))
         {
             return null;
         }
 
-        if (sourceUrl.Contains("music.amazon.", StringComparison.OrdinalIgnoreCase)
-            || sourceUrl.Contains("amazon.com/music", StringComparison.OrdinalIgnoreCase)
-            || sourceUrl.Contains("amazon.co", StringComparison.OrdinalIgnoreCase))
-        {
-            return sourceUrl;
-        }
-
-        return null;
+        return sourceUrl;
     }
 
     public static string? TryExtractAmazonTrackId(string? sourceUrl, TimeSpan regexTimeout)
@@ -88,7 +85,7 @@ public static class EngineLinkParser
         }
 
         if (Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
-            && parsed.Host.Contains("amazon.", StringComparison.OrdinalIgnoreCase))
+            && IsAmazonHost(parsed.Host))
         {
             return TryExtractAmazonTrackAsinFromQuery(parsed.Query)
                 ?? TryExtractAmazonTrackIdFromPath(parsed.AbsolutePath);
@@ -142,4 +139,42 @@ public static class EngineLinkParser
 
         return null;
     }
+
+    public static string? TryExtractDeezerTrackId(string? sourceUrl)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrl)
+            || !Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
+            || !IsHostOrSubdomain(parsed.Host, "deezer.com"))
+        {
+            return null;
+        }
+
+        var segments = parsed.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (!segments[i].Equals("track", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var candidate = Uri.UnescapeDataString(segments[i + 1]).Trim();
+            return candidate.All(char.IsDigit) && candidate != "0" ? candidate : null;
+        }
+
+        return null;
+    }
+
+    private static bool IsHostOrSubdomain(string host, string domain)
+        => host.Equals(domain, StringComparison.OrdinalIgnoreCase)
+           || host.EndsWith($".{domain}", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAmazonHost(string host)
+        => host.Equals("amazon.com", StringComparison.OrdinalIgnoreCase)
+           || host.StartsWith("amazon.", StringComparison.OrdinalIgnoreCase)
+           || host.EndsWith(".amazon.com", StringComparison.OrdinalIgnoreCase)
+           || host.StartsWith("music.amazon.", StringComparison.OrdinalIgnoreCase)
+           || host.EndsWith(".amazon.co.uk", StringComparison.OrdinalIgnoreCase)
+           || host.EndsWith(".amazon.co.jp", StringComparison.OrdinalIgnoreCase)
+           || host.EndsWith(".amazon.de", StringComparison.OrdinalIgnoreCase)
+           || host.EndsWith(".amazon.fr", StringComparison.OrdinalIgnoreCase);
 }

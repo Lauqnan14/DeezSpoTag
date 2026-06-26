@@ -23,7 +23,6 @@ public interface IQobuzDownloadService
 {
     Task<bool> IsrcAvailableAsync(string isrc, CancellationToken cancellationToken);
     Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken);
-    Task<string> DownloadByIsrcAsync(QobuzDownloadRequest request, CancellationToken cancellationToken);
     Task<QobuzResolvedStreamUrl> ResolveStreamUrlByTrackIdAsync(
         int trackId,
         string quality,
@@ -79,24 +78,18 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private readonly ILogger<QobuzDownloadService> _logger;
     private readonly HttpClient _apiClient;
     private readonly HttpClient _downloadClient;
-    private readonly QobuzTrackResolver _trackResolver;
     private readonly QobuzApiConfig _qobuzConfig;
     private readonly IQobuzCredentialProvider _credentialProvider;
     private readonly IQobuzPublicProviderRegistry _publicProviderRegistry;
-    private readonly ResolveProxyClient _resolveProxyClient;
     private static readonly ConcurrentDictionary<string, PreferredProviderState> PreferredProviders = new(StringComparer.OrdinalIgnoreCase);
 
     public QobuzDownloadService(
         ILogger<QobuzDownloadService> logger,
-        QobuzTrackResolver trackResolver,
-        ResolveProxyClient resolveProxyClient,
         IOptions<QobuzApiConfig> qobuzOptions,
         IQobuzCredentialProvider credentialProvider,
         IQobuzPublicProviderRegistry? publicProviderRegistry = null)
     {
         _logger = logger;
-        _trackResolver = trackResolver;
-        _resolveProxyClient = resolveProxyClient;
         _qobuzConfig = qobuzOptions.Value ?? new QobuzApiConfig();
         _credentialProvider = credentialProvider;
         _publicProviderRegistry = publicProviderRegistry
@@ -141,71 +134,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return payload?.Tracks?.Total > 0;
     }
 
-    [SuppressMessage("Major Code Smell", "S3776", Justification = "Download resolution path keeps explicit provider/metadata fallback ordering to preserve deterministic provider selection.")]
-    public async Task<string> DownloadByIsrcAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(request.OutputDir);
-
-        var resolvedIsrc = await ResolveRequestIsrcAsync(request, cancellationToken);
-        var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
-
-        var resolution = await _trackResolver.ResolveTrackAsync(
-            resolvedIsrc,
-            request.TrackName,
-            request.ArtistName,
-            request.AlbumName,
-            request.DurationSeconds > 0 ? request.DurationSeconds * 1000 : null,
-            cancellationToken);
-        if (resolution == null)
-        {
-            return await DownloadByFallbackTrackIdAsync(request, resolvedIsrc, expectedPath, cancellationToken);
-        }
-
-        var track = resolution.Track;
-        var outputPath = expectedPath;
-        await DownloadTrackWithProviderFallbackAsync(track.Id, request, outputPath, cancellationToken);
-        return outputPath;
-    }
-
-    private async Task<string?> ResolveRequestIsrcAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(request.Isrc))
-        {
-            return request.Isrc;
-        }
-
-        var expectedDurationSec = request.DurationSeconds > 0 ? request.DurationSeconds : 0;
-        var metadataTrack = await SearchByQueryAsync(
-            request.TrackName,
-            request.ArtistName,
-            expectedDurationSec,
-            requireStrongMatch: true,
-            cancellationToken);
-        if (metadataTrack == null)
-        {
-            throw new InvalidOperationException("Qobuz download requires an ISRC or a strict metadata match.");
-        }
-
-        return metadataTrack.Isrc;
-    }
-
-    private async Task<string> DownloadByFallbackTrackIdAsync(
-        QobuzDownloadRequest request,
-        string? resolvedIsrc,
-        string expectedPath,
-        CancellationToken cancellationToken)
-    {
-        var fallbackTrackId = await ResolveFallbackTrackIdAsync(request, resolvedIsrc, cancellationToken);
-        if (!fallbackTrackId.HasValue || fallbackTrackId.Value <= 0)
-        {
-            throw new InvalidOperationException("Qobuz track not found for ISRC or metadata.");
-        }
-
-        await DownloadTrackWithProviderFallbackAsync(fallbackTrackId.Value, request, expectedPath, cancellationToken);
-
-        return expectedPath;
-    }
-
     public async Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(request.OutputDir);
@@ -215,31 +143,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         if (trackId == null || trackId <= 0)
         {
             throw new InvalidOperationException("Qobuz download requires a valid track URL.");
-        }
-
-        // Keep explicit Qobuz track URLs authoritative to avoid unintentionally swapping
-        // to a different catalog entry/edition during metadata resolution.
-        if (!IsExplicitQobuzTrackUrl(sourceUrl))
-        {
-            var resolution = await _trackResolver.ResolveTrackAsync(
-                isrc: null,
-                title: request.TrackName,
-                artist: request.ArtistName,
-                album: request.AlbumName,
-                durationMs: request.DurationSeconds > 0 ? request.DurationSeconds * 1000 : null,
-                cancellationToken);
-            if (resolution?.Track.Id > 0 && resolution.Track.Id != trackId.Value)
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation(
-                        "Qobuz download URL corrected by resolver: requested={RequestedTrackId} resolved={ResolvedTrackId} source={Source} score={Score}",
-                        trackId.Value,
-                        resolution.Track.Id,
-                        resolution.Source,
-                        resolution.Score);                }
-                trackId = resolution.Track.Id;
-            }
         }
 
         var expectedPath = BuildSanitizedOutputPath(request, FlacExtension);
@@ -765,136 +668,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         await DownloadFileAsync(url, outputPath, progressCallback, cancellationToken);
-    }
-
-    private async Task<QobuzTrack?> SearchByQueryAsync(
-        string title,
-        string artist,
-        int expectedDurationSec,
-        bool requireStrongMatch,
-        CancellationToken cancellationToken)
-    {
-        var queries = BuildSearchQueries(title, artist);
-        if (queries.Count == 0)
-        {
-            return null;
-        }
-
-        var allTracks = await SearchTracksByQueriesAsync(queries, cancellationToken);
-        if (allTracks.Count == 0)
-        {
-            return null;
-        }
-
-        return SelectBestSearchTrack(allTracks, title, artist, expectedDurationSec, requireStrongMatch);
-    }
-
-    private async Task<List<QobuzTrack>> SearchTracksByQueriesAsync(
-        IReadOnlyList<string> queries,
-        CancellationToken cancellationToken)
-    {
-        var allTracks = new List<QobuzTrack>();
-        var seenTrackIds = new HashSet<long>();
-        foreach (var query in queries)
-        {
-            var queryTracks = await SearchTracksForQueryAsync(query, cancellationToken);
-            AddUniqueTracks(allTracks, seenTrackIds, queryTracks);
-        }
-
-        return allTracks;
-    }
-
-    private async Task<List<QobuzTrack>> SearchTracksForQueryAsync(string query, CancellationToken cancellationToken)
-    {
-        var apiBase = DecodeBase64("aHR0cHM6Ly93d3cucW9idXouY29tL2FwaS5qc29uLzAuMi90cmFjay9zZWFyY2g/cXVlcnk9");
-        var url = $"{apiBase}{Uri.EscapeDataString(query)}&limit=20&app_id={DefaultAppId}";
-        using var response = await _apiClient.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            _logger.LogWarning(
-                "Qobuz search by metadata failed (status={Status}) url={Url} body={Body}",
-                (int)response.StatusCode,
-                url,
-                DownloadFileUtilities.TruncateForLog(errorBody));
-            return new List<QobuzTrack>();
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            _logger.LogWarning("Qobuz search by metadata returned empty response url={Url}", url);
-            return new List<QobuzTrack>();
-        }
-
-        var payload = JsonSerializer.Deserialize<QobuzSearchResponse>(body, SerializerOptions);
-        return payload?.Tracks?.Items ?? new List<QobuzTrack>();
-    }
-
-    private static void AddUniqueTracks(List<QobuzTrack> allTracks, HashSet<long> seenTrackIds, List<QobuzTrack> items)
-    {
-        foreach (var item in items.Where(item => item.Id <= 0 || seenTrackIds.Add(item.Id)))
-        {
-            allTracks.Add(item);
-        }
-    }
-
-    private static QobuzTrack? SelectBestSearchTrack(
-        List<QobuzTrack> allTracks,
-        string title,
-        string artist,
-        int expectedDurationSec,
-        bool requireStrongMatch)
-    {
-        QobuzTrack? best = null;
-        var bestScore = -1;
-        foreach (var item in allTracks)
-        {
-            var (strongMatch, score) = EvaluateSearchTrack(item, title, artist, expectedDurationSec);
-            if (requireStrongMatch && !strongMatch)
-            {
-                continue;
-            }
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = item;
-            }
-        }
-
-        return best;
-    }
-
-    private static (bool strongMatch, int score) EvaluateSearchTrack(
-        QobuzTrack item,
-        string title,
-        string artist,
-        int expectedDurationSec)
-    {
-        var titleMatch = QobuzTitlesMatch(title, item.Title ?? string.Empty);
-        var artistMatch = QobuzArtistsMatch(artist, GetTrackArtist(item));
-        var durationMatch = expectedDurationSec > 0 && item.Duration.HasValue &&
-            Math.Abs(item.Duration.Value - expectedDurationSec) <= 10;
-        var strongMatch = titleMatch && artistMatch && (expectedDurationSec <= 0 || durationMatch);
-
-        var score = 0;
-        if (titleMatch)
-        {
-            score += 2;
-        }
-
-        if (artistMatch)
-        {
-            score += 2;
-        }
-
-        if (durationMatch)
-        {
-            score += 1;
-        }
-
-        return (strongMatch, score);
     }
 
 
@@ -1427,109 +1200,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         throw new InvalidOperationException("Qobuz official API response did not contain a usable stream URL.");
-    }
-
-    private async Task<long?> TryResolveTrackIdByIsrcAsync(string isrc, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(isrc))
-        {
-            return null;
-        }
-
-        var apiBase = DecodeBase64("aHR0cHM6Ly93d3cucW9idXouY29tL2FwaS5qc29uLzAuMi90cmFjay9zZWFyY2g/cXVlcnk9");
-        var query = $"isrc:{isrc}";
-        var url = $"{apiBase}{Uri.EscapeDataString(query)}&limit=20&app_id={DefaultAppId}";
-        using var response = await _apiClient.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return null;
-        }
-
-        var payload = JsonSerializer.Deserialize<QobuzSearchResponse>(body, SerializerOptions);
-        var match = payload?.Tracks?.Items?.FirstOrDefault(track =>
-            !string.IsNullOrWhiteSpace(track.Isrc)
-            && string.Equals(track.Isrc, isrc, StringComparison.OrdinalIgnoreCase));
-        if (match?.Id > 0)
-        {
-            return match.Id;
-        }
-
-        return null;
-    }
-
-    private async Task<long?> ResolveFallbackTrackIdAsync(
-        QobuzDownloadRequest request,
-        string? resolvedIsrc,
-        CancellationToken cancellationToken)
-    {
-        var fromProxy = await TryResolveTrackIdViaResolveProxyAsync(request, cancellationToken);
-        if (fromProxy.HasValue && fromProxy.Value > 0)
-        {
-            if (!QobuzTrackId.TryCreate(fromProxy.Value, out var qobuzTrackId))
-            {
-                return await TryResolveTrackIdByIsrcAsync(resolvedIsrc ?? string.Empty, cancellationToken);
-            }
-
-            var validated = await _trackResolver.ValidateTrackIdAsync(
-                qobuzTrackId,
-                resolvedIsrc,
-                request.TrackName,
-                request.ArtistName,
-                request.AlbumName,
-                request.DurationSeconds > 0 ? request.DurationSeconds * 1000 : null,
-                cancellationToken);
-            if (validated?.Track.Id > 0)
-            {
-                return validated.Track.Id;
-            }
-
-            _logger.LogWarning(
-                "Rejected Qobuz resolve-proxy track id {TrackId} because it did not match requested metadata for {Artist} - {Title}.",
-                fromProxy.Value,
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.ArtistName),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.TrackName));
-        }
-
-        return await TryResolveTrackIdByIsrcAsync(resolvedIsrc ?? string.Empty, cancellationToken);
-    }
-
-    private async Task<long?> TryResolveTrackIdViaResolveProxyAsync(
-        QobuzDownloadRequest request,
-        CancellationToken cancellationToken)
-    {
-        if (_resolveProxyClient == null)
-        {
-            return null;
-        }
-
-        SongLinkResult? proxyResult = null;
-        if (!string.IsNullOrWhiteSpace(request.ServiceUrl))
-        {
-            proxyResult = await _resolveProxyClient.ResolveUrlAsync(request.ServiceUrl, cancellationToken);
-        }
-
-        if (proxyResult == null
-            && !string.IsNullOrWhiteSpace(request.SpotifyId))
-        {
-            proxyResult = await _resolveProxyClient.ResolvePlatformIdAsync(
-                "spotify",
-                "track",
-                request.SpotifyId,
-                cancellationToken);
-        }
-
-        if (proxyResult?.QobuzUrl == null)
-        {
-            return null;
-        }
-
-        return TryExtractTrackId(proxyResult.QobuzUrl);
     }
 
     private static string ComputeMd5Hex(string input)
@@ -2086,65 +1756,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return false;
     }
 
-    private static List<string> BuildSearchQueries(string title, string artist)
-    {
-        var queries = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var combined = string.Join(' ', new[] { artist, title }.Where(part => !string.IsNullOrWhiteSpace(part)));
-        AddSearchQuery(queries, seen, combined);
-        AddSearchQuery(queries, seen, title);
-        AddJapaneseRomajiQueries(queries, seen, title, artist);
-        AddSearchQuery(queries, seen, artist);
-
-        return queries;
-    }
-
-    private static void AddSearchQuery(List<string> queries, HashSet<string> seen, string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        var normalized = NormalizeText(value);
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return;
-        }
-
-        if (seen.Add(normalized))
-        {
-            queries.Add(value.Trim());
-        }
-    }
-
-    private static void AddJapaneseRomajiQueries(List<string> queries, HashSet<string> seen, string title, string artist)
-    {
-        if (!QobuzRomajiHelper.ContainsJapanese(title) && !QobuzRomajiHelper.ContainsJapanese(artist))
-        {
-            return;
-        }
-
-        var romajiTitle = QobuzRomajiHelper.JapaneseToRomaji(title);
-        var romajiArtist = QobuzRomajiHelper.JapaneseToRomaji(artist);
-        var cleanRomajiTitle = QobuzRomajiHelper.CleanToAscii(romajiTitle);
-        var cleanRomajiArtist = QobuzRomajiHelper.CleanToAscii(romajiArtist);
-
-        if (!string.IsNullOrWhiteSpace(cleanRomajiArtist) && !string.IsNullOrWhiteSpace(cleanRomajiTitle))
-        {
-            AddSearchQuery(queries, seen, $"{cleanRomajiArtist} {cleanRomajiTitle}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(cleanRomajiTitle)
-            && !string.Equals(cleanRomajiTitle, title, StringComparison.OrdinalIgnoreCase))
-        {
-            AddSearchQuery(queries, seen, cleanRomajiTitle);
-        }
-
-        AddSearchQuery(queries, seen, cleanRomajiArtist);
-    }
-
     private static bool LooksLikeHtml(string value)
     {
         foreach (var ch in value)
@@ -2187,30 +1798,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         url = trimmed;
         return true;
-    }
-
-    private static bool IsExplicitQobuzTrackUrl(string? sourceUrl)
-    {
-        if (string.IsNullOrWhiteSpace(sourceUrl))
-        {
-            return false;
-        }
-
-        if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed))
-        {
-            return false;
-        }
-
-        if (!parsed.Host.Contains("qobuz.com", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return Regex.IsMatch(
-            parsed.AbsolutePath,
-            @"(?:^|/)track/\d+(?:/|$)",
-            RegexOptions.IgnoreCase,
-            RegexTimeout);
     }
 
     private static string DecodeBase64(string value)

@@ -66,25 +66,19 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
     private async Task ResolveOneLookaheadItemAsync(CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
-        if (!settings.EnableQueuePreResolution)
-        {
-            return;
-        }
-
         var downloadGate = await _orchestrationService.EvaluateDownloadGateAsync(cancellationToken);
         if (!downloadGate.Allowed)
         {
             return;
         }
 
-        var windowSize = Math.Clamp(settings.QueuePreResolutionWindow, 1, 25);
         var retryDelay = TimeSpan.FromMinutes(Math.Clamp(settings.QueuePreResolutionRetryMinutes, 1, 60));
         var now = DateTimeOffset.UtcNow;
         var tasks = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
         var candidate = QueuePreResolutionPlanner.SelectNext(
             tasks,
             settings.QueueOrder,
-            windowSize,
+            windowSize: 1,
             retryDelay,
             now);
         if (candidate == null)

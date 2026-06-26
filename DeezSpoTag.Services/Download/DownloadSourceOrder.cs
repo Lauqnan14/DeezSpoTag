@@ -395,7 +395,7 @@ public static class DownloadSourceOrder
         }
 
         var normalized = NormalizeDownloadEngineOrderSettings(settings.DownloadEngineOrder);
-        var profiles = new List<DownloadProfile>();
+        var enabledProfiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var engine in normalized.Engines)
         {
             if (!engine.Enabled)
@@ -412,18 +412,18 @@ public static class DownloadSourceOrder
 
                 var source = NormalizeEngine(engine.Engine);
                 var normalizedQuality = NormalizeQuality(source, quality.Quality);
-                var profile = AutoPriority.FirstOrDefault(candidate =>
-                    string.Equals(candidate.Source, source, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(candidate.Quality, normalizedQuality, StringComparison.OrdinalIgnoreCase));
-                if (profile != null)
-                {
-                    profiles.Add(profile);
-                }
+                enabledProfiles.Add(BuildProfileKey(source, normalizedQuality));
             }
         }
 
-        return profiles;
+        return AutoPriority
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.Quality)
+                && enabledProfiles.Contains(BuildProfileKey(profile.Source, profile.Quality)))
+            .ToArray();
     }
+
+    private static string BuildProfileKey(string source, string quality)
+        => $"{NormalizeEngine(source)}|{NormalizeQuality(source, quality)}";
 
     private static bool ShouldIncludeProfile(
         bool includeDeezer,

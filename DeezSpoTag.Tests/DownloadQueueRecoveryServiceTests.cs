@@ -90,8 +90,6 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
 
         var runtime = new DownloadQueueRecoveryRuntime(
             retryScheduler,
-            fallbackCoordinator,
-            _settingsService,
             new NullActivityLogWriter(),
             new DeezSpoTagListener());
         _recoveryService = new DownloadQueueRecoveryService(
@@ -102,7 +100,7 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task RecoverStaleRunningTasksAsync_AdvancesOrphanedCrossEngineItem()
+    public async Task RecoverStaleRunningTasksAsync_RetriesPersistedEngineWithoutCrossEngineResolution()
     {
         var queueUuid = "recovery-qobuz-to-deezer";
         var payload = new QobuzQueueItem
@@ -133,15 +131,15 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
 
         var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
         Assert.NotNull(recovered);
-        Assert.Equal("queued", recovered!.Status);
-        Assert.Equal("deezer", recovered.Engine);
+        Assert.Equal("failed", recovered!.Status);
+        Assert.Equal("qobuz", recovered.Engine);
 
         var recoveredPayload = JsonSerializer.Deserialize<QobuzQueueItem>(recovered.PayloadJson!);
         Assert.NotNull(recoveredPayload);
-        Assert.Equal("deezer", recoveredPayload!.Engine);
-        Assert.Equal("deezer", recoveredPayload.SourceService);
-        Assert.Equal(1, recoveredPayload.AutoIndex);
-        Assert.Equal("https://www.deezer.com/track/3094483121", recoveredPayload.SourceUrl);
+        Assert.Equal("qobuz", recoveredPayload!.Engine);
+        Assert.Equal("qobuz", recoveredPayload.SourceService);
+        Assert.Equal(0, recoveredPayload.AutoIndex);
+        Assert.Equal("https://play.qobuz.com/track/301435615", recoveredPayload.SourceUrl);
     }
 
     [Fact]

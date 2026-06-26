@@ -63,14 +63,10 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
 
     private readonly ILogger<AmazonDownloadService> _logger;
     private readonly HttpClient _client;
-    private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
-
     public AmazonDownloadService(
-        ILogger<AmazonDownloadService> logger,
-        SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
+        ILogger<AmazonDownloadService> logger)
     {
         _logger = logger;
-        _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromMinutes(2)
@@ -87,17 +83,14 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         Directory.CreateDirectory(request.OutputDir);
 
         var amazonUrl = EngineLinkParser.TryNormalizeAmazonUrl(request.ServiceUrl);
-        var resolvedSpotifyId = string.IsNullOrWhiteSpace(request.SpotifyId)
-            ? EngineLinkParser.TryExtractSpotifyTrackId(request.ServiceUrl, RegexTimeout)
-            : request.SpotifyId;
         if (string.IsNullOrWhiteSpace(amazonUrl))
         {
-            if (string.IsNullOrWhiteSpace(resolvedSpotifyId))
+            if (string.IsNullOrWhiteSpace(request.AmazonId))
             {
-                throw new InvalidOperationException("Amazon download requires a service URL or Spotify ID");
+                throw new InvalidOperationException("Amazon download requires a valid Amazon ID or service URL.");
             }
 
-            amazonUrl = await GetAmazonUrlFromSpotifyAsync(resolvedSpotifyId, cancellationToken);
+            amazonUrl = $"https://music.amazon.com/tracks/{Uri.EscapeDataString(request.AmazonId.Trim())}";
         }
 
         if (string.IsNullOrWhiteSpace(amazonUrl))
@@ -154,26 +147,6 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
                 RequestedLocalQualityRank: request.RequestedLocalQualityRank));
 
         return renamedPath ?? filePath;
-    }
-
-    private async Task<string> GetAmazonUrlFromSpotifyAsync(string spotifyId, CancellationToken cancellationToken)
-    {
-        if (_spotifyTrackMetadataResolver == null)
-        {
-            throw new InvalidOperationException(
-                "song.link is deactivated and Spotify metadata resolver is unavailable for Amazon URL regeneration.");
-        }
-
-        var spotifyTrack = await _spotifyTrackMetadataResolver.ResolveTrackAsync(spotifyId, cancellationToken);
-        if (spotifyTrack == null
-            || string.IsNullOrWhiteSpace(spotifyTrack.Title)
-            || string.IsNullOrWhiteSpace(spotifyTrack.Artist))
-        {
-            throw new InvalidOperationException("Unable to hydrate Spotify metadata for Amazon link regeneration.");
-        }
-
-        throw new InvalidOperationException(
-            $"song.link is deactivated. Provide a direct Amazon track URL for \"{spotifyTrack.Artist} - {spotifyTrack.Title}\".");
     }
 
     private async Task<string> DownloadFromServiceAsync(string amazonUrl, string outputDir, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)

@@ -25,8 +25,6 @@ public sealed class ProviderIntegrationSurfaceTests
         var registry = new StubQobuzProviderRegistry();
         var service = new QobuzDownloadService(
             NullLogger<QobuzDownloadService>.Instance,
-            trackResolver: null!,
-            resolveProxyClient: null!,
             Options.Create(new QobuzApiConfig()),
             credentialProvider: new StubQobuzCredentialProvider(),
             publicProviderRegistry: registry);

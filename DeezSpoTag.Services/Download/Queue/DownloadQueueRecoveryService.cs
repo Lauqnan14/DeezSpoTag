@@ -1,14 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using DeezSpoTag.Services.Download.Amazon;
-using DeezSpoTag.Services.Download.Apple;
-using DeezSpoTag.Services.Download.Deezer;
-using DeezSpoTag.Services.Download.Fallback;
-using DeezSpoTag.Services.Download.Qobuz;
-using DeezSpoTag.Services.Download.Shared;
-using DeezSpoTag.Services.Download.Shared.Models;
-using DeezSpoTag.Services.Download.Tidal;
-using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Download.Queue;
@@ -16,7 +5,6 @@ namespace DeezSpoTag.Services.Download.Queue;
 public sealed class DownloadQueueRecoveryService
 {
     private const string FailedStatus = "failed";
-    private const string InQueueStatus = "inQueue";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DownloadCancellationRegistry _cancellationRegistry;
     private readonly DownloadQueueRecoveryRuntime _runtime;
@@ -108,92 +96,9 @@ public sealed class DownloadQueueRecoveryService
 
     private async Task RecoverOrphanedItemAsync(DownloadQueueItem item, CancellationToken cancellationToken)
     {
-        var normalizedItem = await NormalizeFallbackPayloadAsync(item, cancellationToken);
-        var engine = NormalizeEngineName(normalizedItem.Engine);
-
-        switch (engine)
-        {
-            case "qobuz":
-                await RecoverOrphanedItemAsync(
-                    normalizedItem,
-                    payloadJson => QueueHelperUtils.DeserializeQueueItem<QobuzQueueItem>(payloadJson),
-                    cancellationToken);
-                break;
-            case "apple":
-                await RecoverOrphanedItemAsync(
-                    normalizedItem,
-                    payloadJson => QueueHelperUtils.DeserializeQueueItem<AppleQueueItem>(payloadJson),
-                    cancellationToken);
-                break;
-            case "tidal":
-                await RecoverOrphanedItemAsync(
-                    normalizedItem,
-                    payloadJson => QueueHelperUtils.DeserializeQueueItem<TidalQueueItem>(payloadJson),
-                    cancellationToken);
-                break;
-            case "amazon":
-                await RecoverOrphanedItemAsync(
-                    normalizedItem,
-                    payloadJson => QueueHelperUtils.DeserializeQueueItem<AmazonQueueItem>(payloadJson),
-                    cancellationToken);
-                break;
-            default:
-                await RecoverOrphanedItemAsync(
-                    normalizedItem with { Engine = "deezer" },
-                    payloadJson => QueueHelperUtils.DeserializeQueueItem<DeezerQueueItem>(payloadJson),
-                    cancellationToken);
-                break;
-        }
-    }
-
-    private async Task RecoverOrphanedItemAsync<TPayload>(
-        DownloadQueueItem item,
-        Func<string?, TPayload?> deserialize,
-        CancellationToken cancellationToken)
-        where TPayload : EngineQueueItemBase
-    {
-        var payload = deserialize(item.PayloadJson);
         var engine = NormalizeEngineName(item.Engine);
         var recoveryMessage = DownloadQueueRecoveryPolicy.BuildRecoveryFailureMessage(engine);
-        if (payload == null)
-        {
-            await MarkFailedAndRetryAsync(item.QueueUuid, engine, "Invalid payload during queue recovery.");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(payload.Engine))
-        {
-            payload.Engine = engine;
-        }
-
-        var currentEngine = NormalizeEngineName(payload.Engine);
-        var advanced = await _runtime.FallbackCoordinator.TryAdvanceAsync(
-            item.QueueUuid,
-            currentEngine,
-            payload,
-            cancellationToken);
-        if (advanced)
-        {
-            _logger.LogWarning(
-                "Recovered orphaned running queue item {QueueUuid}: {OldEngine} -> {NewEngine}",
-                item.QueueUuid,
-                currentEngine,
-                payload.Engine);
-            _runtime.ActivityLog.Warn($"Recovered stale running item: {item.QueueUuid} {currentEngine} -> {payload.Engine}");
-            _runtime.Listener.Send("updateQueue", new
-            {
-                uuid = item.QueueUuid,
-                status = InQueueStatus,
-                progress = 0,
-                downloaded = 0,
-                failed = 0,
-                error = default(string),
-                engine = payload.Engine
-            });
-            return;
-        }
-
-        await MarkFailedAndRetryAsync(item.QueueUuid, currentEngine, recoveryMessage);
+        await MarkFailedAndRetryAsync(item.QueueUuid, engine, recoveryMessage);
     }
 
     private async Task MarkFailedAndRetryAsync(string queueUuid, string engine, string message)
@@ -211,43 +116,6 @@ public sealed class DownloadQueueRecoveryService
         });
         _runtime.ActivityLog.Error($"Queue recovery failed (engine={engine}): {queueUuid} {message}");
         _runtime.RetryScheduler.ScheduleRetry(queueUuid, engine, message);
-    }
-
-    private async Task<DownloadQueueItem> NormalizeFallbackPayloadAsync(
-        DownloadQueueItem item,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(item.PayloadJson))
-        {
-            return item;
-        }
-
-        JsonObject? payloadObj;
-        try
-        {
-            payloadObj = JsonNode.Parse(item.PayloadJson) as JsonObject;
-        }
-        catch (JsonException)
-        {
-            return item;
-        }
-
-        if (payloadObj == null)
-        {
-            return item;
-        }
-
-        var settings = _runtime.SettingsService.LoadSettings();
-        var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, settings, payloadObj);
-        var changed = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, state, resetIndexAndHistory: false);
-        if (!changed)
-        {
-            return item;
-        }
-
-        var normalizedPayload = payloadObj.ToJsonString();
-        await _queueRepository.UpdatePayloadAsync(item.QueueUuid, normalizedPayload, cancellationToken);
-        return item with { PayloadJson = normalizedPayload };
     }
 
     private static string NormalizeEngineName(string? engine)

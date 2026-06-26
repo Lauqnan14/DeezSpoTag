@@ -768,9 +768,9 @@ public sealed class DownloadIntentService
             AppleId = FirstNonEmpty(
                 ReadPayloadString(payload, "AppleId", "appleId"),
                 item.AppleTrackId) ?? string.Empty,
-            QobuzId = ReadPayloadStringAny(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId") ?? string.Empty,
-            TidalId = ReadPayloadStringAny(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId") ?? string.Empty,
-            AmazonId = ReadPayloadStringAny(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId") ?? string.Empty,
+            QobuzId = FirstNonEmpty(item.QobuzTrackId, ReadPayloadStringAny(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId")) ?? string.Empty,
+            TidalId = FirstNonEmpty(item.TidalTrackId, ReadPayloadStringAny(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId")) ?? string.Empty,
+            AmazonId = FirstNonEmpty(item.AmazonTrackId, ReadPayloadStringAny(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId")) ?? string.Empty,
             Isrc = FirstNonEmpty(
                 ReadPayloadString(payload, "Isrc", "isrc"),
                 item.Isrc) ?? string.Empty,
@@ -5514,18 +5514,15 @@ public sealed class DownloadIntentService
     private static void ApplyVisiblePayloadResolutionState(EngineQueueItemBase payload)
     {
         var sourceUrl = payload.SourceUrl ?? string.Empty;
+        PopulateEngineIdentityFromSourceUrl(payload, sourceUrl);
         var hasDirectIdentity = payload.Engine switch
         {
-            TidalPlatform => !string.IsNullOrWhiteSpace(payload.TidalId)
-                || IsServiceUrlMatch(sourceUrl, TidalPlatform),
-            QobuzPlatform => !string.IsNullOrWhiteSpace(payload.QobuzId)
-                || IsServiceUrlMatch(sourceUrl, QobuzPlatform),
-            AmazonPlatform => !string.IsNullOrWhiteSpace(payload.AmazonId)
-                || IsServiceUrlMatch(sourceUrl, AmazonPlatform),
+            TidalPlatform => !string.IsNullOrWhiteSpace(payload.TidalId),
+            QobuzPlatform => !string.IsNullOrWhiteSpace(payload.QobuzId),
+            AmazonPlatform => !string.IsNullOrWhiteSpace(payload.AmazonId),
             ApplePlatform => !string.IsNullOrWhiteSpace(payload.AppleId)
                 || IsServiceUrlMatch(sourceUrl, ApplePlatform),
-            DeezerPlatform => !string.IsNullOrWhiteSpace(payload.DeezerId)
-                || IsServiceUrlMatch(sourceUrl, DeezerPlatform),
+            DeezerPlatform => !string.IsNullOrWhiteSpace(payload.DeezerId),
             _ => false
         };
 
@@ -5538,9 +5535,33 @@ public sealed class DownloadIntentService
         payload.ResolutionStatus = QueuePreResolutionPayload.Resolved;
         payload.ResolvedAtUtc = DateTimeOffset.UtcNow;
         payload.ResolvedEngine = payload.Engine;
-        payload.ResolvedSourceUrl = payload.SourceUrl;
+        payload.ResolvedSourceUrl = sourceUrl;
         payload.ResolvedQuality = payload.Quality;
         payload.ResolvedAutoIndex = payload.AutoIndex;
+    }
+
+    private static void PopulateEngineIdentityFromSourceUrl(EngineQueueItemBase payload, string sourceUrl)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return;
+        }
+
+        switch (payload.Engine)
+        {
+            case DeezerPlatform when string.IsNullOrWhiteSpace(payload.DeezerId):
+                payload.DeezerId = EngineLinkParser.TryExtractDeezerTrackId(sourceUrl) ?? string.Empty;
+                break;
+            case QobuzPlatform when string.IsNullOrWhiteSpace(payload.QobuzId):
+                payload.QobuzId = EngineLinkParser.TryExtractQobuzTrackId(sourceUrl) ?? string.Empty;
+                break;
+            case TidalPlatform when string.IsNullOrWhiteSpace(payload.TidalId):
+                payload.TidalId = EngineLinkParser.TryExtractTidalTrackId(sourceUrl) ?? string.Empty;
+                break;
+            case AmazonPlatform when string.IsNullOrWhiteSpace(payload.AmazonId):
+                payload.AmazonId = EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, EngineLinkParser.RegexTimeout) ?? string.Empty;
+                break;
+        }
     }
 
     private static List<string> ResolveVisiblePreResolutionSources(

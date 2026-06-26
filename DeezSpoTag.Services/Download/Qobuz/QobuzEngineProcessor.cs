@@ -735,12 +735,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             return await _qobuzDownloader.DownloadByUrlAsync(requestPayload, context.CancellationToken);
         }
 
-        if (!string.IsNullOrWhiteSpace(context.ResolvedIsrc))
-        {
-            return await _qobuzDownloader.DownloadByIsrcAsync(requestPayload, context.CancellationToken);
-        }
-
-        throw new InvalidOperationException("Qobuz download requires a valid source URL or ISRC.");
+        throw new InvalidOperationException("Qobuz download requires a verified Qobuz track ID or source URL.");
     }
 
     private sealed record DownloadWithQualityContext(

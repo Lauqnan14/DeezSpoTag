@@ -48,19 +48,16 @@ public sealed class TidalDownloadService
     private readonly ILogger<TidalDownloadService> _logger;
     private readonly HttpClient _client;
     private readonly TidalApiProviderSource _providerSource;
-    private readonly SpotifyTrackMetadataResolver? _spotifyTrackMetadataResolver;
     private readonly ITidalAccessTokenProvider _accessTokenProvider;
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
         TidalApiProviderSource providerSource,
-        ITidalAccessTokenProvider accessTokenProvider,
-        SpotifyTrackMetadataResolver? spotifyTrackMetadataResolver = null)
+        ITidalAccessTokenProvider accessTokenProvider)
     {
         _logger = logger;
         _providerSource = providerSource;
         _accessTokenProvider = accessTokenProvider;
-        _spotifyTrackMetadataResolver = spotifyTrackMetadataResolver;
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(15)
@@ -88,11 +85,6 @@ public sealed class TidalDownloadService
             tidalUrl = BuildTidalTrackListenUrl(tidalTrackId);
         }
 
-        if (string.IsNullOrWhiteSpace(tidalUrl) && !string.IsNullOrWhiteSpace(request.SpotifyId))
-        {
-            tidalUrl = await GetTidalUrlFromSpotifyAsync(request.SpotifyId, cancellationToken);
-        }
-
         if (!string.IsNullOrWhiteSpace(tidalUrl))
         {
             try
@@ -110,7 +102,7 @@ public sealed class TidalDownloadService
             }
         }
 
-        throw new InvalidOperationException("Tidal download requires a valid Tidal ID, service URL, or Spotify ID for native link regeneration.");
+        throw new InvalidOperationException("Tidal download requires a valid Tidal ID or service URL.");
     }
 
     public Task<string> ResolveVideoStreamUrlAsync(long videoId, CancellationToken cancellationToken)
@@ -295,40 +287,6 @@ public sealed class TidalDownloadService
         var title = DownloadFileUtilities.SanitizeFilename(
             string.IsNullOrWhiteSpace(request.TrackName) ? $"Tidal Video {videoId}" : request.TrackName);
         return Path.Join(outputRoot, $"{artist} - {title}.mp4");
-    }
-
-    private async Task<string> GetTidalUrlFromSpotifyAsync(string spotifyId, CancellationToken cancellationToken)
-    {
-        if (_spotifyTrackMetadataResolver == null)
-        {
-            throw new InvalidOperationException("Spotify metadata resolver is not available for Tidal URL regeneration.");
-        }
-
-        var spotifyTrack = await _spotifyTrackMetadataResolver.ResolveTrackAsync(spotifyId, cancellationToken);
-        if (spotifyTrack == null
-            || string.IsNullOrWhiteSpace(spotifyTrack.Title)
-            || string.IsNullOrWhiteSpace(spotifyTrack.Artist))
-        {
-            throw new InvalidOperationException("Unable to hydrate Spotify metadata for Tidal link regeneration.");
-        }
-
-        var expectedDuration = spotifyTrack.DurationMs.HasValue && spotifyTrack.DurationMs.Value > 0
-            ? (int)Math.Round(spotifyTrack.DurationMs.Value / 1000d)
-            : 0;
-
-        var resolved = await ResolveTrackUrlAsync(
-            spotifyTrack.Title,
-            spotifyTrack.Artist,
-            spotifyTrack.Isrc ?? string.Empty,
-            expectedDuration,
-            cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(resolved))
-        {
-            throw new InvalidOperationException("Tidal URL regeneration failed for the provided Spotify track.");
-        }
-
-        return resolved;
     }
 
     private async Task<TidalTrack> SearchTrackByMetadataWithIsrcAsync(string trackName, string artistName, string isrc, int expectedDuration, CancellationToken cancellationToken)
@@ -531,13 +489,13 @@ public sealed class TidalDownloadService
 
     private async Task<List<TidalTrack>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken)
     {
-        var oauthResult = await SearchTracksViaOauthAsync(query, limit, cancellationToken);
-        if (oauthResult.Count > 0)
+        var publicResult = await SearchTracksViaPublicApiAsync(query, limit, cancellationToken);
+        if (publicResult.Count > 0)
         {
-            return oauthResult;
+            return publicResult;
         }
 
-        return await SearchTracksViaPublicApiAsync(query, limit, cancellationToken);
+        return await SearchTracksViaOauthAsync(query, limit, cancellationToken);
     }
 
     private static long GetTrackIdFromUrl(string tidalUrl)
@@ -558,16 +516,16 @@ public sealed class TidalDownloadService
 
     private async Task<TidalTrack> GetTrackInfoByIdAsync(long trackId, CancellationToken cancellationToken)
     {
-        var oauthTrack = await TryGetTrackInfoByIdViaOauthAsync(trackId, cancellationToken);
-        if (oauthTrack != null)
-        {
-            return oauthTrack;
-        }
-
         var publicTrack = await TryGetTrackInfoByIdViaPublicApiAsync(trackId, cancellationToken);
         if (publicTrack != null)
         {
             return publicTrack;
+        }
+
+        var oauthTrack = await TryGetTrackInfoByIdViaOauthAsync(trackId, cancellationToken);
+        if (oauthTrack != null)
+        {
+            return oauthTrack;
         }
 
         throw new InvalidOperationException($"Tidal track not found for track ID {trackId}.");
@@ -1842,6 +1800,20 @@ public sealed class TidalDownloadService
 
         try
         {
+            var direct = JsonSerializer.Deserialize<TidalPlaybackInfoResponse>(body, SerializerOptions);
+            if (!string.IsNullOrWhiteSpace(direct?.Manifest))
+            {
+                manifest = ManifestPrefix + direct.Manifest;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            manifest = "";
+        }
+
+        try
+        {
             var v1 = JsonSerializer.Deserialize<List<TidalApiResponse>>(body, SerializerOptions);
             var direct = v1?.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.OriginalTrackUrl));
             if (direct != null)
@@ -1969,68 +1941,123 @@ public sealed class TidalDownloadService
         bool allowRefresh,
         CancellationToken cancellationToken)
     {
+        var credentialManifest = await TryFetchManifestFromCredentialApiAsync(trackId, quality, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(credentialManifest))
+        {
+            return [credentialManifest];
+        }
+
         var providers = await _providerSource.GetRotatedProviderRecordsAsync(cancellationToken);
         if (providers.Count == 0)
         {
             throw new InvalidOperationException("Tidal API pool is empty");
         }
 
-        var manifests = new List<string>();
-        foreach (var provider in providers)
+        var provider = providers.FirstOrDefault(candidate => !IsProviderCoolingDown(candidate));
+        if (provider == null)
         {
-            if (IsProviderCoolingDown(provider))
+            throw new InvalidOperationException("No Tidal download provider is currently available.");
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
+            stopwatch.Stop();
+            if (string.IsNullOrWhiteSpace(manifest))
             {
-                continue;
+                await _providerSource.RememberFailureAsync(provider, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
+                throw new InvalidOperationException("Tidal download URL not available");
             }
 
-            var stopwatch = Stopwatch.StartNew();
-            try
+            await _providerSource.RememberHealthSuccessAsync(provider, stopwatch.ElapsedMilliseconds, cancellationToken);
+            await _providerSource.RememberSuccessAsync(provider, cancellationToken);
+            return [manifest.Trim()];
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            stopwatch.Stop();
+            await _providerSource.RememberFailureAsync(provider, ClassifyProviderFailure(ex), stopwatch.ElapsedMilliseconds, cancellationToken);
+            _logger.LogWarning(
+                ex,
+                "Tidal public provider {Provider} failed for track {TrackId} quality {Quality}.",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.DisplayName),
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(quality));
+            throw new InvalidOperationException("Tidal download URL not available", ex);
+        }
+    }
+
+    private async Task<string?> TryFetchManifestFromCredentialApiAsync(
+        long trackId,
+        string quality,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var token = await _accessTokenProvider.GetAccessTokenAsync(cancellationToken);
+            var countryCode = await _accessTokenProvider.GetCountryCodeAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(token))
             {
-                var manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
-                stopwatch.Stop();
-                if (string.IsNullOrWhiteSpace(manifest))
+                return null;
+            }
+
+            var normalizedQuality = NormalizeTidalDownloadQuality(quality);
+            var builder = new UriBuilder(Uri.UriSchemeHttps, "api.tidal.com")
+            {
+                Path = $"v1/tracks/{trackId}/playbackinfopostpaywall",
+                Query = string.Join(
+                    "&",
+                    new Dictionary<string, string>
+                    {
+                        ["audioquality"] = normalizedQuality,
+                        ["playbackmode"] = "STREAM",
+                        ["assetpresentation"] = "FULL",
+                        ["countryCode"] = string.IsNullOrWhiteSpace(countryCode) ? TidalPublicCountryCode : countryCode
+                    }.Select(pair => $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"))
+            };
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            using var response = await _client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    await _providerSource.RememberFailureAsync(provider, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
-                    continue;
+                    _logger.LogDebug(
+                        "Tidal credential playback info returned HTTP {StatusCode} for track {TrackId} quality {Quality}.",
+                        (int)response.StatusCode,
+                        trackId,
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedQuality));
                 }
 
-                await _providerSource.RememberHealthSuccessAsync(provider, stopwatch.ElapsedMilliseconds, cancellationToken);
-                await _providerSource.RememberSuccessAsync(provider, cancellationToken);
-                manifests.Add(manifest.Trim());
-                break;
+                return null;
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            return TryParseManifest(body, out var manifest) ? manifest : null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
             {
-                throw;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                stopwatch.Stop();
-                await _providerSource.RememberFailureAsync(provider, ClassifyProviderFailure(ex), stopwatch.ElapsedMilliseconds, cancellationToken);
-                _logger.LogWarning(
+                _logger.LogDebug(
                     ex,
-                    "Tidal public provider {Provider} failed for track {TrackId} quality {Quality}.",
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.DisplayName),
+                    "Tidal credential playback info failed for track {TrackId} quality {Quality}.",
                     trackId,
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(quality));
             }
-        }
 
-        manifests = manifests
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        if (manifests.Count > 0)
-        {
-            return manifests;
+            return null;
         }
-
-        if (allowRefresh)
-        {
-            await TidalApiProviderSource.RefreshAsync(force: true, cancellationToken);
-            return await GetDownloadUrlCandidatesAsync(trackId, quality, allowRefresh: false, cancellationToken);
-        }
-
-        throw new InvalidOperationException("Tidal download URL not available");
     }
 
     private async Task<string> GetVideoStreamUrlAsync(long videoId, int maxResolution, CancellationToken cancellationToken)
@@ -2543,6 +2570,15 @@ public sealed class TidalDownloadService
     }
 
     private sealed class TidalApiResponseV2Data
+    {
+        [JsonPropertyName("manifest")]
+        public string Manifest { get; set; } = "";
+
+        [JsonPropertyName("manifestMimeType")]
+        public string ManifestMimeType { get; set; } = "";
+    }
+
+    private sealed class TidalPlaybackInfoResponse
     {
         [JsonPropertyName("manifest")]
         public string Manifest { get; set; } = "";

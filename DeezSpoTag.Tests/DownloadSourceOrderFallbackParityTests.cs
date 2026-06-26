@@ -13,6 +13,14 @@ public sealed class DownloadSourceOrderFallbackParityTests
     private static readonly string[] ExpectedDeezerQualityFallback = { "deezer|3", "deezer|1" };
     private static readonly string[] ExpectedQobuzStrictQuality = { "qobuz|6" };
     private static readonly string[] ExpectedCustomQualityOrder = { "apple|ALAC", "qobuz|6", "tidal|LOSSLESS" };
+    private static readonly string[] ExpectedCustomQobuzTidalInterleavedOrder =
+    {
+        "qobuz|27",
+        "qobuz|7",
+        "tidal|HI_RES",
+        "qobuz|6",
+        "tidal|LOSSLESS"
+    };
     private static readonly string[] ExpectedAppleOnlyOrder = { "apple|ALAC", "apple|AAC" };
     private static readonly string[] ExpectedQobuzLosslessOrder = { "qobuz|6" };
     private static readonly string[] ExpectedDirectAppleOrder = { "apple|ALAC", "qobuz|6" };
@@ -122,7 +130,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
     }
 
     [Fact]
-    public void ResolveQualityAutoSources_CustomOrderEnabled_RespectsEngineAndQualityOrder()
+    public void ResolveQualityAutoSources_CustomOrderEnabled_UsesCanonicalQualityOrderForEnabledCustomSources()
     {
         var settings = CreateCustomOrderSettings(
             ("apple", true, new[] { ("ALAC", true), ("AAC", false) }),
@@ -134,6 +142,36 @@ public sealed class DownloadSourceOrderFallbackParityTests
         var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
 
         Assert.Equal(ExpectedCustomQualityOrder, sources);
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_CustomOrderEnabled_InterleavesEnabledQobuzAndTidalByCanonicalQuality()
+    {
+        var settings = CreateCustomOrderSettings(
+            ("tidal", true, new[] { ("LOSSLESS", true), ("HIGH", false), ("LOW", false), ("HI_RES", true), ("HI_RES_LOSSLESS", false) }),
+            ("qobuz", true, new[] { ("6", true), ("5", false), ("7", true), ("27", true) }),
+            ("apple", false, new[] { ("ALAC", true), ("AAC", true) }),
+            ("amazon", false, new[] { ("FLAC", true) }),
+            ("deezer", false, new[] { ("9", true), ("3", true), ("1", true) }));
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
+
+        Assert.Equal(ExpectedCustomQobuzTidalInterleavedOrder, sources);
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_CustomOrderEnabled_KeepsDeezer128BeforeTidal96()
+    {
+        var settings = CreateCustomOrderSettings(
+            ("tidal", true, new[] { ("HI_RES_LOSSLESS", false), ("HI_RES", false), ("LOSSLESS", false), ("HIGH", false), ("LOW", true) }),
+            ("deezer", true, new[] { ("9", false), ("3", false), ("1", true) }),
+            ("qobuz", false, new[] { ("27", true), ("7", true), ("6", true), ("5", true) }),
+            ("apple", false, new[] { ("ALAC", true), ("AAC", true) }),
+            ("amazon", false, new[] { ("FLAC", true) }));
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
+
+        Assert.Equal(new[] { "deezer|1", "tidal|LOW" }, sources);
     }
 
     [Fact]

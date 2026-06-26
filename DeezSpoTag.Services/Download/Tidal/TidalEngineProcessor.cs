@@ -43,39 +43,12 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                 async (payload, request, settings, progressReporter, cancellationToken) =>
                 {
                     var tidalRequest = (TidalDownloadRequest)request;
-
-                    async Task<string> DownloadWithQualityAsync(string quality)
-                    {
-                        tidalRequest.Quality = quality;
-                        return await _tidalDownloader.DownloadAsync(
-                            tidalRequest,
-                            settings.EmbedMaxQualityCover,
-                            settings.Tags,
-                            progressReporter,
-                            cancellationToken);
-                    }
-
-                    try
-                    {
-                        return await DownloadWithQualityAsync(tidalRequest.Quality);
-                    }
-                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested
-                                               && settings.FallbackBitrate
-                                               && !IsTidalAtmosQuality(tidalRequest.Quality)
-                                               && !IsTidalAtmosQuality(payload.Quality)
-                                               && ShouldUseInEngineQualityFallback(payload))
-                    {
-                        var fallbackQuality = EngineQualityFallback.GetNextLowerQuality(EngineName, tidalRequest.Quality);
-                        if (string.IsNullOrWhiteSpace(fallbackQuality))
-                        {
-                            throw;
-                        }
-
-                        _logger.LogWarning(ex, "Tidal download failed at quality {Quality}, retrying at {Fallback}", tidalRequest.Quality, fallbackQuality);
-                        tidalRequest.Quality = fallbackQuality;
-                        payload.Quality = fallbackQuality;
-                        return await DownloadWithQualityAsync(fallbackQuality);
-                    }
+                    return await _tidalDownloader.DownloadAsync(
+                        tidalRequest,
+                        settings.EmbedMaxQualityCover,
+                        settings.Tags,
+                        progressReporter,
+                        cancellationToken);
                 },
                 null,
                 request => $"Download start: {item.QueueUuid} engine=tidal quality={((TidalDownloadRequest)request).Quality}",
@@ -83,15 +56,6 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                 static payload => payload.ToQueuePayload()),
             cancellationToken);
     }
-
-    private static bool ShouldUseInEngineQualityFallback(TidalQueueItem payload)
-    {
-        return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
-    }
-
-    private static bool IsTidalAtmosQuality(string? quality)
-        => string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase);
 
     private static string ResolveTidalSourceId(TidalQueueItem payload)
     {

@@ -142,6 +142,11 @@ public sealed class EngineFallbackCoordinator
     {
         var settings = ResolveEffectiveSettings(request);
         var planSteps = BuildPlanSteps(request, settings);
+        if (planSteps.Count == 0)
+        {
+            _activityLog.Warn($"Quality plan unavailable: {request.QueueUuid}");
+            return false;
+        }
 
         var resolvedIsrc = await ResolveIsrcForFallbackAsync(request, cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolvedIsrc))
@@ -362,7 +367,7 @@ public sealed class EngineFallbackCoordinator
 
         if (string.Equals(source, AmazonEngine, StringComparison.OrdinalIgnoreCase))
         {
-            var resolvedAmazonId = EngineLinkParser.TryExtractAmazonTrackId(resolvedUrl, TimeSpan.FromMilliseconds(250));
+            var resolvedAmazonId = EngineLinkParser.TryExtractAmazonTrackId(resolvedUrl, EngineLinkParser.RegexTimeout);
             if (!string.IsNullOrWhiteSpace(resolvedAmazonId))
             {
                 TrySetStringProperty(payloadForSerialization, "AmazonId", resolvedAmazonId);
@@ -373,36 +378,12 @@ public sealed class EngineFallbackCoordinator
 
         if (string.Equals(source, DeezerEngine, StringComparison.OrdinalIgnoreCase))
         {
-            var resolvedDeezerId = TryExtractDeezerTrackId(resolvedUrl);
+            var resolvedDeezerId = EngineLinkParser.TryExtractDeezerTrackId(resolvedUrl);
             if (!string.IsNullOrWhiteSpace(resolvedDeezerId))
             {
                 TrySetStringProperty(payloadForSerialization, "DeezerId", resolvedDeezerId);
             }
         }
-    }
-
-    private static string? TryExtractDeezerTrackId(string? resolvedUrl)
-    {
-        if (string.IsNullOrWhiteSpace(resolvedUrl)
-            || !Uri.TryCreate(resolvedUrl, UriKind.Absolute, out var parsed)
-            || !parsed.Host.Contains("deezer.com", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        var segments = parsed.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (var i = 0; i < segments.Length - 1; i++)
-        {
-            if (!segments[i].Equals("track", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var candidate = Uri.UnescapeDataString(segments[i + 1]).Trim();
-            return candidate.All(char.IsDigit) ? candidate : null;
-        }
-
-        return null;
     }
 
     private async Task<bool> PersistAdvancedFallbackStateAsync(
@@ -412,8 +393,7 @@ public sealed class EngineFallbackCoordinator
         CancellationToken cancellationToken)
     {
         var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
-        await _queueRepository.UpdatePayloadAsync(queueUuid, json, cancellationToken);
-        await _queueRepository.UpdateEngineAsync(queueUuid, stepSource, cancellationToken);
+        await _queueRepository.UpdatePayloadAndEngineAsync(queueUuid, stepSource, json, cancellationToken);
         await _queueRepository.ClearRetryArtifactsAsync(queueUuid, cancellationToken);
         return await _queueRepository.RequeueAsync(
             queueUuid,
@@ -442,32 +422,16 @@ public sealed class EngineFallbackCoordinator
         FallbackAdvanceRequest request,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
+        _ = settings;
         var steps = new List<(string Source, string? Quality)>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var atmosOnly = IsAtmosRequest(request);
-
-        if (request.AutoSources != null && request.AutoSources.Count > 0)
-        {
-            foreach (var decoded in request.AutoSources.Select(DownloadSourceOrder.DecodeAutoSource))
-            {
-                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality, atmosOnly);
-            }
-        }
 
         if (request.FallbackPlan != null && request.FallbackPlan.Count > 0)
         {
             foreach (var step in request.FallbackPlan)
             {
                 AppendPlanStep(steps, seen, step.Engine, step.Quality, atmosOnly);
-            }
-        }
-
-        if (steps.Count == 0 && !atmosOnly)
-        {
-            foreach (var decoded in DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null)
-                .Select(DownloadSourceOrder.DecodeAutoSource))
-            {
-                AppendPlanStep(steps, seen, decoded.Source, decoded.Quality, atmosOnly);
             }
         }
 
