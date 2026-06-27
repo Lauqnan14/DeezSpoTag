@@ -130,6 +130,51 @@ public sealed class DownloadTagSourceIdentityGuardTests
         Assert.True(string.IsNullOrWhiteSpace(payload.DeezerId));
     }
 
+    [Fact]
+    public async Task ApplyProfileMetadataOverrideAsync_KeepsLatinPayloadAlbumWhenResolverReturnsLocalizedAlbum()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IMetadataResolver, LocalizedAlbumResolver>();
+        services.AddSingleton<IMetadataResolverRegistry, MetadataResolverRegistry>();
+        var provider = services.BuildServiceProvider();
+        var track = new Track
+        {
+            Title = "Memories",
+            ArtistString = "Maroon 5",
+            ArtistsString = "Maroon 5",
+            MainArtist = new Artist("0", "Maroon 5"),
+            Album = new Album("0", "JORDI (Deluxe)"),
+            ISRC = "USUM71913350",
+            Duration = 189
+        };
+        var payload = new TestQueueItem
+        {
+            Title = "Memories",
+            Artist = "Maroon 5",
+            Album = "JORDI (Deluxe)",
+            Isrc = "USUM71913350",
+            DurationSeconds = 189,
+            QobuzId = "123327344"
+        };
+
+        var applied = await EngineAudioPostDownloadHelper.ApplyProfileMetadataOverrideAsync(
+            new EngineAudioPostDownloadHelper.ProfileMetadataOverrideRequest(
+                track,
+                payload,
+                new DeezSpoTagSettings(),
+                provider,
+                "qobuz",
+                DownloadTagSourceHelper.QobuzSource,
+                NullLogger.Instance,
+                CancellationToken.None));
+
+        Assert.True(applied);
+        Assert.Equal("Memories", track.Title);
+        Assert.Equal("Maroon 5", track.MainArtist?.Name);
+        Assert.Equal("JORDI (Deluxe)", track.Album?.Title);
+        Assert.Equal("123327344", payload.QobuzId);
+    }
+
     private static string? ResolveKnownDeezerId(Track track, EngineQueueItemBase payload)
         => ResolveKnownDeezerIdMethod.Invoke(null, new object[] { track, payload }) as string;
 
@@ -151,6 +196,24 @@ public sealed class DownloadTagSourceIdentityGuardTests
             track.Album = new Album("0", "The Best Of");
             track.ISRC = "DEKB71500819";
             track.Duration = 300;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class LocalizedAlbumResolver : IMetadataResolver
+    {
+        public string SourceKey => DownloadTagSourceHelper.QobuzSource;
+
+        public Task ResolveTrackAsync(Track track, DeezSpoTagSettings settings, CancellationToken cancellationToken)
+        {
+            track.Title = "Memories";
+            track.MainArtist = new Artist("0", "Maroon 5");
+            track.ArtistString = "Maroon 5";
+            track.ArtistsString = "Maroon 5";
+            track.Artists = new List<string> { "Maroon 5" };
+            track.Album = new Album("0", "傷心情歌");
+            track.ISRC = "USUM71913350";
+            track.Duration = 189;
             return Task.CompletedTask;
         }
     }

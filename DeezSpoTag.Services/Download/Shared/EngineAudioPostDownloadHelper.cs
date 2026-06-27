@@ -15,7 +15,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Reflection;
+using System.Text;
 using System.Text.RegularExpressions;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
@@ -359,6 +361,7 @@ public static partial class EngineAudioPostDownloadHelper
                 return false;
             }
 
+            PreserveRequestedAlbumTextStyle(originalTrack, request.Payload, request.Track, request.EngineName, source, request.Logger);
             ApplyResolvedTagSourceIdentity(request.Track, request.Payload, source);
             request.Track.ApplySettings(request.Settings);
             return true;
@@ -704,6 +707,87 @@ public static partial class EngineAudioPostDownloadHelper
 
         return true;
     }
+
+    private static void PreserveRequestedAlbumTextStyle(
+        TrackMetadataSnapshot original,
+        EngineQueueItemBase payload,
+        Track resolved,
+        string engineName,
+        string source,
+        ILogger logger)
+    {
+        var requestedAlbum = FirstNonEmpty(payload.Album, original.AlbumTitle);
+        var resolvedAlbum = resolved.Album?.Title;
+        if (string.IsNullOrWhiteSpace(requestedAlbum)
+            || string.IsNullOrWhiteSpace(resolvedAlbum)
+            || string.Equals(requestedAlbum.Trim(), resolvedAlbum.Trim(), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!IsLatinScriptText(requestedAlbum) || !HasNonLatinLetters(resolvedAlbum))
+        {
+            return;
+        }
+
+        resolved.Album ??= new Album("0", requestedAlbum);
+        resolved.Album.Title = requestedAlbum.Trim();
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "{Engine} profile metadata source {Source} kept requested album title '{RequestedAlbum}' instead of localized album title '{ResolvedAlbum}'.",
+                engineName,
+                source,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(requestedAlbum),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(resolvedAlbum));
+        }
+    }
+
+    private static bool IsLatinScriptText(string value)
+    {
+        var hasLetter = false;
+        foreach (var rune in value.EnumerateRunes())
+        {
+            if (!RuneIsLetter(rune))
+            {
+                continue;
+            }
+
+            hasLetter = true;
+            if (!IsLatinLetter(rune.Value))
+            {
+                return false;
+            }
+        }
+
+        return hasLetter;
+    }
+
+    private static bool HasNonLatinLetters(string value)
+    {
+        foreach (var rune in value.EnumerateRunes())
+        {
+            if (RuneIsLetter(rune) && !IsLatinLetter(rune.Value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool RuneIsLetter(Rune rune)
+        => Rune.GetUnicodeCategory(rune) is
+            UnicodeCategory.UppercaseLetter
+            or UnicodeCategory.LowercaseLetter
+            or UnicodeCategory.TitlecaseLetter
+            or UnicodeCategory.ModifierLetter
+            or UnicodeCategory.OtherLetter;
+
+    private static bool IsLatinLetter(int codePoint)
+        => codePoint is >= 0x0041 and <= 0x007A
+           or >= 0x00C0 and <= 0x024F
+           or >= 0x1E00 and <= 0x1EFF;
 
     private static double ResolveExpectedDurationMilliseconds(TrackMetadataSnapshot original, EngineQueueItemBase payload)
     {
