@@ -42,8 +42,34 @@ public static class EngineFallbackPlanPolicy
     {
         var steps = new List<DownloadSourceOrder.AutoSourceStep>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        AppendFallbackPlanSteps(payload, steps, seen);
+        AppendAutoSourceSteps(payload, steps, seen);
+        if (steps.Count == 0)
+        {
+            AppendFallbackPlanSteps(payload, steps, seen);
+        }
+
         return steps;
+    }
+
+    private static void AppendAutoSourceSteps(
+        EngineQueueItemBase payload,
+        List<DownloadSourceOrder.AutoSourceStep> steps,
+        HashSet<string> seen)
+    {
+        foreach (var encodedSource in payload.AutoSources)
+        {
+            var step = DownloadSourceOrder.DecodeAutoSource(encodedSource);
+            if (string.IsNullOrWhiteSpace(step.Source))
+            {
+                continue;
+            }
+
+            var key = DownloadSourceOrder.EncodeAutoSource(step.Source, step.Quality);
+            if (seen.Add(key))
+            {
+                steps.Add(step);
+            }
+        }
     }
 
     private static void AppendFallbackPlanSteps(
