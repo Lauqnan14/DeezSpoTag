@@ -181,6 +181,13 @@ public sealed class EngineFallbackCoordinator
             var step = planSteps[stepIndex];
             if (ShouldSkipStep(step, request.CurrentEngine, settings.FallbackBitrate))
             {
+                AddFallbackAttempt(
+                    stepContext.PayloadForSerialization,
+                    step,
+                    stepIndex,
+                    "skipped",
+                    "same_engine_blocked",
+                    "Same-engine quality fallback is disabled.");
                 continue;
             }
 
@@ -196,6 +203,12 @@ public sealed class EngineFallbackCoordinator
             }
         }
 
+        await PersistFallbackExhaustionAsync(
+            request,
+            planSteps,
+            nextIndex,
+            payloadForSerialization,
+            cancellationToken);
         return false;
     }
 
@@ -303,6 +316,13 @@ public sealed class EngineFallbackCoordinator
             cancellationToken);
         if (string.IsNullOrWhiteSpace(resolvedUrl))
         {
+            AddFallbackAttempt(
+                context.PayloadForSerialization,
+                step,
+                stepIndex,
+                "skipped",
+                "unresolved",
+                "No resolvable URL for enabled fallback step.");
             _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (no resolvable URL)");
             return false;
         }
@@ -323,6 +343,79 @@ public sealed class EngineFallbackCoordinator
 
         _activityLog.Info($"Fallback advanced: {request.QueueUuid} -> {step.Source} (auto_index={stepIndex})");
         return true;
+    }
+
+    private async Task PersistFallbackExhaustionAsync(
+        FallbackAdvanceRequest request,
+        List<(string Source, string? Quality)> planSteps,
+        int nextIndex,
+        object payloadForSerialization,
+        CancellationToken cancellationToken)
+    {
+        if (!HasLaterDistinctEngineStep(planSteps, request.CurrentEngine, nextIndex))
+        {
+            return;
+        }
+
+        var triedSteps = planSteps
+            .Skip(Math.Max(0, nextIndex))
+            .Select(step => string.IsNullOrWhiteSpace(step.Quality)
+                ? step.Source
+                : $"{step.Source} {step.Quality}")
+            .ToList();
+        var detail = triedSteps.Count == 0
+            ? "No later enabled fallback source remained in the queue plan."
+            : $"Tried enabled fallback steps: {string.Join(", ", triedSteps)}.";
+        var message = $"Enabled fallback sources could not resolve this track after {request.CurrentEngine} failed. {detail}";
+        SetResolutionError(payloadForSerialization, message);
+        var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
+        await _queueRepository.UpdatePayloadAsync(request.QueueUuid, json, cancellationToken);
+    }
+
+    private static bool HasLaterDistinctEngineStep(
+        List<(string Source, string? Quality)> planSteps,
+        string currentEngine,
+        int nextIndex)
+    {
+        for (var index = Math.Max(0, nextIndex); index < planSteps.Count; index++)
+        {
+            if (!string.Equals(planSteps[index].Source, currentEngine, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void AddFallbackAttempt(
+        object payloadForSerialization,
+        (string Source, string? Quality) step,
+        int stepIndex,
+        string status,
+        string errorClass,
+        string detail)
+    {
+        if (payloadForSerialization is not EngineQueueItemBase payload)
+        {
+            return;
+        }
+
+        payload.FallbackHistory.Add(new FallbackAttempt(
+            $"step-{stepIndex}",
+            status,
+            errorClass,
+            string.IsNullOrWhiteSpace(step.Quality)
+                ? $"{step.Source}: {detail}"
+                : $"{step.Source} {step.Quality}: {detail}"));
+    }
+
+    private static void SetResolutionError(object payloadForSerialization, string message)
+    {
+        if (payloadForSerialization is EngineQueueItemBase payload)
+        {
+            payload.ResolutionError = message;
+        }
     }
 
     private static void TrySetResolvedEngineId(object payloadForSerialization, string source, string? resolvedUrl)
@@ -427,7 +520,16 @@ public sealed class EngineFallbackCoordinator
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var atmosOnly = IsAtmosRequest(request);
 
-        if (request.FallbackPlan != null && request.FallbackPlan.Count > 0)
+        if (request.AutoSources.Count > 0)
+        {
+            foreach (var encodedSource in request.AutoSources)
+            {
+                var step = DownloadSourceOrder.DecodeAutoSource(encodedSource);
+                AppendPlanStep(steps, seen, step.Source, step.Quality, atmosOnly);
+            }
+        }
+
+        if (steps.Count == 0 && request.FallbackPlan != null && request.FallbackPlan.Count > 0)
         {
             foreach (var step in request.FallbackPlan)
             {

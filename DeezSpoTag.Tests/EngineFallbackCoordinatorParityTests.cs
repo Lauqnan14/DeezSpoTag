@@ -44,7 +44,7 @@ public sealed class EngineFallbackCoordinatorParityTests
     private static readonly string[] ExpectedForcedDeezerFallbackSteps = { "deezer|9", "deezer|3", "deezer|1" };
     private static readonly string[] ExpectedCustomFallbackSteps = { "apple|ALAC", "qobuz|6" };
     [Fact]
-    public void BuildPlanSteps_UsesPersistedFallbackPlanOnly()
+    public void BuildPlanSteps_UsesAutoSourcesBeforePersistedFallbackPlan()
     {
         var fallbackPlan = new List<FallbackPlanStep>
         {
@@ -55,11 +55,11 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(fallbackPlan, new List<string> { "deezer|9" }, settings);
 
-        Assert.Equal(["qobuz|27", "tidal|HI_RES_LOSSLESS"], steps);
+        Assert.Equal(["deezer|9"], steps);
     }
 
     [Fact]
-    public void BuildPlanSteps_PreservesPersistedFallbackPlanOrder()
+    public void BuildPlanSteps_PreservesAutoSourcesOrder_WhenFallbackPlanDiffers()
     {
         var fallbackPlan = new List<FallbackPlanStep>
         {
@@ -76,11 +76,11 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(fallbackPlan, autoSources, settings);
 
-        Assert.Equal(["qobuz|27", "qobuz|7"], steps);
+        Assert.Equal(["qobuz|27", "tidal|HI_RES_LOSSLESS", "apple|ALAC"], steps);
     }
 
     [Fact]
-    public void BuildPlanSteps_RequiresFallbackPlanWhenOnlyAutoSourcesExist()
+    public void BuildPlanSteps_UsesAutoSources_WhenFallbackPlanIsMissing()
     {
         var autoSources = new List<string>
         {
@@ -93,7 +93,7 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(new List<FallbackPlanStep>(), autoSources, settings);
 
-        Assert.Empty(steps);
+        Assert.Equal(["qobuz|27", "deezer|9", "deezer|3", "tidal|LOSSLESS"], steps);
     }
 
     [Fact]
@@ -107,7 +107,7 @@ public sealed class EngineFallbackCoordinatorParityTests
     }
 
     [Fact]
-    public void BuildPlanSteps_DoesNotRebuildCustomOrder_WhenPayloadHasNoPlan()
+    public void BuildPlanSteps_DoesNotRebuildCustomOrder_WhenPayloadHasNoPlanOrAutoSources()
     {
         var settings = new DeezSpoTagSettings
         {
@@ -182,7 +182,7 @@ public sealed class EngineFallbackCoordinatorParityTests
     }
 
     [Fact]
-    public void BuildPlanSteps_RequiresFallbackPlanWhenAutoSourcesExist()
+    public void BuildPlanSteps_UsesAutoSourcesForMultiSourceFallback()
     {
         var autoSources = new List<string>
         {
@@ -194,7 +194,7 @@ public sealed class EngineFallbackCoordinatorParityTests
 
         var steps = BuildPlanSteps(new List<FallbackPlanStep>(), autoSources, settings);
 
-        Assert.Empty(steps);
+        Assert.Equal(["qobuz|27", "tidal|HI_RES_LOSSLESS", "deezer|9"], steps);
     }
 
     [Fact]

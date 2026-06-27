@@ -984,9 +984,12 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             queueUuid,
             PrefetchCancelDrainTimeout,
             CancellationToken.None);
-        await MarkQueueFailedAsync(queueUuid, payload, ex.Message);
-        _activityLog.Error($"Download failed (engine={EngineName}): {queueUuid} {ex.Message}");
-        _retryScheduler.ScheduleRetry(queueUuid, EngineName, ex.Message);
+        var error = !string.IsNullOrWhiteSpace(payload?.ResolutionError)
+            ? payload.ResolutionError
+            : ex.Message;
+        await MarkQueueFailedAsync(queueUuid, payload, error);
+        _activityLog.Error($"Download failed (engine={EngineName}): {queueUuid} {error}");
+        _retryScheduler.ScheduleRetry(queueUuid, EngineName, error);
     }
 
     private async Task MarkQueueFailedAsync(string queueUuid, QobuzQueueItem? payload, string error)
