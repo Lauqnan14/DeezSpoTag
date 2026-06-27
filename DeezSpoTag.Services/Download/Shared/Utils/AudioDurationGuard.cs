@@ -22,7 +22,7 @@ public static class AudioDurationGuard
             return AudioDurationGuardResult.Fail("Audio validation failed: unable to read output duration.");
         }
 
-        if (!LooksLikePreviewDuration(actualDurationSeconds, expectedDurationSeconds))
+        if (IsExpectedDurationAcceptable(actualDurationSeconds, expectedDurationSeconds))
         {
             return AudioDurationGuardResult.Ok();
         }
@@ -46,23 +46,20 @@ public static class AudioDurationGuard
         }
     }
 
-    private static bool LooksLikePreviewDuration(double actualSeconds, int expectedSeconds)
+    public static bool IsExpectedDurationAcceptable(double actualSeconds, int expectedSeconds)
     {
-        if (actualSeconds <= 0 || expectedSeconds < 60)
+        if (expectedSeconds <= 0)
+        {
+            return true;
+        }
+
+        if (actualSeconds <= 0)
         {
             return false;
         }
 
-        var missingSeconds = expectedSeconds - actualSeconds;
-        if (missingSeconds < 25)
-        {
-            return false;
-        }
-
-        var previewLengthForLongTrack = expectedSeconds > 120 && actualSeconds <= 120;
-        var clearlyShorterThanExpected = actualSeconds <= expectedSeconds * 0.85d;
-        var heavilyTruncated = actualSeconds < expectedSeconds * 0.5d;
-        return (previewLengthForLongTrack && clearlyShorterThanExpected) || heavilyTruncated;
+        var allowedDelta = Math.Max(5d, expectedSeconds * 0.12d);
+        return Math.Abs(actualSeconds - expectedSeconds) <= allowedDelta;
     }
 }
 

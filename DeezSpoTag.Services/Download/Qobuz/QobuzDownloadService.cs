@@ -1053,7 +1053,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return true;
         }
 
-        if (!IsSevereDurationMismatch(probe.Value.DurationSeconds, expectedDurationSeconds))
+        if (AudioDurationGuard.IsExpectedDurationAcceptable(probe.Value.DurationSeconds, expectedDurationSeconds))
         {
             return true;
         }
@@ -1500,14 +1500,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         try
         {
             using var tagFile = TagLib.File.Create(filePath);
-            var durationSeconds = tagFile.Properties.Duration.TotalSeconds;
-            if (request.DurationSeconds > 0
-                && IsSevereDurationMismatch(durationSeconds, request.DurationSeconds))
-            {
-                return AudioIdentityGuardResult.Fail(
-                    $"Audio identity validation failed: output duration is {durationSeconds:F1}s but expected about {request.DurationSeconds}s.");
-            }
-
             var expectedIsrc = request.Isrc?.Trim();
             var actualIsrc = tagFile.Tag.ISRC?.Trim();
             if (!string.IsNullOrWhiteSpace(expectedIsrc)
@@ -1546,22 +1538,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             return AudioIdentityGuardResult.Fail($"Audio identity validation failed: {ex.Message}");
         }
-    }
-
-    private static bool IsSevereDurationMismatch(double actualSeconds, int expectedSeconds)
-    {
-        if (expectedSeconds <= 0 || actualSeconds <= 0)
-        {
-            return false;
-        }
-
-        var ratio = actualSeconds / expectedSeconds;
-        if (ratio < 0.55d || ratio > 1.45d)
-        {
-            return true;
-        }
-
-        return Math.Abs(actualSeconds - expectedSeconds) > 120d;
     }
 
     private static string? FirstNonEmpty(params string?[] values)
