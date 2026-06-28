@@ -326,34 +326,18 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Equal(expected, result);
     }
 
-    [Theory]
-    [InlineData("shazam", 5, true)]
-    [InlineData("ShAzAm", 2, true)]
-    [InlineData("spotify", 1, true)]
-    [InlineData("spotify", 3, false)]
-    [InlineData("deezer", 2, false)]
-    public void ShouldShortCircuitOnShazamIdentifyFailure_OnlyForShazamOrSinglePlatform(
-        string platform,
-        int platformCount,
-        bool expected)
-    {
-        var result = InvokeStatic<bool>(
-            "ShouldShortCircuitOnShazamIdentifyFailure",
-            platform,
-            platformCount);
-
-        Assert.Equal(expected, result);
-    }
-
     [Fact]
-    public void Runner_HonorsForcedShazamEvenWhenShazamIsNotTaggingPlatform()
+    public void Runner_AllowsOtherPlatformsAfterForcedShazamNoMatch()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("if (config.ForceShazam || (hasShazamConfig && shazamConfig.ForceMatch))", source, StringComparison.Ordinal);
-        Assert.Contains("if (context.Plan.ForceShazamMatch", source, StringComparison.Ordinal);
         Assert.Contains("ShazamFailureKind.Infrastructure", source, StringComparison.Ordinal);
-        Assert.Contains("EmitSkippedStatus(context, shazamResult.Error ?? \"shazam identify failed\", shazamResult.UsedShazam)", source, StringComparison.Ordinal);
+        Assert.Contains("ShazamFailureKind.NoMatch", source, StringComparison.Ordinal);
+        Assert.Contains("new ShazamEnrichmentResult(false, \"shazam could not identify track\", false, ShazamFailureKind.NoMatch)", source, StringComparison.Ordinal);
+        Assert.Contains("continuing with {context.Platform}", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldShortCircuitOnShazamIdentifyFailure", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("EmitSkippedStatus(context, shazamResult.Error ?? \"shazam identify failed\", shazamResult.UsedShazam)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("EmitReviewStatus(\n                    context,\n                    shazamResult.Error ?? \"shazam identify failed\"", source, StringComparison.Ordinal);
     }
 

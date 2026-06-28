@@ -612,20 +612,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (shazamResult.IsFatal)
         {
-            if (shazamResult.FailureKind == ShazamFailureKind.Infrastructure)
-            {
-                throw new AutoTagRunPausedException(shazamResult.Error ?? "Shazam is unavailable.");
-            }
+            throw new AutoTagRunPausedException(shazamResult.Error ?? "Shazam is unavailable.");
+        }
 
-            if (context.Plan.ForceShazamMatch
-                || ShouldShortCircuitOnShazamIdentifyFailure(context.Platform, context.Plan.PlatformCount))
-            {
-                EmitSkippedStatus(context, shazamResult.Error ?? "shazam identify failed", shazamResult.UsedShazam);
-                return;
-            }
-
+        if (shazamResult.FailureKind == ShazamFailureKind.NoMatch
+            && !string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
+        {
             context.LogCallback(
-                $"onetagger_autotag: shazam identify failed for {Path.GetFileName(context.File)}; continuing with {context.Platform} fallback");
+                $"onetagger_autotag: shazam could not identify {Path.GetFileName(context.File)}; continuing with {context.Platform}");
         }
 
         var match = await ResolvePlatformMatchAsync(context, info, usedShazamForStatus);
@@ -651,16 +645,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return true;
-    }
-
-    private static bool ShouldShortCircuitOnShazamIdentifyFailure(string platform, int platformCount)
-    {
-        if (platformCount <= 1)
-        {
-            return true;
-        }
-
-        return string.Equals(platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<AutoTagMatchResult?> ResolvePlatformMatchAsync(
@@ -2731,12 +2715,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     ShazamFailureKind.Infrastructure);
             }
 
-            if (forceShazamMatch)
-            {
-                return new ShazamEnrichmentResult(false, "shazam could not identify track", true, ShazamFailureKind.NoMatch);
-            }
-
-            return new ShazamEnrichmentResult(false, null, false);
+            return forceShazamMatch
+                ? new ShazamEnrichmentResult(false, "shazam could not identify track", false, ShazamFailureKind.NoMatch)
+                : new ShazamEnrichmentResult(false, null, false);
         }
 
         if (!fromCache)
