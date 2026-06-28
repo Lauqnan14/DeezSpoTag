@@ -12,6 +12,7 @@ using System.Linq;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Security;
+using DeezSpoTag.Services.Apple;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace DeezSpoTag.Services.Download.Utils;
@@ -59,6 +60,7 @@ public class LyricsService
     private const string SpotifyProvider = "spotify";
     private const string LrclibProvider = "lrclib";
     private const string MusixmatchProvider = "musixmatch";
+    private const string PaxsenixBaseUrl = "https://lyrics.paxsenix.org";
     private const string ApplicationJson = "application/json";
     private const string LyricsClientName = "LyricsService";
     private const string UserAgentHeader = "User-Agent";
@@ -473,7 +475,7 @@ public class LyricsService
         Track track,
         CancellationToken cancellationToken)
     {
-        return ResolvePaxsenixLyricsFallbackAsync(track, AppleProvider, "Apple Music", cancellationToken);
+        return ResolvePaxsenixAppleLyricsByIdAsync(track, cancellationToken);
     }
 
     private Task<LyricsBase?> ResolvePaxsenixMusixmatchLyricsFallbackAsync(
@@ -510,6 +512,83 @@ public class LyricsService
         return lyrics.IsLoaded() ? lyrics : null;
     }
 
+    private async Task<LyricsBase?> ResolvePaxsenixAppleLyricsByIdAsync(
+        Track track,
+        CancellationToken cancellationToken)
+    {
+        var appleId = ResolvePaxsenixAppleTrackId(track);
+        if (string.IsNullOrWhiteSpace(appleId))
+        {
+            return null;
+        }
+
+        var url = $"{PaxsenixBaseUrl}/apple-music/lyrics?id={Uri.EscapeDataString(appleId)}&ttml=true";
+        var body = await FetchPaxsenixLyricsBodyAsync(url, AppleProvider, "Apple Music", cancellationToken);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        if (LooksLikeRawTtml(body))
+        {
+            return new LyricsSource { TtmlLyrics = body };
+        }
+
+        try
+        {
+            using var payload = JsonDocument.Parse(body);
+            var lyrics = ParsePaxsenixLyricsPayload(payload.RootElement);
+            return lyrics.IsLoaded() ? lyrics : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ResolvePaxsenixAppleTrackId(Track track)
+    {
+        if (string.Equals(track.Source, AppleProvider, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(track.SourceId)
+            && long.TryParse(track.SourceId.Trim(), out _))
+        {
+            return track.SourceId.Trim();
+        }
+
+        foreach (var value in EnumerateAppleIdentityCandidates(track))
+        {
+            var resolved = AppleIdParser.Resolve(value, value);
+            if (!string.IsNullOrWhiteSpace(resolved)
+                && long.TryParse(resolved, out _))
+            {
+                return resolved;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateAppleIdentityCandidates(Track track)
+    {
+        if (!string.IsNullOrWhiteSpace(track.DownloadURL))
+        {
+            yield return track.DownloadURL;
+        }
+
+        if (track.Urls is not { Count: > 0 })
+        {
+            yield break;
+        }
+
+        foreach (var key in new[] { "apple_track_id", "apple_id", "appleid", "apple", "apple_url", "source_url" })
+        {
+            if (track.Urls.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                yield return value;
+            }
+        }
+    }
+
     private async Task<JsonDocument?> FetchPaxsenixLyricsPayloadAsync(
         Track track,
         string artist,
@@ -518,17 +597,26 @@ public class LyricsService
         CancellationToken cancellationToken)
     {
         var title = track.Title?.Trim() ?? string.Empty;
-        var query = new Dictionary<string, string?>
-        {
-            ["provider"] = source,
-            ["source"] = source,
-            ["title"] = title,
-            ["artist"] = artist,
-            ["track"] = title,
-            ["track_name"] = title,
-            ["artist_name"] = artist,
-            ["q"] = $"{artist} {title}".Trim()
-        };
+        var query = source.Equals(MusixmatchProvider, StringComparison.OrdinalIgnoreCase)
+            ? new Dictionary<string, string?>
+            {
+                ["q"] = $"{artist} {title}".Trim(),
+                ["t"] = title,
+                ["a"] = artist,
+                ["format"] = "lrc",
+                ["v"] = "2"
+            }
+            : new Dictionary<string, string?>
+            {
+                ["provider"] = source,
+                ["source"] = source,
+                ["title"] = title,
+                ["artist"] = artist,
+                ["track"] = title,
+                ["track_name"] = title,
+                ["artist_name"] = artist,
+                ["q"] = $"{artist} {title}".Trim()
+            };
         if (!string.IsNullOrWhiteSpace(track.Album?.Title))
         {
             query["album"] = track.Album.Title;
@@ -537,19 +625,49 @@ public class LyricsService
         if (track.Duration > 0)
         {
             query["duration"] = track.Duration.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (source.Equals(MusixmatchProvider, StringComparison.OrdinalIgnoreCase))
+            {
+                query["d"] = track.Duration.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
         }
 
         var queryString = string.Join("&", query
             .Where(static pair => !string.IsNullOrWhiteSpace(pair.Value))
             .Select(static pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value!)}"));
-        var url = $"https://lyrics.paxsenix.org/lyrics?{queryString}";
+        var endpoint = source.Equals(MusixmatchProvider, StringComparison.OrdinalIgnoreCase)
+            ? "musixmatch/lyrics"
+            : "lyrics";
+        var url = $"{PaxsenixBaseUrl}/{endpoint}?{queryString}";
 
+        var body = await FetchPaxsenixLyricsBodyAsync(url, source, sourceName, cancellationToken);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonDocument.Parse(body);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogDebug(ex, "Paxsenix {Source} lyrics fallback returned non-JSON payload.", sourceName);
+            return null;
+        }
+    }
+
+    private async Task<string?> FetchPaxsenixLyricsBodyAsync(
+        string url,
+        string source,
+        string sourceName,
+        CancellationToken cancellationToken)
+    {
         try
         {
             using var client = _httpClientFactory.CreateClient(LyricsClientName);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation(UserAgentHeader, DefaultSpotifyWebPlayerUserAgent);
-            request.Headers.TryAddWithoutValidation("Accept", ApplicationJson);
+            request.Headers.TryAddWithoutValidation("Accept", $"{ApplicationJson}, text/plain, application/xml, text/xml");
 
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
@@ -558,8 +676,7 @@ public class LyricsService
                 return null;
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            return await response.Content.ReadAsStringAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -673,7 +790,7 @@ public class LyricsService
     private static bool IsTtmlPropertyName(string name)
     {
         var normalized = NormalizeJsonName(name);
-        return normalized is "ttml" or "ttmllyrics" or "ttmlpayload" or "applettml";
+        return normalized is "ttml" or "ttmllyrics" or "ttmlpayload" or "applettml" or "content";
     }
 
     private static bool IsSyncedLyricsPropertyName(string name)
@@ -694,6 +811,14 @@ public class LyricsService
     private static bool LooksLikeTtml(string value)
         => value.Contains("<tt", StringComparison.OrdinalIgnoreCase)
            && value.Contains("</tt>", StringComparison.OrdinalIgnoreCase);
+
+    private static bool LooksLikeRawTtml(string value)
+    {
+        var trimmed = value.TrimStart();
+        return LooksLikeTtml(value)
+               && (trimmed.StartsWith("<", StringComparison.Ordinal)
+                   || trimmed.StartsWith("<?xml", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static List<SynchronizedLyric> ParseLrcLines(string value)
     {

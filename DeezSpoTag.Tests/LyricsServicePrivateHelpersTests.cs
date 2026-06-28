@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
@@ -326,6 +327,24 @@ public sealed class LyricsServicePrivateHelpersTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void ParsePaxsenixLyricsPayload_ExtractsTtmlFromAppleContentEnvelope()
+    {
+        using var doc = JsonDocument.Parse("""
+            {
+              "type": "TTML",
+              "content": "<?xml version='1.0' encoding='utf-8'?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"00:00:01.000\">Apple public line</p></div></body></tt>"
+            }
+            """);
+
+        var lyrics = InvokeStatic<LyricsBase>("ParsePaxsenixLyricsPayload", doc.RootElement);
+
+        Assert.NotNull(lyrics.TtmlLyrics);
+        Assert.StartsWith("<?xml", lyrics.TtmlLyrics);
+        Assert.Contains("Apple public line", lyrics.TtmlLyrics);
+        Assert.DoesNotContain("\"type\"", lyrics.TtmlLyrics);
     }
 
     [Fact]
