@@ -1923,8 +1923,9 @@ async function initLibraryFolderDestinationDropdowns() {
     }
 
     try {
-        const [allFoldersResponse, videoFoldersResponse] = await Promise.all([
+        const [allFoldersResponse, atmosFoldersResponse, videoFoldersResponse] = await Promise.all([
             fetch('/api/library/folders'),
+            fetch('/api/library/folders?downloadOnly=true&contentType=atmos'),
             fetch('/api/library/folders?downloadOnly=true&contentType=video')
         ]);
         if (!allFoldersResponse.ok) {
@@ -1938,17 +1939,26 @@ async function initLibraryFolderDestinationDropdowns() {
         const videoFolders = videoFoldersResponse.ok
             ? await videoFoldersResponse.json()
             : [];
+        const atmosFolders = atmosFoldersResponse.ok
+            ? await atmosFoldersResponse.json()
+            : [];
         const validVideoFolders = Array.isArray(videoFolders) ? videoFolders : [];
+        const validAtmosFolders = Array.isArray(atmosFolders) ? atmosFolders : [];
 
         const sorted = folders
             .filter(folder => folder && folder.id != null && folder.displayName)
             .slice()
             .sort((a, b) => String(a.displayName).localeCompare(String(b.displayName), undefined, { sensitivity: 'base' }));
 
-        const buildOptionsHtml = () => {
+        const sortedAtmos = validAtmosFolders
+            .filter(folder => folder && folder.id != null && folder.displayName && folder.enabled !== false)
+            .slice()
+            .sort((a, b) => String(a.displayName).localeCompare(String(b.displayName), undefined, { sensitivity: 'base' }));
+
+        const buildOptionsHtml = (items = sorted) => {
             return [
                 '<option value="">(Use request destination)</option>',
-                ...sorted.map(folder =>
+                ...items.map(folder =>
                     `<option value="${String(folder.id)}">${escapeHtml(String(folder.displayName))}</option>`)
             ].join('');
         };
@@ -1956,17 +1966,17 @@ async function initLibraryFolderDestinationDropdowns() {
         const currentPrimary = primarySelect ? ((primarySelect.value || primarySelect.dataset.pendingValue || '').trim()) : '';
         const currentSecondary = secondarySelect ? ((secondarySelect.value || secondarySelect.dataset.pendingValue || '').trim()) : '';
         const currentVideo = videoSelect ? (videoSelect.value || '').trim() : '';
-        const hasFolderIdOption = (value) => {
+        const hasFolderIdOption = (value, items = sorted) => {
             const normalized = String(value ?? '').trim();
             if (!normalized) {
                 return false;
             }
 
-            return sorted.some(folder => String(folder.id).trim() === normalized);
+            return items.some(folder => String(folder.id).trim() === normalized);
         };
-        const appendCurrentFolderOption = (select, value, labelPrefix) => {
+        const appendCurrentFolderOption = (select, value, labelPrefix, items = sorted) => {
             const normalized = String(value ?? '').trim();
-            if (!select || !normalized || hasFolderIdOption(normalized)) {
+            if (!select || !normalized || hasFolderIdOption(normalized, items)) {
                 return;
             }
 
@@ -1981,8 +1991,8 @@ async function initLibraryFolderDestinationDropdowns() {
             appendCurrentFolderOption(primarySelect, currentPrimary, 'Current folder');
         }
         if (secondarySelect) {
-            secondarySelect.innerHTML = buildOptionsHtml();
-            appendCurrentFolderOption(secondarySelect, currentSecondary, 'Current Atmos folder');
+            secondarySelect.innerHTML = buildOptionsHtml(sortedAtmos);
+            appendCurrentFolderOption(secondarySelect, currentSecondary, 'Current Atmos folder', sortedAtmos);
         }
         if (videoSelect) {
             const videoOptions = [
