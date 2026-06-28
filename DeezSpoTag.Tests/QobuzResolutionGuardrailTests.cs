@@ -79,6 +79,17 @@ public sealed class QobuzResolutionGuardrailTests
     }
 
     [Fact]
+    public void AutoMapping_DoesNotAcceptQobuzWithoutResolvableUrl()
+    {
+        var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
+
+        Assert.Contains(
+            "candidateEngine is DeezerPlatform or QobuzPlatform or TidalPlatform or AmazonPlatform or ApplePlatform",
+            downloadIntentService,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TidalAtmosSecondaryQueue_IsProofOnly()
     {
         var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");

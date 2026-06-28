@@ -1225,8 +1225,14 @@ public sealed class DownloadIntentService
                 .ToList();
         }
 
-        return DownloadSourceOrder.CollapseAutoSourcesByService(
-            BuildFallbackPlanSources(autoSources, settings, engine, quality));
+        var strict = UseStrictQualityFallback(settings, engine, quality);
+        return DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            autoSources,
+            engine,
+            quality,
+            strict,
+            includeDeezer: true);
     }
 
     private static bool IsAtmosSourceRequest(string? contentType, string? quality)
@@ -2351,7 +2357,7 @@ public sealed class DownloadIntentService
         }
 
         var missingUrl = string.IsNullOrWhiteSpace(candidate.SourceUrl)
-            && candidateEngine is DeezerPlatform or TidalPlatform or AmazonPlatform or ApplePlatform;
+            && candidateEngine is DeezerPlatform or QobuzPlatform or TidalPlatform or AmazonPlatform or ApplePlatform;
         if (missingUrl)
         {
             reason = "missing_url";
@@ -4733,34 +4739,6 @@ public sealed class DownloadIntentService
         }
     }
 
-    private static List<string> BuildFallbackPlanSources(
-        List<string> autoSources,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        string engine,
-        string? requestedQuality)
-    {
-        var planSources = new List<string>();
-        var strict = UseStrictQualityFallback(settings, engine, requestedQuality);
-        var isAuto = string.Equals(settings.Service, AutoService, StringComparison.OrdinalIgnoreCase);
-
-        if (isAuto)
-        {
-            planSources.AddRange(
-                DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: requestedQuality));
-        }
-        else
-        {
-            AppendEngineFallbackSources(planSources, autoSources, settings, engine, requestedQuality, strict);
-        }
-
-        if (planSources.Count == 0 && autoSources.Count > 0)
-        {
-            planSources.AddRange(autoSources);
-        }
-
-        return DownloadSourceOrder.CollapseAutoSourcesByService(planSources);
-    }
-
     private List<string> PrioritizeAutoSourcesByHealth(
         IEnumerable<string> sources,
         DeezSpoTagSettings settings,
@@ -4970,40 +4948,6 @@ public sealed class DownloadIntentService
         if (string.IsNullOrWhiteSpace(intent.DeezerId) && !string.IsNullOrWhiteSpace(link?.DeezerId))
         {
             intent.DeezerId = link.DeezerId;
-        }
-    }
-
-    private static void AppendEngineFallbackSources(
-        List<string> planSources,
-        IReadOnlyList<string> autoSources,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        string engine,
-        string? requestedQuality,
-        bool strict)
-    {
-        if (!string.IsNullOrWhiteSpace(engine))
-        {
-            planSources.AddRange(DownloadSourceOrder.ResolveEngineQualitySources(settings, engine, requestedQuality, strict));
-        }
-
-        var seenEngines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(engine))
-        {
-            seenEngines.Add(engine);
-        }
-
-        foreach (var decoded in autoSources.Select(DownloadSourceOrder.DecodeAutoSource))
-        {
-            if (string.IsNullOrWhiteSpace(decoded.Source) || seenEngines.Contains(decoded.Source))
-            {
-                continue;
-            }
-
-            seenEngines.Add(decoded.Source);
-            var preferredQuality = string.IsNullOrWhiteSpace(decoded.Quality)
-                ? ResolvePreferredQuality(settings, decoded.Source)
-                : decoded.Quality;
-            planSources.AddRange(DownloadSourceOrder.ResolveEngineQualitySources(settings, decoded.Source, preferredQuality, strict));
         }
     }
 

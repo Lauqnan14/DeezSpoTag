@@ -178,6 +178,52 @@ public static class DownloadSourceOrder
             .ToList();
     }
 
+    public static List<string> ResolveFallbackPlanSources(
+        DeezSpoTagSettings settings,
+        IReadOnlyList<string> autoSources,
+        string engine,
+        string? requestedQuality,
+        bool strict,
+        bool includeDeezer)
+    {
+        var service = settings.Service?.Trim().ToLowerInvariant();
+        if (string.Equals(service, AutoService, StringComparison.OrdinalIgnoreCase))
+        {
+            return CollapseAutoSourcesByService(
+                ResolveQualityAutoSources(settings, includeDeezer, requestedQuality));
+        }
+
+        var planSources = new List<string>();
+        if (!string.IsNullOrWhiteSpace(engine))
+        {
+            planSources.AddRange(ResolveEngineQualitySources(settings, engine, requestedQuality, strict));
+        }
+
+        var seenEngines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(engine))
+        {
+            seenEngines.Add(engine);
+        }
+
+        foreach (var decoded in autoSources.Select(DecodeAutoSource))
+        {
+            if (string.IsNullOrWhiteSpace(decoded.Source) || seenEngines.Contains(decoded.Source))
+            {
+                continue;
+            }
+
+            seenEngines.Add(decoded.Source);
+            planSources.AddRange(ResolveEngineQualitySources(settings, decoded.Source, decoded.Quality, strict));
+        }
+
+        if (planSources.Count == 0 && autoSources.Count > 0)
+        {
+            planSources.AddRange(autoSources);
+        }
+
+        return CollapseAutoSourcesByService(planSources);
+    }
+
     public static DownloadEngineOrderSettings NormalizeDownloadEngineOrderSettings(DownloadEngineOrderSettings? configured)
     {
         var defaults = DownloadEngineOrderSettings.CreateDefault();

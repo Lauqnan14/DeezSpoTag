@@ -13,15 +13,17 @@ namespace DeezSpoTag.Tests;
 public sealed class DownloadIntentFallbackParityTests
 {
     [Fact]
-    public void BuildFallbackPlanSources_UsesRequestedTargetQuality_ForAutoService()
+    public void ResolveFallbackPlanSources_UsesRequestedTargetQuality_ForAutoService()
     {
         var settings = CreateAutoSettings();
 
-        var resolved = InvokeBuildFallbackPlanSources(
-            new List<string> { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "deezer|3" },
+        var resolved = DownloadSourceOrder.ResolveFallbackPlanSources(
             settings,
+            new List<string> { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "deezer|3" },
             "qobuz",
-            "3");
+            "3",
+            strict: false,
+            includeDeezer: true);
 
         Assert.Equal("deezer|3", resolved[0]);
         Assert.Contains("deezer|3", resolved);
@@ -30,14 +32,16 @@ public sealed class DownloadIntentFallbackParityTests
     }
 
     [Fact]
-    public void BuildFallbackPlanSources_PreservesCrossEngineOrder_WhenAvailabilityIsKnown()
+    public void ResolveFallbackPlanSources_PreservesCrossEngineOrder_WhenAvailabilityIsKnown()
     {
         var settings = CreateAutoSettings();
-        var resolved = InvokeBuildFallbackPlanSources(
-            new List<string> { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "deezer|3" },
+        var resolved = DownloadSourceOrder.ResolveFallbackPlanSources(
             settings,
+            new List<string> { "qobuz|6", "tidal|LOSSLESS", "apple|ALAC", "deezer|3" },
             "qobuz",
-            requestedQuality: null);
+            requestedQuality: null,
+            strict: false,
+            includeDeezer: true);
 
         Assert.Contains("qobuz|6", resolved);
         Assert.Contains("tidal|LOSSLESS", resolved);
@@ -147,22 +151,6 @@ public sealed class DownloadIntentFallbackParityTests
         }
 
         return settings;
-    }
-
-    private static List<string> InvokeBuildFallbackPlanSources(
-        IReadOnlyList<string> autoSources,
-        DeezSpoTagSettings settings,
-        string engine,
-        string? requestedQuality)
-    {
-        var method = typeof(DownloadIntentService).GetMethod(
-            "BuildFallbackPlanSources",
-            BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(method);
-
-        var result = method!.Invoke(null, new object?[] { autoSources.ToList(), settings, engine, requestedQuality });
-        Assert.NotNull(result);
-        return Assert.IsAssignableFrom<List<string>>(result);
     }
 
     private static void InvokeNormalizeEnqueueSettings(DeezSpoTagSettings settings)
