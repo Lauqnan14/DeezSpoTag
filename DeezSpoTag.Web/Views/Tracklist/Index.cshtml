@@ -359,8 +359,8 @@
 
 .tracks-table col.col-number { width: 60px; }
 .tracks-table col.col-title { width: 420px; }
-.tracks-table col.col-quality { width: 170px; }
-.tracks-table col.col-duration { width: 72px; }
+.tracks-table col.col-quality { width: 230px; }
+.tracks-table col.col-duration { width: 84px; }
 .tracks-table col.col-availability { width: 240px; }
 .tracks-table col.col-location-status { width: 150px; }
 .tracks-table col.col-actions { width: 72px; }
@@ -782,16 +782,22 @@
     -webkit-mask-image: url("/images/availability/apple.svg");
 }
 
-.track-quality { width: 170px; }
-.quality-tags { display: inline-flex; align-items: center; gap: 8px; }
+.track-quality { width: 230px; }
+.quality-tags {
+    display: flex;
+    align-items: center;
+    max-width: 100%;
+}
 .quality-strip {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 8px;
     color: var(--text-primary);
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.15px;
+    max-width: 100%;
+    min-width: 0;
 }
 .quality-strip .quality-icon {
     display: inline-block;
@@ -812,6 +818,7 @@
 }
 .quality-strip .quality-icon.atmos-icon {
     width: 62px;
+    min-width: 62px;
     height: 18px;
     mask-image: url("/images/apple/atmos.svg");
     -webkit-mask-image: url("/images/apple/atmos.svg");
@@ -819,6 +826,7 @@
 .quality-strip .quality-text {
     color: var(--text-primary);
     white-space: nowrap;
+    min-width: 0;
 }
 
 .track-actions {
