@@ -8,6 +8,7 @@ using System.Diagnostics;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Runtime;
+using DeezSpoTag.Services.Download.Queue;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -254,6 +255,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
         CleanupStaleState(allItems);
         await SeedPersistedLastRunsAsync(allItems, repository, stoppingToken);
+        await RecoverInvalidPendingWatchClaimsAsync(repository, serviceProvider, stoppingToken);
         var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
             playlistItems,
             settings,
@@ -330,46 +332,10 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
 
         var schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
-        var staleSchedulerState = IsStaleActivePlaylistState(schedulerState, settings)
-            ? schedulerState
-            : null;
-        if (staleSchedulerState != null)
-        {
-            _logger.LogWarning(
-                "Watchlist active playlist state was stale and will be released. source={Source}, sourceId={SourceId}, activeStartedUtc={ActiveStartedUtc}, lastProgressUtc={LastProgressUtc}, zeroQueueStreak={ZeroQueueStreak}",
-                staleSchedulerState.ActiveSource,
-                staleSchedulerState.ActiveSourceId,
-                staleSchedulerState.ActiveStartedUtc,
-                staleSchedulerState.LastProgressUtc,
-                staleSchedulerState.ZeroQueueStreak);
-            await SaveSchedulerStateAsync(
-                repository,
-                activeSource: null,
-                activeSourceId: null,
-                activeStartedUtc: null,
-                lastProgressUtc: DateTimeOffset.UtcNow,
-                zeroQueueStreak: 0,
-                stoppingToken);
-            schedulerState = null;
-        }
-
-        var activeItem = ResolveActivePlaylistItem(playlistItems, schedulerState);
+        var activeItem = ResolveInitialPlaylistItem(playlistItems, schedulerState, settings);
         if (activeItem == null)
         {
-            activeItem = ResolveNextPlaylistItem(playlistItems);
-            if (activeItem == null)
-            {
-                return new PlaylistRunResult(AbortedRun: false);
-            }
-
-            await SaveSchedulerStateAsync(
-                repository,
-                activeItem.Source,
-                activeItem.Playlist?.SourceId,
-                activeStartedUtc: DateTimeOffset.UtcNow,
-                lastProgressUtc: schedulerState?.LastProgressUtc,
-                zeroQueueStreak: 0,
-                stoppingToken);
+            return new PlaylistRunResult(AbortedRun: false);
         }
 
         var failFastAbort = false;
@@ -475,10 +441,10 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     stoppingToken);
                 await SaveSchedulerStateAsync(
                     repository,
-                    activeItem.Source,
-                    activeItem.Playlist?.SourceId,
-                    schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
-                    schedulerState?.LastProgressUtc,
+                    activeSource: null,
+                    activeSourceId: null,
+                    activeStartedUtc: null,
+                    lastProgressUtc: DateTimeOffset.UtcNow,
                     zeroQueueStreak: 0,
                     stoppingToken);
                 break;
@@ -494,10 +460,10 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     stoppingToken);
                 await SaveSchedulerStateAsync(
                     repository,
-                    activeItem.Source,
-                    activeItem.Playlist?.SourceId,
-                    schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
-                    schedulerState?.LastProgressUtc,
+                    activeSource: null,
+                    activeSourceId: null,
+                    activeStartedUtc: null,
+                    lastProgressUtc: DateTimeOffset.UtcNow,
                     zeroQueueStreak: 0,
                     stoppingToken);
                 break;
@@ -512,19 +478,19 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                 zeroQueueStreak = (schedulerState?.ZeroQueueStreak ?? 0) + 1;
                 await SaveSchedulerStateAsync(
                     repository,
-                    activeItem.Source,
-                    activeItem.Playlist?.SourceId,
-                    schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
-                    schedulerState?.LastProgressUtc,
+                    activeSource: null,
+                    activeSourceId: null,
+                    activeStartedUtc: null,
+                    lastProgressUtc: schedulerState?.LastProgressUtc,
                     zeroQueueStreak,
                     stoppingToken);
             }
 
             await SaveSchedulerStateAsync(
                 repository,
-                activeItem.Source,
-                activeItem.Playlist?.SourceId,
-                schedulerState?.ActiveStartedUtc ?? DateTimeOffset.UtcNow,
+                activeSource: null,
+                activeSourceId: null,
+                activeStartedUtc: null,
                 queueProgressed ? DateTimeOffset.UtcNow : schedulerState?.LastProgressUtc,
                 zeroQueueStreak: queueProgressed ? 0 : zeroQueueStreak,
                 stoppingToken);
@@ -538,11 +504,6 @@ public sealed class PlaylistWatchHostedService : BackgroundService
                     Fingerprint: null,
                     FailureCount: 0),
                 stoppingToken);
-
-            if (decision == PlaylistAdvanceDecision.StopRunKeepActive)
-            {
-                break;
-            }
 
             if (decision == PlaylistAdvanceDecision.StopRunClearActive)
             {
@@ -583,11 +544,6 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return PlaylistAdvanceDecision.Advance;
         }
 
-        if (result.KeepActivePlaylist)
-        {
-            return PlaylistAdvanceDecision.StopRunKeepActive;
-        }
-
         if (string.Equals(
                 result.QueueStopReason,
                 PlaylistWatchService.WatchQueueStopReason.PreviousWatchlistRunActive.ToString(),
@@ -603,7 +559,7 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
         if (IsBlockingPlaylistStopReason(result.QueueStopReason))
         {
-            return PlaylistAdvanceDecision.StopRunKeepActive;
+            return PlaylistAdvanceDecision.StopRunClearActive;
         }
 
         if (result.RemainingQueueableTracks <= 0)
@@ -866,6 +822,76 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         }
     }
 
+    private async Task RecoverInvalidPendingWatchClaimsAsync(
+        LibraryRepository repository,
+        IServiceProvider serviceProvider,
+        CancellationToken cancellationToken)
+    {
+        var pendingClaims = await repository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken);
+        if (pendingClaims.Count == 0)
+        {
+            return;
+        }
+
+        var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        var recoveredCount = 0;
+        foreach (var claim in pendingClaims)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var queueItem = await queueRepository.GetByUuidAsync(claim.QueueUuid, cancellationToken);
+            if (IsPendingWatchClaimStillOwnedByQueue(queueItem))
+            {
+                continue;
+            }
+
+            await repository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                claim.QueueUuid,
+                "failed",
+                cancellationToken);
+            await repository.UpdatePlaylistWatchTrackStatusAsync(
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                "failed",
+                cancellationToken);
+            recoveredCount++;
+        }
+
+        if (recoveredCount > 0 && _logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Recovered {Count} stale pending watchlist download claim(s) before playlist scheduling.",
+                recoveredCount);
+        }
+    }
+
+    private static bool IsPendingWatchClaimStillOwnedByQueue(DownloadQueueItem? queueItem)
+    {
+        if (queueItem == null)
+        {
+            return false;
+        }
+
+        var status = NormalizeStatus(queueItem.Status);
+        if (status is "queued" or "resolving" or "preparing" or "prepared" or "inqueue" or "running" or "downloading" or "paused" or "retrying")
+        {
+            return true;
+        }
+
+        if (status is not "completed" and not "complete")
+        {
+            return false;
+        }
+
+        var moveStatus = NormalizeStatus(queueItem.FinalizationStatus);
+        var enrichmentStatus = NormalizeStatus(queueItem.EnrichmentStatus);
+        return moveStatus is "pending" or "running"
+            || enrichmentStatus is "pending" or "running";
+    }
+
+    private static string NormalizeStatus(string? status)
+        => string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();
+
     private static async Task<DateTimeOffset?> ResolvePersistedLastCheckedUtcAsync(
         WatchItem item,
         LibraryRepository repository,
@@ -888,30 +914,25 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         return state?.LastCheckedUtc;
     }
 
-    private static WatchItem? ResolveActivePlaylistItem(
+    private static WatchItem? ResolveInitialPlaylistItem(
         IReadOnlyList<WatchItem> playlistItems,
-        WatchlistSchedulerStateDto? state)
+        WatchlistSchedulerStateDto? state,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
         if (playlistItems.Count == 0)
         {
             return null;
         }
 
-        if (state == null
-            || string.IsNullOrWhiteSpace(state.ActiveSource)
-            || string.IsNullOrWhiteSpace(state.ActiveSourceId))
+        if (state != null && IsRecentExplicitPlaylistFocus(state, settings))
         {
-            return ResolveNextPlaylistItem(playlistItems);
+            return ResolvePlaylistItemFromState(playlistItems, state) ?? ResolveNextPlaylistItem(playlistItems);
         }
 
-        return playlistItems.FirstOrDefault(item =>
-            item.Kind == PlaylistKind
-            && string.Equals(item.Source, NormalizeSource(state.ActiveSource), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(item.Playlist?.SourceId, state.ActiveSourceId, StringComparison.OrdinalIgnoreCase))
-            ?? ResolveNextPlaylistItem(playlistItems);
+        return ResolveNextPlaylistItem(playlistItems);
     }
 
-    private static bool IsStaleActivePlaylistState(
+    private static bool IsRecentExplicitPlaylistFocus(
         WatchlistSchedulerStateDto? state,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {
@@ -922,18 +943,24 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return false;
         }
 
-        var now = DateTimeOffset.UtcNow;
-        var intervalSeconds = Math.Max(1, settings.WatchPollIntervalSeconds);
-        var staleWindow = TimeSpan.FromSeconds(Math.Max(900, intervalSeconds * 3));
-        var progressReference = state.LastProgressUtc ?? state.ActiveStartedUtc;
-        if (progressReference.HasValue && now - progressReference.Value > staleWindow)
+        if (state.LastProgressUtc.HasValue || !state.ActiveStartedUtc.HasValue)
         {
-            return true;
+            return false;
         }
 
-        return state.ZeroQueueStreak >= 3
-            && state.ActiveStartedUtc.HasValue
-            && now - state.ActiveStartedUtc.Value > TimeSpan.FromSeconds(Math.Max(60, intervalSeconds));
+        var now = DateTimeOffset.UtcNow;
+        var focusWindow = TimeSpan.FromSeconds(Math.Max(30, Math.Min(300, settings.WatchPollIntervalSeconds)));
+        return now - state.ActiveStartedUtc.Value <= focusWindow;
+    }
+
+    private static WatchItem? ResolvePlaylistItemFromState(
+        IReadOnlyList<WatchItem> playlistItems,
+        WatchlistSchedulerStateDto state)
+    {
+        return playlistItems.FirstOrDefault(item =>
+            item.Kind == PlaylistKind
+            && string.Equals(item.Source, NormalizeSource(state.ActiveSource), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(item.Playlist?.SourceId, state.ActiveSourceId, StringComparison.OrdinalIgnoreCase));
     }
 
     private static WatchItem? ResolveNextPlaylistItem(IReadOnlyList<WatchItem> playlistItems)
@@ -1196,7 +1223,6 @@ public sealed class PlaylistWatchHostedService : BackgroundService
     private enum PlaylistAdvanceDecision
     {
         Advance,
-        StopRunKeepActive,
         StopRunClearActive
     }
 

@@ -8017,6 +8017,28 @@ ORDER BY track_source_id, queue_uuid;";
         return claims;
     }
 
+    public async Task<IReadOnlyList<PlaylistWatchDownloadClaimDto>> GetAllPlaylistWatchDownloadClaimsAsync(
+        string? status = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source, source_id, track_source_id, queue_uuid, destination_folder_id, status, updated_at
+FROM playlist_watch_download_claim
+WHERE (@status IS NULL OR lower(status) = lower(@status))
+ORDER BY source, source_id, track_source_id, queue_uuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("status", string.IsNullOrWhiteSpace(status) ? DBNull.Value : status.Trim());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var claims = new List<PlaylistWatchDownloadClaimDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            claims.Add(await ReadPlaylistWatchDownloadClaimAsync(reader, cancellationToken));
+        }
+
+        return claims;
+    }
+
     private static async Task<PlaylistWatchDownloadClaimDto> ReadPlaylistWatchDownloadClaimAsync(
         SqliteDataReader reader,
         CancellationToken cancellationToken)

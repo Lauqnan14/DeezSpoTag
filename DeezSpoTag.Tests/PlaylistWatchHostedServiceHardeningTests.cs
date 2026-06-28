@@ -347,6 +347,62 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RunOnce_StalePlaylistFocus_DoesNotOverridePriorityOrder()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchMaxTracksPerPlaylistCheck = 1;
+        _settingsService.SaveSettings(settings);
+
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-stale-focus-target", new PlaylistWatchlistMetadataInput("Stale Focus Target", null, null, null));
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-priority-first", new PlaylistWatchlistMetadataInput("Priority First", null, null, null));
+        await _repository.UpsertWatchlistSchedulerStateAsync(
+            new LibraryRepository.WatchlistSchedulerStateUpsertInput(
+                "playlist",
+                "unsupported",
+                "pl-stale-focus-target",
+                DateTimeOffset.UtcNow.AddHours(-2),
+                null,
+                0),
+            CancellationToken.None);
+
+        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        await InvokeRunOnceAsync(hosted);
+
+        var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-priority-first", CancellationToken.None);
+        var staleFocusState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-stale-focus-target", CancellationToken.None);
+        Assert.NotNull(firstState?.LastCheckedUtc);
+        Assert.Null(staleFocusState?.LastCheckedUtc);
+    }
+
+    [Fact]
+    public async Task RunOnce_RecentExplicitPlaylistFocus_CanOverridePriorityOrderOnce()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchMaxTracksPerPlaylistCheck = 1;
+        _settingsService.SaveSettings(settings);
+
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-explicit-focus-target", new PlaylistWatchlistMetadataInput("Explicit Focus Target", null, null, null));
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-priority-first", new PlaylistWatchlistMetadataInput("Priority First", null, null, null));
+        await _repository.UpsertWatchlistSchedulerStateAsync(
+            new LibraryRepository.WatchlistSchedulerStateUpsertInput(
+                "playlist",
+                "unsupported",
+                "pl-explicit-focus-target",
+                DateTimeOffset.UtcNow,
+                null,
+                0),
+            CancellationToken.None);
+
+        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        await InvokeRunOnceAsync(hosted);
+
+        var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-priority-first", CancellationToken.None);
+        var explicitFocusState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-explicit-focus-target", CancellationToken.None);
+        Assert.Null(firstState?.LastCheckedUtc);
+        Assert.NotNull(explicitFocusState?.LastCheckedUtc);
+    }
+
+    [Fact]
     public async Task GetAll_RejectsBulkSourceRefreshAndKeepsListCacheOnly()
     {
         await _repository.AddPlaylistWatchlistAsync("spotify", "pl-cache-only", new PlaylistWatchlistMetadataInput("Cache Only", null, null, null));

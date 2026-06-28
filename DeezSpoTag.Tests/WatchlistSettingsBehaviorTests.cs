@@ -315,23 +315,26 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void PlaylistWatch_ActivePlaylistRetentionRequiresProgressAndBudgetStop()
+    public void PlaylistWatch_ActivePlaylistRetentionCannotOverridePriorityOrder()
     {
         var repoRoot = ResolveRepoRoot();
         var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
         var hostedSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchHostedService.cs"));
 
-        Assert.Contains("if (queueResult.RemainingQueueableCount <= 0)", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("if (queueResult.QueuedCount <= 0)", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldKeepPlaylistActive", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("KeepActivePlaylist", serviceSource, StringComparison.Ordinal);
         Assert.Contains("RunBudget", serviceSource, StringComparison.Ordinal);
         Assert.Contains("ResolutionBudget", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("if (result.QueuedTracks <= 0)", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (result.KeepActivePlaylist)", hostedSource, StringComparison.Ordinal);
         Assert.Contains("IsBlockingPlaylistStopReason(result.QueueStopReason)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("return PlaylistAdvanceDecision.StopRunClearActive;", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WatchQueueStopReason.DownloadGate.ToString()", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WatchQueueStopReason.TrackDeferred.ToString()", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("IsStaleActivePlaylistState", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("state.ZeroQueueStreak >= 3", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("Watchlist active playlist state was stale and will be released.", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveInitialPlaylistItem", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("IsRecentExplicitPlaylistFocus", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("state.LastProgressUtc.HasValue", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("return ResolveNextPlaylistItem(playlistItems);", hostedSource, StringComparison.Ordinal);
     }
 
     [Fact]

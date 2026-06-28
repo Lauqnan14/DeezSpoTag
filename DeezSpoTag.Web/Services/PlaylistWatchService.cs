@@ -225,8 +225,7 @@ public sealed class PlaylistWatchService
         string? FailureFingerprint = null,
         string? FailureMessage = null,
         string? QueueStopReason = null,
-        int RemainingQueueableTracks = 0,
-        bool KeepActivePlaylist = false);
+        int RemainingQueueableTracks = 0);
 
     public enum WatchQueueStopReason
     {
@@ -436,8 +435,7 @@ public sealed class PlaylistWatchService
                 0,
                 null,
                 QueueStopReason: WatchQueueStopReason.Completed.ToString(),
-                RemainingQueueableTracks: 0,
-                KeepActivePlaylist: false);
+                RemainingQueueableTracks: 0);
         }
 
         await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
@@ -658,24 +656,7 @@ public sealed class PlaylistWatchService
             FailureFingerprint: queueResult.FirstSystemicFailureFingerprint,
             FailureMessage: queueResult.FirstFailureMessage,
             QueueStopReason: queueResult.StopReason.ToString(),
-            RemainingQueueableTracks: queueResult.RemainingQueueableCount,
-            KeepActivePlaylist: ShouldKeepPlaylistActive(queueResult));
-    }
-
-    private static bool ShouldKeepPlaylistActive(QueueWatchResult queueResult)
-    {
-        if (queueResult.RemainingQueueableCount <= 0)
-        {
-            return false;
-        }
-
-        if (queueResult.QueuedCount <= 0)
-        {
-            return false;
-        }
-
-        return queueResult.StopReason is WatchQueueStopReason.RunBudget
-            or WatchQueueStopReason.ResolutionBudget;
+            RemainingQueueableTracks: queueResult.RemainingQueueableCount);
     }
 
     private async Task<PlaylistSyncResult> SyncPlaylistAsync(
