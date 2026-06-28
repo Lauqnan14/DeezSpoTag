@@ -111,11 +111,72 @@ public sealed class EngineAudioPostDownloadHelperFilenameStemTests
         Assert.Equal("literal:Nandy - Dah! (feat. Alikiba)", context.FilenameFormat);
     }
 
+    [Fact]
+    public void BuildTrackContext_StripsTidalAtmosVersionFromAlbumFolderOnly()
+    {
+        var settings = CreateSettings();
+        settings.DownloadLocation = "/downloads";
+        settings.CreateAlbumFolder = true;
+        settings.AlbumNameTemplate = "%album%";
+        var processor = new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance);
+        var payload = new TidalQueueItem
+        {
+            CollectionType = "album",
+            Title = "break da law",
+            Artist = "21 Savage",
+            Album = "i am > i was (Dolby Atmos Version)",
+            Quality = "DOLBY_ATMOS",
+            TrackNumber = 2,
+            Position = 2
+        };
+
+        var context = EngineAudioPostDownloadHelper.BuildTrackContext(
+            payload,
+            settings,
+            processor,
+            "tidal",
+            payload.TidalId);
+
+        Assert.Equal("/downloads/i am _ i was", context.PathResult.FilePath);
+        Assert.Equal("i am > i was (Dolby Atmos Version)", context.Track.Album?.Title);
+    }
+
+    [Fact]
+    public void BuildTrackContext_KeepsTidalStereoAlbumFolderAsProvided()
+    {
+        var settings = CreateSettings();
+        settings.DownloadLocation = "/downloads";
+        settings.CreateAlbumFolder = true;
+        settings.AlbumNameTemplate = "%album%";
+        var processor = new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance);
+        var payload = new TidalQueueItem
+        {
+            CollectionType = "album",
+            Title = "break da law",
+            Artist = "21 Savage",
+            Album = "i am > i was (Dolby Atmos Version)",
+            Quality = "LOSSLESS",
+            TrackNumber = 2,
+            Position = 2
+        };
+
+        var context = EngineAudioPostDownloadHelper.BuildTrackContext(
+            payload,
+            settings,
+            processor,
+            "tidal",
+            payload.TidalId);
+
+        Assert.Equal("/downloads/i am _ i was (Dolby Atmos Version)", context.PathResult.FilePath);
+        Assert.Equal("i am > i was (Dolby Atmos Version)", context.Track.Album?.Title);
+    }
+
     private static DeezSpoTagSettings CreateSettings()
     {
         return new DeezSpoTagSettings
         {
             TracknameTemplate = "%artist% - %title%",
+            AlbumNameTemplate = "%album%",
             CreatePlaylistFolder = false,
             CreateArtistFolder = false,
             CreateAlbumFolder = false,

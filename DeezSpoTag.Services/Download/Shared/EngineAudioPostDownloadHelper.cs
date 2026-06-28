@@ -55,6 +55,11 @@ public static partial class EngineAudioPostDownloadHelper
         RegexOptions.CultureInvariant,
         250)]
     private static partial Regex LrcTimestampPatternRegex();
+    [GeneratedRegex(
+        @"\s*\(\s*Dolby\s+Atmos\s+Version\s*\)\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+        250)]
+    private static partial Regex TidalAtmosAlbumFolderSuffixRegex();
     private static readonly HashSet<string> KnownAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".flac",
@@ -251,7 +256,7 @@ public static partial class EngineAudioPostDownloadHelper
         track.ApplySettings(settings);
 
         var downloadType = ResolveDownloadType(payload, downloadTypeResolver);
-        var pathResult = pathProcessor.GeneratePaths(track, downloadType, settings);
+        var pathResult = GeneratePathResult(track, payload, settings, pathProcessor, downloadType);
         var filenameStem = ResolveFilenameStem(pathResult.Filename);
         if (string.IsNullOrWhiteSpace(filenameStem))
         {
@@ -261,6 +266,68 @@ public static partial class EngineAudioPostDownloadHelper
         var outputDir = DownloadPathResolver.ResolveIoPath(pathResult.FilePath);
         return new EngineTrackContext(track, pathResult, outputDir, $"literal:{filenameStem}");
     }
+
+    private static PathGenerationResult GeneratePathResult(
+        Track track,
+        EngineQueueItemBase payload,
+        DeezSpoTagSettings settings,
+        EnhancedPathTemplateProcessor pathProcessor,
+        string downloadType)
+    {
+        var originalAlbumTitle = track.Album?.Title;
+        var folderAlbumTitle = ResolveAlbumFolderTitle(payload, originalAlbumTitle);
+        var shouldRestoreAlbumTitle = track.Album != null
+            && !string.Equals(originalAlbumTitle, folderAlbumTitle, StringComparison.Ordinal);
+        if (shouldRestoreAlbumTitle)
+        {
+            track.Album!.Title = folderAlbumTitle;
+        }
+
+        try
+        {
+            return pathProcessor.GeneratePaths(track, downloadType, settings);
+        }
+        finally
+        {
+            if (shouldRestoreAlbumTitle)
+            {
+                track.Album!.Title = originalAlbumTitle ?? string.Empty;
+            }
+        }
+    }
+
+    private static string ResolveAlbumFolderTitle(EngineQueueItemBase payload, string? albumTitle)
+    {
+        if (string.IsNullOrWhiteSpace(albumTitle) || !IsTidalAtmosPayload(payload))
+        {
+            return albumTitle ?? string.Empty;
+        }
+
+        var cleaned = TidalAtmosAlbumFolderSuffixRegex().Replace(albumTitle, string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(cleaned) ? albumTitle.Trim() : cleaned;
+    }
+
+    private static bool IsTidalAtmosPayload(EngineQueueItemBase payload)
+    {
+        var isTidal = string.Equals(payload.Engine, TidalSource, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payload.SourceService, TidalSource, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payload.ResolvedEngine, TidalSource, StringComparison.OrdinalIgnoreCase);
+        if (!isTidal)
+        {
+            return false;
+        }
+
+        return ContainsAtmos(payload.Quality)
+            || ContainsAtmos(payload.QualityBucket)
+            || ContainsAtmos(payload.ContentType)
+            || payload.FallbackPlan.Any(static step =>
+                ContainsAtmos(step.Quality)
+                || ContainsAtmos(step.ResolutionStrategy));
+    }
+
+    private static bool ContainsAtmos(string? value)
+        => !string.IsNullOrWhiteSpace(value)
+           && value.Contains("atmos", StringComparison.OrdinalIgnoreCase);
 
     public static async Task<string?> ResolveProfileDownloadTagSourceAsync(
         IDownloadTagSettingsResolver tagSettingsResolver,
