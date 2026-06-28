@@ -92,6 +92,34 @@ public sealed class DownloadIntentPayloadPopulationTests
     }
 
     [Fact]
+    public void PopulateStandardQueuePayload_PreservesCompleteEngineIdentityMatrix()
+    {
+        var payload = new DeezerQueueItem();
+        var intent = new DownloadIntent
+        {
+            Isrc = "USSM12503434",
+            SpotifyId = "4gMgiXfqyzZLMhsksGmbQV",
+            DeezerId = "359542303",
+            AppleId = "1447452170",
+            TidalId = "451457120",
+            QobuzId = "123456789",
+            AmazonId = "B087654321",
+            Title = "break da law",
+            Artist = "21 Savage"
+        };
+
+        InvokePopulateStandardQueuePayload(payload, intent);
+
+        Assert.Equal(intent.Isrc, payload.Isrc);
+        Assert.Equal(intent.SpotifyId, payload.SpotifyId);
+        Assert.Equal(intent.DeezerId, payload.DeezerId);
+        Assert.Equal(intent.AppleId, payload.AppleId);
+        Assert.Equal(intent.TidalId, payload.TidalId);
+        Assert.Equal(intent.QobuzId, payload.QobuzId);
+        Assert.Equal(intent.AmazonId, payload.AmazonId);
+    }
+
+    [Fact]
     public void CreateManualParityQueueIntent_PreservesResolvedMetadata()
     {
         var intent = new DownloadIntent

@@ -225,6 +225,7 @@ public sealed class DownloadIntentService
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly TidalDownloadService _tidalDownloadService;
     private readonly AppleMusicCatalogService _appleCatalogService;
+    private readonly AutoTag.ItunesMatcher _itunesMatcher;
     private readonly LibraryRepository _libraryRepository;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly SpotifyPathfinderMetadataClient _spotifyPathfinderClient;
@@ -254,6 +255,7 @@ public sealed class DownloadIntentService
         _authenticatedDeezerService = serviceProvider.GetRequiredService<AuthenticatedDeezerService>();
         _tidalDownloadService = serviceProvider.GetRequiredService<TidalDownloadService>();
         _appleCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
+        _itunesMatcher = serviceProvider.GetRequiredService<AutoTag.ItunesMatcher>();
         _libraryRepository = serviceProvider.GetRequiredService<LibraryRepository>();
         _spotifyMetadataService = serviceProvider.GetRequiredService<SpotifyMetadataService>();
         _spotifyPathfinderClient = serviceProvider.GetRequiredService<SpotifyPathfinderMetadataClient>();
@@ -510,12 +512,6 @@ public sealed class DownloadIntentService
         var resolved = resolvedTarget.Resolution;
         var resolvedSourceUrl = resolved.SourceUrl;
         var isMusicIntent = IsMusicIntent(intent);
-        await HydrateIntentAppleIdForLyricsAsync(
-            intent,
-            settings,
-            resolvedSourceUrl,
-            availability,
-            cancellationToken);
         var durationSeconds = intent.DurationMs > 0 ? (int)Math.Round(intent.DurationMs / 1000d) : 0;
         var queued = new List<string>();
         var relatedQueueUuids = new List<string>();
@@ -834,70 +830,6 @@ public sealed class DownloadIntentService
         return durationSeconds.HasValue
             ? (int)Math.Clamp(durationSeconds.Value * 1000, 0, int.MaxValue)
             : 0;
-    }
-
-    private async Task HydrateIntentAppleIdForLyricsAsync(
-        DownloadIntent intent,
-        DeezSpoTagSettings settings,
-        string? resolvedSourceUrl,
-        SongLinkResult? availability,
-        CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(intent.AppleId))
-        {
-            return;
-        }
-
-        var canResolveByIdentity = !string.IsNullOrWhiteSpace(intent.Isrc)
-            || (!string.IsNullOrWhiteSpace(intent.Title) && !string.IsNullOrWhiteSpace(intent.Artist));
-        if (!canResolveByIdentity)
-        {
-            return;
-        }
-
-        var candidateSourceUrl = resolvedSourceUrl ?? intent.SourceUrl ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(candidateSourceUrl)
-            || !candidateSourceUrl.Contains(AppleMusicDomain, StringComparison.OrdinalIgnoreCase))
-        {
-            candidateSourceUrl = availability?.AppleMusicUrl ?? candidateSourceUrl;
-        }
-
-        try
-        {
-            var resolvedAppleId = await ResolveAppleIdForStorefrontAsync(
-                intent.AppleId,
-                candidateSourceUrl,
-                intent.Isrc,
-                IsVideoIntent(intent),
-                preferSourceAppleId: false,
-                settings,
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(resolvedAppleId))
-            {
-                var resolvedAppleUrl = await ResolveAppleSongUrlAsync(intent, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(resolvedAppleUrl))
-                {
-                    resolvedAppleId = AppleIdParser.TryExtractFromUrl(resolvedAppleUrl);
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(resolvedAppleId))
-            {
-                intent.AppleId = resolvedAppleId;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                    _logger.LogDebug(
-                        ex,
-                        "Apple ID hydration for lyrics failed: title='{Title}' artist='{Artist}' isrc='{Isrc}'",
-                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
-                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist),
-                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Isrc));
-            }
-        }
     }
 
     private static DownloadIntent CloneIntentForAvailabilityLookup(DownloadIntent source)
@@ -2930,10 +2862,14 @@ public sealed class DownloadIntentService
 
     private async Task<SongLinkResult?> ResolveAvailabilityAsync(DownloadIntent intent, CancellationToken cancellationToken)
     {
-        var userCountry = _settingsService.LoadSettings().DeezerCountry;
+        var settings = _settingsService.LoadSettings();
+        var userCountry = settings.DeezerCountry;
+        ApplySourceUrlIdentity(intent);
         var songLink = await ResolveInitialAvailabilityAsync(intent, userCountry, cancellationToken);
+        songLink = await ApplyQobuzAvailabilityFallbackAsync(intent, songLink, cancellationToken);
         ApplyAvailabilityIdentity(intent, songLink);
-        return await ApplyQobuzAvailabilityFallbackAsync(intent, songLink, cancellationToken);
+        await ResolveMissingAppleIdentityAsync(intent, settings, cancellationToken);
+        return songLink;
     }
 
     private async Task<SongLinkResult?> ResolveInitialAvailabilityAsync(
@@ -2969,11 +2905,129 @@ public sealed class DownloadIntentService
             return;
         }
 
-        intent.Isrc = string.IsNullOrWhiteSpace(intent.Isrc) ? songLink.Isrc ?? string.Empty : intent.Isrc;
-        if (string.IsNullOrWhiteSpace(intent.SpotifyId) && !string.IsNullOrWhiteSpace(songLink.SpotifyId))
+        intent.Isrc = FirstNonEmpty(intent.Isrc, songLink.Isrc) ?? string.Empty;
+        intent.SpotifyId = FirstNonEmpty(intent.SpotifyId, songLink.SpotifyId) ?? string.Empty;
+    }
+
+    private static void ApplySourceUrlIdentity(DownloadIntent intent)
+    {
+        var sourceUrl = intent.SourceUrl;
+        if (string.IsNullOrWhiteSpace(sourceUrl))
         {
-            intent.SpotifyId = songLink.SpotifyId;
+            return;
         }
+
+        intent.SpotifyId = FirstNonEmpty(intent.SpotifyId, TryExtractSpotifyId(sourceUrl)) ?? string.Empty;
+        intent.DeezerId = FirstNonEmpty(
+            NormalizeDeezerTrackId(intent.DeezerId),
+            NormalizeDeezerTrackId(TryExtractDeezerTrackId(sourceUrl))) ?? string.Empty;
+        intent.AppleId = FirstNonEmpty(intent.AppleId, AppleIdParser.TryExtractFromUrl(sourceUrl)) ?? string.Empty;
+        intent.TidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl)) ?? string.Empty;
+        intent.QobuzId = FirstNonEmpty(
+            intent.QobuzId,
+            TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture)) ?? string.Empty;
+        intent.AmazonId = FirstNonEmpty(
+            intent.AmazonId,
+            EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout)) ?? string.Empty;
+    }
+
+    private async Task ResolveMissingAppleIdentityAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(intent.AppleId)
+            || (string.IsNullOrWhiteSpace(intent.Isrc)
+                && (string.IsNullOrWhiteSpace(intent.Title) || string.IsNullOrWhiteSpace(intent.Artist))))
+        {
+            return;
+        }
+
+        try
+        {
+            var appleUrl = IsServiceUrlMatch(intent.SourceUrl ?? string.Empty, ApplePlatform)
+                ? intent.SourceUrl ?? string.Empty
+                : string.Empty;
+            intent.AppleId = await ResolveAppleIdForStorefrontAsync(
+                intent.AppleId,
+                appleUrl,
+                intent.Isrc,
+                IsVideoIntent(intent),
+                preferSourceAppleId: false,
+                settings,
+                cancellationToken) ?? string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(intent.AppleId))
+            {
+                return;
+            }
+
+            var resolvedAppleUrl = await ResolveAppleSongUrlAsync(intent, cancellationToken);
+            intent.AppleId = AppleIdParser.TryExtractFromUrl(resolvedAppleUrl) ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(intent.AppleId))
+            {
+                return;
+            }
+
+            intent.AppleId = await ResolveAppleIdViaItunesMatcherAsync(intent, settings, cancellationToken) ?? string.Empty;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Apple identity resolution failed before queue persistence: title='{Title}' artist='{Artist}' isrc='{Isrc}'",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Title),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Artist),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(intent.Isrc));
+        }
+    }
+
+    private async Task<string?> ResolveAppleIdViaItunesMatcherAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(intent.Title) || string.IsNullOrWhiteSpace(intent.Artist))
+        {
+            return null;
+        }
+
+        var info = new AutoTag.AutoTagAudioInfo
+        {
+            Title = intent.Title,
+            Artist = intent.Artist,
+            Artists = new List<string> { intent.Artist },
+            Album = string.IsNullOrWhiteSpace(intent.Album) ? null : intent.Album,
+            DurationSeconds = intent.DurationMs > 0 ? (int?)Math.Max(1, (int)Math.Round(intent.DurationMs / 1000d)) : null,
+            Isrc = intent.Isrc
+        };
+        var config = new AutoTag.AutoTagMatchingConfig
+        {
+            MatchDuration = intent.DurationMs > 0,
+            MaxDurationDifferenceSeconds = 8,
+            Strictness = 0.82
+        };
+        var itunesConfig = new AutoTag.ItunesMatchConfig
+        {
+            Country = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
+            SearchLimit = 10,
+            MatchById = false
+        };
+        var match = await _itunesMatcher.MatchAsync(info, config, itunesConfig, cancellationToken);
+        var trackId = match?.Track?.TrackId;
+        if (match == null || string.IsNullOrWhiteSpace(trackId) || match.Accuracy < config.Strictness)
+        {
+            return null;
+        }
+
+        if (IsrcValidator.IsValid(intent.Isrc)
+            && IsrcValidator.IsValid(match.Track.Isrc)
+            && !string.Equals(intent.Isrc, match.Track.Isrc, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trackId;
     }
 
     private async Task<SongLinkResult?> ApplyQobuzAvailabilityFallbackAsync(

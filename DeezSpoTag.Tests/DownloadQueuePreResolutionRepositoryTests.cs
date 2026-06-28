@@ -112,6 +112,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
               "DeezerId":"359542303",
               "SpotifyId":"spotify-track",
               "AppleId":"apple-track",
+              "QobuzId":"qobuz-track",
+              "TidalId":"tidal-track",
+              "AmazonId":"amazon-track",
               "DurationSeconds":205,
               "DestinationFolderId":1,
               "ContentType":"stereo"
@@ -126,6 +129,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
             DeezerTrackId = "359542303",
             SpotifyTrackId = "spotify-track",
             AppleTrackId = "apple-track",
+            QobuzTrackId = "qobuz-track",
+            TidalTrackId = "tidal-track",
+            AmazonTrackId = "amazon-track",
             DurationMs = 205000,
             DestinationFolderId = 1,
             ContentType = "stereo",
@@ -146,6 +152,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
         Assert.Equal("359542303", stored.DeezerTrackId);
         Assert.Equal("spotify-track", stored.SpotifyTrackId);
         Assert.Equal("apple-track", stored.AppleTrackId);
+        Assert.Equal("qobuz-track", stored.QobuzTrackId);
+        Assert.Equal("tidal-track", stored.TidalTrackId);
+        Assert.Equal("amazon-track", stored.AmazonTrackId);
         Assert.Equal(205000, stored.DurationMs);
         Assert.Equal(1, stored.DestinationFolderId);
     }
@@ -160,6 +169,11 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
               "Artist":"Davy Waweru, Muthoka",
               "Isrc":"QT3F22565438",
               "DeezerId":"359542303",
+              "SpotifyId":"spotify-track",
+              "AppleId":"apple-track",
+              "QobuzId":"qobuz-track",
+              "TidalId":"tidal-track",
+              "AmazonId":"amazon-track",
               "DurationSeconds":205,
               "DestinationFolderId":1,
               "ContentType":"stereo"
@@ -181,6 +195,11 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
         Assert.NotNull(stored);
         Assert.Equal("QT3F22565438", stored!.Isrc);
         Assert.Equal("359542303", stored.DeezerTrackId);
+        Assert.Equal("spotify-track", stored.SpotifyTrackId);
+        Assert.Equal("apple-track", stored.AppleTrackId);
+        Assert.Equal("qobuz-track", stored.QobuzTrackId);
+        Assert.Equal("tidal-track", stored.TidalTrackId);
+        Assert.Equal("amazon-track", stored.AmazonTrackId);
         Assert.Equal(205000, stored.DurationMs);
         Assert.Equal(1, stored.DestinationFolderId);
         Assert.Equal("stereo", stored.ContentType);
