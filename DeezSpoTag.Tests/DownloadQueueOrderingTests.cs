@@ -90,6 +90,40 @@ public sealed class DownloadQueueOrderingTests
     }
 
     [Fact]
+    public async Task DequeueNextAnyAsync_DoesNotSkipQueuedItemWithFailedPreResolutionPayload()
+    {
+        await using var context = CreateContext();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                "queue-failed-resolution-head",
+                payloadJson: "{\"ResolutionStatus\":\"failed\",\"resolutionStatus\":\"failed\"}"),
+            CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-later"), CancellationToken.None);
+
+        var next = await context.QueueRepository.DequeueNextAnyAsync(
+            newestFirst: false,
+            CancellationToken.None);
+
+        Assert.NotNull(next);
+        Assert.Equal("queue-failed-resolution-head", next!.QueueUuid);
+    }
+
+    [Fact]
+    public async Task HasRunnableDownloadsAsync_TreatsQueuedFailedPreResolutionPayloadAsRunnable()
+    {
+        await using var context = CreateContext();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem(
+                "queue-failed-resolution-runnable",
+                payloadJson: "{\"ResolutionStatus\":\"failed\",\"resolutionStatus\":\"failed\"}"),
+            CancellationToken.None);
+
+        var hasRunnable = await context.QueueRepository.HasRunnableDownloadsAsync(CancellationToken.None);
+
+        Assert.True(hasRunnable);
+    }
+
+    [Fact]
     public async Task RecoverInterruptedPreResolutionAsync_RequeuesResolvingItemForDownload()
     {
         await using var context = CreateContext();

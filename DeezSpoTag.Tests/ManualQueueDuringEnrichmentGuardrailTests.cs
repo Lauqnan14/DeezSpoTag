@@ -242,6 +242,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.Contains("SetPhase(OrchestrationPhase.Downloading);", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("WHERE lower(status) IN ('inqueue', 'running', 'downloading', 'retrying')", queueSource, StringComparison.Ordinal);
         Assert.Contains("OR (lower(status) = 'queued' AND \" + QueuedItemReadyForDownloadSqlCondition + @\")", queueSource, StringComparison.Ordinal);
+        Assert.Contains("private const string QueuedItemReadyForDownloadSqlCondition = \"1 = 1\";", queueSource, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] pathParts)
