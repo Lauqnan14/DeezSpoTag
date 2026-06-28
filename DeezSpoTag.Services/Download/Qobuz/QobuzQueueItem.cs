@@ -16,7 +16,6 @@ public sealed class QobuzQueueItem : EngineQueueItemBase
     public int? QobuzResolutionScore { get; set; }
     public string QobuzRequestedQuality { get; set; } = "";
     public string QobuzResolvedQuality { get; set; } = "";
-    public string QobuzActualQuality { get; set; } = "";
     public int QobuzMaximumBitDepth { get; set; }
     public double QobuzMaximumSamplingRate { get; set; }
     public string QobuzCatalogQuality { get; set; } = "";
@@ -34,7 +33,6 @@ public sealed class QobuzQueueItem : EngineQueueItemBase
                 ["qobuzResolutionScore"] = QobuzResolutionScore,
                 ["qobuzRequestedQuality"] = QobuzRequestedQuality,
                 ["qobuzResolvedQuality"] = QobuzResolvedQuality,
-                ["qobuzActualQuality"] = QobuzActualQuality,
                 ["qobuzMaximumBitDepth"] = QobuzMaximumBitDepth,
                 ["qobuzMaximumSamplingRate"] = QobuzMaximumSamplingRate,
                 ["qobuzCatalogQuality"] = QobuzCatalogQuality,

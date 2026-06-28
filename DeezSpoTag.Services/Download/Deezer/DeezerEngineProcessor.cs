@@ -592,6 +592,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         CancellationToken cancellationToken)
     {
         var sizeMb = QueueHelperUtils.TryGetFileSizeMb(outputPath);
+        ActualDownloadQualityLabel.ApplyTo(request.Payload, outputPath);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<DeezerQueueItem>(
                 _queueRepository,
@@ -613,6 +614,16 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
 
         await _queueRepository.UpdateStatusAsync(request.QueueUuid, CompletedStatus, cancellationToken: cancellationToken);
         await request.Context.UpdateWatchlistTrackStatusAsync(request.PayloadJson, CompletedStatus, cancellationToken);
+        _listener.Send(UpdateQueueEvent, new
+        {
+            uuid = request.QueueUuid,
+            status = CompletedStatus,
+            progress = 100,
+            downloaded = 1,
+            failed = 0,
+            engine = request.Payload.Engine,
+            quality = request.Payload.Quality
+        });
     }
 
     private async Task FailQueueAsync(

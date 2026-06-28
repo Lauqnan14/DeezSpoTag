@@ -118,7 +118,6 @@ public sealed class QobuzQualityFallbackTests
             Quality = "6",
             QobuzRequestedQuality = "27",
             QobuzResolvedQuality = "6",
-            QobuzActualQuality = "6",
             QobuzMaximumBitDepth = 16,
             QobuzMaximumSamplingRate = 44.1,
             QobuzCatalogQuality = "6",
@@ -129,7 +128,6 @@ public sealed class QobuzQualityFallbackTests
 
         Assert.Contains("\"qobuzRequestedQuality\":\"27\"", json);
         Assert.Contains("\"qobuzResolvedQuality\":\"6\"", json);
-        Assert.Contains("\"qobuzActualQuality\":\"6\"", json);
         Assert.Contains("\"qobuzMaximumBitDepth\":16", json);
         Assert.Contains("\"qobuzMaximumSamplingRate\":44.1", json);
         Assert.Contains("\"qobuzCatalogQuality\":\"6\"", json);

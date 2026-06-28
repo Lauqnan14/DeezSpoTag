@@ -840,6 +840,19 @@
     border: 1px solid var(--accent-purple);
 }
 
+.downloads-tab .badge-quality-atmos {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.downloads-tab .badge-quality-atmos img {
+    display: block;
+    width: 3.75rem;
+    height: auto;
+    filter: invert(41%) sepia(91%) saturate(2755%) hue-rotate(248deg) brightness(102%) contrast(102%);
+}
+
 .downloads-tab .badge-video-resolution {
     background: rgba(34, 197, 94, 0.2);
     color: #4ade80;
@@ -4720,6 +4733,20 @@ async function clearCanceledTasks() {
 	    return badges.join('');
 	}
 
+	function renderQualityBadge(task, displayQuality) {
+	    const engine = String(task?.engine || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+	    const quality = String(displayQuality || '').trim();
+	    const isAtmos = quality.toLowerCase().includes('atmos');
+	    const isAppleMusic = engine === 'apple' || engine === 'applemusic';
+	    const isTidal = engine === 'tidal';
+
+	    if (isAtmos && (isAppleMusic || isTidal)) {
+	        return `<span class="badge badge-quality badge-quality-atmos" title="${escapeHtml(quality)}" aria-label="${escapeHtml(quality)}"><img src="/images/apple/atmos.svg" alt="" aria-hidden="true"></span>`;
+	    }
+
+	    return `<span class="badge badge-quality">${escapeHtml(quality)}</span>`;
+	}
+
 		let renderTasksScheduled = false;
 		let renderTasksTimer = null;
 		const renderTasksDelayMs = 80;
@@ -4834,9 +4861,9 @@ async function clearCanceledTasks() {
             : '';
 
         const displayQuality = task.quality ? task.quality.replace(/_/g, ' ') : '';
+        const qualityBadge = renderQualityBadge(task, displayQuality);
         const safeTitle = escapeHtml(task.title || 'Unknown');
         const safeArtist = escapeHtml(task.artist || 'Unknown');
-        const safeQuality = escapeHtml(displayQuality);
 	        const safeEngine = escapeHtml(task.engine || '');
 	        const coverStyle = task.cover
 	            ? `style="--task-cover-url: url('${escapeCssUrl(task.cover)}')"`
@@ -4869,7 +4896,7 @@ async function clearCanceledTasks() {
 	                    </div>
 	                    <div class="task-badges">
 	                        <span class="badge ${getStatusBadgeClass(statusForUi)}">${safeStatus}</span>
-	                        <span class="badge badge-quality">${safeQuality}</span>
+	                        ${qualityBadge}
 	                        ${videoBadges.map(videoBadge => `<span class="badge ${videoBadge.className}">${videoBadge.label}</span>`).join('')}
 	                        <span class="badge badge-engine">${safeEngine}</span>
 	                        ${renderFallbackPlanBadges(task)}
@@ -5442,13 +5469,13 @@ function readQueueItemText(item, candidates) {
 }
 
 function resolveQueueRawQuality(item, engineHint) {
+    const quality = readQueueItemText(item, ['quality', 'Quality', 'bitrate', 'Bitrate']);
+    if (quality) {
+        return quality;
+    }
+
     const normalizedEngine = normalizeEngine(engineHint || resolveQueueDisplayEngine(item) || item?.engine || item?.Engine || '');
     if (normalizedEngine === 'qobuz') {
-        const actualQobuzQuality = readQueueItemText(item, ['qobuzActualQuality', 'QobuzActualQuality']);
-        if (actualQobuzQuality) {
-            return actualQobuzQuality;
-        }
-
         const resolvedQobuzQuality = readQueueItemText(item, ['qobuzResolvedQuality', 'QobuzResolvedQuality']);
         if (resolvedQobuzQuality) {
             return resolvedQobuzQuality;
@@ -5460,7 +5487,7 @@ function resolveQueueRawQuality(item, engineHint) {
         }
     }
 
-    return readQueueItemText(item, ['quality', 'Quality', 'bitrate', 'Bitrate']);
+    return '';
 }
 
 function resolveQueueItemTitle(item) {
