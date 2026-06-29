@@ -193,6 +193,10 @@ public sealed class CredentialProtectionTests : IDisposable
         var provider = providers[0];
         Assert.True(provider.Enabled);
 
+        await registry.RecordSuccessAsync(provider.Id, 123, CancellationToken.None);
+        var checkedProviders = await registry.GetProvidersAsync(CancellationToken.None);
+        Assert.Equal("online", Assert.Single(checkedProviders, item => item.Id == provider.Id).Status);
+
         await registry.SetEnabledAsync(provider.Id, false, CancellationToken.None);
         var reloaded = await registry.GetProvidersAsync(CancellationToken.None);
         Assert.False(Assert.Single(reloaded, item => item.Id == provider.Id).Enabled);
@@ -248,6 +252,10 @@ public sealed class CredentialProtectionTests : IDisposable
         var provider = providers[0];
         Assert.True(provider.Enabled);
 
+        await registry.RecordSuccessAsync(provider.Endpoint, 123, CancellationToken.None);
+        var checkedProviders = await registry.GetProvidersAsync(CancellationToken.None);
+        Assert.Equal("online", Assert.Single(checkedProviders, item => item.Id == provider.Id).Status);
+
         await registry.SetEnabledAsync(provider.Id, false, CancellationToken.None);
         var reloaded = await registry.GetProvidersAsync(CancellationToken.None);
         Assert.False(Assert.Single(reloaded, item => item.Id == provider.Id).Enabled);
@@ -258,6 +266,26 @@ public sealed class CredentialProtectionTests : IDisposable
         Assert.DoesNotContain("monochrome.tf", stored, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("squid.wtf", stored, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("squid", stored, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PublicProviderRegistries_DoNotExpireCachedHealthForSidebarStatus()
+    {
+        var qobuzSource = File.ReadAllText(Path.Combine(
+            GetRepoRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "QobuzPublicProviderRegistry.cs"));
+        var tidalSource = File.ReadAllText(Path.Combine(
+            GetRepoRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "TidalPublicProviderRegistry.cs"));
+
+        Assert.DoesNotContain("HealthFreshness", qobuzSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("HealthFreshness", tidalSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("DateTimeOffset.UtcNow - provider.LastCheckedAt", qobuzSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("DateTimeOffset.UtcNow - provider.LastCheckedAt", tidalSource, StringComparison.Ordinal);
     }
 
     private SpotifyBlobService CreateSpotifyBlobService()
@@ -280,6 +308,19 @@ public sealed class CredentialProtectionTests : IDisposable
             configuration,
             NullLogger<SpotifyUserAuthStore>.Instance,
             _dataProtectionProvider);
+    }
+
+    private static string GetRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null
+            && !File.Exists(Path.Combine(current.FullName, "Directory.Build.props"))
+            && !Directory.Exists(Path.Combine(current.FullName, "DeezSpoTag.Web")))
+        {
+            current = current.Parent;
+        }
+
+        return current?.FullName ?? throw new InvalidOperationException("Repository root could not be resolved.");
     }
 
     public void Dispose()

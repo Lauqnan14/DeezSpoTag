@@ -11,7 +11,6 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     private const string FileName = "tidal-public-providers.json";
     private const string DisabledStatus = "disabled";
     private const string UnknownStatus = "unknown";
-    private static readonly TimeSpan HealthFreshness = TimeSpan.FromMinutes(30);
     private readonly ProtectedCredentialFileStore _store;
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -182,7 +181,6 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     private static TidalPublicProvider ToPublicProvider(ProviderState provider)
     {
         var status = provider.Enabled ? provider.Status : DisabledStatus;
-        if (provider.Enabled && provider.LastCheckedAt.HasValue && DateTimeOffset.UtcNow - provider.LastCheckedAt.Value > HealthFreshness) status = UnknownStatus;
         return new TidalPublicProvider(
             provider.Id,
             provider.DisplayName,

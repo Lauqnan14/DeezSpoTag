@@ -13,7 +13,6 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     private const string DisabledStatus = "disabled";
     private const string MusicDlProviderKind = "musicdl";
     private const string UnknownStatus = "unknown";
-    private static readonly TimeSpan HealthFreshness = TimeSpan.FromMinutes(30);
     private readonly ProtectedCredentialFileStore _store;
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -199,12 +198,6 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     private static QobuzPublicProvider ToPublicProvider(ProviderState provider)
     {
         var status = provider.Enabled ? provider.Status : DisabledStatus;
-        if (provider.Enabled
-            && provider.LastCheckedAt.HasValue
-            && DateTimeOffset.UtcNow - provider.LastCheckedAt.Value > HealthFreshness)
-        {
-            status = UnknownStatus;
-        }
         return new(provider.Id, provider.DisplayName, provider.Kind, provider.Endpoint, provider.Region, provider.Enabled, status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
     }
 
