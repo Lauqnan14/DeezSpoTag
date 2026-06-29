@@ -4,9 +4,7 @@ using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using DeezSpoTag.Integrations.Qobuz;
-using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Integrations.Tidal;
-using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Integrations.Deezer;
 
 namespace DeezSpoTag.Web.Controllers.Api;
@@ -20,10 +18,8 @@ public sealed class PlatformAuthApiDependencies
     public required AppleMusicWrapperService AppleWrapperService { get; init; }
     public required QobuzAccountProfileService QobuzAccountProfileService { get; init; }
     public required IQobuzPublicProviderRegistry QobuzPublicProviderRegistry { get; init; }
-    public required IQobuzDownloadService QobuzDownloadService { get; init; }
     public required ITidalPublicProviderRegistry TidalPublicProviderRegistry { get; init; }
     public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
-    public required TidalDownloadService TidalDownloadService { get; init; }
     public required SoulseekConnectionService SoulseekConnectionService { get; init; }
     public required DeezerSessionManager DeezerSessionManager { get; init; }
 }
@@ -41,10 +37,8 @@ public class PlatformAuthApiController : ControllerBase
     private readonly AppleMusicWrapperService _appleWrapperService;
     private readonly QobuzAccountProfileService _qobuzAccountProfileService;
     private readonly IQobuzPublicProviderRegistry _qobuzPublicProviderRegistry;
-    private readonly IQobuzDownloadService _qobuzDownloadService;
     private readonly ITidalPublicProviderRegistry _tidalPublicProviderRegistry;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
-    private readonly TidalDownloadService _tidalDownloadService;
     private readonly SoulseekConnectionService _soulseekConnectionService;
     private readonly DeezerSessionManager _deezerSessionManager;
     public PlatformAuthApiController(PlatformAuthApiDependencies dependencies)
@@ -56,10 +50,8 @@ public class PlatformAuthApiController : ControllerBase
         _appleWrapperService = dependencies.AppleWrapperService;
         _qobuzAccountProfileService = dependencies.QobuzAccountProfileService;
         _qobuzPublicProviderRegistry = dependencies.QobuzPublicProviderRegistry;
-        _qobuzDownloadService = dependencies.QobuzDownloadService;
         _tidalPublicProviderRegistry = dependencies.TidalPublicProviderRegistry;
         _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
-        _tidalDownloadService = dependencies.TidalDownloadService;
         _soulseekConnectionService = dependencies.SoulseekConnectionService;
         _deezerSessionManager = dependencies.DeezerSessionManager;
     }
@@ -179,7 +171,6 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await _tidalDownloadService.CheckPublicProvidersAsync(cancellationToken);
         return Ok(await GetPublicTidalProvidersAsync(cancellationToken));
     }
 
@@ -213,7 +204,6 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await _qobuzDownloadService.CheckPublicProvidersAsync(cancellationToken);
         return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
     }
 

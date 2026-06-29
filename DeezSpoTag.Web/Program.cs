@@ -1395,10 +1395,8 @@ public partial class Program
                 AppleWrapperService = sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>(),
                 QobuzAccountProfileService = sp.GetRequiredService<DeezSpoTag.Web.Services.QobuzAccountProfileService>(),
                 QobuzPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry>(),
-                QobuzDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService>(),
                 TidalPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalPublicProviderRegistry>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
-                TidalDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>(),
                 SoulseekConnectionService = sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekConnectionService>(),
                 DeezerSessionManager = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>()
             });
@@ -1626,20 +1624,10 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SystemStatsService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService, DeezSpoTag.Services.Download.Qobuz.QobuzDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
-        services.AddSingleton<DeezSpoTag.Web.Services.QobuzPublicProviderHealthService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.QobuzPublicProviderHealthService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Periodic sequential Qobuz public provider health checks after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Download.Amazon.IAmazonDownloadService, DeezSpoTag.Services.Download.Amazon.AmazonDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Amazon.AmazonEngineProcessor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalEngineProcessor>();
-        services.AddSingleton<DeezSpoTag.Web.Services.TidalPublicProviderHealthService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.TidalPublicProviderHealthService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Periodic sequential Tidal public provider health checks after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.IAppleDownloadService, DeezSpoTag.Services.Download.Apple.AppleDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWebPlaybackClient>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleHlsDownloader>();

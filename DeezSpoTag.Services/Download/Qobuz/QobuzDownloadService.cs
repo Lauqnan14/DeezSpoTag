@@ -21,21 +21,11 @@ namespace DeezSpoTag.Services.Download.Qobuz;
 
 public interface IQobuzDownloadService
 {
-    Task<bool> IsrcAvailableAsync(string isrc, CancellationToken cancellationToken);
     Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken);
-    Task<QobuzResolvedStreamUrl> ResolveStreamUrlByTrackIdAsync(
-        int trackId,
-        string quality,
-        bool allowQualityFallback,
-        CancellationToken cancellationToken);
-    Task CheckPublicProvidersAsync(CancellationToken cancellationToken);
 }
-
-public readonly record struct QobuzResolvedStreamUrl(string Url, string SelectedQuality);
 
 public sealed class QobuzDownloadService : IQobuzDownloadService
 {
-    private const long ProviderHealthCheckTrackId = 411245095;
     private const string ApplicationJsonContentType = "application/json";
     private const string DownloadUrlUnavailableMessage = "Qobuz download URL not available";
     private const string FlacExtension = ".flac";
@@ -46,11 +36,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private static readonly TimeSpan ProviderTransientRetryDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan ProviderCooldown = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan PreferredProviderTtl = TimeSpan.FromMinutes(15);
-    private static readonly TimeSpan StreamProbeTimeout = TimeSpan.FromSeconds(3);
     private const int ProviderHttpMaxAttempts = 2;
-    private const int DownloadUrlResolutionMaxAttempts = 2;
     private const int MaxConcurrentProviderResolutions = 2;
-    private const int StreamProbeReadLimitBytes = 64 * 1024;
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
     private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
     private static readonly string[] ProviderUrlPropertyNames = ["url", "download_url", "link"];
@@ -107,33 +94,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         _downloadClient.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserUserAgent);
     }
 
-    public async Task<bool> IsrcAvailableAsync(string isrc, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(isrc))
-        {
-            return false;
-        }
-
-        var apiBase = DecodeBase64("aHR0cHM6Ly93d3cucW9idXouY29tL2FwaS5qc29uLzAuMi90cmFjay9zZWFyY2g/cXVlcnk9");
-        var query = $"isrc:{isrc}";
-        var url = $"{apiBase}{Uri.EscapeDataString(query)}&limit=50&app_id={DefaultAppId}";
-
-        using var response = await _apiClient.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return false;
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return false;
-        }
-
-        var payload = JsonSerializer.Deserialize<QobuzSearchResponse>(body, SerializerOptions);
-        return payload?.Tracks?.Total > 0;
-    }
-
     public async Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(request.OutputDir);
@@ -149,42 +109,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         var outputPath = expectedPath;
         await DownloadTrackWithProviderFallbackAsync(trackId.Value, request, outputPath, cancellationToken);
         return outputPath;
-    }
-
-    public async Task<QobuzResolvedStreamUrl> ResolveStreamUrlByTrackIdAsync(
-        int trackId,
-        string quality,
-        bool allowQualityFallback,
-        CancellationToken cancellationToken)
-    {
-        if (trackId <= 0)
-        {
-            throw new InvalidOperationException("Qobuz track id must be greater than zero.");
-        }
-
-        var normalizedQuality = NormalizeQobuzQualityCode(quality);
-        var resolution = await GetDownloadUrlWithRetryAsync(
-            trackId,
-            normalizedQuality,
-            allowQualityFallback,
-            0,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(resolution.Url))
-        {
-            throw new InvalidOperationException(DownloadUrlUnavailableMessage);
-        }
-
-        return new QobuzResolvedStreamUrl(resolution.Url!, resolution.SelectedQuality);
-    }
-
-    public async Task CheckPublicProvidersAsync(CancellationToken cancellationToken)
-    {
-        var providers = await BuildPublicProvidersAsync(ProviderHealthCheckTrackId, "6", cancellationToken);
-        foreach (var provider in providers)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await TryResolveProviderAsync(provider, ProviderHealthCheckTrackId, "6", cancellationToken);
-        }
     }
 
     private async Task NotifySelectedQualityAsync(QobuzDownloadRequest request, string selectedQuality)
@@ -203,148 +127,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             _logger.LogWarning(ex, "Qobuz selected-quality callback failed for quality {Quality}", selectedQuality);
         }
     }
-
-    private async Task<FlacStreamProbeResult?> TryProbeFlacStreamInfoAsync(
-        string downloadUrl,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            probeCts.CancelAfter(StreamProbeTimeout);
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
-            request.Headers.Range = new RangeHeaderValue(0, StreamProbeReadLimitBytes - 1);
-            using var response = await _downloadClient.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                probeCts.Token);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(probeCts.Token);
-            var buffer = new byte[StreamProbeReadLimitBytes];
-            var totalRead = 0;
-            while (totalRead < buffer.Length)
-            {
-                var bytesRead = await stream.ReadAsync(
-                    buffer.AsMemory(totalRead, buffer.Length - totalRead),
-                    probeCts.Token);
-                if (bytesRead <= 0)
-                {
-                    break;
-                }
-
-                totalRead += bytesRead;
-                if (totalRead >= 42)
-                {
-                    break;
-                }
-            }
-
-            if (totalRead <= 0)
-            {
-                return null;
-            }
-
-            if (!TryExtractFlacStreamInfo(
-                    buffer.AsSpan(0, totalRead),
-                    out var bitsPerSample,
-                    out var sampleRate,
-                    out var durationSeconds))
-            {
-                return null;
-            }
-
-            return new FlacStreamProbeResult(bitsPerSample, sampleRate, durationSeconds);
-        }
-        catch (OperationCanceledException)
-        {
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Qobuz stream probe failed for quality inference.");
-            }
-
-            return null;
-        }
-    }
-
-    private static bool TryExtractFlacStreamInfo(
-        ReadOnlySpan<byte> payload,
-        out int bitsPerSample,
-        out int sampleRate,
-        out double durationSeconds)
-    {
-        bitsPerSample = 0;
-        sampleRate = 0;
-        durationSeconds = 0;
-
-        var marker = "fLaC"u8;
-        var markerIndex = payload.IndexOf(marker);
-        if (markerIndex < 0)
-        {
-            return false;
-        }
-
-        var cursor = markerIndex + marker.Length;
-        while (cursor + 4 <= payload.Length)
-        {
-            var header = payload[cursor];
-            var blockType = header & 0x7F;
-            var blockLength =
-                (payload[cursor + 1] << 16)
-                | (payload[cursor + 2] << 8)
-                | payload[cursor + 3];
-            cursor += 4;
-
-            if (cursor + blockLength > payload.Length)
-            {
-                return false;
-            }
-
-            if (blockType == 0)
-            {
-                if (blockLength < 34)
-                {
-                    return false;
-                }
-
-                var streamInfo = payload.Slice(cursor, 34);
-                sampleRate =
-                    (streamInfo[10] << 12)
-                    | (streamInfo[11] << 4)
-                    | ((streamInfo[12] & 0xF0) >> 4);
-                bitsPerSample = (((streamInfo[12] & 0x01) << 4) | ((streamInfo[13] & 0xF0) >> 4)) + 1;
-                ulong totalSamples =
-                    ((ulong)(streamInfo[13] & 0x0F) << 32)
-                    | ((ulong)streamInfo[14] << 24)
-                    | ((ulong)streamInfo[15] << 16)
-                    | ((ulong)streamInfo[16] << 8)
-                    | streamInfo[17];
-                if (sampleRate > 0 && totalSamples > 0)
-                {
-                    durationSeconds = totalSamples / (double)sampleRate;
-                }
-
-                return sampleRate > 0 && bitsPerSample > 0;
-            }
-
-            cursor += blockLength;
-        }
-
-        return false;
-    }
-
-    private readonly record struct FlacStreamProbeResult(
-        int BitsPerSample,
-        int SampleRate,
-        double DurationSeconds);
 
     private static long? TryExtractTrackId(string trackUrl)
     {
@@ -406,40 +188,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Sanitize = static value => value
         };
         return AudioFilePathHelper.BuildOutputPath(outputPathContext, extension);
-    }
-
-    private readonly record struct DownloadUrlResolution(string? Url, string SelectedQuality);
-
-    private async Task<DownloadUrlResolution> GetDownloadUrlWithRetryAsync(
-        long trackId,
-        string quality,
-        bool allowQualityFallback,
-        int expectedDurationSeconds,
-        CancellationToken cancellationToken)
-    {
-        var normalizedRequestedQuality = NormalizeQobuzQualityCode(quality);
-        for (var attempt = 1; attempt <= DownloadUrlResolutionMaxAttempts; attempt++)
-        {
-            try
-            {
-                return await GetDownloadUrlAsync(
-                    trackId,
-                    quality,
-                    allowQualityFallback,
-                    expectedDurationSeconds,
-                    cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception) when (attempt < DownloadUrlResolutionMaxAttempts)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
-            }
-        }
-
-        return new DownloadUrlResolution(null, normalizedRequestedQuality);
     }
 
     private async Task DownloadTrackWithProviderFallbackAsync(
@@ -670,33 +418,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         await DownloadFileAsync(url, outputPath, progressCallback, cancellationToken);
     }
 
-
-    private async Task<DownloadUrlResolution> GetDownloadUrlAsync(
-        long trackId,
-        string quality,
-        bool allowQualityFallback,
-        int expectedDurationSeconds,
-        CancellationToken cancellationToken)
-    {
-        var requestedQuality = NormalizeQobuzQualityCode(quality);
-        var qualityOrder = GetQualityFallbackOrder(requestedQuality, allowQualityFallback);
-
-        foreach (var qualityCode in qualityOrder)
-        {
-            var url = await TryGetDownloadUrlForQualityAsync(
-                trackId,
-                qualityCode,
-                expectedDurationSeconds,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(url))
-            {
-                return new DownloadUrlResolution(url, qualityCode);
-            }
-        }
-
-        return new DownloadUrlResolution(null, requestedQuality);
-    }
-
     private static string NormalizeQobuzQualityCode(string? quality) => QobuzQualityCodeNormalizer.Normalize(quality, defaultCode: "6");
 
     private static List<string> GetQualityFallbackOrder(string quality, bool allowQualityFallback)
@@ -722,77 +443,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         return new List<string> { string.IsNullOrWhiteSpace(quality) ? "6" : quality };
-    }
-
-    private async Task<string?> TryGetDownloadUrlForQualityAsync(
-        long trackId,
-        string qualityCode,
-        int expectedDurationSeconds,
-        CancellationToken cancellationToken)
-    {
-        var officialResolved = await TryResolveOfficialStreamUrlAsync(trackId, qualityCode, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(officialResolved)
-            && await IsProviderStreamAcceptableAsync(
-                "Qobuz Official",
-                trackId,
-                qualityCode,
-                officialResolved,
-                expectedDurationSeconds,
-                cancellationToken))
-        {
-            return officialResolved;
-        }
-
-        var providers = await BuildPublicProvidersAsync(trackId, qualityCode, cancellationToken);
-        var preferredProvider = GetPreferredProvider(providers, qualityCode);
-        if (preferredProvider != null && !IsProviderCoolingDown(preferredProvider.Name))
-        {
-            var preferredResolved = await TryResolveProviderAsync(preferredProvider, trackId, qualityCode, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(preferredResolved)
-                && await IsProviderStreamAcceptableAsync(
-                    preferredProvider.Name,
-                    trackId,
-                    qualityCode,
-                    preferredResolved,
-                    expectedDurationSeconds,
-                    cancellationToken))
-            {
-                MarkPreferredProvider(preferredProvider, qualityCode);
-                return preferredResolved;
-            }
-
-            ClearPreferredProvider(preferredProvider, qualityCode);
-        }
-
-        providers = providers
-            .Where(provider => !IsProviderCoolingDown(provider.Name))
-            .Where(provider => preferredProvider == null
-                || !string.Equals(provider.Name, preferredProvider.Name, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        if (providers.Length == 0)
-        {
-            return null;
-        }
-
-        foreach (var provider in providers)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var resolved = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(resolved)
-                && await IsProviderStreamAcceptableAsync(
-                    provider.Name,
-                    trackId,
-                    qualityCode,
-                    resolved,
-                    expectedDurationSeconds,
-                    cancellationToken))
-            {
-                MarkPreferredProvider(provider, qualityCode);
-                return resolved;
-            }
-        }
-
-        return null;
     }
 
     private static ProviderCandidate? GetPreferredProvider(
@@ -1032,41 +682,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private static bool ShouldApplyProviderCooldown(Exception ex)
     {
         return !IsTransientProviderFailure(ex);
-    }
-
-    private async Task<bool> IsProviderStreamAcceptableAsync(
-        string providerName,
-        long trackId,
-        string qualityCode,
-        string resolvedUrl,
-        int expectedDurationSeconds,
-        CancellationToken cancellationToken)
-    {
-        if (expectedDurationSeconds <= 0 || string.IsNullOrWhiteSpace(resolvedUrl))
-        {
-            return true;
-        }
-
-        var probe = await TryProbeFlacStreamInfoAsync(resolvedUrl, cancellationToken);
-        if (probe == null || probe.Value.DurationSeconds <= 0)
-        {
-            return true;
-        }
-
-        if (AudioDurationGuard.IsExpectedDurationAcceptable(probe.Value.DurationSeconds, expectedDurationSeconds))
-        {
-            return true;
-        }
-
-        MarkProviderCoolingDown(providerName);
-        _logger.LogWarning(
-            "Qobuz provider {Provider} rejected for track {TrackId} quality {Quality}: stream duration {ActualDuration:F1}s mismatches expected {ExpectedDuration}s",
-            DeezSpoTag.Core.Security.LogSanitizer.OneLine(providerName),
-            trackId,
-            DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode),
-            probe.Value.DurationSeconds,
-            expectedDurationSeconds);
-        return false;
     }
 
     private static bool IsTransientProviderFailure(Exception ex)
