@@ -24,6 +24,8 @@ public sealed class SpotifyTracklistService
     }
 
     private static readonly TimeSpan SnapshotCacheTtl = TimeSpan.FromHours(2);
+    private const int SnapshotCacheLimit = 256;
+    private const int DeezerSnapshotCacheLimit = 256;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyTracklistMatchSnapshot Snapshot)> SnapshotCache = new();
     private static readonly TimeSpan DeezerSnapshotTtl = TimeSpan.FromHours(2);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeezerSnapshotCacheEntry> DeezerSnapshotCache = new();
@@ -694,6 +696,7 @@ public sealed class SpotifyTracklistService
         var entry = DeezerSnapshotCache.GetOrAdd(snapshotId, _ => new DeezerSnapshotCacheEntry());
         entry.Stamp = DateTimeOffset.UtcNow;
         entry.DeezerIds[trackId] = deezerId;
+        TrimSnapshotCaches();
     }
 
     private sealed class DeezerSnapshotCacheEntry
@@ -831,6 +834,28 @@ public sealed class SpotifyTracklistService
     private static void CacheSnapshot(string signature, SpotifyTracklistMatchSnapshot snapshot)
     {
         SnapshotCache[signature] = (DateTimeOffset.UtcNow, snapshot);
+        TrimSnapshotCaches();
+    }
+
+    private static void TrimSnapshotCaches()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var entry in SnapshotCache.Where(entry => now - entry.Value.Stamp > SnapshotCacheTtl))
+        {
+            SnapshotCache.TryRemove(entry.Key, out _);
+        }
+        foreach (var entry in DeezerSnapshotCache.Where(entry => now - entry.Value.Stamp > DeezerSnapshotTtl))
+        {
+            DeezerSnapshotCache.TryRemove(entry.Key, out _);
+        }
+        foreach (var key in SnapshotCache.Keys.Take(Math.Max(0, SnapshotCache.Count - SnapshotCacheLimit)))
+        {
+            SnapshotCache.TryRemove(key, out _);
+        }
+        foreach (var key in DeezerSnapshotCache.Keys.Take(Math.Max(0, DeezerSnapshotCache.Count - DeezerSnapshotCacheLimit)))
+        {
+            DeezerSnapshotCache.TryRemove(key, out _);
+        }
     }
 
     private static string BuildMatchToken(string? type, string? id)

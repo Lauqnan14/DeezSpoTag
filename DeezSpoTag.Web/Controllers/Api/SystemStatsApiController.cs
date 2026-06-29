@@ -2,6 +2,7 @@ using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using DeezSpoTag.Services.Runtime;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -15,35 +16,42 @@ public sealed class SystemStatsApiController : ControllerBase
     private readonly QualityScannerService _qualityScannerService;
     private readonly DuplicateCleanerService _duplicateCleanerService;
     private readonly DownloadOrchestrationService _downloadOrchestrationService;
+    private readonly ShazamRecognitionService _shazamRecognitionService;
+    private readonly BackgroundWorkCoordinator _backgroundWorkCoordinator;
 
     public SystemStatsApiController(
         DownloadQueueRepository queueRepository,
         SystemStatsService systemStatsService,
         QualityScannerService qualityScannerService,
         DuplicateCleanerService duplicateCleanerService,
-        DownloadOrchestrationService downloadOrchestrationService)
+        DownloadOrchestrationService downloadOrchestrationService,
+        ShazamRecognitionService shazamRecognitionService,
+        BackgroundWorkCoordinator backgroundWorkCoordinator)
     {
         _queueRepository = queueRepository;
         _systemStatsService = systemStatsService;
         _qualityScannerService = qualityScannerService;
         _duplicateCleanerService = duplicateCleanerService;
         _downloadOrchestrationService = downloadOrchestrationService;
+        _shazamRecognitionService = shazamRecognitionService;
+        _backgroundWorkCoordinator = backgroundWorkCoordinator;
     }
 
     [HttpGet("details")]
     public async Task<IActionResult> GetDetails(CancellationToken cancellationToken)
     {
-        var tasks = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
         var utcToday = DateTimeOffset.UtcNow.Date;
-
-        var activeDownloads = tasks.Count(task => IsActiveDownloadStatus(task.Status));
-        var finishedDownloads = tasks.Count(task =>
-            IsCompletedStatus(task.Status)
-            && task.UpdatedAt.UtcDateTime.Date == utcToday);
+        var queueCounts = await _queueRepository.GetStatusCountsAsync(
+            new DateTimeOffset(utcToday, TimeSpan.Zero),
+            cancellationToken);
+        var activeDownloads = queueCounts.ActiveDownloads;
+        var finishedDownloads = queueCounts.CompletedDownloads;
 
         var qualityState = _qualityScannerService.GetState();
         var duplicateSummary = _duplicateCleanerService.GetLastRunSummary();
         var orchestration = _downloadOrchestrationService.GetStatusSnapshot();
+        var resources = SystemStatsService.GetResourceSnapshot();
+        var backgroundWork = _backgroundWorkCoordinator.GetSnapshot();
 
         return Ok(new
         {
@@ -54,6 +62,16 @@ public sealed class SystemStatsApiController : ControllerBase
             activeSyncs = 0,
             uptime = _systemStatsService.GetUptime(),
             memory = SystemStatsService.GetMemoryUsage(),
+            resources = new
+            {
+                resources.WorkingSetBytes,
+                resources.ManagedMemoryBytes,
+                resources.ManagedHeapBytes,
+                resources.ManagedFragmentedBytes,
+                resources.ProcessThreadCount,
+                activeShazamProcesses = _shazamRecognitionService.ActiveRecognizerProcessCount,
+                backgroundWork.ActiveHeavyOperation
+            },
             orchestration = new
             {
                 phase = orchestration.Phase.ToString(),
@@ -114,15 +132,4 @@ public sealed class SystemStatsApiController : ControllerBase
         });
     }
 
-    private static bool IsActiveDownloadStatus(string? status)
-    {
-        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized is "running" or "downloading" or "inprogress" or "retrying";
-    }
-
-    private static bool IsCompletedStatus(string? status)
-    {
-        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized is "completed" or "complete" or "finished";
-    }
 }

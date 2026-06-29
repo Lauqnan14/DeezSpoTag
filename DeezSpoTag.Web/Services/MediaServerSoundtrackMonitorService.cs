@@ -2,42 +2,36 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class MediaServerSoundtrackMonitorService : BackgroundService
 {
-    private static readonly TimeSpan InitialDelay = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan SchedulerPollInterval = TimeSpan.FromMinutes(15);
+    private const string JobKey = "media-server-soundtrack-sync";
     private readonly MediaServerSoundtrackService _service;
+    private readonly DeezSpoTag.Services.Library.LibraryRepository _repository;
+    private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<MediaServerSoundtrackMonitorService> _logger;
 
     public MediaServerSoundtrackMonitorService(
         MediaServerSoundtrackService service,
+        DeezSpoTag.Services.Library.LibraryRepository repository,
+        DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator workCoordinator,
         ILogger<MediaServerSoundtrackMonitorService> logger)
     {
         _service = service;
+        _repository = repository;
+        _workCoordinator = workCoordinator;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
-        {
-            await Task.Delay(InitialDelay, stoppingToken);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
         while (!stoppingToken.IsCancellationRequested)
         {
-            await RunSyncIterationAsync(stoppingToken);
-
-            try
+            if (await _repository.TryClaimBackgroundJobAsync(JobKey, RefreshInterval, DateTimeOffset.UtcNow, stoppingToken))
             {
-                await Task.Delay(RefreshInterval, stoppingToken);
+                await _workCoordinator.RunHeavyWorkAsync(RunSyncIterationAsync, stoppingToken);
+                await _repository.CompleteBackgroundJobAsync(JobKey, RefreshInterval, DateTimeOffset.UtcNow, stoppingToken);
             }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
+            await Task.Delay(SchedulerPollInterval, stoppingToken);
         }
     }
 

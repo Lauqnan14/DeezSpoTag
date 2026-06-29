@@ -1098,7 +1098,7 @@ public sealed class MelodayService
 
         var playCounts = filteredHistory
             .GroupBy(entry => entry.TrackId)
-            .ToDictionary(group => group.Key, group => group.Count());
+            .ToDictionary(group => group.Key, group => group.Sum(entry => entry.PlayCount));
 
         var sortedTracks = playCounts
             .OrderByDescending(entry => entry.Value)
@@ -1140,7 +1140,9 @@ public sealed class MelodayService
 
             foreach (var genre in metadata.Genres.Where(genre => !string.IsNullOrWhiteSpace(genre)))
             {
-                genreCount[genre] = genreCount.TryGetValue(genre, out var count) ? count + 1 : 1;
+                genreCount[genre] = genreCount.TryGetValue(genre, out var count)
+                    ? count + entry.PlayCount
+                    : entry.PlayCount;
             }
         }
 

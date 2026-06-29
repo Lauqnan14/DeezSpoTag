@@ -10,18 +10,23 @@ public sealed class PlexMetadataRefreshService : BackgroundService
     private readonly LibraryRepository _libraryRepository;
     private readonly IConfiguration _configuration;
     private readonly ILogger<PlexMetadataRefreshService> _logger;
+    private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
     private readonly TimeSpan _interval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(15);
+    private const string JobKey = "plex-metadata-refresh";
 
     public PlexMetadataRefreshService(
         PlexApiClient plexApiClient,
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
+        DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator workCoordinator,
         IConfiguration configuration,
         ILogger<PlexMetadataRefreshService> logger)
     {
         _plexApiClient = plexApiClient;
         _authService = authService;
         _libraryRepository = libraryRepository;
+        _workCoordinator = workCoordinator;
         _configuration = configuration;
         _logger = logger;
     }
@@ -35,27 +40,39 @@ public sealed class PlexMetadataRefreshService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
+            var now = DateTimeOffset.UtcNow;
+            if (await _libraryRepository.TryClaimBackgroundJobAsync(JobKey, _interval, now, stoppingToken))
             {
-                await RefreshRecentMetadataAsync(stoppingToken);
-            }
-            catch (OperationCanceledException ex) when (!stoppingToken.IsCancellationRequested)
-            {
-                _logger.LogWarning(ex, "Plex metadata refresh timed out; will retry on next interval.");
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Plex metadata refresh failed.");
+                await RunClaimedRefreshAsync(stoppingToken);
             }
 
             try
             {
-                await Task.Delay(_interval, stoppingToken);
+                await Task.Delay(PollInterval, stoppingToken);
             }
             catch (TaskCanceledException)
             {
                 break;
             }
+        }
+    }
+
+    private async Task RunClaimedRefreshAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _workCoordinator.RunHeavyWorkAsync(RefreshRecentMetadataAsync, cancellationToken);
+            await _libraryRepository.CompleteBackgroundJobAsync(JobKey, _interval, DateTimeOffset.UtcNow, cancellationToken);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Plex metadata refresh timed out; will retry later.");
+            await _libraryRepository.FailBackgroundJobAsync(JobKey, TimeSpan.FromMinutes(30), DateTimeOffset.UtcNow, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Plex metadata refresh failed.");
+            await _libraryRepository.FailBackgroundJobAsync(JobKey, TimeSpan.FromMinutes(30), DateTimeOffset.UtcNow, CancellationToken.None);
         }
     }
 

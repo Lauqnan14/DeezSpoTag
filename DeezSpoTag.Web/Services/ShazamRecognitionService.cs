@@ -1,11 +1,12 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Security;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class ShazamRecognitionService
+public sealed class ShazamRecognitionService : IDisposable
 {
     public enum RecognitionMode
     {
@@ -34,6 +35,8 @@ public sealed class ShazamRecognitionService
     private readonly IWebHostEnvironment _environment;
     private readonly ShazamDiscoveryService _discoveryService;
     private readonly ILogger<ShazamRecognitionService> _logger;
+    private readonly SemaphoreSlim _recognizerGate = new(2, 2);
+    private readonly ConcurrentDictionary<int, Process> _activeRecognizerProcesses = new();
     private readonly object _runtimeProbeGate = new();
     private RecognizerRuntimeProbe? _runtimeProbe;
     private DateTimeOffset _runtimeProbeCheckedAtUtc = DateTimeOffset.MinValue;
@@ -454,85 +457,123 @@ public sealed class ShazamRecognitionService
 
         var pythonExecutable = ResolvePythonExecutable();
         var startInfo = CreateRecognizerProcessStartInfo(scriptPath, filePath, pythonExecutable, signatureWindowSeconds);
-        using var process = new Process { StartInfo = startInfo };
-        if (!TryStartRecognizerProcess(process, pythonExecutable, out var startError))
-        {
-            return new PortedRecognizerExecution
-            {
-                State = PortedRecognizerState.Error,
-                Error = startError
-            };
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(40));
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
-        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        _recognizerGate.Wait(cancellationToken);
         try
         {
-            process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            TryTerminateRecognizerProcess(process);
-            return new PortedRecognizerExecution
+            using var process = new Process { StartInfo = startInfo };
+            if (!TryStartRecognizerProcess(process, pythonExecutable, out var startError))
             {
-                State = PortedRecognizerState.Error,
-                Error = "Shazam recognizer timed out after 40 seconds."
-            };
-        }
-        catch (OperationCanceledException)
-        {
-            TryTerminateRecognizerProcess(process);
-            throw;
-        }
-
-        var stdout = stdoutTask.GetAwaiter().GetResult().Trim();
-        var stderr = stderrTask.GetAwaiter().GetResult().Trim();
-        if (process.ExitCode != 0)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Shazam ported recognizer exited with code {Code}. stderr={Stderr}", process.ExitCode, stderr);
+                return new PortedRecognizerExecution
+                {
+                    State = PortedRecognizerState.Error,
+                    Error = startError
+                };
             }
-            return new PortedRecognizerExecution
-            {
-                State = PortedRecognizerState.Error,
-                Error = BuildRecognizerExitError(process.ExitCode, stderr)
-            };
-        }
 
-        if (string.IsNullOrWhiteSpace(stdout))
+            _activeRecognizerProcesses[process.Id] = process;
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(40));
+                var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+                var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+                try
+                {
+                    process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    var terminated = TryTerminateRecognizerProcess(process);
+                    return new PortedRecognizerExecution
+                    {
+                        State = PortedRecognizerState.Error,
+                        Error = terminated
+                            ? "Shazam recognizer timed out after 40 seconds."
+                            : "Shazam recognizer timed out and its process did not terminate."
+                    };
+                }
+                catch (OperationCanceledException)
+                {
+                    TryTerminateRecognizerProcess(process);
+                    throw;
+                }
+
+                var stdout = stdoutTask.GetAwaiter().GetResult().Trim();
+                var stderr = stderrTask.GetAwaiter().GetResult().Trim();
+                if (process.ExitCode != 0)
+                {
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Shazam ported recognizer exited with code {Code}. stderr={Stderr}", process.ExitCode, stderr);
+                    }
+                    return new PortedRecognizerExecution
+                    {
+                        State = PortedRecognizerState.Error,
+                        Error = BuildRecognizerExitError(process.ExitCode, stderr)
+                    };
+                }
+
+                if (string.IsNullOrWhiteSpace(stdout))
+                {
+                    _logger.LogDebug("Shazam ported recognizer returned empty output.");
+                    return new PortedRecognizerExecution
+                    {
+                        State = PortedRecognizerState.Error,
+                        Error = "Shazam recognizer returned empty output."
+                    };
+                }
+
+                return ParsePortedRecognizerOutput(stdout);
+            }
+            finally
+            {
+                _activeRecognizerProcesses.TryRemove(process.Id, out _);
+                if (!process.HasExited)
+                {
+                    TryTerminateRecognizerProcess(process);
+                }
+            }
+        }
+        finally
         {
-            _logger.LogDebug("Shazam ported recognizer returned empty output.");
-            return new PortedRecognizerExecution
-            {
-                State = PortedRecognizerState.Error,
-                Error = "Shazam recognizer returned empty output."
-            };
+            _recognizerGate.Release();
         }
-
-        return ParsePortedRecognizerOutput(stdout);
     }
 
-    private static void TryTerminateRecognizerProcess(Process process)
+    private static bool TryTerminateRecognizerProcess(Process process)
     {
         try
         {
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
-                process.WaitForExit(5000);
+                if (!process.WaitForExit(5000) && !process.HasExited)
+                {
+                    return false;
+                }
             }
+            return true;
         }
         catch (InvalidOperationException)
         {
-            // The process exited between the state check and termination.
+            return true;
         }
         catch (System.ComponentModel.Win32Exception)
         {
-            // The operating system already released the process.
+            return process.HasExited;
         }
+    }
+
+    public int ActiveRecognizerProcessCount => _activeRecognizerProcesses.Count;
+
+    public void Dispose()
+    {
+        foreach (var process in _activeRecognizerProcesses.Values)
+        {
+            TryTerminateRecognizerProcess(process);
+        }
+        _activeRecognizerProcesses.Clear();
+        _recognizerGate.Dispose();
     }
 
     private ProcessStartInfo CreateRecognizerProcessStartInfo(

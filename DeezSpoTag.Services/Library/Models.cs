@@ -201,7 +201,8 @@ public sealed record TrackAnalysisResultDto(
 
 public sealed record PlayHistoryEntryDto(
     long TrackId,
-    DateTimeOffset PlayedAtUtc);
+    DateTimeOffset PlayedAtUtc,
+    int PlayCount = 1);
 
 public sealed record PlexTrackMetadataDto(
     long TrackId,

@@ -73,8 +73,10 @@ public sealed class PlexHistoryImportService
             if (!trackId.HasValue) stats.Unresolved++;
 
             AddRatingKeyUpsertIfAvailable(item.RatingKey, trackId, trackIdsByRatingKey, ratingKeyUpserts);
-            await WritePlayHistoryAsync(plexUserId, libraryId, trackId, item, cancellationToken);
-            stats.Inserted++;
+            if (await WritePlayHistoryAsync(plexUserId, libraryId, trackId, item, cancellationToken))
+            {
+                stats.Inserted++;
+            }
         }
 
         if (ratingKeyUpserts.Count > 0)
@@ -179,14 +181,14 @@ public sealed class PlexHistoryImportService
             DateTimeOffset.UtcNow));
     }
 
-    private async Task WritePlayHistoryAsync(
+    private async Task<bool> WritePlayHistoryAsync(
         long plexUserId,
         long? libraryId,
         long? trackId,
         PlexHistoryItem item,
         CancellationToken cancellationToken)
     {
-        await _libraryRepository.AddPlayHistoryAsync(
+        return await _libraryRepository.AddPlayHistoryAsync(
             new LibraryRepository.PlayHistoryWriteInput(
                 plexUserId,
                 libraryId,

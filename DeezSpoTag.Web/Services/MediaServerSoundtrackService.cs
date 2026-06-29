@@ -52,6 +52,7 @@ public sealed partial class MediaServerSoundtrackService
     private const string SpotifyUriPattern = @"^spotify:(?<type>album|playlist|track):(?<id>[A-Za-z0-9]{22})$";
     private const string DeezerWebLinkPattern = @"deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?<type>album|playlist|track)\/(?<id>\d+)";
     private static readonly TimeSpan SoundtrackCacheTtl = TimeSpan.FromHours(12);
+    private const int SoundtrackCacheLimit = 2048;
     private static readonly TimeSpan MonthlySyncInterval = TimeSpan.FromDays(30);
     private static readonly TimeSpan LibraryDiscoveryRefreshInterval = TimeSpan.FromHours(24);
     private static readonly TimeSpan LibraryConnectedFreshWindow = TimeSpan.FromMinutes(30);
@@ -531,6 +532,7 @@ public sealed partial class MediaServerSoundtrackService
         if (!string.IsNullOrWhiteSpace(cacheKey))
         {
             _soundtrackCache[cacheKey] = (DateTimeOffset.UtcNow, resolvedMatch);
+            TrimSoundtrackCache();
         }
 
         return resolvedMatch;
@@ -2339,6 +2341,7 @@ public sealed partial class MediaServerSoundtrackService
             var resolved = await ResolveSoundtrackDirectAsync(item, CancellationToken.None);
             NormalizeMatchMetadata(resolved);
             _soundtrackCache[cacheKey] = (DateTimeOffset.UtcNow, resolved);
+            TrimSoundtrackCache();
             return resolved;
         }
         finally
@@ -3912,6 +3915,19 @@ public sealed partial class MediaServerSoundtrackService
 
     private static string NormalizeText(string? value)
         => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+
+    private void TrimSoundtrackCache()
+    {
+        var cutoff = DateTimeOffset.UtcNow - SoundtrackCacheTtl;
+        foreach (var entry in _soundtrackCache.Where(entry => entry.Value.CachedAtUtc < cutoff))
+        {
+            _soundtrackCache.TryRemove(entry.Key, out _);
+        }
+        foreach (var key in _soundtrackCache.Keys.Take(Math.Max(0, _soundtrackCache.Count - SoundtrackCacheLimit)))
+        {
+            _soundtrackCache.TryRemove(key, out _);
+        }
+    }
 
     private static string GetCategoryLabel(string category)
         => string.Equals(category, MediaServerSoundtrackConstants.TvShowCategory, StringComparison.Ordinal)

@@ -613,21 +613,38 @@ CREATE TABLE IF NOT EXISTS plex_user (
 CREATE TABLE IF NOT EXISTS play_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
-    plex_user_id BIGINT REFERENCES plex_user(id) ON DELETE SET NULL,
+    plex_user_id BIGINT NOT NULL REFERENCES plex_user(id) ON DELETE CASCADE,
     track_id BIGINT REFERENCES track(id) ON DELETE SET NULL,
     plex_track_key TEXT,
     plex_rating_key TEXT,
+    event_key TEXT NOT NULL,
     played_at_utc TEXT NOT NULL,
     play_duration_ms INTEGER,
     source TEXT NOT NULL DEFAULT 'plex',
     metadata_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (plex_user_id, plex_track_key, played_at_utc)
+    UNIQUE (plex_user_id, source, event_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_play_history_library ON play_history (library_id);
-CREATE INDEX IF NOT EXISTS idx_play_history_user ON play_history (plex_user_id);
-CREATE INDEX IF NOT EXISTS idx_play_history_played_at ON play_history (played_at_utc);
+CREATE INDEX IF NOT EXISTS idx_play_history_user_source_time
+    ON play_history (plex_user_id, source, played_at_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_play_history_user_library_time
+    ON play_history (plex_user_id, library_id, played_at_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_play_history_user_library_track_time
+    ON play_history (plex_user_id, library_id, track_id, played_at_utc DESC);
+
+CREATE TABLE IF NOT EXISTS background_job_state (
+    job_key TEXT NOT NULL PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'idle',
+    last_started_at_utc TEXT,
+    last_finished_at_utc TEXT,
+    next_due_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_background_job_state_due
+    ON background_job_state (status, next_due_at_utc);
 
 CREATE TABLE IF NOT EXISTS mix_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

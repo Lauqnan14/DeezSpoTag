@@ -2466,27 +2466,51 @@ LIMIT 1;";
         return Convert.ToInt64(result);
     }
 
-    public async Task AddPlayHistoryAsync(
+    public async Task<bool> AddPlayHistoryAsync(
         PlayHistoryWriteInput input,
         CancellationToken cancellationToken = default)
     {
+        var source = string.IsNullOrWhiteSpace(input.Source) ? "plex" : input.Source.Trim().ToLowerInvariant();
+        var eventIdentity = FirstNonEmptyHistoryIdentity(input.PlexTrackKey, input.PlexRatingKey, input.TrackId);
+        if (string.IsNullOrWhiteSpace(eventIdentity))
+        {
+            return false;
+        }
+
+        var eventKey = $"{eventIdentity}|{input.PlayedAtUtc.ToUniversalTime():O}";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = $@"
 INSERT OR IGNORE INTO play_history
-    (library_id, plex_user_id, track_id, plex_track_key, plex_rating_key, played_at_utc, play_duration_ms, source, metadata_json)
+    (library_id, plex_user_id, track_id, plex_track_key, plex_rating_key, event_key, played_at_utc, play_duration_ms, source, metadata_json)
 VALUES
-    (@libraryId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @playedAtUtc, @{DurationMsField}, @source, @metadataJson);";
+    (@libraryId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @eventKey, @playedAtUtc, @{DurationMsField}, @source, @metadataJson);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, (object?)input.LibraryId ?? DBNull.Value);
         command.Parameters.AddWithValue("plexUserId", input.PlexUserId);
         command.Parameters.AddWithValue(TrackIdField, (object?)input.TrackId ?? DBNull.Value);
         command.Parameters.AddWithValue("plexTrackKey", (object?)input.PlexTrackKey ?? DBNull.Value);
         command.Parameters.AddWithValue("plexRatingKey", (object?)input.PlexRatingKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("eventKey", eventKey);
         command.Parameters.AddWithValue("playedAtUtc", input.PlayedAtUtc.ToString("O"));
         command.Parameters.AddWithValue(DurationMsField, (object?)input.DurationMs ?? DBNull.Value);
-        command.Parameters.AddWithValue("source", string.IsNullOrWhiteSpace(input.Source) ? "plex" : input.Source.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("source", source);
         command.Parameters.AddWithValue("metadataJson", (object?)input.MetadataJson ?? DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    private static string? FirstNonEmptyHistoryIdentity(string? trackKey, string? ratingKey, long? trackId)
+    {
+        if (!string.IsNullOrWhiteSpace(trackKey))
+        {
+            return $"key:{trackKey.Trim()}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(ratingKey))
+        {
+            return $"rating:{ratingKey.Trim()}";
+        }
+
+        return trackId.HasValue ? $"track:{trackId.Value.ToString(CultureInfo.InvariantCulture)}" : null;
     }
 
     public async Task<DateTimeOffset?> GetLatestPlayHistoryUtcAsync(
@@ -2507,6 +2531,90 @@ WHERE plex_user_id = @plexUserId
         return value is string text && !string.IsNullOrWhiteSpace(text)
             ? ParseDateTimeOffsetInvariant(text)
             : null;
+    }
+
+    public async Task<bool> TryClaimBackgroundJobAsync(
+        string jobKey,
+        TimeSpan interval,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(jobKey))
+        {
+            throw new ArgumentException("Background job key is required.", nameof(jobKey));
+        }
+
+        var normalizedKey = jobKey.Trim().ToLowerInvariant();
+        var firstDueAt = nowUtc.Add(interval);
+        var staleBefore = nowUtc.Subtract(TimeSpan.FromHours(2));
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        await using (var ensureCommand = new SqliteCommand(@"
+INSERT INTO background_job_state (job_key, status, next_due_at_utc, updated_at_utc)
+VALUES (@jobKey, 'idle', @nextDueAtUtc, @nowUtc)
+ON CONFLICT(job_key) DO NOTHING;", connection, transaction))
+        {
+            ensureCommand.Parameters.AddWithValue("jobKey", normalizedKey);
+            ensureCommand.Parameters.AddWithValue("nextDueAtUtc", firstDueAt.ToString("O"));
+            ensureCommand.Parameters.AddWithValue("nowUtc", nowUtc.ToString("O"));
+            await ensureCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var claimCommand = new SqliteCommand(@"
+UPDATE background_job_state
+SET status = 'running',
+    last_started_at_utc = @nowUtc,
+    updated_at_utc = @nowUtc
+WHERE job_key = @jobKey
+  AND (status <> 'running' OR last_started_at_utc < @staleBeforeUtc)
+  AND next_due_at_utc <= @nowUtc;", connection, transaction);
+        claimCommand.Parameters.AddWithValue("jobKey", normalizedKey);
+        claimCommand.Parameters.AddWithValue("nowUtc", nowUtc.ToString("O"));
+        claimCommand.Parameters.AddWithValue("staleBeforeUtc", staleBefore.ToString("O"));
+        var claimed = await claimCommand.ExecuteNonQueryAsync(cancellationToken) > 0;
+        await transaction.CommitAsync(cancellationToken);
+        return claimed;
+    }
+
+    public async Task CompleteBackgroundJobAsync(
+        string jobKey,
+        TimeSpan interval,
+        DateTimeOffset completedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await UpdateBackgroundJobAfterRunAsync(jobKey, "idle", completedAtUtc.Add(interval), completedAtUtc, cancellationToken);
+    }
+
+    public async Task FailBackgroundJobAsync(
+        string jobKey,
+        TimeSpan retryDelay,
+        DateTimeOffset failedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await UpdateBackgroundJobAfterRunAsync(jobKey, "idle", failedAtUtc.Add(retryDelay), failedAtUtc, cancellationToken);
+    }
+
+    private async Task UpdateBackgroundJobAfterRunAsync(
+        string jobKey,
+        string status,
+        DateTimeOffset nextDueAtUtc,
+        DateTimeOffset finishedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE background_job_state
+SET status = @status,
+    last_finished_at_utc = @finishedAtUtc,
+    next_due_at_utc = @nextDueAtUtc,
+    updated_at_utc = @finishedAtUtc
+WHERE job_key = @jobKey;", connection);
+        command.Parameters.AddWithValue("status", status);
+        command.Parameters.AddWithValue("finishedAtUtc", finishedAtUtc.ToString("O"));
+        command.Parameters.AddWithValue("nextDueAtUtc", nextDueAtUtc.ToString("O"));
+        command.Parameters.AddWithValue("jobKey", jobKey.Trim().ToLowerInvariant());
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<long>> GetTopTrackIdsAsync(long plexUserId, long libraryId, int limit, CancellationToken cancellationToken = default)
@@ -2734,7 +2842,8 @@ LIMIT @limit;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT ph.track_id,
-       ph.played_at_utc
+       MAX(ph.played_at_utc) AS last_played_at_utc,
+       COUNT(*) AS play_count
 FROM play_history ph
 WHERE ph.plex_user_id = @plexUserId
   AND ph.library_id = @libraryId
@@ -2745,20 +2854,23 @@ WHERE ph.plex_user_id = @plexUserId
       SELECT CAST(value AS INTEGER)
       FROM json_each(@allowedHoursJson)
   )
-ORDER BY ph.played_at_utc DESC;";
+GROUP BY ph.track_id
+ORDER BY last_played_at_utc DESC
+LIMIT @historyLimit;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("plexUserId", plexUserId);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
         command.Parameters.AddWithValue("lookbackStart", lookbackStartUtc.ToString("O"));
         command.Parameters.AddWithValue("excludeAfter", excludeAfterUtc.ToString("O"));
         command.Parameters.AddWithValue("allowedHoursJson", SerializeJsonArray(allowedHours));
+        command.Parameters.AddWithValue("historyLimit", 50000);
 
         var results = new List<PlayHistoryEntryDto>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
             var playedAt = ParseDateTimeOffsetInvariant(reader.GetString(1));
-            results.Add(new PlayHistoryEntryDto(reader.GetInt64(0), playedAt));
+            results.Add(new PlayHistoryEntryDto(reader.GetInt64(0), playedAt, reader.GetInt32(2)));
         }
 
         return results;

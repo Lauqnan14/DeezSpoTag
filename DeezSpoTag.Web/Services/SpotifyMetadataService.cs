@@ -127,6 +127,10 @@ public sealed class SpotifyMetadataService
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
     private readonly ILogger<SpotifyMetadataService> _logger;
     private static readonly TimeSpan PlaylistCacheTtl = TimeSpan.FromSeconds(60);
+    private const int PlaylistCacheLimit = 256;
+    private const int PlaylistTrackCacheLimit = 256;
+    private const int LibrespotTrackCacheLimit = 4096;
+    private const int AudioFeatureCacheLimit = 10000;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyUrlMetadata Data)> PlaylistCache = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyUrlMetadata Data)> PlaylistMetadataCache = new();
     private static readonly TimeSpan PlaylistTrackCacheTtl = TimeSpan.FromMinutes(5);
@@ -1421,6 +1425,7 @@ public sealed class SpotifyMetadataService
             DateTimeOffset.UtcNow,
             source,
             FilterInvalidSpotifyTracks(tracks));
+        TrimCache(PlaylistTrackCache, PlaylistTrackCacheLimit);
     }
 
     private static List<SpotifyTrackSummary> FilterInvalidSpotifyTracks(List<SpotifyTrackSummary> tracks)
@@ -1495,6 +1500,7 @@ public sealed class SpotifyMetadataService
         }
 
         LibrespotTrackCache[track.Id] = (DateTimeOffset.UtcNow, track);
+        TrimTimestampCache(LibrespotTrackCache, LibrespotTrackCacheLimit, LibrespotTrackCacheTtl);
     }
 
     private static bool TryGetPlaylistMetadataFromCache(string playlistId, out SpotifyUrlMetadata metadata)
@@ -1529,6 +1535,7 @@ public sealed class SpotifyMetadataService
         }
 
         PlaylistMetadataCache[playlistId] = (DateTimeOffset.UtcNow, metadata);
+        TrimTimestampCache(PlaylistMetadataCache, PlaylistCacheLimit, PlaylistCacheTtl);
     }
 
     internal static bool HasTrustedPlaylistMetadata(SpotifyUrlMetadata? metadata)
@@ -1887,6 +1894,7 @@ public sealed class SpotifyMetadataService
             {
                 AudioFeatureCache[id] = features;
             }
+            TrimCache(AudioFeatureCache, AudioFeatureCacheLimit);
 
             return fetched;
         }
@@ -2757,6 +2765,7 @@ public sealed class SpotifyMetadataService
         }
 
         PlaylistCache[playlistId] = (DateTimeOffset.UtcNow, metadata);
+        TrimTimestampCache(PlaylistCache, PlaylistCacheLimit, PlaylistCacheTtl);
     }
 
     private static string? ExtractArtists(JsonElement item)
@@ -3629,6 +3638,35 @@ public sealed class SpotifyMetadataService
         string? SnapshotId,
         int? TotalTracks,
         List<string> TrackIds);
+
+    private static void TrimTimestampCache<T>(
+        System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, T Data)> cache,
+        int limit,
+        TimeSpan ttl)
+    {
+        var cutoff = DateTimeOffset.UtcNow - ttl;
+        foreach (var entry in cache.Where(entry => entry.Value.Stamp < cutoff))
+        {
+            cache.TryRemove(entry.Key, out _);
+        }
+        TrimCache(cache, limit);
+    }
+
+    private static void TrimCache<T>(
+        System.Collections.Concurrent.ConcurrentDictionary<string, T> cache,
+        int limit)
+    {
+        var overflow = cache.Count - limit;
+        if (overflow <= 0)
+        {
+            return;
+        }
+
+        foreach (var key in cache.Keys.Take(overflow))
+        {
+            cache.TryRemove(key, out _);
+        }
+    }
 
     private static string? CleanSpotifyDescription(string? description)
     {

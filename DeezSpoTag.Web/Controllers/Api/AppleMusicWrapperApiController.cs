@@ -10,6 +10,10 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class AppleMusicWrapperApiController : ControllerBase
 {
+    private static readonly TimeSpan StatusCacheTtl = TimeSpan.FromMinutes(1);
+    private static readonly object StatusCacheLock = new();
+    private static AppleMusicWrapperStatusSnapshot? _cachedStatus;
+    private static DateTimeOffset _statusCacheExpiresUtc;
     private readonly AppleMusicWrapperService _wrapperService;
     private readonly ILogger<AppleMusicWrapperApiController> _logger;
 
@@ -30,7 +34,7 @@ public sealed class AppleMusicWrapperApiController : ControllerBase
             return gate;
         }
 
-        return Ok(ToResponse(_wrapperService.GetStatus()));
+        return Ok(ToResponse(GetCachedStatus()));
     }
 
     [HttpGet("helper/status")]
@@ -71,6 +75,7 @@ public sealed class AppleMusicWrapperApiController : ControllerBase
         try
         {
             var status = await _wrapperService.StartLoginAsync(payload.Email, payload.Password, cancellationToken);
+            SetCachedStatus(status);
             return Ok(ToResponse(status));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -92,6 +97,7 @@ public sealed class AppleMusicWrapperApiController : ControllerBase
         try
         {
             var status = await _wrapperService.SubmitTwoFactorAsync(payload.Code, cancellationToken);
+            SetCachedStatus(status);
             return Ok(ToResponse(status));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -114,6 +120,34 @@ public sealed class AppleMusicWrapperApiController : ControllerBase
             recentOutput = _wrapperService.GetRecentOutput(),
             diagnostics = _wrapperService.GetDiagnostics()
         };
+    }
+
+    private AppleMusicWrapperStatusSnapshot GetCachedStatus()
+    {
+        lock (StatusCacheLock)
+        {
+            if (_cachedStatus is not null && _statusCacheExpiresUtc > DateTimeOffset.UtcNow)
+            {
+                return _cachedStatus;
+            }
+            var status = _wrapperService.GetStatus();
+            SetCachedStatusCore(status);
+            return status;
+        }
+    }
+
+    private static void SetCachedStatus(AppleMusicWrapperStatusSnapshot status)
+    {
+        lock (StatusCacheLock)
+        {
+            SetCachedStatusCore(status);
+        }
+    }
+
+    private static void SetCachedStatusCore(AppleMusicWrapperStatusSnapshot status)
+    {
+        _cachedStatus = status;
+        _statusCacheExpiresUtc = DateTimeOffset.UtcNow.Add(StatusCacheTtl);
     }
 
     public sealed class AppleWrapperLoginRequest

@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
+    private const int CacheLimit = 4096;
     private static readonly ConcurrentDictionary<string, CacheEntry> Cache = new();
     private readonly SpotifyMetadataService _metadataService;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
@@ -102,6 +103,7 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
         }
 
         Cache[cacheKey] = new CacheEntry(DateTimeOffset.UtcNow, artwork);
+        TrimCache();
         if (_logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("Spotify artwork resolved for track {SpotifyTrackId}", spotifyTrackId);
@@ -110,4 +112,18 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
     }
 
     private sealed record CacheEntry(DateTimeOffset Stamp, SpotifyTrackArtwork Artwork);
+
+    private static void TrimCache()
+    {
+        var cutoff = DateTimeOffset.UtcNow - CacheTtl;
+        foreach (var entry in Cache.Where(entry => entry.Value.Stamp < cutoff))
+        {
+            Cache.TryRemove(entry.Key, out _);
+        }
+
+        foreach (var key in Cache.Keys.Take(Math.Max(0, Cache.Count - CacheLimit)))
+        {
+            Cache.TryRemove(key, out _);
+        }
+    }
 }

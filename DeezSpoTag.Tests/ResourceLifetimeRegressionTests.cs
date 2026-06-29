@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Collections.Generic;
+using System.Diagnostics;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -63,6 +64,26 @@ public sealed class ResourceLifetimeRegressionTests
     }
 
     [Fact]
+    public void ShazamRecognizer_TerminationWaitsUntilOwnedProcessExits()
+    {
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "/bin/sh",
+            UseShellExecute = false,
+            ArgumentList = { "-c", "sleep 30" }
+        }) ?? throw new InvalidOperationException("Unable to start test process.");
+        var method = typeof(ShazamRecognitionService).GetMethod(
+            "TryTerminateRecognizerProcess",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("TryTerminateRecognizerProcess not found.");
+
+        var terminated = Assert.IsType<bool>(method.Invoke(null, [process]));
+
+        Assert.True(terminated);
+        Assert.True(process.HasExited);
+    }
+
+    [Fact]
     public void ActiveStaticCaches_HaveExplicitResourceCaps()
     {
         var repoRoot = FindRepoRoot();
@@ -71,6 +92,10 @@ public sealed class ResourceLifetimeRegressionTests
         var spotifyPathfinder = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs"));
         var trackAvailability = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAvailabilityService.cs"));
         var localAutoTagRunner = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var spotifyMetadata = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs"));
+        var spotifyArtwork = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyArtworkResolver.cs"));
+        var spotifyTracklist = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyTracklistService.cs"));
+        var soundtrack = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MediaServerSoundtrackService.cs"));
 
         Assert.Contains("MaxSessionCardCacheEntries", shazamDiscovery, StringComparison.Ordinal);
         Assert.Contains("TrimSessionCardCacheIfNeeded", shazamDiscovery, StringComparison.Ordinal);
@@ -83,6 +108,22 @@ public sealed class ResourceLifetimeRegressionTests
         Assert.Contains("MaxShowEpisodeCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("MaxAppleSearchCacheEntries", trackAvailability, StringComparison.Ordinal);
         Assert.Contains("_jobMatchCaches.TryRemove(jobId, out _);", localAutoTagRunner, StringComparison.Ordinal);
+        Assert.Contains("AudioFeatureCacheLimit", spotifyMetadata, StringComparison.Ordinal);
+        Assert.Contains("PlaylistTrackCacheLimit", spotifyMetadata, StringComparison.Ordinal);
+        Assert.Contains("CacheLimit", spotifyArtwork, StringComparison.Ordinal);
+        Assert.Contains("SnapshotCacheLimit", spotifyTracklist, StringComparison.Ordinal);
+        Assert.Contains("SoundtrackCacheLimit", soundtrack, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagTerminalCleanup_RemovesAllPerJobRuntimeState()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("_lastActivityLines.TryRemove(job.Id, out _);", source, StringComparison.Ordinal);
+        Assert.Contains("_archiveLocks.TryRemove(job.Id, out _);", source, StringComparison.Ordinal);
+        Assert.Contains("_lastRunIndexUpdateUtc.TryRemove(job.Id, out _);", source, StringComparison.Ordinal);
     }
 
     private static string FindRepoRoot()

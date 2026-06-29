@@ -2317,7 +2317,7 @@ async function validatePersistentLoginState() {
 
 async function loadPlatformAuthState() {
     try {
-        const response = await fetch('/api/platform-auth', {
+        const response = await fetch('/api/platform-auth?refresh=true', {
             cache: 'no-store',
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
@@ -4067,7 +4067,10 @@ async function refreshSpotifyConnectionStatus(data, active, activeAccountName, a
             const response = await fetchWithTimeout(statusUrl, {
                 cache: 'no-store',
                 credentials: 'same-origin',
-                headers: { Accept: 'application/json' }
+                headers: {
+                    Accept: 'application/json',
+                    'X-DeezSpoTag-Explicit-Refresh': forceRefresh ? 'login' : ''
+                }
             }, 4500);
 
             if (!response || !response.ok) {

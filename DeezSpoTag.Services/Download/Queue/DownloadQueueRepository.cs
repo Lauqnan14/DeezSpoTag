@@ -21,6 +21,8 @@ public enum QueueRequeueOrigin
     Unknown = 99
 }
 
+public sealed record DownloadQueueStatusCounts(int ActiveDownloads, int CompletedDownloads);
+
 public sealed class DownloadQueueRepository
 {
     public sealed record QueueStateChangedEvent(string QueueUuid, string Status);
@@ -338,6 +340,36 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
         return items;
     }
 
+    public async Task<IReadOnlyList<DownloadQueueItem>> GetPreResolutionWindowAsync(
+        bool newestFirst,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var direction = newestFirst ? "DESC" : "ASC";
+        var sql = $@"
+SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
+FROM download_task
+WHERE lower(status) IN ('queued', 'resolving')
+ORDER BY (queue_order IS NULL), queue_order {direction}, created_at {direction}, id {direction}
+LIMIT @limit;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 25));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var items = new List<DownloadQueueItem>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadItem(reader));
+        }
+
+        return items;
+    }
+
     public async Task<IReadOnlyList<DownloadQueueItem>> GetActivitiesTasksAsync(
         int terminalItemLimit,
         CancellationToken cancellationToken = default)
@@ -425,6 +457,30 @@ WHERE lower(status) IN ('inqueue', 'running', 'downloading', 'retrying')
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 0 : Convert.ToInt32(result);
+    }
+
+    public async Task<DownloadQueueStatusCounts> GetStatusCountsAsync(
+        DateTimeOffset completedSinceUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT
+    SUM(CASE WHEN lower(status) IN ('running', 'downloading', 'inprogress', 'retrying') THEN 1 ELSE 0 END),
+    SUM(CASE WHEN lower(status) IN ('completed', 'complete', 'finished')
+              AND updated_at >= @completedSinceUtc THEN 1 ELSE 0 END)
+FROM download_task;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("completedSinceUtc", completedSinceUtc.ToString("O"));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new DownloadQueueStatusCounts(0, 0);
+        }
+        return new DownloadQueueStatusCounts(
+            reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
+            reader.IsDBNull(1) ? 0 : reader.GetInt32(1));
     }
 
     public async Task<bool> HasActiveDownloadsAsync(CancellationToken cancellationToken = default)

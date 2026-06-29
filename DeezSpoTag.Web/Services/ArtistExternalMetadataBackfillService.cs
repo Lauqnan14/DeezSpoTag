@@ -10,26 +10,29 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
     private const int LastFmCandidateLimit = 8;
     private const string BackfillCycleFailedMessage = "Artist external metadata backfill cycle failed.";
     private static readonly TimeSpan RefreshAge = TimeSpan.FromDays(7);
-    private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CycleDelay = TimeSpan.FromMinutes(30);
+    private const string JobKey = "artist-external-metadata-backfill";
     private static readonly HttpClient ImageHttpClient = new();
 
     private readonly LibraryRepository _repository;
     private readonly AppleArtistBiographyService _appleBiographyService;
     private readonly LastFmArtistImageService _lastFmArtistImageService;
     private readonly ILogger<ArtistExternalMetadataBackfillService> _logger;
+    private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
     private readonly string _cacheRoot;
 
     public ArtistExternalMetadataBackfillService(
         LibraryRepository repository,
         AppleArtistBiographyService appleBiographyService,
         LastFmArtistImageService lastFmArtistImageService,
+        DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator workCoordinator,
         IWebHostEnvironment environment,
         ILogger<ArtistExternalMetadataBackfillService> logger)
     {
         _repository = repository;
         _appleBiographyService = appleBiographyService;
         _lastFmArtistImageService = lastFmArtistImageService;
+        _workCoordinator = workCoordinator;
         _logger = logger;
         _cacheRoot = Path.Join(AppDataPaths.GetDataRoot(environment), "library-artist-images", "lastfm", "artists");
     }
@@ -41,40 +44,11 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
             return;
         }
 
-        try
-        {
-            await Task.Delay(InitialDelay, stoppingToken);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
+            if (await _repository.TryClaimBackgroundJobAsync(JobKey, CycleDelay, DateTimeOffset.UtcNow, stoppingToken))
             {
-                await ProcessBatchAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (HttpRequestException ex)
-            {
-                _logger.LogWarning(ex, BackfillCycleFailedMessage);
-            }
-            catch (IOException ex)
-            {
-                _logger.LogWarning(ex, BackfillCycleFailedMessage);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                _logger.LogWarning(ex, BackfillCycleFailedMessage);
-            }
-            catch (InvalidOperationException ex)
-            {
-                _logger.LogWarning(ex, BackfillCycleFailedMessage);
+                await RunClaimedBatchAsync(stoppingToken);
             }
 
             try
@@ -85,6 +59,24 @@ public sealed class ArtistExternalMetadataBackfillService : BackgroundService
             {
                 break;
             }
+        }
+    }
+
+    private async Task RunClaimedBatchAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _workCoordinator.RunHeavyWorkAsync(ProcessBatchAsync, cancellationToken);
+            await _repository.CompleteBackgroundJobAsync(JobKey, CycleDelay, DateTimeOffset.UtcNow, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _logger.LogWarning(ex, BackfillCycleFailedMessage);
+            await _repository.FailBackgroundJobAsync(JobKey, TimeSpan.FromMinutes(15), DateTimeOffset.UtcNow, CancellationToken.None);
         }
     }
 

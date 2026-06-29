@@ -210,6 +210,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly TimeSpan _downloadIdleDelay = TimeSpan.FromSeconds(15);
     private readonly TimeSpan _orchestrationRecheckDelay = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan IdleRecoveryRecheckDelay = TimeSpan.FromMinutes(15);
     private readonly object _enhancementResumeLock = new();
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _processedCompletionByQueueItem = new(StringComparer.OrdinalIgnoreCase);
@@ -582,9 +583,16 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var now = DateTimeOffset.UtcNow;
+        OrchestrationPhase phase;
+        lock (_phaseLock)
+        {
+            phase = _phase;
+        }
         var deadlines = new List<DateTimeOffset>(3)
         {
-            now.Add(_orchestrationRecheckDelay)
+            now.Add(phase == OrchestrationPhase.Idle
+                ? IdleRecoveryRecheckDelay
+                : _orchestrationRecheckDelay)
         };
 
         if (countdownUntilUtc.HasValue && countdownUntilUtc.Value > now)

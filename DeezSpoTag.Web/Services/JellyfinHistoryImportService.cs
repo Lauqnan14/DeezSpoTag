@@ -61,7 +61,7 @@ public sealed class JellyfinHistoryImportService
                 stats.Unresolved++;
             }
 
-            await _libraryRepository.AddPlayHistoryAsync(
+            var inserted = await _libraryRepository.AddPlayHistoryAsync(
                 new LibraryRepository.PlayHistoryWriteInput(
                     userId,
                     libraryId,
@@ -73,7 +73,10 @@ public sealed class JellyfinHistoryImportService
                     JsonSerializer.Serialize(item),
                     "jellyfin"),
                 cancellationToken);
-            stats.Inserted++;
+            if (inserted)
+            {
+                stats.Inserted++;
+            }
         }
 
         if (_logger.IsEnabled(LogLevel.Information))

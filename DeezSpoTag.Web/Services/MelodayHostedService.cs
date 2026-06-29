@@ -8,6 +8,8 @@ public sealed class MelodayHostedService : BackgroundService
     private readonly MelodayOptions _options;
     private readonly MelodaySettingsStore _settingsStore;
     private readonly IConfiguration _configuration;
+    private readonly DeezSpoTag.Services.Library.LibraryRepository _repository;
+    private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<MelodayHostedService> _logger;
     private string? _lastPeriod;
 
@@ -16,12 +18,16 @@ public sealed class MelodayHostedService : BackgroundService
         IOptions<MelodayOptions> options,
         ILogger<MelodayHostedService> logger,
         MelodaySettingsStore settingsStore,
+        DeezSpoTag.Services.Library.LibraryRepository repository,
+        DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator workCoordinator,
         IConfiguration configuration)
     {
         _melodayService = melodayService;
         _options = options.Value;
         _logger = logger;
         _settingsStore = settingsStore;
+        _repository = repository;
+        _workCoordinator = workCoordinator;
         _configuration = configuration;
     }
 
@@ -43,12 +49,12 @@ public sealed class MelodayHostedService : BackgroundService
                 if (!effective.Enabled)
                 {
                     loggedDisabledState = LogDisabledStateOnce(loggedDisabledState);
-                    await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+                    await _settingsStore.WaitForChangeAsync(stoppingToken);
                     continue;
                 }
                 loggedDisabledState = false;
 
-                await RunCurrentPeriodUpdateIfNeededAsync(stoppingToken);
+                await RunCurrentPeriodUpdateIfNeededAsync(effective, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -59,10 +65,11 @@ public sealed class MelodayHostedService : BackgroundService
                 _logger.LogWarning(ex, "Meloday update failed.");
             }
 
-            var delay = TimeSpan.FromMinutes(Math.Max(5, effective.UpdateIntervalMinutes));
             try
             {
-                await Task.Delay(delay, stoppingToken);
+                await _settingsStore.WaitForChangeAsync(
+                    TimeSpan.FromMinutes(Math.Max(5, effective.UpdateIntervalMinutes)),
+                    stoppingToken);
             }
             catch (TaskCanceledException)
             {
@@ -82,7 +89,7 @@ public sealed class MelodayHostedService : BackgroundService
         return true;
     }
 
-    private async Task RunCurrentPeriodUpdateIfNeededAsync(CancellationToken stoppingToken)
+    private async Task RunCurrentPeriodUpdateIfNeededAsync(MelodayOptions effective, CancellationToken stoppingToken)
     {
         var period = MelodayService.GetCurrentPeriodName();
         if (string.Equals(period, _lastPeriod, StringComparison.OrdinalIgnoreCase))
@@ -90,10 +97,29 @@ public sealed class MelodayHostedService : BackgroundService
             return;
         }
 
-        var result = await _melodayService.RunAsync(refreshHistory: true, stoppingToken);
+        var interval = TimeSpan.FromMinutes(Math.Max(5, effective.UpdateIntervalMinutes));
+        var jobKey = $"meloday:{period}";
+        if (!await _repository.TryClaimBackgroundJobAsync(jobKey, interval, DateTimeOffset.UtcNow, stoppingToken))
+        {
+            _lastPeriod = period;
+            return;
+        }
+
+        MelodayRunResult? result = null;
+        await _workCoordinator.RunHeavyWorkAsync(
+            async token => result = await _melodayService.RunAsync(refreshHistory: true, token),
+            stoppingToken);
+        if (result?.Success == true)
+        {
+            await _repository.CompleteBackgroundJobAsync(jobKey, interval, DateTimeOffset.UtcNow, stoppingToken);
+        }
+        else
+        {
+            await _repository.FailBackgroundJobAsync(jobKey, TimeSpan.FromMinutes(15), DateTimeOffset.UtcNow, stoppingToken);
+        }
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Meloday update: {Message}", result.Message);
+            _logger.LogInformation("Meloday update: {Message}", result?.Message);
         }
         _lastPeriod = period;
     }

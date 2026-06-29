@@ -122,7 +122,9 @@ public sealed class RecommendationImplementationContractTests
             "Services",
             "LibraryRecommendationAutomationHostedService.cs"));
 
-        Assert.Contains("_recommendationService.RefreshDailyRecommendationsAsync(reason, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("_recommendationService.RefreshDailyRecommendationsAsync(reason, token)", source, StringComparison.Ordinal);
+        Assert.Contains("TryClaimBackgroundJobAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RunHeavyWorkAsync", source, StringComparison.Ordinal);
     }
 
     private static string ReadRecommendationServiceSource()

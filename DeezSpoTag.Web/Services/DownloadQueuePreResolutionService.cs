@@ -10,7 +10,7 @@ namespace DeezSpoTag.Web.Services;
 [ExcludeFromCodeCoverage]
 public sealed class DownloadQueuePreResolutionService : BackgroundService
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan RecoveryPollInterval = TimeSpan.FromMinutes(1);
     private const string QueuedStatus = "queued";
     private const string FailedStatus = "failed";
     private readonly DownloadQueueRepository _queueRepository;
@@ -18,6 +18,7 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
     private readonly DownloadOrchestrationService _orchestrationService;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<DownloadQueuePreResolutionService> _logger;
+    private readonly SemaphoreSlim _wakeSignal = new(1, 1);
 
     public DownloadQueuePreResolutionService(
         DownloadQueueRepository queueRepository,
@@ -36,29 +37,50 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await _queueRepository.RecoverInterruptedPreResolutionAsync(stoppingToken);
-        using var timer = new PeriodicTimer(PollInterval);
-        while (!stoppingToken.IsCancellationRequested)
+        DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
+        try
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await ResolveOneLookaheadItemAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                {
+                    _logger.LogWarning(ex, "Queue pre-resolution pass failed.");
+                }
+
+                await _wakeSignal.WaitAsync(RecoveryPollInterval, stoppingToken);
+            }
+        }
+        finally
+        {
+            DownloadQueueRepository.QueueStateChanged -= OnQueueStateChanged;
+        }
+    }
+
+    private void OnQueueStateChanged(DownloadQueueRepository.QueueStateChangedEvent state)
+    {
+        if (!string.Equals(state.Status, QueuedStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(state.Status, "resolving", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (_wakeSignal.CurrentCount == 0)
         {
             try
             {
-                await ResolveOneLookaheadItemAsync(stoppingToken);
+                _wakeSignal.Release();
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            catch (SemaphoreFullException)
             {
-                break;
-            }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-            {
-                _logger.LogWarning(ex, "Queue pre-resolution pass failed.");
-            }
-
-            try
-            {
-                await timer.WaitForNextTickAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
+                // Coalesce concurrent queue notifications.
             }
         }
     }
@@ -74,7 +96,11 @@ public sealed class DownloadQueuePreResolutionService : BackgroundService
 
         var retryDelay = TimeSpan.FromMinutes(Math.Clamp(settings.QueuePreResolutionRetryMinutes, 1, 60));
         var now = DateTimeOffset.UtcNow;
-        var tasks = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var newestFirst = string.Equals(settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
+        var tasks = await _queueRepository.GetPreResolutionWindowAsync(
+            newestFirst,
+            limit: 1,
+            cancellationToken);
         var candidate = QueuePreResolutionPlanner.SelectNext(
             tasks,
             settings.QueueOrder,

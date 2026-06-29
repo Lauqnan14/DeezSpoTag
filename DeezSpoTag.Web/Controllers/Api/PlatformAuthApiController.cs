@@ -7,6 +7,7 @@ using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Tidal;
+using DeezSpoTag.Integrations.Deezer;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -24,6 +25,7 @@ public sealed class PlatformAuthApiDependencies
     public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
     public required TidalDownloadService TidalDownloadService { get; init; }
     public required SoulseekConnectionService SoulseekConnectionService { get; init; }
+    public required DeezerSessionManager DeezerSessionManager { get; init; }
 }
 
 [ApiController]
@@ -44,6 +46,7 @@ public class PlatformAuthApiController : ControllerBase
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly TidalDownloadService _tidalDownloadService;
     private readonly SoulseekConnectionService _soulseekConnectionService;
+    private readonly DeezerSessionManager _deezerSessionManager;
     public PlatformAuthApiController(PlatformAuthApiDependencies dependencies)
     {
         _authService = dependencies.AuthService;
@@ -58,10 +61,13 @@ public class PlatformAuthApiController : ControllerBase
         _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
         _tidalDownloadService = dependencies.TidalDownloadService;
         _soulseekConnectionService = dependencies.SoulseekConnectionService;
+        _deezerSessionManager = dependencies.DeezerSessionManager;
     }
 
     [HttpGet]
-    public async Task<IActionResult> Get(CancellationToken cancellationToken)
+    public async Task<IActionResult> Get(
+        [FromQuery] bool refresh,
+        CancellationToken cancellationToken)
     {
         var gate = EnsureAccess();
         if (gate != null)
@@ -70,53 +76,20 @@ public class PlatformAuthApiController : ControllerBase
         }
 
         var state = await _authService.LoadAsync();
-        var wrapperStatus = _appleWrapperService.GetStatus();
-        state.AppleMusic ??= new AppleMusicAuth();
-        var apple = state.AppleMusic;
-        var changed = false;
-
-        if (apple.WrapperReady != wrapperStatus.WrapperReady)
+        if (refresh)
         {
-            apple.WrapperReady = wrapperStatus.WrapperReady;
-            changed = true;
+            state = await RefreshAppleWrapperStateAsync(state);
+            state = await RefreshQobuzAccountAsync(state, cancellationToken);
+            state = await RefreshSoulseekConnectionAsync(state, cancellationToken);
         }
-
-        if (!string.Equals(apple.Email, wrapperStatus.Email, StringComparison.Ordinal))
-        {
-            apple.Email = wrapperStatus.Email;
-            changed = true;
-        }
-
-        if (!wrapperStatus.WrapperReady && apple.WrapperLoggedInAt is not null)
-        {
-            apple.WrapperLoggedInAt = null;
-            changed = true;
-        }
-
-        if (changed)
-        {
-            state = await _authService.UpdateAsync(current =>
-            {
-                current.AppleMusic ??= new AppleMusicAuth();
-                current.AppleMusic.WrapperReady = wrapperStatus.WrapperReady;
-                current.AppleMusic.Email = wrapperStatus.Email;
-                if (!wrapperStatus.WrapperReady)
-                {
-                    current.AppleMusic.WrapperLoggedInAt = null;
-                }
-
-                return current;
-            });
-        }
-
-        state = await RefreshQobuzAccountAsync(state, cancellationToken);
-        state = await RefreshSoulseekConnectionAsync(state, cancellationToken);
         var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
         var tidalProviders = await GetPublicTidalProvidersAsync(cancellationToken);
 
         return Ok(new
         {
             spotify = state.Spotify,
+            spotifyConnected = HasSpotifyRuntimeCredentials(state.Spotify),
+            deezerConnected = _deezerSessionManager.LoggedIn && _deezerSessionManager.CurrentUser is not null,
             discogs = state.Discogs,
             lastFm = ToPublicLastFm(state.LastFm),
             bpmSupreme = state.BpmSupreme,
@@ -128,6 +101,55 @@ public class PlatformAuthApiController : ControllerBase
             soulseek = ToPublicSoulseek(state.Soulseek),
             boomplay = ToPublicBoomplay(state.Boomplay)
         });
+    }
+
+    private async Task<PlatformAuthState> RefreshAppleWrapperStateAsync(PlatformAuthState state)
+    {
+        var wrapperStatus = _appleWrapperService.GetStatus();
+        state.AppleMusic ??= new AppleMusicAuth();
+        var apple = state.AppleMusic;
+        if (apple.WrapperReady == wrapperStatus.WrapperReady
+            && string.Equals(apple.Email, wrapperStatus.Email, StringComparison.Ordinal)
+            && (wrapperStatus.WrapperReady || apple.WrapperLoggedInAt is null))
+        {
+            return state;
+        }
+
+        return await _authService.UpdateAsync(current =>
+        {
+            current.AppleMusic ??= new AppleMusicAuth();
+            current.AppleMusic.WrapperReady = wrapperStatus.WrapperReady;
+            current.AppleMusic.Email = wrapperStatus.Email;
+            if (!wrapperStatus.WrapperReady)
+            {
+                current.AppleMusic.WrapperLoggedInAt = null;
+            }
+            return current;
+        });
+    }
+
+    private static bool HasSpotifyRuntimeCredentials(SpotifyConfig? spotify)
+    {
+        if (spotify?.Accounts is not { Count: > 0 })
+        {
+            return false;
+        }
+
+        var active = spotify.Accounts.FirstOrDefault(account =>
+            string.Equals(account.Name, spotify.ActiveAccount, StringComparison.OrdinalIgnoreCase));
+        active ??= spotify.Accounts.FirstOrDefault();
+        if (active is null)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(active.LibrespotBlobPath))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(active.BlobPath)
+            && !active.BlobPath.EndsWith(".web.json", StringComparison.OrdinalIgnoreCase);
     }
 
     [HttpGet("tidal/providers")]

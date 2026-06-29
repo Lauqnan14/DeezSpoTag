@@ -8,6 +8,7 @@ public sealed class MelodaySettingsStore
     private readonly string _settingsPath;
     private readonly ILogger<MelodaySettingsStore> _logger;
     private readonly SemaphoreSlim _sync = new(1, 1);
+    private readonly SemaphoreSlim _changed = new(0, 1);
     private MelodayOptions? _cached;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -81,8 +82,18 @@ public sealed class MelodaySettingsStore
             _sync.Release();
         }
 
+        if (_changed.CurrentCount == 0)
+        {
+            _changed.Release();
+        }
         return Clone(_cached ?? settings);
     }
+
+    public Task WaitForChangeAsync(CancellationToken cancellationToken)
+        => _changed.WaitAsync(cancellationToken);
+
+    public Task<bool> WaitForChangeAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        => _changed.WaitAsync(timeout, cancellationToken);
 
     private static MelodayOptions Merge(MelodayOptions defaults, MelodayOptions stored) => new()
     {

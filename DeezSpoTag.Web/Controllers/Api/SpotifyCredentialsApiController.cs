@@ -21,6 +21,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         TimeSpan.FromMilliseconds(250));
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, CachedSpotifyConnectionStatus> SpotifyConnectionStatusCache = new(StringComparer.Ordinal);
     private static readonly TimeSpan SpotifyConnectionStatusCacheTtl = TimeSpan.FromMinutes(2);
+    private static readonly SemaphoreSlim SpotifyConnectionStatusGate = new(1, 1);
     public sealed class SpotifyCredentialsCollaborators
     {
         public required PlatformAuthService PlatformAuthService { get; init; }
@@ -1243,36 +1244,53 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         var cacheKey = userId.Trim();
-        var forceRefresh = IsTruthyQueryValue(force);
+        var explicitRefresh = string.Equals(
+            Request.Headers["X-DeezSpoTag-Explicit-Refresh"].ToString(),
+            "login",
+            StringComparison.OrdinalIgnoreCase);
+        var forceRefresh = IsTruthyQueryValue(force) && explicitRefresh;
+        SpotifyConnectionStatusResponse? cachedStatus;
         if (forceRefresh)
         {
             SpotifyConnectionStatusCache.TryRemove(cacheKey, out _);
         }
-        else if (TryGetCachedSpotifyConnectionStatus(cacheKey, out var cachedStatus))
+        else if (TryGetCachedSpotifyConnectionStatus(cacheKey, out cachedStatus))
         {
             return Ok(cachedStatus);
         }
 
-        var state = await LoadUserStateWithFallbackAsync(userId);
-        var activeAccount = state.ActiveAccount;
-        var webPlayerBlobPath = SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(state);
-        var librespotBlobPath = SpotifyUserAuthStore.ResolveActiveLibrespotBlobPath(state);
-        var webPlayerStatus = await ValidateWebPlayerConnectionAsync(webPlayerBlobPath, cancellationToken);
-        var librespotStatus = await ValidateLibrespotConnectionAsync(librespotBlobPath, cancellationToken);
-
-        var response = new SpotifyConnectionStatusResponse
+        await SpotifyConnectionStatusGate.WaitAsync(cancellationToken);
+        try
         {
-            ActiveAccount = activeAccount,
-            WebPlayerBlobPath = webPlayerBlobPath,
-            LibrespotBlobPath = librespotBlobPath,
-            WebPlayerOk = webPlayerStatus.Ok,
-            WebPlayerError = webPlayerStatus.Error,
-            LibrespotOk = librespotStatus.Ok,
-            LibrespotError = librespotStatus.Error
-        };
-        SetCachedSpotifyConnectionStatus(cacheKey, response);
+            if (!forceRefresh && TryGetCachedSpotifyConnectionStatus(cacheKey, out cachedStatus))
+            {
+                return Ok(cachedStatus);
+            }
 
-        return Ok(response);
+            var state = await LoadUserStateWithFallbackAsync(userId);
+            var activeAccount = state.ActiveAccount;
+            var webPlayerBlobPath = SpotifyUserAuthStore.ResolveActiveWebPlayerBlobPath(state);
+            var librespotBlobPath = SpotifyUserAuthStore.ResolveActiveLibrespotBlobPath(state);
+            var webPlayerStatus = await ValidateWebPlayerConnectionAsync(webPlayerBlobPath, cancellationToken);
+            var librespotStatus = await ValidateLibrespotConnectionAsync(librespotBlobPath, cancellationToken);
+
+            var response = new SpotifyConnectionStatusResponse
+            {
+                ActiveAccount = activeAccount,
+                WebPlayerBlobPath = webPlayerBlobPath,
+                LibrespotBlobPath = librespotBlobPath,
+                WebPlayerOk = webPlayerStatus.Ok,
+                WebPlayerError = webPlayerStatus.Error,
+                LibrespotOk = librespotStatus.Ok,
+                LibrespotError = librespotStatus.Error
+            };
+            SetCachedSpotifyConnectionStatus(cacheKey, response);
+            return Ok(response);
+        }
+        finally
+        {
+            SpotifyConnectionStatusGate.Release();
+        }
     }
 
     private static bool IsTruthyQueryValue(string? value)

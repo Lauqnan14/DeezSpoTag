@@ -3,27 +3,28 @@ using DeezSpoTag.Services.Library;
 namespace DeezSpoTag.Web.Services;
 
 /// <summary>
-/// Background worker that assigns completed analysis tracks to mood buckets.
-/// Runs every 30 seconds, processing 50 tracks per batch.
+/// One-time compatibility backfill for analyzed tracks created before mood assignment
+/// became part of the analysis completion path.
 /// </summary>
 public sealed class MoodBucketBackgroundService : BackgroundService
 {
     private const int BatchSize = 50;
-    private static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
-
     private readonly MoodBucketService _moodBucketService;
     private readonly LibraryRepository _repository;
     private readonly IConfiguration _configuration;
     private readonly ILogger<MoodBucketBackgroundService> _logger;
+    private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
 
     public MoodBucketBackgroundService(
         MoodBucketService moodBucketService,
         LibraryRepository repository,
+        DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator workCoordinator,
         IConfiguration configuration,
         ILogger<MoodBucketBackgroundService> logger)
     {
         _moodBucketService = moodBucketService;
         _repository = repository;
+        _workCoordinator = workCoordinator;
         _configuration = configuration;
         _logger = logger;
     }
@@ -35,38 +36,38 @@ public sealed class MoodBucketBackgroundService : BackgroundService
             return;
         }
 
+        await _workCoordinator.RunHeavyWorkAsync(ProcessBacklogAsync, stoppingToken);
+    }
+
+    private async Task ProcessBacklogAsync(CancellationToken stoppingToken)
+    {
         while (!stoppingToken.IsCancellationRequested)
         {
-            await ProcessBatchSafelyAsync(stoppingToken);
-            if (!await WaitForNextBatchAsync(stoppingToken))
+            try
             {
-                break;
+                if (await ProcessBatchAsync(stoppingToken) == 0)
+                {
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "MoodBucket backfill failed");
+                return;
             }
         }
     }
 
-    private async Task ProcessBatchSafelyAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            await ProcessBatchAsync(stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            return;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "MoodBucket worker error");
-        }
-    }
-
-    private async Task ProcessBatchAsync(CancellationToken stoppingToken)
+    private async Task<int> ProcessBatchAsync(CancellationToken stoppingToken)
     {
         var trackIds = await _repository.GetUnbucketedAnalyzedTrackIdsAsync(BatchSize, stoppingToken);
         if (trackIds.Count == 0)
         {
-            return;
+            return 0;
         }
 
         var totalAssigned = 0;
@@ -82,18 +83,6 @@ public sealed class MoodBucketBackgroundService : BackgroundService
                 "MoodBucket backfill: processed {Count} tracks, {Assigned} mood assignments",
                 trackIds.Count, totalAssigned);
         }
-    }
-
-    private static async Task<bool> WaitForNextBatchAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            await Task.Delay(Interval, stoppingToken);
-            return true;
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
+        return trackIds.Count;
     }
 }

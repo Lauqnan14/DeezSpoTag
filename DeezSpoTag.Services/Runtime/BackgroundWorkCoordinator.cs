@@ -8,11 +8,13 @@ public sealed class BackgroundWorkCoordinator
     private readonly object _stateLock = new();
     private readonly TaskCompletionSource _backgroundWorkersReleased =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly SemaphoreSlim _heavyWorkGate = new(1, 1);
     private DateTimeOffset? _watcherDegradedUntilUtc;
     private string _watcherDegradedReason = string.Empty;
     private DateTimeOffset? _applicationStartedAtUtc;
     private DateTimeOffset? _startupGraceEndsAtUtc;
     private DateTimeOffset? _backgroundWorkersReleasedAtUtc;
+    private string? _activeHeavyOperation;
 
     public BackgroundWorkCoordinator()
         : this(TimeProvider.System)
@@ -66,7 +68,8 @@ public sealed class BackgroundWorkCoordinator
                 _backgroundWorkersReleasedAtUtc,
                 watcherDegraded,
                 watcherDegraded ? _watcherDegradedUntilUtc : null,
-                watcherDegraded ? _watcherDegradedReason : string.Empty);
+                watcherDegraded ? _watcherDegradedReason : string.Empty,
+                _activeHeavyOperation);
         }
     }
 
@@ -140,6 +143,31 @@ public sealed class BackgroundWorkCoordinator
                 : reason.Trim();
         }
     }
+
+    public async Task RunHeavyWorkAsync(
+        Func<CancellationToken, Task> work,
+        CancellationToken cancellationToken,
+        [System.Runtime.CompilerServices.CallerMemberName] string operation = "")
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        await _heavyWorkGate.WaitAsync(cancellationToken);
+        try
+        {
+            lock (_stateLock)
+            {
+                _activeHeavyOperation = string.IsNullOrWhiteSpace(operation) ? "background-work" : operation;
+            }
+            await work(cancellationToken);
+        }
+        finally
+        {
+            lock (_stateLock)
+            {
+                _activeHeavyOperation = null;
+            }
+            _heavyWorkGate.Release();
+        }
+    }
 }
 
 public sealed record BackgroundWorkSnapshot(
@@ -149,4 +177,5 @@ public sealed record BackgroundWorkSnapshot(
     DateTimeOffset? BackgroundWorkersReleasedAtUtc,
     bool LibraryWatchersDegraded,
     DateTimeOffset? LibraryWatchersDegradedUntilUtc,
-    string LibraryWatchersDegradedReason);
+    string LibraryWatchersDegradedReason,
+    string? ActiveHeavyOperation);

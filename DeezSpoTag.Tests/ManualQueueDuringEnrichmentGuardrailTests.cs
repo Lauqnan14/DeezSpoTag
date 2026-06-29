@@ -195,7 +195,9 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.Contains("WaitForWakeAsync", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("GetNextWakeDelay", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("_orchestrationRecheckDelay = TimeSpan.FromSeconds(15)", orchestrationSource, StringComparison.Ordinal);
-        Assert.Contains("now.Add(_orchestrationRecheckDelay)", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("IdleRecoveryRecheckDelay = TimeSpan.FromMinutes(15)", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("? IdleRecoveryRecheckDelay", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains(": _orchestrationRecheckDelay", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("_wakeSignal.WaitAsync(timeout, cancellationToken)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged", orchestrationSource, StringComparison.Ordinal);
         Assert.DoesNotContain("_watchdogInterval = TimeSpan.FromSeconds(", orchestrationSource, StringComparison.Ordinal);

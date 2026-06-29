@@ -4,9 +4,6 @@ namespace DeezSpoTag.Web.Services;
 
 public static class BackgroundAutomationPolicy
 {
-    private const string GlobalConfigKey = "BackgroundAutomation:Enabled";
-    private const string GlobalEnvVar = "DEEZSPOTAG_BACKGROUND_AUTOMATION_ENABLED";
-
     public static bool IsEnabled(IConfiguration configuration, string featureName)
     {
         if (TryReadBoolean(Environment.GetEnvironmentVariable(ToFeatureEnvVar(featureName)), out var featureEnv))
@@ -18,16 +15,6 @@ public static class BackgroundAutomationPolicy
         if (TryReadBoolean(featureConfig, out var featureEnabled))
         {
             return featureEnabled;
-        }
-
-        if (TryReadBoolean(Environment.GetEnvironmentVariable(GlobalEnvVar), out var globalEnv))
-        {
-            return globalEnv;
-        }
-
-        if (TryReadBoolean(configuration[GlobalConfigKey], out var globalEnabled))
-        {
-            return globalEnabled;
         }
 
         return false;

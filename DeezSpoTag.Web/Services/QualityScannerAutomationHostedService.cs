@@ -1,8 +1,10 @@
+using DeezSpoTag.Services.Library;
+
 namespace DeezSpoTag.Web.Services;
 
 public sealed class QualityScannerAutomationHostedService : BackgroundService
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan ActiveCheckMaximum = TimeSpan.FromMinutes(15);
     private readonly QualityScannerService _qualityScannerService;
     private readonly IConfiguration _configuration;
     private readonly ILogger<QualityScannerAutomationHostedService> _logger;
@@ -26,30 +28,45 @@ public sealed class QualityScannerAutomationHostedService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (!await ExecuteAutomationIterationAsync(stoppingToken))
+            QualityScannerAutomationSettingsDto settings;
+            try
+            {
+                settings = await _qualityScannerService.GetAutomationSettingsAsync(stoppingToken);
+                if (!settings.Enabled)
+                {
+                    await _qualityScannerService.WaitForAutomationSettingsChangeAsync(stoppingToken);
+                    continue;
+                }
+
+                await TryStartAutomationRunAsync(settings, stoppingToken);
+                await _qualityScannerService.WaitForAutomationSettingsChangeAsync(
+                    GetNextCheckDelay(settings),
+                    stoppingToken);
+            }
+            catch (OperationCanceledException)
             {
                 break;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Quality scanner automation loop failed.");
+                await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             }
         }
     }
 
-    private async Task<bool> ExecuteAutomationIterationAsync(CancellationToken stoppingToken)
+    private static TimeSpan GetNextCheckDelay(QualityScannerAutomationSettingsDto settings)
     {
-        try
+        var baseline = settings.LastFinishedUtc ?? settings.LastStartedUtc;
+        if (baseline is null)
         {
-            var settings = await _qualityScannerService.GetAutomationSettingsAsync(stoppingToken);
-            await TryStartAutomationRunAsync(settings, stoppingToken);
+            return TimeSpan.FromMinutes(1);
         }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Quality scanner automation loop failed.");
-        }
-
-        return await DelayUntilNextPollAsync(stoppingToken);
+        var due = baseline.Value.AddMinutes(Math.Clamp(settings.IntervalMinutes, 15, 10080));
+        var remaining = due - DateTimeOffset.UtcNow;
+        return remaining <= TimeSpan.Zero
+            ? TimeSpan.FromMinutes(1)
+            : remaining < ActiveCheckMaximum ? remaining : ActiveCheckMaximum;
     }
 
     private async Task TryStartAutomationRunAsync(
@@ -90,19 +107,6 @@ public sealed class QualityScannerAutomationHostedService : BackgroundService
                 settings.Scope,
                 settings.FolderId,
                 settings.QueueAtmosAlternatives);
-        }
-    }
-
-    private static async Task<bool> DelayUntilNextPollAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            await Task.Delay(PollInterval, stoppingToken);
-            return true;
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
         }
     }
 

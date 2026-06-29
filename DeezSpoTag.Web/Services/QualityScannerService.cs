@@ -27,6 +27,7 @@ public sealed class QualityScannerService
     private readonly TrackAnalysisBackgroundService _trackAnalysisService;
     private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly ILogger<QualityScannerService> _logger;
+    private readonly SemaphoreSlim _automationSettingsChanged = new(0, 1);
     private CancellationTokenSource? _cts;
     private QualityScannerState _state = QualityScannerState.Idle();
     private sealed record TrackActionOutcome(string LastAction, DateTimeOffset? LastQueuedAtUtc, string? LastError, bool IncrementDuplicateCount)
@@ -81,8 +82,19 @@ public sealed class QualityScannerService
         QualityScannerAutomationSettingsDto settings,
         CancellationToken cancellationToken = default)
     {
-        return await _repository.UpdateQualityScannerAutomationSettingsAsync(settings, cancellationToken);
+        var updated = await _repository.UpdateQualityScannerAutomationSettingsAsync(settings, cancellationToken);
+        if (_automationSettingsChanged.CurrentCount == 0)
+        {
+            _automationSettingsChanged.Release();
+        }
+        return updated;
     }
+
+    public Task WaitForAutomationSettingsChangeAsync(CancellationToken cancellationToken)
+        => _automationSettingsChanged.WaitAsync(cancellationToken);
+
+    public Task<bool> WaitForAutomationSettingsChangeAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        => _automationSettingsChanged.WaitAsync(timeout, cancellationToken);
 
     public async Task<bool> StartAsync(
         QualityScannerStartRequest request,

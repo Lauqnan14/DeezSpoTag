@@ -53,6 +53,7 @@ public sealed class LibraryRecommendationService
     private const string GenerationReasonOnDemand = "on-demand";
     private const string GenerationReasonManualRebuild = "manual-rebuild";
     private const int PersistedFailureReasonMaxLength = 240;
+    private const int DeezerMetadataCacheLimit = 2048;
 
     private const int MaxDailyRecommendations = 50;
     private const int RecommendationPoolMultiplier = 3;
@@ -3926,7 +3927,7 @@ public sealed class LibraryRecommendationService
                         continue;
                     }
 
-                    _deezerRecommendationMetadataCache[deezerId] = deezerMetadata;
+                    CacheDeezerRecommendationMetadata(deezerId, deezerMetadata);
                     ApplyRecommendationMetadata(normalized, pendingByTrackId, deezerId, deezerMetadata);
                 }
             }
@@ -3965,7 +3966,7 @@ public sealed class LibraryRecommendationService
                 continue;
             }
 
-            _deezerRecommendationMetadataCache[deezerId] = fallbackMetadata;
+            CacheDeezerRecommendationMetadata(deezerId, fallbackMetadata);
             ApplyRecommendationMetadata(normalized, pendingByTrackId, deezerId, fallbackMetadata);
         }
     }
@@ -4223,6 +4224,21 @@ public sealed class LibraryRecommendationService
         foreach (var key in staleKeys)
         {
             _dailyPoolCache.TryRemove(key, out _);
+        }
+    }
+
+    private void CacheDeezerRecommendationMetadata(string deezerId, RecommendationTrackDto metadata)
+    {
+        _deezerRecommendationMetadataCache[deezerId] = metadata;
+        var excess = _deezerRecommendationMetadataCache.Count - DeezerMetadataCacheLimit;
+        if (excess <= 0)
+        {
+            return;
+        }
+
+        foreach (var key in _deezerRecommendationMetadataCache.Keys.Take(excess))
+        {
+            _deezerRecommendationMetadataCache.TryRemove(key, out _);
         }
     }
 

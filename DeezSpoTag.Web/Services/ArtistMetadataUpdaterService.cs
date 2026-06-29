@@ -52,6 +52,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     private readonly IWebHostEnvironment _environment;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ArtistMetadataUpdaterService> _logger;
+    private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
     private readonly SemaphoreSlim _runGate = new(1, 1);
     private readonly object _statusLock = new();
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
@@ -83,6 +84,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         _environment = environment;
         _httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
         _logger = logger;
+        _workCoordinator = serviceProvider.GetRequiredService<DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator>();
         _statePath = Path.Join(
             AppDataPaths.GetDataRoot(environment),
             "library-artist-images",
@@ -156,7 +158,9 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             }
 
             var normalized = request ?? new MetadataUpdaterRunRequest();
-            _activeRun = RunInternalAsync(normalized, isAutomatic: false, CancellationToken.None);
+            _activeRun = _workCoordinator.RunHeavyWorkAsync(
+                token => RunInternalAsync(normalized, isAutomatic: false, token),
+                CancellationToken.None);
             return true;
         }
         finally
@@ -214,15 +218,15 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 return;
             }
 
-            _activeRun = RunInternalAsync(
-                new MetadataUpdaterRunRequest
-                {
-                    IntervalDays = null,
-                    IncludeAllArtists = false,
-                    Force = false
-                },
-                isAutomatic: true,
-                CancellationToken.None);
+            var request = new MetadataUpdaterRunRequest
+            {
+                IntervalDays = null,
+                IncludeAllArtists = false,
+                Force = false
+            };
+            _activeRun = _workCoordinator.RunHeavyWorkAsync(
+                token => RunInternalAsync(request, isAutomatic: true, token),
+                cancellationToken);
         }
         finally
         {
@@ -1942,7 +1946,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
     private async Task<MetadataUpdaterState> LoadStateAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(_statePath))
+        if (!File.Exists(_statePath) || new FileInfo(_statePath).Length == 0)
         {
             return new MetadataUpdaterState();
         }
@@ -1968,8 +1972,12 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             Directory.CreateDirectory(directory);
         }
 
-        await using var stream = File.Create(_statePath);
-        await JsonSerializer.SerializeAsync(stream, state, _jsonOptions, cancellationToken);
+        var temporaryPath = _statePath + ".tmp";
+        await using (var stream = File.Create(temporaryPath))
+        {
+            await JsonSerializer.SerializeAsync(stream, state, _jsonOptions, cancellationToken);
+        }
+        File.Move(temporaryPath, _statePath, overwrite: true);
     }
 
     private void UpdateStatus(MetadataUpdaterStatusSnapshot status)

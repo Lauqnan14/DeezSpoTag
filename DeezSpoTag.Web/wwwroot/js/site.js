@@ -1478,34 +1478,6 @@ globalThis.DeezSpoTag = {
         }
     },
 
-    isSpotifyStatusTransient(status) {
-        const webError = String(status?.webPlayerError || '').toLowerCase();
-        const librespotError = String(status?.librespotError || '').toLowerCase();
-        const hardErrors = new Set([
-            'missing_web_player_blob',
-            'web_player_anonymous',
-            'missing_librespot_blob',
-            'credentials_not_found',
-            'helper_not_found',
-            'missing_blob'
-        ]);
-
-        if (hardErrors.has(webError) || hardErrors.has(librespotError)) {
-            return false;
-        }
-
-        const merged = `${webError} ${librespotError}`;
-        return merged.includes('token_failed')
-            || merged.includes('all_retries_failed')
-            || merged.includes('timeout')
-            || merged.includes('timed out')
-            || merged.includes('network')
-            || merged.includes('429')
-            || merged.includes('502')
-            || merged.includes('503')
-            || merged.includes('504');
-    },
-
     getSpotifyErrorSummary(status) {
         const parts = [];
         const webError = status?.webPlayerError;
@@ -1664,9 +1636,13 @@ globalThis.DeezSpoTag = {
             return;
         }
 
-        this.refreshPublicApiSidebarStatus();
-        this.publicApiStatusRefreshTimerId = globalThis.setInterval(() => {
+        if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
             this.refreshPublicApiSidebarStatus();
+        }
+        this.publicApiStatusRefreshTimerId = globalThis.setInterval(() => {
+            if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
+                this.refreshPublicApiSidebarStatus();
+            }
         }, this.publicApiStatusRefreshIntervalMs);
     },
 
@@ -1730,12 +1706,17 @@ globalThis.DeezSpoTag = {
         }
 
         this.connectedPlatformsRefreshTimerId = globalThis.setInterval(() => {
-            this.loadConnectedPlatforms({ force: true, forceDeep: true, reason: 'timer-deep' });
+            if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
+                this.loadConnectedPlatforms({ force: true, forceDeep: false, reason: 'timer-cached' });
+            }
         }, this.connectedPlatformsRefreshIntervalMs);
 
         if (!this.connectedPlatformsFocusHandler) {
             this.connectedPlatformsFocusHandler = () => {
-                this.loadConnectedPlatforms({ deep: false, reason: 'focus-cheap' });
+                if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
+                    this.loadConnectedPlatforms({ deep: false, reason: 'focus-cheap' });
+                    this.refreshPublicApiSidebarStatus();
+                }
             };
             globalThis.addEventListener('focus', this.connectedPlatformsFocusHandler);
         }
@@ -1743,7 +1724,10 @@ globalThis.DeezSpoTag = {
         if (!this.connectedPlatformsVisibilityHandler) {
             this.connectedPlatformsVisibilityHandler = () => {
                 if (document.visibilityState === 'visible') {
-                    this.loadConnectedPlatforms({ deep: false, reason: 'visibility-cheap' });
+                    if (this.tryAcquireConnectedPlatformsPollingLease()) {
+                        this.loadConnectedPlatforms({ deep: false, reason: 'visibility-cheap' });
+                        this.refreshPublicApiSidebarStatus();
+                    }
                 }
             };
             document.addEventListener('visibilitychange', this.connectedPlatformsVisibilityHandler);
@@ -1751,6 +1735,9 @@ globalThis.DeezSpoTag = {
     },
 
     async loadConnectedPlatforms(options = {}) {
+        if (document.visibilityState === 'hidden' && options.allowHidden !== true) {
+            return;
+        }
         const container = document.getElementById('connectedPlatformsList');
         if (!container) {
             return;
@@ -1780,9 +1767,6 @@ globalThis.DeezSpoTag = {
             Object.entries(platformStates)
                 .filter(([, status]) => status?.active === true)
                 .map(([id]) => id));
-        const cachedHadSpotify = cached?.statuses?.spotify?.active === true
-            || (Array.isArray(cached?.platforms) && cached.platforms.includes('spotify'));
-
         this.seedSelectedConnectedPlatforms(selected, connected, platformStates);
 
         const fetchOptions = {
@@ -1790,29 +1774,11 @@ globalThis.DeezSpoTag = {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         };
-        const skipExpensiveChecks = !probePlan.runDeepChecks;
-
         try {
             const settledResponses = await this.fetchConnectedPlatformResponses(fetchOptions, probePlan.runDeepChecks, probePlan.forceDeep);
             const authData = await this.applyAuthStatus(settledResponses.authResponse, settledResponses.authOk, connected, platformStates);
-            const wrapperReady = await this.resolveWrapperReadiness(
-                settledResponses.appleWrapperResponse,
-                settledResponses.appleWrapperOk,
-                authData);
-            this.applyWrapperPlatformState(wrapperReady, connected, platformStates);
-            await this.applySpotifyStatus(
-                settledResponses.spotifyResponse,
-                settledResponses.spotifyOk,
-                skipExpensiveChecks,
-                cachedHadSpotify,
-                connected,
-                platformStates);
-            await this.applyDeezerStatus(settledResponses.deezerResponse, settledResponses.deezerOk, connected, platformStates);
             const resolved = Array.from(connected);
-            const requiredChecksCompleted = settledResponses.authCompleted
-                && settledResponses.spotifyCompleted
-                && (!settledResponses.deezerRequested || settledResponses.deezerCompleted)
-                && (!settledResponses.appleWrapperRequested || settledResponses.appleWrapperCompleted);
+            const requiredChecksCompleted = settledResponses.authCompleted;
             const preserveIfEmpty = !requiredChecksCompleted;
             this.setCachedConnectedPlatforms({
                 platforms: resolved,
@@ -1890,53 +1856,38 @@ globalThis.DeezSpoTag = {
     },
 
     async fetchConnectedPlatformResponses(fetchOptions, runDeepChecks, forceDeepRefresh = false) {
-        const deezerRequested = true;
-        const appleWrapperRequested = runDeepChecks;
-        const deezerRequest = deezerRequested
-            ? fetch('/api/login/status', fetchOptions)
-            : Promise.resolve(null);
-        const spotifyStatusRequest = this.buildSpotifyStatusRequest(fetchOptions, runDeepChecks, forceDeepRefresh);
-        const appleWrapperStatusRequest = appleWrapperRequested
-            ? fetch('/api/apple-music/wrapper-ref/status', fetchOptions)
-            : Promise.resolve(null);
-        const [authResult, deezerResult, spotifyStatusResult, appleWrapperStatusResult] = await Promise.allSettled([
-            fetch('/api/platform-auth', fetchOptions),
-            deezerRequest,
-            spotifyStatusRequest,
-            appleWrapperStatusRequest
+        const [authResult] = await Promise.allSettled([
+            fetch('/api/platform-auth', fetchOptions)
         ]);
 
         const authResponse = authResult.status === 'fulfilled' ? authResult.value : null;
-        const deezerResponse = deezerResult.status === 'fulfilled' ? deezerResult.value : null;
-        const spotifyResponse = spotifyStatusResult.status === 'fulfilled' ? spotifyStatusResult.value : null;
-        const appleWrapperResponse = appleWrapperStatusResult.status === 'fulfilled' ? appleWrapperStatusResult.value : null;
         return {
             authResponse,
-            deezerResponse,
-            spotifyResponse,
-            appleWrapperResponse,
             authCompleted: authResult.status === 'fulfilled',
-            deezerCompleted: deezerResult.status === 'fulfilled',
-            spotifyCompleted: spotifyStatusResult.status === 'fulfilled',
-            appleWrapperCompleted: appleWrapperStatusResult.status === 'fulfilled',
-            deezerRequested,
-            appleWrapperRequested,
-            authOk: Boolean(authResponse?.ok),
-            deezerOk: Boolean(deezerResponse?.ok),
-            spotifyOk: Boolean(spotifyResponse?.ok),
-            appleWrapperOk: Boolean(appleWrapperResponse?.ok)
+            authOk: Boolean(authResponse?.ok)
         };
     },
 
-    buildSpotifyStatusRequest(fetchOptions, runDeepChecks, forceDeepRefresh) {
-        if (!runDeepChecks) {
-            return fetch('/api/spotify-credentials/accounts', fetchOptions);
+    tryAcquireConnectedPlatformsPollingLease() {
+        const key = 'deezspotag.connected-platforms-poll-lease';
+        const now = Date.now();
+        const leaseMs = 60_000;
+        this.connectedPlatformsTabId ??= globalThis.crypto?.randomUUID?.()
+            ?? `${now}-${Math.random().toString(16).slice(2)}`;
+        try {
+            const current = JSON.parse(globalThis.localStorage.getItem(key) || '{}');
+            if (current.owner && current.owner !== this.connectedPlatformsTabId
+                && Number(current.expiresAt || 0) > now) {
+                return false;
+            }
+            globalThis.localStorage.setItem(key, JSON.stringify({
+                owner: this.connectedPlatformsTabId,
+                expiresAt: now + leaseMs
+            }));
+            return true;
+        } catch {
+            return true;
         }
-
-        const spotifyStatusUrl = forceDeepRefresh
-            ? '/api/spotify-credentials/status?force=true'
-            : '/api/spotify-credentials/status';
-        return fetch(spotifyStatusUrl, fetchOptions);
     },
 
     async applyAuthStatus(authResponse, authOk, connected, platformStates) {
@@ -1990,6 +1941,9 @@ globalThis.DeezSpoTag = {
     },
 
     applyStreamingPlatformStatus(authData, connected, platformStates) {
+        this.applyConnectedFlagState(authData.deezerConnected === true, connected, platformStates, 'deezer', 'auth', 'offline');
+        this.applyConnectedFlagState(authData.spotifyConnected === true, connected, platformStates, 'spotify', 'librespot-blob', 'missing');
+        this.applyConnectedFlagState(authData.appleMusic?.wrapperReady === true, connected, platformStates, 'applemusic', 'wrapper', 'wrapper');
         this.applyConnectedFlagState(authData.qobuz?.connected === true, connected, platformStates, 'qobuz', 'official-api', 'offline');
         this.setPlatformPublicApiStatus(
             platformStates,
@@ -2028,136 +1982,6 @@ globalThis.DeezSpoTag = {
         this.setPlatformState(platformStates, platform, false, disconnectedDetail);
     },
 
-    async resolveWrapperReadiness(appleWrapperResponse, appleWrapperOk, authData) {
-        if (appleWrapperOk) {
-            const wrapperData = await this.parseJsonSafely(appleWrapperResponse, '/api/apple-music/wrapper-ref/status');
-            if (wrapperData) {
-                return wrapperData.wrapperReady === true;
-            }
-        }
-
-        if (authData) {
-            return authData.appleMusic?.wrapperReady === true;
-        }
-
-        return null;
-    },
-
-    applyWrapperPlatformState(wrapperReady, connected, platformStates) {
-        if (wrapperReady === true) {
-            connected.add('applemusic');
-            this.setPlatformState(platformStates, 'applemusic', true, 'wrapper');
-        } else if (wrapperReady === false) {
-            this.setPlatformState(platformStates, 'applemusic', false, 'wrapper');
-        }
-    },
-
-    async applySpotifyStatus(spotifyResponse, spotifyOk, skipExpensiveChecks, cachedHadSpotify, connected, platformStates) {
-        if (!spotifyResponse) {
-            return;
-        }
-
-        if (!spotifyOk) {
-            this.setPlatformState(platformStates, 'spotify', false, 'status-request-failed');
-            return;
-        }
-
-        if (skipExpensiveChecks) {
-            const accountsData = await this.parseJsonSafely(spotifyResponse, '/api/spotify-credentials/accounts');
-            this.applySpotifyStatusFromAccounts(accountsData, connected, platformStates);
-            return;
-        }
-
-        const status = await this.parseJsonSafely(spotifyResponse, '/api/spotify-credentials/status');
-        this.applySpotifyStatusFromCredentialState(status, cachedHadSpotify, connected, platformStates);
-    },
-
-    applySpotifyStatusFromAccounts(accountsData, connected, platformStates) {
-        if (!accountsData) {
-            this.setPlatformState(platformStates, 'spotify', false, 'status-unavailable');
-            return;
-        }
-
-        const accounts = Array.isArray(accountsData.accounts) ? accountsData.accounts : [];
-        const activeAccountName = typeof accountsData.activeAccount === 'string' ? accountsData.activeAccount : '';
-        const activeAccount = accounts.find((account) =>
-            typeof account?.name === 'string'
-            && account.name.toLowerCase() === activeAccountName.toLowerCase());
-        const hasLibrespotBlob = this.hasSpotifyLibrespotBlob(activeAccount);
-        if (activeAccount && hasLibrespotBlob) {
-            connected.add('spotify');
-            this.setPinnedMessage('spotify-auth', null);
-            this.setPlatformState(platformStates, 'spotify', true, 'librespot-blob');
-            return;
-        }
-
-        this.setPlatformState(platformStates, 'spotify', false, 'no-active-account');
-    },
-
-    applySpotifyStatusFromCredentialState(status, cachedHadSpotify, connected, platformStates) {
-        if (!status) {
-            this.setPlatformState(platformStates, 'spotify', false, 'status-unavailable');
-            return;
-        }
-
-        const librespotOk = status.librespotOk === true;
-        const librespotBlobPath = typeof status.librespotBlobPath === 'string'
-            ? status.librespotBlobPath.trim()
-            : '';
-        const hasLibrespotCredentials = librespotBlobPath.length > 0;
-        if (librespotOk || hasLibrespotCredentials) {
-            connected.add('spotify');
-            this.setPinnedMessage('spotify-auth', null);
-            const reason = librespotOk ? 'librespot' : 'librespot-blob';
-            this.setPlatformState(platformStates, 'spotify', true, reason);
-            return;
-        }
-
-        const transientFailure = this.isSpotifyStatusTransient(status);
-        this.setPinnedMessage('spotify-auth', null);
-        if (transientFailure && cachedHadSpotify) {
-            connected.add('spotify');
-            this.setPlatformState(platformStates, 'spotify', true, 'cached-transient');
-            return;
-        }
-
-        this.setPlatformState(platformStates, 'spotify', false, 'missing');
-    },
-
-    hasSpotifyLibrespotBlob(account) {
-        if (!account || typeof account !== 'object') {
-            return false;
-        }
-
-        const explicit = typeof account.librespotBlobPath === 'string'
-            ? account.librespotBlobPath.trim()
-            : '';
-        if (explicit.length > 0) {
-            return true;
-        }
-
-        const legacy = typeof account.blobPath === 'string'
-            ? account.blobPath.trim()
-            : '';
-        if (legacy.length === 0) {
-            return false;
-        }
-
-        return !legacy.toLowerCase().endsWith('.web.json');
-    },
-
-    async applyDeezerStatus(deezerResponse, deezerOk, connected, platformStates) {
-        if (!deezerOk) {
-            return;
-        }
-
-        const data = await this.parseJsonSafely(deezerResponse, '/api/login/status');
-        const deezerConnected = Boolean(data && Number(data.status) > 0 && data.user);
-        if (deezerConnected) {
-            connected.add('deezer');
-            this.setPlatformState(platformStates, 'deezer', true, 'auth');
-        }
-    },
 
     renderConnectedPlatforms(platformsOrStates, options = {}) {
         const container = document.getElementById('connectedPlatformsList');

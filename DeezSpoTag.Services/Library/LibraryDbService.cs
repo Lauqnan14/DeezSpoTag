@@ -33,6 +33,9 @@ public sealed class LibraryDbService
     private const string TrackShazamCacheTable = "track_shazam_cache";
     private const string SongLinkCacheTable = "song_link_cache";
     private const string LibrarySettingsTable = "library_settings";
+    private const string PlayHistoryTable = "play_history";
+    private const string BackgroundJobStateTable = "background_job_state";
+    private const string PlayHistoryIdentityMigrationId = "play-history-event-identity-v1";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
     private const string BigIntType = "BIGINT";
@@ -73,6 +76,16 @@ public sealed class LibraryDbService
             ["idx_track_album_id"] = (TrackTable, AlbumIdColumn, false),
             ["idx_track_local_audio_file_id"] = (TrackLocalTable, "audio_file_id", false),
             ["idx_artist_name_nocase"] = (ArtistTable, "name COLLATE NOCASE", false)
+            ,
+            ["idx_play_history_library"] = (PlayHistoryTable, LibraryIdColumn, false)
+            ,
+            ["idx_play_history_user_source_time"] = (PlayHistoryTable, "plex_user_id, source, played_at_utc DESC", false)
+            ,
+            ["idx_play_history_user_library_time"] = (PlayHistoryTable, "plex_user_id, library_id, played_at_utc DESC", false)
+            ,
+            ["idx_play_history_user_library_track_time"] = (PlayHistoryTable, "plex_user_id, library_id, track_id, played_at_utc DESC", false)
+            ,
+            ["idx_background_job_state_due"] = (BackgroundJobStateTable, "status, next_due_at_utc", false)
             ,
             ["idx_artist_watchlist_spotify_id"] = (ArtistWatchlistTable, "spotify_id", false)
             ,
@@ -143,6 +156,30 @@ public sealed class LibraryDbService
 
     private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
+        var playHistoryRebuilt = await MigratePlayHistoryIdentityAsync(connection, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_play_history_library", PlayHistoryTable, LibraryIdColumn, unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_play_history_user_source_time", PlayHistoryTable, "plex_user_id, source, played_at_utc DESC", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_play_history_user_library_time", PlayHistoryTable, "plex_user_id, library_id, played_at_utc DESC", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_play_history_user_library_track_time", PlayHistoryTable, "plex_user_id, library_id, track_id, played_at_utc DESC", unique: false, cancellationToken);
+        await DropIndexIfExistsAsync(connection, "idx_play_history_user", cancellationToken);
+        await DropIndexIfExistsAsync(connection, "idx_play_history_played_at", cancellationToken);
+        if (playHistoryRebuilt)
+        {
+            await VacuumAsync(connection, cancellationToken);
+            await MarkMigrationCompletedAsync(connection, PlayHistoryIdentityMigrationId, cancellationToken);
+            await CheckpointWalAsync(connection, cancellationToken);
+        }
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS background_job_state (
+    job_key TEXT NOT NULL PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'idle',
+    last_started_at_utc TEXT,
+    last_finished_at_utc TEXT,
+    next_due_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_background_job_state_due", BackgroundJobStateTable, "status, next_due_at_utc", unique: false, cancellationToken);
+
         await EnsureColumnAsync(connection, ArtistTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "metadata_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "preferred_background_path", TextType, cancellationToken);
@@ -459,6 +496,133 @@ CREATE TABLE IF NOT EXISTS track_other_tag (
     PRIMARY KEY (track_id, tag_key, tag_value)
 );", cancellationToken);
 
+    }
+
+    private static async Task<bool> MigratePlayHistoryIdentityAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS app_schema_migration (
+    migration_id TEXT NOT NULL PRIMARY KEY,
+    completed_at_utc TEXT NOT NULL
+);", cancellationToken);
+
+        await using (var checkCommand = new SqliteCommand(
+            "SELECT 1 FROM app_schema_migration WHERE migration_id = @migrationId LIMIT 1;",
+            connection))
+        {
+            checkCommand.Parameters.AddWithValue("migrationId", PlayHistoryIdentityMigrationId);
+            if (await checkCommand.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return false;
+            }
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string rebuildSql = @"
+DROP TABLE IF EXISTS play_history_canonical;
+CREATE TABLE play_history_canonical (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
+    plex_user_id BIGINT NOT NULL REFERENCES plex_user(id) ON DELETE CASCADE,
+    track_id BIGINT REFERENCES track(id) ON DELETE SET NULL,
+    plex_track_key TEXT,
+    plex_rating_key TEXT,
+    event_key TEXT NOT NULL,
+    played_at_utc TEXT NOT NULL,
+    play_duration_ms INTEGER,
+    source TEXT NOT NULL DEFAULT 'plex',
+    metadata_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (plex_user_id, source, event_key)
+);
+INSERT OR IGNORE INTO play_history_canonical
+    (id, library_id, plex_user_id, track_id, plex_track_key, plex_rating_key, event_key,
+     played_at_utc, play_duration_ms, source, metadata_json, created_at)
+SELECT ph.id,
+       CASE WHEN l.id IS NOT NULL THEN ph.library_id END,
+       ph.plex_user_id,
+       CASE WHEN t.id IS NOT NULL THEN ph.track_id END,
+       ph.plex_track_key,
+       ph.plex_rating_key,
+       CASE
+           WHEN TRIM(COALESCE(ph.plex_track_key, '')) <> ''
+               THEN 'key:' || TRIM(ph.plex_track_key)
+           WHEN TRIM(COALESCE(ph.plex_rating_key, '')) <> ''
+               THEN 'rating:' || TRIM(ph.plex_rating_key)
+           WHEN t.id IS NOT NULL
+               THEN 'track:' || CAST(ph.track_id AS TEXT)
+       END || '|' || ph.played_at_utc,
+       ph.played_at_utc,
+       ph.play_duration_ms,
+       LOWER(TRIM(COALESCE(NULLIF(ph.source, ''), 'plex'))),
+       ph.metadata_json,
+       ph.created_at
+FROM play_history ph
+JOIN plex_user pu ON pu.id = ph.plex_user_id
+LEFT JOIN library l ON l.id = ph.library_id
+LEFT JOIN track t ON t.id = ph.track_id
+WHERE ph.played_at_utc IS NOT NULL
+  AND (
+      TRIM(COALESCE(ph.plex_track_key, '')) <> ''
+      OR TRIM(COALESCE(ph.plex_rating_key, '')) <> ''
+      OR t.id IS NOT NULL
+  )
+ORDER BY CASE WHEN t.id IS NULL THEN 1 ELSE 0 END, ph.id;
+DROP TABLE play_history;
+ALTER TABLE play_history_canonical RENAME TO play_history;";
+        await using (var rebuildCommand = new SqliteCommand(rebuildSql, connection, transaction))
+        {
+            rebuildCommand.CommandTimeout = 0;
+            await rebuildCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    private static async Task MarkMigrationCompletedAsync(
+        SqliteConnection connection,
+        string migrationId,
+        CancellationToken cancellationToken)
+    {
+        await using var markerCommand = new SqliteCommand(@"
+INSERT INTO app_schema_migration (migration_id, completed_at_utc)
+VALUES (@migrationId, @completedAtUtc)
+ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc = excluded.completed_at_utc;", connection);
+        markerCommand.Parameters.AddWithValue("migrationId", migrationId);
+        markerCommand.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+        await markerCommand.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task DropIndexIfExistsAsync(
+        SqliteConnection connection,
+        string indexName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqliteCommand($"DROP INDEX IF EXISTS {indexName};", connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task VacuumAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = new SqliteCommand("VACUUM;", connection)
+        {
+            CommandTimeout = 0
+        };
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task CheckpointWalAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqliteCommand("PRAGMA wal_checkpoint(TRUNCATE);", connection)
+        {
+            CommandTimeout = 0
+        };
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task EnsureTableAsync(

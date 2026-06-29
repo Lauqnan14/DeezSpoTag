@@ -35,8 +35,27 @@ public class SystemStatsService
 
     public static string GetMemoryUsage()
     {
-        var process = Process.GetCurrentProcess();
+        using var process = Process.GetCurrentProcess();
         var memoryMb = process.WorkingSet64 / (1024.0 * 1024.0);
         return $"~{memoryMb:0} MB";
     }
+
+    public static SystemResourceSnapshot GetResourceSnapshot()
+    {
+        using var process = Process.GetCurrentProcess();
+        var gc = GC.GetGCMemoryInfo();
+        return new SystemResourceSnapshot(
+            process.WorkingSet64,
+            GC.GetTotalMemory(forceFullCollection: false),
+            gc.HeapSizeBytes,
+            gc.FragmentedBytes,
+            process.Threads.Count);
+    }
 }
+
+public sealed record SystemResourceSnapshot(
+    long WorkingSetBytes,
+    long ManagedMemoryBytes,
+    long ManagedHeapBytes,
+    long ManagedFragmentedBytes,
+    int ProcessThreadCount);

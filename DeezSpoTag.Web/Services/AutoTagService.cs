@@ -2112,6 +2112,9 @@ public partial class AutoTagService
                 Volatile.Write(ref _latestTerminalJob, CreateCompactTerminalJob(job));
             }
             _jobs.TryRemove(job.Id, out _);
+            _lastActivityLines.TryRemove(job.Id, out _);
+            _archiveLocks.TryRemove(job.Id, out _);
+            _lastRunIndexUpdateUtc.TryRemove(job.Id, out _);
         }
     }
 

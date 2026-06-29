@@ -96,14 +96,15 @@ public sealed class DeezerLoginStatusBehaviorTests
     }
 
     [Fact]
-    public void SidebarUsesCheapDeezerStatus_AndLoginPageUsesExplicitValidation()
+    public void SidebarUsesSharedCachedPlatformStatus_AndLoginPageUsesExplicitValidation()
     {
         var repoRoot = ResolveRepoRoot();
         var siteSource = File.ReadAllText(Path.Join(repoRoot, DeezSpoTagWebDirectory, "wwwroot", "js", "site.js"));
         var loginSource = File.ReadAllText(Path.Join(repoRoot, DeezSpoTagWebDirectory, "Views", "Login", "Index.cshtml"));
         var layoutSource = File.ReadAllText(Path.Join(repoRoot, DeezSpoTagWebDirectory, "Views", "Shared", "_Layout.cshtml"));
 
-        Assert.Contains(StatusUrl, siteSource, StringComparison.Ordinal);
+        Assert.Contains("/api/platform-auth", siteSource, StringComparison.Ordinal);
+        Assert.DoesNotContain(StatusUrl, siteSource, StringComparison.Ordinal);
         Assert.DoesNotContain(ValidateStatusUrl, siteSource, StringComparison.Ordinal);
         Assert.Contains(ValidateStatusUrl, loginSource, StringComparison.Ordinal);
         Assert.DoesNotContain($"'{ConnectedPlatformsCacheKey}',", layoutSource, StringComparison.Ordinal);

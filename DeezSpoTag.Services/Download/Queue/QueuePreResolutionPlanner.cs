@@ -22,24 +22,6 @@ public static class QueuePreResolutionPlanner
             .FirstOrDefault(item => ShouldAttemptResolution(item, retryDelay, now));
     }
 
-    public static IReadOnlyList<DownloadQueueItem> SelectBatch(
-        IReadOnlyList<DownloadQueueItem> tasks,
-        string? queueOrder,
-        int windowSize,
-        int batchSize,
-        TimeSpan retryDelay,
-        DateTimeOffset now)
-    {
-        var clampedWindow = Math.Clamp(windowSize, 1, 25);
-        var clampedBatch = Math.Clamp(batchSize, 1, clampedWindow);
-        return OrderQueue(tasks, queueOrder)
-            .Where(static item => EligibleStatuses.Contains(item.Status))
-            .Take(clampedWindow)
-            .Where(item => ShouldAttemptResolution(item, retryDelay, now))
-            .Take(clampedBatch)
-            .ToArray();
-    }
-
     public static IEnumerable<DownloadQueueItem> OrderQueue(
         IReadOnlyList<DownloadQueueItem> tasks,
         string? queueOrder)
