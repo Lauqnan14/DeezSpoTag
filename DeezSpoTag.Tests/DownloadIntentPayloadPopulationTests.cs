@@ -127,6 +127,9 @@ public sealed class DownloadIntentPayloadPopulationTests
             SourceService = "apple",
             SourceUrl = "https://music.apple.com/us/song/example/123456789?i=123456789",
             AppleId = "123456789",
+            QobuzId = "987654321",
+            TidalId = "456789123",
+            AmazonId = "B012345678",
             Title = "Resolved Title",
             Artist = "Resolved Artist",
             Album = "Resolved Album",
@@ -153,6 +156,10 @@ public sealed class DownloadIntentPayloadPopulationTests
         Assert.Equal(intent.ReleaseDate, result.ReleaseDate);
         Assert.Equal(intent.Genres, result.Genres);
         Assert.Equal(intent.Composer, result.Composer);
+        Assert.Equal(intent.AppleId, result.AppleId);
+        Assert.Equal(intent.QobuzId, result.QobuzId);
+        Assert.Equal(intent.TidalId, result.TidalId);
+        Assert.Equal(intent.AmazonId, result.AmazonId);
     }
 
     [Fact]

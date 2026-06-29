@@ -3561,6 +3561,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             SourceUrl = intent.SourceUrl,
             SpotifyId = intent.SpotifyId,
             DeezerId = intent.DeezerId,
+            QobuzId = intent.QobuzId,
+            TidalId = intent.TidalId,
+            AmazonId = intent.AmazonId,
             DeezerAlbumId = intent.DeezerAlbumId,
             DeezerArtistId = intent.DeezerArtistId,
             Isrc = intent.Isrc,
@@ -3605,7 +3608,10 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return !string.IsNullOrWhiteSpace(intent.SourceUrl)
                || !string.IsNullOrWhiteSpace(intent.SpotifyId)
                || !string.IsNullOrWhiteSpace(intent.DeezerId)
-               || !string.IsNullOrWhiteSpace(intent.AppleId);
+               || !string.IsNullOrWhiteSpace(intent.AppleId)
+               || !string.IsNullOrWhiteSpace(intent.QobuzId)
+               || !string.IsNullOrWhiteSpace(intent.TidalId)
+               || !string.IsNullOrWhiteSpace(intent.AmazonId);
     }
 
     private async Task<DownloadIntentResult?> TryQueuePrimaryIntentAsync(

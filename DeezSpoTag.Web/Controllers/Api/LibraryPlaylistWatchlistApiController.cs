@@ -1174,30 +1174,28 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
-        var candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
-            normalizedSource,
-            sourceId,
-            cancellationToken);
+        var normalizedSourceId = sourceId.Trim();
+        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, normalizedSourceId, cancellationToken);
+        var candidates = DeserializeCachedPlaylistCandidates(cache?.CandidatesJson);
         var playlist = (await _repository.GetPlaylistWatchlistAsync(cancellationToken))
             .FirstOrDefault(item =>
                 string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(item.SourceId, sourceId, StringComparison.Ordinal));
+                && string.Equals(item.SourceId, normalizedSourceId, StringComparison.Ordinal));
         if (playlist == null)
         {
             return Ok(candidates);
         }
 
-        var preference = await _repository.GetPlaylistWatchPreferenceAsync(normalizedSource, sourceId, cancellationToken);
-        var availability = await _playlistSyncService.GetPlaylistAvailabilityAsync(
-            playlist,
-            preference,
-            candidates,
-            cancellationToken);
-        var availabilityByTrackId = availability.Tracks
-            .Where(static item => !string.IsNullOrWhiteSpace(item.SourceTrackId))
-            .GroupBy(static item => item.SourceTrackId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.OrdinalIgnoreCase);
-        var claims = await _repository.GetPlaylistWatchDownloadClaimsForPlaylistAsync(normalizedSource, sourceId, status: null, cancellationToken);
+        var persistedStatuses = await _repository.GetPlaylistWatchTrackStatusesAsync(normalizedSource, normalizedSourceId, cancellationToken);
+        var statusByTrackId = persistedStatuses
+            .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
+            .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.OrderByDescending(item => item.UpdatedAt).First(),
+                StringComparer.OrdinalIgnoreCase);
+        var ignoredTrackIds = await _repository.GetPlaylistWatchIgnoredTrackIdsAsync(normalizedSource, normalizedSourceId, cancellationToken);
+        var claims = await _repository.GetPlaylistWatchDownloadClaimsForPlaylistAsync(normalizedSource, normalizedSourceId, status: null, cancellationToken);
         var claimsByTrackId = claims
             .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
             .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
@@ -1208,7 +1206,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(candidates.Select(candidate =>
         {
             var trackSourceId = candidate.TrackSourceId ?? string.Empty;
-            availabilityByTrackId.TryGetValue(trackSourceId, out var trackAvailability);
+            statusByTrackId.TryGetValue(trackSourceId, out var persistedStatus);
             claimsByTrackId.TryGetValue(trackSourceId, out var trackClaims);
             var queueTask = ResolveCurrentQueueTask(
                 normalizedSource,
@@ -1217,8 +1215,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 queueTasks,
                 queueTasksByUuid);
             var locationStatus = ResolvePlaylistTrackLocationStatus(
-                availability.Service,
-                trackAvailability,
+                ignoredTrackIds.Contains(trackSourceId),
+                persistedStatus,
                 queueTask);
             return new
             {
@@ -1234,33 +1232,22 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 LocationStatus = locationStatus.Status,
                 LocationStatusLabel = locationStatus.Label,
                 LocationStatusDetail = locationStatus.Detail,
-                InLocalLibrary = trackAvailability?.InLocalLibrary == true,
-                InTargetServer = trackAvailability?.InTargetServer == true,
-                TargetService = availability.Service,
+                InLocalLibrary = locationStatus.Status == "library",
+                InTargetServer = locationStatus.Status == "library",
+                TargetService = string.Empty,
                 WatchStatus = queueTask?.Status ?? string.Empty
             };
         }).ToList());
     }
 
     private static PlaylistTrackLocationStatus ResolvePlaylistTrackLocationStatus(
-        string? service,
-        PlaylistSyncService.PlaylistTrackAvailability? availability,
+        bool ignored,
+        PlaylistWatchTrackStatusDto? persistedStatus,
         DownloadQueueItem? queueTask)
     {
-        if (availability?.Eligible == false)
+        if (ignored)
         {
             return new PlaylistTrackLocationStatus("blocked", "Blocked", "Ignored or blocked by monitored playlist rules.");
-        }
-
-        var serviceLabel = ResolveServiceLabel(service);
-        if (availability?.InTargetServer == true)
-        {
-            return new PlaylistTrackLocationStatus("library", "Library", $"Downloaded and visible in {serviceLabel}.");
-        }
-
-        if (availability?.InLocalLibrary == true)
-        {
-            return new PlaylistTrackLocationStatus("library", "Library", "Downloaded into the DeezSpoTag library, not visible to the configured media server yet.");
         }
 
         var queueState = ResolveQueueLocationStatus(NormalizeStatusText(queueTask?.Status));
@@ -1269,16 +1256,14 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return queueState;
         }
 
-        return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");
-    }
-
-    private static string ResolveServiceLabel(string? service)
-        => service?.Trim().ToLowerInvariant() switch
+        var persistedState = ResolveCachedTrackLocationStatus(persistedStatus?.Status);
+        if (persistedState.Status != "missing")
         {
-            "plex" => "Plex library",
-            "jellyfin" => "Jellyfin library",
-            _ => "Target library"
-        };
+            return persistedState;
+        }
+
+        return persistedState;
+    }
 
     private static string NormalizeStatusText(string? status)
         => string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();
