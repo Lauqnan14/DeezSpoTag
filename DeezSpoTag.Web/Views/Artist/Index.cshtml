@@ -1901,12 +1901,11 @@ async function resolveArtistSpotifyTrack(payload) {
                 return fromFacade;
             }
         } catch {
-            // Continue with API fallback.
+            return null;
         }
     }
 
-    const fromApi = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(payload.link)}`);
-    return isResolvedArtistTrack(fromApi) ? fromApi : null;
+    return null;
 }
 
 function parseDeezerArtistUrl(url) {

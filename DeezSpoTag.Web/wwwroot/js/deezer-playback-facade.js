@@ -40,48 +40,6 @@
         return JSON.stringify([String(url), normalized.title, normalized.artist, normalized.album, normalized.isrc, normalized.durationMs]);
     }
 
-    async function fetchResolveDeezerByMetadata(url, metadata) {
-        if (!url) {
-            return null;
-        }
-
-        const params = new URLSearchParams();
-        params.set('url', String(url));
-        const normalized = normalizeMetadata(metadata);
-        if (normalized?.title) {
-            params.set('title', normalized.title);
-        }
-        if (normalized?.artist) {
-            params.set('artist', normalized.artist);
-        }
-        if (normalized?.album) {
-            params.set('album', normalized.album);
-        }
-        if (normalized?.isrc) {
-            params.set('isrc', normalized.isrc);
-        }
-        if (normalized?.durationMs && normalized.durationMs > 0) {
-            params.set('durationMs', String(normalized.durationMs));
-        }
-
-        const response = await fetch('/api/resolve/deezer?' + params.toString());
-        if (!response.ok) {
-            return null;
-        }
-        const payload = await response.json();
-        const deezerId = String(payload?.deezerId || '').trim();
-        if (!deezerId || deezerId === '0') {
-            return null;
-        }
-        return {
-            available: true,
-            type: 'track',
-            deezerId,
-            deezerUrl: 'https://www.deezer.com/track/' + deezerId,
-            resolvedBy: 'metadata-fallback'
-        };
-    }
-
     async function resolveTrackBySpotifyRequest(request, options = {}) {
         if (!request || typeof request !== 'object') {
             return null;
@@ -116,11 +74,11 @@
 
     async function tryResolveTrackViaUnifiedResolver(normalizedUrl, metadata) {
         if (!global.DeezerResolver || typeof global.DeezerResolver.resolveTrack !== 'function') {
-            return { resolved: null, usedUnifiedResolver: false, unifiedResolverFailed: false };
+            return null;
         }
 
         try {
-            const resolved = await global.DeezerResolver.resolveTrack(
+            return await global.DeezerResolver.resolveTrack(
                 {
                     source: 'spotify',
                     url: normalizedUrl,
@@ -133,46 +91,20 @@
                 {
                     attempts: 2,
                     baseDelayMs: 250,
-                    timeoutMs: 3000,
-                    spotifyResolverFirst: true
+                    timeoutMs: 3000
                 }
             );
-            return { resolved, usedUnifiedResolver: true, unifiedResolverFailed: false };
         } catch {
-            return { resolved: null, usedUnifiedResolver: true, unifiedResolverFailed: true };
-        }
-    }
-
-    async function tryResolveTrackViaLegacyEndpoint(normalizedUrl) {
-        const response = await fetch('/api/spotify/resolve-deezer?url=' + encodeURIComponent(normalizedUrl));
-        if (!response.ok) {
             return null;
         }
-        return await response.json();
     }
 
     async function resolveTrackBySpotifyUrlCore(normalizedUrl, metadata, key) {
-        let resolved = null;
-        const unifiedResult = await tryResolveTrackViaUnifiedResolver(normalizedUrl, metadata);
-        if (unifiedResult.usedUnifiedResolver) {
-            resolved = unifiedResult.resolved;
-        } else {
-            resolved = await tryResolveTrackViaLegacyEndpoint(normalizedUrl);
-        }
+        const resolved = await tryResolveTrackViaUnifiedResolver(normalizedUrl, metadata);
 
         if (isResolvedTrackPayload(resolved)) {
             cacheResolvedTrack(key, resolved);
             return resolved;
-        }
-
-        // DeezerResolver.resolveTrack already performs metadata fallback internally.
-        // Avoid duplicate fallback calls unless the unified resolver is unavailable/failed.
-        if (!unifiedResult.usedUnifiedResolver || unifiedResult.unifiedResolverFailed) {
-            const fallbackResolved = await fetchResolveDeezerByMetadata(normalizedUrl, metadata);
-            if (fallbackResolved?.deezerId) {
-                cacheResolvedTrack(key, fallbackResolved);
-                return fallbackResolved;
-            }
         }
 
         return null;

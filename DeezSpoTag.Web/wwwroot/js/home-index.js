@@ -467,25 +467,11 @@ async function resolveHomeTrendingSpotifyTrackToDeezer(request) {
             const resolved = await facade.resolveTrackBySpotifyRequest(payload);
             return resolved?.type === 'track' && resolved?.deezerId ? resolved : null;
         } catch {
-            // Fall back to direct API resolve below.
+            return null;
         }
     }
 
-    try {
-        const response = await fetch(`/api/spotify/resolve-deezer?url=${encodeURIComponent(link)}`);
-        if (!response.ok) {
-            return null;
-        }
-        const raw = await response.text();
-        const trimmed = raw.trim();
-        if (!trimmed || trimmed === 'undefined') {
-            return null;
-        }
-        const parsed = JSON.parse(raw);
-        return parsed?.type === 'track' && parsed?.deezerId ? parsed : null;
-    } catch {
-        return null;
-    }
+    return null;
 }
 
 function isHomeTrendingMappingButtonVisible(button) {

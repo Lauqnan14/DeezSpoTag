@@ -878,7 +878,24 @@
         const durationMs = (card.dataset.durationMs || '').trim();
         const spotifyUrl = (card.dataset.spotifyUrl || '').trim();
         if (spotifyUrl) {
-            const resolved = await fetchJsonOptional(`/api/spotify/resolve-deezer?url=${encodeURIComponent(spotifyUrl)}`);
+            const params = new URLSearchParams();
+            params.set('url', spotifyUrl);
+            if (titleValue) {
+                params.set('title', titleValue);
+            }
+            if (artistValue) {
+                params.set('artist', artistValue);
+            }
+            if (albumValue) {
+                params.set('album', albumValue);
+            }
+            if (isrc) {
+                params.set('isrc', isrc);
+            }
+            if (durationMs) {
+                params.set('durationMs', durationMs);
+            }
+            const resolved = await fetchJsonOptional(`/api/resolve/deezer?${params.toString()}`);
             if (resolved?.available && resolved?.deezerId) {
                 card.dataset.deezerId = resolved.deezerId;
                 card.dataset.deezerUrl = resolved.deezerUrl || `https://www.deezer.com/track/${resolved.deezerId}`;

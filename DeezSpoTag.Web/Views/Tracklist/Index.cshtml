@@ -7613,7 +7613,7 @@ async function handleTracklistArtistLink(spotifyUrl) {
         }
         const payload = await window.DeezerResolver.resolveTrack(
             { source: 'spotify', url: spotifyUrl },
-            { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+            { attempts: 3, baseDelayMs: 300 }
         );
         if (payload?.deezerId && payload.type === 'artist') {
             window.location.href = `/Artist?id=${encodeURIComponent(payload.deezerId)}&source=deezer`;

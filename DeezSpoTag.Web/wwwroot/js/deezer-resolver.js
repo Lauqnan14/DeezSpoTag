@@ -125,24 +125,6 @@
         };
     }
 
-    async function resolveSpotifyTrackToDeezer(url, options = {}) {
-        const response = await fetchJsonWithRetry(
-            `/api/spotify/resolve-deezer?url=${encodeURIComponent(url)}`,
-            options
-        );
-
-        if (!response.ok) {
-            return {
-                available: false,
-                deezerId: '',
-                type: 'track',
-                reasonCode: response.transientFailure ? 'transient_upstream' : 'resolver_unavailable'
-            };
-        }
-
-        return normalizeResolvePayload(response.payload, 'no_match');
-    }
-
     function buildGenericResolveQuery(input) {
         const qs = new URLSearchParams();
         qs.set('url', input.url);
@@ -198,13 +180,6 @@
             fetchOptions: options.fetchOptions
         };
 
-        if (normalizedSource === 'spotify' && options.spotifyResolverFirst !== false) {
-            const spotifyResolved = await resolveSpotifyTrackToDeezer(normalizedUrl, retryOptions);
-            if (spotifyResolved.available) {
-                return spotifyResolved;
-            }
-        }
-
         return await resolveGenericToDeezer({
             url: normalizedUrl,
             title: input?.title || '',
@@ -239,7 +214,6 @@
     global.DeezerResolver = {
         fetchJsonWithRetry,
         resolveTrack,
-        resolveSpotifyTrackToDeezer,
         resolveGenericToDeezer,
         resolvePlayableStreamUrl
     };

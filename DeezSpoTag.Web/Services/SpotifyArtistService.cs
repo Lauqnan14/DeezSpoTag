@@ -571,7 +571,7 @@ public sealed class SpotifyArtistService
     {
         var profile = await BuildArtistProfileAsync(spotifyId, artistName, artistPage, cancellationToken);
         var albums = BuildArtistAlbums(artistPage);
-        var topTracks = BuildArtistTopTracks(artistPage, albums);
+        var topTracks = BuildArtistTopTracks(artistPage, albums, profile.Name);
         var relatedArtists = artistPage.RelatedArtists ?? new List<SpotifyRelatedArtist>();
         var appearsOn = BuildAppearsOnAlbums(artistPage);
 
@@ -672,8 +672,12 @@ public sealed class SpotifyArtistService
 
     private static List<SpotifyTrack> BuildArtistTopTracks(
         SpotifyArtistHydratedPage artistPage,
-        IReadOnlyList<SpotifyAlbum> albums)
+        IReadOnlyList<SpotifyAlbum> albums,
+        string artistName)
     {
+        var normalizedArtistName = string.IsNullOrWhiteSpace(artistName)
+            ? artistPage.Overview.Name
+            : artistName.Trim();
         var tracks = (artistPage.TopTracks ?? new List<SpotifyTrackSummary>())
             .Select(track => new SpotifyTrack(
                 track.Id,
@@ -695,7 +699,7 @@ public sealed class SpotifyArtistService
             {
                 Isrc = track.Isrc,
                 AlbumId = track.AlbumId,
-                ArtistName = track.Artists,
+                ArtistName = normalizedArtistName,
                 Explicit = track.Explicit,
                 HasLyrics = track.HasLyrics
             })

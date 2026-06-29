@@ -171,11 +171,7 @@
                 }
             }
 
-            const response = await fetch('/api/spotify/resolve-deezer?url=' + encodeURIComponent(spotifyUrl));
-            if (!response.ok) {
-                return null;
-            }
-            return await response.json();
+            return null;
         } catch {
             return null;
         }
@@ -216,8 +212,7 @@
                 },
                 {
                     attempts: 3,
-                    baseDelayMs: 300,
-                    spotifyResolverFirst: resolverSource === 'spotify'
+                    baseDelayMs: 300
                 }
             );
             if (cacheKey) {

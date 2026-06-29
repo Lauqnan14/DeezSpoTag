@@ -166,7 +166,7 @@ async function openSpotifyItem(item) {
                 if (window.DeezerResolver && typeof window.DeezerResolver.resolveTrack === 'function') {
                     const resolved = await window.DeezerResolver.resolveTrack(
                         { source: 'spotify', url: `https://open.spotify.com/artist/${parsed.id}` },
-                        { attempts: 3, baseDelayMs: 300, spotifyResolverFirst: true }
+                        { attempts: 3, baseDelayMs: 300 }
                     );
                     if (resolved?.available && resolved?.deezerId) {
                         window.location.href = `/Artist?id=${encodeURIComponent(resolved.deezerId)}&source=deezer`;
