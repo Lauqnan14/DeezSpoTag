@@ -46,14 +46,9 @@ var enableFileTaggingWorker = builder.Configuration.GetValue("Workers:FileTaggin
 var enableRealtimeLibraryScanner = builder.Configuration.GetValue("Workers:RealtimeLibraryScanner:Enabled", true);
 
 // Add worker services
-if (enableContentSync)
-{
-    builder.Services.AddHostedService<ContentSyncWorker>();
-}
-else
-{
-    Console.WriteLine("ℹ️  Workers.ContentSync disabled by configuration.");
-}
+Console.WriteLine(enableContentSync
+    ? "ℹ️  Workers.ContentSync is handled by the Web host and is not registered in Workers."
+    : "ℹ️  Workers.ContentSync disabled by configuration.");
 
 if (enableFileTaggingWorker)
 {
@@ -85,6 +80,7 @@ builder.Services.AddScoped<DeezSpoTag.Integrations.Deezer.DeezerClient>();
 builder.Services.AddScoped<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
 builder.Services.AddDownloadEngine();
 builder.Services.AddSingleton<AudioQualitySignalAnalyzer>();
+builder.Services.AddSingleton<DeezSpoTag.Services.Download.Shared.IDownloadQueueExecutionGate, WorkerDownloadQueueExecutionGate>();
 
 if (enableRealtimeLibraryScanner)
 {
@@ -98,13 +94,10 @@ else
 builder.Services.AddHostedService<DeezSpoTag.Services.Download.Shared.DeezSpoTagQueueBackgroundService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService, DeezSpoTag.Services.Download.Qobuz.QobuzDownloadService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
-builder.Services.AddHostedService<DeezSpoTag.Services.Download.Qobuz.QobuzQueueBackgroundService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalEngineProcessor>();
-builder.Services.AddHostedService<DeezSpoTag.Services.Download.Tidal.TidalQueueBackgroundService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Amazon.IAmazonDownloadService, DeezSpoTag.Services.Download.Amazon.AmazonDownloadService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Amazon.AmazonEngineProcessor>();
-builder.Services.AddHostedService<DeezSpoTag.Services.Download.Amazon.AmazonQueueBackgroundService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.IAppleDownloadService, DeezSpoTag.Services.Download.Apple.AppleDownloadService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWebPlaybackClient>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleKeyService>();
@@ -114,7 +107,6 @@ builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWidevineCd
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWidevineLicenseClient>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWrapperDecryptor>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleEngineProcessor>();
-builder.Services.AddHostedService<DeezSpoTag.Services.Download.Apple.AppleQueueBackgroundService>();
 
 var host = builder.Build();
 

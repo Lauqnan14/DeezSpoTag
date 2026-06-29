@@ -307,11 +307,11 @@ LIMIT 1;";
                 var indexer = 0;
                 foreach (var engine in excludedEngines)
                 {
-                    command.Parameters.AddWithValue($"exclude{indexer}", engine);
+                    command.Parameters.AddWithValue($"exclude{indexer}", engine.Trim().ToLowerInvariant());
                     indexer++;
                 }
             },
-            $"AND engine NOT IN ({placeholders})",
+            $"AND lower(engine) NOT IN ({placeholders})",
             cancellationToken);
     }
 

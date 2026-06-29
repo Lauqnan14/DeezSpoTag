@@ -62,17 +62,23 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     {
         var appSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagApp.cs");
         var hostedSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagServiceExtensions.cs");
-        var engineQueueSource = ReadSource("DeezSpoTag.Services", "Download", "Queue", "EngineQueueBackgroundService.cs");
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var serviceRoot = Path.Join(ResolveRepoRoot(), "DeezSpoTag.Services");
 
         Assert.Contains("IDownloadQueueExecutionGate", hostedSource, StringComparison.Ordinal);
         Assert.Contains("CanStartQueueItemAsync", appSource, StringComparison.Ordinal);
         Assert.True(
             appSource.IndexOf("CanStartQueueItemAsync(CancellationToken.None)", StringComparison.Ordinal)
             < appSource.IndexOf("DequeueNextAnyAsync", StringComparison.Ordinal));
+        Assert.Contains("EvaluateDownloadExecutionAsync(token)", hostedSource, StringComparison.Ordinal);
         Assert.True(
-            engineQueueSource.IndexOf("EvaluateDownloadExecutionAsync(stoppingToken)", StringComparison.Ordinal)
-            < engineQueueSource.IndexOf("DequeueNextAsync", StringComparison.Ordinal));
+            hostedSource.IndexOf("EvaluateDownloadExecutionAsync(token)", StringComparison.Ordinal)
+            < hostedSource.IndexOf("GetQueuedCountAsync", StringComparison.Ordinal));
+        Assert.False(File.Exists(Path.Join(serviceRoot, "Download", "Queue", "EngineQueueBackgroundService.cs")));
+        Assert.False(File.Exists(Path.Join(serviceRoot, "Download", "Qobuz", "QobuzQueueBackgroundService.cs")));
+        Assert.False(File.Exists(Path.Join(serviceRoot, "Download", "Tidal", "TidalQueueBackgroundService.cs")));
+        Assert.False(File.Exists(Path.Join(serviceRoot, "Download", "Apple", "AppleQueueBackgroundService.cs")));
+        Assert.False(File.Exists(Path.Join(serviceRoot, "Download", "Amazon", "AmazonQueueBackgroundService.cs")));
         Assert.Contains(
             "DownloadOrchestrationService : BackgroundService, IDownloadQueueExecutionGate",
             orchestrationSource,
