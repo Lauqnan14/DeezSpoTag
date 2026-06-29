@@ -29,7 +29,7 @@ public sealed class SpotifyClient
 
         try
         {
-            summaries = await _metadataService.HydrateTrackIsrcsWithPathfinderAsync(summaries, cancellationToken);
+            summaries = await _metadataService.HydrateTrackIsrcsAsync(summaries, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

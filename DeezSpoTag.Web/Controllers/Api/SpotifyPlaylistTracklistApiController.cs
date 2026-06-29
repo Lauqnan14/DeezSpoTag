@@ -119,30 +119,24 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
             || string.Equals(settings.SpotifyPlaylistTrackSource, LibrespotTrackSource, StringComparison.OrdinalIgnoreCase)
             || IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource));
 
-        // Render-first: return mapped Spotify rows immediately, then warm Deezer matches in background.
+        // Render Spotify rows immediately and resolve only this visible page in the shared match queue.
         var tracks = SpotifyTracklistMapper.MapTracks(page.Tracks.ToList(), offset);
 
-        _ = _tracklistService.WarmVisibleTrackMatchesAsync(
-            page.Tracks,
+        var token = $"spotify:playlist:{playlistId}";
+        var visibleMatch = _tracklistService.StartVisibleTrackMatching(
+            token,
             offset,
-            page.SnapshotId,
-            allowFallbackSearch,
-            CancellationToken.None);
+            page.Tracks,
+            allowFallbackSearch);
         if (IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource))
         {
-            var token = $"spotify:playlist:{playlistId}";
             tracks = _tracklistService.ApplyStoredMatchesToTracks(token, tracks);
         }
 
         object? matching = null;
-        if (IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource))
+        if (visibleMatch is { Pending: > 0 })
         {
-            var token = $"spotify:playlist:{playlistId}";
-            var snapshot = _matchStore.GetSnapshot(token);
-            if (snapshot is { Pending: > 0 })
-            {
-                matching = new { token, pending = snapshot.Pending };
-            }
+            matching = new { token = visibleMatch.Token, pending = visibleMatch.Pending };
         }
 
         return Ok(new
@@ -177,35 +171,6 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
 
         var tracks = await _metadataService.FetchLibrespotTracksAsync(idList, cancellationToken);
         return Ok(new { available = true, tracks });
-    }
-
-    [HttpPost("playlist/match")]
-    public IActionResult PlaylistMatch([FromQuery] string url)
-    {
-        var playlistId = ParsePlaylistId(url, out var validationError);
-        if (validationError != null)
-        {
-            return validationError;
-        }
-
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return Ok(new { available = false });
-        }
-
-        var result = _tracklistService.StartPlaylistMatching(url);
-        if (result == null)
-        {
-            return Ok(new { available = false });
-        }
-
-        return Ok(new
-        {
-            available = true,
-            matching = result.Pending > 0
-                ? new { token = result.Token, pending = result.Pending }
-                : null
-        });
     }
 
     private static bool IsPathfinderTrackSource(string? value)

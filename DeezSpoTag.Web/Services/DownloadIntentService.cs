@@ -3509,12 +3509,10 @@ public sealed class DownloadIntentService
     {
         var resolvedDeezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
             _deezerClient,
-            _songLinkResolver,
             BuildSpotifyTrackSummary(intent),
             new SpotifyTrackResolveOptions(
                 AllowFallbackSearch: fallbackSearch,
                 PreferIsrcOnly: false,
-                UseSongLink: true,
                 StrictMode: strictMode,
                 BypassNegativeCanonicalCache: false,
                 Logger: _logger,
@@ -4749,7 +4747,7 @@ public sealed class DownloadIntentService
 
         if (hasSongLinkInputs)
         {
-            return "songlink_url";
+            return "mapped_url";
         }
 
         if (fallbackSearchEnabled)

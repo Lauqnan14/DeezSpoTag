@@ -289,7 +289,8 @@ public sealed class SpotifySearchService
             string.IsNullOrWhiteSpace(track.SourceUrl) ? $"https://open.spotify.com/track/{track.Id}" : track.SourceUrl,
             RewriteSpotifyImageUrl(track.ImageUrl),
             subtitle,
-            track.DurationMs);
+            track.DurationMs,
+            Isrc: track.Isrc);
     }
 
     private static SpotifySearchItem MapPathfinderArtist(SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate artist)
@@ -793,4 +794,5 @@ public sealed record SpotifySearchItem(
     int? DurationMs,
     string? Owner = null,
     int? Followers = null,
-    int? TrackCount = null);
+    int? TrackCount = null,
+    string? Isrc = null);

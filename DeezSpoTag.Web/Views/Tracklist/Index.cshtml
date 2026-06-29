@@ -847,7 +847,27 @@
 }
 
 .tracks-table tbody tr.track-row-dead {
-    opacity: 0.78;
+    color: var(--text-muted);
+}
+
+.tracks-table tbody tr.track-row-dead .track-number,
+.tracks-table tbody tr.track-row-dead .track-title,
+.tracks-table tbody tr.track-row-dead .track-artist,
+.tracks-table tbody tr.track-row-dead .track-album,
+.tracks-table tbody tr.track-row-dead .track-duration,
+.tracks-table tbody tr.track-row-dead .track-quality,
+.tracks-table tbody tr.track-row-dead .track-location-status,
+.tracks-table tbody tr.track-row-dead .track-availability,
+.tracks-table tbody tr.track-row-dead .track-actions {
+    opacity: 0.5;
+    filter: grayscale(1);
+    color: var(--text-muted);
+}
+
+.tracks-table tbody tr.track-row-dead .track-quick-download {
+    opacity: 1;
+    filter: none;
+    color: var(--primary-color);
 }
 
 .tracks-table tbody tr.track-row-dead .track-checkbox {
@@ -2823,7 +2843,6 @@ async function loadSpotifyPlaylistTracklist(spotifyUrl) {
     updateSpotifyNotice();
 
     await loadSpotifyPlaylistTracksPage();
-    void startSpotifyPlaylistMatching(spotifyUrl);
     await ignoredTracksPromise;
     scheduleSpotifyNextPage();
 }
@@ -2910,30 +2929,6 @@ function scheduleSpotifyNextPage() {
             scheduleSpotifyNextPage();
         }
     }, delayMs);
-}
-
-async function startSpotifyPlaylistMatching(spotifyUrl) {
-    try {
-        const response = await fetch(
-            `/api/spotify/tracklist/playlist/match?url=${encodeURIComponent(spotifyUrl)}`,
-            buildCsrfFetchOptions({
-                method: 'POST'
-            }));
-        if (!response.ok) {
-            return;
-        }
-        const payload = await response.json();
-        if (!payload.available) {
-            return;
-        }
-        if (payload.matching?.pending > 0 && payload.matching?.token) {
-            startSpotifyMatchPolling(payload.matching.token, payload.matching.pending);
-        } else {
-            updateSpotifyNotice();
-        }
-    } catch (error) {
-        console.warn('Spotify playlist matching start failed', error);
-    }
 }
 
 async function loadAppleTracklist() {
@@ -3928,6 +3923,8 @@ function applySpotifyMatches(matches) {
         }
         if (row && (deezerId || status === 'matched')) {
             applyExternalMatchToRow(row, deezerId);
+        } else if (row && status) {
+            applyUnmatchedRowState(row);
         }
     });
 }
@@ -4247,6 +4244,17 @@ function applyMatchedRowState(row, deezerId) {
     }
 }
 
+function applyUnmatchedRowState(row) {
+    if (!row) {
+        return;
+    }
+
+    row.dataset.availabilityDeezerId = '';
+    row.classList.add('track-row-dead');
+    updateMatchedRowCheckbox(row, '');
+    updateMatchedRowPreviewControl(row, '');
+}
+
 function updateMatchedRowCheckbox(row, deezerId) {
     const checkbox = row.querySelector('.track-checkbox');
     if (!checkbox) {
@@ -4264,7 +4272,7 @@ function updateMatchedRowCheckbox(row, deezerId) {
     checkbox.checked = false;
     checkbox.disabled = true;
     checkbox.setAttribute('aria-disabled', 'true');
-    checkbox.setAttribute('title', 'Waiting for Deezer match');
+    checkbox.setAttribute('title', 'Unavailable');
 }
 
 function applyDeezerMetadataToRow(row, metadata) {
@@ -6075,7 +6083,6 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             ${shouldShowQuickDownloadColumn(isLocalSource) ? `<td class="track-quick-download">
                 <button class="track-quick-download-btn" type="button"
                     onclick="downloadSingleTrackFromRow(this)"
-                    ${isDeadExternalRow ? 'disabled aria-disabled="true"' : ''}
                     title="${isPodcastShow ? 'Download episode' : 'Download track'}"
                     aria-label="${isPodcastShow ? 'Download episode' : 'Download track'}">
                     <span class="material-icons" aria-hidden="true">file_download</span>

@@ -268,7 +268,6 @@ public sealed class BoomplayDeezerMatchService
             var summary = CreateTrackSummary(context, context.Title ?? string.Empty, context.Isrc);
             var deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
                 _deezerClient,
-                _songLinkResolver,
                 summary,
                 CreateResolveOptions(
                     allowFallbackSearch: false,
@@ -331,7 +330,6 @@ public sealed class BoomplayDeezerMatchService
             var summary = CreateTrackSummary(context, titleCandidate, isrc: null);
             var strictResult = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
                 _deezerClient,
-                _songLinkResolver,
                 summary,
                 CreateResolveOptions(
                     allowFallbackSearch: true,
@@ -353,7 +351,6 @@ public sealed class BoomplayDeezerMatchService
 
             var relaxedResult = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
                 _deezerClient,
-                _songLinkResolver,
                 summary,
                 CreateResolveOptions(
                     allowFallbackSearch: true,
@@ -794,7 +791,6 @@ public sealed class BoomplayDeezerMatchService
         return new SpotifyTrackResolveOptions(
             AllowFallbackSearch: allowFallbackSearch,
             PreferIsrcOnly: preferIsrcOnly,
-            UseSongLink: allowFallbackSearch,
             StrictMode: strictMode,
             BypassNegativeCanonicalCache: bypassNegativeCanonicalCache,
             Logger: _logger,

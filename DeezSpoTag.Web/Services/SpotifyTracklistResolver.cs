@@ -1,7 +1,6 @@
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Integrations.Deezer;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 using System.Globalization;
 using System.Text;
@@ -24,7 +23,6 @@ internal sealed record SpotifyTracklistResolveResult(
 internal sealed record SpotifyTrackResolveOptions(
     bool AllowFallbackSearch,
     bool PreferIsrcOnly,
-    bool UseSongLink,
     bool StrictMode,
     bool BypassNegativeCanonicalCache,
     ILogger Logger,
@@ -97,7 +95,6 @@ internal static class SpotifyTracklistResolver
 
     private readonly record struct ResolveContext(
         DeezerClient DeezerClient,
-        SongLinkResolver SongLinkResolver,
         SpotifyTrackSummary Track,
         SpotifyTrackResolveOptions Options,
         string CanonicalKey,
@@ -139,13 +136,11 @@ internal static class SpotifyTracklistResolver
 
     internal static async Task<string?> ResolveDeezerTrackIdAsync(
         DeezerClient deezerClient,
-        SongLinkResolver songLinkResolver,
         SpotifyTrackSummary track,
         SpotifyTrackResolveOptions options)
     {
         var result = await ResolveDeezerTrackAsync(
             deezerClient,
-            songLinkResolver,
             track,
             options);
         return result.DeezerId;
@@ -153,7 +148,6 @@ internal static class SpotifyTracklistResolver
 
     internal static async Task<SpotifyTracklistResolveResult> ResolveDeezerTrackAsync(
         DeezerClient deezerClient,
-        SongLinkResolver songLinkResolver,
         SpotifyTrackSummary track,
         SpotifyTrackResolveOptions options)
     {
@@ -163,7 +157,6 @@ internal static class SpotifyTracklistResolver
         var strictWithoutIsrc = options.StrictMode && string.IsNullOrWhiteSpace(normalizedIsrc);
         var context = new ResolveContext(
             deezerClient,
-            songLinkResolver,
             track,
             options,
             BuildCanonicalTrackKey(track, normalizedIsrc),
@@ -198,13 +191,6 @@ internal static class SpotifyTracklistResolver
             if (metadataStep.Resolution != null)
             {
                 return metadataStep.Resolution;
-            }
-
-            var songLinkStep = await TryResolveFromSongLinkAsync(context);
-            sawTransientFailure |= songLinkStep.SawTransientFailure;
-            if (songLinkStep.Resolution != null)
-            {
-                return songLinkStep.Resolution;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -307,8 +293,7 @@ internal static class SpotifyTracklistResolver
 
         var strategy = cachedEntry.Strategy?.Trim();
         return string.Equals(strategy, "metadata", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(strategy, "metadata-cache", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(strategy, "songlink", StringComparison.OrdinalIgnoreCase);
+               || string.Equals(strategy, "metadata-cache", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<bool> IsInvalidCachedHitAsync(ResolveContext context, string deezerId)
@@ -596,7 +581,6 @@ internal static class SpotifyTracklistResolver
     private static async Task<MetadataLookupOutcome> LookupMetadataCandidateIdAsync(ResolveContext context)
     {
         var artist = context.Track.Artists ?? string.Empty;
-        var album = context.Track.Album ?? string.Empty;
         var sawTransientFailure = false;
         string? resolvedMetadataId = null;
 
@@ -604,10 +588,9 @@ internal static class SpotifyTracklistResolver
         {
             try
             {
-                var resolvedId = await context.DeezerClient.GetTrackIdFromMetadataAsync(
+                var resolvedId = await context.DeezerClient.GetTrackIdFromMetadataFastAsync(
                     artist,
                     context.Track.Name,
-                    album,
                     context.Track.DurationMs);
                 resolvedMetadataId = NormalizeDeezerId(resolvedId);
             }
@@ -618,145 +601,13 @@ internal static class SpotifyTracklistResolver
                 {
                     context.Options.Logger.LogDebug(
                         ex,
-                            "Transient Deezer metadata lookup failure for {TrackName}",
+                        "Transient Deezer fast metadata lookup failure for {TrackName}",
                             DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.Track.Name));
                 }
             }
         }
 
-        if (string.IsNullOrWhiteSpace(resolvedMetadataId))
-        {
-            try
-            {
-                var fastId = await context.DeezerClient.GetTrackIdFromMetadataFastAsync(
-                    artist,
-                    context.Track.Name,
-                    context.Track.DurationMs);
-                resolvedMetadataId = NormalizeDeezerId(fastId);
-            }
-            catch (Exception ex) when (IsTransientException(ex))
-            {
-                sawTransientFailure = true;
-                if (context.Options.Logger.IsEnabled(LogLevel.Debug))
-                {
-                    context.Options.Logger.LogDebug(
-                        ex,
-                        "Transient Deezer fast metadata lookup failure for {TrackName}",
-                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.Track.Name));
-                }
-            }
-        }
-
         return new MetadataLookupOutcome(resolvedMetadataId, sawTransientFailure);
-    }
-
-    private static async Task<ResolveStepResult> TryResolveFromSongLinkAsync(ResolveContext context)
-    {
-        if (!context.Options.UseSongLink || string.IsNullOrWhiteSpace(context.Track.Id))
-        {
-            return new ResolveStepResult(null, false);
-        }
-
-        var sawTransientFailure = false;
-        try
-        {
-            var songLinkLookup = await ResolveSongLinkDeezerIdAsync(context);
-            sawTransientFailure |= songLinkLookup.SawTransientFailure;
-            var normalized = NormalizeDeezerId(songLinkLookup.DeezerId);
-            if (string.IsNullOrWhiteSpace(normalized))
-            {
-                return new ResolveStepResult(null, sawTransientFailure);
-            }
-
-            var validation = await ValidateCandidateAsync(
-                context.DeezerClient,
-                context.Track,
-                normalized,
-                context.Options.Logger,
-                context.Options.StrictMode);
-            if (validation.IsAccepted)
-            {
-                CacheCanonicalMatch(context.CanonicalKey, normalized, "songlink", validation.Score, persist: context.PersistCanonical, context.Options.Logger);
-                return new ResolveStepResult(
-                    new SpotifyTracklistResolveResult(
-                        normalized,
-                        SpotifyTracklistResolveOutcome.Matched,
-                        "songlink_match"),
-                    sawTransientFailure);
-            }
-
-            sawTransientFailure |= validation.IsTransient;
-            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
-            {
-                context.Options.Logger.LogDebug(
-                    "Rejected Song.link Deezer candidate {DeezerId} for {TrackName}: {Reason} (score={Score:F3})",
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalized),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.Track.Name),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(validation.Reason),
-                    validation.Score);
-            }
-        }
-        catch (Exception ex) when (IsTransientException(ex))
-        {
-            sawTransientFailure = true;
-            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
-            {
-                context.Options.Logger.LogDebug(
-                    ex,
-                    "Transient Song.link resolution failure for {TrackName}",
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.Track.Name));
-            }
-        }
-
-        return new ResolveStepResult(null, sawTransientFailure);
-    }
-
-    private static async Task<MetadataLookupOutcome> ResolveSongLinkDeezerIdAsync(ResolveContext context)
-    {
-        var songLink = await context.SongLinkResolver.ResolveSpotifyTrackAsync(context.Track.Id, context.Options.CancellationToken);
-        var deezerId = songLink?.DeezerId
-            ?? TryExtractDeezerId(songLink?.DeezerUrl);
-        if (!string.IsNullOrWhiteSpace(deezerId) || string.IsNullOrWhiteSpace(songLink?.Isrc))
-        {
-            return new MetadataLookupOutcome(deezerId, false);
-        }
-
-        var songLinkIsrc = NormalizeIsrc(songLink.Isrc);
-        if (string.IsNullOrWhiteSpace(songLinkIsrc))
-        {
-            return new MetadataLookupOutcome(null, false);
-        }
-
-        return await LookupSongLinkIsrcCandidateAsync(context, songLinkIsrc);
-    }
-
-    private static async Task<MetadataLookupOutcome> LookupSongLinkIsrcCandidateAsync(ResolveContext context, string songLinkIsrc)
-    {
-        var lookupTransient = false;
-        ApiTrack? deezerTrack = null;
-        try
-        {
-            deezerTrack = await context.DeezerClient.GetTrackByIsrcAsync(songLinkIsrc);
-        }
-        catch (Exception ex) when (IsTransientException(ex))
-        {
-            lookupTransient = true;
-            if (context.Options.Logger.IsEnabled(LogLevel.Debug))
-            {
-                context.Options.Logger.LogDebug(
-                    ex,
-                    "Transient Deezer Song.link ISRC lookup failure for {TrackName}",
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(context.Track.Name));
-            }
-        }
-
-        var deezerId = NormalizeDeezerId(deezerTrack?.Id?.ToString());
-        if (!lookupTransient || !string.IsNullOrWhiteSpace(deezerId))
-        {
-            CacheValue(IsrcCache, songLinkIsrc, deezerId);
-        }
-
-        return new MetadataLookupOutcome(deezerId, lookupTransient);
     }
 
     private static async Task<CandidateValidationResult> ValidateCandidateAsync(

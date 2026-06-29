@@ -6,7 +6,7 @@ using Newtonsoft.Json.Linq;
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Integrations.Deezer;
-using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
@@ -18,6 +18,9 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Authorize]
 public sealed class ResolveDeezerApiController : ControllerBase
 {
+    private static readonly TimeSpan SpotifyHydrationCacheTtl = TimeSpan.FromMinutes(30);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpotifyHydrationCacheEntry> SpotifyHydrationCache =
+        new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex DeezerTrackRegex =
         CreateRegex(@"deezer\.com\/track\/(?<id>\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -44,20 +47,20 @@ public sealed class ResolveDeezerApiController : ControllerBase
     private static string[] SplitWithTimeout(string input, string pattern, RegexOptions options = RegexOptions.None)
         => Regex.Split(input, pattern, options, RegexTimeout);
 
-    private readonly SongLinkResolver _songLinkResolver;
     private readonly DeezerClient _deezerClient;
     private readonly BoomplayDeezerMatchService _boomplayDeezerMatchService;
+    private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly ILogger<ResolveDeezerApiController> _logger;
 
     public ResolveDeezerApiController(
-        SongLinkResolver songLinkResolver,
         DeezerClient deezerClient,
         BoomplayDeezerMatchService boomplayDeezerMatchService,
+        SpotifyMetadataService spotifyMetadataService,
         ILogger<ResolveDeezerApiController> logger)
     {
-        _songLinkResolver = songLinkResolver;
         _deezerClient = deezerClient;
         _boomplayDeezerMatchService = boomplayDeezerMatchService;
+        _spotifyMetadataService = spotifyMetadataService;
         _logger = logger;
     }
 
@@ -77,11 +80,13 @@ public sealed class ResolveDeezerApiController : ControllerBase
         public required string Url { get; init; }
         public required bool IncludeMeta { get; init; }
         public required bool IsBoomplaySource { get; init; }
+        public required bool IsSpotifyTrackSource { get; init; }
         public string? Title { get; set; }
         public string? Artist { get; set; }
         public string? Album { get; set; }
         public string? Isrc { get; set; }
         public int? DurationMs { get; set; }
+        public string? SpotifyTrackId { get; set; }
     }
 
     [HttpGet]
@@ -98,6 +103,8 @@ public sealed class ResolveDeezerApiController : ControllerBase
         {
             return Ok(await BuildResolveResponseAsync(directId, context.IncludeMeta));
         }
+
+        await HydrateSpotifyTrackContextAsync(context, cancellationToken);
 
         if (context.IsBoomplaySource)
         {
@@ -149,76 +156,43 @@ public sealed class ResolveDeezerApiController : ControllerBase
     private static ResolveRequestContext CreateResolveRequestContext(ResolveDeezerRequest request)
     {
         var normalizedUrl = request.Url!.Trim();
+        var spotifyTrackId = TrackIdNormalization.ExtractSpotifyTrackIdFromUrl(normalizedUrl);
         return new ResolveRequestContext
         {
             Url = normalizedUrl,
             IncludeMeta = request.IncludeMeta == true,
             IsBoomplaySource = BoomplayMetadataService.IsBoomplayUrl(normalizedUrl),
+            IsSpotifyTrackSource = !string.IsNullOrWhiteSpace(spotifyTrackId),
             Title = Normalize(request.Title),
             Artist = Normalize(request.Artist),
             Album = Normalize(request.Album),
             Isrc = Normalize(request.Isrc),
             DurationMs = request.DurationMs.HasValue && request.DurationMs.Value > 0
                 ? request.DurationMs.Value
-                : (int?)null
+                : (int?)null,
+            SpotifyTrackId = spotifyTrackId
         };
     }
 
     private async Task<string?> ResolveDeezerIdAsync(ResolveRequestContext context, CancellationToken cancellationToken)
     {
-        var metadataId = await TryResolveMetadataCandidatesAsync(context, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(metadataId))
-        {
-            return metadataId;
-        }
-
-        var nonBoomplayIsrcId = await TryResolveNonBoomplayIsrcAsync(context, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(nonBoomplayIsrcId))
-        {
-            return nonBoomplayIsrcId;
-        }
-
-        return await TryResolveBySongLinkAsync(context, cancellationToken);
-    }
-
-    private async Task<string?> TryResolveMetadataCandidatesAsync(ResolveRequestContext context, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(context.Title) || string.IsNullOrWhiteSpace(context.Artist))
+        if (string.IsNullOrWhiteSpace(context.Title)
+            && string.IsNullOrWhiteSpace(context.Artist)
+            && string.IsNullOrWhiteSpace(context.Isrc))
         {
             return null;
         }
 
-        foreach (var titleCandidate in new[] { context.Title })
-        {
-            var resolvedId = await TryResolveMetadataForTitleCandidateAsync(
-                context,
-                titleCandidate,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(resolvedId))
-            {
-                return resolvedId;
-            }
-        }
-
-        return null;
-    }
-
-    private async Task<string?> TryResolveMetadataForTitleCandidateAsync(
-        ResolveRequestContext context,
-        string titleCandidate,
-        CancellationToken cancellationToken)
-    {
         try
         {
-            var summary = CreateTrackSummary(context, titleCandidate, isrc: null);
+            var summary = CreateTrackSummary(context);
             var result = await SpotifyTracklistResolver.ResolveDeezerTrackAsync(
                 _deezerClient,
-                _songLinkResolver,
                 summary,
                 CreateResolveOptions(
                     allowFallbackSearch: true,
                     preferIsrcOnly: false,
-                    strictMode: false,
+                    strictMode: true,
                     bypassNegativeCanonicalCache: false,
                     cancellationToken));
             return result.DeezerId;
@@ -230,60 +204,120 @@ public sealed class ResolveDeezerApiController : ControllerBase
         }
     }
 
-    private async Task<string?> TryResolveNonBoomplayIsrcAsync(ResolveRequestContext context, CancellationToken cancellationToken)
+    private async Task HydrateSpotifyTrackContextAsync(
+        ResolveRequestContext context,
+        CancellationToken cancellationToken)
     {
-        if (context.IsBoomplaySource || string.IsNullOrWhiteSpace(context.Isrc))
+        if (!context.IsSpotifyTrackSource || !NeedsSpotifyHydration(context))
         {
-            return null;
+            return;
         }
 
         try
         {
-            var isrcSummary = CreateTrackSummary(context, context.Title ?? string.Empty, context.Isrc);
-            return await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
-                _deezerClient,
-                _songLinkResolver,
-                isrcSummary,
-                CreateResolveOptions(
-                    allowFallbackSearch: false,
-                    preferIsrcOnly: true,
-                    strictMode: false,
-                    bypassNegativeCanonicalCache: false,
-                    cancellationToken));
+            var spotifyTrackId = context.SpotifyTrackId?.Trim();
+            if (!string.IsNullOrWhiteSpace(spotifyTrackId)
+                && TryGetCachedSpotifyHydration(spotifyTrackId, out var cachedTrack))
+            {
+                ApplySpotifyHydration(context, cachedTrack);
+                return;
+            }
+
+            var metadata = await _spotifyMetadataService.FetchByUrlAsync(
+                context.Url,
+                cancellationToken,
+                hydrateTracks: true);
+            var track = metadata?.TrackList.FirstOrDefault();
+            if (track == null)
+            {
+                return;
+            }
+
+            ApplySpotifyHydration(context, track);
+            if (!string.IsNullOrWhiteSpace(spotifyTrackId))
+            {
+                CacheSpotifyHydration(spotifyTrackId, track);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "ISRC Deezer resolve failed for Url");
-            return null;
+            _logger.LogDebug(ex, "Spotify metadata hydration failed for Deezer resolve Url");
         }
     }
 
-    private async Task<string?> TryResolveBySongLinkAsync(ResolveRequestContext context, CancellationToken cancellationToken)
+    private static bool NeedsSpotifyHydration(ResolveRequestContext context)
     {
-        var songLink = await _songLinkResolver.ResolveByUrlAsync(context.Url, cancellationToken);
-        var deezerId = songLink?.DeezerId ?? TryExtractDeezerTrackId(songLink?.DeezerUrl);
-        if (string.IsNullOrWhiteSpace(deezerId))
+        if (string.IsNullOrWhiteSpace(context.Title) || string.IsNullOrWhiteSpace(context.Artist))
         {
-            return null;
+            return true;
         }
 
-        return deezerId;
+        return string.IsNullOrWhiteSpace(context.Isrc) && context.DurationMs is not > 0;
     }
 
-    private static SpotifyTrackSummary CreateTrackSummary(
+    private static bool TryGetCachedSpotifyHydration(string spotifyTrackId, out SpotifyTrackSummary track)
+    {
+        track = null!;
+        if (!SpotifyHydrationCache.TryGetValue(spotifyTrackId, out var entry))
+        {
+            return false;
+        }
+
+        if (DateTimeOffset.UtcNow - entry.Stamp > SpotifyHydrationCacheTtl)
+        {
+            SpotifyHydrationCache.TryRemove(spotifyTrackId, out _);
+            return false;
+        }
+
+        track = entry.Track;
+        return true;
+    }
+
+    private static void CacheSpotifyHydration(string spotifyTrackId, SpotifyTrackSummary track)
+    {
+        SpotifyHydrationCache[spotifyTrackId] = new SpotifyHydrationCacheEntry(DateTimeOffset.UtcNow, track);
+        if (SpotifyHydrationCache.Count <= 512)
+        {
+            return;
+        }
+
+        foreach (var key in SpotifyHydrationCache
+                     .OrderBy(pair => pair.Value.Stamp)
+                     .Take(Math.Max(1, SpotifyHydrationCache.Count - 512))
+                     .Select(pair => pair.Key))
+        {
+            SpotifyHydrationCache.TryRemove(key, out _);
+        }
+    }
+
+    private static void ApplySpotifyHydration(
         ResolveRequestContext context,
-        string trackTitle,
-        string? isrc)
+        SpotifyTrackSummary track)
+    {
+        context.Title = FirstNonEmpty(track.Name, context.Title);
+        context.Artist = FirstNonEmpty(context.Artist, track.Artists);
+        context.Album = FirstNonEmpty(track.Album, context.Album);
+        context.Isrc = FirstNonEmpty(track.Isrc, context.Isrc);
+        context.DurationMs = track.DurationMs is > 0 ? track.DurationMs : context.DurationMs;
+        context.SpotifyTrackId = FirstNonEmpty(track.Id, context.SpotifyTrackId);
+    }
+
+    private static string? FirstNonEmpty(string? preferred, string? fallback)
+        => !string.IsNullOrWhiteSpace(preferred) ? preferred.Trim() : Normalize(fallback);
+
+    private sealed record SpotifyHydrationCacheEntry(DateTimeOffset Stamp, SpotifyTrackSummary Track);
+
+    private static SpotifyTrackSummary CreateTrackSummary(ResolveRequestContext context)
     {
         return new SpotifyTrackSummary(
-            Id: string.Empty,
-            Name: trackTitle,
+            Id: context.SpotifyTrackId ?? string.Empty,
+            Name: context.Title ?? string.Empty,
             Artists: context.Artist,
             Album: context.Album,
             DurationMs: context.DurationMs,
             SourceUrl: context.Url,
             ImageUrl: null,
-            Isrc: isrc);
+            Isrc: context.Isrc);
     }
 
     private SpotifyTrackResolveOptions CreateResolveOptions(
@@ -296,7 +330,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
         return new SpotifyTrackResolveOptions(
             AllowFallbackSearch: allowFallbackSearch,
             PreferIsrcOnly: preferIsrcOnly,
-            UseSongLink: allowFallbackSearch,
             StrictMode: strictMode,
             BypassNegativeCanonicalCache: bypassNegativeCanonicalCache,
             Logger: _logger,

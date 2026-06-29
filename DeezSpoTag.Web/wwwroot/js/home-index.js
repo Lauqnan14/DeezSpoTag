@@ -3123,7 +3123,13 @@ function buildDiscoverClick(item, avatarImage, heroImage) {
 
     const tracklistTypes = new Set(['playlist', 'album', 'show', 'smarttracklist']);
     if (source === 'spotify') {
-        return buildHomeClick(item);
+        const spotifyType = type || 'playlist';
+        const qs = new URLSearchParams();
+        qs.set('id', item.id || '');
+        qs.set('type', spotifyType);
+        qs.set('source', 'spotify');
+        extraParams.forEach((value, key) => qs.set(key, value));
+        return `globalThis.location.href='/Tracklist?${qs.toString()}'`;
     }
     if (tracklistTypes.has(type)) {
         const qs = new URLSearchParams();

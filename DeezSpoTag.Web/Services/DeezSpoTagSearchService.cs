@@ -171,7 +171,8 @@ public sealed class DeezSpoTagSearchService
             nb_tracks = trackCount,
             trackCount,
             release_date = string.Empty,
-            durationMs = item.DurationMs
+            durationMs = item.DurationMs,
+            isrc = item.Isrc ?? string.Empty
         };
     }
 

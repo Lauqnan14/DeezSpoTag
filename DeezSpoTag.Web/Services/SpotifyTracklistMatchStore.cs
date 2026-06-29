@@ -5,7 +5,7 @@ namespace DeezSpoTag.Web.Services;
 public interface ISpotifyTracklistMatchStore
 {
     void Start(string token, int pendingCount, string? signature);
-    void IncrementPending(string token, int pendingCount);
+    bool TryReservePending(string token, int index);
     void RecordProgress(string token, int index, string? spotifyId, string status, string reason, int attempt);
     void RecordMatch(string token, int index, string deezerId, string? spotifyId, string status, string reason, int attempt);
     SpotifyTracklistMatchSnapshot? GetSnapshot(string token);
@@ -28,47 +28,50 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
     {
         if (_matches.TryGetValue(token, out var state))
         {
-            var signatureChanged = !string.IsNullOrWhiteSpace(signature)
-                && !string.Equals(state.Signature, signature, StringComparison.Ordinal);
+            lock (state.SyncRoot)
+            {
+                var signatureChanged = !string.IsNullOrWhiteSpace(signature)
+                    && !string.Equals(state.Signature, signature, StringComparison.Ordinal);
 
-            if (signatureChanged)
-            {
-                state.Matches.Clear();
-                state.Pending = Math.Max(0, pendingCount);
-                state.Signature = signature;
-            }
-            else
-            {
-                var matchedCount = state.Matches.Count;
-                state.Pending = Math.Max(0, pendingCount - matchedCount);
-                if (string.IsNullOrWhiteSpace(state.Signature) && !string.IsNullOrWhiteSpace(signature))
+                if (signatureChanged)
                 {
+                    state.Matches.Clear();
+                    state.ReservedIndexes.Clear();
+                    state.Pending = Math.Max(0, pendingCount);
                     state.Signature = signature;
                 }
-            }
+                else
+                {
+                    var matchedCount = state.Matches.Count;
+                    state.Pending = Math.Max(0, pendingCount - matchedCount);
+                    if (string.IsNullOrWhiteSpace(state.Signature) && !string.IsNullOrWhiteSpace(signature))
+                    {
+                        state.Signature = signature;
+                    }
+                }
 
-            state.LastUpdated = DateTimeOffset.UtcNow;
+                state.LastUpdated = DateTimeOffset.UtcNow;
+            }
             return;
         }
 
         _matches[token] = new MatchState(pendingCount, signature);
     }
 
-    public void IncrementPending(string token, int pendingCount)
+    public bool TryReservePending(string token, int index)
     {
-        if (pendingCount <= 0)
+        var state = _matches.GetOrAdd(token, _ => new MatchState(0, null));
+        lock (state.SyncRoot)
         {
-            return;
-        }
+            if (state.Matches.ContainsKey(index) || !state.ReservedIndexes.Add(index))
+            {
+                return false;
+            }
 
-        if (!_matches.TryGetValue(token, out var state))
-        {
-            state = new MatchState(0, null);
-            _matches[token] = state;
+            state.Pending++;
+            state.LastUpdated = DateTimeOffset.UtcNow;
+            return true;
         }
-
-        state.Pending += pendingCount;
-        state.LastUpdated = DateTimeOffset.UtcNow;
     }
 
     public void RecordProgress(string token, int index, string? spotifyId, string status, string reason, int attempt)
@@ -97,19 +100,22 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
             _matches[token] = state;
         }
 
-        state.Matches[index] = new SpotifyTracklistMatchEntry(
-            index,
-            deezerId,
-            spotifyId ?? string.Empty,
-            status,
-            reason,
-            attempt);
-        state.Pending = Math.Max(0, state.Pending - 1);
-        state.LastUpdated = DateTimeOffset.UtcNow;
-
-        if (state.Pending == 0 && !string.IsNullOrWhiteSpace(state.Signature))
+        lock (state.SyncRoot)
         {
-            CacheSignatureSnapshot(state.Signature!, BuildEntries(state.Matches));
+            state.Matches[index] = new SpotifyTracklistMatchEntry(
+                index,
+                deezerId,
+                spotifyId ?? string.Empty,
+                status,
+                reason,
+                attempt);
+            state.Pending = Math.Max(0, state.Pending - 1);
+            state.LastUpdated = DateTimeOffset.UtcNow;
+
+            if (state.Pending == 0 && !string.IsNullOrWhiteSpace(state.Signature))
+            {
+                CacheSignatureSnapshot(state.Signature!, BuildEntries(state.Matches));
+            }
         }
     }
 
@@ -213,6 +219,8 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
         public int Pending { get; set; }
         public DateTimeOffset LastUpdated { get; set; }
         public string? Signature { get; set; }
+        public object SyncRoot { get; } = new();
+        public HashSet<int> ReservedIndexes { get; } = new();
         public System.Collections.Concurrent.ConcurrentDictionary<int, SpotifyTracklistMatchEntry> Matches { get; } = new();
     }
 

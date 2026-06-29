@@ -196,14 +196,6 @@ public sealed class SongLinkResolver
         if (source != null)
         {
             result = await ResolveViaProxyAsync(normalizedUrl, source, cancellationToken);
-            if (result == null && string.Equals(source.Platform, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
-            {
-                result = await ResolveExternalSongLinkAsync(normalizedUrl, source.TrackId, cancellationToken);
-                if (result != null && _logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Resolved Spotify link via external song.link for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
-                }
-            }
         }
 
         result ??= await ResolveNativeAsync(normalizedUrl, cancellationToken);
@@ -412,80 +404,6 @@ public sealed class SongLinkResolver
         {
             result.SpotifyUrl = BuildSpotifyTrackUrl(result.SpotifyId);
         }
-    }
-
-    private async Task<SongLinkResult?> ResolveExternalSongLinkAsync(
-        string normalizedUrl,
-        string spotifyTrackId,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var apiUrl = $"https://api.song.link/v1-alpha.1/links?url={WebUtility.UrlEncode(normalizedUrl)}";
-            using var client = _httpClientFactory.CreateClient();
-            using var response = await client.GetAsync(apiUrl, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("linksByPlatform", out var linksByPlatform)
-                || linksByPlatform.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
-            var deezerUrl = TryReadPlatformUrl(linksByPlatform, DeezerPlatform);
-            var spotifyUrl = TryReadPlatformUrl(linksByPlatform, SpotifyPlatform) ?? BuildSpotifyTrackUrl(spotifyTrackId);
-            var qobuzUrl = TryReadPlatformUrl(linksByPlatform, QobuzPlatform);
-            var tidalUrl = TryReadPlatformUrl(linksByPlatform, TidalPlatform);
-            var appleUrl = TryReadPlatformUrl(linksByPlatform, ApplePlatform);
-            var amazonUrl = TryReadPlatformUrl(linksByPlatform, AmazonPlatform);
-            var deezerId = TrackIdNormalization.NormalizeDeezerTrackIdOrNull(deezerUrl);
-
-            var result = new SongLinkResult
-            {
-                DeezerId = deezerId,
-                DeezerUrl = string.IsNullOrWhiteSpace(deezerId) ? deezerUrl : BuildDeezerTrackUrl(deezerId),
-                SpotifyId = spotifyTrackId,
-                SpotifyUrl = spotifyUrl,
-                QobuzUrl = qobuzUrl,
-                TidalUrl = tidalUrl,
-                AppleMusicUrl = appleUrl,
-                AmazonUrl = amazonUrl
-            };
-
-            return result.HasAnyResolvedLink() ? result : null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "External song.link lookup failed for {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
-            }
-
-            return null;
-        }
-    }
-
-    private static string? TryReadPlatformUrl(JsonElement linksByPlatform, string platform)
-    {
-        if (!linksByPlatform.TryGetProperty(platform, out var platformNode)
-            || platformNode.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (!platformNode.TryGetProperty("url", out var urlNode)
-            || urlNode.ValueKind != JsonValueKind.String)
-        {
-            return null;
-        }
-
-        return urlNode.GetString();
     }
 
     private async Task<TrackMetadata> ResolveSpotifyTrackMetadataByIdAsync(string spotifyTrackId, CancellationToken cancellationToken)

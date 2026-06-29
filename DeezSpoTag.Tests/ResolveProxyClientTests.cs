@@ -173,50 +173,6 @@ public sealed class ResolveProxyClientTests
         Assert.Null(result);
     }
 
-    [Fact]
-    public async Task ResolveByUrlAsync_FallsBackToSongLink_WhenResolveProxyFails()
-    {
-        var resolver = new SongLinkResolver(new SongLinkResolver.Dependencies
-        {
-            HttpClientFactory = new StubHttpClientFactory(request =>
-            {
-                if (request.RequestUri?.Host.Equals("api.zarz.moe", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway));
-                }
-
-                if (request.RequestUri?.Host.Equals("api.song.link", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    return Task.FromResult(Json("""
-{
-  "linksByPlatform": {
-    "spotify": { "url": "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC" },
-    "tidal": { "url": "https://listen.tidal.com/track/202" },
-    "qobuz": { "url": "https://open.qobuz.com/track/303" },
-    "deezer": { "url": "https://www.deezer.com/track/3135556" }
-  }
-}
-"""));
-                }
-
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
-            }),
-            Logger = NullLogger<SongLinkResolver>.Instance,
-            ResolveProxyClient = CreateClient(request =>
-            {
-                Assert.Equal("api.zarz.moe", request.RequestUri?.Host);
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadGateway));
-            })
-        });
-
-        var result = await resolver.ResolveByUrlAsync($"https://open.spotify.com/track/{SpotifyTrackId}", CancellationToken.None);
-
-        Assert.NotNull(result);
-        Assert.Equal("https://listen.tidal.com/track/202", result!.TidalUrl);
-        Assert.Equal("https://open.qobuz.com/track/303", result.QobuzUrl);
-        Assert.Equal("3135556", result.DeezerId);
-    }
-
     private static ResolveProxyClient CreateClient(Func<HttpRequestMessage, Task<HttpResponseMessage>> responder)
         => new(
             new StubHttpClientFactory(responder),

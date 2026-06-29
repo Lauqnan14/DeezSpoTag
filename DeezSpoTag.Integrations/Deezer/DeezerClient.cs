@@ -537,6 +537,11 @@ public sealed class DeezerClient : IDisposable
                     target[candidate.Id] = score;
                 }
             }
+
+            if (highQuality.Count > 0)
+            {
+                break;
+            }
         }
 
         return (highQuality, exploreMore);

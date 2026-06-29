@@ -188,12 +188,10 @@ public sealed class ExternalTrackMatchService
     {
         return await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
             _deezerClient,
-            _songLinkResolver,
             spotifyTrack,
             new SpotifyTrackResolveOptions(
                 AllowFallbackSearch: request.AllowFallbackSearch,
                 PreferIsrcOnly: request.PreferIsrcOnly,
-                UseSongLink: request.AllowSongLink,
                 StrictMode: false,
                 BypassNegativeCanonicalCache: false,
                 Logger: _logger,

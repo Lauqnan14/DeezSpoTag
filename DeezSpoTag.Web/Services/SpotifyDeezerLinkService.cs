@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Linq;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Library;
@@ -15,7 +14,6 @@ public sealed class SpotifyDeezerLinkService
     private readonly DeezerClient _deezerClient;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
     private readonly LibraryRepository _libraryRepository;
-    private readonly SongLinkResolver _songLinkResolver;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<SpotifyDeezerLinkService> _logger;
 
@@ -24,7 +22,6 @@ public sealed class SpotifyDeezerLinkService
         SpotifyPathfinderMetadataClient pathfinderMetadataClient,
         LibraryRepository libraryRepository,
         LibraryConfigStore configStore,
-        SongLinkResolver songLinkResolver,
         IHttpClientFactory httpClientFactory,
         ILogger<SpotifyDeezerLinkService> logger)
     {
@@ -32,7 +29,6 @@ public sealed class SpotifyDeezerLinkService
         _pathfinderMetadataClient = pathfinderMetadataClient;
         _libraryRepository = libraryRepository;
         _ = configStore;
-        _songLinkResolver = songLinkResolver;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
@@ -167,12 +163,10 @@ public sealed class SpotifyDeezerLinkService
 
                 var deezerTrackId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
                     _deezerClient,
-                    _songLinkResolver,
                     track,
                     new SpotifyTrackResolveOptions(
                         AllowFallbackSearch: false,
                         PreferIsrcOnly: true,
-                        UseSongLink: false,
                         StrictMode: false,
                         BypassNegativeCanonicalCache: false,
                         Logger: _logger,
@@ -229,12 +223,10 @@ public sealed class SpotifyDeezerLinkService
 
             var deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
                 _deezerClient,
-                _songLinkResolver,
                 summary,
                 new SpotifyTrackResolveOptions(
                     AllowFallbackSearch: false,
                     PreferIsrcOnly: true,
-                    UseSongLink: false,
                     StrictMode: false,
                     BypassNegativeCanonicalCache: false,
                     Logger: _logger,

@@ -1728,7 +1728,7 @@ public sealed class SpotifyMetadataService
         return await HydrateTrackDetailsAsync(tracks, cancellationToken);
     }
 
-    public async Task<List<SpotifyTrackSummary>> HydrateTrackIsrcsWithPathfinderAsync(
+    public async Task<List<SpotifyTrackSummary>> HydrateTrackIsrcsAsync(
         List<SpotifyTrackSummary> tracks,
         CancellationToken cancellationToken,
         int? maxConcurrency = null)

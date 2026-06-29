@@ -119,7 +119,7 @@ public sealed class FallbackPayloadNormalizerTests
                     ["Engine"] = "tidal",
                     ["Quality"] = "LOSSLESS",
                     ["RequiredInputs"] = new JsonArray("SpotifyId"),
-                    ["ResolutionStrategy"] = "songlink_url"
+                    ["ResolutionStrategy"] = "mapped_url"
                 })
         };
 
@@ -129,7 +129,7 @@ public sealed class FallbackPayloadNormalizerTests
         Assert.Equal("custom-0", state.FallbackPlan[0].StepId);
         Assert.Equal("isrc", state.FallbackPlan[0].ResolutionStrategy);
         Assert.Equal("custom-1", state.FallbackPlan[1].StepId);
-        Assert.Equal("songlink_url", state.FallbackPlan[1].ResolutionStrategy);
+        Assert.Equal("mapped_url", state.FallbackPlan[1].ResolutionStrategy);
     }
 
     [Fact]

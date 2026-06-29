@@ -1040,16 +1040,32 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return results;
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
-        if (context is null)
-        {
-            return results;
-        }
         List<string> toFetch = CollectUncachedTrackIds(distinct, results);
         if (toFetch.Count == 0)
         {
             return results;
         }
+        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        if (context is null)
+        {
+            return results;
+        }
+        await FetchTrackIsrcsAsync(context, toFetch, results, maxConcurrency, cancellationToken);
+        return results;
+    }
+
+    private async Task FetchTrackIsrcsAsync(
+        PathfinderAuthContext context,
+        IReadOnlyList<string> trackIds,
+        Dictionary<string, string> results,
+        int? maxConcurrency,
+        CancellationToken cancellationToken)
+    {
+        if (trackIds.Count == 0)
+        {
+            return;
+        }
+
         int concurrencyLimit = maxConcurrency ?? 8;
         if (concurrencyLimit < 1)
         {
@@ -1057,14 +1073,13 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         using (SemaphoreSlim gate = new SemaphoreSlim(concurrencyLimit, concurrencyLimit))
         {
-            List<Task> tasks = new List<Task>(toFetch.Count);
-            foreach (string id2 in toFetch)
+            List<Task> tasks = new List<Task>(trackIds.Count);
+            foreach (string id2 in trackIds)
             {
                 await gate.WaitAsync(cancellationToken);
                 tasks.Add(FetchTrackIsrcAsync(context, id2, results, gate, cancellationToken));
             }
             await Task.WhenAll(tasks);
-            return results;
         }
     }
 

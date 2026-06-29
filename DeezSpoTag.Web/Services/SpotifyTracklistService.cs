@@ -29,10 +29,8 @@ public sealed class SpotifyTracklistService
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyTracklistMatchSnapshot Snapshot)> SnapshotCache = new();
     private static readonly TimeSpan DeezerSnapshotTtl = TimeSpan.FromHours(2);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeezerSnapshotCacheEntry> DeezerSnapshotCache = new();
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _playlistMatchPreparationInFlight = new(StringComparer.Ordinal);
     private readonly SpotifyMetadataService _metadataService;
     private readonly DeezerClient _deezerClient;
-    private readonly SongLinkResolver _songLinkResolver;
     private readonly ISpotifyTracklistMatchQueue _matchQueue;
     private readonly ISpotifyTracklistMatchStore _matchStore;
     private readonly ISettingsService _settingsService;
@@ -41,7 +39,6 @@ public sealed class SpotifyTracklistService
     public SpotifyTracklistService(
         SpotifyMetadataService metadataService,
         DeezerClient deezerClient,
-        SongLinkResolver songLinkResolver,
         ISpotifyTracklistMatchQueue matchQueue,
         ISpotifyTracklistMatchStore matchStore,
         ISettingsService settingsService,
@@ -49,7 +46,6 @@ public sealed class SpotifyTracklistService
     {
         _metadataService = metadataService;
         _deezerClient = deezerClient;
-        _songLinkResolver = songLinkResolver;
         _matchQueue = matchQueue;
         _matchStore = matchStore;
         _settingsService = settingsService;
@@ -59,27 +55,6 @@ public sealed class SpotifyTracklistService
     public Task<SpotifyTracklistPayload?> GetPlaylistTracklistAsync(string url, CancellationToken cancellationToken)
     {
         return GetTracklistAsync(url, cancellationToken);
-    }
-
-    public SpotifyTracklistMatchStart? StartPlaylistMatching(string url)
-    {
-        if (!SpotifyMetadataService.TryParseSpotifyUrl(url, out var type, out var playlistId)
-            || !string.Equals(type, PlaylistType, StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        var token = BuildMatchToken(PlaylistType, playlistId);
-        var existing = _matchStore.GetSnapshot(token);
-        if (existing is { Pending: > 0 })
-        {
-            return new SpotifyTracklistMatchStart(token, existing.Pending);
-        }
-
-        _matchStore.Activate(token);
-        _matchStore.Start(token, pendingCount: 1, signature: null);
-        QueuePlaylistMatchPreparation(token, playlistId);
-        return new SpotifyTracklistMatchStart(token, 1);
     }
 
     public async Task<SpotifyTracklistPayload?> GetTracklistAsync(string url, CancellationToken cancellationToken)
@@ -152,6 +127,7 @@ public sealed class SpotifyTracklistService
                 new List<SpotifyTracklistTrack>());
         }
 
+        tracks = await HydrateSpotifyIdentityBatchAsync(tracks, cancellationToken);
         var conversion = await ConvertTracksAsync(tracks, allowFallbackSearch, cancellationToken: cancellationToken);
         conversion = ApplyStoredMatches(token, conversion);
 
@@ -180,17 +156,27 @@ public sealed class SpotifyTracklistService
         }
 
         _matchStore.Activate(token);
-        _matchStore.Start(token, tracks.Count, signature: null);
+        var queued = 0;
         for (var i = 0; i < tracks.Count; i++)
         {
+            var index = offset + i;
+            if (!_matchStore.TryReservePending(token, index))
+            {
+                continue;
+            }
+
             _matchQueue.Enqueue(
                 token,
-                offset + i,
+                index,
                 tracks[i],
                 allowFallbackSearch);
+            queued++;
         }
 
-        return new SpotifyTracklistMatchStart(token, tracks.Count);
+        var pending = _matchStore.GetSnapshot(token)?.Pending ?? queued;
+        return pending > 0
+            ? new SpotifyTracklistMatchStart(token, pending)
+            : null;
     }
 
     private void StartOrSeedMatches(
@@ -231,87 +217,6 @@ public sealed class SpotifyTracklistService
         _matchStore.CacheSignatureSnapshot(signature, entries);
     }
 
-    private void QueuePlaylistMatchPreparation(string token, string playlistId)
-    {
-        if (!_playlistMatchPreparationInFlight.TryAdd(token, 0))
-        {
-            return;
-        }
-
-        _ = QueuePlaylistMatchPreparationCoreAsync(token, playlistId);
-    }
-
-    private async Task QueuePlaylistMatchPreparationCoreAsync(string token, string playlistId)
-    {
-        try
-        {
-            await PreparePlaylistMatchingAsync(token, playlistId);
-        }
-        finally
-        {
-            _playlistMatchPreparationInFlight.TryRemove(token, out _);
-        }
-    }
-
-    private async Task PreparePlaylistMatchingAsync(string token, string playlistId)
-    {
-        try
-        {
-            var metadata = await _metadataService.FetchPlaylistMetadataAsync(playlistId, CancellationToken.None);
-            if (metadata is null)
-            {
-                _matchStore.Start(token, pendingCount: 0, signature: null);
-                return;
-            }
-
-            var settings = _settingsService.LoadSettings();
-            var tracks = await _metadataService.FetchPlaylistTracksForSourceAsync(
-                playlistId,
-                settings.SpotifyPlaylistTrackSource,
-                CancellationToken.None);
-            if (tracks.Count == 0)
-            {
-                _matchStore.Start(token, pendingCount: 0, signature: null);
-                return;
-            }
-
-            tracks = await _metadataService.HydrateTrackIsrcsWithPathfinderAsync(
-                tracks,
-                CancellationToken.None,
-                settings.SpotifyIsrcHydrationConcurrency);
-            if (tracks.Any(t => string.IsNullOrWhiteSpace(t.Name)))
-            {
-                tracks = await _metadataService.HydrateTrackDetailsWithBlobAsync(tracks, CancellationToken.None);
-            }
-
-            var signature = BuildPlaylistSignature(tracks);
-            var strictSpotifyDeezerMode = settings.StrictSpotifyDeezerMode;
-            var allowFallbackSearch = !strictSpotifyDeezerMode
-                && (settings.FallbackSearch
-                    || string.Equals(settings.SpotifyPlaylistTrackSource, "librespot", StringComparison.OrdinalIgnoreCase));
-            if (!strictSpotifyDeezerMode && IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource))
-            {
-                allowFallbackSearch = true;
-            }
-
-            var conversion = new SpotifyTracklistConversion(
-                SpotifyTracklistMapper.MapTracks(tracks, 0),
-                tracks.Select((track, index) => new SpotifyTracklistPending(index, track)).ToList());
-
-            if (!string.IsNullOrWhiteSpace(signature))
-            {
-                conversion = ApplyStoredSnapshot(signature, conversion);
-            }
-            conversion = ApplyStoredMatches(token, conversion);
-            StartOrSeedMatches(token, signature, conversion, allowFallbackSearch);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to prepare Spotify playlist matching for token {Token}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(token));
-            _matchStore.Start(token, pendingCount: 0, signature: null);
-        }
-    }
-
     private async Task<(SpotifyUrlMetadata Metadata, List<SpotifyTrackSummary> Tracks)> ResolveTracksForContentAsync(
         SpotifyUrlMetadata metadata,
         SpotifyContentType contentType,
@@ -331,7 +236,7 @@ public sealed class SpotifyTracklistService
                 metadata.Id,
                 settings.SpotifyPlaylistTrackSource,
                 cancellationToken);
-            tracks = await _metadataService.HydrateTrackIsrcsWithPathfinderAsync(
+            tracks = await _metadataService.HydrateTrackIsrcsAsync(
                 tracks,
                 cancellationToken,
                 settings.SpotifyIsrcHydrationConcurrency);
@@ -434,6 +339,46 @@ public sealed class SpotifyTracklistService
         return false;
     }
 
+    private async Task<List<SpotifyTrackSummary>> HydrateSpotifyIdentityBatchAsync(
+        List<SpotifyTrackSummary> tracks,
+        CancellationToken cancellationToken)
+    {
+        if (tracks.Count == 0 || tracks.All(HasStrongResolveIdentity))
+        {
+            return tracks;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        try
+        {
+            return await _metadataService.HydrateTrackIsrcsAsync(
+                tracks,
+                cancellationToken,
+                settings.SpotifyIsrcHydrationConcurrency);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Spotify tracklist batch identity hydration skipped.");
+            }
+
+            return tracks;
+        }
+    }
+
+    private static bool HasStrongResolveIdentity(SpotifyTrackSummary track)
+    {
+        if (!string.IsNullOrWhiteSpace(track.Isrc))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(track.Name)
+            && !string.IsNullOrWhiteSpace(track.Artists)
+            && track.DurationMs is > 0;
+    }
+
     public async Task<List<SpotifyTracklistTrack>> ResolveVisibleTracksAsync(
         IReadOnlyList<SpotifyTrackSummary> tracks,
         int offset,
@@ -487,12 +432,10 @@ public sealed class SpotifyTracklistService
         {
             deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
                 _deezerClient,
-                _songLinkResolver,
                 track,
                 new SpotifyTrackResolveOptions(
                     AllowFallbackSearch: context.AllowFallbackSearch,
                     PreferIsrcOnly: !context.AllowFallbackSearch,
-                    UseSongLink: context.AllowFallbackSearch,
                     StrictMode: context.StrictSpotifyDeezerMode,
                     BypassNegativeCanonicalCache: true,
                     Logger: _logger,
@@ -559,42 +502,6 @@ public sealed class SpotifyTracklistService
         return tracks;
     }
 
-    public async Task WarmVisibleTrackMatchesAsync(
-        IReadOnlyList<SpotifyTrackSummary> tracks,
-        int offset,
-        string? snapshotId,
-        bool allowFallbackSearch,
-        CancellationToken cancellationToken)
-    {
-        if (tracks.Count == 0)
-        {
-            return;
-        }
-
-        var settings = _settingsService.LoadSettings();
-        var resolveConcurrency = settings.SpotifyResolveConcurrency > 0
-            ? settings.SpotifyResolveConcurrency
-            : 1;
-        var strictSpotifyDeezerMode = settings.StrictSpotifyDeezerMode;
-        var effectiveAllowFallbackSearch = !strictSpotifyDeezerMode && allowFallbackSearch;
-        using var gate = new SemaphoreSlim(resolveConcurrency, resolveConcurrency);
-        var tasks = new List<Task>(tracks.Count);
-
-        for (var i = 0; i < tracks.Count; i++)
-        {
-            var index = i;
-            tasks.Add(WarmVisibleTrackMatchWithGateAsync(
-                tracks[index],
-                snapshotId,
-                effectiveAllowFallbackSearch,
-                strictSpotifyDeezerMode,
-                gate,
-                cancellationToken));
-        }
-
-        await Task.WhenAll(tasks);
-    }
-
     private static bool TryGetCachedDeezerId(string snapshotId, string trackId, out string deezerId)
     {
         deezerId = string.Empty;
@@ -635,48 +542,6 @@ public sealed class SpotifyTracklistService
         try
         {
             resolved[index] = await ResolveVisibleTrackAsync(track, index, context, cancellationToken);
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-
-    private async Task WarmVisibleTrackMatchWithGateAsync(
-        SpotifyTrackSummary track,
-        string? snapshotId,
-        bool allowFallbackSearch,
-        bool strictSpotifyDeezerMode,
-        SemaphoreSlim gate,
-        CancellationToken cancellationToken)
-    {
-        await gate.WaitAsync(cancellationToken);
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(snapshotId)
-                && TryGetCachedDeezerId(snapshotId, track.Id, out var cached)
-                && !string.IsNullOrWhiteSpace(cached))
-            {
-                return;
-            }
-
-            var deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
-                _deezerClient,
-                _songLinkResolver,
-                track,
-                new SpotifyTrackResolveOptions(
-                    AllowFallbackSearch: allowFallbackSearch,
-                    PreferIsrcOnly: !allowFallbackSearch,
-                    UseSongLink: allowFallbackSearch,
-                    StrictMode: strictSpotifyDeezerMode,
-                    BypassNegativeCanonicalCache: true,
-                    Logger: _logger,
-                    CancellationToken: cancellationToken));
-
-            if (!string.IsNullOrWhiteSpace(snapshotId) && !string.IsNullOrWhiteSpace(deezerId))
-            {
-                CacheDeezerId(snapshotId, track.Id, deezerId);
-            }
         }
         finally
         {
@@ -1079,12 +944,10 @@ public sealed class SpotifyTracklistService
             {
                 deezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
                     _deezerClient,
-                    _songLinkResolver,
                     track,
                     new SpotifyTrackResolveOptions(
                         AllowFallbackSearch: context.AllowFallbackSearch,
                         PreferIsrcOnly: !context.AllowFallbackSearch,
-                        UseSongLink: context.AllowFallbackSearch,
                         StrictMode: context.StrictSpotifyDeezerMode,
                         BypassNegativeCanonicalCache: true,
                         Logger: _logger,
