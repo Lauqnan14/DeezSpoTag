@@ -11,7 +11,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class ShazamRecognitionApiController : ControllerBase
 {
-    private const string QuickCaptureAttempt = "quick";
+    private const string EarlyCaptureAttempt = "early";
     private const string FinalCaptureAttempt = "final";
 
     private const long MaxUploadBytes = 128 * 1024 * 1024;
@@ -238,8 +238,6 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         var value = (capturePhase ?? string.Empty).Trim().ToLowerInvariant();
         return value switch
         {
-            QuickCaptureAttempt => QuickCaptureAttempt,
-            FinalCaptureAttempt => FinalCaptureAttempt,
             "file" => "file",
             "logo" => "logo",
             _ => "unknown"
@@ -251,7 +249,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         var value = (captureAttempt ?? string.Empty).Trim().ToLowerInvariant();
         return value switch
         {
-            QuickCaptureAttempt => QuickCaptureAttempt,
+            EarlyCaptureAttempt => EarlyCaptureAttempt,
             FinalCaptureAttempt => FinalCaptureAttempt,
             "file" => "file",
             _ => "none"
@@ -288,8 +286,8 @@ public sealed class ShazamRecognitionApiController : ControllerBase
 
     private static int ResolveMicSignatureWindowSeconds(int captureDurationSeconds, string captureAttempt)
     {
-        // Keep quick probes short to reduce load, but use a longer window for final live recognition.
-        if (string.Equals(captureAttempt, QuickCaptureAttempt, StringComparison.OrdinalIgnoreCase))
+        // Keep the single early attempt short, but use a longer window for final live recognition.
+        if (string.Equals(captureAttempt, EarlyCaptureAttempt, StringComparison.OrdinalIgnoreCase))
         {
             return Math.Clamp(Math.Min(captureDurationSeconds, 5), 3, 5);
         }

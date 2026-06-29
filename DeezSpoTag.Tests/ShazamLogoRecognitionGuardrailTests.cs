@@ -12,7 +12,7 @@ public sealed class ShazamLogoRecognitionGuardrailTests
     private static readonly string[] ExpectedSimilarIds = ["related-1", "search-1"];
 
     [Fact]
-    public void LogoCapture_UsesSingleSessionWithFastAndFinalAttempts()
+    public void LogoCapture_UsesSingleSessionWithOneEarlyAndOneFinalAttempt()
     {
         var root = ResolveRepoRoot();
         var scriptPath = Path.Join(root, "DeezSpoTag.Web", "wwwroot", "js", "shazam-listen.js");
@@ -22,12 +22,18 @@ public sealed class ShazamLogoRecognitionGuardrailTests
 
         Assert.Contains("activeLogoSession", source, StringComparison.Ordinal);
         Assert.Contains("completeLogoSession", source, StringComparison.Ordinal);
-        Assert.Contains("runLogoRecognitionAttempt(sessionId, 'quick'", source, StringComparison.Ordinal);
+        Assert.Contains("runLogoRecognitionAttempt(sessionId, 'early'", source, StringComparison.Ordinal);
         Assert.Contains("runLogoRecognitionAttempt(sessionId, 'final'", source, StringComparison.Ordinal);
+        Assert.Contains("scheduleEarlyAttempt(captureSeconds);", source, StringComparison.Ordinal);
+        Assert.Contains("EARLY_ATTEMPT_SECONDS", source, StringComparison.Ordinal);
         Assert.Contains("phase: 'logo'", source, StringComparison.Ordinal);
         Assert.Contains("attempt: phase", source, StringComparison.Ordinal);
         Assert.Contains("logoSessionId: `logo-${sessionId}`", source, StringComparison.Ordinal);
-        Assert.Contains("activeQuickProbeController.abort();", source, StringComparison.Ordinal);
+        Assert.Contains("activeEarlyAttemptController.abort();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("scheduleQuickProbe", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("runQuickProbe", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("quickProbe", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("'quick'", source, StringComparison.Ordinal);
     }
 
     [Fact]

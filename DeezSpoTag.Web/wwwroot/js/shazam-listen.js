@@ -28,17 +28,16 @@
     let sampleRate = 44100;
     let buffers = [];
     let autoStopTimer = null;
-    let quickProbeTimer = null;
-    let quickProbeInFlight = false;
+    let earlyAttemptTimer = null;
+    let earlyAttemptInFlight = false;
     let captureSessionId = 0;
     let activeLogoSession = null;
-    let activeQuickProbeController = null;
+    let activeEarlyAttemptController = null;
     let overlay = null;
     let fallbackInput = null;
 
-    const QUICK_PROBE_FIRST_DELAY_MS = 3500;
-    const QUICK_PROBE_INTERVAL_MS = 1500;
-    const QUICK_PROBE_MIN_SECONDS = 3;
+    const EARLY_ATTEMPT_SECONDS = 5;
+    const EARLY_ATTEMPT_MIN_FINAL_GAP_SECONDS = 2;
 
     logo.setAttribute('role', 'button');
     logo.setAttribute('tabindex', '0');
@@ -533,15 +532,15 @@
             globalThis.clearTimeout(autoStopTimer);
             autoStopTimer = null;
         }
-        if (quickProbeTimer) {
-            globalThis.clearTimeout(quickProbeTimer);
-            quickProbeTimer = null;
+        if (earlyAttemptTimer) {
+            globalThis.clearTimeout(earlyAttemptTimer);
+            earlyAttemptTimer = null;
         }
-        if (activeQuickProbeController) {
-            activeQuickProbeController.abort();
-            activeQuickProbeController = null;
+        if (activeEarlyAttemptController) {
+            activeEarlyAttemptController.abort();
+            activeEarlyAttemptController = null;
         }
-        quickProbeInFlight = false;
+        earlyAttemptInFlight = false;
 
         if (processor) {
             try {
@@ -937,19 +936,24 @@
         return false;
     };
 
-    const scheduleQuickProbe = (delayMs = QUICK_PROBE_INTERVAL_MS) => {
-        if (quickProbeTimer || state !== 'listening') {
+    const scheduleEarlyAttempt = (captureSeconds) => {
+        if (earlyAttemptTimer || state !== 'listening') {
             return;
         }
 
-        quickProbeTimer = globalThis.setTimeout(() => {
-            quickProbeTimer = null;
-            void runQuickProbe();
-        }, Math.max(400, Number(delayMs) || QUICK_PROBE_INTERVAL_MS));
+        const configuredSeconds = Math.max(3, Math.min(20, Number(captureSeconds) || defaultConfig.captureDurationSeconds));
+        if (configuredSeconds < EARLY_ATTEMPT_SECONDS + EARLY_ATTEMPT_MIN_FINAL_GAP_SECONDS) {
+            return;
+        }
+
+        earlyAttemptTimer = globalThis.setTimeout(() => {
+            earlyAttemptTimer = null;
+            void runEarlyAttempt();
+        }, EARLY_ATTEMPT_SECONDS * 1000);
     };
 
-    const runQuickProbe = async () => {
-        if (state !== 'listening' || quickProbeInFlight) {
+    const runEarlyAttempt = async () => {
+        if (state !== 'listening' || earlyAttemptInFlight) {
             return;
         }
 
@@ -959,35 +963,29 @@
         }
         const capturedSamples = buffers.reduce((sum, chunk) => sum + chunk.length, 0);
         const capturedSeconds = sampleRate > 0 ? (capturedSamples / sampleRate) : 0;
-        if (capturedSeconds < QUICK_PROBE_MIN_SECONDS) {
-            scheduleQuickProbe(QUICK_PROBE_INTERVAL_MS);
+        if (capturedSeconds < EARLY_ATTEMPT_SECONDS) {
             return;
         }
 
-        quickProbeInFlight = true;
-        activeQuickProbeController = new AbortController();
+        earlyAttemptInFlight = true;
+        activeEarlyAttemptController = new AbortController();
         try {
-            const probeChunks = buffers.slice();
-            if (probeChunks.length === 0) {
-                scheduleQuickProbe(QUICK_PROBE_INTERVAL_MS);
+            const earlyChunks = buffers.slice();
+            if (earlyChunks.length === 0) {
                 return;
             }
 
-            await runLogoRecognitionAttempt(sessionId, 'quick', probeChunks, sampleRate, {
+            await runLogoRecognitionAttempt(sessionId, 'early', earlyChunks, sampleRate, {
                 silentNoMatch: true,
-                signal: activeQuickProbeController.signal
+                signal: activeEarlyAttemptController.signal
             });
         } catch (error) {
             if (error?.name !== 'AbortError') {
-                console.debug('Shazam quick probe failed; continuing capture.', error);
+                console.debug('Shazam early recognition attempt failed; continuing capture.', error);
             }
         } finally {
-            activeQuickProbeController = null;
-            quickProbeInFlight = false;
-        }
-
-        if (state === 'listening') {
-            scheduleQuickProbe(QUICK_PROBE_INTERVAL_MS);
+            activeEarlyAttemptController = null;
+            earlyAttemptInFlight = false;
         }
     };
 
@@ -1041,12 +1039,13 @@
             };
             await initializeLiveCapture();
 
+            const captureSeconds = Math.max(3, Math.min(20, Number(config.captureDurationSeconds || defaultConfig.captureDurationSeconds)));
             setState('listening');
-            scheduleQuickProbe(QUICK_PROBE_FIRST_DELAY_MS);
+            scheduleEarlyAttempt(captureSeconds);
 
             autoStopTimer = globalThis.setTimeout(() => {
                 void stopAndSearch();
-            }, Math.max(3, Math.min(20, Number(config.captureDurationSeconds || 7))) * 1000);
+            }, captureSeconds * 1000);
         } catch (error) {
             console.error('Shazam capture start failed', error);
             await releaseAudio();
@@ -1139,9 +1138,9 @@
         if (!sessionId) {
             return;
         }
-        if (activeQuickProbeController) {
-            activeQuickProbeController.abort();
-            activeQuickProbeController = null;
+        if (activeEarlyAttemptController) {
+            activeEarlyAttemptController.abort();
+            activeEarlyAttemptController = null;
         }
         const capturedChunks = buffers.slice();
         const capturedRate = sampleRate;
