@@ -233,18 +233,20 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
-    public void Orchestration_UsesRunnableDownloadArbitrationForEnrichmentGates()
+    public void Orchestration_UsesFullActiveQueueForEnrichmentGates()
     {
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
         var queueSource = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
 
         Assert.Contains("GetRunnableDownloadCountAsync", orchestrationSource, StringComparison.Ordinal);
-        Assert.Contains("HasRunnableDownloadsAsync", orchestrationSource, StringComparison.Ordinal);
-        Assert.Contains("if (hasRunnableDownloads)", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("var hasActiveDownloads = hasRunnableDownloads", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("HasActiveDownloadsAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("if (hasActiveDownloads)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("SetPhase(OrchestrationPhase.Downloading);", orchestrationSource, StringComparison.Ordinal);
-        Assert.Contains("WHERE lower(status) IN ('inqueue', 'running', 'downloading', 'retrying')", queueSource, StringComparison.Ordinal);
-        Assert.Contains("OR (lower(status) = 'queued' AND \" + QueuedItemReadyForDownloadSqlCondition + @\")", queueSource, StringComparison.Ordinal);
-        Assert.Contains("private const string QueuedItemReadyForDownloadSqlCondition = \"1 = 1\";", queueSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "WHERE lower(status) IN ('queued', 'resolving', 'preparing', 'prepared', 'inqueue', 'running', 'downloading', 'paused', 'retrying')",
+            queueSource,
+            StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] pathParts)

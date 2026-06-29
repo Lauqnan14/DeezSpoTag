@@ -46,6 +46,11 @@ public static class AppleIdParser
 
     public static string? TryExtractFromUri(Uri uri)
     {
+        if (!IsAppleMusicHost(uri.Host))
+        {
+            return null;
+        }
+
         var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
         var queryId = query.Get("i");
         if (!string.IsNullOrWhiteSpace(queryId)
@@ -65,5 +70,21 @@ public static class AppleIdParser
         }
 
         return null;
+    }
+
+    private static bool IsAppleMusicHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return false;
+        }
+
+        var normalized = host.Trim().TrimEnd('.');
+        return normalized.Equals("music.apple.com", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith(".music.apple.com", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("music.apple.com.cn", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith(".music.apple.com.cn", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("itunes.apple.com", StringComparison.OrdinalIgnoreCase)
+            || normalized.EndsWith(".itunes.apple.com", StringComparison.OrdinalIgnoreCase);
     }
 }

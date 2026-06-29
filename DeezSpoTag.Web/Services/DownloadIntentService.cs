@@ -388,6 +388,9 @@ public sealed class DownloadIntentService
         }
 
         var settings = preparation.Settings;
+        ApplySourceUrlIdentity(intent);
+        await ResolveMissingAppleIdentityAsync(intent, settings, cancellationToken);
+
         var engine = ResolveVisibleQueueEngine(intent, settings, preparation.IsPodcastIntent);
         if (string.IsNullOrWhiteSpace(engine))
         {
@@ -2948,6 +2951,7 @@ public sealed class DownloadIntentService
             var appleUrl = IsServiceUrlMatch(intent.SourceUrl ?? string.Empty, ApplePlatform)
                 ? intent.SourceUrl ?? string.Empty
                 : string.Empty;
+
             intent.AppleId = await ResolveAppleIdForStorefrontAsync(
                 intent.AppleId,
                 appleUrl,
@@ -2957,13 +2961,6 @@ public sealed class DownloadIntentService
                 settings,
                 cancellationToken) ?? string.Empty;
 
-            if (!string.IsNullOrWhiteSpace(intent.AppleId))
-            {
-                return;
-            }
-
-            var resolvedAppleUrl = await ResolveAppleSongUrlAsync(intent, cancellationToken);
-            intent.AppleId = AppleIdParser.TryExtractFromUrl(resolvedAppleUrl) ?? string.Empty;
             if (!string.IsNullOrWhiteSpace(intent.AppleId))
             {
                 return;

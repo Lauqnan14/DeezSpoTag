@@ -1631,17 +1631,19 @@ public class AudioTagger
 
         if (save.Title && !string.IsNullOrWhiteSpace(track.Title))
         {
-            validators.Add(static tag => !string.IsNullOrWhiteSpace(tag.Title));
+            validators.Add(tag => MetadataValueEquals(tag.Title, track.Title));
         }
 
         if (save.Artist && (track.Artists.Count > 0 || !string.IsNullOrWhiteSpace(track.MainArtist?.Name)))
         {
-            validators.Add(static tag => !string.IsNullOrWhiteSpace(tag.Artist));
+            var expectedArtist = ResolveAtlArtistValue(track, save);
+            validators.Add(tag => MetadataValueEquals(tag.Artist, expectedArtist));
         }
 
         if (save.Album && !string.IsNullOrWhiteSpace(track.Album?.Title))
         {
-            validators.Add(static tag => !string.IsNullOrWhiteSpace(tag.Album));
+            var expectedAlbum = track.Album.Title;
+            validators.Add(tag => MetadataValueEquals(tag.Album, expectedAlbum));
         }
 
         if (save.Year && !string.IsNullOrWhiteSpace(track.Date?.Year))
@@ -1668,6 +1670,14 @@ public class AudioTagger
         }
 
         return validators;
+    }
+
+    private static bool MetadataValueEquals(string? actual, string? expected)
+    {
+        return string.Equals(
+            actual?.Trim(),
+            expected?.Trim(),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion

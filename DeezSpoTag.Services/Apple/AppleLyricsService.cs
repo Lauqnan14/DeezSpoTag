@@ -173,7 +173,21 @@ public sealed class AppleLyricsService
             return AppleLyrics.CreateError("Unable to resolve Apple Music ID for lyrics.");
         }
 
+        ApplyResolvedAppleIdToTrack(track, appleId);
         return await ResolveLyricsAsync(appleId, settings, cancellationToken);
+    }
+
+    private static void ApplyResolvedAppleIdToTrack(Track track, string appleId)
+    {
+        if (track == null || string.IsNullOrWhiteSpace(appleId))
+        {
+            return;
+        }
+
+        var normalizedAppleId = appleId.Trim();
+        track.Urls["apple_track_id"] = normalizedAppleId;
+        track.Urls["apple_id"] = normalizedAppleId;
+        track.Urls[AppleSource] = $"https://music.apple.com/us/song/{normalizedAppleId}?i={normalizedAppleId}";
     }
 
     private static string? TryExtractAppleIdFromTrack(Track track)
@@ -351,30 +365,7 @@ public sealed class AppleLyricsService
             return null;
         }
 
-        var queryAppleId = TryExtractAppleIdFromQuery(uri);
-        if (!string.IsNullOrWhiteSpace(queryAppleId))
-        {
-            return queryAppleId;
-        }
-
-        var segments = uri.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (var i = segments.Length - 1; i >= 0; i--)
-        {
-            var segment = segments[i];
-            if (segment.StartsWith("id", StringComparison.OrdinalIgnoreCase)
-                && TryNormalizeAppleId(segment[2..], out var idSegment))
-            {
-                return idSegment;
-            }
-
-            if (TryNormalizeAppleId(segment, out var directSegment))
-            {
-                return directSegment;
-            }
-        }
-
-        return null;
+        return AppleIdParser.TryExtractFromUri(uri);
     }
 
     private static string? TryExtractAppleIdFromRegex(string candidate)

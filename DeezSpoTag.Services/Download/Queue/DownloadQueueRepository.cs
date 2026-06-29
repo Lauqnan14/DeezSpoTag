@@ -490,8 +490,8 @@ FROM download_task;";
         const string sql = @"
 SELECT 1
 FROM download_task
-WHERE lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
-LIMIT 1;";
+	WHERE lower(status) IN ('queued', 'resolving', 'preparing', 'prepared', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+	LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null && result is not DBNull;
