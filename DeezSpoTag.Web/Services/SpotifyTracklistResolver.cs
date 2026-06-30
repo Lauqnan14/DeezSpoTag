@@ -146,6 +146,104 @@ internal static class SpotifyTracklistResolver
         return result.DeezerId;
     }
 
+    internal static async Task<SpotifyTracklistResolveResult> ResolveFinalUnmatchedFromMetadataAsync(
+        DeezerClient deezerClient,
+        SpotifyTrackSummary track,
+        bool strictMode,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(track.Name)
+            || string.IsNullOrWhiteSpace(track.Artists))
+        {
+            return new SpotifyTracklistResolveResult(
+                null,
+                SpotifyTracklistResolveOutcome.HardMismatch,
+                "terminal_metadata_missing_identity");
+        }
+
+        try
+        {
+            var resolvedId = NormalizeDeezerId(await deezerClient.GetTrackIdFromMetadataAsync(
+                track.Artists,
+                track.Name,
+                track.Album ?? string.Empty,
+                track.DurationMs));
+            if (string.IsNullOrWhiteSpace(resolvedId))
+            {
+                return new SpotifyTracklistResolveResult(
+                    null,
+                    SpotifyTracklistResolveOutcome.HardMismatch,
+                    "terminal_metadata_no_match");
+            }
+
+            var validation = await ValidateCandidateAsync(
+                deezerClient,
+                track,
+                resolvedId,
+                logger,
+                strictMode);
+            if (!validation.IsAccepted)
+            {
+                return new SpotifyTracklistResolveResult(
+                    null,
+                    validation.IsTransient
+                        ? SpotifyTracklistResolveOutcome.TransientFailure
+                        : SpotifyTracklistResolveOutcome.HardMismatch,
+                    $"terminal_metadata_{validation.Reason}");
+            }
+
+            var normalizedIsrc = NormalizeIsrc(track.Isrc);
+            var canonicalKey = BuildCanonicalTrackKey(track, normalizedIsrc);
+            var metadataKey = BuildMetadataKey(track);
+            if (!string.IsNullOrWhiteSpace(metadataKey))
+            {
+                CacheValue(MetadataCache, metadataKey, resolvedId);
+            }
+
+            CacheCanonicalMatch(
+                canonicalKey,
+                resolvedId,
+                "metadata",
+                validation.Score,
+                persist: true,
+                logger);
+            TryFlushPersistentCache(logger);
+
+            return new SpotifyTracklistResolveResult(
+                resolvedId,
+                SpotifyTracklistResolveOutcome.Matched,
+                "terminal_metadata_match");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (IsTransientException(ex))
+            {
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug(
+                        ex,
+                        "Transient terminal Deezer metadata lookup failure for {TrackName}",
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Name));
+                }
+
+                return new SpotifyTracklistResolveResult(
+                    null,
+                    SpotifyTracklistResolveOutcome.TransientFailure,
+                    "terminal_metadata_transient_failure");
+            }
+
+            logger.LogWarning(
+                ex,
+                "Terminal Deezer metadata lookup failed for Spotify track {TrackName}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Name));
+            return new SpotifyTracklistResolveResult(
+                null,
+                SpotifyTracklistResolveOutcome.HardMismatch,
+                "terminal_metadata_failure");
+        }
+    }
+
     internal static async Task<SpotifyTracklistResolveResult> ResolveDeezerTrackAsync(
         DeezerClient deezerClient,
         SpotifyTrackSummary track,
@@ -830,6 +928,20 @@ internal static class SpotifyTracklistResolver
             artistCandidates.Add(ComputeSimilarity(fullSourceArtist, candidateArtist));
         }
 
+        foreach (var creditedArtist in GetCreditedArtists(sourceTrack.Artists))
+        {
+            var normalizedCreditedArtist = NormalizeDescriptor(creditedArtist);
+            if (string.IsNullOrWhiteSpace(normalizedCreditedArtist))
+            {
+                continue;
+            }
+
+            artistCandidates.Add(ComputeSimilarity(normalizedCreditedArtist, candidateArtist));
+            artistCandidates.Add(ComputeSimilarity(
+                StripThePrefix(normalizedCreditedArtist),
+                StripThePrefix(candidateArtist)));
+        }
+
         return artistCandidates.Max();
     }
 
@@ -1112,15 +1224,16 @@ internal static class SpotifyTracklistResolver
 
     private static string GetPrimaryArtist(string? value)
     {
+        return GetCreditedArtists(value).FirstOrDefault() ?? value?.Trim() ?? string.Empty;
+    }
+
+    private static IReadOnlyList<string> GetCreditedArtists(string? value)
+    {
         if (string.IsNullOrWhiteSpace(value))
         {
-            return string.Empty;
+            return Array.Empty<string>();
         }
 
-        var parts = SplitWithTimeout(
-            value,
-            @"\s*(,|&| and | with | feat\. | ft\. | featuring )\s*",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var separators = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             ",",
@@ -1131,17 +1244,16 @@ internal static class SpotifyTracklistResolver
             "ft.",
             "featuring"
         };
-        var primary = parts
+        return SplitWithTimeout(
+                value,
+                @"\s*(,|&| and | with | feat\. | ft\. | featuring )\s*",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
             .Select(part => part?.Trim())
-            .FirstOrDefault(trimmed =>
+            .Where(trimmed =>
                 !string.IsNullOrWhiteSpace(trimmed)
-                && !separators.Contains(trimmed));
-        if (!string.IsNullOrWhiteSpace(primary))
-        {
-            return primary;
-        }
-
-        return value.Trim();
+                && !separators.Contains(trimmed))
+            .Select(trimmed => trimmed!)
+            .ToList();
     }
 
     private static string StripThePrefix(string normalized)

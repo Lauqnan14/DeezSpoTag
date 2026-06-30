@@ -99,7 +99,13 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
 
             RecordMatchAttemptStart(item, attempt);
             var result = await ResolveTrackAsync(item, resolvedTrack, strictMode, stoppingToken);
-            if (TryHandleTerminalResult(item, result, attempt))
+            if (await TryHandleTerminalResultAsync(
+                    item,
+                    resolvedTrack,
+                    result,
+                    strictMode,
+                    attempt,
+                    stoppingToken))
             {
                 return;
             }
@@ -161,10 +167,13 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
                 CancellationToken: stoppingToken));
     }
 
-    private bool TryHandleTerminalResult(
+    private async Task<bool> TryHandleTerminalResultAsync(
         SpotifyTracklistMatchWorkItem item,
+        SpotifyTrackSummary resolvedTrack,
         SpotifyTracklistResolveResult result,
-        int attempt)
+        bool strictMode,
+        int attempt,
+        CancellationToken stoppingToken)
     {
         if (result.Outcome == SpotifyTracklistResolveOutcome.Matched)
         {
@@ -179,9 +188,28 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             return true;
         }
 
-        if (result.Outcome != SpotifyTracklistResolveOutcome.HardMismatch)
+        if (!ShouldRunTerminalMetadataPass(result))
         {
             return false;
+        }
+
+        var terminalMetadataResult = await SpotifyTracklistResolver.ResolveFinalUnmatchedFromMetadataAsync(
+            _deezerClient,
+            resolvedTrack,
+            strictMode,
+            _logger,
+            stoppingToken);
+        if (terminalMetadataResult.Outcome == SpotifyTracklistResolveOutcome.Matched)
+        {
+            _store.RecordMatch(
+                item.Token,
+                item.Index,
+                terminalMetadataResult.DeezerId ?? string.Empty,
+                item.Track.Id,
+                "matched",
+                terminalMetadataResult.Reason,
+                attempt);
+            return true;
         }
 
         _store.RecordMatch(
@@ -190,8 +218,11 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             string.Empty,
             item.Track.Id,
             "unmatched_final",
-            result.Reason,
+            terminalMetadataResult.Reason,
             attempt);
         return true;
     }
+
+    internal static bool ShouldRunTerminalMetadataPass(SpotifyTracklistResolveResult result) =>
+        result.Outcome == SpotifyTracklistResolveOutcome.HardMismatch;
 }

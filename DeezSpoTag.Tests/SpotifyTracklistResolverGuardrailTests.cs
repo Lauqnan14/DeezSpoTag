@@ -43,4 +43,33 @@ public sealed class SpotifyTracklistResolverGuardrailTests
 
         Assert.False(Assert.IsType<bool>(accepted));
     }
+
+    [Fact]
+    public void ValidateCandidate_AcceptsMatchingCreditedArtist()
+    {
+        var source = new SpotifyTrackSummary(
+            Id: "2hMi1XlpiV87o7o3CYUIwb",
+            Name: "Backbencher",
+            Artists: "Countree Hype, Toxic Lyrikali",
+            Album: "Fast & Furious Riddim Sports",
+            DurationMs: 173000,
+            SourceUrl: "https://open.spotify.com/track/2hMi1XlpiV87o7o3CYUIwb",
+            ImageUrl: null,
+            Isrc: null,
+            ReleaseDate: null);
+        var candidate = new ApiTrack
+        {
+            Id = "3396572611",
+            Title = "Backbencher",
+            TitleShort = "Backbencher",
+            Duration = 173,
+            Artist = new ApiArtist { Name = "Toxic Lyrikali" },
+            Album = new ApiAlbum { Title = "Backbencher" }
+        };
+
+        var validation = ValidateCandidateMethod.Invoke(null, new object?[] { source, candidate, false });
+        var accepted = validation?.GetType().GetProperty("IsAccepted")?.GetValue(validation);
+
+        Assert.True(Assert.IsType<bool>(accepted));
+    }
 }
