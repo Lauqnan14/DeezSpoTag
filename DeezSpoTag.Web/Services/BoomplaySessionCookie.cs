@@ -4,6 +4,17 @@ internal static class BoomplaySessionCookie
 {
     private const int MaxCookieHeaderLength = 8192;
 
+    public static bool TryCreate(string? imei, string? sessionId, out string normalizedCookie)
+    {
+        normalizedCookie = string.Empty;
+        if (string.IsNullOrWhiteSpace(imei) || string.IsNullOrWhiteSpace(sessionId))
+        {
+            return false;
+        }
+
+        return TryNormalize($"imei={imei.Trim()}; sessionID={sessionId.Trim()}", out normalizedCookie);
+    }
+
     public static bool TryNormalize(string? rawCookie, out string normalizedCookie)
     {
         normalizedCookie = string.Empty;

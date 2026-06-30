@@ -24,6 +24,12 @@ public sealed class PlatformAuthApiDependencies
     public required DeezerSessionManager DeezerSessionManager { get; init; }
 }
 
+public sealed class BoomplayLoginRequest
+{
+    public string? Imei { get; set; }
+    public string? SessionId { get; set; }
+}
+
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/platform-auth")]
@@ -438,7 +444,7 @@ public class PlatformAuthApiController : ControllerBase
     }
 
     [HttpPost("boomplay")]
-    public async Task<IActionResult> SaveBoomplay([FromBody] BoomplayAuth request)
+    public async Task<IActionResult> SaveBoomplay([FromBody] BoomplayLoginRequest request)
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
@@ -446,26 +452,21 @@ public class PlatformAuthApiController : ControllerBase
 
         var currentState = await _authService.LoadAsync();
         var previous = currentState.Boomplay;
-        var submittedCookie = ResolveSubmittedSecret(request.Cookie, previous?.Cookie);
-        if (!BoomplaySessionCookie.TryNormalize(submittedCookie, out var cookie))
+        var existingCookie = string.Empty;
+        var keepExisting = string.IsNullOrWhiteSpace(request.Imei)
+                           && string.IsNullOrWhiteSpace(request.SessionId)
+                           && BoomplaySessionCookie.TryNormalize(previous?.Cookie, out existingCookie);
+        if (!keepExisting
+            && !BoomplaySessionCookie.TryCreate(request.Imei, request.SessionId, out existingCookie))
         {
-            return BadRequest("A valid Boomplay Cookie header is required.");
+            return BadRequest("Both Boomplay imei and sessionID cookies are required.");
         }
-
-        var userAgent = string.IsNullOrWhiteSpace(request.UserAgent)
-            ? previous?.UserAgent
-            : request.UserAgent.Trim();
-        var displayName = string.IsNullOrWhiteSpace(request.DisplayName)
-            ? "Boomplay session"
-            : request.DisplayName.Trim();
 
         var boomplay = await _authService.UpdateAsync(state =>
         {
             state.Boomplay = new BoomplayAuth
             {
-                Cookie = cookie,
-                UserAgent = userAgent,
-                DisplayName = displayName,
+                Cookie = existingCookie,
                 SessionValid = true,
                 LastStatus = "session_saved",
                 SavedAt = DateTimeOffset.UtcNow
@@ -787,11 +788,10 @@ public class PlatformAuthApiController : ControllerBase
 
         return new
         {
-            cookieSaved = configured,
+            imeiSaved = configured,
+            sessionIdSaved = configured,
             configured,
             connected = configured && auth?.SessionValid != false,
-            userAgent = auth?.UserAgent,
-            displayName = auth?.DisplayName,
             status,
             savedAt = auth?.SavedAt
         };

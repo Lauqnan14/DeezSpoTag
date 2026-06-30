@@ -30,6 +30,30 @@ public sealed class BoomplaySecurityGuardrailTests
     }
 
     [Fact]
+    public void Boomplay_cookie_builds_required_session_pair()
+    {
+        var accepted = BoomplaySessionCookie.TryCreate(
+            "device-123",
+            "session-456",
+            out var normalized);
+
+        Assert.True(accepted);
+        Assert.Equal("imei=device-123; sessionID=session-456", normalized);
+    }
+
+    [Fact]
+    public void Boomplay_cookie_rejects_incomplete_session_pair()
+    {
+        var accepted = BoomplaySessionCookie.TryCreate(
+            "device-123",
+            null,
+            out var normalized);
+
+        Assert.False(accepted);
+        Assert.Empty(normalized);
+    }
+
+    [Fact]
     public void Boomplay_resource_cipher_does_not_store_literal_secret_strings()
     {
         var source = File.ReadAllText(Path.Combine(

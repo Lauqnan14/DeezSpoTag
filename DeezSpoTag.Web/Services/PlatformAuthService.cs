@@ -135,8 +135,6 @@ public class SoulseekAuth
 public class BoomplayAuth
 {
     public string? Cookie { get; set; }
-    public string? UserAgent { get; set; }
-    public string? DisplayName { get; set; }
     public bool? SessionValid { get; set; }
     public string? LastStatus { get; set; }
     public DateTimeOffset? SavedAt { get; set; }

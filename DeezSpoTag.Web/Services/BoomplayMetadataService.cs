@@ -898,16 +898,28 @@ public sealed class BoomplayMetadataService
         }
 
         var url = $"{BoomplayBaseUrl}/playlists/{playlistId}";
-        var html = await GetHtmlAsync(url, session, cancellationToken);
-        if (string.IsNullOrWhiteSpace(html))
+        var htmlTask = GetHtmlAsync(url, session, cancellationToken);
+        var officialTask = GetOfficialPlaylistSnapshotAsync(playlistId, cancellationToken);
+        await Task.WhenAll(htmlTask, officialTask);
+
+        var html = await htmlTask;
+        var official = await officialTask;
+        if (string.IsNullOrWhiteSpace(html) && official == null)
         {
             return null;
         }
 
-        var parsed = ParsePlaylistHtml(playlistId, html, url);
-        var officialTracks = await GetOfficialPlaylistTracksAsync(playlistId, cancellationToken)
-            ?? Array.Empty<BoomplayTrackMetadata>();
-        if (parsed.TrackIds.Count == 0 && officialTracks.Count > 0)
+        var invalidWebPage = LooksLikeNotFoundPlaylistPage(html);
+        var parsed = string.IsNullOrWhiteSpace(html)
+            ? new BoomplayPlaylistMetadata { Id = playlistId, Url = url }
+            : ParsePlaylistHtml(playlistId, html, url);
+        if (official != null)
+        {
+            ApplyOfficialPlaylistMetadata(parsed, official);
+        }
+
+        var officialTracks = official?.Tracks ?? Array.Empty<BoomplayTrackMetadata>();
+        if ((invalidWebPage || parsed.TrackIds.Count == 0) && officialTracks.Count > 0)
         {
             parsed.TrackIds = officialTracks
                 .Select(static track => track.Id)
@@ -941,6 +953,22 @@ public sealed class BoomplayMetadataService
         return parsed;
     }
 
+    private static bool LooksLikeNotFoundPlaylistPage(string? html)
+    {
+        return !string.IsNullOrWhiteSpace(html)
+               && html.Contains("Boomplay Music: Not Found", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ApplyOfficialPlaylistMetadata(
+        BoomplayPlaylistMetadata target,
+        BoomplayOfficialPlaylistSnapshot official)
+    {
+        target.Title = FirstNonEmpty(official.Title, target.Title) ?? string.Empty;
+        target.Description = FirstNonEmpty(official.Description, target.Description) ?? string.Empty;
+        target.ImageUrl = FirstNonEmpty(official.ImageUrl, target.ImageUrl) ?? string.Empty;
+        target.CreatorName = FirstNonEmpty(official.CreatorName, target.CreatorName) ?? string.Empty;
+    }
+
     private static BoomplayTrackMetadata BuildCompletePlaylistTrack(
         string id,
         IReadOnlyDictionary<string, BoomplayTrackMetadata> officialById,
@@ -967,7 +995,7 @@ public sealed class BoomplayMetadataService
         };
     }
 
-    private async Task<IReadOnlyList<BoomplayTrackMetadata>?> GetOfficialPlaylistTracksAsync(
+    private async Task<BoomplayOfficialPlaylistSnapshot?> GetOfficialPlaylistSnapshotAsync(
         string playlistId,
         CancellationToken cancellationToken)
     {
@@ -999,12 +1027,13 @@ public sealed class BoomplayMetadataService
                 return null;
             }
 
-            var declaredCount = root.TryGetProperty("detailCol", out var detail)
-                && detail.ValueKind == JsonValueKind.Object
-                && detail.TryGetProperty("songCount", out var countValue)
-                && countValue.TryGetInt32(out var parsedCount)
-                    ? parsedCount
-                    : -1;
+            var hasDetail = root.TryGetProperty("detailCol", out var detail)
+                            && detail.ValueKind == JsonValueKind.Object;
+            var declaredCount = hasDetail
+                                && detail.TryGetProperty("songCount", out var countValue)
+                                && countValue.TryGetInt32(out var parsedCount)
+                ? parsedCount
+                : -1;
             var tracks = ParseOfficialPlaylistTracks(musics);
             if (declaredCount >= 0 && tracks.Count != declaredCount)
             {
@@ -1015,7 +1044,28 @@ public sealed class BoomplayMetadataService
                     declaredCount);
             }
 
-            return tracks;
+            var title = hasDetail ? GetJsonText(detail, "name") : string.Empty;
+            var description = hasDetail
+                ? CleanBoomplayPlaylistDescription(GetJsonText(detail, "descr"))
+                : string.Empty;
+            var imageUrl = hasDetail
+                ? BuildBoomplaySourceUrl(FirstNonEmpty(
+                    GetJsonText(detail, "bigIconID"),
+                    GetJsonText(detail, "iconMagicUrl"),
+                    GetJsonText(detail, "smIconID")) ?? string.Empty)
+                : string.Empty;
+            var creatorName = hasDetail
+                              && detail.TryGetProperty("owner", out var owner)
+                              && owner.ValueKind == JsonValueKind.Object
+                ? FirstNonEmpty(GetJsonText(owner, "userName"), GetJsonText(owner, "name")) ?? string.Empty
+                : string.Empty;
+
+            return new BoomplayOfficialPlaylistSnapshot(
+                title,
+                description,
+                imageUrl,
+                creatorName,
+                tracks);
         }
         catch (OperationCanceledException)
         {
@@ -1027,6 +1077,13 @@ public sealed class BoomplayMetadataService
             return null;
         }
     }
+
+    private sealed record BoomplayOfficialPlaylistSnapshot(
+        string Title,
+        string Description,
+        string ImageUrl,
+        string CreatorName,
+        IReadOnlyList<BoomplayTrackMetadata> Tracks);
 
     private static List<BoomplayTrackMetadata> ParseOfficialPlaylistTracks(JsonElement musics)
     {
@@ -3506,7 +3563,7 @@ public sealed class BoomplayMetadataService
         return target.Genres.Count > before;
     }
 
-    private readonly record struct BoomplaySessionSnapshot(bool HasSession, string? Cookie, string? UserAgent, string CacheKeySuffix);
+    private readonly record struct BoomplaySessionSnapshot(bool HasSession, string? Cookie, string CacheKeySuffix);
     private readonly record struct SongAttemptParseResult(BoomplayTrackMetadata Metadata);
     private readonly record struct Id3Frame(string FrameId, int FrameOffset, int FrameSize);
 
@@ -3515,11 +3572,10 @@ public sealed class BoomplayMetadataService
         var auth = (await _platformAuthService.LoadAsync()).Boomplay;
         if (!BoomplaySessionCookie.TryNormalize(auth?.Cookie, out var cookie) || auth?.SessionValid == false)
         {
-            return new BoomplaySessionSnapshot(false, null, null, "anon");
+            return new BoomplaySessionSnapshot(false, null, "anon");
         }
 
-        var userAgent = string.IsNullOrWhiteSpace(auth!.UserAgent) ? null : auth.UserAgent.Trim();
-        return new BoomplaySessionSnapshot(true, cookie, userAgent, $"auth:{ComputeSessionCacheKey(cookie)}");
+        return new BoomplaySessionSnapshot(true, cookie, $"auth:{ComputeSessionCacheKey(cookie)}");
     }
 
     private static string BuildPlaylistCacheKey(string id, BoomplaySessionSnapshot session)
@@ -3552,8 +3608,7 @@ public sealed class BoomplayMetadataService
         client.Timeout = TimeSpan.FromSeconds(25);
         if (client.DefaultRequestHeaders.UserAgent.Count == 0)
         {
-            var userAgent = session?.UserAgent;
-            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", string.IsNullOrWhiteSpace(userAgent) ? DefaultUserAgent : userAgent);
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", DefaultUserAgent);
         }
 
         return client;
@@ -3629,6 +3684,7 @@ public sealed class BoomplayPlaylistMetadata
     public string Title { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string ImageUrl { get; set; } = string.Empty;
+    public string CreatorName { get; set; } = string.Empty;
     public List<string> TrackIds { get; set; } = new();
     public Dictionary<string, BoomplayTrackHint> TrackHints { get; set; } = new(StringComparer.Ordinal);
     public List<BoomplayTrackMetadata> Tracks { get; set; } = new();

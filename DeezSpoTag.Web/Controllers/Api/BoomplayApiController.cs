@@ -398,7 +398,11 @@ public sealed class BoomplayApiController : ControllerBase
             cover_big = playlist.ImageUrl,
             cover_xl = playlist.ImageUrl,
             nb_tracks = Math.Max(tracks.Count, playlist.TrackIds.Count),
-            creator = new { id = string.Empty, name = "Boomplay" },
+            creator = new
+            {
+                id = string.Empty,
+                name = string.IsNullOrWhiteSpace(playlist.CreatorName) ? "Boomplay" : playlist.CreatorName
+            },
             tracks
         };
     }
