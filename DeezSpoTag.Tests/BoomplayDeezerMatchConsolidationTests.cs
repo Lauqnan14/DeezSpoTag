@@ -23,6 +23,15 @@ public sealed class BoomplayDeezerMatchConsolidationTests
         Assert.Contains("TryResolveIsrcFirstAsync", matchService, StringComparison.Ordinal);
         Assert.Contains("TryResolveDirectMetadataAsync", matchService, StringComparison.Ordinal);
         Assert.Contains("TryResolveSearchFallbackAsync", matchService, StringComparison.Ordinal);
+        Assert.Contains("TryResolveByEnrichedIsrcAsync", matchService, StringComparison.Ordinal);
+        Assert.Contains("if (!HasAnySourceMetadata(context))", matchService, StringComparison.Ordinal);
+        Assert.Contains("await EnrichBoomplayMetadataAsync(context, cancellationToken);", matchService, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveBySongLinkAsync", matchService, StringComparison.Ordinal);
+        Assert.DoesNotContain("SongLinkResolver", matchService, StringComparison.Ordinal);
+        Assert.True(
+            matchService.IndexOf("TryResolveSearchFallbackAsync(context", StringComparison.Ordinal)
+            < matchService.IndexOf("TryResolveByEnrichedIsrcAsync(context", StringComparison.Ordinal),
+            "Boomplay stream-tag ISRC enrichment must only run after normal metadata matching fails.");
 
         Assert.DoesNotContain("TryResolveBoomplay", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("TryResolveBoomplay", resolveController, StringComparison.Ordinal);
@@ -30,6 +39,9 @@ public sealed class BoomplayDeezerMatchConsolidationTests
         Assert.DoesNotContain("ResolveDeezerIdViaDirectMetadataAsync", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("DeezerResolvedMetadata", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildDeezerResolutionCacheKey", boomplayController, StringComparison.Ordinal);
+        Assert.DoesNotContain("includeMeta', 'true'", tracklistView, StringComparison.Ordinal);
+        Assert.DoesNotContain("shouldHydrateDeezerMetadata", tracklistView, StringComparison.Ordinal);
+        Assert.DoesNotContain("applyDeezerMetadataToRow", tracklistView, StringComparison.Ordinal);
         Assert.DoesNotContain("playlist/tracks/stream", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("playlist/metadata", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("playlist/tracks", boomplayController, StringComparison.Ordinal);

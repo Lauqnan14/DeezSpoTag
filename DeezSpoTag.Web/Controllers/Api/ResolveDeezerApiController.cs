@@ -116,7 +116,8 @@ public sealed class ResolveDeezerApiController : ControllerBase
                     context.Album,
                     context.Isrc,
                     context.DurationMs),
-                cancellationToken);
+                cancellationToken,
+                context.IncludeMeta);
             if (boomplayMatch == null)
             {
                 return Ok(new { available = false, reasonCode = "no_match" });

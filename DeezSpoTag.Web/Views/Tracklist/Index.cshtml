@@ -1499,7 +1499,7 @@ const soundtrackMatchContextYear = Number.isFinite(Number(soundtrackMatchContext
     ? Number(soundtrackMatchContextYearRaw)
     : null;
 const externalDeezerMatchCache = new Map();
-// Map<link, { promise: Promise<{ deezerId: string, resolvePayload: any }>, priority: 'high'|'low' }>
+// Map<link, { promise: Promise<{ deezerId: string }>, priority: 'high'|'low' }>
 const externalDeezerMatchInFlight = new Map();
 const deezerPlaybackContextCache = new Map();
 const deezerPlaybackContextRequests = new Map();
@@ -3946,11 +3946,6 @@ function isDeezerMatchedExternalSource(source) {
     return deezerMatchedExternalSources.has(normalizedSource);
 }
 
-function shouldHydrateDeezerMetadata(source) {
-    const normalizedSource = String(source || '').trim().toLowerCase();
-    return normalizedSource === 'boomplay';
-}
-
 function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
     if (!track) {
         return null;
@@ -4048,9 +4043,6 @@ function buildExternalDeezerResolveQuery(current, source) {
     if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
         qs.set('durationMs', String(current.durationMs));
     }
-    if (shouldHydrateDeezerMetadata(source)) {
-        qs.set('includeMeta', 'true');
-    }
     return qs;
 }
 
@@ -4073,7 +4065,6 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
     if (!inFlightEntry || shouldPromotePriority) {
         const inFlightPromise = runExternalResolverTask(async () => {
             let deezerId = '';
-            let resolvePayload = null;
             if (source === 'spotify') {
                 const facade = getTracklistPlaybackFacade();
                 const request = buildSpotifyTrackResolveRequestFromRow(row);
@@ -4082,23 +4073,17 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
                         ? await facade.resolveTrackBySpotifyRequest(request)
                         : null;
                     deezerId = resolved?.deezerId || '';
-                    if (deezerId && shouldHydrateDeezerMetadata(source) && resolved?.resolvedBy === 'metadata-fallback') {
-                        const qs = buildExternalDeezerResolveQuery(current, source);
-                        const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
-                        resolvePayload = data;
-                    }
                 }
             }
 
             if (!deezerId) {
                 const qs = buildExternalDeezerResolveQuery(current, source);
                 const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
-                resolvePayload = data;
                 deezerId = data?.deezerId || '';
             }
 
             externalDeezerMatchCache.set(cacheKey, deezerId);
-            return { deezerId, resolvePayload };
+            return { deezerId };
         }, priority);
 
         inFlightEntry = {
@@ -4112,9 +4097,6 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
         const result = await inFlightEntry.promise;
         const deezerId = String(result?.deezerId || '').trim();
         if (deezerId && row) {
-            if (result?.resolvePayload && shouldHydrateDeezerMetadata(source)) {
-                applyDeezerMetadataToRow(row, result.resolvePayload);
-            }
             applyExternalMatchToRow(row, deezerId);
         }
         return deezerId;
@@ -4273,107 +4255,6 @@ function updateMatchedRowCheckbox(row, deezerId) {
     checkbox.disabled = true;
     checkbox.setAttribute('aria-disabled', 'true');
     checkbox.setAttribute('title', 'Unavailable');
-}
-
-function applyDeezerMetadataToRow(row, metadata) {
-    if (!row || !metadata) {
-        return;
-    }
-    const durationMs = resolveMetadataDurationMs(metadata);
-    if (durationMs > 0) {
-        const durationSeconds = Math.round(durationMs / 1000);
-        const durationCell = row.querySelector('.track-duration');
-        if (durationCell) {
-            durationCell.textContent = formatTrackDurationSeconds(durationSeconds);
-        }
-        row.dataset.availabilityDuration = String(durationMs);
-        const checkbox = row.querySelector('.track-checkbox');
-        if (checkbox) {
-            checkbox.setAttribute('data-track-duration-ms', String(durationMs));
-        }
-    }
-
-    if (metadata.title) {
-        const titleCell = row.querySelector('.track-title-text');
-        const displayTitle = isBoomplayTracklistSource()
-            ? normalizeBoomplayLabelForDisplay(metadata.title, { artist: metadata.artist || row.dataset.availabilityArtist || '' })
-            : metadata.title;
-        if (titleCell) {
-            titleCell.textContent = displayTitle;
-        }
-        row.dataset.availabilityTitle = metadata.title;
-        const checkbox = row.querySelector('.track-checkbox');
-        if (checkbox) {
-            checkbox.setAttribute('data-track-title', escapeHtml(metadata.title));
-        }
-    }
-
-    if (metadata.artist) {
-        const artistCell = row.querySelector('.track-artist .track-cell-text');
-        const displayArtist = isBoomplayTracklistSource()
-            ? normalizeBoomplayLabelForDisplay(metadata.artist, { isArtist: true })
-            : metadata.artist;
-        if (artistCell) {
-            artistCell.textContent = displayArtist;
-        }
-        row.dataset.availabilityArtist = metadata.artist;
-        const checkbox = row.querySelector('.track-checkbox');
-        if (checkbox) {
-            checkbox.setAttribute('data-track-artist', escapeHtml(metadata.artist));
-        }
-    }
-
-    if (metadata.album) {
-        const albumCell = row.querySelector('.track-album .track-cell-text');
-        if (albumCell) {
-            albumCell.textContent = metadata.album;
-        }
-        const checkbox = row.querySelector('.track-checkbox');
-        if (checkbox) {
-            checkbox.setAttribute('data-track-album', escapeHtml(metadata.album));
-        }
-    }
-
-    if (metadata.coverMedium) {
-        const cover = normalizeCoverUrl(metadata.coverMedium);
-        if (!cover) {
-            return;
-        }
-        const coverImg = row.querySelector('.track-album-art');
-        if (coverImg) {
-            coverImg.src = cover;
-        } else {
-            const titleContent = row.querySelector('.track-title-content');
-            if (titleContent) {
-                const img = document.createElement('img');
-                img.className = 'track-album-art';
-                img.src = cover;
-                img.alt = '';
-                img.loading = 'lazy';
-                titleContent.insertBefore(img, titleContent.firstChild);
-            }
-        }
-        const checkbox = row.querySelector('.track-checkbox');
-        if (checkbox) {
-            checkbox.setAttribute('data-track-cover', escapeHtml(cover));
-        }
-    }
-}
-
-function resolveMetadataDurationMs(metadata) {
-    if (!metadata) {
-        return 0;
-    }
-
-    const explicitMilliseconds = Number(metadata.durationMs || metadata.duration_ms || 0);
-    if (Number.isFinite(explicitMilliseconds) && explicitMilliseconds > 0) {
-        return Math.round(explicitMilliseconds);
-    }
-
-    const seconds = Number(metadata.duration || metadata.durationSeconds || metadata.duration_seconds || 0);
-    return Number.isFinite(seconds) && seconds > 0
-        ? Math.round(seconds * 1000)
-        : 0;
 }
 
 function buildAvailabilityTrackFromRow(row, deezerId) {

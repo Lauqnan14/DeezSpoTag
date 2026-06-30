@@ -32,9 +32,11 @@ public sealed class BoomplayDeezerMatchService
 {
     private const string DeezerResolutionCacheKeyPrefix = "boomplay:deezer:resolved:";
     private const string DeezerResolutionMissCacheKeyPrefix = "boomplay:deezer:miss:";
+    private const string BoomplayIsrcCacheKeyPrefix = "boomplay:isrc:";
     private static readonly TimeSpan DeezerResolutionCacheTtl = TimeSpan.FromHours(12);
     private static readonly TimeSpan DeezerResolutionMissCacheTtl = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan DeezerValidationTrackCacheTtl = TimeSpan.FromHours(6);
+    private static readonly TimeSpan BoomplayIsrcCacheTtl = TimeSpan.FromHours(12);
 
     private static readonly string[] DerivativeMarkers =
     {
@@ -80,20 +82,17 @@ public sealed class BoomplayDeezerMatchService
 
     private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly DeezerClient _deezerClient;
-    private readonly SongLinkResolver _songLinkResolver;
     private readonly IMemoryCache _memoryCache;
     private readonly ILogger<BoomplayDeezerMatchService> _logger;
 
     public BoomplayDeezerMatchService(
         BoomplayMetadataService boomplayMetadataService,
         DeezerClient deezerClient,
-        SongLinkResolver songLinkResolver,
         IMemoryCache memoryCache,
         ILogger<BoomplayDeezerMatchService> logger)
     {
         _boomplayMetadataService = boomplayMetadataService;
         _deezerClient = deezerClient;
-        _songLinkResolver = songLinkResolver;
         _memoryCache = memoryCache;
         _logger = logger;
     }
@@ -123,7 +122,8 @@ public sealed class BoomplayDeezerMatchService
                 track.Isrc,
                 track.DurationMs > 0 ? track.DurationMs : null,
                 track),
-            cancellationToken);
+            cancellationToken,
+            includeMeta: true);
 
         if (result != null)
         {
@@ -139,12 +139,16 @@ public sealed class BoomplayDeezerMatchService
 
     public async Task<BoomplayDeezerMatchResult?> ResolveAsync(
         BoomplayDeezerMatchRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool includeMeta = false)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var context = CreateContext(request);
-        await EnrichBoomplayMetadataAsync(context, cancellationToken);
+        if (!HasAnySourceMetadata(context))
+        {
+            await EnrichBoomplayMetadataAsync(context, cancellationToken);
+        }
 
         var validationTrackCache = new ConcurrentDictionary<string, ApiTrack?>(StringComparer.Ordinal);
         var deezerId = await ResolveDeezerIdAsync(context, validationTrackCache, cancellationToken);
@@ -153,7 +157,9 @@ public sealed class BoomplayDeezerMatchService
             return null;
         }
 
-        return await HydrateDeezerMetadataAsync(deezerId, context, validationTrackCache, cancellationToken);
+        return includeMeta
+            ? await HydrateDeezerMetadataAsync(deezerId, context, validationTrackCache, cancellationToken)
+            : new BoomplayDeezerMatchResult(deezerId, string.Empty, string.Empty, string.Empty, string.Empty, null);
     }
 
     private static BoomplayMatchContext CreateContext(BoomplayDeezerMatchRequest request)
@@ -250,7 +256,76 @@ public sealed class BoomplayDeezerMatchService
             return fallbackId;
         }
 
-        return await TryResolveBySongLinkAsync(context, validationTrackCache, cancellationToken);
+        var enrichedIsrcId = await TryResolveByEnrichedIsrcAsync(context, validationTrackCache, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(enrichedIsrcId))
+        {
+            return enrichedIsrcId;
+        }
+
+        return null;
+    }
+
+    private async Task<string?> TryResolveByEnrichedIsrcAsync(
+        BoomplayMatchContext context,
+        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(context.Isrc)
+            || string.IsNullOrWhiteSpace(context.Url)
+            || !BoomplayMetadataService.TryParseBoomplayUrl(context.Url, out var type, out var trackId)
+            || !string.Equals(type, "track", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(trackId))
+        {
+            return null;
+        }
+
+        var isrc = await ResolveBoomplayIsrcAfterMetadataMissAsync(trackId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return null;
+        }
+
+        context.Isrc = Normalize(isrc);
+        if (string.IsNullOrWhiteSpace(context.Isrc))
+        {
+            return null;
+        }
+
+        return await TryResolveIsrcFirstAsync(context, validationTrackCache, cancellationToken);
+    }
+
+    private async Task<string?> ResolveBoomplayIsrcAfterMetadataMissAsync(
+        string trackId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedTrackId = trackId.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedTrackId))
+        {
+            return null;
+        }
+
+        var cacheKey = BuildBoomplayIsrcCacheKey(normalizedTrackId);
+        if (_memoryCache.TryGetValue(cacheKey, out string? cachedIsrc))
+        {
+            return cachedIsrc;
+        }
+
+        try
+        {
+            var track = await _boomplayMetadataService.GetSongAsync(normalizedTrackId, cancellationToken);
+            var isrc = Normalize(track?.Isrc);
+            if (!string.IsNullOrWhiteSpace(isrc))
+            {
+                _memoryCache.Set(cacheKey, isrc, BoomplayIsrcCacheTtl);
+                return isrc;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed enriching Boomplay ISRC after Deezer metadata miss.");
+        }
+
+        return null;
     }
 
     private async Task<string?> TryResolveIsrcFirstAsync(
@@ -477,32 +552,6 @@ public sealed class BoomplayDeezerMatchService
             context.Album,
             context.Isrc,
             context.DurationMs,
-            validationTrackCache,
-            cancellationToken);
-    }
-
-    private async Task<string?> TryResolveBySongLinkAsync(
-        BoomplayMatchContext context,
-        ConcurrentDictionary<string, ApiTrack?> validationTrackCache,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(context.Url))
-        {
-            return null;
-        }
-
-        var songLink = await _songLinkResolver.ResolveByUrlAsync(context.Url, cancellationToken);
-        var deezerId = songLink?.DeezerId ?? ResolveDeezerApiController.TryExtractDeezerTrackId(songLink?.DeezerUrl);
-        if (string.IsNullOrWhiteSpace(deezerId) || !HasAnySourceMetadata(context))
-        {
-            return null;
-        }
-
-        return await ValidateResolvedCandidateAsync(
-            deezerId,
-            context,
-            context.Title,
-            context.Artist,
             validationTrackCache,
             cancellationToken);
     }
@@ -868,6 +917,9 @@ public sealed class BoomplayDeezerMatchService
 
     private static string BuildDeezerResolutionMissCacheKey(string boomplayTrackId)
         => $"{DeezerResolutionMissCacheKeyPrefix}{boomplayTrackId.Trim()}";
+
+    private static string BuildBoomplayIsrcCacheKey(string boomplayTrackId)
+        => $"{BoomplayIsrcCacheKeyPrefix}{boomplayTrackId.Trim()}";
 
     private static string BuildValidationTrackCacheKey(string deezerId)
         => $"boomplay:deezer:track:{deezerId.Trim()}";
