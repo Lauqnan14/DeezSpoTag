@@ -3065,12 +3065,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     } catch (error) {
         console.error('Home data load failed:', error);
     }
-    // Run auto-login in background and refresh home once if credentials were hydrated.
-    void checkAutoLogin().then((wasAuthenticated) => {
-        if (wasAuthenticated) {
-            void loadHomeData();
-        }
-    });
+    // Authentication continues independently; the rendered home feed is not fetched twice.
+    void checkAutoLogin();
     applySearchSourceState();
     document.body.addEventListener('click', (event) => {
         const card = event.target.closest('[data-spotify-item]');

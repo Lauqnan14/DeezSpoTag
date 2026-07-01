@@ -1483,10 +1483,6 @@ public partial class Program
             new DeezSpoTag.Web.Services.SpotifyHomeFeedCollaborators
             {
                 PathfinderClient = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
-                SpotifyMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
-                SpotifyDeezerAlbumResolver = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyDeezerAlbumResolver>(),
-                SongLinkResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.SongLinkResolver>(),
-                DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.ISettingsService>(),
                 BlobService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyBlobService>(),
                 PlatformAuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),

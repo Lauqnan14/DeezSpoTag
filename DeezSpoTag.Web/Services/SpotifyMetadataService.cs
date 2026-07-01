@@ -1731,8 +1731,7 @@ public sealed class SpotifyMetadataService
 
     public async Task<List<SpotifyTrackSummary>> HydrateTrackIsrcsAsync(
         List<SpotifyTrackSummary> tracks,
-        CancellationToken cancellationToken,
-        int? maxConcurrency = null)
+        CancellationToken cancellationToken)
     {
         if (tracks.Count == 0)
         {
@@ -1751,22 +1750,13 @@ public sealed class SpotifyMetadataService
             return tracks;
         }
 
-        var isrcMap = await _pathfinderMetadataClient.FetchTrackIsrcsAsync(
-            missing,
-            cancellationToken,
-            maxConcurrency);
-
-        if (isrcMap.Count < missing.Count)
+        var isrcMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var librespotTracks = await FetchLibrespotTracksAsync(missing, cancellationToken);
+        foreach (var track in librespotTracks)
         {
-            var librespotIsrcMap = await FetchMissingTrackIsrcsWithLibrespotAsync(
-                missing.Where(id => !isrcMap.ContainsKey(id)).ToList(),
-                cancellationToken);
-            foreach (var (trackId, isrc) in librespotIsrcMap)
+            if (!string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc))
             {
-                if (!isrcMap.ContainsKey(trackId) && IsValidIsrc(isrc))
-                {
-                    isrcMap[trackId] = isrc;
-                }
+                isrcMap[track.Id] = track.Isrc!;
             }
         }
 
@@ -1790,41 +1780,6 @@ public sealed class SpotifyMetadataService
         }
 
         return updated;
-    }
-
-    private async Task<Dictionary<string, string>> FetchMissingTrackIsrcsWithLibrespotAsync(
-        List<string> trackIds,
-        CancellationToken cancellationToken)
-    {
-        var results = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (trackIds.Count == 0)
-        {
-            return results;
-        }
-
-        var blobPath = await TryResolveActiveLibrespotBlobPathAsync();
-        if (string.IsNullOrWhiteSpace(blobPath))
-        {
-            return results;
-        }
-
-        try
-        {
-            var hydrated = await HydrateTrackDetailsWithLibrespotAsync(
-                blobPath,
-                trackIds.Select(CreatePlaceholderTrackSummary).ToList(),
-                cancellationToken);
-            foreach (var track in hydrated.Where(track => !string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc)))
-            {
-                results[track.Id] = track.Isrc!;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Spotify librespot ISRC hydration fallback failed.");
-        }
-
-        return results;
     }
 
     public async Task<List<SpotifyTrackSummary>> HydrateTrackAudioFeaturesAsync(

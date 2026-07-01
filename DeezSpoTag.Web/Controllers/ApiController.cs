@@ -802,7 +802,21 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var deezerLanguage = ResolveDeezerLanguage();
-                var page = await FetchHomePageAsync(channel, deezerLanguage);
+                var pageTask = FetchHomePageAsync(channel, deezerLanguage);
+                Task<IReadOnlyList<object>>? spotifySectionsTask = null;
+                Task<IReadOnlyList<object>>? spotifyCategoriesTask = null;
+                if (!rawEnabled && string.IsNullOrWhiteSpace(channel))
+                {
+                    spotifySectionsTask = _spotifyHomeFeedRuntimeService.GetMappedSectionsAsync(
+                        timeZone,
+                        refreshEnabled,
+                        HttpContext.RequestAborted);
+                    spotifyCategoriesTask = _spotifyHomeFeedRuntimeService.GetBrowseCategoriesAsync(
+                        refreshEnabled,
+                        HttpContext.RequestAborted);
+                }
+
+                var page = await pageTask;
 
                 if (rawEnabled)
                 {
@@ -813,13 +827,8 @@ namespace DeezSpoTag.Web.Controllers
                 if (string.IsNullOrWhiteSpace(channel))
                 {
                     var deezerSections = ExtractHomeSections(result);
-                    var spotifySections = await _spotifyHomeFeedRuntimeService.GetMappedSectionsAsync(
-                        timeZone,
-                        refreshEnabled,
-                        HttpContext.RequestAborted);
-                    var spotifyCategories = await _spotifyHomeFeedRuntimeService.GetBrowseCategoriesAsync(
-                        refreshEnabled,
-                        HttpContext.RequestAborted);
+                    var spotifySections = await spotifySectionsTask!;
+                    var spotifyCategories = await spotifyCategoriesTask!;
                     var categorizedSections = MergeSpotifyCategoriesIntoHomeCategories(deezerSections, spotifyCategories);
                     result = BuildHomeSectionsResponse(MergeSpotifySectionsIntoHomeSections(categorizedSections, spotifySections));
                 }

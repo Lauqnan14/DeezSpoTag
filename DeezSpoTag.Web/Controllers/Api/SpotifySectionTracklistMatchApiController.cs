@@ -62,7 +62,8 @@ public sealed class SpotifySectionTracklistMatchApiController : ControllerBase
             sectionKey,
             normalizedTracks,
             allowFallbackSearch,
-            cancellationToken);
+            cancellationToken,
+            immediateResolveLimit: 0);
 
         var immediateMatches = result.Tracks
             .Where(track => IsNumericDeezerId(track.Id))

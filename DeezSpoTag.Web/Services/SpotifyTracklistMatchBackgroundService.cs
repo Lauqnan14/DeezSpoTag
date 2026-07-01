@@ -6,6 +6,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
 {
     private const int MaxTransientAttempts = 3;
+    private const int IdentityHydrationBatchSize = 64;
     private readonly ISpotifyTracklistMatchQueue _queue;
     private readonly ISpotifyTracklistMatchStore _store;
     private readonly DeezerClient _deezerClient;
@@ -33,16 +34,41 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
     {
         var concurrency = ReadConcurrencySettings();
         using var gate = new SemaphoreSlim(concurrency, concurrency);
-        await foreach (var item in _queue.Reader.ReadAllAsync(stoppingToken))
+        while (await _queue.Reader.WaitToReadAsync(stoppingToken))
         {
-            if (!_store.IsActive(item.Token))
+            var batch = ReadActiveBatch();
+            if (batch.Count == 0)
             {
                 continue;
             }
 
-            await gate.WaitAsync(stoppingToken);
-            _ = ProcessItemAsync(item, gate, stoppingToken);
+            var hydratedTracks = await _tracklistService.HydrateSpotifyIdentityBatchAsync(
+                batch.Select(item => item.Track).ToList(),
+                stoppingToken);
+            for (var index = 0; index < batch.Count; index++)
+            {
+                var item = batch[index];
+                var hydratedTrack = index < hydratedTracks.Count
+                    ? hydratedTracks[index]
+                    : item.Track;
+                await gate.WaitAsync(stoppingToken);
+                _ = ProcessItemAsync(item, hydratedTrack, gate, stoppingToken);
+            }
         }
+    }
+
+    private List<SpotifyTracklistMatchWorkItem> ReadActiveBatch()
+    {
+        var batch = new List<SpotifyTracklistMatchWorkItem>(IdentityHydrationBatchSize);
+        while (batch.Count < IdentityHydrationBatchSize && _queue.Reader.TryRead(out var item))
+        {
+            if (_store.IsActive(item.Token))
+            {
+                batch.Add(item);
+            }
+        }
+
+        return batch;
     }
 
     private int ReadConcurrencySettings()
@@ -56,6 +82,7 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
 
     private async Task ProcessItemAsync(
         SpotifyTracklistMatchWorkItem item,
+        SpotifyTrackSummary resolvedTrack,
         SemaphoreSlim gate,
         CancellationToken stoppingToken)
     {
@@ -67,7 +94,6 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             }
 
             var strictMode = _settingsService.LoadSettings().StrictSpotifyDeezerMode;
-            var resolvedTrack = await HydrateQueuedTrackIdentityAsync(item.Track, stoppingToken);
             await ResolveWithRetriesAsync(item, resolvedTrack, strictMode, stoppingToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -225,14 +251,6 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             terminalMetadataResult.Reason,
             attempt);
         return true;
-    }
-
-    private async Task<SpotifyTrackSummary> HydrateQueuedTrackIdentityAsync(
-        SpotifyTrackSummary track,
-        CancellationToken cancellationToken)
-    {
-        var hydrated = await _tracklistService.HydrateSpotifyIdentityBatchAsync([track], cancellationToken);
-        return hydrated.Count > 0 ? hydrated[0] : track;
     }
 
     internal static bool ShouldRunTerminalMetadataPass(SpotifyTracklistResolveResult result) =>

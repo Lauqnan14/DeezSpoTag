@@ -245,6 +245,7 @@ public sealed class SpotifyPathfinderMetadataClient
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250.0);
 
     private static readonly TimeSpan TokenRefreshWindow = TimeSpan.FromMinutes(5.0);
+    private static readonly TimeSpan AuthContextBuildTimeout = TimeSpan.FromSeconds(6.0);
 
     private static readonly JsonSerializerOptions ClientTokenJsonOptions = new JsonSerializerOptions
     {
@@ -1301,6 +1302,11 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private async Task<PathfinderAuthContext?> BuildBlobAuthContextAsync(string blobPath, CancellationToken cancellationToken)
     {
+        if (TryGetCachedBlobContext(blobPath, out PathfinderAuthContext? currentContext) && currentContext is not null)
+        {
+            return currentContext;
+        }
+
         await _authGate.WaitAsync(cancellationToken);
         try
         {
@@ -1309,12 +1315,16 @@ public sealed class SpotifyPathfinderMetadataClient
                 return cachedContext;
             }
 
-            if (await _blobService.IsLibrespotBlobAsync(blobPath, cancellationToken))
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(AuthContextBuildTimeout);
+            var buildToken = timeoutSource.Token;
+
+            if (await _blobService.IsLibrespotBlobAsync(blobPath, buildToken))
             {
-                return await BuildLibrespotAuthContextAsync(blobPath, cancellationToken);
+                return await BuildLibrespotAuthContextAsync(blobPath, buildToken);
             }
 
-            SpotifyBlobPayload? payload = await _blobService.TryLoadBlobPayloadAsync(blobPath, cancellationToken);
+            SpotifyBlobPayload? payload = await _blobService.TryLoadBlobPayloadAsync(blobPath, buildToken);
             if (payload is null)
             {
                 _logger.LogWarning("Spotify Pathfinder auth unavailable: invalid blob payload.");
@@ -1332,14 +1342,14 @@ public sealed class SpotifyPathfinderMetadataClient
                 _logger.LogWarning("Spotify Pathfinder auth unavailable: failed to build cookie client.");
                 return null;
             }
-            SpotifyBlobService.SpotifyWebPlayerTokenInfo? tokenInfo = await _blobService.GetWebPlayerTokenInfoAsync(blobPath, cancellationToken);
+            SpotifyBlobService.SpotifyWebPlayerTokenInfo? tokenInfo = await _blobService.GetWebPlayerTokenInfoAsync(blobPath, buildToken);
             if (tokenInfo is null || string.IsNullOrWhiteSpace(tokenInfo.AccessToken))
             {
                 _logger.LogWarning("Spotify Pathfinder auth unavailable: missing web player access token.");
                 return null;
             }
             var accessToken = tokenInfo.AccessToken;
-            WebPlayerSessionInfo? sessionInfo = await FetchWebPlayerSessionInfoFromBlobAsync(cookieClient, payload, cancellationToken);
+            WebPlayerSessionInfo? sessionInfo = await FetchWebPlayerSessionInfoFromBlobAsync(cookieClient, payload, buildToken);
             if (sessionInfo is null || string.IsNullOrWhiteSpace(sessionInfo.ClientVersion))
             {
                 _logger.LogWarning("Spotify Pathfinder auth unavailable: missing client version.");
@@ -1357,7 +1367,7 @@ public sealed class SpotifyPathfinderMetadataClient
             }
             string deviceId = sessionInfo.DeviceId ?? string.Empty;
             HttpClient blobClient = _httpClientFactory.CreateClient();
-            string? clientToken = await GetClientTokenAsync(blobClient, clientId, sessionInfo.ClientVersion, deviceId, cancellationToken);
+            string? clientToken = await GetClientTokenAsync(blobClient, clientId, sessionInfo.ClientVersion, deviceId, buildToken);
             if (string.IsNullOrWhiteSpace(clientToken))
             {
                 _logger.LogWarning("Spotify Pathfinder auth unavailable: missing client token.");
@@ -1366,6 +1376,13 @@ public sealed class SpotifyPathfinderMetadataClient
             PathfinderAuthContext context = new PathfinderAuthContext(accessToken, clientToken, sessionInfo.ClientVersion, deviceId);
             CacheBlobContext(blobPath, context, ResolveWebPlayerAccessTokenExpiry(tokenInfo.ExpiresAtUnixMs), (_clientTokenExpiresAt != default(DateTimeOffset)) ? _clientTokenExpiresAt : DateTimeOffset.UtcNow.AddMinutes(50.0));
             return context;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Spotify Pathfinder auth context build exceeded {TimeoutSeconds}s.",
+                AuthContextBuildTimeout.TotalSeconds);
+            return null;
         }
         finally
         {

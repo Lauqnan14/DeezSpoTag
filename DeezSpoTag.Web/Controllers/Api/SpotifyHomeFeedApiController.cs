@@ -1,6 +1,3 @@
-using DeezSpoTag.Core.Models.Deezer;
-using DeezSpoTag.Integrations.Deezer;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Web.Services;
 using System.Linq;
@@ -23,6 +20,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private const string EpisodeType = "episode";
     private const string ShowType = "show";
     private const string StationType = "station";
+    private const string SectionType = "section";
     private const string SectionItemsKey = "sectionItems";
     private const string ItemsKey = "items";
     private const string ContentKey = "content";
@@ -85,10 +83,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     };
     private const string TrendingSongsSectionUri = "spotify:section:0JQ5DB5E8N831KzFzsBBQ2";
     private readonly SpotifyPathfinderMetadataClient _pathfinderClient;
-    private readonly SpotifyMetadataService _spotifyMetadataService;
-    private readonly SpotifyDeezerAlbumResolver _spotifyDeezerAlbumResolver;
-    private readonly SongLinkResolver _songLinkResolver;
-    private readonly DeezSpoTag.Integrations.Deezer.DeezerClient _deezerClient;
     private readonly DeezSpoTag.Services.Settings.ISettingsService _settingsService;
     private readonly SpotifyBlobService _blobService;
     private readonly PlatformAuthService _platformAuthService;
@@ -96,9 +90,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private readonly ISpotifyUserContextAccessor _userContext;
     private readonly ILogger<SpotifyHomeFeedApiController> _logger;
     private readonly IWebHostEnvironment _hostEnvironment;
-    private static readonly TimeSpan MatchCacheTtl = TimeSpan.FromMinutes(10);
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string? DeezerUrl, DateTimeOffset Stamp)> MatchCache
-        = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, object Item)> BrowseCategoryCache
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, IReadOnlyList<object> Items, int Total)> BrowseCategoryPlaylistsCache
@@ -176,11 +167,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         bool? IsPublic = null,
         bool? Collaborative = null);
 
-    private sealed record MetadataEnrichmentLimits(
-        int MaxItemsPerSectionToEnrich,
-        int MaxPlaylistMetadataLookups,
-        int MaxArtistMetadataLookups);
-
     private static bool ReadSpotifyBrowseEnabled()
     {
         var value = Environment.GetEnvironmentVariable("DEEZSPOTAG_SPOTIFY_BROWSE_ENABLED");
@@ -200,10 +186,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         IWebHostEnvironment hostEnvironment)
     {
         _pathfinderClient = collaborators.PathfinderClient;
-        _spotifyMetadataService = collaborators.SpotifyMetadataService;
-        _spotifyDeezerAlbumResolver = collaborators.SpotifyDeezerAlbumResolver;
-        _songLinkResolver = collaborators.SongLinkResolver;
-        _deezerClient = collaborators.DeezerClient;
         _settingsService = collaborators.SettingsService;
         _blobService = collaborators.BlobService;
         _platformAuthService = collaborators.PlatformAuthService;
@@ -683,64 +665,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
     }
 
-    [HttpPost("map")]
-    public async Task<IActionResult> MapBatch([FromBody] SpotifyHomeMapRequest request, CancellationToken cancellationToken)
-    {
-        if (request?.Urls == null || request.Urls.Count == 0)
-        {
-            return Ok(new { success = true, matches = new Dictionary<string, string?>() });
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        var urls = request.Urls
-            .Where(url => !string.IsNullOrWhiteSpace(url))
-            .Select(url => url.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var matches = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var pending = new List<string>();
-        foreach (var url in urls)
-        {
-            if (MatchCache.TryGetValue(url, out var cached) && now - cached.Stamp <= MatchCacheTtl)
-            {
-                matches[url] = cached.DeezerUrl;
-            }
-            else
-            {
-                pending.Add(url);
-            }
-        }
-
-        if (pending.Count == 0)
-        {
-            return Ok(new { success = true, matches });
-        }
-
-        using var throttle = new SemaphoreSlim(4);
-        var tasks = pending.Select(async url =>
-        {
-            await throttle.WaitAsync(cancellationToken);
-            try
-            {
-                var deezerUrl = await ResolveDeezerUrlAsync(url, cancellationToken);
-                MatchCache[url] = (deezerUrl, DateTimeOffset.UtcNow);
-                lock (matches)
-                {
-                    matches[url] = deezerUrl;
-                }
-            }
-            finally
-            {
-                throttle.Release();
-            }
-        }).ToList();
-
-        await Task.WhenAll(tasks);
-
-        return Ok(new { success = true, matches });
-    }
-
     private static bool TryGetFreshHomeFeedCache(
         string cacheKey,
         out (DateTimeOffset Stamp, string Greeting, List<object> Sections) cache)
@@ -1099,9 +1023,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             ? (TryGetAnonymousItems(merged[existingIndex])?.Count ?? 0)
             : 0;
 
-        // Existing home/legacy popular-radio payloads are often thin (8-10 cards).
-        // Rehydrate from browse page when absent or clearly truncated.
-        if (existingIndex >= 0 && existingCount > 10)
+        if (existingIndex >= 0 && existingCount > 0)
         {
             return merged;
         }
@@ -1519,69 +1441,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
 
         return updated;
-    }
-
-    private async Task<string?> ResolveDeezerUrlAsync(string url, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var result = await _songLinkResolver.ResolveByUrlAsync(url, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(result?.DeezerUrl))
-            {
-                return result.DeezerUrl;
-            }
-
-            if (!string.IsNullOrWhiteSpace(result?.Isrc))
-            {
-                try
-                {
-                    var track = await _deezerClient.GetTrackByIsrcAsync(result.Isrc);
-                    if (track != null && !string.IsNullOrWhiteSpace(track.Id) && track.Id != "0")
-                    {
-                        return $"https://www.deezer.com/track/{track.Id}";
-                    }
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // Best effort.
-                }
-            }
-
-            if (SpotifyMetadataService.TryParseSpotifyUrl(url, out var type, out var id)
-                && string.Equals(type, AlbumType, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(id))
-            {
-                var albumUrl = $"https://open.spotify.com/album/{id}";
-                var deezerAlbumUrl = await ResolveDeezerAlbumUrlAsync(albumUrl, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(deezerAlbumUrl))
-                {
-                    return deezerAlbumUrl;
-                }
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Best effort.
-        }
-
-        return null;
-    }
-
-    private async Task<string?> ResolveDeezerAlbumUrlAsync(string spotifyAlbumUrl, CancellationToken cancellationToken)
-    {
-        var metadata = await _pathfinderClient.FetchByUrlAsync(spotifyAlbumUrl, cancellationToken);
-        if (metadata == null || !string.Equals(metadata.Type, AlbumType, StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        var deezerId = await _spotifyDeezerAlbumResolver.ResolveAlbumIdAsync(metadata, cancellationToken);
-        return string.IsNullOrWhiteSpace(deezerId) ? null : $"https://www.deezer.com/album/{deezerId}";
-    }
-
-    public sealed class SpotifyHomeMapRequest
-    {
-        public List<string> Urls { get; set; } = new();
     }
 
     private static string? ResolveBrowseCategoryId(string? id, string? uri)
@@ -3090,393 +2949,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             : itemUri;
     }
 
-    private async Task<List<object>> MapHomeSectionsAsync(IEnumerable<object> sections, CancellationToken cancellationToken)
-    {
-        var mapped = MapHomeSections(sections);
-        if (mapped.Count == 0)
-        {
-            return mapped;
-        }
-
-        return await EnrichSpotifyPlaylistStatsAsync(mapped, cancellationToken);
-    }
-
-    private async Task<List<object>> EnrichSpotifyPlaylistStatsAsync(List<object> mappedSections, CancellationToken cancellationToken)
-    {
-        const int maxItemsPerSectionToEnrich = 64;
-        const int maxPlaylistMetadataLookups = 256;
-        const int maxArtistMetadataLookups = 64;
-        var limits = new MetadataEnrichmentLimits(
-            maxItemsPerSectionToEnrich,
-            maxPlaylistMetadataLookups,
-            maxArtistMetadataLookups);
-        using var metadataThrottle = new SemaphoreSlim(8, 8);
-
-        var playlistLookupTasks = new Dictionary<string, Task<SpotifyUrlMetadata?>>(StringComparer.OrdinalIgnoreCase);
-        var artistLookupTasks = new Dictionary<string, Task<int?>>(StringComparer.OrdinalIgnoreCase);
-        CollectSectionMetadataTasks(
-            mappedSections,
-            playlistLookupTasks,
-            artistLookupTasks,
-            metadataThrottle,
-            limits,
-            cancellationToken);
-
-        var metadataTasks = new List<Task>(playlistLookupTasks.Count + artistLookupTasks.Count);
-        metadataTasks.AddRange(playlistLookupTasks.Values);
-        metadataTasks.AddRange(artistLookupTasks.Values);
-        if (metadataTasks.Count > 0)
-        {
-            await Task.WhenAll(metadataTasks);
-        }
-
-        var enrichedSections = new List<object>(mappedSections.Count);
-        foreach (var section in mappedSections)
-        {
-            var enrichedSection = await TryBuildEnrichedSectionAsync(section, playlistLookupTasks, artistLookupTasks);
-            if (enrichedSection != null)
-            {
-                enrichedSections.Add(enrichedSection);
-            }
-        }
-
-        return enrichedSections;
-    }
-
-    private void CollectSectionMetadataTasks(
-        IEnumerable<object> mappedSections,
-        Dictionary<string, Task<SpotifyUrlMetadata?>> playlistLookupTasks,
-        Dictionary<string, Task<int?>> artistLookupTasks,
-        SemaphoreSlim metadataThrottle,
-        MetadataEnrichmentLimits limits,
+    private static Task<List<object>> MapHomeSectionsAsync(
+        IEnumerable<object> sections,
         CancellationToken cancellationToken)
     {
-        foreach (var sectionItems in mappedSections
-            .Select(TryGetAnonymousItems)
-            .Where(items => items != null && items.Count > 0)
-            .Select(items => items!))
-        {
-            var inspectCount = Math.Min(sectionItems.Count, limits.MaxItemsPerSectionToEnrich);
-            for (var index = 0; index < inspectCount; index++)
-            {
-                QueueHomeItemMetadataTask(
-                    sectionItems[index],
-                    playlistLookupTasks,
-                    artistLookupTasks,
-                    metadataThrottle,
-                    limits,
-                    cancellationToken);
-            }
-        }
-    }
-
-    private void QueueHomeItemMetadataTask(
-        object? item,
-        Dictionary<string, Task<SpotifyUrlMetadata?>> playlistLookupTasks,
-        Dictionary<string, Task<int?>> artistLookupTasks,
-        SemaphoreSlim metadataThrottle,
-        MetadataEnrichmentLimits limits,
-        CancellationToken cancellationToken)
-    {
-        if (item == null || !string.Equals(TryGetAnonymousString(item, "source"), SpotifySource, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var itemType = TryGetAnonymousString(item, "type");
-        if (string.Equals(itemType, PlaylistType, StringComparison.OrdinalIgnoreCase))
-        {
-            TryQueuePlaylistMetadataTask(item, playlistLookupTasks, metadataThrottle, limits.MaxPlaylistMetadataLookups, cancellationToken);
-            return;
-        }
-
-        if (string.Equals(itemType, ArtistType, StringComparison.OrdinalIgnoreCase))
-        {
-            TryQueueArtistMetadataTask(item, artistLookupTasks, metadataThrottle, limits.MaxArtistMetadataLookups, cancellationToken);
-        }
-    }
-
-    private void TryQueuePlaylistMetadataTask(
-        object item,
-        Dictionary<string, Task<SpotifyUrlMetadata?>> playlistLookupTasks,
-        SemaphoreSlim metadataThrottle,
-        int maxPlaylistMetadataLookups,
-        CancellationToken cancellationToken)
-    {
-        var playlistId = TryGetAnonymousString(item, "id");
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return;
-        }
-
-        var trackCount = TryGetAnonymousInt(item, TrackCountKey)
-                         ?? TryGetAnonymousInt(item, "nb_tracks")
-                         ?? TryGetAnonymousInt(item, "track_count");
-        var playlistFollowers = TryGetAnonymousInt(item, FollowersKey)
-                                ?? TryGetAnonymousInt(item, "fans");
-        if (trackCount.HasValue && playlistFollowers.HasValue)
-        {
-            return;
-        }
-
-        if (playlistLookupTasks.Count >= maxPlaylistMetadataLookups && !playlistLookupTasks.ContainsKey(playlistId))
-        {
-            return;
-        }
-
-        if (!playlistLookupTasks.ContainsKey(playlistId))
-        {
-            playlistLookupTasks[playlistId] = FetchPlaylistMetadataSafeAsync(playlistId, metadataThrottle, cancellationToken);
-        }
-    }
-
-    private void TryQueueArtistMetadataTask(
-        object item,
-        Dictionary<string, Task<int?>> artistLookupTasks,
-        SemaphoreSlim metadataThrottle,
-        int maxArtistMetadataLookups,
-        CancellationToken cancellationToken)
-    {
-        var artistId = TryGetAnonymousString(item, "id");
-        if (string.IsNullOrWhiteSpace(artistId))
-        {
-            return;
-        }
-
-        var artistFollowers = TryGetAnonymousInt(item, FollowersKey)
-                              ?? TryGetAnonymousInt(item, "fans");
-        var subtitle = TryGetAnonymousString(item, SubtitleKey);
-        var subtitleHasAudience = !string.IsNullOrWhiteSpace(subtitle)
-            && (subtitle.Contains("follower", StringComparison.OrdinalIgnoreCase)
-                || subtitle.Contains("fan", StringComparison.OrdinalIgnoreCase));
-        if (artistFollowers.HasValue || subtitleHasAudience)
-        {
-            return;
-        }
-
-        if (artistLookupTasks.Count >= maxArtistMetadataLookups && !artistLookupTasks.ContainsKey(artistId))
-        {
-            return;
-        }
-
-        if (!artistLookupTasks.ContainsKey(artistId))
-        {
-            artistLookupTasks[artistId] = FetchArtistFollowersSafeAsync(artistId, metadataThrottle, cancellationToken);
-        }
-    }
-
-    private static async Task<object?> TryBuildEnrichedSectionAsync(
-        object section,
-        IReadOnlyDictionary<string, Task<SpotifyUrlMetadata?>> playlistLookupTasks,
-        IReadOnlyDictionary<string, Task<int?>> artistLookupTasks)
-    {
-        var source = TryGetAnonymousString(section, SourcesKey) ?? SpotifySource;
-        var title = TryGetAnonymousTitle(section);
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            return null;
-        }
-
-        var items = TryGetAnonymousItems(section);
-        if (items == null || items.Count == 0)
-        {
-            return null;
-        }
-
-        var enrichedItems = new List<object>(items.Count);
-        foreach (var item in items)
-        {
-            var enrichedItem = await BuildEnrichedHomeItemAsync(item, source, playlistLookupTasks, artistLookupTasks);
-            if (enrichedItem != null)
-            {
-                enrichedItems.Add(enrichedItem);
-            }
-        }
-
-        if (enrichedItems.Count == 0)
-        {
-            return null;
-        }
-
-        var preserveAllItems = TryGetAnonymousBool(section, "__preserveAllItems") == true
-                               || TryGetAnonymousBool(section, "preserveAllItems") == true;
-
-        return new
-        {
-            source,
-            title,
-            layout = TryGetAnonymousString(section, "layout") ?? "row",
-            pagePath = TryGetAnonymousString(section, "pagePath") ?? string.Empty,
-            hasMore = TryGetAnonymousBool(section, "hasMore") ?? false,
-            __preserveAllItems = preserveAllItems,
-            preserveAllItems,
-            items = enrichedItems
-        };
-    }
-
-    private static async Task<object?> BuildEnrichedHomeItemAsync(
-        object? item,
-        string sectionSource,
-        IReadOnlyDictionary<string, Task<SpotifyUrlMetadata?>> playlistLookupTasks,
-        IReadOnlyDictionary<string, Task<int?>> artistLookupTasks)
-    {
-        if (item == null)
-        {
-            return null;
-        }
-
-        var itemSource = TryGetAnonymousString(item, "source") ?? sectionSource;
-        var itemType = TryGetAnonymousString(item, "type") ?? PlaylistType;
-        var itemId = TryGetAnonymousString(item, "id") ?? string.Empty;
-        var itemUri = TryGetAnonymousString(item, "uri") ?? string.Empty;
-        var name = TryGetAnonymousString(item, "name")
-                   ?? TryGetAnonymousString(item, TitleKey)
-                   ?? string.Empty;
-        var artists = TryGetAnonymousString(item, ArtistsKey);
-        var description = TryGetAnonymousString(item, DescriptionKey);
-        var coverUrl = TryGetAnonymousString(item, "coverUrl")
-                       ?? TryGetAnonymousString(item, ImageKey);
-        var albumName = TryGetAnonymousString(item, "albumName")
-                        ?? TryGetAnonymousString(item, AlbumKey);
-        var durationMs = TryGetAnonymousInt(item, "durationMs");
-        var trackCount = TryGetAnonymousInt(item, TrackCountKey)
-                         ?? TryGetAnonymousInt(item, "nb_tracks")
-                         ?? TryGetAnonymousInt(item, "track_count");
-        var followers = TryGetAnonymousInt(item, FollowersKey)
-                        ?? TryGetAnonymousInt(item, "fans");
-        var isPublic = TryGetAnonymousBool(item, PublicKey)
-                       ?? TryGetAnonymousBool(item, "isPublic");
-        var collaborative = TryGetAnonymousBool(item, CollaborativeKey)
-                            ?? TryGetAnonymousBool(item, "isCollaborative");
-
-        (trackCount, followers) = await ApplySpotifyAudienceMetadataAsync(
-            itemSource,
-            itemType,
-            itemId,
-            trackCount,
-            followers,
-            playlistLookupTasks,
-            artistLookupTasks);
-
-        var normalizedArtists = NormalizeMappedArtists(itemType, artists);
-        var normalizedDescription = NormalizeMappedDescription(description);
-        var subtitle = BuildMappedSubtitle(itemType, normalizedArtists, normalizedDescription, trackCount, followers);
-
-        return new
-        {
-            source = itemSource,
-            id = itemId,
-            uri = itemUri,
-            type = itemType,
-            name,
-            title = name,
-            artists = normalizedArtists,
-            subtitle,
-            description = normalizedDescription,
-            coverUrl,
-            albumName,
-            durationMs,
-            trackCount,
-            nb_tracks = trackCount,
-            followers,
-            fans = followers,
-            @public = isPublic,
-            collaborative,
-            image = coverUrl
-        };
-    }
-
-    private static bool IsSpotifyItemType(string itemSource, string itemType, string expectedType, string itemId) =>
-        string.Equals(itemSource, SpotifySource, StringComparison.OrdinalIgnoreCase)
-        && string.Equals(itemType, expectedType, StringComparison.OrdinalIgnoreCase)
-        && !string.IsNullOrWhiteSpace(itemId);
-
-    private static async Task<(int? TrackCount, int? Followers)> ApplySpotifyAudienceMetadataAsync(
-        string itemSource,
-        string itemType,
-        string itemId,
-        int? trackCount,
-        int? followers,
-        IReadOnlyDictionary<string, Task<SpotifyUrlMetadata?>> playlistLookupTasks,
-        IReadOnlyDictionary<string, Task<int?>> artistLookupTasks)
-    {
-        if (IsSpotifyItemType(itemSource, itemType, PlaylistType, itemId)
-            && playlistLookupTasks.TryGetValue(itemId, out var metadataTask))
-        {
-            var metadata = await metadataTask;
-            if (metadata != null)
-            {
-                trackCount ??= metadata.TotalTracks;
-                followers ??= metadata.Followers;
-            }
-        }
-        else if (IsSpotifyItemType(itemSource, itemType, ArtistType, itemId)
-                 && artistLookupTasks.TryGetValue(itemId, out var artistFollowersTask))
-        {
-            var artistFollowers = await artistFollowersTask;
-            if (artistFollowers.HasValue)
-            {
-                followers ??= artistFollowers.Value;
-            }
-        }
-
-        return (trackCount, followers);
-    }
-
-    private async Task<SpotifyUrlMetadata?> FetchPlaylistMetadataSafeAsync(
-        string playlistId,
-        SemaphoreSlim metadataThrottle,
-        CancellationToken cancellationToken)
-    {
-        await metadataThrottle.WaitAsync(cancellationToken);
-        try
-        {
-            return await _spotifyMetadataService.FetchPlaylistMetadataAsync(playlistId, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Spotify playlist metadata enrichment failed for playlist {PlaylistId}.", playlistId);
-            }
-            return null;
-        }
-        finally
-        {
-            metadataThrottle.Release();
-        }
-    }
-
-    private async Task<int?> FetchArtistFollowersSafeAsync(
-        string artistId,
-        SemaphoreSlim metadataThrottle,
-        CancellationToken cancellationToken)
-    {
-        await metadataThrottle.WaitAsync(cancellationToken);
-        try
-        {
-            var overview = await _pathfinderClient.FetchArtistOverviewAsync(artistId, cancellationToken);
-            if (overview?.Followers is > 0)
-            {
-                return overview.Followers;
-            }
-
-            var url = $"https://open.spotify.com/artist/{artistId}";
-            var metadata = await _spotifyMetadataService.FetchByUrlAsync(url, cancellationToken);
-            return metadata?.Followers;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Spotify artist metadata enrichment failed for artist {ArtistId}.", artistId);
-            }
-            return null;
-        }
-        finally
-        {
-            metadataThrottle.Release();
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(MapHomeSections(sections));
     }
 
     private static string BuildMappedSubtitle(

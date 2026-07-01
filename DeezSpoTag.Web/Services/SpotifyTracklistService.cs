@@ -116,7 +116,8 @@ public sealed class SpotifyTracklistService
         string? id,
         List<SpotifyTrackSummary> tracks,
         bool allowFallbackSearch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int immediateResolveLimit = ImmediateResolveLimit)
     {
         var token = BuildMatchToken(type, id);
         if (tracks.Count == 0)
@@ -127,8 +128,16 @@ public sealed class SpotifyTracklistService
                 new List<SpotifyTracklistTrack>());
         }
 
-        tracks = await HydrateSpotifyIdentityBatchAsync(tracks, cancellationToken);
-        var conversion = await ConvertTracksAsync(tracks, allowFallbackSearch, cancellationToken: cancellationToken);
+        if (immediateResolveLimit > 0)
+        {
+            tracks = await HydrateSpotifyIdentityBatchAsync(tracks, cancellationToken);
+        }
+
+        var conversion = await ConvertTracksAsync(
+            tracks,
+            allowFallbackSearch,
+            immediateResolveLimit,
+            cancellationToken);
         conversion = ApplyStoredMatches(token, conversion);
 
         if (conversion.Pending.Count > 0)
@@ -238,8 +247,7 @@ public sealed class SpotifyTracklistService
                 cancellationToken);
             tracks = await _metadataService.HydrateTrackIsrcsAsync(
                 tracks,
-                cancellationToken,
-                settings.SpotifyIsrcHydrationConcurrency);
+                cancellationToken);
             if (tracks.Any(t => string.IsNullOrWhiteSpace(t.Name)))
             {
                 tracks = await _metadataService.HydrateTrackDetailsWithBlobAsync(tracks, cancellationToken);
@@ -348,13 +356,11 @@ public sealed class SpotifyTracklistService
             return tracks;
         }
 
-        var settings = _settingsService.LoadSettings();
         try
         {
             return await _metadataService.HydrateTrackIsrcsAsync(
                 tracks,
-                cancellationToken,
-                settings.SpotifyIsrcHydrationConcurrency);
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
