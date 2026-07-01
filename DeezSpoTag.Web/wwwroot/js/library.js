@@ -125,11 +125,7 @@ const ARTIST_MEDIA_SOURCE_VALUES = new Set(['apple', 'tidal']);
 const libraryTrackSummaryCache = new Map();
 let spotifyTopTrackMatchRequestId = 0;
 let spotifyTopTrackPreviewWarmupTimer = 0;
-let spotifyTopTrackMatchPollTimer = 0;
-let spotifyTopTrackMatchToken = '';
-let spotifyTopTrackMatchStartPromise = null;
-const spotifyTopTrackMatchButtonsByIndex = new Map();
-const spotifyTopTrackMatchButtonsBySpotifyId = new Map();
+let spotifyTopTrackMatcher = null;
 const LIBRARY_VIEW_SESSION_KEY = 'libraryViewFolderId';
 const LIBRARY_RETURN_STATE_SESSION_KEY = 'library:return:state';
 const SOUNDTRACK_RETURN_STATE_SESSION_KEY = 'soundtrack:return:state';
@@ -1007,13 +1003,21 @@ function getLibraryPlaybackFacade() {
 
 function getSpotifyUrlHelpers() {
     const helpers = globalThis.SpotifyUrlHelpers;
-    if (helpers && typeof helpers.buildSpotifyWebUrl === 'function' && typeof helpers.parseSpotifyUrl === 'function') {
+    if (helpers
+        && typeof helpers.buildSpotifyWebUrl === 'function'
+        && typeof helpers.parseSpotifyUrl === 'function'
+        && typeof helpers.createDeezerSectionMatcher === 'function') {
         return helpers;
     }
 
     return {
         buildSpotifyWebUrl: () => '',
-        parseSpotifyUrl: () => null
+        parseSpotifyUrl: () => null,
+        createDeezerSectionMatcher: () => ({
+            start: async () => {},
+            waitForCurrent: async () => {},
+            isRunning: () => false
+        })
     };
 }
 
@@ -5118,7 +5122,8 @@ function buildArtistPageTrackAvailabilityRequest(track, fallbackId) {
         return null;
     }
 
-    const sourceId = String(track.id || extractSpotifyTopTrackIdFromUrl(track.sourceUrl || '') || '').trim();
+    const parsedSource = spotifyUrlHelpers.parseSpotifyUrl(track.sourceUrl || '');
+    const sourceId = String(track.id || (parsedSource?.type === 'track' ? parsedSource.id : '') || '').trim();
     const id = String(sourceId || fallbackId || '').trim();
     const trackTitle = String(track.name || track.title || '').trim();
     const artistName = String(
@@ -5226,38 +5231,17 @@ function scheduleSpotifyTopTrackPreviewWarmup() {
     }, 220);
 }
 
-function extractSpotifyTopTrackIdFromUrl(url) {
-    const parsed = spotifyUrlHelpers.parseSpotifyUrl(url);
-    if (parsed?.type !== 'track') {
-        return '';
-    }
-    return String(parsed.id || '').trim();
-}
-
-function resetSpotifyTopTrackMatchMaps() {
-    spotifyTopTrackMatchButtonsByIndex.clear();
-    spotifyTopTrackMatchButtonsBySpotifyId.clear();
-}
-
-function applySpotifyTopTrackPlaylistMatches(matches) {
-    if (!Array.isArray(matches) || matches.length === 0) {
-        return;
+function getSpotifyTopTrackMatcher() {
+    if (spotifyTopTrackMatcher) {
+        return spotifyTopTrackMatcher;
     }
 
-    matches.forEach((match) => {
-        const deezerId = String(match?.deezerId || '').trim();
-        const spotifyId = String(match?.spotifyId || '').trim();
-        const status = String(match?.status || '').trim().toLowerCase();
-        const index = Number.isFinite(Number(match?.index)) ? Number(match.index) : -1;
-        const button = (spotifyId && spotifyTopTrackMatchButtonsBySpotifyId.get(spotifyId))
-            || (index >= 0 ? spotifyTopTrackMatchButtonsByIndex.get(index) : null);
-        if (!(button instanceof HTMLElement)) {
-            return;
-        }
-
-        if (/^\d+$/.test(deezerId)) {
-            button.dataset.deezerId = deezerId;
-            button.dataset.mappingState = 'mapped';
+    spotifyTopTrackMatcher = spotifyUrlHelpers.createDeezerSectionMatcher({
+        sectionKey: () => `library-top-tracks:${getCurrentLibraryArtistId() || 'unknown'}`,
+        normalizeUrl: normalizeSpotifyTrackSourceUrl,
+        buildRequest: (button, url) => buildSpotifyTrackResolveRequestFromButton(button) || { link: url },
+        fetchJson,
+        onMatched: (button, deezerId) => {
             const playbackContext = globalThis.DeezerPlaybackContext;
             if (playbackContext && typeof playbackContext.fetchContext === 'function') {
                 playbackContext.fetchContext(deezerId, {
@@ -5272,126 +5256,20 @@ function applySpotifyTopTrackPlaylistMatches(matches) {
                     // Best-effort context warmup only.
                 });
             }
-            return;
-        }
-
-        if (status === 'unmatched_final' || status === 'hard_mismatch') {
-            button.dataset.mappingState = 'unmapped';
         }
     });
-}
-
-async function pollSpotifyTopTrackPlaylistMatches(token) {
-    if (!token) {
-        return;
-    }
-    try {
-        const payload = await fetchJsonOptional(`/api/spotify/tracklist/matches?token=${encodeURIComponent(token)}`);
-        if (payload?.available !== true) {
-            return;
-        }
-        applySpotifyTopTrackPlaylistMatches(payload.matches);
-        const pending = Number(payload.pending || 0);
-        if (pending <= 0 && token === spotifyTopTrackMatchToken) {
-            if (spotifyTopTrackMatchPollTimer) {
-                globalThis.clearInterval(spotifyTopTrackMatchPollTimer);
-                spotifyTopTrackMatchPollTimer = 0;
-            }
-        }
-    } catch {
-        // Best-effort polling only.
-    }
+    return spotifyTopTrackMatcher;
 }
 
 async function startSpotifyTopTrackPlaylistStyleMatching(pendingQueue) {
-    if (!Array.isArray(pendingQueue) || pendingQueue.length === 0) {
-        return;
-    }
-    if (spotifyTopTrackMatchStartPromise) {
-        await spotifyTopTrackMatchStartPromise;
-        return;
-    }
-
-    const startPromise = (async () => {
-        resetSpotifyTopTrackMatchMaps();
-        const tracks = [];
-        const touchedButtons = [];
-        for (let index = 0; index < pendingQueue.length; index += 1) {
-            const current = pendingQueue[index];
-            const request = buildSpotifyTrackResolveRequestFromButton(current.el) || { link: current.url };
-            const link = normalizeSpotifyTrackSourceUrl(String(request?.link || current.url || '').trim());
-            if (!link) {
-                continue;
-            }
-
-            current.el.dataset.mappingState = 'mapping';
-            touchedButtons.push(current.el);
-            spotifyTopTrackMatchButtonsByIndex.set(index, current.el);
-            const spotifyId = extractSpotifyTopTrackIdFromUrl(link);
-            if (spotifyId && !spotifyTopTrackMatchButtonsBySpotifyId.has(spotifyId)) {
-                spotifyTopTrackMatchButtonsBySpotifyId.set(spotifyId, current.el);
-            }
-
-            tracks.push(spotifyUrlHelpers.buildSpotifyTrackMatchPayload(link, request));
-        }
-
-        if (tracks.length === 0) {
-            return;
-        }
-
-        try {
-            const payload = await fetchJson('/api/spotify/tracklist/section/match', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    sectionKey: `library-top-tracks:${getCurrentLibraryArtistId() || 'unknown'}`,
-                    tracks
-                })
-            });
-            if (payload?.available !== true) {
-                touchedButtons.forEach((button) => {
-                    if (!button.dataset.deezerId) {
-                        button.dataset.mappingState = 'unmapped';
-                    }
-                });
-                return;
-            }
-
-            applySpotifyTopTrackPlaylistMatches(payload.matches);
-            const token = String(payload?.matching?.token || '').trim();
-            const pendingCount = Number(payload?.matching?.pending || 0);
-            if (!token || pendingCount <= 0) {
-                return;
-            }
-
-            spotifyTopTrackMatchToken = token;
-            if (spotifyTopTrackMatchPollTimer) {
-                globalThis.clearInterval(spotifyTopTrackMatchPollTimer);
-                spotifyTopTrackMatchPollTimer = 0;
-            }
-
-            await pollSpotifyTopTrackPlaylistMatches(token);
-            spotifyTopTrackMatchPollTimer = globalThis.setInterval(() => {
-                void pollSpotifyTopTrackPlaylistMatches(token);
-            }, 1000);
-        } catch {
-            touchedButtons.forEach((button) => {
-                if (!button.dataset.deezerId) {
-                    button.dataset.mappingState = 'unmapped';
-                }
-            });
-            // Best-effort section matching.
-        }
-    })();
-
-    spotifyTopTrackMatchStartPromise = startPromise;
-    try {
-        await startPromise;
-    } finally {
-        spotifyTopTrackMatchStartPromise = null;
-    }
+    const entries = Array.isArray(pendingQueue)
+        ? pendingQueue.map(entry => ({
+            button: entry?.el,
+            url: entry?.url,
+            isVisible: entry?.isVisible
+        }))
+        : [];
+    await getSpotifyTopTrackMatcher().start(entries);
 }
 
 function buildTopSongSubtitle(track) {

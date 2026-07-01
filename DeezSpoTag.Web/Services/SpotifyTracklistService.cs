@@ -339,7 +339,7 @@ public sealed class SpotifyTracklistService
         return false;
     }
 
-    private async Task<List<SpotifyTrackSummary>> HydrateSpotifyIdentityBatchAsync(
+    public async Task<List<SpotifyTrackSummary>> HydrateSpotifyIdentityBatchAsync(
         List<SpotifyTrackSummary> tracks,
         CancellationToken cancellationToken)
     {

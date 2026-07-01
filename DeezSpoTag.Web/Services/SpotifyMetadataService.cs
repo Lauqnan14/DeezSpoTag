@@ -924,36 +924,14 @@ public sealed class SpotifyMetadataService
             }
         }
 
-        var metadataTimeout = TimeSpan.FromSeconds(4);
-        try
+        var pathfinderMetadata = await FetchPathfinderPlaylistAsync(
+            playlistId,
+            includeTracks: false,
+            cancellationToken);
+        if (pathfinderMetadata != null)
         {
-            using var metadataCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            metadataCts.CancelAfter(metadataTimeout);
-            var spotiFlacPayload = await _pathfinderMetadataClient.FetchSpotiFlacPlaylistMetadataAsync(
-                playlistId,
-                metadataCts.Token);
-            if (spotiFlacPayload != null)
-            {
-                var metadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks: false);
-                if (HasTrustedPlaylistMetadata(metadata))
-                {
-                    CachePlaylistMetadata(playlistId, metadata);
-                    return metadata;
-                }
-
-                _logger.LogWarning(
-                    "Spotify playlist metadata lookup returned incomplete metadata for {PlaylistId}.",
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
-                return null;
-            }
-        }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            _logger.LogWarning(
-                ex,
-                "Spotify playlist metadata lookup timed out after {TimeoutMs}ms for {PlaylistId}; metadata unavailable.",
-                (int)metadataTimeout.TotalMilliseconds,
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
+            CachePlaylistMetadata(playlistId, pathfinderMetadata);
+            return pathfinderMetadata with { TrackList = new List<SpotifyTrackSummary>() };
         }
 
         return null;
@@ -972,8 +950,10 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        var metadata = await FetchPlaylistMetadataAsync(playlistId, cancellationToken);
         var normalizedSource = NormalizeTrackSource(trackSource);
+        var metadata = string.Equals(normalizedSource, LibrespotSource, StringComparison.OrdinalIgnoreCase)
+            ? await FetchPlaylistMetadataAsync(playlistId, cancellationToken)
+            : await FetchPathfinderPlaylistAsync(playlistId, includeTracks: true, cancellationToken);
         var boundedOffset = Math.Max(0, offset);
         var boundedLimit = Math.Clamp(limit, 1, 100);
 
@@ -988,7 +968,9 @@ public sealed class SpotifyMetadataService
                 cancellationToken);
         }
 
-        var tracks = await GetPathfinderPlaylistTracksAsync(playlistId, cancellationToken);
+        var tracks = metadata?.TrackList.Count > 0
+            ? metadata.TrackList
+            : await GetPathfinderPlaylistTracksAsync(playlistId, cancellationToken);
         var totalTracks = metadata?.TotalTracks ?? tracks.Count;
         var pageTracks = tracks
             .Skip(boundedOffset)
@@ -1340,13 +1322,32 @@ public sealed class SpotifyMetadataService
             return cachedTracks;
         }
 
-        var spotiFlacPayload = await _pathfinderMetadataClient.FetchSpotiFlacPlaylistAsync(playlistId, cancellationToken);
-        var tracks = spotiFlacPayload != null
-            ? MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks: true).TrackList
-            : await _pathfinderMetadataClient.FetchPlaylistTracksAsync(playlistId, cancellationToken)
-                ?? new List<SpotifyTrackSummary>();
+        var metadata = await FetchPathfinderPlaylistAsync(
+            playlistId,
+            includeTracks: true,
+            cancellationToken);
+        var tracks = metadata?.TrackList
+            ?? new List<SpotifyTrackSummary>();
         CacheTrackList(cacheKey, "pathfinder", tracks);
         return tracks;
+    }
+
+    private async Task<SpotifyUrlMetadata?> FetchPathfinderPlaylistAsync(
+        string playlistId,
+        bool includeTracks,
+        CancellationToken cancellationToken)
+    {
+        var spotiFlacPayload = await _pathfinderMetadataClient.FetchSpotiFlacPlaylistAsync(
+            playlistId,
+            cancellationToken);
+        if (spotiFlacPayload == null)
+        {
+            return null;
+        }
+
+        var metadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks);
+        CachePlaylist(playlistId, metadata);
+        return metadata;
     }
 
     private async Task<List<string>> GetLibrespotPlaylistTrackIdsAsync(

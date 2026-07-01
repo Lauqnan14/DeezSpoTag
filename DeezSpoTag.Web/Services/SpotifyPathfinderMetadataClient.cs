@@ -1222,25 +1222,6 @@ public sealed class SpotifyPathfinderMetadataClient
         return BuildSpotiFlacPlaylistPayload(playlist.PlaylistUnion, playlist.TrackItems);
     }
 
-    public async Task<SpotiFlacPlaylistPayload?> FetchSpotiFlacPlaylistMetadataAsync(string playlistId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return null;
-        }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
-        if (context is null)
-        {
-            return null;
-        }
-        PlaylistUnionResult? playlist = await QueryPlaylistUnionAsync(context, playlistId, cancellationToken, 1);
-        if (playlist is null)
-        {
-            return null;
-        }
-        return BuildSpotiFlacPlaylistPayload(playlist.PlaylistUnion, null);
-    }
-
     private async Task<PathfinderAuthContext?> BuildAuthContextAsync(CancellationToken cancellationToken)
     {
         PathfinderAuthContext? blobContext = await BuildBlobAuthContextAsync(cancellationToken);

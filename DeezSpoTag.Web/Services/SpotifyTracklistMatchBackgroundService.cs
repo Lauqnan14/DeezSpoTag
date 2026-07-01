@@ -9,6 +9,7 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
     private readonly ISpotifyTracklistMatchQueue _queue;
     private readonly ISpotifyTracklistMatchStore _store;
     private readonly DeezerClient _deezerClient;
+    private readonly SpotifyTracklistService _tracklistService;
     private readonly ISettingsService _settingsService;
     private readonly ILogger<SpotifyTracklistMatchBackgroundService> _logger;
 
@@ -16,12 +17,14 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
         ISpotifyTracklistMatchQueue queue,
         ISpotifyTracklistMatchStore store,
         DeezerClient deezerClient,
+        SpotifyTracklistService tracklistService,
         ISettingsService settingsService,
         ILogger<SpotifyTracklistMatchBackgroundService> logger)
     {
         _queue = queue;
         _store = store;
         _deezerClient = deezerClient;
+        _tracklistService = tracklistService;
         _settingsService = settingsService;
         _logger = logger;
     }
@@ -64,7 +67,8 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             }
 
             var strictMode = _settingsService.LoadSettings().StrictSpotifyDeezerMode;
-            await ResolveWithRetriesAsync(item, item.Track, strictMode, stoppingToken);
+            var resolvedTrack = await HydrateQueuedTrackIdentityAsync(item.Track, stoppingToken);
+            await ResolveWithRetriesAsync(item, resolvedTrack, strictMode, stoppingToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -221,6 +225,14 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
             terminalMetadataResult.Reason,
             attempt);
         return true;
+    }
+
+    private async Task<SpotifyTrackSummary> HydrateQueuedTrackIdentityAsync(
+        SpotifyTrackSummary track,
+        CancellationToken cancellationToken)
+    {
+        var hydrated = await _tracklistService.HydrateSpotifyIdentityBatchAsync([track], cancellationToken);
+        return hydrated.Count > 0 ? hydrated[0] : track;
     }
 
     internal static bool ShouldRunTerminalMetadataPass(SpotifyTracklistResolveResult result) =>

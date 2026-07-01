@@ -512,7 +512,9 @@ internal static class SpotifyTracklistResolver
         var deezerId = NormalizeDeezerId(deezerTrack?.Id?.ToString());
         if (!string.IsNullOrWhiteSpace(deezerId))
         {
-            var validation = ValidateCandidate(context.Track, deezerTrack!, context.Options.StrictMode);
+            var validation = IsExactIsrcCandidateAcceptable(context.Track, deezerTrack!)
+                ? CandidateValidationResult.Accept(1d)
+                : ValidateCandidate(context.Track, deezerTrack!, context.Options.StrictMode);
             if (!validation.IsAccepted)
             {
                 if (context.Options.Logger.IsEnabled(LogLevel.Debug))
@@ -537,6 +539,35 @@ internal static class SpotifyTracklistResolver
             deezerId,
             sawTransientFailure,
             !lookupTransient || !string.IsNullOrWhiteSpace(deezerId));
+    }
+
+    private static bool IsExactIsrcCandidateAcceptable(SpotifyTrackSummary sourceTrack, ApiTrack candidate)
+    {
+        var sourceIsrc = NormalizeIsrc(sourceTrack.Isrc);
+        var candidateIsrc = NormalizeIsrc(candidate.Isrc);
+        if (string.IsNullOrWhiteSpace(sourceIsrc)
+            || string.IsNullOrWhiteSpace(candidateIsrc)
+            || !string.Equals(sourceIsrc, candidateIsrc, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var titleScore = ComputeTitleScore(sourceTrack, candidate);
+        if (titleScore < MinAcceptedTitleSimilarity)
+        {
+            return false;
+        }
+
+        if (sourceTrack.DurationMs is > 0 && candidate.Duration > 0)
+        {
+            var sourceSeconds = (int)Math.Round(sourceTrack.DurationMs.Value / 1000d);
+            if (Math.Abs(sourceSeconds - candidate.Duration) > MaxAcceptedDurationDiffSeconds)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static SpotifyTracklistResolveResult? TryResolvePreferIsrcOnly(ResolveContext context, bool sawTransientFailure)

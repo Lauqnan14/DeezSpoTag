@@ -62,9 +62,229 @@
         };
     }
 
+    function parseJson(raw) {
+        try {
+            return JSON.parse(String(raw || '{}'));
+        } catch {
+            return {};
+        }
+    }
+
+    async function defaultFetchJson(url, options) {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+            return null;
+        }
+        return parseJson(await response.text());
+    }
+
+    function createDeezerSectionMatcher(options) {
+        const state = {
+            token: '',
+            pollTimer: 0,
+            startPromise: null,
+            buttonsByIndex: new Map(),
+            buttonsBySpotifyId: new Map()
+        };
+
+        const fetchJson = typeof options?.fetchJson === 'function'
+            ? options.fetchJson
+            : defaultFetchJson;
+        const normalizeUrl = typeof options?.normalizeUrl === 'function'
+            ? options.normalizeUrl
+            : (value) => String(value || '').trim();
+        const buildRequest = typeof options?.buildRequest === 'function'
+            ? options.buildRequest
+            : ((button, url) => ({ link: url || String(button?.dataset?.spotifyUrl || '').trim() }));
+
+        function clearPollTimer() {
+            if (state.pollTimer) {
+                clearInterval(state.pollTimer);
+                state.pollTimer = 0;
+            }
+        }
+
+        function resetMaps() {
+            state.buttonsByIndex.clear();
+            state.buttonsBySpotifyId.clear();
+        }
+
+        function markTouchedUnavailable(buttons) {
+            buttons.forEach((button) => {
+                if (button instanceof HTMLElement && !button.dataset.deezerId) {
+                    button.dataset.mappingState = 'unmapped';
+                    if (typeof options?.onUnmatched === 'function') {
+                        options.onUnmatched(button, null);
+                    }
+                }
+            });
+        }
+
+        function applyMatches(matches) {
+            if (!Array.isArray(matches) || matches.length === 0) {
+                return;
+            }
+
+            matches.forEach((match) => {
+                const deezerId = String(match?.deezerId || '').trim();
+                const spotifyId = String(match?.spotifyId || '').trim();
+                const status = String(match?.status || '').trim().toLowerCase();
+                const index = Number.isFinite(Number(match?.index)) ? Number(match.index) : -1;
+                const button = (spotifyId && state.buttonsBySpotifyId.get(spotifyId))
+                    || (index >= 0 ? state.buttonsByIndex.get(index) : null);
+                if (!(button instanceof HTMLElement)) {
+                    return;
+                }
+
+                if (/^\d+$/.test(deezerId)) {
+                    button.dataset.deezerId = deezerId;
+                    button.dataset.mappingState = 'mapped';
+                    if (typeof options?.onMatched === 'function') {
+                        options.onMatched(button, deezerId, match);
+                    }
+                    return;
+                }
+
+                if (status === 'unmatched_final' || status === 'hard_mismatch') {
+                    button.dataset.mappingState = 'unmapped';
+                    if (typeof options?.onUnmatched === 'function') {
+                        options.onUnmatched(button, match);
+                    }
+                }
+            });
+        }
+
+        async function poll(token) {
+            if (!token) {
+                return;
+            }
+
+            try {
+                const payload = await fetchJson(`/api/spotify/tracklist/matches?token=${encodeURIComponent(token)}`);
+                if (payload?.available !== true) {
+                    return;
+                }
+
+                applyMatches(payload.matches);
+                const pending = Number(payload.pending || 0);
+                if (pending <= 0 && token === state.token) {
+                    clearPollTimer();
+                }
+            } catch {
+                // Best-effort polling.
+            }
+        }
+
+        async function start(entries) {
+            if (!Array.isArray(entries) || entries.length === 0) {
+                return;
+            }
+
+            if (state.startPromise) {
+                await state.startPromise;
+                return;
+            }
+
+            const startPromise = (async () => {
+                resetMaps();
+                const tracks = [];
+                const touchedButtons = [];
+
+                for (let index = 0; index < entries.length; index += 1) {
+                    const entry = entries[index];
+                    const button = entry?.button;
+                    const request = buildRequest(button, entry?.url) || { link: entry?.url };
+                    const link = normalizeUrl(String(request?.link || entry?.url || '').trim());
+                    if (!link || !(button instanceof HTMLElement)) {
+                        continue;
+                    }
+
+                    button.dataset.mappingState = 'mapping';
+                    touchedButtons.push(button);
+                    state.buttonsByIndex.set(index, button);
+
+                    const parsedSpotify = parseSpotifyUrl(link);
+                    const spotifyId = parsedSpotify?.type === 'track'
+                        ? String(parsedSpotify.id || '').trim()
+                        : '';
+                    if (spotifyId && !state.buttonsBySpotifyId.has(spotifyId)) {
+                        state.buttonsBySpotifyId.set(spotifyId, button);
+                    }
+
+                    tracks.push(buildSpotifyTrackMatchPayload(link, request));
+                }
+
+                if (tracks.length === 0) {
+                    return;
+                }
+
+                try {
+                    const sectionKey = typeof options?.sectionKey === 'function'
+                        ? options.sectionKey()
+                        : options?.sectionKey;
+                    const payload = await fetchJson('/api/spotify/tracklist/section/match', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            sectionKey: String(sectionKey || 'spotify-section').trim(),
+                            tracks
+                        })
+                    });
+
+                    if (payload?.available !== true) {
+                        markTouchedUnavailable(touchedButtons);
+                        return;
+                    }
+
+                    applyMatches(payload.matches);
+                    const token = String(payload?.matching?.token || '').trim();
+                    const pendingCount = Number(payload?.matching?.pending || 0);
+                    if (!token || pendingCount <= 0) {
+                        return;
+                    }
+
+                    state.token = token;
+                    clearPollTimer();
+                    await poll(token);
+                    state.pollTimer = setInterval(() => {
+                        void poll(token);
+                    }, Number(options?.pollIntervalMs || 1000));
+                } catch {
+                    markTouchedUnavailable(touchedButtons);
+                }
+            })();
+
+            state.startPromise = startPromise;
+            try {
+                await startPromise;
+            } finally {
+                state.startPromise = null;
+            }
+        }
+
+        return Object.freeze({
+            start,
+            applyMatches,
+            waitForCurrent: async () => {
+                if (state.startPromise) {
+                    await state.startPromise;
+                }
+            },
+            isRunning: () => Boolean(state.startPromise),
+            stop: () => {
+                clearPollTimer();
+                state.token = '';
+                resetMaps();
+            }
+        });
+    }
+
     globalObj.SpotifyUrlHelpers = Object.freeze({
         buildSpotifyWebUrl,
         parseSpotifyUrl,
-        buildSpotifyTrackMatchPayload
+        buildSpotifyTrackMatchPayload,
+        createDeezerSectionMatcher
     });
 })(globalThis);
