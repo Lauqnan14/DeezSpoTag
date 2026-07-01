@@ -989,6 +989,9 @@ function displayArtist(data) {
     updateTopSongsTracklistLink();
     bindArtistTopTracksHandlers();
     scheduleArtistTopTrackPreviewWarmup();
+    if (String(data.artistSource || '').toLowerCase() === 'amazon') {
+        void resolveAmazonTopTrackDeezerIds();
+    }
     initArtistWatchlistToggle(data);
 
     if (window.DeezSpoTagDownload?.ensureDestinationSelects) {
@@ -1268,6 +1271,7 @@ function renderTopTracks(tracks) {
         const spotifyUrl = source === 'spotify'
             ? normalizeArtistSpotifyTrackSourceUrl(String(trackLink || ''))
             : '';
+        const amazonId = source === 'amazon' ? String(track.amazonId || track.id || '').trim() : '';
         const spotifyArtist = String(
             track.artist?.name
             || (Array.isArray(track.contributors) ? track.contributors.map((contributor) => contributor?.name).filter(Boolean).join(', ') : '')
@@ -1298,6 +1302,16 @@ function renderTopTracks(tracks) {
             }
         }
         const playAttrs = [];
+        if (amazonId) {
+            playAttrs.push(
+                `data-amazon-id="${escapeHtml(amazonId)}"`,
+                `data-amazon-url="${escapeHtml(trackLink)}"`,
+                `data-track-title="${safeTitle}"`,
+                `data-track-artist="${escapeHtml(spotifyArtist)}"`,
+                `data-track-album="${escapeHtml(albumTitle)}"`,
+                `data-track-duration-ms="${trackDurationMs}"`
+            );
+        }
         if (safeSpotifyUrl) {
             playAttrs.push(`data-spotify-url="${safeSpotifyUrl}"`);
             if (safeTitle) {
@@ -1374,6 +1388,64 @@ function renderTopTracks(tracks) {
             ${rows}
         </div>
     `;
+}
+
+async function resolveAmazonTopTrackDeezerIds() {
+    const list = document.getElementById('artistTopTracksList');
+    if (!list) {
+        return;
+    }
+
+    const buttons = Array.from(list.querySelectorAll('button.track-play[data-amazon-id]'));
+    if (buttons.length === 0) {
+        return;
+    }
+
+    const tracks = buttons.map((button) => ({
+        amazonId: String(button.dataset.amazonId || '').trim(),
+        sourceUrl: String(button.dataset.amazonUrl || '').trim(),
+        title: String(button.dataset.trackTitle || '').trim(),
+        artist: String(button.dataset.trackArtist || '').trim(),
+        album: String(button.dataset.trackAlbum || '').trim(),
+        durationMs: Number.parseInt(String(button.dataset.trackDurationMs || '0'), 10) || 0
+    }));
+
+    try {
+        const payload = await fetchJson('/api/amazon/deezer-matches', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ tracks })
+        });
+        const matches = Array.isArray(payload?.matches) ? payload.matches : [];
+        matches.forEach((match) => {
+            const index = Number(match?.index);
+            const deezerId = String(match?.deezerId || '').trim();
+            const button = Number.isInteger(index) ? buttons[index] : null;
+            if (!button || !/^\d+$/.test(deezerId)) {
+                return;
+            }
+
+            button.dataset.deezerId = deezerId;
+            button.dataset.mappingState = 'mapped';
+            if (window.DeezerPlaybackContext && typeof window.DeezerPlaybackContext.fetchContext === 'function') {
+                window.DeezerPlaybackContext.fetchContext(deezerId, {
+                    cache: artistDeezerPlaybackContextCache,
+                    requests: artistDeezerPlaybackContextRequests
+                }).then((context) => {
+                    if (context && typeof window.DeezerPlaybackContext.applyContextToElement === 'function') {
+                        window.DeezerPlaybackContext.applyContextToElement(button, context);
+                        button.dataset.mappingState = 'context-ready';
+                    }
+                }).catch(() => {
+                    // Playback context is optional after the Amazon ID has mapped.
+                });
+            }
+        });
+    } catch (error) {
+        console.warn('Amazon top-song Deezer ID mapping failed', error);
+    }
 }
 
 function bindArtistTopTracksHandlers() {

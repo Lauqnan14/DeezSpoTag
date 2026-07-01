@@ -2888,6 +2888,7 @@ namespace DeezSpoTag.Web.Controllers
                 .Select(static track => new Dictionary<string, object>
                 {
                     ["id"] = track.Id,
+                    ["amazonId"] = track.Id,
                     [TitleField] = track.Title,
                     [NameField] = track.Title,
                     [SourceField] = AmazonSource,

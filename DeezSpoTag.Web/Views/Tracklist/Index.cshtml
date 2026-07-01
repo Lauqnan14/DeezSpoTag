@@ -7069,7 +7069,11 @@ async function downloadTracks(trackElements, triggerButton) {
                                     sourceService: 'deezer',
                                     sourceUrl: resolvedSourceUrl
                                 }
-                                : undefined
+                                : {
+                                    ...metadata,
+                                    sourceService: 'amazon',
+                                    sourceUrl: resolvedSourceUrl
+                                }
                         });
                     } else {
                         errorCount++;

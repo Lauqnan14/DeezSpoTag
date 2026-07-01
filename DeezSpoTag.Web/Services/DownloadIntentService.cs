@@ -337,6 +337,16 @@ public sealed class DownloadIntentService
             appleUrl);
     }
 
+    public async Task<string?> ResolveAmazonDeezerIdAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+
+        await TryHydrateIntentFromAmazonAsync(intent, cancellationToken);
+        return NormalizeDeezerTrackId(intent.DeezerId);
+    }
+
     public Task<DownloadIntentResult> EnqueueAsync(
         DownloadIntent intent,
         CancellationToken cancellationToken,
