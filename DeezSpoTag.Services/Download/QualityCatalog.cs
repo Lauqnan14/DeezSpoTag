@@ -104,7 +104,8 @@ public static class QualityCatalog
             {
                 new QualityOption("ULTRA_HD_FLAC", "Ultra HD FLAC"),
                 new QualityOption("HD_FLAC", "HD FLAC"),
-                new QualityOption("OPUS", "Opus")
+                new QualityOption("OPUS", "Opus"),
+                new QualityOption("DOLBY_ATMOS", "Dolby Atmos")
             },
             ["qobuz"] = new[]
             {

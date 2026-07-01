@@ -20,17 +20,16 @@ public static class DownloadSourceOrder
     private sealed record DownloadProfile(string Source, string Label, string? Quality, int? DeezerBitrate);
     public sealed record DownloadEngineOrderValidationResult(bool IsValid, string? Error);
 
-    // WARNING: Do not change this order and do not remove any items; fallback behavior depends on it.
-    private static readonly DownloadProfile[] AutoPriority =
+    private static readonly DownloadProfile[] StereoPriority =
     [
         new(QobuzSource, "Max Hi-Res (24-bit/192kHz)", "27", null),
         new(TidalSource, "Max Hi-Res (24-bit/192kHz)", "HI_RES_LOSSLESS", null),
         new(AppleSource, "Apple Music ALAC (lossless)", "ALAC", null),
         new(QobuzSource, "Hi-Res (24-bit/96kHz)", "7", null),
         new(TidalSource, "Hi-Res (24-bit/96kHz)", "HI_RES", null),
+        new(AmazonSource, "Ultra HD FLAC", "ULTRA_HD_FLAC", null),
         new(QobuzSource, "CD Lossless (16-bit/44.1kHz)", "6", null),
         new(TidalSource, "CD Lossless (16-bit/44.1kHz)", "LOSSLESS", null),
-        new(AmazonSource, "Ultra HD FLAC", "ULTRA_HD_FLAC", null),
         new(AmazonSource, "HD FLAC", "HD_FLAC", null),
         new(DeezerSource, "Deezer FLAC", "9", DeezerFlac),
         new(AppleSource, "Apple Music AAC", "AAC", null),
@@ -39,9 +38,14 @@ public static class DownloadSourceOrder
         new(AmazonSource, "Opus", "OPUS", null),
         new(DeezerSource, "Deezer 320kbps", "3", DeezerMp3High),
         new(DeezerSource, "Deezer 128kbps", "1", DeezerMp3Low),
-        new(TidalSource, "Low (96kbps)", "LOW", null),
+        new(TidalSource, "Low (96kbps)", "LOW", null)
+    ];
+
+    private static readonly DownloadProfile[] AtmosPriority =
+    [
         new(AppleSource, "Apple Music Atmos", "ATMOS", null),
-        new(TidalSource, "Tidal Dolby Atmos", "DOLBY_ATMOS", null)
+        new(TidalSource, "Tidal Dolby Atmos", "DOLBY_ATMOS", null),
+        new(AmazonSource, "Amazon Dolby Atmos", "DOLBY_ATMOS", null)
     ];
 
     public static string ResolveService(DeezSpoTagSettings settings)
@@ -97,7 +101,8 @@ public static class DownloadSourceOrder
         var sources = BuildConfiguredAutoSources(
             settings,
             includeDeezer,
-            profile => ShouldIncludeQualityProfile(profile, forcedService, includeAtmos));
+            profile => ShouldIncludeQualityProfile(profile, forcedService),
+            includeAtmos ? AtmosPriority : null);
 
         if (string.IsNullOrWhiteSpace(targetQuality))
         {
@@ -391,7 +396,7 @@ public static class DownloadSourceOrder
 
         if (string.Equals(settings.Service, AutoService, StringComparison.OrdinalIgnoreCase))
         {
-            var deezerProfile = AutoPriority.FirstOrDefault(profile => profile.Source == DeezerSource);
+            var deezerProfile = StereoPriority.FirstOrDefault(profile => profile.Source == DeezerSource);
             return deezerProfile?.DeezerBitrate ?? DeezerFlac;
         }
 
@@ -418,9 +423,10 @@ public static class DownloadSourceOrder
     private static List<string> BuildConfiguredAutoSources(
         DeezSpoTagSettings settings,
         bool includeDeezer,
-        Func<DownloadProfile, bool>? profileFilter = null)
+        Func<DownloadProfile, bool>? profileFilter = null,
+        IReadOnlyList<DownloadProfile>? explicitProfiles = null)
     {
-        var profiles = ResolveConfiguredProfiles(settings);
+        var profiles = explicitProfiles ?? ResolveConfiguredProfiles(settings);
         var sources = new List<string>();
         foreach (var profile in profiles)
         {
@@ -439,7 +445,7 @@ public static class DownloadSourceOrder
     {
         if (settings?.DownloadEngineOrder?.Enabled != true)
         {
-            return AutoPriority;
+            return StereoPriority;
         }
 
         var normalized = NormalizeDownloadEngineOrderSettings(settings.DownloadEngineOrder);
@@ -464,7 +470,7 @@ public static class DownloadSourceOrder
             }
         }
 
-        return AutoPriority
+        return StereoPriority
             .Where(profile => !string.IsNullOrWhiteSpace(profile.Quality)
                 && enabledProfiles.Contains(BuildProfileKey(profile.Source, profile.Quality)))
             .ToArray();
@@ -592,14 +598,8 @@ public static class DownloadSourceOrder
 
     private static bool ShouldIncludeQualityProfile(
         DownloadProfile profile,
-        string? forcedService,
-        bool includeAtmos)
+        string? forcedService)
     {
-        if (!includeAtmos && IsAtmosQuality(profile.Quality))
-        {
-            return false;
-        }
-
         if (!string.IsNullOrWhiteSpace(forcedService) && forcedService != AutoService
             && !string.Equals(profile.Source, forcedService, StringComparison.OrdinalIgnoreCase))
         {
