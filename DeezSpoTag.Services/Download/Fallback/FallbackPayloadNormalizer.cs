@@ -167,7 +167,10 @@ public static class FallbackPayloadNormalizer
             return payloadQuality;
         }
 
-        return string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase) ? "DOLBY_ATMOS" : "ATMOS";
+        return string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(engine, "amazon", StringComparison.OrdinalIgnoreCase)
+            ? "DOLBY_ATMOS"
+            : "ATMOS";
     }
 
     private static DeezSpoTagSettings ResolveFallbackSettings(DeezSpoTagSettings settings, JsonObject payloadObj)
@@ -200,7 +203,8 @@ public static class FallbackPayloadNormalizer
 
     private static bool IsAtmosEngine(string? engine)
         => string.Equals(engine, "apple", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase);
+           || string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(engine, "amazon", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsEncodedAtmosSource(string encodedSource)
     {
@@ -212,6 +216,8 @@ public static class FallbackPayloadNormalizer
         => (string.Equals(engine, "apple", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase))
            || (string.Equals(engine, "tidal", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase))
+           || (string.Equals(engine, "amazon", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase));
 
     public static List<FallbackPlanStep> ReadFallbackPlan(JsonObject payloadObj)

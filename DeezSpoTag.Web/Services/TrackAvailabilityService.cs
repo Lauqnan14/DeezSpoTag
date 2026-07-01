@@ -113,7 +113,10 @@ public sealed class TrackAvailabilityService
             spotifyId = await ResolveSpotifyIdBySearchAsync(input, cancellationToken);
         }
 
-        var deezerId = FirstNonEmpty(proxy.SongLink.DeezerId, input.NormalizedDeezerId);
+        var deezerId = FirstNonEmpty(
+            proxy.SongLink.DeezerId,
+            input.NormalizedDeezerId,
+            ExtractDeezerId(lookup.DeezerUrl));
         var appleUrl = FirstNonEmpty(proxy.SongLink.AppleMusicUrl, lookup.AppleMusicUrl);
         var appleId = FirstNonEmpty(input.AppleId, ExtractAppleId(proxy.SongLink.AppleMusicUrl), ExtractAppleId(appleUrl));
         var appleUnknown = false;
@@ -137,7 +140,7 @@ public sealed class TrackAvailabilityService
         var spotifyUrl = FirstNonEmpty(proxy.SongLink.SpotifyUrl, lookup.SpotifyUrl, BuildSpotifyUrl(spotifyId));
         var deezerUrl = FirstNonEmpty(proxy.SongLink.DeezerUrl, lookup.DeezerUrl, BuildDeezerUrl(deezerId));
         var tidalUrl = FirstNonEmpty(proxy.SongLink.TidalUrl, lookup.TidalUrl, BuildTidalUrl(tidalId));
-        var amazonUrl = FirstNonEmpty(proxy.SongLink.AmazonUrl, lookup.AmazonUrl);
+        var amazonUrl = lookup.AmazonUrl;
         var qobuzUrl = FirstNonEmpty(proxy.SongLink.QobuzUrl, lookup.QobuzUrl, BuildQobuzUrl(qobuzId));
         appleUrl = FirstNonEmpty(appleUrl, BuildAppleUrl(appleId));
         if (IsFabricatedAppleIdentity(deezerId, appleId, appleUrl))
@@ -201,7 +204,8 @@ public sealed class TrackAvailabilityService
             Artist = input.Artist ?? string.Empty,
             Album = input.Album ?? string.Empty,
             DurationMs = input.DurationMs ?? 0,
-            AppleId = input.AppleId ?? string.Empty
+            AppleId = input.AppleId ?? string.Empty,
+            AmazonId = input.AmazonId ?? string.Empty
         };
     }
 
@@ -643,6 +647,9 @@ public sealed class TrackAvailabilityService
 
     private static string? BuildDeezerUrl(string? deezerId)
         => string.IsNullOrWhiteSpace(deezerId) ? null : $"https://www.deezer.com/track/{deezerId}";
+
+    private static string? ExtractDeezerId(string? value)
+        => TryExtractDeezerId(value, out var deezerId) ? deezerId : null;
 
     private static string? BuildTidalUrl(string? tidalId)
         => string.IsNullOrWhiteSpace(tidalId) ? null : $"https://listen.tidal.com/track/{tidalId}";

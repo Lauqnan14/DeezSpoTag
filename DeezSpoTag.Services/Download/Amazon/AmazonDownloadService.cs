@@ -1,14 +1,10 @@
-using System.Net;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using System.Net.Http.Json;
 using System.Linq;
 using IOFile = System.IO.File;
 using DeezSpoTag.Services.Download;
 using Microsoft.Extensions.Logging;
-using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using System.Diagnostics;
 using DeezSpoTag.Services.Download.Shared.Utils;
@@ -17,45 +13,13 @@ namespace DeezSpoTag.Services.Download.Amazon;
 
 public sealed class AmazonDownloadService : IAmazonDownloadService
 {
-    private const string HttpsScheme = "https";
-    private const string AmazonAfkarHost = "amazon.afkarxyz.fun";
-    private const string AmazonSpotByeHost = "amazon.spotbye.qzz.io";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private const string FlacExtension = ".flac";
     private const string ErrorLogLevel = "error";
-    private const string ErrorStatus = "error";
-    private const string TrackFlacFileName = "track.flac";
-    private const string LucidaLoadApi = "https://lucida.to/api/load?url=/api/fetch/stream/v2";
     private static readonly string[] FfmpegExecutableNamesWindows = ["ffmpeg.exe", "ffmpeg"];
     private static readonly string[] FfmpegExecutableNamesUnix = ["ffmpeg"];
     private static readonly string[] FfprobeExecutableNamesWindows = ["ffprobe.exe", "ffprobe"];
     private static readonly string[] FfprobeExecutableNamesUnix = ["ffprobe"];
-    private static readonly string[] StreamProviderHosts =
-    [
-        AmazonAfkarHost,
-        AmazonSpotByeHost
-    ];
-    private static readonly string[] LucidaTokenPatterns =
-    [
-        "token:\"([^\"]+)\"",
-        "\"token\"\\s*:\\s*\"([^\"]+)\""
-    ];
-    private static readonly string[] LucidaStreamUrlPatterns =
-    [
-        "\"url\":\"([^\"]+)\"",
-        "url:\"([^\"]+)\""
-    ];
-    private static readonly string[] LucidaTokenExpiryPatterns =
-    [
-        "tokenExpiry:(\\d+)",
-        "\"tokenExpiry\"\\s*:\\s*(\\d+)"
-    ];
-    private static readonly string[] LucidaErrorPatterns =
-    [
-        "error:\"([^\"]+)\"",
-        "\"error\"\\s*:\\s*\"([^\"]+)\""
-    ];
-    private static readonly char[] ContentDispositionTrimChars = ['\"', '\''];
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -117,7 +81,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         var expectedPaths = AudioFilePathHelper.BuildExpectedPaths(expectedPathContext, FlacExtension, ".m4a");
         await EnsureExpectedFinalDestinationsAllowedAsync(request, expectedPaths, cancellationToken);
 
-        var filePath = await DownloadFromServiceAsync(amazonUrl, request.OutputDir, progressCallback, cancellationToken);
+        var filePath = await DownloadFromServiceAsync(amazonUrl, request.Quality, request.OutputDir, progressCallback, cancellationToken);
         var durationValidation = AudioDurationGuard.ValidateAgainstPreview(filePath, request.DurationSeconds);
         if (!durationValidation.Success)
         {
@@ -149,126 +113,9 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         return renamedPath ?? filePath;
     }
 
-    private async Task<string> DownloadFromServiceAsync(string amazonUrl, string outputDir, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
-    {
-        var regions = new[] { "us", "eu" };
-        Exception? lastError = null;
-
-        foreach (var providerHost in StreamProviderHosts)
-        {
-            try
-            {
-                var providerPath = await DownloadFromStreamProviderAsync(providerHost, amazonUrl, outputDir, progressCallback, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(providerPath))
-                {
-                    return providerPath;
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Amazon direct stream provider {Provider} failed; trying next provider", providerHost);
-                lastError = ex;
-            }
-        }
-
-        try
-        {
-            var lucidaPath = await DownloadFromLucidaAsync(amazonUrl, outputDir, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(lucidaPath))
-            {
-                return lucidaPath;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Lucida download failed; falling back to DoubleDouble");
-            lastError = ex;
-        }
-
-        foreach (var region in regions)
-        {
-            try
-            {
-                var outputPath = await TryDownloadFromDoubleDoubleRegionAsync(region, amazonUrl, outputDir, progressCallback, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(outputPath))
-                {
-                    return outputPath;
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Amazon download failed for region {Region}", region);
-                lastError = ex;
-            }
-        }
-
-        throw new InvalidOperationException("Amazon download failed", lastError);
-    }
-
-    private async Task<string?> TryDownloadFromDoubleDoubleRegionAsync(
-        string region,
+    private async Task<string> DownloadFromServiceAsync(
         string amazonUrl,
-        string outputDir,
-        Func<double, double, Task>? progressCallback,
-        CancellationToken cancellationToken)
-    {
-        var baseUrl = $"https://{region}.doubledouble.top";
-        var submitUrl = $"{baseUrl}/dl?url={WebUtility.UrlEncode(amazonUrl)}";
-
-        using var submitReq = CreateGetRequestWithRandomUserAgent(submitUrl);
-        using var submitResp = await _client.SendAsync(submitReq, cancellationToken);
-        if (!submitResp.IsSuccessStatusCode)
-        {
-            _logger.LogWarning("Amazon submit failed ({Status}) for region {Region}", (int)submitResp.StatusCode, region);
-            return null;
-        }
-
-        var submitBody = await submitResp.Content.ReadAsStringAsync(cancellationToken);
-        var submit = JsonSerializer.Deserialize<DoubleDoubleSubmitResponse>(submitBody, SerializerOptions);
-        if (submit == null || !submit.Success || string.IsNullOrWhiteSpace(submit.Id))
-        {
-            _logger.LogWarning("Amazon submit payload invalid for region {Region}: {Body}", region, submitBody);
-            return null;
-        }
-
-        var statusUrl = $"{baseUrl}/dl/{submit.Id}";
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation("Amazon status URL: {StatusUrl}", statusUrl);        }
-        var fileUrl = await PollStatusAsync(statusUrl, cancellationToken);
-        if (string.IsNullOrWhiteSpace(fileUrl))
-        {
-            _logger.LogWarning("Amazon status polling returned empty file URL for region {Region}", region);
-            return null;
-        }
-
-        fileUrl = NormalizeDoubleDoubleFileUrl(fileUrl, baseUrl);
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation("Amazon download URL resolved: {FileUrl}", fileUrl);        }
-
-        var filename = $"{Guid.NewGuid():N}{FlacExtension}";
-        var outputPath = Path.Join(outputDir, filename);
-        await DownloadFileAsync(fileUrl, outputPath, progressCallback, cancellationToken);
-        return outputPath;
-    }
-
-    private static string NormalizeDoubleDoubleFileUrl(string fileUrl, string baseUrl)
-    {
-        if (fileUrl.StartsWith("./", StringComparison.Ordinal))
-        {
-            return $"{baseUrl}/{fileUrl.TrimStart('.', '/')}";
-        }
-        if (fileUrl.StartsWith('/'))
-        {
-            return $"{baseUrl}/{fileUrl.TrimStart('/')}";
-        }
-        return fileUrl;
-    }
-
-    private async Task<string?> DownloadFromStreamProviderAsync(
-        string providerHost,
-        string amazonUrl,
+        string quality,
         string outputDir,
         Func<double, double, Task>? progressCallback,
         CancellationToken cancellationToken)
@@ -276,44 +123,94 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         var asin = ExtractAmazonAsin(amazonUrl);
         if (string.IsNullOrWhiteSpace(asin))
         {
-            return null;
+            throw new InvalidOperationException("Amazon download requires a valid Amazon ASIN.");
         }
 
-        var normalizedBaseUrl = BuildHttpsBaseUrl(providerHost);
-        var apiUrl = $"{normalizedBaseUrl}/api/track/{asin}";
-        using var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
-        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36");
+        var codec = ResolveAmazonCodec(quality);
+        var apiUrl = $"https://api.zarz.moe/v1/media?asin={Uri.EscapeDataString(asin)}&codec={Uri.EscapeDataString(codec)}";
+        using var request = CreateGetRequestWithRandomUserAgent(apiUrl);
         using var response = await _client.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"{normalizedBaseUrl} failed ({(int)response.StatusCode})");
+            throw new InvalidOperationException($"Amazon download API failed ({(int)response.StatusCode}).");
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
+        var media = DeserializeZarzMedia(body);
+        if (string.IsNullOrWhiteSpace(media?.Audio?.Url))
         {
-            throw new InvalidOperationException($"{normalizedBaseUrl} returned empty response.");
+            throw new InvalidOperationException("Amazon download URL not available.");
         }
 
-        var payload = JsonSerializer.Deserialize<AfkarStreamResponse>(body, SerializerOptions);
-        if (string.IsNullOrWhiteSpace(payload?.StreamUrl))
-        {
-            throw new InvalidOperationException($"{normalizedBaseUrl} response missing stream URL.");
-        }
-
-        var sourceExtension = InferAudioExtension(payload.StreamUrl, ".m4a");
-        var encryptedPath = Path.Join(outputDir, $"{Guid.NewGuid():N}{sourceExtension}");
-        await DownloadFileAsync(payload.StreamUrl, encryptedPath, progressCallback, cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(payload.DecryptionKey))
-        {
-            return encryptedPath;
-        }
-
-        return await DecryptAmazonMediaAsync(encryptedPath, payload.DecryptionKey, outputDir, cancellationToken);
+        var extension = ResolveAmazonExtension(codec, media.Audio.Codec, media.Audio.Url);
+        var encryptedPath = Path.Join(outputDir, $"{Guid.NewGuid():N}{extension}");
+        await DownloadFileAsync(media.Audio.Url, encryptedPath, progressCallback, cancellationToken);
+        return string.IsNullOrWhiteSpace(media.Audio.Key)
+            ? encryptedPath
+            : await DecryptAmazonMediaAsync(encryptedPath, media.Audio.Key, outputDir, cancellationToken);
     }
 
-    private static string BuildHttpsBaseUrl(string host) => new UriBuilder(HttpsScheme, host).Uri.ToString().TrimEnd('/');
+    private static string ResolveAmazonCodec(string? quality)
+        => (quality ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "DOLBY_ATMOS" => "eac3",
+            "OPUS" => "opus",
+            _ => "flac"
+        };
+
+    private static string ResolveAmazonExtension(string requestedCodec, string? actualCodec, string url)
+    {
+        var codec = string.IsNullOrWhiteSpace(actualCodec) ? requestedCodec : actualCodec.Trim().ToLowerInvariant();
+        if (codec.Contains("opus", StringComparison.OrdinalIgnoreCase))
+        {
+            return ".opus";
+        }
+
+        if (codec.Contains("eac3", StringComparison.OrdinalIgnoreCase)
+            || codec.Contains("ec-3", StringComparison.OrdinalIgnoreCase)
+            || codec.Contains("atmos", StringComparison.OrdinalIgnoreCase))
+        {
+            return ".m4a";
+        }
+
+        return InferAudioExtension(url, FlacExtension);
+    }
+
+    private static ZarzMediaResponse? DeserializeZarzMedia(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            var first = root.EnumerateArray().FirstOrDefault();
+            return first.ValueKind == JsonValueKind.Undefined
+                ? null
+                : first.Deserialize<ZarzMediaResponse>(SerializerOptions);
+        }
+
+        if (root.TryGetProperty("data", out var data))
+        {
+            if (data.ValueKind == JsonValueKind.Array)
+            {
+                var first = data.EnumerateArray().FirstOrDefault();
+                return first.ValueKind == JsonValueKind.Undefined
+                    ? null
+                    : first.Deserialize<ZarzMediaResponse>(SerializerOptions);
+            }
+
+            if (data.ValueKind == JsonValueKind.Object)
+            {
+                return data.Deserialize<ZarzMediaResponse>(SerializerOptions);
+            }
+        }
+
+        return root.Deserialize<ZarzMediaResponse>(SerializerOptions);
+    }
 
     private static async Task<string> DecryptAmazonMediaAsync(
         string encryptedPath,
@@ -424,286 +321,6 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     {
         return DownloadFileUtilities.ResolveExecutablePath(
             OperatingSystem.IsWindows() ? FfprobeExecutableNamesWindows : FfprobeExecutableNamesUnix);
-    }
-
-    private static async Task<string?> DownloadFromLucidaAsync(string amazonUrl, string outputDir, CancellationToken cancellationToken)
-    {
-        using var handler = CreateLucidaHttpHandler();
-        using var client = CreateLucidaHttpClient(handler);
-        var userAgent = GetRandomUserAgent();
-
-        var sessionData = await InitializeLucidaSessionAsync(client, userAgent, amazonUrl, cancellationToken);
-        var loadData = await SubmitLucidaLoadAsync(client, handler.CookieContainer, userAgent, sessionData, cancellationToken);
-
-        var completionUrl = $"https://{loadData.Server}.lucida.to/api/fetch/request/{loadData.Handoff}";
-        await WaitForLucidaCompletionAsync(client, userAgent, completionUrl, cancellationToken);
-
-        var downloadUrl = $"{completionUrl}/download";
-        return await DownloadLucidaFileAsync(client, userAgent, downloadUrl, outputDir, cancellationToken);
-    }
-
-    private static HttpClientHandler CreateLucidaHttpHandler()
-    {
-        var handler = new HttpClientHandler
-        {
-            CookieContainer = new CookieContainer()
-        };
-        TlsPolicy.ApplyIfAllowed(handler, configuration: null);
-        return handler;
-    }
-
-    private static HttpClient CreateLucidaHttpClient(HttpClientHandler handler)
-    {
-        return new HttpClient(handler)
-        {
-            Timeout = TimeSpan.FromSeconds(120)
-        };
-    }
-
-    private static async Task<LucidaSessionData> InitializeLucidaSessionAsync(
-        HttpClient client,
-        string userAgent,
-        string amazonUrl,
-        CancellationToken cancellationToken)
-    {
-        var lucidaUrl = $"https://lucida.to/?url={WebUtility.UrlEncode(amazonUrl)}&country=auto";
-        using var initialReq = new HttpRequestMessage(HttpMethod.Get, lucidaUrl);
-        initialReq.Headers.UserAgent.ParseAdd(userAgent);
-        using var initialResp = await client.SendAsync(initialReq, cancellationToken);
-        if (!initialResp.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Lucida init failed ({(int)initialResp.StatusCode})");
-        }
-
-        var html = await initialResp.Content.ReadAsStringAsync(cancellationToken);
-        var token = ExtractLucidaData(html, LucidaTokenPatterns);
-        var streamUrl = ExtractLucidaData(html, LucidaStreamUrlPatterns);
-        var expiry = ExtractLucidaData(html, LucidaTokenExpiryPatterns);
-        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(streamUrl))
-        {
-            var errorMsg = ExtractLucidaData(html, LucidaErrorPatterns);
-            throw !string.IsNullOrWhiteSpace(errorMsg)
-                ? new InvalidOperationException($"Lucida error: {errorMsg}")
-                : new InvalidOperationException("Lucida init missing token or stream URL");
-        }
-
-        return new LucidaSessionData(
-            DecodedToken: DecodeLucidaToken(token),
-            StreamUrl: streamUrl.Replace("\\/", "/", StringComparison.Ordinal),
-            Expiry: expiry);
-    }
-
-    private static string DecodeLucidaToken(string token)
-    {
-        try
-        {
-            var second = Convert.FromBase64String(token);
-            var first = Convert.FromBase64String(Encoding.UTF8.GetString(second));
-            return Encoding.UTF8.GetString(first);
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            return token;
-        }
-    }
-
-    private static async Task<LucidaLoadResponse> SubmitLucidaLoadAsync(
-        HttpClient client,
-        CookieContainer cookieContainer,
-        string userAgent,
-        LucidaSessionData sessionData,
-        CancellationToken cancellationToken)
-    {
-        var loadPayload = new
-        {
-            account = new { id = "auto", type = "country" },
-            compat = "false",
-            downscale = "original",
-            handoff = true,
-            metadata = true,
-            @private = true,
-            token = new { primary = sessionData.DecodedToken, expiry = sessionData.Expiry },
-            upload = new { enabled = false },
-            url = sessionData.StreamUrl
-        };
-
-        using var loadReq = new HttpRequestMessage(HttpMethod.Post, LucidaLoadApi);
-        loadReq.Headers.UserAgent.ParseAdd(userAgent);
-        loadReq.Content = new StringContent(JsonSerializer.Serialize(loadPayload), Encoding.UTF8, "application/json");
-        AddLucidaCsrfHeaders(loadReq, cookieContainer);
-
-        using var loadResp = await client.SendAsync(loadReq, cancellationToken);
-        if (!loadResp.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Lucida load failed ({(int)loadResp.StatusCode})");
-        }
-
-        var loadData = await loadResp.Content.ReadFromJsonAsync<LucidaLoadResponse>(SerializerOptions, cancellationToken);
-        if (loadData == null || !loadData.Success)
-        {
-            throw new InvalidOperationException($"Lucida load request failed: {loadData?.Error ?? "unknown"}");
-        }
-
-        return loadData;
-    }
-
-    private static void AddLucidaCsrfHeaders(HttpRequestMessage request, CookieContainer cookieContainer)
-    {
-        foreach (Cookie cookie in cookieContainer
-                     .GetCookies(new Uri(LucidaLoadApi))
-                     .Where(static cookie => string.Equals(cookie.Name, "csrf_token", StringComparison.OrdinalIgnoreCase)))
-        {
-            request.Headers.TryAddWithoutValidation("X-CSRF-Token", cookie.Value);
-        }
-    }
-
-    private static async Task WaitForLucidaCompletionAsync(
-        HttpClient client,
-        string userAgent,
-        string completionUrl,
-        CancellationToken cancellationToken)
-    {
-        var maxWait = TimeSpan.FromSeconds(300);
-        var elapsed = TimeSpan.Zero;
-        var pollInterval = TimeSpan.FromSeconds(2);
-
-        while (elapsed < maxWait)
-        {
-            await Task.Delay(pollInterval, cancellationToken);
-            elapsed += pollInterval;
-
-            using var statusReq = new HttpRequestMessage(HttpMethod.Get, completionUrl);
-            statusReq.Headers.UserAgent.ParseAdd(userAgent);
-            using var statusResp = await client.SendAsync(statusReq, cancellationToken);
-            if (!statusResp.IsSuccessStatusCode)
-            {
-                continue;
-            }
-
-            var status = await statusResp.Content.ReadFromJsonAsync<LucidaStatusResponse>(SerializerOptions, cancellationToken);
-            if (status == null)
-            {
-                continue;
-            }
-
-            if (string.Equals(status.Status, "completed", StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            if (string.Equals(status.Status, ErrorStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException($"Lucida processing failed: {status.Message}");
-            }
-        }
-
-        throw new InvalidOperationException("Lucida processing timeout");
-    }
-
-    private static async Task<string> DownloadLucidaFileAsync(
-        HttpClient client,
-        string userAgent,
-        string downloadUrl,
-        string outputDir,
-        CancellationToken cancellationToken)
-    {
-        using var downloadReq = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
-        downloadReq.Headers.UserAgent.ParseAdd(userAgent);
-        using var downloadResp = await client.SendAsync(downloadReq, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!downloadResp.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Lucida download failed ({(int)downloadResp.StatusCode})");
-        }
-
-        var filePath = Path.Join(outputDir, ResolveLucidaFileName(downloadResp));
-        await using var responseStream = await downloadResp.Content.ReadAsStreamAsync(cancellationToken);
-        await using var output = IOFile.Create(filePath);
-        await DownloadStreamHelper.CopyToAsyncWithProgress(
-            responseStream,
-            output,
-            downloadResp.Content.Headers.ContentLength,
-            null,
-            cancellationToken);
-        return filePath;
-    }
-
-    private static string ResolveLucidaFileName(HttpResponseMessage response)
-    {
-        var disposition = response.Content.Headers.ContentDisposition;
-        if (disposition == null)
-        {
-            return TrackFlacFileName;
-        }
-
-        var rawName = disposition.FileNameStar ?? disposition.FileName;
-        if (string.IsNullOrWhiteSpace(rawName))
-        {
-            return TrackFlacFileName;
-        }
-
-        rawName = rawName.Trim(ContentDispositionTrimChars);
-        if (rawName.StartsWith("UTF-8''", StringComparison.OrdinalIgnoreCase))
-        {
-            rawName = Uri.UnescapeDataString(rawName[7..]);
-        }
-
-        var sanitized = Regex.Replace(rawName, "[<>:\"/\\\\|?*]", string.Empty, RegexOptions.None, RegexTimeout);
-        return string.IsNullOrWhiteSpace(sanitized) ? TrackFlacFileName : sanitized;
-    }
-
-    private static string ExtractLucidaData(string html, IEnumerable<string> patterns)
-    {
-        var match = patterns
-            .Select(pattern => Regex.Match(html, pattern, RegexOptions.None, RegexTimeout))
-            .FirstOrDefault(static candidate => candidate.Success && candidate.Groups.Count > 1);
-
-        return match?.Groups[1].Value ?? string.Empty;
-    }
-
-    private async Task<string?> PollStatusAsync(string statusUrl, CancellationToken cancellationToken)
-    {
-        var maxWait = TimeSpan.FromMinutes(5);
-        var pollInterval = TimeSpan.FromSeconds(3);
-        var elapsed = TimeSpan.Zero;
-
-        while (elapsed < maxWait)
-        {
-            await Task.Delay(pollInterval, cancellationToken);
-            elapsed += pollInterval;
-
-            using var statusReq = CreateGetRequestWithRandomUserAgent(statusUrl);
-            using var statusResp = await _client.SendAsync(statusReq, cancellationToken);
-            if (!statusResp.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("Amazon status polling failed ({Status})", (int)statusResp.StatusCode);
-                continue;
-            }
-
-            var statusBody = await statusResp.Content.ReadAsStringAsync(cancellationToken);
-            var status = JsonSerializer.Deserialize<DoubleDoubleStatusResponse>(statusBody, SerializerOptions);
-            if (status == null)
-            {
-                _logger.LogWarning("Amazon status polling returned invalid JSON: {Body}", statusBody);
-                continue;
-            }
-
-            if (string.Equals(status.Status, "done", StringComparison.OrdinalIgnoreCase))
-            {
-                return status.Url;
-            }
-
-            if (string.Equals(status.Status, ErrorStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException(status.FriendlyStatus ?? "Amazon processing failed");
-            }
-
-            if (!string.IsNullOrWhiteSpace(status.Status) && _logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Amazon status: {Status}", status.Status);
-            }
-        }
-
-        throw new InvalidOperationException("Amazon download timed out");
     }
 
     private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
@@ -875,71 +492,21 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         DeezSpoTag.Core.Models.Settings.TagSettings? TagSettings,
         int? RequestedLocalQualityRank);
 
-    private sealed record LucidaSessionData(string DecodedToken, string StreamUrl, string Expiry);
-
-    private sealed class AfkarStreamResponse
+    private sealed class ZarzMediaResponse
     {
-        [JsonPropertyName("streamUrl")]
-        public string StreamUrl { get; set; } = "";
-
-        [JsonPropertyName("decryptionKey")]
-        public string DecryptionKey { get; set; } = "";
+        [JsonPropertyName("audio")]
+        public ZarzAudioResponse? Audio { get; set; }
     }
 
-    private sealed class DoubleDoubleSubmitResponse
+    private sealed class ZarzAudioResponse
     {
-        [JsonPropertyName("success")]
-        public bool Success { get; set; }
-
-        [JsonPropertyName("id")]
-        public string Id { get; set; } = "";
-    }
-
-    private sealed class DoubleDoubleStatusResponse
-    {
-        [JsonPropertyName("status")]
-        public string Status { get; set; } = "";
-
-        [JsonPropertyName("friendlyStatus")]
-        public string? FriendlyStatus { get; set; }
-
         [JsonPropertyName("url")]
         public string Url { get; set; } = "";
-    }
 
-    private sealed class LucidaLoadResponse
-    {
-        [JsonPropertyName("success")]
-        public bool Success { get; set; }
+        [JsonPropertyName("key")]
+        public string Key { get; set; } = "";
 
-        [JsonPropertyName("server")]
-        public string Server { get; set; } = "";
-
-        [JsonPropertyName("handoff")]
-        public string Handoff { get; set; } = "";
-
-        [JsonPropertyName("error")]
-        public string? Error { get; set; }
-    }
-
-    private sealed class LucidaStatusResponse
-    {
-        [JsonPropertyName("status")]
-        public string Status { get; set; } = "";
-
-        [JsonPropertyName("message")]
-        public string? Message { get; set; }
-
-        [JsonPropertyName("progress")]
-        public LucidaProgress Progress { get; set; } = new();
-    }
-
-    private sealed class LucidaProgress
-    {
-        [JsonPropertyName("current")]
-        public long Current { get; set; }
-
-        [JsonPropertyName("total")]
-        public long Total { get; set; }
+        [JsonPropertyName("codec")]
+        public string Codec { get; set; } = "";
     }
 }

@@ -45,7 +45,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
     public async Task<IActionResult> Enqueue([FromBody] AmazonDownloadBatchRequest request)
     {
         var destinationFolderId = request?.DestinationFolderId;
-        const string quality = "FLAC";
+        var quality = ResolveRequestedQuality(request);
         var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<AmazonQueueItem>(
             _queueRepository,
             _dedupeService);
@@ -66,9 +66,9 @@ public sealed class AmazonDownloadApiController : ControllerBase
                 Logger = _logger,
                 ValidateSettings = _ =>
                 {
-                    if (quality.Contains("atmos", StringComparison.OrdinalIgnoreCase))
+                    if (!IsSupportedAmazonQuality(quality))
                     {
-                        return new BadRequestObjectResult(new { error = "Atmos downloads are restricted to Apple Music." });
+                        return new BadRequestObjectResult(new { error = "Unsupported Amazon Music quality." });
                     }
 
                     return null;
@@ -97,11 +97,22 @@ public sealed class AmazonDownloadApiController : ControllerBase
                 RegexTimeout = RegexTimeout
             },
             cancellationToken);
+
+    private static string ResolveRequestedQuality(AmazonDownloadBatchRequest? request)
+    {
+        var quality = request?.Quality?.Trim();
+        return string.IsNullOrWhiteSpace(quality) ? "ULTRA_HD_FLAC" : quality.ToUpperInvariant();
+    }
+
+    private static bool IsSupportedAmazonQuality(string quality)
+        => QualityCatalog.GetEngineQualityOptions().TryGetValue("amazon", out var options)
+           && options.Any(option => string.Equals(option.Value, quality, StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed class AmazonDownloadBatchRequest : EngineDownloadBatchRequestBase
 {
     public List<AmazonDownloadTrackDto> Tracks { get; set; } = new();
+    public string? Quality { get; set; }
 }
 
 public sealed class AmazonDownloadTrackDto : EngineDownloadTrackDtoBase

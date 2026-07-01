@@ -12,6 +12,7 @@ public class PlatformRegistryApiController : ControllerBase
 {
     private const string LastFmPlatform = "lastfm";
     private const string AppleMusicPlatform = "applemusic";
+    private const string AmazonMusicPlatform = "amazonmusic";
     private const string BpmSupremePlatform = "bpmsupreme";
     private const string QobuzPlatform = "qobuz";
     private const string TidalPlatform = "tidal";
@@ -23,6 +24,7 @@ public class PlatformRegistryApiController : ControllerBase
         "deezer",
         "spotify",
         AppleMusicPlatform,
+        AmazonMusicPlatform,
         QobuzPlatform,
         TidalPlatform,
         SoulseekPlatform,
@@ -56,6 +58,7 @@ public class PlatformRegistryApiController : ControllerBase
         "plex",
         "jellyfin",
         AppleMusicPlatform,
+        AmazonMusicPlatform,
         QobuzPlatform,
         TidalPlatform,
         SoulseekPlatform,
@@ -67,6 +70,7 @@ public class PlatformRegistryApiController : ControllerBase
         ["deezer"] = "deezer-login",
         ["spotify"] = "spotify-login",
         [AppleMusicPlatform] = "apple-music-login",
+        [AmazonMusicPlatform] = "amazon-music-login",
         [QobuzPlatform] = "qobuz-login",
         [TidalPlatform] = "tidal-login",
         [SoulseekPlatform] = "soulseek-login",
@@ -86,6 +90,7 @@ public class PlatformRegistryApiController : ControllerBase
         ["musicbrainz"] = "MusicBrainz",
         ["itunes"] = "iTunes",
         [AppleMusicPlatform] = "Apple Music",
+        [AmazonMusicPlatform] = "Amazon Music",
         [QobuzPlatform] = "Qobuz",
         [TidalPlatform] = "Tidal",
         [SoulseekPlatform] = "Soulseek",
@@ -237,6 +242,10 @@ public class PlatformRegistryApiController : ControllerBase
         if (string.Equals(platformId, AppleMusicPlatform, StringComparison.OrdinalIgnoreCase))
         {
             return "/images/icons/apple-music.png";
+        }
+        if (string.Equals(platformId, AmazonMusicPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return "/images/icons/amazon-music.png";
         }
         if (string.Equals(platformId, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
         {

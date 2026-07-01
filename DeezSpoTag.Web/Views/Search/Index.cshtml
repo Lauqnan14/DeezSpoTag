@@ -547,6 +547,9 @@
         <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="apple" id="tab-apple" data-bs-toggle="tab" data-bs-target="#search-source-apple">Apple Music</button>
     </li>
     <li class="nav-item">
+        <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="amazon" id="tab-amazon" data-bs-toggle="tab" data-bs-target="#search-source-amazon">Amazon Music</button>
+    </li>
+    <li class="nav-item">
         <button class="nav-link source-btn" type="button" role="tab" aria-selected="false" data-source="tidal" id="tab-tidal" data-bs-toggle="tab" data-bs-target="#search-source-tidal">Tidal</button>
     </li>
     }
@@ -659,6 +662,24 @@
         </div>
     </div>
 
+    <div class="tab-pane fade" id="search-source-amazon" role="tabpanel" aria-labelledby="tab-amazon">
+        <div class="search-filters">
+            <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="amazon">Tracks</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="album" data-source="amazon">Albums</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="artist" data-source="amazon">Artists</a>
+            <a href="#" class="filter-btn action-btn action-btn-sm" data-type="playlist" data-source="amazon">Playlists</a>
+        </div>
+
+        <div class="results-section">
+            <div id="search-results-amazon">
+                <div class="loading-section">
+                    <div class="loading-spinner"></div>
+                    <p>Searching...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="tab-pane fade" id="search-source-tidal" role="tabpanel" aria-labelledby="tab-tidal">
         <div class="search-filters">
             <a href="#" class="filter-btn action-btn action-btn-sm active" data-type="track" data-source="tidal">Tracks</a>
@@ -707,7 +728,7 @@ const searchMode = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData[
 const searchModeNormalized = String(searchMode || '').trim().toLowerCase();
 const soundtrackSearchMode = searchModeNormalized === 'soundtrack';
 const soundtrackSearchTypes = new Set(['all', 'album', 'playlist', 'compilation']);
-const searchSources = soundtrackSearchMode ? ['spotify', 'deezer', 'manual'] : ['spotify', 'deezer', 'apple', 'tidal'];
+const searchSources = soundtrackSearchMode ? ['spotify', 'deezer', 'manual'] : ['spotify', 'deezer', 'apple', 'amazon', 'tidal'];
 let sourceTypeSelections = {};
 const soundtrackContextTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextType"]?.ToString() ?? string.Empty));
 const soundtrackContextServerTypeRaw = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(ViewData["SoundtrackContextServerType"]?.ToString() ?? string.Empty));
@@ -1598,6 +1619,8 @@ function markBroadSourceResultsLoaded(sourceData, source) {
         ? ['track', 'album', 'artist', 'playlist', 'station', 'atmos', 'video']
         : normalizedSource === 'tidal'
             ? ['track', 'album', 'artist', 'playlist', 'atmos', 'video']
+        : normalizedSource === 'amazon'
+            ? ['track', 'album', 'artist', 'playlist']
         : soundtrackSearchMode
             ? ['all', 'album', 'playlist', 'compilation']
             : ['track', 'album', 'artist', 'playlist'];
@@ -1640,6 +1663,10 @@ function shouldUseTypedSearch(source, type) {
 
     if (normalizedSource === 'tidal') {
         return ['track', 'album', 'artist', 'playlist', 'atmos', 'video'].includes(normalizedType);
+    }
+
+    if (normalizedSource === 'amazon') {
+        return ['track', 'album', 'artist', 'playlist'].includes(normalizedType);
     }
 
     return false;
@@ -1859,6 +1886,25 @@ async function fetchSourceResults(source, term, type, options = {}) {
         };
     }
 
+    if (normalizedSource === 'amazon') {
+        const amazonType = typedOnly ? mapAmazonSearchType(normalizedType) : '';
+        const amazonUrl = amazonType
+            ? `/api/amazon/search?term=${encodeURIComponent(term)}&type=${encodeURIComponent(amazonType)}&limit=50`
+            : `/api/amazon/search?term=${encodeURIComponent(term)}&limit=25`;
+        const amazonResponse = await fetch(amazonUrl);
+        const amazonData = await amazonResponse.json().catch(() => null);
+        if (!amazonResponse.ok || amazonData?.available === false) {
+            return {
+                ...createEmptySourceResults('amazon'),
+                error: amazonData?.error || `Amazon Music search unavailable (HTTP ${amazonResponse.status})`
+            };
+        }
+        return {
+            ...createEmptySourceResults('amazon'),
+            ...amazonData
+        };
+    }
+
     if (normalizedSource === 'spotify') {
         const spotifyUrl = typedOnly
             ? `/api/spotify/search/type?query=${encodeURIComponent(term)}&type=${encodeURIComponent(normalizedType)}&limit=50`
@@ -1934,6 +1980,18 @@ function mapTidalSearchType(type) {
             return 'video';
         case 'atmos':
             return 'atmos';
+        default:
+            return '';
+    }
+}
+
+function mapAmazonSearchType(type) {
+    switch (String(type || '').trim().toLowerCase()) {
+        case 'track':
+        case 'album':
+        case 'artist':
+        case 'playlist':
+            return type;
         default:
             return '';
     }
@@ -2124,6 +2182,7 @@ function getResultsForType(type, source) {
 
     if (source === 'deezer') return from(cachedResults.deezer || {});
     if (source === 'apple') return from(cachedResults.apple || {}).filter(item => !item?.hasAtmos);
+    if (source === 'amazon') return from(cachedResults.amazon || {});
     if (source === 'tidal') return from(cachedResults.tidal || {}).filter(item => !item?.hasAtmos);
     if (source === 'spotify') return from(cachedResults.spotify || {});
 
@@ -2700,6 +2759,11 @@ function buildUnifiedClick(item, type) {
     if (tidalId || tidalUrl) {
         return `openTidalResult('${escapeJsString(tidalId)}', '${type}', '${escapeJsString(tidalUrl)}', '${escapeJsString(item.name || '')}')`;
     }
+    const amazonId = item.amazonId || item.id || '';
+    const amazonUrl = item.sourceUrl || item.url || '';
+    if ((item.source === 'amazon' || item.source === 'amazonmusic') && (amazonId || amazonUrl)) {
+        return `openAmazonResult('${escapeJsString(amazonId)}', '${type}', '${escapeJsString(amazonUrl)}')`;
+    }
     const qobuzUrl = item.qobuzUrl || buildQobuzUrlForItem(item.qobuzId || '', item.qobuzType || type || '');
     if (qobuzUrl) {
         return '';
@@ -2766,6 +2830,24 @@ function openTidalResult(tidalId, type, tidalUrl, artistName = '') {
         return;
     }
     navigateToTracklist(id, normalizedType || 'track', 'tidal', { externalUrl: normalizedUrl });
+}
+
+function openAmazonResult(amazonId, type, amazonUrl) {
+    const normalizedType = String(type || '').trim().toLowerCase();
+    const normalizedId = String(amazonId || '').trim();
+    const normalizedUrl = String(amazonUrl || '').trim();
+    if (normalizedType === 'artist') {
+        if (normalizedId) {
+            openUnifiedArtist(normalizedId, 'amazon');
+        }
+        return;
+    }
+
+    const id = normalizedId || normalizedUrl;
+    if (!id) {
+        return;
+    }
+    navigateToTracklist(id, normalizedType || 'track', 'amazon', { externalUrl: normalizedUrl });
 }
 
 function buildTidalUrlForItem(id, type) {
@@ -2981,7 +3063,7 @@ async function refreshLibraryExistence(sourcesToCheck) {
     if (!cachedResults) return;
     const sources = Array.isArray(sourcesToCheck) && sourcesToCheck.length > 0
         ? sourcesToCheck
-        : ['deezer', 'spotify', 'apple', 'tidal'];
+        : ['deezer', 'spotify', 'apple', 'amazon', 'tidal'];
     const tasks = sources.map(source => updateLibraryStatusForTracks(cachedResults[source]?.tracks || [], source));
     await Promise.all(tasks);
     if (currentSearchType === 'track' || currentSearchType === 'atmos') {

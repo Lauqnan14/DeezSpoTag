@@ -2086,6 +2086,13 @@ async function initArtistWatchlistToggle(data) {
 
     const artistName = (data?.artistName || document.querySelector('.artist-hero__title')?.textContent || 'Unknown Artist').trim();
     const isSpotifySource = String(currentArtistSource || '').toLowerCase() === 'spotify';
+    const supportsLocalWatchlist = isSpotifySource || isNumericId(artistIdValue);
+    if (!supportsLocalWatchlist) {
+        button.disabled = true;
+        button.title = 'Artist monitoring is not available for this source yet.';
+        button.textContent = 'Monitor Artist';
+        return;
+    }
     let resolvedDeezerId = null;
     let mutationInFlight = false;
 

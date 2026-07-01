@@ -1413,6 +1413,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Apple.AppleMusicCatalogService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyBlobService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyAppTokenService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.AmazonMusicMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistServiceDependencies>(sp =>
             new DeezSpoTag.Web.Services.SpotifyArtistServiceDependencies(
@@ -1523,7 +1524,8 @@ public partial class Program
                 sp.GetRequiredService<IHttpClientFactory>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Download.ISpotifyIdResolver>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Download.ISpotifyArtworkResolver>(),
-                sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>()));
+                sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>(),
+                sp.GetRequiredService<DeezSpoTag.Web.Services.AmazonMusicMetadataService>()));
         services.AddScoped<DeezSpoTag.Web.Controllers.ApiController.ApiControllerDependencies>(sp =>
             new DeezSpoTag.Web.Controllers.ApiController.ApiControllerDependencies
             {

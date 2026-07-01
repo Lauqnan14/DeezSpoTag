@@ -47,6 +47,7 @@ namespace DeezSpoTag.Web.Controllers
         private const string AppleSource = "apple";
         private const string SpotifySource = "spotify";
         private const string TidalSource = "tidal";
+        private const string AmazonSource = "amazon";
         private const string VideoType = "video";
         private const string ArtistPageCacheSource = "artist-page";
         private const string SmartTracklistType = "smarttracklist";
@@ -132,6 +133,7 @@ namespace DeezSpoTag.Web.Controllers
         private readonly ISpotifyIdResolver _spotifyIdResolver;
         private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
         private readonly DeezSpoTag.Web.Services.SpotifyArtistService _spotifyArtistService;
+        private readonly DeezSpoTag.Web.Services.AmazonMusicMetadataService _amazonMusicMetadataService;
         private readonly TracklistSongCacheStore _tracklistSongCacheStore;
         private readonly CrossDeviceSyncService _crossDeviceSyncService;
         private readonly SpotifyHomeFeedRuntimeService _spotifyHomeFeedRuntimeService;
@@ -144,13 +146,15 @@ namespace DeezSpoTag.Web.Controllers
                 IHttpClientFactory httpClientFactory,
                 ISpotifyIdResolver spotifyIdResolver,
                 ISpotifyArtworkResolver spotifyArtworkResolver,
-                DeezSpoTag.Web.Services.SpotifyArtistService spotifyArtistService)
+                DeezSpoTag.Web.Services.SpotifyArtistService spotifyArtistService,
+                DeezSpoTag.Web.Services.AmazonMusicMetadataService amazonMusicMetadataService)
             {
                 AppleCatalog = appleCatalog;
                 HttpClientFactory = httpClientFactory;
                 SpotifyIdResolver = spotifyIdResolver;
                 SpotifyArtworkResolver = spotifyArtworkResolver;
                 SpotifyArtistService = spotifyArtistService;
+                AmazonMusicMetadataService = amazonMusicMetadataService;
             }
 
             public AppleMusicCatalogService AppleCatalog { get; }
@@ -158,6 +162,7 @@ namespace DeezSpoTag.Web.Controllers
             public ISpotifyIdResolver SpotifyIdResolver { get; }
             public ISpotifyArtworkResolver SpotifyArtworkResolver { get; }
             public DeezSpoTag.Web.Services.SpotifyArtistService SpotifyArtistService { get; }
+            public DeezSpoTag.Web.Services.AmazonMusicMetadataService AmazonMusicMetadataService { get; }
         }
 
         public sealed class ApiControllerDependencies
@@ -190,6 +195,7 @@ namespace DeezSpoTag.Web.Controllers
             _spotifyIdResolver = dependencies.MusicServices.SpotifyIdResolver;
             _spotifyArtworkResolver = dependencies.MusicServices.SpotifyArtworkResolver;
             _spotifyArtistService = dependencies.MusicServices.SpotifyArtistService;
+            _amazonMusicMetadataService = dependencies.MusicServices.AmazonMusicMetadataService;
             _tracklistSongCacheStore = dependencies.TracklistSongCacheStore;
             _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
             _spotifyHomeFeedRuntimeService = dependencies.SpotifyHomeFeedRuntimeService;
@@ -2161,7 +2167,7 @@ namespace DeezSpoTag.Web.Controllers
         }
 
         private static bool IsSupportedArtistPageSource(string source) =>
-            source == DeezerSource || source == AppleSource || source == SpotifySource || source == TidalSource;
+            source == DeezerSource || source == AppleSource || source == SpotifySource || source == TidalSource || source == AmazonSource;
 
         private async Task<ArtistCacheEntry?> GetArtistPageCacheSnapshotAsync(
             string cacheKey,
@@ -2483,6 +2489,11 @@ namespace DeezSpoTag.Web.Controllers
             if (source == TidalSource)
             {
                 return await BuildTidalArtistPageAsync(id, cancellationToken);
+            }
+
+            if (source == AmazonSource)
+            {
+                return await BuildAmazonArtistPageAsync(id, cancellationToken);
             }
 
             var deezerData = await FetchDeezerArtistDataAsync(httpClient, id);
@@ -2856,6 +2867,145 @@ namespace DeezSpoTag.Web.Controllers
                 [PictureMediumField] = artistArtwork ?? string.Empty,
                 [ReleasesField] = releases
             };
+        }
+
+        private async Task<Dictionary<string, object>?> BuildAmazonArtistPageAsync(string id, CancellationToken cancellationToken)
+        {
+            var page = await _amazonMusicMetadataService.GetArtistPageAsync(id, cancellationToken);
+            if (page is null)
+            {
+                return null;
+            }
+
+            var artist = page.Artist;
+            var releases = page.Releases
+                .Select(static release => BuildAmazonReleasePayload(release, AlbumType))
+                .ToList();
+            var appearsOn = page.AppearsOn
+                .Select(static release => BuildAmazonReleasePayload(release, "featured"))
+                .ToList();
+            var topTracks = page.TopTracks
+                .Select(static track => new Dictionary<string, object>
+                {
+                    ["id"] = track.Id,
+                    [TitleField] = track.Title,
+                    [NameField] = track.Title,
+                    [SourceField] = AmazonSource,
+                    [TypeField] = TrackType,
+                    ["artist"] = new Dictionary<string, object>
+                    {
+                        ["id"] = string.Empty,
+                        [NameField] = track.Artist
+                    },
+                    [AlbumType] = new Dictionary<string, object>
+                    {
+                        ["id"] = track.Id,
+                        [TitleField] = track.Album,
+                        [SourceField] = AmazonSource,
+                        [TypeField] = track.Type == AlbumType ? AlbumType : TrackType,
+                        [CoverSmallField] = track.CoverUrl,
+                        [CoverMediumField] = track.CoverUrl,
+                        [CoverBigField] = track.CoverUrl,
+                        [CoverXlField] = track.CoverUrl
+                    },
+                    [DurationField] = track.DurationMs.HasValue && track.DurationMs.Value > 0 ? track.DurationMs.Value / 1000 : 0,
+                    ["link"] = track.Url,
+                    [PictureXlField] = track.CoverUrl,
+                    [PictureBigField] = track.CoverUrl,
+                    [PictureMediumField] = track.CoverUrl
+                })
+                .ToList();
+            var related = page.Related
+                .Select(static relatedArtist => new Dictionary<string, object>
+                {
+                    ["id"] = relatedArtist.Id,
+                    [NameField] = relatedArtist.Title,
+                    [SourceField] = AmazonSource,
+                    [PictureXlField] = relatedArtist.CoverUrl,
+                    [PictureBigField] = relatedArtist.CoverUrl,
+                    [PictureMediumField] = relatedArtist.CoverUrl
+                })
+                .ToList();
+
+            return new Dictionary<string, object>
+            {
+                ["id"] = artist.Id,
+                [SourceField] = AmazonSource,
+                [NameField] = artist.Title,
+                ["genres"] = Array.Empty<string>(),
+                ["nb_fan"] = 0,
+                [PictureXlField] = artist.CoverUrl,
+                [PictureBigField] = artist.CoverUrl,
+                [PictureMediumField] = artist.CoverUrl,
+                [ReleasesField] = new Dictionary<string, object>
+                {
+                    [AlbumType] = releases,
+                    ["featured"] = appearsOn
+                },
+                ["top_tracks"] = topTracks,
+                ["videos"] = Array.Empty<object>(),
+                [RelatedField] = related,
+                ["download_link"] = artist.Url
+            };
+        }
+
+        private static Dictionary<string, object> BuildAmazonReleasePayload(AmazonCatalogItem release, string fallbackType)
+        {
+            var (releaseType, releaseDate) = ParseAmazonReleaseMetadata(release.Artist, fallbackType);
+            return new Dictionary<string, object>
+            {
+                ["id"] = release.Id,
+                [TitleField] = release.Title,
+                [SourceField] = AmazonSource,
+                [TypeField] = AlbumType,
+                [RecordTypeField] = releaseType,
+                [ReleaseDateField] = releaseDate,
+                [NbTracksField] = 0,
+                ["link"] = release.Url,
+                [CoverSmallField] = release.CoverUrl,
+                [CoverMediumField] = release.CoverUrl,
+                [CoverBigField] = release.CoverUrl,
+                [CoverXlField] = release.CoverUrl,
+                [PictureXlField] = release.CoverUrl,
+                [PictureBigField] = release.CoverUrl,
+                [PictureMediumField] = release.CoverUrl
+            };
+        }
+
+        private static (string ReleaseType, string ReleaseDate) ParseAmazonReleaseMetadata(string? metadata, string fallbackType)
+        {
+            if (string.IsNullOrWhiteSpace(metadata))
+            {
+                return (fallbackType, string.Empty);
+            }
+
+            var parts = metadata.Split('•', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var releaseType = fallbackType;
+            var releaseDate = string.Empty;
+            foreach (var part in parts)
+            {
+                if (int.TryParse(part, out var year) && year > 1900 && year < 3000)
+                {
+                    releaseDate = year.ToString(CultureInfo.InvariantCulture);
+                    continue;
+                }
+
+                var normalized = part.Trim().ToLowerInvariant();
+                if (normalized.Contains("single", StringComparison.Ordinal))
+                {
+                    releaseType = SingleType;
+                }
+                else if (normalized.Contains("album", StringComparison.Ordinal))
+                {
+                    releaseType = AlbumType;
+                }
+                else if (normalized.Contains("ep", StringComparison.Ordinal))
+                {
+                    releaseType = "ep";
+                }
+            }
+
+            return (releaseType, releaseDate);
         }
 
         private async Task<Dictionary<string, object>?> BuildTidalArtistPageAsync(string id, CancellationToken cancellationToken)

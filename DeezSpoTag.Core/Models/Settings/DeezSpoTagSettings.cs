@@ -274,7 +274,7 @@ public class DownloadEngineOrderSettings
                 CreateEngine("qobuz", "27", "7", "6", "5"),
                 CreateEngine("tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW"),
                 CreateEngine("apple", "ALAC", "AAC"),
-                CreateEngine("amazon", "FLAC"),
+                CreateEngine("amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS"),
                 CreateEngine("deezer", "9", "3", "1")
             }
         };

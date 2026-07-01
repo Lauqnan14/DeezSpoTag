@@ -603,7 +603,7 @@ public sealed class EngineFallbackSearchService
         {
             AppleEngine => songLink.AppleMusicUrl,
             TidalEngine => songLink.TidalUrl,
-            "amazon" => songLink.AmazonUrl,
+            "amazon" => null,
             QobuzEngine => songLink.QobuzUrl,
             DeezerEngine => songLink.DeezerUrl,
             _ => null

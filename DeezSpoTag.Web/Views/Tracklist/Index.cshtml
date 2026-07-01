@@ -1575,6 +1575,7 @@ const deezerMatchedExternalSources = new Set([
     'boomplay',
     'tidal',
     'qobuz',
+    'amazon',
     'bandcamp'
 ]);
 
@@ -2269,6 +2270,11 @@ async function loadTracklist() {
             return;
         }
 
+        if (tracklistSource === 'amazon') {
+            await loadAmazonTracklist();
+            return;
+        }
+
         if (['soundcloud', 'tidal', 'qobuz', 'bandcamp', 'pandora'].includes((tracklistSource || '').toLowerCase())) {
             await loadExternalPlaylistTracklist();
             return;
@@ -2444,6 +2450,30 @@ async function loadExternalPlaylistTracklist() {
     const payload = await response.json();
     if (!payload.available || !payload.tracklist) {
         throw new Error(payload.error || 'External tracklist unavailable.');
+    }
+
+    await loadIgnoredTracks();
+    renderTracklist(payload.tracklist, { allowEmptyTracks: true });
+}
+
+async function loadAmazonTracklist() {
+    resetSpotifyState();
+    const qs = new URLSearchParams();
+    qs.set('id', tracklistId || '');
+    qs.set('type', tracklistType || 'playlist');
+    const sourceUrl = resolveExternalPlaylistUrl();
+    if (sourceUrl) {
+        qs.set('url', sourceUrl);
+    }
+
+    const response = await fetch(`/api/amazon/tracklist?${qs.toString()}`);
+    if (!response.ok) {
+        throw new Error(`Failed to load Amazon Music tracklist (HTTP ${response.status})`);
+    }
+
+    const payload = await response.json();
+    if (!payload.available || !payload.tracklist) {
+        throw new Error(payload.error || 'Amazon Music tracklist unavailable.');
     }
 
     await loadIgnoredTracks();
@@ -5803,6 +5833,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         || playbackSource === 'soundcloud'
         || playbackSource === 'tidal'
         || playbackSource === 'qobuz'
+        || playbackSource === 'amazon'
         || playbackSource === 'bandcamp'
         || playbackSource === 'pandora';
 

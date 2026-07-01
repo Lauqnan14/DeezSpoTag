@@ -15,6 +15,7 @@ public class PlatformAuthState
     public AppleMusicAuth? AppleMusic { get; set; }
     public QobuzAuth? Qobuz { get; set; }
     public TidalAuth? Tidal { get; set; }
+    public AmazonMusicAuth? AmazonMusic { get; set; }
     public SoulseekAuth? Soulseek { get; set; }
     public BoomplayAuth? Boomplay { get; set; }
 }
@@ -121,6 +122,14 @@ public class TidalAuth
     public DateTimeOffset? ValidatedAt { get; set; }
 }
 
+public class AmazonMusicAuth
+{
+    public string? Host { get; set; }
+    public string? Locale { get; set; }
+    public string? Cookie { get; set; }
+    public DateTimeOffset? SavedAt { get; set; }
+}
+
 public class SoulseekAuth
 {
     public string? BaseUrl { get; set; }
@@ -144,6 +153,7 @@ public class PlatformAuthService
 {
     private const string QobuzProtectionPurpose = "DeezSpoTag.PlatformAuth.Qobuz";
     private const string TidalProtectionPurpose = "DeezSpoTag.PlatformAuth.Tidal";
+    private const string AmazonMusicProtectionPurpose = "DeezSpoTag.PlatformAuth.AmazonMusic";
     private const string SoulseekProtectionPurpose = "DeezSpoTag.PlatformAuth.Soulseek";
     private const string BoomplayProtectionPurpose = "DeezSpoTag.PlatformAuth.Boomplay";
     private const string SpotifyFileName = "spotify.json";
@@ -155,6 +165,7 @@ public class PlatformAuthService
     private const string AppleMusicFileName = "applemusic.json";
     private const string QobuzFileName = "qobuz.json";
     private const string TidalFileName = "tidal.json";
+    private const string AmazonMusicFileName = "amazonmusic.json";
     private const string SoulseekFileName = "soulseek.json";
     private const string BoomplayFileName = "boomplay.json";
     private const string LegacyAggregateFileName = "platform-auth.json";
@@ -171,6 +182,7 @@ public class PlatformAuthService
     private readonly string[] _legacyAggregateFileCandidates;
     private readonly ProtectedCredentialFileStore _qobuzCredentialStore;
     private readonly ProtectedCredentialFileStore _tidalCredentialStore;
+    private readonly ProtectedCredentialFileStore _amazonMusicCredentialStore;
     private readonly ProtectedCredentialFileStore _soulseekCredentialStore;
     private readonly ProtectedCredentialFileStore _boomplayCredentialStore;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
@@ -186,6 +198,7 @@ public class PlatformAuthService
         bool PlexConfigured,
         bool JellyfinConfigured,
         bool AppleConfigured,
+        bool AmazonMusicConfigured,
         bool BoomplayConfigured);
     private readonly record struct AuthStatusLogFields(
         string SpotifyAccount,
@@ -196,6 +209,7 @@ public class PlatformAuthService
         string Plex,
         string Jellyfin,
         string AppleMusic,
+        string AmazonMusic,
         string Boomplay);
     private static readonly string[] PlatformFileNames =
     {
@@ -208,6 +222,7 @@ public class PlatformAuthService
         AppleMusicFileName,
         QobuzFileName,
         TidalFileName,
+        AmazonMusicFileName,
         SoulseekFileName,
         BoomplayFileName
     };
@@ -236,6 +251,9 @@ public class PlatformAuthService
         _tidalCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             TidalProtectionPurpose);
+        _amazonMusicCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            AmazonMusicProtectionPurpose);
         _soulseekCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             SoulseekProtectionPurpose);
@@ -312,6 +330,7 @@ public class PlatformAuthService
         await SavePlatformSectionNoLockAsync(AppleMusicFileName, state.AppleMusic);
         await SaveQobuzNoLockAsync(state.Qobuz);
         await SaveTidalNoLockAsync(state.Tidal);
+        await SaveAmazonMusicNoLockAsync(state.AmazonMusic);
         await SaveSoulseekNoLockAsync(state.Soulseek);
         await SaveBoomplayNoLockAsync(state.Boomplay);
         TryRetireLegacyAggregateStateNoLock();
@@ -333,6 +352,7 @@ public class PlatformAuthService
             AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
             Qobuz = await LoadQobuzNoLockAsync(),
             Tidal = await LoadTidalNoLockAsync(),
+            AmazonMusic = await LoadAmazonMusicNoLockAsync(),
             Soulseek = await LoadSoulseekNoLockAsync(),
             Boomplay = await LoadBoomplayNoLockAsync()
         };
@@ -434,6 +454,44 @@ public class PlatformAuthService
 
         await _tidalCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
         HardenCredentialFilePermissions(path, "Tidal");
+    }
+
+    private async Task<AmazonMusicAuth?> LoadAmazonMusicNoLockAsync()
+    {
+        var path = GetPlatformFilePath(AmazonMusicFileName);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var json = await _amazonMusicCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "Amazon Music");
+            return string.IsNullOrWhiteSpace(json)
+                ? null
+                : JsonSerializer.Deserialize<AmazonMusicAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load protected Amazon Music auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    private async Task SaveAmazonMusicNoLockAsync(AmazonMusicAuth? auth)
+    {
+        var path = GetPlatformFilePath(AmazonMusicFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        await _amazonMusicCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "Amazon Music");
     }
 
     private async Task<SoulseekAuth?> LoadSoulseekNoLockAsync()
@@ -744,7 +802,7 @@ public class PlatformAuthService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic} Boomplay={Boomplay}",
+                "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic} AmazonMusic={AmazonMusic} Boomplay={Boomplay}",
                 logFields.SpotifyAccount,
                 logFields.SpotifyBlob,
                 logFields.Discogs,
@@ -753,6 +811,7 @@ public class PlatformAuthService
                 logFields.Plex,
                 logFields.Jellyfin,
                 logFields.AppleMusic,
+                logFields.AmazonMusic,
                 logFields.Boomplay);
         }
     }
@@ -774,6 +833,7 @@ public class PlatformAuthService
             IsPlexConfigured(state.Plex),
             IsJellyfinConfigured(state.Jellyfin),
             state.AppleMusic?.WrapperReady == true,
+            IsAmazonMusicConfigured(state.AmazonMusic),
             IsBoomplayConfigured(state.Boomplay));
     }
 
@@ -789,6 +849,7 @@ public class PlatformAuthService
             $"Plex:{(snapshot.PlexConfigured ? PresentStatus : MissingStatus)}|" +
             $"Jellyfin:{(snapshot.JellyfinConfigured ? PresentStatus : MissingStatus)}|" +
             $"AppleMusic:{(snapshot.AppleConfigured ? "ready" : MissingStatus)}|" +
+            $"AmazonMusic:{(snapshot.AmazonMusicConfigured ? PresentStatus : MissingStatus)}|" +
             $"Boomplay:{(snapshot.BoomplayConfigured ? PresentStatus : MissingStatus)}";
     }
 
@@ -803,6 +864,7 @@ public class PlatformAuthService
             Plex: ResolveStatus(snapshot.PlexConfigured),
             Jellyfin: ResolveStatus(snapshot.JellyfinConfigured),
             AppleMusic: snapshot.AppleConfigured ? "ready" : MissingStatus,
+            AmazonMusic: ResolveStatus(snapshot.AmazonMusicConfigured),
             Boomplay: ResolveStatus(snapshot.BoomplayConfigured));
     }
 
@@ -848,6 +910,13 @@ public class PlatformAuthService
     {
         return boomplay != null
                && !string.IsNullOrWhiteSpace(boomplay.Cookie);
+    }
+
+    private static bool IsAmazonMusicConfigured(AmazonMusicAuth? amazonMusic)
+    {
+        return amazonMusic != null
+               && (!string.IsNullOrWhiteSpace(amazonMusic.Host)
+                   || !string.IsNullOrWhiteSpace(amazonMusic.Cookie));
     }
 
     private bool NormalizeSpotifyBlobPaths(PlatformAuthState state)

@@ -905,6 +905,7 @@
                                 <button type="button" class="dropdown-option" data-value="atmos:auto">Auto</button>
                                 <button type="button" class="dropdown-option" data-value="atmos:apple">Apple Music</button>
                                 <button type="button" class="dropdown-option" data-value="atmos:tidal">Tidal</button>
+                                <button type="button" class="dropdown-option" data-value="atmos:amazon">Amazon Music</button>
                             </div>
                             <input type="hidden" id="downloadSource" value="deezer">
                         </div>
@@ -986,6 +987,7 @@
                                     <div class="dropdown-menu" id="multiQualityAtmosEngineMenu">
                                         <button type="button" class="dropdown-option" data-value="apple">Apple Music</button>
                                         <button type="button" class="dropdown-option" data-value="tidal">Tidal</button>
+                                        <button type="button" class="dropdown-option" data-value="amazon">Amazon Music</button>
                                     </div>
                                     <input type="hidden" id="multiQualityAtmosEngine" value="apple">
                                 </div>
@@ -2432,7 +2434,24 @@ function resolveDownloadSourceService(value) {
         return 'tidal';
     }
 
+    if (normalized === 'atmos:amazon') {
+        return 'amazon';
+    }
+
     return normalized || 'deezer';
+}
+
+function resolveAtmosEngineFromDownloadSource(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'atmos:tidal') {
+        return 'tidal';
+    }
+
+    if (normalized === 'atmos:amazon') {
+        return 'amazon';
+    }
+
+    return 'apple';
 }
 
 function resolveDownloadSourceSelection(settings) {
@@ -2456,6 +2475,10 @@ function resolveDownloadSourceSelection(settings) {
         return 'atmos:tidal';
     }
 
+    if (service === 'amazon' || String(mq.atmosEngine || '').trim().toLowerCase() === 'amazon') {
+        return 'atmos:amazon';
+    }
+
     return 'atmos:apple';
 }
 
@@ -2473,7 +2496,7 @@ function syncAtmosSourceControls(value) {
         return;
     }
 
-    const engine = normalized === 'atmos:tidal' ? 'tidal' : 'apple';
+    const engine = resolveAtmosEngineFromDownloadSource(normalized);
     setFieldValue('multiQualityAtmosEngine', engine);
     setCheckboxValue('multiQualityAtmosSearchFallback', false);
     setCheckboxValue('multiQualityAtmosDownloadFallback', false);
@@ -4356,7 +4379,7 @@ function collectFormData() {
     const selectedDownloadSource = getValue('downloadSource', 'deezer');
     const selectedAtmosSource = isAtmosDownloadSource(selectedDownloadSource);
     const selectedAtmosAuto = selectedDownloadSource === 'atmos:auto';
-    const selectedAtmosEngine = selectedDownloadSource === 'atmos:tidal' ? 'tidal' : 'apple';
+    const selectedAtmosEngine = resolveAtmosEngineFromDownloadSource(selectedDownloadSource);
     const persistedDownloadService = resolveDownloadSourceService(selectedDownloadSource);
     const formData = {
         downloadLocation: getValue('downloadLocation'),

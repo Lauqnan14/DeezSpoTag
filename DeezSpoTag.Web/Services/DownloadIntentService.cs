@@ -232,6 +232,7 @@ public sealed class DownloadIntentService
     private readonly ArtistPageCacheRepository _artistPageCacheRepository;
     private readonly IDownloadTagSettingsResolver _downloadTagSettingsResolver;
     private readonly BoomplayMetadataService _boomplayMetadataService;
+    private readonly AmazonMusicMetadataService _amazonMusicMetadataService;
     private readonly IDownloadApiHealthTracker _apiHealthTracker;
     private readonly DownloadDedupeService _dedupeService;
     private readonly ILogger<DownloadIntentService> _logger;
@@ -262,6 +263,7 @@ public sealed class DownloadIntentService
         _artistPageCacheRepository = serviceProvider.GetRequiredService<ArtistPageCacheRepository>();
         _downloadTagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
         _boomplayMetadataService = serviceProvider.GetRequiredService<BoomplayMetadataService>();
+        _amazonMusicMetadataService = serviceProvider.GetRequiredService<AmazonMusicMetadataService>();
         _apiHealthTracker = serviceProvider.GetRequiredService<IDownloadApiHealthTracker>();
         _dedupeService = serviceProvider.GetRequiredService<DownloadDedupeService>();
         _logger = logger;
@@ -912,6 +914,11 @@ public sealed class DownloadIntentService
         SongLinkResult? preResolved,
         CancellationToken cancellationToken)
     {
+        if (string.Equals(engine, AmazonPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return await ResolveAmazonAvailabilityUrlAsync(baseIntent, cancellationToken);
+        }
+
         var probeIntent = CloneIntentForAvailabilityLookup(baseIntent);
         var resolved = await ResolveIntentAsync(
             probeIntent,
@@ -928,6 +935,34 @@ public sealed class DownloadIntentService
         }
 
         return resolved.SourceUrl;
+    }
+
+    private async Task<string?> ResolveAmazonAvailabilityUrlAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        var amazonId = FirstNonEmpty(
+            intent.AmazonId,
+            EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout));
+        if (!string.IsNullOrWhiteSpace(amazonId))
+        {
+            intent.AmazonId = amazonId;
+            return $"https://music.amazon.com/tracks/{amazonId}";
+        }
+
+        var resolved = await _amazonMusicMetadataService.ResolveTrackAsync(
+            intent.Title,
+            intent.Artist,
+            intent.Album,
+            intent.DurationMs > 0 ? intent.DurationMs : null,
+            cancellationToken);
+        if (resolved is null || string.IsNullOrWhiteSpace(resolved.Id))
+        {
+            return null;
+        }
+
+        intent.AmazonId = resolved.Id;
+        return resolved.Url;
     }
 
     private static string? ResolveSpotifySourceUrl(string? sourceUrl, string? spotifyId)
@@ -1341,18 +1376,27 @@ public sealed class DownloadIntentService
 
     private async Task<EngineEnqueueOutcome> EnqueueAmazonAsync(EngineEnqueueRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.ResolvedSourceUrl))
+        var amazonId = FirstNonEmpty(
+            request.Intent.AmazonId,
+            EngineLinkParser.TryExtractAmazonTrackId(request.ResolvedSourceUrl, RegexTimeout),
+            EngineLinkParser.TryExtractAmazonTrackId(request.Intent.SourceUrl, RegexTimeout));
+        if (string.IsNullOrWhiteSpace(amazonId))
         {
             return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Amazon URL unavailable for this track.", Engine = request.Engine },
+                new DownloadIntentResult { Success = false, Message = "Amazon Music identity unavailable for this track.", Engine = request.Engine },
                 0);
         }
 
+        request.Intent.AmazonId = amazonId;
+        var sourceUrl = FirstNonEmpty(
+            request.ResolvedSourceUrl,
+            request.Intent.SourceUrl,
+            $"https://music.amazon.com/tracks/{amazonId}")!;
         var payload = new AmazonQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            request.ResolvedSourceUrl,
+            sourceUrl,
             string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
-            ResolveContentType(request.Intent.ContentType, request.ResolvedSourceUrl, TrackType, request.Intent.HasAtmos, request.SelectedQuality),
+            ResolveContentType(request.Intent.ContentType, sourceUrl, TrackType, request.Intent.HasAtmos, request.SelectedQuality),
             request.FallbackInfo.AutoSources,
             request.FallbackInfo.AutoIndex,
             request.FallbackInfo.FallbackPlan,
@@ -1360,7 +1404,8 @@ public sealed class DownloadIntentService
             request.DurationSeconds,
             request.PrimaryDestinationFolderId,
             request.UseAtmosStereoDual ? StereoType : string.Empty));
-        payload.Quality = request.SelectedQuality ?? "FLAC";
+        payload.Quality = request.SelectedQuality ?? "ULTRA_HD_FLAC";
+        payload.AmazonId = amazonId;
         ApplyIntentMetadata(payload, request.Intent);
 
         var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
@@ -2500,6 +2545,13 @@ public sealed class DownloadIntentService
         }
 
         await TryHydrateIntentIsrcFromBootstrapAsync(intent, bootstrap);
+        await TryHydrateIntentFromAmazonAsync(intent, cancellationToken);
+
+        var amazonDeezerResult = TryResolveAmazonMappedDeezerSource(intent, engine);
+        if (amazonDeezerResult.HasValue)
+        {
+            return amazonDeezerResult.Value;
+        }
 
         var settings = effectiveSettings ?? _settingsService.LoadSettings();
         var userCountry = settings.DeezerCountry;
@@ -2658,6 +2710,67 @@ public sealed class DownloadIntentService
         }
 
         intent.Isrc = await ResolveDeezerIsrcAsync(bootstrap.NormalizedDeezerId) ?? string.Empty;
+    }
+
+    private async Task TryHydrateIntentFromAmazonAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        var amazonId = FirstNonEmpty(
+            intent.AmazonId,
+            EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout));
+        if (string.IsNullOrWhiteSpace(amazonId))
+        {
+            return;
+        }
+
+        intent.AmazonId = amazonId;
+        if (string.IsNullOrWhiteSpace(intent.Title)
+            || string.IsNullOrWhiteSpace(intent.Artist)
+            || string.IsNullOrWhiteSpace(intent.Album)
+            || intent.DurationMs <= 0)
+        {
+            var amazonTrack = await _amazonMusicMetadataService.GetTrackAsync(amazonId, cancellationToken);
+            if (amazonTrack is not null)
+            {
+                ApplyIntentStringValue(false, intent.Title, amazonTrack.Title, value => intent.Title = value);
+                ApplyIntentStringValue(false, intent.Artist, amazonTrack.Artist, value => intent.Artist = value);
+                ApplyIntentStringValue(false, intent.Album, amazonTrack.Album, value => intent.Album = value);
+                ApplyIntentStringValue(false, intent.Cover, amazonTrack.CoverUrl, value => intent.Cover = value);
+                ApplyIntentIntValue(false, intent.DurationMs, amazonTrack.DurationMs ?? 0, value => intent.DurationMs = value);
+                ApplyIntentStringValue(false, intent.SourceUrl, amazonTrack.Url, value => intent.SourceUrl = value);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.DeezerId))
+        {
+            intent.DeezerId = await ResolveDeezerTrackIdFromMetadataAsync(intent) ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Isrc))
+        {
+            var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
+            if (!string.IsNullOrWhiteSpace(normalizedDeezerId))
+            {
+                intent.DeezerId = normalizedDeezerId;
+                intent.Isrc = await ResolveDeezerIsrcAsync(normalizedDeezerId) ?? string.Empty;
+            }
+        }
+    }
+
+    private static (string Engine, string? SourceUrl, string Message, string MappingSource)? TryResolveAmazonMappedDeezerSource(
+        DownloadIntent intent,
+        string engine)
+    {
+        if (!string.Equals(engine, DeezerPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var normalizedDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
+        return string.IsNullOrWhiteSpace(normalizedDeezerId)
+            ? null
+            : (engine, $"https://www.deezer.com/track/{normalizedDeezerId}", string.Empty, "amazon-id-deezer-metadata");
     }
 
     private static bool IsStrictSpotifyDeezerMode(
@@ -3188,16 +3301,6 @@ public sealed class DownloadIntentService
         }
 
         var mappedUrl = ResolveSongLinkMappedUrl(songLink, engine, sourceUrl);
-        if (string.Equals(engine, AmazonPlatform, StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(mappedUrl))
-        {
-            var amazonUrl = await ResolveAmazonSongLinkFallbackAsync(intent, songLink, userCountry, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(amazonUrl))
-            {
-                return (true, amazonUrl, SonglinkSpotifyKey);
-            }
-        }
-
         if (!string.Equals(engine, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
         {
             return (true, mappedUrl ?? string.Empty, mappingSource);
@@ -3266,40 +3369,10 @@ public sealed class DownloadIntentService
             DeezerPlatform => songLink.DeezerUrl,
             ApplePlatform => songLink.AppleMusicUrl,
             TidalPlatform => songLink.TidalUrl,
-            AmazonPlatform => songLink.AmazonUrl,
+            AmazonPlatform => null,
             QobuzPlatform => songLink.QobuzUrl,
             _ => sourceUrl
         };
-
-    private async Task<string?> ResolveAmazonSongLinkFallbackAsync(
-        DownloadIntent intent,
-        SongLinkResult songLink,
-        string userCountry,
-        CancellationToken cancellationToken)
-    {
-        var spotifyId = string.IsNullOrWhiteSpace(intent.SpotifyId)
-            ? songLink.SpotifyId
-            : intent.SpotifyId;
-        if (!string.IsNullOrWhiteSpace(spotifyId))
-        {
-            var spotifyLink = await _songLinkResolver.ResolveSpotifyTrackAsync(spotifyId, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(spotifyLink?.AmazonUrl))
-            {
-                return spotifyLink.AmazonUrl;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(songLink.SpotifyUrl))
-        {
-            var spotifyLink = await _songLinkResolver.ResolveByUrlAsync(songLink.SpotifyUrl, userCountry, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(spotifyLink?.AmazonUrl))
-            {
-                return spotifyLink.AmazonUrl;
-            }
-        }
-
-        return null;
-    }
 
     private static string? TryExtractSpotifyId(string? sourceUrl)
     {
@@ -5132,7 +5205,7 @@ public sealed class DownloadIntentService
             DeezerPlatform => settings.MaxBitrate > 0 ? settings.MaxBitrate.ToString() : null,
             TidalPlatform => settings.TidalQuality,
             QobuzPlatform => settings.QobuzQuality,
-            AmazonPlatform => "FLAC",
+            AmazonPlatform => "ULTRA_HD_FLAC",
             _ => null
         };
 
@@ -5888,9 +5961,14 @@ public sealed class DownloadIntentService
             request.Settings.MultiQuality?.AtmosSearchFallback == true);
         foreach (var atmosEngine in atmosEngines)
         {
-            var queued = string.Equals(atmosEngine, TidalPlatform, StringComparison.OrdinalIgnoreCase)
-                ? await TryEnqueueTidalAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value)
-                : await TryEnqueueAppleAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value);
+            var queued = atmosEngine switch
+            {
+                var engine when string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase)
+                    => await TryEnqueueTidalAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value),
+                var engine when string.Equals(engine, AmazonPlatform, StringComparison.OrdinalIgnoreCase)
+                    => await TryEnqueueAmazonAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value),
+                _ => await TryEnqueueAppleAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value)
+            };
             if (queued)
             {
                 return true;
@@ -6046,17 +6124,78 @@ public sealed class DownloadIntentService
         return false;
     }
 
+    private async Task<bool> TryEnqueueAmazonAtmosSecondaryAsync(
+        AtmosSecondaryEnqueueRequest request,
+        long secondaryDestinationFolderId)
+    {
+        const string secondaryQuality = TidalAtmosQuality;
+        var amazonUrl = await ResolveAmazonAvailabilityUrlAsync(request.Intent, request.CancellationToken);
+        if (string.IsNullOrWhiteSpace(amazonUrl) || string.IsNullOrWhiteSpace(request.Intent.AmazonId))
+        {
+            _activityLog.Warn("Secondary Atmos mapping skipped: Amazon Music URL unavailable.");
+            return false;
+        }
+
+        var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
+        var autoSources = BuildAtmosAutoSources(request.Settings.MultiQuality, request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+        var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
+            request.Intent,
+            request.Settings,
+            AmazonPlatform,
+            secondaryQuality,
+            MusicIntent: IsMusicIntent(request.Intent),
+            AllowCrossEngineFallback: request.Settings.MultiQuality?.AtmosDownloadFallback == true,
+            UseAtmosStereoDual: false,
+            AutoSources: autoSources,
+            Availability: request.Availability));
+        var payload = new AmazonQueueItem();
+        PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
+            amazonUrl,
+            string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
+            DownloadContentTypes.Atmos,
+            fallbackInfo.AutoSources,
+            fallbackInfo.AutoIndex,
+            fallbackInfo.FallbackPlan,
+            string.Empty,
+            durationSeconds,
+            secondaryDestinationFolderId,
+            AtmosQuality));
+        payload.Quality = secondaryQuality;
+        payload.AmazonId = request.Intent.AmazonId;
+        payload.Id = Guid.NewGuid().ToString("N");
+        payload.QualityBucket = AtmosQuality;
+        ApplyIntentMetadata(payload, request.Intent);
+
+        var enqueueDecision = await EnqueueItemAsync(
+            payload,
+            request.BlockRules,
+            request.AllowQualityUpgrade,
+            ParseRequestedQualityRank(secondaryQuality),
+            request.CancellationToken);
+        if (enqueueDecision.Success)
+        {
+            request.Queued.Add(enqueueDecision.QueueUuid ?? payload.Id);
+            _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
+            return true;
+        }
+
+        return false;
+    }
+
     private static string[] ResolveAtmosEngineOrder(
         MultiQualityDownloadSettings? multiQuality,
         bool includeFallbackEngine)
     {
         var primary = NormalizeAtmosEngine(multiQuality?.AtmosEngine);
-        var secondary = string.Equals(primary, TidalPlatform, StringComparison.OrdinalIgnoreCase)
-            ? ApplePlatform
-            : TidalPlatform;
-        return includeFallbackEngine
-            ? new[] { primary, secondary }
-            : new[] { primary };
+        if (!includeFallbackEngine)
+        {
+            return new[] { primary };
+        }
+
+        var fallbackOrder = new[] { ApplePlatform, TidalPlatform, AmazonPlatform };
+        return new[] { primary }
+            .Concat(fallbackOrder.Where(engine => !string.Equals(engine, primary, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
     }
 
     private static List<string> BuildAtmosAutoSources(
@@ -6070,13 +6209,25 @@ public sealed class DownloadIntentService
 
     private static string NormalizeAtmosEngine(string? engine)
     {
-        return string.Equals(engine?.Trim(), TidalPlatform, StringComparison.OrdinalIgnoreCase)
-            ? TidalPlatform
-            : ApplePlatform;
+        var normalized = engine?.Trim();
+        if (string.Equals(normalized, TidalPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return TidalPlatform;
+        }
+
+        if (string.Equals(normalized, AmazonPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return AmazonPlatform;
+        }
+
+        return ApplePlatform;
     }
 
     private static string ResolveAtmosQualityForEngine(string engine)
-        => string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase) ? TidalAtmosQuality : AtmosQualityUpper;
+        => string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase)
+           || string.Equals(engine, AmazonPlatform, StringComparison.OrdinalIgnoreCase)
+            ? TidalAtmosQuality
+            : AtmosQualityUpper;
 
     private static string? TryExtractTidalTrackId(string? sourceUrl)
     {

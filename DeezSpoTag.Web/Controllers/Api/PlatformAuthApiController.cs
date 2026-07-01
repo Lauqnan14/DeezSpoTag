@@ -30,6 +30,13 @@ public sealed class BoomplayLoginRequest
     public string? SessionId { get; set; }
 }
 
+public sealed class AmazonMusicLoginRequest
+{
+    public string? Host { get; set; }
+    public string? Locale { get; set; }
+    public string? Cookie { get; set; }
+}
+
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/platform-auth")]
@@ -96,6 +103,7 @@ public class PlatformAuthApiController : ControllerBase
             appleMusic = state.AppleMusic,
             qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
             tidal = ToPublicTidal(state.Tidal, tidalProviders),
+            amazonMusic = ToPublicAmazonMusic(state.AmazonMusic),
             soulseek = ToPublicSoulseek(state.Soulseek),
             boomplay = ToPublicBoomplay(state.Boomplay)
         });
@@ -476,6 +484,35 @@ public class PlatformAuthApiController : ControllerBase
         });
 
         return Ok(new { saved = true, boomplay = ToPublicBoomplay(boomplay) });
+    }
+
+    [HttpPost("amazonmusic")]
+    public async Task<IActionResult> SaveAmazonMusic([FromBody] AmazonMusicLoginRequest request)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        if (request is null) return BadRequest("Amazon Music session details are required.");
+
+        var currentState = await _authService.LoadAsync();
+        var previous = currentState.AmazonMusic;
+        var host = NormalizeAmazonHost(request.Host);
+        var locale = string.IsNullOrWhiteSpace(request.Locale) ? previous?.Locale : request.Locale.Trim();
+        var cookie = ResolveSubmittedSecret(request.Cookie, previous?.Cookie);
+
+        var amazonMusic = await _authService.UpdateAsync(state =>
+        {
+            state.AmazonMusic = new AmazonMusicAuth
+            {
+                Host = host,
+                Locale = string.IsNullOrWhiteSpace(locale) ? "en_US" : locale,
+                Cookie = cookie,
+                SavedAt = DateTimeOffset.UtcNow
+            };
+
+            return state.AmazonMusic;
+        });
+
+        return Ok(new { saved = true, amazonMusic = ToPublicAmazonMusic(amazonMusic) });
     }
 
     [HttpPost("lastfm")]
@@ -985,6 +1022,9 @@ public class PlatformAuthApiController : ControllerBase
                 case "tidal":
                     state.Tidal = null;
                     break;
+                case "amazonmusic":
+                    state.AmazonMusic = null;
+                    break;
                 case "soulseek":
                     state.Soulseek = null;
                     break;
@@ -1015,8 +1055,33 @@ public class PlatformAuthApiController : ControllerBase
             or "applemusic"
             or "qobuz"
             or "tidal"
+            or "amazonmusic"
             or "soulseek"
             or "boomplay";
+    }
+
+    private static object ToPublicAmazonMusic(AmazonMusicAuth? auth)
+    {
+        var configured = auth is not null
+            && (!string.IsNullOrWhiteSpace(auth.Host) || !string.IsNullOrWhiteSpace(auth.Cookie));
+        return new
+        {
+            host = auth?.Host ?? "music.amazon.com",
+            locale = auth?.Locale ?? "en_US",
+            cookieSaved = !string.IsNullOrWhiteSpace(auth?.Cookie),
+            configured,
+            connected = configured,
+            savedAt = auth?.SavedAt
+        };
+    }
+
+    private static string NormalizeAmazonHost(string? value)
+    {
+        var host = (value ?? "music.amazon.com").Trim();
+        host = host.Replace("https://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("http://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Trim('/');
+        return string.IsNullOrWhiteSpace(host) ? "music.amazon.com" : host;
     }
 
     private UnauthorizedObjectResult? EnsureAccess()

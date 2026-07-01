@@ -102,7 +102,9 @@ public static class QualityCatalog
             },
             ["amazon"] = new[]
             {
-                new QualityOption("FLAC", "Amazon FLAC")
+                new QualityOption("ULTRA_HD_FLAC", "Ultra HD FLAC"),
+                new QualityOption("HD_FLAC", "HD FLAC"),
+                new QualityOption("OPUS", "Opus")
             },
             ["qobuz"] = new[]
             {

@@ -963,7 +963,8 @@ DeezSpoTag.DownloadClient = {
             urlPredicate: this.isAmazonUrl,
             buildBody: (ctx) => ({
                 tracks: [{ sourceUrl: ctx.url }],
-                destinationFolderId: ctx.destinationId
+                destinationFolderId: ctx.destinationId,
+                quality: ctx.intentContext.preferredQuality || 'ULTRA_HD_FLAC'
             })
         });
     },
