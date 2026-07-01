@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Services.Security;
 using Microsoft.AspNetCore.DataProtection;
@@ -14,6 +15,7 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     private const string MusicDlProviderKind = "musicdl";
     private const string UnknownStatus = "unknown";
     private readonly ProtectedCredentialFileStore _store;
+    private readonly IHttpClientFactory? _httpClientFactory;
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ILogger<QobuzPublicProviderRegistry> _logger;
@@ -22,9 +24,11 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     public QobuzPublicProviderRegistry(
         IWebHostEnvironment environment,
         IDataProtectionProvider dataProtectionProvider,
-        ILogger<QobuzPublicProviderRegistry> logger)
+        ILogger<QobuzPublicProviderRegistry> logger,
+        IHttpClientFactory? httpClientFactory = null)
     {
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
         _store = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
         _path = Path.Join(AppDataPaths.GetDataRoot(environment), "autotag", FileName);
     }
@@ -72,6 +76,16 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
         }
     }
 
+    public async Task<IReadOnlyList<QobuzPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken)
+    {
+        var providers = (await GetProvidersAsync(cancellationToken))
+            .Where(static provider => provider.Enabled)
+            .ToArray();
+
+        await Task.WhenAll(providers.Select(provider => CheckProviderAsync(provider, cancellationToken)));
+        return await GetProvidersAsync(cancellationToken);
+    }
+
     public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken)
         => UpdateHealthAsync(providerId, "online", null, responseTimeMs, null, cancellationToken);
 
@@ -111,6 +125,92 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
             _gate.Release();
         }
     }
+
+    private async Task CheckProviderAsync(QobuzPublicProvider provider, CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var category = await ProbeEndpointAsync(provider.Endpoint, cancellationToken);
+            stopwatch.Stop();
+            if (category is null)
+            {
+                await RecordSuccessAsync(provider.Id, stopwatch.ElapsedMilliseconds, cancellationToken);
+                return;
+            }
+
+            await RecordFailureAsync(provider.Id, category, stopwatch.ElapsedMilliseconds, ResolveCooldown(category), cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            stopwatch.Stop();
+            await RecordFailureAsync(provider.Id, "timeout", stopwatch.ElapsedMilliseconds, ResolveCooldown("timeout"), cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            stopwatch.Stop();
+            _logger.LogDebug(ex, "Qobuz public provider health check failed for {ProviderId}.", provider.Id);
+            await RecordFailureAsync(provider.Id, "transient", stopwatch.ElapsedMilliseconds, ResolveCooldown("transient"), cancellationToken);
+        }
+    }
+
+    private async Task<string?> ProbeEndpointAsync(string endpoint, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(6));
+        using var client = CreateHealthClient();
+        using var request = new HttpRequestMessage(HttpMethod.Head, endpoint);
+        using var response = await SendHealthRequestAsync(client, request, timeout.Token);
+
+        return ClassifyHealthResponse(response.StatusCode);
+    }
+
+    private HttpClient CreateHealthClient()
+    {
+        var client = _httpClientFactory?.CreateClient() ?? new HttpClient();
+        client.Timeout = TimeSpan.FromSeconds(8);
+        return client;
+    }
+
+    private static async Task<HttpResponseMessage> SendHealthRequestAsync(
+        HttpClient client,
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+        catch (HttpRequestException) when (request.Method == HttpMethod.Head)
+        {
+            using var getRequest = new HttpRequestMessage(HttpMethod.Get, request.RequestUri);
+            return await client.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+    }
+
+    private static string? ClassifyHealthResponse(System.Net.HttpStatusCode statusCode)
+    {
+        var numeric = (int)statusCode;
+        if (numeric is >= 200 and < 500 && statusCode != System.Net.HttpStatusCode.TooManyRequests)
+        {
+            return null;
+        }
+
+        return statusCode == System.Net.HttpStatusCode.TooManyRequests
+            ? "rate_limited"
+            : numeric >= 500
+                ? "transient"
+                : "offline";
+    }
+
+    private static DateTimeOffset? ResolveCooldown(string category)
+        => category is "rate_limited" or "timeout" or "transient"
+            ? DateTimeOffset.UtcNow.AddMinutes(3)
+            : null;
 
     private async Task<ProviderRegistryState> LoadNoLockAsync(CancellationToken cancellationToken)
     {

@@ -1131,7 +1131,7 @@ globalThis.DeezSpoTag = {
     platformDisplayOrder: [],
 
     connectedPlatformsRefreshIntervalMs: 300000,
-    publicApiStatusRefreshIntervalMs: 900000,
+    publicApiStatusRefreshIntervalMs: 180000,
     connectedPlatformsDeepProbeMinIntervalMs: 300000,
     connectedPlatformsCheapProbeMinIntervalMs: 30000,
     connectedPlatformsRefreshTimerId: null,
@@ -1330,7 +1330,7 @@ globalThis.DeezSpoTag = {
     },
 
     setPlatformPublicApiStatus(states, id, status, onlineCount = null) {
-        if (!states?.[id] || !['qobuz', 'tidal'].includes(id)) {
+        if (!states?.[id] || !['qobuz', 'tidal', 'amazonmusic'].includes(id)) {
             return;
         }
 
@@ -1383,7 +1383,7 @@ globalThis.DeezSpoTag = {
                     merged[id].reason = value.reason;
                 }
                 const publicApiStatus = String(value?.publicApiStatus || '').trim().toLowerCase();
-                if (['qobuz', 'tidal'].includes(id) && ['online', 'offline', 'unknown'].includes(publicApiStatus)) {
+                if (['qobuz', 'tidal', 'amazonmusic'].includes(id) && ['online', 'offline', 'unknown'].includes(publicApiStatus)) {
                     merged[id].publicApiStatus = publicApiStatus;
                     const parsedCount = Number(value?.publicApiOnlineCount);
                     merged[id].publicApiOnlineCount = Number.isInteger(parsedCount) && parsedCount >= 0
@@ -1637,16 +1637,16 @@ globalThis.DeezSpoTag = {
         }
 
         if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-            this.refreshPublicApiSidebarStatus();
+            this.refreshPublicApiSidebarStatus({ check: true });
         }
         this.publicApiStatusRefreshTimerId = globalThis.setInterval(() => {
             if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-                this.refreshPublicApiSidebarStatus();
+                this.refreshPublicApiSidebarStatus({ check: true });
             }
         }, this.publicApiStatusRefreshIntervalMs);
     },
 
-    async refreshPublicApiSidebarStatus() {
+    async refreshPublicApiSidebarStatus(options = {}) {
         if (document.visibilityState === 'hidden'
             || this.publicApiStatusRefreshInFlight
             || this.connectedPlatformsRefreshInFlight) {
@@ -1656,7 +1656,10 @@ globalThis.DeezSpoTag = {
         this.publicApiStatusRefreshInFlight = true;
         try {
             await this.ensurePlatformRegistryLoaded();
-            const response = await fetch('/api/platform-auth/public-providers/status', {
+            const endpoint = options?.check === true
+                ? '/api/platform-auth/public-providers/status?check=true'
+                : '/api/platform-auth/public-providers/status';
+            const response = await fetch(endpoint, {
                 cache: 'no-store',
                 credentials: 'same-origin',
                 headers: { Accept: 'application/json' }
@@ -1683,6 +1686,11 @@ globalThis.DeezSpoTag = {
                 'tidal',
                 data.tidal?.status,
                 data.tidal?.onlineCount);
+            this.setPlatformPublicApiStatus(
+                platformStates,
+                'amazonmusic',
+                data.amazonMusic?.status,
+                data.amazonMusic?.onlineCount);
 
             const connected = Object.entries(platformStates)
                 .filter(([, status]) => status?.active === true)
@@ -1956,6 +1964,12 @@ globalThis.DeezSpoTag = {
             'tidal',
             authData.tidal?.publicApiStatus,
             authData.tidal?.publicApiOnlineCount);
+        this.applyConnectedFlagState(authData.amazonMusic?.connected === true, connected, platformStates, 'amazonmusic', 'session', 'offline');
+        this.setPlatformPublicApiStatus(
+            platformStates,
+            'amazonmusic',
+            authData.amazonMusic?.publicApiStatus,
+            authData.amazonMusic?.publicApiOnlineCount);
         this.applyConnectedFlagState(
             authData.soulseek?.connected === true,
             connected,
@@ -2015,7 +2029,7 @@ globalThis.DeezSpoTag = {
             }
             const isActive = status?.active === true;
             const stateLabel = isActive ? 'Connected' : 'Not connected';
-            const publicApiStatus = ['qobuz', 'tidal'].includes(id)
+            const publicApiStatus = ['qobuz', 'tidal', 'amazonmusic'].includes(id)
                 && ['online', 'offline', 'unknown'].includes(status?.publicApiStatus)
                 ? status.publicApiStatus
                 : null;

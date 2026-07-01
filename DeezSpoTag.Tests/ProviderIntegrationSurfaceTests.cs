@@ -56,6 +56,9 @@ public sealed class ProviderIntegrationSurfaceTests
                 new("disabled", "Disabled provider", "musicdl", "https://example.com/disabled", null, false, "disabled", null, null, null, null, null, null)
             ]);
 
+        public Task<IReadOnlyList<QobuzPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken)
+            => GetProvidersAsync(cancellationToken);
+
         public Task<QobuzPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken) => Task.FromResult<QobuzPublicProvider?>(null);
         public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task RecordFailureAsync(string providerId, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken) => Task.CompletedTask;

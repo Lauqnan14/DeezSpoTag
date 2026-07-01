@@ -21,13 +21,13 @@ public sealed class PublicDownloadProviderBoundaryGuardrailTests
     }
 
     [Fact]
-    public void PublicDownloadProviders_AreNotCheckedFromLoginProviderStatusEndpoints()
+    public void PublicDownloadProviders_AreCheckedThroughExistingRegistries()
     {
         var controller = ReadSource("DeezSpoTag.Web/Controllers/Api/PlatformAuthApiController.cs");
 
         Assert.Contains("CheckQobuzProviders", controller, StringComparison.Ordinal);
         Assert.Contains("CheckTidalProviders", controller, StringComparison.Ordinal);
-        Assert.DoesNotContain("CheckPublicProvidersAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("CheckEnabledProvidersAsync", controller, StringComparison.Ordinal);
         Assert.DoesNotContain("QobuzDownloadService", controller, StringComparison.Ordinal);
         Assert.DoesNotContain("TidalDownloadService", controller, StringComparison.Ordinal);
     }

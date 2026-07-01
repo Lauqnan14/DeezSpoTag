@@ -3,6 +3,7 @@ using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
+using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Integrations.Deezer;
@@ -17,6 +18,7 @@ public sealed class PlatformAuthApiDependencies
     public required JellyfinApiClient JellyfinApiClient { get; init; }
     public required AppleMusicWrapperService AppleWrapperService { get; init; }
     public required QobuzAccountProfileService QobuzAccountProfileService { get; init; }
+    public required IAmazonPublicProviderRegistry AmazonPublicProviderRegistry { get; init; }
     public required IQobuzPublicProviderRegistry QobuzPublicProviderRegistry { get; init; }
     public required ITidalPublicProviderRegistry TidalPublicProviderRegistry { get; init; }
     public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
@@ -49,6 +51,7 @@ public class PlatformAuthApiController : ControllerBase
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly AppleMusicWrapperService _appleWrapperService;
     private readonly QobuzAccountProfileService _qobuzAccountProfileService;
+    private readonly IAmazonPublicProviderRegistry _amazonPublicProviderRegistry;
     private readonly IQobuzPublicProviderRegistry _qobuzPublicProviderRegistry;
     private readonly ITidalPublicProviderRegistry _tidalPublicProviderRegistry;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
@@ -62,6 +65,7 @@ public class PlatformAuthApiController : ControllerBase
         _jellyfinApiClient = dependencies.JellyfinApiClient;
         _appleWrapperService = dependencies.AppleWrapperService;
         _qobuzAccountProfileService = dependencies.QobuzAccountProfileService;
+        _amazonPublicProviderRegistry = dependencies.AmazonPublicProviderRegistry;
         _qobuzPublicProviderRegistry = dependencies.QobuzPublicProviderRegistry;
         _tidalPublicProviderRegistry = dependencies.TidalPublicProviderRegistry;
         _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
@@ -87,6 +91,7 @@ public class PlatformAuthApiController : ControllerBase
             state = await RefreshQobuzAccountAsync(state, cancellationToken);
             state = await RefreshSoulseekConnectionAsync(state, cancellationToken);
         }
+        var amazonProviders = await GetPublicAmazonProvidersAsync(cancellationToken);
         var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
         var tidalProviders = await GetPublicTidalProvidersAsync(cancellationToken);
 
@@ -103,10 +108,44 @@ public class PlatformAuthApiController : ControllerBase
             appleMusic = state.AppleMusic,
             qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
             tidal = ToPublicTidal(state.Tidal, tidalProviders),
-            amazonMusic = ToPublicAmazonMusic(state.AmazonMusic),
+            amazonMusic = ToPublicAmazonMusic(state.AmazonMusic, amazonProviders),
             soulseek = ToPublicSoulseek(state.Soulseek),
             boomplay = ToPublicBoomplay(state.Boomplay)
         });
+    }
+
+    [HttpGet("amazonmusic/providers")]
+    public async Task<IActionResult> GetAmazonMusicProviders(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        return Ok(await GetPublicAmazonProvidersAsync(cancellationToken));
+    }
+
+    [HttpPut("amazonmusic/providers/{providerId}/enabled")]
+    public async Task<IActionResult> SetAmazonMusicProviderEnabled(
+        string providerId,
+        [FromBody] AmazonProviderEnabledRequest request,
+        CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        if (request.Enabled is not { } enabled)
+        {
+            return BadRequest("Enabled is required.");
+        }
+
+        var updated = await _amazonPublicProviderRegistry.SetEnabledAsync(providerId, enabled, cancellationToken);
+        return updated is null ? NotFound("Unknown Amazon provider.") : Ok(ToPublicAmazonProvider(updated));
+    }
+
+    [HttpPost("amazonmusic/providers/check")]
+    public async Task<IActionResult> CheckAmazonMusicProviders(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        await _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
+        return Ok(await GetPublicAmazonProvidersAsync(cancellationToken));
     }
 
     private async Task<PlatformAuthState> RefreshAppleWrapperStateAsync(PlatformAuthState state)
@@ -185,6 +224,7 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
+        await _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
         return Ok(await GetPublicTidalProvidersAsync(cancellationToken));
     }
 
@@ -218,19 +258,32 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
+        await _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
         return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
     }
 
     [HttpGet("public-providers/status")]
-    public async Task<IActionResult> GetPublicProviderStatus(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetPublicProviderStatus(
+        [FromQuery] bool check,
+        CancellationToken cancellationToken)
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
 
+        if (check)
+        {
+            await Task.WhenAll(
+                _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
+                _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
+                _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken));
+        }
+
+        var amazon = await GetPublicAmazonProvidersAsync(cancellationToken);
         var qobuz = await GetPublicQobuzProvidersAsync(cancellationToken);
         var tidal = await GetPublicTidalProvidersAsync(cancellationToken);
         return Ok(new
         {
+            amazonMusic = new { status = amazon.Status, onlineCount = amazon.OnlineCount },
             qobuz = new { status = qobuz.Status, onlineCount = qobuz.OnlineCount },
             tidal = new { status = tidal.Status, onlineCount = tidal.OnlineCount }
         });
@@ -487,7 +540,7 @@ public class PlatformAuthApiController : ControllerBase
     }
 
     [HttpPost("amazonmusic")]
-    public async Task<IActionResult> SaveAmazonMusic([FromBody] AmazonMusicLoginRequest request)
+    public async Task<IActionResult> SaveAmazonMusic([FromBody] AmazonMusicLoginRequest request, CancellationToken cancellationToken)
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
@@ -512,7 +565,8 @@ public class PlatformAuthApiController : ControllerBase
             return state.AmazonMusic;
         });
 
-        return Ok(new { saved = true, amazonMusic = ToPublicAmazonMusic(amazonMusic) });
+        var amazonProviders = await GetPublicAmazonProvidersAsync(cancellationToken);
+        return Ok(new { saved = true, amazonMusic = ToPublicAmazonMusic(amazonMusic, amazonProviders) });
     }
 
     [HttpPost("lastfm")]
@@ -1060,7 +1114,30 @@ public class PlatformAuthApiController : ControllerBase
             or "boomplay";
     }
 
-    private static object ToPublicAmazonMusic(AmazonMusicAuth? auth)
+    private async Task<AmazonProviderSummary> GetPublicAmazonProvidersAsync(CancellationToken cancellationToken)
+    {
+        var providers = (await _amazonPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicAmazonProvider).ToArray();
+        var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
+        var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
+        var online = onlineCount > 0;
+        return new AmazonProviderSummary(
+            online,
+            onlineCount,
+            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked)),
+            providers);
+    }
+
+    private static AmazonProviderView ToPublicAmazonProvider(AmazonPublicProvider provider)
+        => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
+
+    public sealed record AmazonProviderEnabledRequest(bool? Enabled);
+    private sealed record AmazonProviderSummary(bool Online, int OnlineCount, string Status, AmazonProviderView[] Providers);
+    private sealed record AmazonProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
+
+    private static bool IsChecked(AmazonProviderView provider)
+        => provider.LastCheckedAt.HasValue && provider.Status != "unknown";
+
+    private static object ToPublicAmazonMusic(AmazonMusicAuth? auth, AmazonProviderSummary providers)
     {
         var configured = auth is not null
             && (!string.IsNullOrWhiteSpace(auth.Host) || !string.IsNullOrWhiteSpace(auth.Cookie));
@@ -1071,7 +1148,11 @@ public class PlatformAuthApiController : ControllerBase
             cookieSaved = !string.IsNullOrWhiteSpace(auth?.Cookie),
             configured,
             connected = configured,
-            savedAt = auth?.SavedAt
+            savedAt = auth?.SavedAt,
+            publicApiOnline = providers.Online,
+            publicApiStatus = providers.Status,
+            publicApiOnlineCount = providers.OnlineCount,
+            providers = providers.Providers
         };
     }
 

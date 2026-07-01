@@ -42,6 +42,7 @@ public sealed record TidalPublicProvider(
 public interface ITidalPublicProviderRegistry
 {
     Task<IReadOnlyList<TidalPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<TidalPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken);
     Task<TidalPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken);
     Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken);
     Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken);

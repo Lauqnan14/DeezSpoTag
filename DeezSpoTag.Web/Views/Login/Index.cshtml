@@ -536,6 +536,21 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "amazonMusicLoggedInInfo", ImageAlt = "Amazon Music", ImageSrc = "/images/icons/amazon-music.png", ImageCssClass = "h-20 w-20", ButtonId = "amazonMusicDisconnectBtn", NameId = "amazonMusicLoggedInName", NameFallback = initialAmazonMusicName, DetailId = "amazonMusicLoggedInStatus", DetailText = initialAmazonMusicStatus, WrapperCssClass = initialAmazonMusicConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
+                <section class="qobuz-provider-panel" aria-labelledby="amazonMusicProviderHeading">
+                    <div class="qobuz-provider-panel__header">
+                        <div>
+                            <h4 id="amazonMusicProviderHeading">Public API Providers</h4>
+                            <p class="text-muted" id="amazonMusicProviderSummary">Provider status has not been loaded.</p>
+                        </div>
+                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="amazonMusicProviderToggle" type="button" aria-expanded="false">Edit providers</button>
+                    </div>
+                    <div class="qobuz-provider-editor" id="amazonMusicProviderEditor" hidden>
+                        <div class="qobuz-provider-editor__actions">
+                            <button class="btn btn-primary action-btn action-btn-sm" id="amazonMusicCheckProvidersBtn" type="button">Check now</button>
+                        </div>
+                        <div id="amazonMusicProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                    </div>
+                </section>
             </div>
         </div>
 
@@ -1843,7 +1858,6 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!toggle) return;
             await setQobuzProviderEnabled(toggle.dataset.qobuzProviderId, toggle.checked, toggle);
         });
-        window.setInterval(refreshQobuzProviderView, 60_000);
     }
 
     bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
@@ -1855,7 +1869,17 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!toggle) return;
             await setTidalProviderEnabled(toggle.dataset.tidalProviderId, toggle.checked, toggle);
         });
-        window.setInterval(refreshTidalProviderView, 60_000);
+    }
+
+    bindProviderPanelToggle('amazonMusicProviderToggle', 'amazonMusicProviderEditor');
+    bindAsyncClick('amazonMusicCheckProvidersBtn', checkAmazonMusicProviders);
+    const amazonMusicProviderRows = document.getElementById('amazonMusicProviderRows');
+    if (amazonMusicProviderRows) {
+        amazonMusicProviderRows.addEventListener('change', async function(event) {
+            const toggle = event.target.closest('[data-amazon-music-provider-id]');
+            if (!toggle) return;
+            await setAmazonMusicProviderEnabled(toggle.dataset.amazonMusicProviderId, toggle.checked, toggle);
+        });
     }
 
     const tidalForm = document.getElementById('tidalLoginForm');
@@ -3051,24 +3075,6 @@ async function checkQobuzProviders() {
     }
 }
 
-async function refreshQobuzProviderView() {
-    const qobuzPane = document.getElementById('qobuz-login');
-    if (document.hidden || !qobuzPane || qobuzPane.hidden) return;
-
-    try {
-        const response = await fetch('/api/platform-auth/qobuz/providers', {
-            cache: 'no-store',
-            credentials: 'same-origin',
-            headers: { Accept: 'application/json' }
-        });
-        if (!response.ok) return;
-        const result = await response.json();
-        renderQobuzProviders(result?.providers || [], result?.online === true);
-    } catch (error) {
-        console.warn('Failed to refresh Qobuz provider status', error);
-    }
-}
-
 function renderTidalProviders(providers, publicApiOnline) {
     const container = document.getElementById('tidalProviderRows');
     const summary = document.getElementById('tidalProviderSummary');
@@ -3136,21 +3142,70 @@ async function checkTidalProviders() {
     }
 }
 
-async function refreshTidalProviderView() {
-    const tidalPane = document.getElementById('tidal-login');
-    if (document.hidden || !tidalPane || tidalPane.hidden) return;
+function renderAmazonMusicProviders(providers, publicApiOnline) {
+    const container = document.getElementById('amazonMusicProviderRows');
+    const summary = document.getElementById('amazonMusicProviderSummary');
+    if (!container || !summary) return;
 
+    const rows = Array.isArray(providers) ? providers : [];
+    const enabledCount = rows.filter(provider => provider?.enabled).length;
+    const onlineCount = rows.filter(provider => provider?.enabled && provider?.status === 'online').length;
+    summary.textContent = publicApiOnline
+        ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
+        : enabledCount === 0
+            ? 'All public API providers are disabled.'
+            : 'No enabled public API provider is currently confirmed online.';
+
+    container.replaceChildren(...rows.map(createAmazonMusicProviderRow));
+}
+
+function createAmazonMusicProviderRow(provider) {
+    const row = createQobuzProviderRow(provider);
+    const toggle = row.querySelector('[data-qobuz-provider-id]');
+    if (toggle) {
+        toggle.dataset.amazonMusicProviderId = provider?.id || '';
+        delete toggle.dataset.qobuzProviderId;
+        toggle.setAttribute('aria-label', `${toggle.checked ? 'Disable' : 'Enable'} ${provider?.name || 'Amazon provider'}`);
+    }
+    return row;
+}
+
+async function setAmazonMusicProviderEnabled(providerId, enabled, toggle) {
+    toggle.disabled = true;
     try {
-        const response = await fetch('/api/platform-auth/tidal/providers', {
-            cache: 'no-store',
+        const response = await fetch(`/api/platform-auth/amazonmusic/providers/${encodeURIComponent(providerId)}/enabled`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update Amazon provider'));
+        await loadPlatformAuthState();
+        refreshConnectedPlatformsSidebar();
+    } catch (error) {
+        toggle.checked = !enabled;
+        showToast(error.message || 'Failed to update Amazon provider', 'error');
+    } finally {
+        toggle.disabled = false;
+    }
+}
+
+async function checkAmazonMusicProviders() {
+    const button = document.getElementById('amazonMusicCheckProvidersBtn');
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch('/api/platform-auth/amazonmusic/providers/check', {
+            method: 'POST',
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         });
-        if (!response.ok) return;
-        const result = await response.json();
-        renderTidalProviders(result?.providers || [], result?.online === true);
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Amazon provider check failed'));
+        await loadPlatformAuthState();
+        refreshConnectedPlatformsSidebar();
     } catch (error) {
-        console.warn('Failed to refresh Tidal provider status', error);
+        showToast(error.message || 'Amazon provider check failed', 'error');
+    } finally {
+        if (button) button.disabled = false;
     }
 }
 
@@ -3208,6 +3263,7 @@ function renderAmazonMusicInfo(auth) {
             ? `${auth.host || 'music.amazon.com'} | ${auth.locale || 'en_US'}`
             : 'Amazon Music is not configured.';
     }
+    renderAmazonMusicProviders(auth?.providers || [], auth?.publicApiOnline === true);
 }
 
 function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {

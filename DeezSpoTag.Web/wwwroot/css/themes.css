@@ -1091,13 +1091,15 @@ textarea::placeholder {
 }
 
 .connected-platform-icon--platform-qobuz.connected-platform-icon--inactive[class*="connected-platform-icon--api-"],
-.connected-platform-icon--platform-tidal.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] {
+.connected-platform-icon--platform-tidal.connected-platform-icon--inactive[class*="connected-platform-icon--api-"],
+.connected-platform-icon--platform-amazonmusic.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] {
     opacity: 1;
     filter: none;
 }
 
 .connected-platform-icon--platform-qobuz.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] img,
-.connected-platform-icon--platform-tidal.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] img {
+.connected-platform-icon--platform-tidal.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] img,
+.connected-platform-icon--platform-amazonmusic.connected-platform-icon--inactive[class*="connected-platform-icon--api-"] img {
     opacity: 0.45;
 }
 

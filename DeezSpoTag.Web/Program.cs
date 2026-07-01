@@ -1394,12 +1394,14 @@ public partial class Program
                 JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
                 AppleWrapperService = sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>(),
                 QobuzAccountProfileService = sp.GetRequiredService<DeezSpoTag.Web.Services.QobuzAccountProfileService>(),
+                AmazonPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Amazon.IAmazonPublicProviderRegistry>(),
                 QobuzPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry>(),
                 TidalPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalPublicProviderRegistry>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
                 SoulseekConnectionService = sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekConnectionService>(),
                 DeezerSessionManager = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>()
             });
+        services.AddSingleton<DeezSpoTag.Integrations.Amazon.IAmazonPublicProviderRegistry, DeezSpoTag.Web.Services.AmazonPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthQobuzCredentialProvider>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry, DeezSpoTag.Web.Services.QobuzPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Integrations.Tidal.ITidalCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthTidalCredentialProvider>();

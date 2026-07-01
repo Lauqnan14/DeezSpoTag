@@ -100,6 +100,9 @@ public sealed class TidalApiProviderSourceTests
         public Task<IReadOnlyList<TidalPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<TidalPublicProvider>>(_providers.ToArray());
 
+        public Task<IReadOnlyList<TidalPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken)
+            => GetProvidersAsync(cancellationToken);
+
         public Task<TidalPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken)
         {
             var index = _providers.FindIndex(provider => provider.Id == providerId);

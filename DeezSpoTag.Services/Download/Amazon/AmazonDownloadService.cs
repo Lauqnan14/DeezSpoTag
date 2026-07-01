@@ -7,6 +7,7 @@ using DeezSpoTag.Services.Download;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download.Utils;
 using System.Diagnostics;
+using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Services.Download.Shared.Utils;
 
 namespace DeezSpoTag.Services.Download.Amazon;
@@ -26,11 +27,14 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     };
 
     private readonly ILogger<AmazonDownloadService> _logger;
+    private readonly IAmazonPublicProviderRegistry _publicProviderRegistry;
     private readonly HttpClient _client;
     public AmazonDownloadService(
-        ILogger<AmazonDownloadService> logger)
+        ILogger<AmazonDownloadService> logger,
+        IAmazonPublicProviderRegistry publicProviderRegistry)
     {
         _logger = logger;
+        _publicProviderRegistry = publicProviderRegistry;
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromMinutes(2)
@@ -127,28 +131,103 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         }
 
         var codec = ResolveAmazonCodec(quality);
-        var apiUrl = $"https://api.zarz.moe/v1/media?asin={Uri.EscapeDataString(asin)}&codec={Uri.EscapeDataString(codec)}";
-        using var request = CreateGetRequestWithRandomUserAgent(apiUrl);
-        using var response = await _client.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        var providers = (await _publicProviderRegistry.GetProvidersAsync(cancellationToken))
+            .Where(static provider => provider.Enabled)
+            .ToArray();
+        if (providers.Length == 0)
         {
-            throw new InvalidOperationException($"Amazon download API failed ({(int)response.StatusCode}).");
+            throw new InvalidOperationException("No enabled Amazon public download API provider.");
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        var media = DeserializeZarzMedia(body);
-        if (string.IsNullOrWhiteSpace(media?.Audio?.Url))
+        Exception? lastError = null;
+        foreach (var provider in providers)
         {
-            throw new InvalidOperationException("Amazon download URL not available.");
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var apiUrl = BuildAmazonMediaApiUrl(provider.Endpoint, asin, codec);
+                using var request = CreateGetRequestWithRandomUserAgent(apiUrl);
+                using var response = await _client.SendAsync(request, cancellationToken);
+                stopwatch.Stop();
+                if (!response.IsSuccessStatusCode)
+                {
+                    var category = ClassifyDownloadFailure(response.StatusCode);
+                    await _publicProviderRegistry.RecordFailureAsync(provider.Id, category, stopwatch.ElapsedMilliseconds, cancellationToken);
+                    lastError = new InvalidOperationException($"Amazon download API failed ({(int)response.StatusCode}).");
+                    continue;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                var media = DeserializeZarzMedia(body);
+                if (string.IsNullOrWhiteSpace(media?.Audio?.Url))
+                {
+                    await _publicProviderRegistry.RecordFailureAsync(provider.Id, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
+                    lastError = new InvalidOperationException("Amazon download URL not available.");
+                    continue;
+                }
+
+                await _publicProviderRegistry.RecordSuccessAsync(provider.Id, stopwatch.ElapsedMilliseconds, cancellationToken);
+                var extension = ResolveAmazonExtension(codec, media.Audio.Codec, media.Audio.Url);
+                var encryptedPath = Path.Join(outputDir, $"{Guid.NewGuid():N}{extension}");
+                await DownloadFileAsync(media.Audio.Url, encryptedPath, progressCallback, cancellationToken);
+                return string.IsNullOrWhiteSpace(media.Audio.Key)
+                    ? encryptedPath
+                    : await DecryptAmazonMediaAsync(encryptedPath, media.Audio.Key, outputDir, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (HttpRequestException ex)
+            {
+                stopwatch.Stop();
+                _logger.LogDebug(ex, "Amazon public provider download failed for {ProviderId}.", provider.Id);
+                await _publicProviderRegistry.RecordFailureAsync(provider.Id, "transient", stopwatch.ElapsedMilliseconds, cancellationToken);
+                lastError = ex;
+            }
+            catch (JsonException ex)
+            {
+                stopwatch.Stop();
+                _logger.LogDebug(ex, "Amazon public provider returned invalid JSON for {ProviderId}.", provider.Id);
+                await _publicProviderRegistry.RecordFailureAsync(provider.Id, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
+                lastError = new InvalidOperationException("Amazon download API returned invalid media metadata.", ex);
+            }
+            catch (IOException ex)
+            {
+                stopwatch.Stop();
+                _logger.LogDebug(ex, "Amazon public provider download IO failed for {ProviderId}.", provider.Id);
+                await _publicProviderRegistry.RecordFailureAsync(provider.Id, "transient", stopwatch.ElapsedMilliseconds, cancellationToken);
+                lastError = ex;
+            }
+            catch (InvalidOperationException ex)
+            {
+                stopwatch.Stop();
+                _logger.LogDebug(ex, "Amazon public provider download failed for {ProviderId}.", provider.Id);
+                await _publicProviderRegistry.RecordFailureAsync(provider.Id, "transient", stopwatch.ElapsedMilliseconds, cancellationToken);
+                lastError = ex;
+            }
         }
 
-        var extension = ResolveAmazonExtension(codec, media.Audio.Codec, media.Audio.Url);
-        var encryptedPath = Path.Join(outputDir, $"{Guid.NewGuid():N}{extension}");
-        await DownloadFileAsync(media.Audio.Url, encryptedPath, progressCallback, cancellationToken);
-        return string.IsNullOrWhiteSpace(media.Audio.Key)
-            ? encryptedPath
-            : await DecryptAmazonMediaAsync(encryptedPath, media.Audio.Key, outputDir, cancellationToken);
+        throw lastError ?? new InvalidOperationException("Amazon download URL not available.");
     }
+
+    private static string BuildAmazonMediaApiUrl(string endpoint, string asin, string codec)
+    {
+        var baseEndpoint = (endpoint ?? string.Empty).Trim().TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(baseEndpoint))
+        {
+            throw new InvalidOperationException("Amazon public download API endpoint is not configured.");
+        }
+
+        return $"{baseEndpoint}/media?asin={Uri.EscapeDataString(asin)}&codec={Uri.EscapeDataString(codec)}";
+    }
+
+    private static string ClassifyDownloadFailure(System.Net.HttpStatusCode statusCode)
+        => statusCode == System.Net.HttpStatusCode.TooManyRequests
+            ? "rate_limited"
+            : (int)statusCode >= 500
+                ? "transient"
+                : "offline";
 
     private static string ResolveAmazonCodec(string? quality)
         => (quality ?? string.Empty).Trim().ToUpperInvariant() switch

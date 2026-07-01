@@ -1,28 +1,28 @@
-using System.Text.Json;
 using System.Diagnostics;
-using DeezSpoTag.Integrations.Tidal;
+using System.Text.Json;
+using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Services.Security;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
+public sealed class AmazonPublicProviderRegistry : IAmazonPublicProviderRegistry
 {
-    private const string ProtectionPurpose = "DeezSpoTag.Tidal.PublicProviders";
-    private const string FileName = "tidal-public-providers.json";
+    private const string ProtectionPurpose = "DeezSpoTag.Amazon.PublicProviders";
+    private const string FileName = "amazon-public-providers.json";
     private const string DisabledStatus = "disabled";
     private const string UnknownStatus = "unknown";
     private readonly ProtectedCredentialFileStore _store;
     private readonly IHttpClientFactory? _httpClientFactory;
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly ILogger<TidalPublicProviderRegistry> _logger;
+    private readonly ILogger<AmazonPublicProviderRegistry> _logger;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
-    public TidalPublicProviderRegistry(
+    public AmazonPublicProviderRegistry(
         IWebHostEnvironment environment,
         IDataProtectionProvider dataProtectionProvider,
-        ILogger<TidalPublicProviderRegistry> logger,
+        ILogger<AmazonPublicProviderRegistry> logger,
         IHttpClientFactory? httpClientFactory = null)
     {
         _logger = logger;
@@ -31,7 +31,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         _path = Path.Join(AppDataPaths.GetDataRoot(environment), "autotag", FileName);
     }
 
-    public async Task<IReadOnlyList<TidalPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<AmazonPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -44,7 +44,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         }
     }
 
-    public async Task<TidalPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken)
+    public async Task<AmazonPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -63,7 +63,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         }
     }
 
-    public async Task<IReadOnlyList<TidalPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<AmazonPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken)
     {
         var providers = (await GetProvidersAsync(cancellationToken))
             .Where(static provider => provider.Enabled)
@@ -73,14 +73,14 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         return await GetProvidersAsync(cancellationToken);
     }
 
-    public Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken)
-        => UpdateHealthAsync(endpoint, "online", null, responseTimeMs, null, cancellationToken);
+    public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken)
+        => UpdateHealthAsync(providerId, "online", null, responseTimeMs, null, cancellationToken);
 
-    public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken)
-        => UpdateHealthAsync(endpoint, ResolveFailureStatus(category), category, responseTimeMs, ResolveCooldown(category), cancellationToken);
+    public Task RecordFailureAsync(string providerId, string category, long responseTimeMs, CancellationToken cancellationToken)
+        => UpdateHealthAsync(providerId, ResolveFailureStatus(category), category, responseTimeMs, ResolveCooldown(category), cancellationToken);
 
     private async Task UpdateHealthAsync(
-        string endpoint,
+        string providerId,
         string status,
         string? category,
         long responseTimeMs,
@@ -91,14 +91,12 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         try
         {
             var state = await LoadNoLockAsync(cancellationToken);
-            var normalized = NormalizeEndpoint(endpoint);
+            var normalized = NormalizeEndpoint(providerId);
             var provider = state.Providers.FirstOrDefault(item => string.Equals(item.Id, normalized, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(item.Endpoint, normalized, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(item.HealthEndpoint, normalized, StringComparison.OrdinalIgnoreCase));
-            if (provider is null)
-            {
-                return;
-            }
+            if (provider is null) return;
+
             var now = DateTimeOffset.UtcNow;
             provider.Status = provider.Enabled ? status : DisabledStatus;
             provider.LastCheckedAt = now;
@@ -115,7 +113,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         }
     }
 
-    private async Task CheckProviderAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
+    private async Task CheckProviderAsync(AmazonPublicProvider provider, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
         try
@@ -142,12 +140,12 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         catch (HttpRequestException ex)
         {
             stopwatch.Stop();
-            _logger.LogDebug(ex, "Tidal public provider health check failed for {ProviderId}.", provider.Id);
+            _logger.LogDebug(ex, "Amazon public provider health check failed for {ProviderId}.", provider.Id);
             await RecordFailureAsync(provider.Id, "transient", stopwatch.ElapsedMilliseconds, cancellationToken);
         }
     }
 
-    private async Task<string?> ProbeEndpointAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
+    private async Task<string?> ProbeEndpointAsync(AmazonPublicProvider provider, CancellationToken cancellationToken)
     {
         var endpoint = string.IsNullOrWhiteSpace(provider.HealthEndpoint)
             ? provider.Endpoint
@@ -155,9 +153,8 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(6));
         using var client = CreateHealthClient();
-        using var request = new HttpRequestMessage(HttpMethod.Head, endpoint);
-        using var response = await SendHealthRequestAsync(client, request, timeout.Token);
-
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         return ClassifyHealthResponse(response.StatusCode);
     }
 
@@ -166,22 +163,6 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         var client = _httpClientFactory?.CreateClient() ?? new HttpClient();
         client.Timeout = TimeSpan.FromSeconds(8);
         return client;
-    }
-
-    private static async Task<HttpResponseMessage> SendHealthRequestAsync(
-        HttpClient client,
-        HttpRequestMessage request,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        }
-        catch (HttpRequestException) when (request.Method == HttpMethod.Head)
-        {
-            using var getRequest = new HttpRequestMessage(HttpMethod.Get, request.RequestUri);
-            return await client.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        }
     }
 
     private static string? ClassifyHealthResponse(System.Net.HttpStatusCode statusCode)
@@ -211,9 +192,10 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Failed to load protected Tidal public provider registry.");
+                _logger.LogWarning(ex, "Failed to load protected Amazon public provider registry.");
             }
         }
+
         state ??= new RegistryState();
         var changed = ReconcileDefaults(state);
         if (changed || !File.Exists(_path)) await SaveNoLockAsync(state, cancellationToken);
@@ -228,7 +210,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
 
     private static bool ReconcileDefaults(RegistryState state)
     {
-        var definitions = TidalPublicProviderDefaults.Providers;
+        var definitions = AmazonPublicProviderDefaults.Providers;
         var allowedIds = definitions.Select(static definition => definition.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var changed = state.Providers.RemoveAll(provider => !allowedIds.Contains(provider.Id)) > 0;
 
@@ -263,7 +245,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         return changed;
     }
 
-    private static ProviderState CreateState(TidalPublicProviderDefinition definition)
+    private static ProviderState CreateState(AmazonPublicProviderDefinition definition)
         => new()
         {
             Id = definition.Id,
@@ -276,10 +258,10 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             Status = UnknownStatus
         };
 
-    private static TidalPublicProvider ToPublicProvider(ProviderState provider)
+    private static AmazonPublicProvider ToPublicProvider(ProviderState provider)
     {
         var status = provider.Enabled ? provider.Status : DisabledStatus;
-        return new TidalPublicProvider(
+        return new AmazonPublicProvider(
             provider.Id,
             provider.DisplayName,
             provider.Kind,
@@ -322,7 +304,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     {
         public string Id { get; set; } = string.Empty;
         public string DisplayName { get; set; } = string.Empty;
-        public string Kind { get; set; } = TidalPublicProviderDefaults.LegacyProviderKind;
+        public string Kind { get; set; } = AmazonPublicProviderDefaults.DownloadProviderKind;
         public string Endpoint { get; set; } = string.Empty;
         public string? HealthEndpoint { get; set; }
         public string? HealthServiceKey { get; set; }
