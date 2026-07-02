@@ -28,6 +28,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using DeezSpoTag.Web.Configuration;
+using DeezSpoTag.Web.Filters;
 using Microsoft.Net.Http.Headers;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.RateLimiting;
@@ -517,7 +518,7 @@ public partial class Program
         });
         services.AddControllersWithViews(options =>
         {
-            options.Filters.Add(new Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryTokenAttribute());
+            options.Filters.Add<ApiTokenAwareAntiforgeryFilter>();
         });
         services.AddRazorPages();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryPinUnlockService>();

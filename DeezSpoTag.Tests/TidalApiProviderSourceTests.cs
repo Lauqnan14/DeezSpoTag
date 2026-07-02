@@ -113,5 +113,6 @@ public sealed class TidalApiProviderSourceTests
 
         public Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

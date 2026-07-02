@@ -52,8 +52,8 @@ public sealed class ProviderIntegrationSurfaceTests
     {
         public Task<IReadOnlyList<QobuzPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<QobuzPublicProvider>>([
-                new("enabled", "Enabled provider", "musicdl", "https://example.com/enabled", null, true, "unknown", null, null, null, null, null, null),
-                new("disabled", "Disabled provider", "musicdl", "https://example.com/disabled", null, false, "disabled", null, null, null, null, null, null)
+                new("enabled", "Enabled provider", "zarz-v2", "https://example.com/enabled", null, null, null, true, "unknown", null, null, null, null, null, null),
+                new("disabled", "Disabled provider", "zarz-v2", "https://example.com/disabled", null, null, null, false, "disabled", null, null, null, null, null, null)
             ]);
 
         public Task<IReadOnlyList<QobuzPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken)
@@ -66,8 +66,41 @@ public sealed class ProviderIntegrationSurfaceTests
 
     private sealed class StubQobuzCredentialProvider : IQobuzCredentialProvider
     {
+        public StubQobuzCredentialProvider(
+            string appId = "app-id",
+            string authToken = "auth-token",
+            string appSecret = "app-secret")
+        {
+            Credentials = new QobuzOfficialCredentials(appId, authToken, appSecret);
+        }
+
+        private QobuzOfficialCredentials Credentials { get; }
+
         public Task<QobuzOfficialCredentials> GetCredentialsAsync(CancellationToken cancellationToken)
-            => Task.FromResult(new QobuzOfficialCredentials("app-id", "auth-token", "app-secret"));
+            => Task.FromResult(Credentials);
+    }
+
+    [Theory]
+    [InlineData("", "auth-token")]
+    [InlineData("app-secret", "")]
+    public async Task QobuzOfficialStreamResolution_SkipsOfficialPath_WhenPersonalCredentialsAreMissing(
+        string appSecret,
+        string authToken)
+    {
+        var service = new QobuzDownloadService(
+            NullLogger<QobuzDownloadService>.Instance,
+            Options.Create(new QobuzApiConfig()),
+            credentialProvider: new StubQobuzCredentialProvider(authToken: authToken, appSecret: appSecret),
+            publicProviderRegistry: new StubQobuzProviderRegistry());
+        var method = typeof(QobuzDownloadService).GetMethod(
+            "TryGetOfficialQobuzStreamUrlAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        var result = await Assert.IsAssignableFrom<Task<string?>>(method!.Invoke(service, [123L, "6", CancellationToken.None]));
+
+        Assert.Null(result);
     }
 
     [Fact]

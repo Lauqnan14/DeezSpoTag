@@ -13,7 +13,6 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/qobuz/download")]
 [Authorize]
-[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class QobuzDownloadApiController : ControllerBase
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);

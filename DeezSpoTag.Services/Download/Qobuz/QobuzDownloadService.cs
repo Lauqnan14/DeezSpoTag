@@ -40,6 +40,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const string ZarzExchangePath = "/session/exchange";
     private const string ZarzAppVersion = "qobuz-web@1.1.0";
     private const string ZarzPlatform = "extension";
+    private const string ZarzExtensionState = "qobuz-web";
+    private const string ZarzCallbackScheme = "spotiflac://session-grant";
     private const string ZarzScheme = "ZARZ-HMAC-V1";
     private const int ZarzTimeWindowSeconds = 300;
     private const string ZarzSessionFileName = "zarz-signed-session.json";
@@ -338,10 +340,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             return new ProviderDownloadAttempt(false, null);
         }
 
-        var downloadUrl = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
-        if (string.IsNullOrWhiteSpace(downloadUrl))
+        var resolution = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
+        if (string.IsNullOrWhiteSpace(resolution.DownloadUrl))
         {
-            return new ProviderDownloadAttempt(false, null);
+            return new ProviderDownloadAttempt(false, resolution.Failure);
         }
 
         try
@@ -350,7 +352,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             await NotifySelectedQualityAsync(request, qualityCode);
             await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
             {
-                DownloadUrl = downloadUrl,
+                DownloadUrl = resolution.DownloadUrl,
                 OutputPath = outputPath,
                 Request = request
             }, cancellationToken);
@@ -459,7 +461,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return new List<string> { string.IsNullOrWhiteSpace(quality) ? "6" : quality };
     }
 
-    private async Task<string?> TryResolveProviderAsync(
+    private sealed record ProviderResolutionAttempt(string? DownloadUrl, Exception? Failure);
+
+    private async Task<ProviderResolutionAttempt> TryResolveProviderAsync(
         ProviderCandidate provider,
         long trackId,
         string qualityCode,
@@ -479,7 +483,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             {
                 await _publicProviderRegistry.RecordFailureAsync(provider.Id, "empty_response", stopwatch.ElapsedMilliseconds, null, cancellationToken);
             }
-            return resolved;
+            return new ProviderResolutionAttempt(resolved, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -505,7 +509,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.Name),
                 trackId,
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
-            return null;
+            return new ProviderResolutionAttempt(null, ex);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -528,7 +532,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.Name),
                 trackId,
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
-            return null;
+            return new ProviderResolutionAttempt(null, ex);
         }
         finally
         {
@@ -658,9 +662,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             : credentials.AppId.Trim();
         var authToken = credentials.AuthToken?.Trim();
         var secret = credentials.AppSecret?.Trim();
-        if (string.IsNullOrWhiteSpace(secret))
+        if (string.IsNullOrWhiteSpace(secret) || string.IsNullOrWhiteSpace(authToken))
         {
-            throw new InvalidOperationException("Qobuz official credentials are missing. Configure the App ID and App Secret on the Login page.");
+            return null;
         }
 
         var apiBase = string.IsNullOrWhiteSpace(_qobuzConfig.ApiBase)
@@ -679,10 +683,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.TryAddWithoutValidation("x-app-id", appId);
-        if (!string.IsNullOrWhiteSpace(authToken))
-        {
-            request.Headers.TryAddWithoutValidation("x-user-auth-token", authToken);
-        }
+        request.Headers.TryAddWithoutValidation("x-user-auth-token", authToken);
         using var response = await SendProviderRequestAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -947,9 +948,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Query = string.Join('&', new Dictionary<string, string>
             {
                 ["install_id"] = installId,
-                ["app_version"] = ZarzAppVersion,
-                ["platform"] = ZarzPlatform,
-                ["callback_url"] = "https://api.zarz.moe/v2/session/callback"
+                ["app_version"] = ZarzAppVersion
             }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
         };
         using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
@@ -974,6 +973,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             return string.Empty;
         }
+        var verificationUrl = FirstNonEmpty(payload?.AuthUrl, payload?.ChallengeUrl);
+        if (!string.IsNullOrWhiteSpace(verificationUrl))
+        {
+            return verificationUrl;
+        }
+
         return !string.IsNullOrWhiteSpace(payload?.ChallengeId)
             ? BuildZarzChallengeUrl(payload.ChallengeId)
             : throw new InvalidOperationException("Qobuz session bootstrap did not return a verification challenge.");
@@ -1028,9 +1033,19 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static string BuildZarzChallengeUrl(string challengeId)
     {
+        var callbackQuery = string.Join('&', new Dictionary<string, string>
+        {
+            ["cb_version"] = "v2grant",
+            ["state"] = ZarzExtensionState
+        }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
+        var callback = $"{ZarzCallbackScheme}?{callbackQuery}";
         var builder = new UriBuilder(BuildZarzUri(ZarzChallengePath))
         {
-            Query = $"id={Uri.EscapeDataString(challengeId)}"
+            Query = string.Join('&', new Dictionary<string, string>
+            {
+                ["id"] = challengeId,
+                ["cb"] = callback
+            }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
         };
         return builder.Uri.ToString();
     }
@@ -1595,6 +1610,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private sealed class ZarzBootstrapResponse
     {
+        [JsonPropertyName("auth_url")]
+        public string? AuthUrl { get; set; }
+
+        [JsonPropertyName("challenge_url")]
+        public string? ChallengeUrl { get; set; }
+
         [JsonPropertyName("session_id")]
         public string? SessionId { get; set; }
 
