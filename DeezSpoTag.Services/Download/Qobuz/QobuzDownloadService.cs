@@ -214,6 +214,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             {
                 return;
             }
+            if (officialAttempt.Failure != null)
+            {
+                lastFailure = officialAttempt.Failure;
+            }
 
             var providers = await BuildOrderedProvidersAsync(trackId, qualityCode, cancellationToken);
             foreach (var provider in providers)
@@ -254,7 +258,25 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         string outputPath,
         CancellationToken cancellationToken)
     {
-        var downloadUrl = await TryResolveOfficialStreamUrlAsync(trackId, qualityCode, cancellationToken);
+        string? downloadUrl;
+        try
+        {
+            downloadUrl = await TryResolveOfficialStreamUrlAsync(trackId, qualityCode, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Qobuz official credentials failed for track {TrackId} quality {Quality}; trying public providers.",
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
+            return new ProviderDownloadAttempt(false, ex);
+        }
+
         if (string.IsNullOrWhiteSpace(downloadUrl))
         {
             return new ProviderDownloadAttempt(false, null);
@@ -746,19 +768,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             return await TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, cancellationToken);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(
-                ex,
-                "Qobuz official credentials failed for track {TrackId} quality {Quality}; trying public providers.",
-                trackId,
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
-            return null;
-        }
         finally
         {
             ProviderResolutionGate.Release();
@@ -994,6 +1003,19 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         if (LooksLikeHtml(body))
         {
             throw new InvalidOperationException($"{providerLabel} returned HTML instead of JSON.");
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (TryExtractProviderUrl(doc.RootElement, out directUrl))
+            {
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException($"{providerLabel} response was not valid JSON.");
         }
 
         return false;

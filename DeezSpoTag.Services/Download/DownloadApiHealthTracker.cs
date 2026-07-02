@@ -6,19 +6,14 @@ public interface IDownloadApiHealthTracker
 {
     void ReportSuccess(string engine);
 
-    void ReportFailure(string engine, string? reason);
-
     IReadOnlyList<string> PrioritizeSources(
         IEnumerable<string> encodedSources,
         string? protectedEngine = null,
         DateTimeOffset? now = null);
-
-    bool IsCoolingDown(string engine, string? protectedEngine = null, DateTimeOffset? now = null);
 }
 
 public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
 {
-    private static readonly TimeSpan FailureCooldown = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan RecentSuccessWindow = TimeSpan.FromMinutes(5);
     private readonly ConcurrentDictionary<string, HealthEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
 
@@ -33,25 +28,7 @@ public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
         var entry = _entries.GetOrAdd(normalized, static _ => new HealthEntry());
         lock (entry.Gate)
         {
-            entry.ConsecutiveFailures = 0;
             entry.LastSuccessUtc = DateTimeOffset.UtcNow;
-        }
-    }
-
-    public void ReportFailure(string engine, string? reason)
-    {
-        _ = reason;
-        var normalized = NormalizeEngine(engine);
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            return;
-        }
-
-        var entry = _entries.GetOrAdd(normalized, static _ => new HealthEntry());
-        lock (entry.Gate)
-        {
-            entry.ConsecutiveFailures++;
-            entry.LastFailureUtc = DateTimeOffset.UtcNow;
         }
     }
 
@@ -82,27 +59,15 @@ public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
             })
             .ToList();
 
-        if (ranked.Count == 0)
-        {
-            return sourceList;
-        }
-
-        var usable = ranked.Where(static source => source.Rank != SourceRank.CoolingDown).ToList();
-        if (usable.Count == 0)
-        {
-            usable = ranked;
-        }
-
-        return usable
+        return ranked.Count == 0
+            ? sourceList
+            : ranked
             .OrderBy(static source => source.Rank)
             .ThenByDescending(static source => source.LastSuccessUtc ?? DateTimeOffset.MinValue)
             .ThenBy(static source => source.OriginalIndex)
             .Select(static source => source.Encoded)
             .ToList();
     }
-
-    public bool IsCoolingDown(string engine, string? protectedEngine = null, DateTimeOffset? now = null)
-        => ResolveRank(engine, protectedEngine, now ?? DateTimeOffset.UtcNow) == SourceRank.CoolingDown;
 
     private SourceRank ResolveRank(string engine, string? protectedEngine, DateTimeOffset now)
     {
@@ -118,13 +83,6 @@ public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
 
         lock (entry.Gate)
         {
-            if (entry.ConsecutiveFailures > 0
-                && entry.LastFailureUtc.HasValue
-                && now - entry.LastFailureUtc.Value < FailureCooldown)
-            {
-                return SourceRank.CoolingDown;
-            }
-
             if (entry.LastSuccessUtc.HasValue
                 && now - entry.LastSuccessUtc.Value < RecentSuccessWindow)
             {
@@ -159,11 +117,7 @@ public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
     {
         public object Gate { get; } = new();
 
-        public int ConsecutiveFailures { get; set; }
-
         public DateTimeOffset? LastSuccessUtc { get; set; }
-
-        public DateTimeOffset? LastFailureUtc { get; set; }
     }
 
     private sealed record RankedSource(
@@ -179,7 +133,6 @@ public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
     private enum SourceRank
     {
         RecentSuccess = 0,
-        Neutral = 1,
-        CoolingDown = 2
+        Neutral = 1
     }
 }

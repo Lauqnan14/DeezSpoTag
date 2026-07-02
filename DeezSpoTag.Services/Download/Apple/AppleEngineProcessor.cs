@@ -206,13 +206,16 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         string message,
         CancellationToken stoppingToken)
     {
-        ClearPrefetchGate(next.QueueUuid);
         if (queueContext != null)
         {
             await HandleDownloadFailureAsync(next, queueContext.Payload, message, stoppingToken, CancellationToken.None);
             return;
         }
 
+        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+            next.QueueUuid,
+            TimeSpan.FromSeconds(15),
+            CancellationToken.None);
         await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, message, cancellationToken: CancellationToken.None);
         ScheduleRetryIfEligible(next.QueueUuid, message);
     }
@@ -647,7 +650,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         CancellationToken itemToken,
         string? quality = null)
     {
-        ClearPrefetchGate(next.QueueUuid);
         if (string.IsNullOrWhiteSpace(quality))
         {
             _activityLog.Warn($"Download failed (engine=apple): {next.QueueUuid} {reason}");
@@ -662,6 +664,17 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             return;
         }
 
+        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+            next.QueueUuid,
+            TimeSpan.FromSeconds(15),
+            itemToken);
+        await _queueRepository.UpdatePrefetchStateAsync(
+            next.QueueUuid,
+            "[]",
+            string.Empty,
+            FailedStatus,
+            "Audio download failed before prefetched assets could be finalized.",
+            itemToken);
         payload.ErrorMessage = reason;
         payload.Status = AppleDownloadStatus.Failed;
         await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, reason, cancellationToken: itemToken);

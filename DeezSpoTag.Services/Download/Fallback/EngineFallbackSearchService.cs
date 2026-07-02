@@ -1,7 +1,7 @@
 using System.Text.Json;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Tidal;
-using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Matching;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using Microsoft.Extensions.Logging;
@@ -34,60 +34,49 @@ public sealed record EngineFallbackSearchResult(
     string? ResolvedUrl,
     string ResolutionSource);
 
+public interface IAmazonFallbackTrackResolver
+{
+    Task<AmazonFallbackTrackResolution?> ResolveTrackAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        CancellationToken cancellationToken);
+}
+
+public sealed record AmazonFallbackTrackResolution(
+    string Id,
+    string Url);
+
 public sealed class EngineFallbackSearchService
 {
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
     private const string TidalEngine = "tidal";
+    private const string AmazonEngine = "amazon";
     private const string DefaultAppleStorefront = "us";
     private const string DefaultLanguage = "en-US";
     private static readonly string[] AppleFallbackStorefronts = ["us", "gb", "ca", "au"];
 
-    private readonly SongLinkResolver _songLinkResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly TidalDownloadService? _tidalDownloadService;
+    private readonly IAmazonFallbackTrackResolver? _amazonFallbackTrackResolver;
     private readonly ILogger<EngineFallbackSearchService> _logger;
 
     public EngineFallbackSearchService(
-        SongLinkResolver songLinkResolver,
         AppleMusicCatalogService appleCatalogService,
         ILogger<EngineFallbackSearchService> logger,
         QobuzTrackResolver? qobuzTrackResolver = null,
-        TidalDownloadService? tidalDownloadService = null)
+        TidalDownloadService? tidalDownloadService = null,
+        IAmazonFallbackTrackResolver? amazonFallbackTrackResolver = null)
     {
-        _songLinkResolver = songLinkResolver;
         _appleCatalogService = appleCatalogService;
         _logger = logger;
         _qobuzTrackResolver = qobuzTrackResolver;
         _tidalDownloadService = tidalDownloadService;
-    }
-
-    public async Task<string?> ResolveSpotifyIdAsync(
-        string sourceUrl,
-        string deezerId,
-        string userCountry,
-        CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(sourceUrl))
-        {
-            var sourceSongLink = await _songLinkResolver.ResolveByUrlAsync(sourceUrl, userCountry, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(sourceSongLink?.SpotifyId))
-            {
-                return sourceSongLink.SpotifyId;
-            }
-        }
-
-        var normalizedDeezerId = NormalizeDeezerTrackId(deezerId);
-        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
-        {
-            return null;
-        }
-
-        var deezerUrl = $"https://www.deezer.com/track/{normalizedDeezerId}";
-        var deezerSongLink = await _songLinkResolver.ResolveByUrlAsync(deezerUrl, userCountry, cancellationToken);
-        return deezerSongLink?.SpotifyId;
+        _amazonFallbackTrackResolver = amazonFallbackTrackResolver;
     }
 
     public async Task<EngineFallbackSearchResult> ResolveAsync(
@@ -106,47 +95,31 @@ public sealed class EngineFallbackSearchService
             return new EngineFallbackSearchResult($"https://www.deezer.com/track/{normalizedDeezerId}", "deezer-id");
         }
 
+        var qobuzId = EngineLinkParser.NormalizeNumericTrackId(request.QobuzId);
         if (string.Equals(request.Engine, QobuzEngine, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(request.QobuzId))
+            && !string.IsNullOrWhiteSpace(qobuzId))
         {
-            return new EngineFallbackSearchResult($"https://play.qobuz.com/track/{Uri.EscapeDataString(request.QobuzId.Trim())}", "qobuz-id");
+            return new EngineFallbackSearchResult($"https://play.qobuz.com/track/{qobuzId}", "qobuz-id");
         }
 
+        var tidalId = EngineLinkParser.NormalizeNumericTrackId(request.TidalId);
         if (string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(request.TidalId))
+            && !string.IsNullOrWhiteSpace(tidalId))
         {
-            return new EngineFallbackSearchResult($"https://tidal.com/browse/track/{Uri.EscapeDataString(request.TidalId.Trim())}", "tidal-id");
+            return new EngineFallbackSearchResult($"https://tidal.com/browse/track/{tidalId}", "tidal-id");
+        }
+
+        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(request.AmazonId);
+        if (string.Equals(request.Engine, AmazonEngine, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(amazonId))
+        {
+            return new EngineFallbackSearchResult($"https://music.amazon.com/tracks/{amazonId}", "amazon-id");
         }
 
         var appleUrl = await TryBuildAppleFallbackUrlAsync(request, cancellationToken);
         if (!string.IsNullOrWhiteSpace(appleUrl))
         {
             return new EngineFallbackSearchResult(appleUrl, "apple-catalog");
-        }
-
-        var songLink = await ResolveSongLinkFromDeezerAsync(normalizedDeezerId, request.UserCountry, cancellationToken);
-        var resolvedUrl = GetValidatedEngineUrl(songLink, request);
-        if (!string.IsNullOrWhiteSpace(resolvedUrl))
-        {
-            return new EngineFallbackSearchResult(resolvedUrl, "songlink-deezer");
-        }
-
-        (resolvedUrl, songLink) = await TryResolveFromSourceUrlAsync(request, songLink, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(resolvedUrl))
-        {
-            return new EngineFallbackSearchResult(resolvedUrl, "songlink-source-url");
-        }
-
-        (resolvedUrl, songLink) = await TryResolveFromSpotifyAsync(request, songLink, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(resolvedUrl))
-        {
-            return new EngineFallbackSearchResult(resolvedUrl, "songlink-spotify");
-        }
-
-        (resolvedUrl, _) = await TryResolveFromSpotifyFallbackSearchAsync(request, songLink, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(resolvedUrl))
-        {
-            return new EngineFallbackSearchResult(resolvedUrl, "songlink-spotify-deezer-search");
         }
 
         if (string.Equals(request.Engine, QobuzEngine, StringComparison.OrdinalIgnoreCase))
@@ -164,6 +137,15 @@ public sealed class EngineFallbackSearchService
             if (!string.IsNullOrWhiteSpace(tidalUrl))
             {
                 return new EngineFallbackSearchResult(tidalUrl, "tidal-metadata-search");
+            }
+        }
+
+        if (string.Equals(request.Engine, AmazonEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            var amazonUrl = await ResolveAmazonUrlAsync(request, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(amazonUrl))
+            {
+                return new EngineFallbackSearchResult(amazonUrl, "amazon-metadata-search");
             }
         }
 
@@ -220,6 +202,35 @@ public sealed class EngineFallbackSearchService
                 request.Isrc ?? string.Empty,
                 durationSeconds,
                 cancellationToken);
+    }
+
+    private async Task<string?> ResolveAmazonUrlAsync(
+        EngineFallbackSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_amazonFallbackTrackResolver == null
+            || string.IsNullOrWhiteSpace(request.Title)
+            || string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        var resolution = await _amazonFallbackTrackResolver.ResolveTrackAsync(
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.DurationMs,
+            cancellationToken);
+        if (resolution == null)
+        {
+            return null;
+        }
+
+        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(resolution.Id)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(resolution.Url, EngineLinkParser.RegexTimeout);
+        return string.IsNullOrWhiteSpace(amazonId)
+            ? null
+            : $"https://music.amazon.com/tracks/{amazonId}";
     }
 
     private static bool IsAtmosRequest(EngineFallbackSearchRequest request)
@@ -451,163 +462,6 @@ public sealed class EngineFallbackSearchService
         }
 
         return (int)Math.Round(validation.Score * 100d);
-    }
-
-    private async Task<SongLinkResult?> ResolveSongLinkFromDeezerAsync(
-        string? normalizedDeezerId,
-        string userCountry,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(normalizedDeezerId))
-        {
-            return null;
-        }
-
-        var deezerUrl = $"https://www.deezer.com/track/{normalizedDeezerId}";
-        return await _songLinkResolver.ResolveByUrlAsync(deezerUrl, userCountry, cancellationToken);
-    }
-
-    private async Task<(string? ResolvedUrl, SongLinkResult? SongLink)> TryResolveFromSourceUrlAsync(
-        EngineFallbackSearchRequest request,
-        SongLinkResult? currentSongLink,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(request.SourceUrl))
-        {
-            return (null, currentSongLink);
-        }
-
-        var sourceUrlSongLink = await _songLinkResolver.ResolveByUrlAsync(request.SourceUrl, request.UserCountry, cancellationToken);
-        return PreferSongLinkCandidate(request, currentSongLink, sourceUrlSongLink);
-    }
-
-    private async Task<(string? ResolvedUrl, SongLinkResult? SongLink)> TryResolveFromSpotifyAsync(
-        EngineFallbackSearchRequest request,
-        SongLinkResult? currentSongLink,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(request.SpotifyId))
-        {
-            return (null, currentSongLink);
-        }
-
-        var spotifySongLink = await _songLinkResolver.ResolveSpotifyTrackAsync(request.SpotifyId, cancellationToken);
-        return PreferSongLinkCandidate(request, currentSongLink, spotifySongLink);
-    }
-
-    private async Task<(string? ResolvedUrl, SongLinkResult? SongLink)> TryResolveFromSpotifyFallbackSearchAsync(
-        EngineFallbackSearchRequest request,
-        SongLinkResult? currentSongLink,
-        CancellationToken cancellationToken)
-    {
-        if (!request.FallbackSearchEnabled || string.IsNullOrWhiteSpace(request.SpotifyId))
-        {
-            return (null, currentSongLink);
-        }
-
-        var resolvedDeezerId = await _songLinkResolver.ResolveDeezerIdFromSpotifyAsync(request.SpotifyId, cancellationToken);
-        if (string.IsNullOrWhiteSpace(resolvedDeezerId))
-        {
-            return (null, currentSongLink);
-        }
-
-        var deezerUrl = $"https://www.deezer.com/track/{resolvedDeezerId}";
-        var resolvedDeezerSongLink = await _songLinkResolver.ResolveByUrlAsync(deezerUrl, request.UserCountry, cancellationToken);
-        return PreferSongLinkCandidate(request, currentSongLink, resolvedDeezerSongLink);
-    }
-
-    private static (string? ResolvedUrl, SongLinkResult? SongLink) PreferSongLinkCandidate(
-        EngineFallbackSearchRequest request,
-        SongLinkResult? currentSongLink,
-        SongLinkResult? candidateSongLink)
-    {
-        ApplyRequestIdentityIfMissing(request, candidateSongLink);
-        var candidateUrl = GetValidatedEngineUrl(candidateSongLink, request);
-        if (!string.IsNullOrWhiteSpace(candidateUrl) || currentSongLink == null)
-        {
-            return (candidateUrl, candidateSongLink);
-        }
-
-        return (null, currentSongLink);
-    }
-
-    private static void ApplyRequestIdentityIfMissing(
-        EngineFallbackSearchRequest request,
-        SongLinkResult? candidateSongLink)
-    {
-        if (candidateSongLink == null)
-        {
-            return;
-        }
-
-        candidateSongLink.Isrc = string.IsNullOrWhiteSpace(candidateSongLink.Isrc)
-            ? request.Isrc
-            : candidateSongLink.Isrc;
-        candidateSongLink.SourceTitle = string.IsNullOrWhiteSpace(candidateSongLink.SourceTitle)
-            ? request.Title
-            : candidateSongLink.SourceTitle;
-        candidateSongLink.SourceArtist = string.IsNullOrWhiteSpace(candidateSongLink.SourceArtist)
-            ? request.Artist
-            : candidateSongLink.SourceArtist;
-    }
-
-    private static string? GetValidatedEngineUrl(SongLinkResult? songLink, EngineFallbackSearchRequest request)
-    {
-        if (songLink == null)
-        {
-            return null;
-        }
-
-        var candidateUrl = GetEngineUrl(songLink, request.Engine);
-        if (string.IsNullOrWhiteSpace(candidateUrl))
-        {
-            return null;
-        }
-
-        var validation = TrackCandidateValidator.Validate(
-            new TrackMatchSource(
-                request.Isrc,
-                request.Title,
-                request.Artist,
-                request.Album,
-                request.DurationMs),
-            new TrackMatchCandidate(
-                candidateUrl,
-                songLink.Isrc,
-                songLink.SourceTitle,
-                songLink.SourceArtist,
-                null,
-                null),
-            new TrackCandidateValidationOptions(
-                StrictWithoutIsrc: true,
-                AllowMissingCandidateArtist: false,
-                RequireCandidateDurationWhenSourceHasDuration: false,
-                MaxIsrcDurationDifferenceMs: 20_000,
-                MaxMetadataDurationDifferenceMs: 8_000));
-        if (!validation.Accepted)
-        {
-            return null;
-        }
-
-        return candidateUrl;
-    }
-
-    private static string? GetEngineUrl(SongLinkResult? songLink, string engine)
-    {
-        if (songLink == null)
-        {
-            return null;
-        }
-
-        return engine switch
-        {
-            AppleEngine => songLink.AppleMusicUrl,
-            TidalEngine => songLink.TidalUrl,
-            "amazon" => null,
-            QobuzEngine => songLink.QobuzUrl,
-            DeezerEngine => songLink.DeezerUrl,
-            _ => null
-        };
     }
 
     private static string? ResolveSeedAppleId(EngineFallbackSearchRequest request)

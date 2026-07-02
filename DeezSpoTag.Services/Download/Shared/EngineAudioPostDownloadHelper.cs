@@ -1725,8 +1725,17 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         var prefetchPaths = BuildPrefetchPathContext(request.QueueUuid, request.Context, request.ExpectedOutputPath);
+        if (PrefetchGates.ContainsKey(prefetchPaths.QueueUuid))
+        {
+            return;
+        }
+
         var gateState = new PrefetchGateState();
-        PrefetchGates[prefetchPaths.QueueUuid] = gateState;
+        if (!PrefetchGates.TryAdd(prefetchPaths.QueueUuid, gateState))
+        {
+            gateState.Cancellation.Dispose();
+            return;
+        }
 
         QueuePrefetchStatusHelper.Send(
             request.Listener,
@@ -1810,7 +1819,7 @@ public static partial class EngineAudioPostDownloadHelper
             var lyricsTask = BuildLyricsPrefetchTask(execution, runState, token);
             await Task.WhenAll(artworkTask, lyricsTask);
             completionResult = BuildPrefetchCompletionResult(execution.Requirements, runState);
-            await PersistPrefetchPayloadStateAsync(provider, execution, token);
+            await PersistPrefetchPayloadStateAsync(provider, execution, runState, token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
@@ -1974,6 +1983,7 @@ public static partial class EngineAudioPostDownloadHelper
     private static async Task PersistPrefetchPayloadStateAsync(
         IServiceProvider provider,
         PrefetchExecutionContext execution,
+        PrefetchRunState runState,
         CancellationToken token)
     {
         try
@@ -1993,7 +2003,14 @@ public static partial class EngineAudioPostDownloadHelper
             var result = QueuePayloadFileHelper.BuildAudioFiles(execution.Request.Context.PathResult, outputPath);
             execution.Request.Payload.Files = result.Files;
             execution.Request.Payload.LyricsStatus = result.LyricsStatus;
-            await QueueHelperUtils.UpdatePayloadAsync(queueRepository, execution.Paths.QueueUuid, execution.Request.Payload, token);
+            var filesJson = System.Text.Json.JsonSerializer.Serialize(result.Files);
+            await queueRepository.UpdatePrefetchStateAsync(
+                execution.Paths.QueueUuid,
+                filesJson,
+                result.LyricsStatus,
+                runState.ArtworkStatus,
+                runState.ArtworkResult.FailureReason,
+                token);
 
             execution.Request.Listener.Send(UpdateQueueEvent, new
             {
@@ -2602,7 +2619,8 @@ public static partial class EngineAudioPostDownloadHelper
     private static bool CanProcessAtmosPayload(string? engineName)
     {
         return string.Equals(engineName, "apple", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(engineName, "tidal", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(engineName, "tidal", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(engineName, "amazon", StringComparison.OrdinalIgnoreCase);
     }
 
     public static async Task<TPayload?> InitializeQueueItemAsync<TPayload>(
@@ -2624,7 +2642,7 @@ public static partial class EngineAudioPostDownloadHelper
         if (DownloadEngineSettingsHelper.IsAtmosOnlyPayload(payload.ContentType, payload.Quality)
             && !CanProcessAtmosPayload(context.EngineName))
         {
-            const string message = "Atmos payload must be processed by Apple Music or Tidal.";
+            const string message = "Atmos payload must be processed by Apple Music, Tidal, or Amazon Music.";
             context.ActivityLog.Warn($"Atmos guard blocked non-Apple processing: {queueItem.QueueUuid} engine={context.EngineName}");
             var advanced = await context.TryAdvanceAsync(
                 queueItem.QueueUuid,
@@ -2714,14 +2732,7 @@ public static partial class EngineAudioPostDownloadHelper
         context.Logger.LogError(exception, "{Engine} download failed for {QueueUuid}", context.EngineName, queueUuid);
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
-            await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
-            var failedEngine = string.IsNullOrWhiteSpace(payload.Engine)
-                ? context.EngineName
-                : payload.Engine;
-            context.ServiceProvider
-                .GetService<IDownloadApiHealthTracker>()
-                ?.ReportFailure(failedEngine, exception.Message);
             context.ActivityLog.Warn($"Download failed (engine={context.EngineName} quality={quality}): {queueUuid} {exception.Message}");
             var advanced = await context.TryAdvanceAsync(
                 queueUuid,
@@ -2740,15 +2751,34 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
-        await context.QueueRepository.UpdateStatusAsync(queueUuid, FailedStatus, exception.Message, cancellationToken: CancellationToken.None);
+        await context.QueueRepository.UpdatePrefetchStateAsync(
+            queueUuid,
+            "[]",
+            string.Empty,
+            FailedStatus,
+            "Audio download failed before prefetched assets could be finalized.",
+            CancellationToken.None);
+        var failureMessage = !string.IsNullOrWhiteSpace(payload?.ResolutionError)
+            ? payload.ResolutionError
+            : exception.Message;
+        await context.QueueRepository.UpdateStatusAsync(queueUuid, FailedStatus, failureMessage, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
             await UpdateWatchlistTrackStatusAsync(payload, FailedStatus, context.ServiceProvider, CancellationToken.None);
         }
 
-        context.ActivityLog.Error($"Download failed (engine={context.EngineName}): {queueUuid} {exception.Message}");
-        context.RetryScheduler.ScheduleRetry(queueUuid, context.EngineName, exception.Message);
+        context.ActivityLog.Error($"Download failed (engine={context.EngineName}): {queueUuid} {failureMessage}");
+        if (!IsRateLimitedFailure(exception))
+        {
+            context.RetryScheduler.ScheduleRetry(queueUuid, context.EngineName, failureMessage);
+        }
     }
+
+    private static bool IsRateLimitedFailure(Exception exception)
+        => exception.Message.Contains("429", StringComparison.OrdinalIgnoreCase)
+           || exception.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+           || exception.Message.Contains("rate-limit", StringComparison.OrdinalIgnoreCase)
+           || exception.Message.Contains("throttl", StringComparison.OrdinalIgnoreCase);
 
     private static PrefetchRequirements BuildPrefetchRequirements(PrefetchRequest request)
     {

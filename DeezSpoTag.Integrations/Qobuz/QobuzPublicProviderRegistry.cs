@@ -6,6 +6,8 @@ public sealed record QobuzPublicProvider(
     string Kind,
     string Endpoint,
     string? Region,
+    string? HealthEndpoint,
+    string? HealthServiceKey,
     bool Enabled,
     string Status,
     DateTimeOffset? LastCheckedAt,

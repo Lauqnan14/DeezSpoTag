@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Diagnostics;
+using System.Net;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Security;
 using Microsoft.AspNetCore.DataProtection;
@@ -13,7 +14,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     private const string DisabledStatus = "disabled";
     private const string UnknownStatus = "unknown";
     private readonly ProtectedCredentialFileStore _store;
-    private readonly IHttpClientFactory? _httpClientFactory;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ILogger<TidalPublicProviderRegistry> _logger;
@@ -23,7 +24,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         IWebHostEnvironment environment,
         IDataProtectionProvider dataProtectionProvider,
         ILogger<TidalPublicProviderRegistry> logger,
-        IHttpClientFactory? httpClientFactory = null)
+        IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -74,16 +75,17 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     }
 
     public Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken)
-        => UpdateHealthAsync(endpoint, "online", null, responseTimeMs, null, cancellationToken);
+        => UpdateDownloadOutcomeAsync(endpoint, null, null, cancellationToken);
 
     public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken)
-        => UpdateHealthAsync(endpoint, ResolveFailureStatus(category), category, responseTimeMs, ResolveCooldown(category), cancellationToken);
+        => RecordFailureAsync(endpoint, category, responseTimeMs, ResolveCooldown(category), cancellationToken);
 
-    private async Task UpdateHealthAsync(
+    public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken)
+        => UpdateDownloadOutcomeAsync(endpoint, category, cooldownUntil, cancellationToken);
+
+    private async Task UpdateDownloadOutcomeAsync(
         string endpoint,
-        string status,
         string? category,
-        long responseTimeMs,
         DateTimeOffset? cooldownUntil,
         CancellationToken cancellationToken)
     {
@@ -99,13 +101,9 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             {
                 return;
             }
-            var now = DateTimeOffset.UtcNow;
-            provider.Status = provider.Enabled ? status : DisabledStatus;
-            provider.LastCheckedAt = now;
-            provider.LastSuccessAt = status == "online" ? now : provider.LastSuccessAt;
+
             provider.FailureCategory = category;
             provider.FailureMessage = ResolveFailureMessage(category);
-            provider.ResponseTimeMs = Math.Max(0, responseTimeMs);
             provider.CooldownUntil = cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
         }
@@ -115,88 +113,44 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         }
     }
 
-    private async Task CheckProviderAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        try
-        {
-            var category = await ProbeEndpointAsync(provider, cancellationToken);
-            stopwatch.Stop();
-            if (category is null)
-            {
-                await RecordSuccessAsync(provider.Id, stopwatch.ElapsedMilliseconds, cancellationToken);
-                return;
-            }
-
-            await RecordFailureAsync(provider.Id, category, stopwatch.ElapsedMilliseconds, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            stopwatch.Stop();
-            await RecordFailureAsync(provider.Id, "timeout", stopwatch.ElapsedMilliseconds, cancellationToken);
-        }
-        catch (HttpRequestException ex)
-        {
-            stopwatch.Stop();
-            _logger.LogDebug(ex, "Tidal public provider health check failed for {ProviderId}.", provider.Id);
-            await RecordFailureAsync(provider.Id, "transient", stopwatch.ElapsedMilliseconds, cancellationToken);
-        }
-    }
-
-    private async Task<string?> ProbeEndpointAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
-    {
-        var endpoint = string.IsNullOrWhiteSpace(provider.HealthEndpoint)
-            ? provider.Endpoint
-            : provider.HealthEndpoint;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(6));
-        using var client = CreateHealthClient();
-        using var request = new HttpRequestMessage(HttpMethod.Head, endpoint);
-        using var response = await SendHealthRequestAsync(client, request, timeout.Token);
-
-        return ClassifyHealthResponse(response.StatusCode);
-    }
-
-    private HttpClient CreateHealthClient()
-    {
-        var client = _httpClientFactory?.CreateClient() ?? new HttpClient();
-        client.Timeout = TimeSpan.FromSeconds(8);
-        return client;
-    }
-
-    private static async Task<HttpResponseMessage> SendHealthRequestAsync(
-        HttpClient client,
-        HttpRequestMessage request,
+    private async Task UpdateHealthAsync(
+        string endpoint,
+        string status,
+        string? category,
+        long responseTimeMs,
+        DateTimeOffset? cooldownUntil,
+        bool preserveActiveCooldown,
         CancellationToken cancellationToken)
     {
+        await _gate.WaitAsync(cancellationToken);
         try
         {
-            return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var state = await LoadNoLockAsync(cancellationToken);
+            var normalized = NormalizeEndpoint(endpoint);
+            var provider = state.Providers.FirstOrDefault(item => string.Equals(item.Id, normalized, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.Endpoint, normalized, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(item.HealthEndpoint, normalized, StringComparison.OrdinalIgnoreCase));
+            if (provider is null)
+            {
+                return;
+            }
+            var now = DateTimeOffset.UtcNow;
+            var activeCooldown = preserveActiveCooldown
+                && provider.CooldownUntil.HasValue
+                && provider.CooldownUntil.Value > now;
+            provider.Status = provider.Enabled ? status : DisabledStatus;
+            provider.LastCheckedAt = now;
+            provider.LastSuccessAt = status == "online" ? now : provider.LastSuccessAt;
+            provider.FailureCategory = activeCooldown ? provider.FailureCategory : category;
+            provider.FailureMessage = activeCooldown ? provider.FailureMessage : ResolveFailureMessage(category);
+            provider.ResponseTimeMs = Math.Max(0, responseTimeMs);
+            provider.CooldownUntil = activeCooldown ? provider.CooldownUntil : cooldownUntil;
+            await SaveNoLockAsync(state, cancellationToken);
         }
-        catch (HttpRequestException) when (request.Method == HttpMethod.Head)
+        finally
         {
-            using var getRequest = new HttpRequestMessage(HttpMethod.Get, request.RequestUri);
-            return await client.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            _gate.Release();
         }
-    }
-
-    private static string? ClassifyHealthResponse(System.Net.HttpStatusCode statusCode)
-    {
-        var numeric = (int)statusCode;
-        if (numeric is >= 200 and < 500 && statusCode != System.Net.HttpStatusCode.TooManyRequests)
-        {
-            return null;
-        }
-
-        return statusCode == System.Net.HttpStatusCode.TooManyRequests
-            ? "rate_limited"
-            : numeric >= 500
-                ? "transient"
-                : "offline";
     }
 
     private async Task<RegistryState> LoadNoLockAsync(CancellationToken cancellationToken)
@@ -297,6 +251,111 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     }
 
     private static string NormalizeEndpoint(string? endpoint) => (endpoint ?? string.Empty).Trim().TrimEnd('/');
+    private async Task CheckProviderAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(provider.HealthEndpoint))
+        {
+            await UpdateHealthAsync(provider.Id, UnknownStatus, null, 0, null, preserveActiveCooldown: true, cancellationToken);
+            return;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var category = await ProbeHealthEndpointAsync(provider.HealthEndpoint, provider.HealthServiceKey, cancellationToken);
+            stopwatch.Stop();
+            if (category is null)
+            {
+                await UpdateHealthAsync(provider.Id, "online", null, stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
+                return;
+            }
+
+            await UpdateHealthAsync(
+                provider.Id,
+                ResolveFailureStatus(category),
+                category,
+                stopwatch.ElapsedMilliseconds,
+                null,
+                preserveActiveCooldown: true,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            stopwatch.Stop();
+            await UpdateHealthAsync(provider.Id, "degraded", "timeout", stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            stopwatch.Stop();
+            _logger.LogDebug(ex, "Tidal public provider health check failed for {ProviderId}.", provider.Id);
+            await UpdateHealthAsync(provider.Id, "degraded", "transient", stopwatch.ElapsedMilliseconds, null, preserveActiveCooldown: true, cancellationToken);
+        }
+    }
+
+    private async Task<string?> ProbeHealthEndpointAsync(string healthEndpoint, string? serviceKey, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(4));
+        using var request = new HttpRequestMessage(HttpMethod.Get, healthEndpoint);
+        request.Headers.Accept.ParseAdd("application/json");
+        using var response = await _httpClientFactory.CreateClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            return "rate_limited";
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return (int)response.StatusCode >= 500 ? "transient" : "offline";
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
+        return ClassifyHealthPayload(document.RootElement, serviceKey);
+    }
+
+    private static string? ClassifyHealthPayload(JsonElement root, string? serviceKey)
+    {
+        if (!string.IsNullOrWhiteSpace(serviceKey)
+            && root.TryGetProperty("services", out var services)
+            && services.ValueKind == JsonValueKind.Object
+            && services.TryGetProperty(serviceKey, out var service))
+        {
+            if (service.TryGetProperty("ok", out var ok) && ok.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                return ok.GetBoolean() ? null : "offline";
+            }
+
+            if (service.TryGetProperty("status", out var serviceStatus))
+            {
+                return ClassifyStatusValue(serviceStatus);
+            }
+        }
+
+        return root.TryGetProperty("status", out var status) ? ClassifyStatusValue(status) : null;
+    }
+
+    private static string? ClassifyStatusValue(JsonElement status)
+    {
+        if (status.ValueKind == JsonValueKind.Number && status.TryGetInt32(out var code))
+        {
+            return code is >= 200 and < 300 ? null : code == 429 ? "rate_limited" : code >= 500 ? "transient" : "offline";
+        }
+
+        var value = status.GetString()?.Trim().ToLowerInvariant();
+        return value switch
+        {
+            null or "" or "ok" or "up" or "online" or "healthy" or "operational" or "pass" or "passing" => null,
+            "degraded" or "partial" or "warning" or "warn" => "transient",
+            "down" or "offline" or "error" or "failed" or "fail" or "unhealthy" => "offline",
+            _ => null
+        };
+    }
+
     private static string ResolveFailureStatus(string category) => category switch
     {
         "rate_limited" => "rate_limited",

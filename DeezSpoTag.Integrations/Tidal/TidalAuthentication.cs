@@ -46,6 +46,7 @@ public interface ITidalPublicProviderRegistry
     Task<TidalPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken);
     Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken);
     Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken);
+    Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken);
 }
 
 public sealed record TidalPublicProviderDefinition(

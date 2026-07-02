@@ -73,9 +73,10 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
 
     private static string ResolveAmazonSourceId(AmazonQueueItem payload)
     {
-        if (!string.IsNullOrWhiteSpace(payload.AmazonId))
+        var persistedId = EngineLinkParser.NormalizeAmazonTrackId(payload.AmazonId);
+        if (!string.IsNullOrWhiteSpace(persistedId))
         {
-            return payload.AmazonId.Trim();
+            return persistedId;
         }
 
         var fromSource = EngineLinkParser.TryExtractAmazonTrackId(payload.SourceUrl, TimeSpan.FromMilliseconds(250));

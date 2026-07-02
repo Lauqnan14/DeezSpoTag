@@ -21,7 +21,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private static readonly HashSet<string> PublicApiDownloadEngines = new(StringComparer.OrdinalIgnoreCase)
     {
         "qobuz",
-        "tidal"
+        "tidal",
+        "amazon"
     };
     private const string FailedStatus = "failed";
     private const string CanceledStatus = "canceled";
@@ -36,7 +37,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DownloadCancellationRegistry _cancellationRegistry;
     private readonly IDownloadQueueExecutionGate _executionGate;
-    private readonly SemaphoreSlim _publicApiDownloadGate = new(1, 1);
 
     public object? CurrentJob { get; private set; }
 
@@ -234,22 +234,13 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             }
 
             var newestFirst = string.Equals(Settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
-            var publicApiSlot = await TryReservePublicApiDownloadSlotAsync(cancellationToken: CancellationToken.None);
-            var nextItem = publicApiSlot.Reserved
-                ? await _queueRepository.DequeueNextAnyAsync(newestFirst)
-                : await _queueRepository.DequeueNextAnyExceptAsync(
-                    PublicApiDownloadEngines,
-                    newestFirst,
-                    CancellationToken.None);
+            var nextItem = await _queueRepository.DequeueNextWithPublicEngineLimitAsync(
+                PublicApiDownloadEngines,
+                newestFirst,
+                CancellationToken.None);
             if (nextItem == null || string.IsNullOrWhiteSpace(nextItem.QueueUuid))
             {
-                publicApiSlot.Dispose();
                 return;
-            }
-
-            if (!IsPublicApiDownloadEngine(nextItem.Engine))
-            {
-                publicApiSlot.Dispose();
             }
 
             try
@@ -263,44 +254,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 await HandleUnhandledProcessorFailureAsync(nextItem, ex);
-            }
-            finally
-            {
-                if (IsPublicApiDownloadEngine(nextItem.Engine))
-                {
-                    publicApiSlot.Dispose();
-                }
-            }
-        }
-    }
-
-    private async Task<PublicApiDownloadSlot> TryReservePublicApiDownloadSlotAsync(CancellationToken cancellationToken)
-    {
-        var reserved = await _publicApiDownloadGate.WaitAsync(0, cancellationToken);
-        return new PublicApiDownloadSlot(_publicApiDownloadGate, reserved);
-    }
-
-    private static bool IsPublicApiDownloadEngine(string? engine)
-        => !string.IsNullOrWhiteSpace(engine)
-           && PublicApiDownloadEngines.Contains(NormalizeEngineName(engine));
-
-    private readonly struct PublicApiDownloadSlot : IDisposable
-    {
-        private readonly SemaphoreSlim _gate;
-
-        public PublicApiDownloadSlot(SemaphoreSlim gate, bool reserved)
-        {
-            _gate = gate;
-            Reserved = reserved;
-        }
-
-        public bool Reserved { get; }
-
-        public void Dispose()
-        {
-            if (Reserved)
-            {
-                _gate.Release();
             }
         }
     }

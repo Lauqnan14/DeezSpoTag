@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using System.Linq;
 using IOFile = System.IO.File;
 using DeezSpoTag.Services.Download;
@@ -14,7 +13,6 @@ namespace DeezSpoTag.Services.Download.Amazon;
 
 public sealed class AmazonDownloadService : IAmazonDownloadService
 {
-    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private const string FlacExtension = ".flac";
     private const string ErrorLogLevel = "error";
     private static readonly string[] FfmpegExecutableNamesWindows = ["ffmpeg.exe", "ffmpeg"];
@@ -533,15 +531,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     }
 
     private static string? ExtractAmazonAsin(string amazonUrl)
-    {
-        if (string.IsNullOrWhiteSpace(amazonUrl))
-        {
-            return null;
-        }
-
-        var match = Regex.Match(amazonUrl, "(B[0-9A-Z]{9})", RegexOptions.IgnoreCase, RegexTimeout);
-        return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
-    }
+        => EngineLinkParser.NormalizeAmazonTrackId(amazonUrl)
+           ?? EngineLinkParser.TryExtractAmazonTrackId(amazonUrl, TimeSpan.FromMilliseconds(250));
 
     private static string GetRandomUserAgent()
     {

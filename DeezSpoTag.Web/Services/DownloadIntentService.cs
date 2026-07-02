@@ -685,9 +685,8 @@ public sealed class DownloadIntentService
         var tidalId = FirstNonEmpty(
             intent.TidalId,
             TryExtractTidalTrackId(sourceUrl));
-        var amazonId = FirstNonEmpty(
-            intent.AmazonId,
-            EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout));
+        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout);
 
         return new QueuePreResolutionPayload.ResolutionResult(
             string.IsNullOrWhiteSpace(target.Engine) ? item.Engine : target.Engine,
@@ -779,9 +778,12 @@ public sealed class DownloadIntentService
             AppleId = FirstNonEmpty(
                 ReadPayloadString(payload, "AppleId", "appleId"),
                 item.AppleTrackId) ?? string.Empty,
-            QobuzId = FirstNonEmpty(item.QobuzTrackId, ReadPayloadStringAny(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId")) ?? string.Empty,
-            TidalId = FirstNonEmpty(item.TidalTrackId, ReadPayloadStringAny(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId")) ?? string.Empty,
-            AmazonId = FirstNonEmpty(item.AmazonTrackId, ReadPayloadStringAny(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId")) ?? string.Empty,
+            QobuzId = EngineLinkParser.NormalizeNumericTrackId(
+                FirstNonEmpty(item.QobuzTrackId, ReadPayloadStringAny(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId"))) ?? string.Empty,
+            TidalId = EngineLinkParser.NormalizeNumericTrackId(
+                FirstNonEmpty(item.TidalTrackId, ReadPayloadStringAny(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId"))) ?? string.Empty,
+            AmazonId = EngineLinkParser.NormalizeAmazonTrackId(
+                FirstNonEmpty(item.AmazonTrackId, ReadPayloadStringAny(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId"))) ?? string.Empty,
             Isrc = FirstNonEmpty(
                 ReadPayloadString(payload, "Isrc", "isrc"),
                 item.Isrc) ?? string.Empty,
@@ -951,9 +953,8 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         CancellationToken cancellationToken)
     {
-        var amazonId = FirstNonEmpty(
-            intent.AmazonId,
-            EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout));
+        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout);
         if (!string.IsNullOrWhiteSpace(amazonId))
         {
             intent.AmazonId = amazonId;
@@ -1126,6 +1127,14 @@ public sealed class DownloadIntentService
             }, null);
         }
 
+        if (routing.AutoSources
+                .Select(DownloadSourceOrder.DecodeAutoSource)
+                .Any(step => string.Equals(step.Source, AmazonPlatform, StringComparison.OrdinalIgnoreCase))
+            && string.IsNullOrWhiteSpace(EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)))
+        {
+            await ResolveAmazonAvailabilityUrlAsync(intent, cancellationToken);
+        }
+
         return (null, new EnqueueResolutionState(settings, routing, resolvedTarget));
     }
 
@@ -1224,7 +1233,8 @@ public sealed class DownloadIntentService
         var decoded = DownloadSourceOrder.DecodeAutoSource(encodedSource);
         return IsAtmosSourceRequest(null, decoded.Quality)
             && (string.Equals(decoded.Source, ApplePlatform, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(decoded.Source, TidalPlatform, StringComparison.OrdinalIgnoreCase));
+                || string.Equals(decoded.Source, TidalPlatform, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(decoded.Source, AmazonPlatform, StringComparison.OrdinalIgnoreCase));
     }
 
     private static PrimaryPayloadEnqueueContext CreatePrimaryEnqueueContext(EngineEnqueueRequest request)
@@ -1386,10 +1396,14 @@ public sealed class DownloadIntentService
 
     private async Task<EngineEnqueueOutcome> EnqueueAmazonAsync(EngineEnqueueRequest request)
     {
-        var amazonId = FirstNonEmpty(
-            request.Intent.AmazonId,
-            EngineLinkParser.TryExtractAmazonTrackId(request.ResolvedSourceUrl, RegexTimeout),
-            EngineLinkParser.TryExtractAmazonTrackId(request.Intent.SourceUrl, RegexTimeout));
+        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(request.Intent.AmazonId)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(request.ResolvedSourceUrl, RegexTimeout)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(request.Intent.SourceUrl, RegexTimeout);
+        if (string.IsNullOrWhiteSpace(amazonId))
+        {
+            var resolvedUrl = await ResolveAmazonAvailabilityUrlAsync(request.Intent, request.CancellationToken);
+            amazonId = EngineLinkParser.TryExtractAmazonTrackId(resolvedUrl, RegexTimeout);
+        }
         if (string.IsNullOrWhiteSpace(amazonId))
         {
             return new EngineEnqueueOutcome(
@@ -1398,10 +1412,8 @@ public sealed class DownloadIntentService
         }
 
         request.Intent.AmazonId = amazonId;
-        var sourceUrl = FirstNonEmpty(
-            request.ResolvedSourceUrl,
-            request.Intent.SourceUrl,
-            $"https://music.amazon.com/tracks/{amazonId}")!;
+        var sourceUrl = $"https://music.amazon.com/tracks/{amazonId}";
+        request.Intent.SourceUrl = sourceUrl;
         var payload = new AmazonQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
             sourceUrl,
@@ -2726,11 +2738,11 @@ public sealed class DownloadIntentService
         DownloadIntent intent,
         CancellationToken cancellationToken)
     {
-        var amazonId = FirstNonEmpty(
-            intent.AmazonId,
-            EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout));
+        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout);
         if (string.IsNullOrWhiteSpace(amazonId))
         {
+            intent.AmazonId = string.Empty;
             return;
         }
 
@@ -3052,9 +3064,9 @@ public sealed class DownloadIntentService
         intent.QobuzId = FirstNonEmpty(
             intent.QobuzId,
             TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture)) ?? string.Empty;
-        intent.AmazonId = FirstNonEmpty(
-            intent.AmazonId,
-            EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout)) ?? string.Empty;
+        intent.AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout)
+            ?? string.Empty;
     }
 
     private async Task ResolveMissingAppleIdentityAsync(
@@ -4213,10 +4225,11 @@ public sealed class DownloadIntentService
 
         if (string.Equals(engine, AmazonPlatform, StringComparison.OrdinalIgnoreCase))
         {
-            var amazonId = FirstNonEmpty(intent.AmazonId, EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout));
+            var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+                ?? EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout);
             return string.IsNullOrWhiteSpace(amazonId)
                 ? null
-                : (engine, sourceUrl, string.Empty, "amazon-id");
+                : (engine, $"https://music.amazon.com/tracks/{amazonId}", string.Empty, "amazon-id");
         }
 
         return null;
@@ -6891,7 +6904,9 @@ public sealed class DownloadIntentService
         payload.AppleId = intent.AppleId ?? string.Empty;
         payload.QobuzId = FirstNonEmpty(intent.QobuzId, TryExtractQobuzTrackId(context.SourceUrl)?.ToString(CultureInfo.InvariantCulture)) ?? string.Empty;
         payload.TidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(context.SourceUrl)) ?? string.Empty;
-        payload.AmazonId = FirstNonEmpty(intent.AmazonId, EngineLinkParser.TryExtractAmazonTrackId(context.SourceUrl, RegexTimeout)) ?? string.Empty;
+        payload.AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(context.SourceUrl, RegexTimeout)
+            ?? string.Empty;
         payload.ContentType = context.ContentType;
         payload.Cover = intent.Cover ?? string.Empty;
         payload.AutoSources = context.AutoSources;

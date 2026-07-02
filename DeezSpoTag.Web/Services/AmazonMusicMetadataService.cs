@@ -2,11 +2,12 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Matching;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class AmazonMusicMetadataService
+public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 {
     private const string DefaultHost = "music.amazon.com";
     private const string DefaultLocale = "en_US";
@@ -213,14 +214,14 @@ public sealed class AmazonMusicMetadataService
         int? durationMs,
         CancellationToken cancellationToken)
     {
-        var query = string.Join(' ', new[] { title, artist }.Where(static value => !string.IsNullOrWhiteSpace(value)));
+        var query = BuildTrackSearchQuery(title, artist, album);
         if (string.IsNullOrWhiteSpace(query))
         {
             return null;
         }
 
-        var search = await SearchAsync(query, "track", 10, cancellationToken);
-        foreach (var candidate in search.Tracks)
+        var search = await SearchAsync(query, "track", 25, cancellationToken);
+        foreach (var candidate in search.Tracks.Where(IsDownloadableMusicTrackResult))
         {
             var validation = TrackCandidateValidator.Validate(
                 new TrackMatchSource(
@@ -249,6 +250,28 @@ public sealed class AmazonMusicMetadataService
         }
 
         return null;
+    }
+
+    private static string BuildTrackSearchQuery(string title, string artist, string? album)
+        => string.Join(' ', new[] { title, artist, album }.Where(static value => !string.IsNullOrWhiteSpace(value)));
+
+    private static bool IsDownloadableMusicTrackResult(AmazonCatalogItem item)
+        => item.Type == "track"
+           && !string.IsNullOrWhiteSpace(item.Id)
+           && !string.IsNullOrWhiteSpace(item.Title)
+           && !string.IsNullOrWhiteSpace(item.Artist);
+
+    async Task<AmazonFallbackTrackResolution?> IAmazonFallbackTrackResolver.ResolveTrackAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        CancellationToken cancellationToken)
+    {
+        var item = await ResolveTrackAsync(title, artist, album, durationMs, cancellationToken);
+        return item == null || string.IsNullOrWhiteSpace(item.Id)
+            ? null
+            : new AmazonFallbackTrackResolution(item.Id, item.Url);
     }
 
     private async Task<AmazonSession> CreateSessionAsync(CancellationToken cancellationToken)

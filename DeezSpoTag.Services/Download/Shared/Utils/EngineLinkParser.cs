@@ -4,6 +4,27 @@ namespace DeezSpoTag.Services.Download.Shared.Utils;
 
 public static class EngineLinkParser
 {
+    private static readonly Regex AmazonTrackIdRegex = new(
+        @"^B[0-9A-Z]{9}$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
+        TimeSpan.FromMilliseconds(250));
+
+    public static string? NormalizeAmazonTrackId(string? value)
+    {
+        var normalized = value?.Trim().ToUpperInvariant();
+        return !string.IsNullOrWhiteSpace(normalized) && AmazonTrackIdRegex.IsMatch(normalized)
+            ? normalized
+            : null;
+    }
+
+    public static string? NormalizeNumericTrackId(string? value)
+    {
+        var normalized = value?.Trim();
+        return !string.IsNullOrWhiteSpace(normalized) && normalized.All(char.IsDigit)
+            ? normalized
+            : null;
+    }
+
     public static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
     public static string? TryExtractSpotifyTrackId(string? sourceUrl, TimeSpan regexTimeout)
@@ -87,12 +108,17 @@ public static class EngineLinkParser
         if (Uri.TryCreate(sourceUrl, UriKind.Absolute, out var parsed)
             && IsAmazonHost(parsed.Host))
         {
-            return TryExtractAmazonTrackAsinFromQuery(parsed.Query)
-                ?? TryExtractAmazonTrackIdFromPath(parsed.AbsolutePath);
+            return NormalizeAmazonTrackId(
+                TryExtractAmazonTrackAsinFromQuery(parsed.Query)
+                ?? TryExtractAmazonTrackIdFromPath(parsed.AbsolutePath));
         }
 
-        var match = Regex.Match(sourceUrl, @"(?:trackAsin=|asin=|\/tracks?\/)(?<id>[A-Z0-9]+)", RegexOptions.IgnoreCase, regexTimeout);
-        return match.Success ? match.Groups["id"].Value : null;
+        var match = Regex.Match(
+            sourceUrl,
+            @"(?:trackAsin=|asin=|\/tracks?\/)(?<id>B[0-9A-Z]{9})(?:$|[/?&#])",
+            RegexOptions.IgnoreCase,
+            regexTimeout);
+        return match.Success ? NormalizeAmazonTrackId(match.Groups["id"].Value) : null;
     }
 
     private static string? TryExtractAmazonTrackAsinFromQuery(string? query)

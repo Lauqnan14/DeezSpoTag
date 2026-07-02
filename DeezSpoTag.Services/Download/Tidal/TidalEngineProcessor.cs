@@ -1,6 +1,7 @@
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 
@@ -59,9 +60,10 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
 
     private static string ResolveTidalSourceId(TidalQueueItem payload)
     {
-        if (!string.IsNullOrWhiteSpace(payload.TidalId))
+        var persistedId = EngineLinkParser.NormalizeNumericTrackId(payload.TidalId);
+        if (!string.IsNullOrWhiteSpace(persistedId))
         {
-            return payload.TidalId.Trim();
+            return persistedId;
         }
 
         var fromSource = TryExtractTrackId(payload.SourceUrl);

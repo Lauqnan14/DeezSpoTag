@@ -157,23 +157,18 @@ public sealed class EngineFallbackCoordinator
         var nextIndex = ResolveNextPlanIndex(planSteps, request);
         mutators.ApplyAutoSources(EncodePlanSteps(planSteps));
         var userCountry = settings.DeezerCountry;
-        var resolvedSpotifyId = await ResolveSpotifyIdForFallbackAsync(request, userCountry, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(resolvedSpotifyId))
-        {
-            TrySetSpotifyId(payloadForSerialization, resolvedSpotifyId);
-        }
 
         var resolutionRequest = BuildSourceResolutionRequest(
             request,
             settings,
             userCountry,
-            resolvedSpotifyId,
+            request.SpotifyId,
             resolvedIsrc);
         var stepContext = new FallbackStepExecutionContext(
             mutators,
             payloadForSerialization,
             resolutionRequest,
-            resolvedSpotifyId ?? request.SpotifyId,
+            request.SpotifyId,
             resolvedIsrc);
 
         for (var stepIndex = nextIndex; stepIndex < planSteps.Count; stepIndex++)
@@ -401,13 +396,24 @@ public sealed class EngineFallbackCoordinator
             return;
         }
 
+        var stepId = $"step-{stepIndex}";
+        var attemptDetail = string.IsNullOrWhiteSpace(step.Quality)
+            ? $"{step.Source}: {detail}"
+            : $"{step.Source} {step.Quality}: {detail}";
+        if (payload.FallbackHistory.Any(attempt =>
+                string.Equals(attempt.StepId, stepId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(attempt.Status, status, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(attempt.ErrorClass, errorClass, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(attempt.Detail, attemptDetail, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
         payload.FallbackHistory.Add(new FallbackAttempt(
-            $"step-{stepIndex}",
+            stepId,
             status,
             errorClass,
-            string.IsNullOrWhiteSpace(step.Quality)
-                ? $"{step.Source}: {detail}"
-                : $"{step.Source} {step.Quality}: {detail}"));
+            attemptDetail));
     }
 
     private static void SetResolutionError(object payloadForSerialization, string message)
@@ -494,23 +500,6 @@ public sealed class EngineFallbackCoordinator
             cancellationToken);
     }
 
-    private async Task<string?> ResolveSpotifyIdForFallbackAsync(
-        FallbackAdvanceRequest request,
-        string userCountry,
-        CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(request.SpotifyId))
-        {
-            return request.SpotifyId;
-        }
-
-        return await _fallbackSearchService.ResolveSpotifyIdAsync(
-            request.SourceUrl,
-            request.DeezerId,
-            userCountry,
-            cancellationToken);
-    }
-
     private static List<(string Source, string? Quality)> BuildPlanSteps(
         FallbackAdvanceRequest request,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
@@ -575,6 +564,8 @@ public sealed class EngineFallbackCoordinator
         => (string.Equals(source, AppleEngine, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase))
            || (string.Equals(source, "tidal", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase))
+           || (string.Equals(source, AmazonEngine, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase));
 
     private static int FindStepIndex(List<(string Source, string? Quality)> autoSources, string engine, string quality)
@@ -643,11 +634,6 @@ public sealed class EngineFallbackCoordinator
         }
 
         property.SetValue(payload, isrc);
-    }
-
-    private static void TrySetSpotifyId(object payload, string spotifyId)
-    {
-        TrySetStringProperty(payload, "SpotifyId", spotifyId);
     }
 
     private static void TrySetStringProperty(object payload, string propertyName, string value)

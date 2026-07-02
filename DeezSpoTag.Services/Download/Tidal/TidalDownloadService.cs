@@ -794,7 +794,8 @@ public sealed class TidalDownloadService
         using var response = await _client.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Tidal Zarz provider returned HTTP {(int)response.StatusCode}.");
+            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz provider", response, errorBody));
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -831,7 +832,8 @@ public sealed class TidalDownloadService
         using var response = await _client.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Tidal Zarz Atmos provider returned HTTP {(int)response.StatusCode}.");
+            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz Atmos provider", response, errorBody));
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -1953,43 +1955,56 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Tidal API pool is empty");
         }
 
-        var provider = providers.FirstOrDefault(candidate => !IsProviderCoolingDown(candidate));
-        if (provider == null)
+        var availableProviders = providers
+            .Where(candidate => !IsProviderCoolingDown(candidate))
+            .ToArray();
+        if (availableProviders.Length == 0)
         {
             throw new InvalidOperationException("No Tidal download provider is currently available.");
         }
 
-        var stopwatch = Stopwatch.StartNew();
-        try
+        Exception? lastFailure = null;
+        foreach (var provider in availableProviders)
         {
-            var manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
-            stopwatch.Stop();
-            if (string.IsNullOrWhiteSpace(manifest))
+            var stopwatch = Stopwatch.StartNew();
+            try
             {
-                await _providerSource.RememberFailureAsync(provider, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
-                throw new InvalidOperationException("Tidal download URL not available");
-            }
+                var manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
+                stopwatch.Stop();
+                if (string.IsNullOrWhiteSpace(manifest))
+                {
+                    await _providerSource.RememberFailureAsync(provider, "empty_response", stopwatch.ElapsedMilliseconds, cancellationToken);
+                    lastFailure = new InvalidOperationException(
+                        $"Tidal provider {provider.DisplayName} returned no download manifest.");
+                    continue;
+                }
 
-            await _providerSource.RememberHealthSuccessAsync(provider, stopwatch.ElapsedMilliseconds, cancellationToken);
-            await _providerSource.RememberSuccessAsync(provider, cancellationToken);
-            return [manifest.Trim()];
+                await _providerSource.RememberHealthSuccessAsync(provider, stopwatch.ElapsedMilliseconds, cancellationToken);
+                await _providerSource.RememberSuccessAsync(provider, cancellationToken);
+                return [manifest.Trim()];
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                stopwatch.Stop();
+                lastFailure = ex;
+                var category = ClassifyProviderFailure(ex);
+                await _providerSource.RememberFailureAsync(provider, category, stopwatch.ElapsedMilliseconds, ResolveProviderCooldown(category, ex), cancellationToken);
+                _logger.LogWarning(
+                    ex,
+                    "Tidal public provider {Provider} failed for track {TrackId} quality {Quality}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.DisplayName),
+                    trackId,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(quality));
+            }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            stopwatch.Stop();
-            await _providerSource.RememberFailureAsync(provider, ClassifyProviderFailure(ex), stopwatch.ElapsedMilliseconds, cancellationToken);
-            _logger.LogWarning(
-                ex,
-                "Tidal public provider {Provider} failed for track {TrackId} quality {Quality}.",
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(provider.DisplayName),
-                trackId,
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(quality));
-            throw new InvalidOperationException("Tidal download URL not available", ex);
-        }
+
+        throw new InvalidOperationException(
+            "All enabled Tidal download providers failed to return a usable manifest.",
+            lastFailure);
     }
 
     private async Task<string?> TryFetchManifestFromCredentialApiAsync(
@@ -2291,6 +2306,46 @@ public sealed class TidalDownloadService
         }
 
         return "transient";
+    }
+
+    private static DateTimeOffset? ResolveProviderCooldown(string category, Exception exception)
+    {
+        if (category != "rate_limited")
+        {
+            return category is "empty_response" ? DateTimeOffset.UtcNow.AddMinutes(15) : null;
+        }
+
+        var retryAfter = ExtractRetryAfterSeconds(exception.Message);
+        return retryAfter.HasValue
+            ? DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(retryAfter.Value, 60, 86400))
+            : DateTimeOffset.UtcNow.AddMinutes(15);
+    }
+
+    private static string BuildZarzHttpFailureMessage(string providerName, HttpResponseMessage response, string body)
+    {
+        var status = (int)response.StatusCode;
+        var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds;
+        if (!retryAfter.HasValue)
+        {
+            retryAfter = ExtractRetryAfterSeconds(body);
+        }
+
+        return retryAfter.HasValue
+            ? $"{providerName} returned HTTP {status}; retry_after={Math.Ceiling(retryAfter.Value).ToString(CultureInfo.InvariantCulture)}."
+            : $"{providerName} returned HTTP {status}.";
+    }
+
+    private static int? ExtractRetryAfterSeconds(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var match = MatchWithTimeout(value, "\"?retry_after\"?\\s*[:=]\\s*(\\d+)", RegexOptions.IgnoreCase);
+        return match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds)
+            ? seconds
+            : null;
     }
 
     private static bool BodyContainsPreviewAsset(string body)

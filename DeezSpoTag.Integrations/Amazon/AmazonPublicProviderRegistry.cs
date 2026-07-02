@@ -44,7 +44,7 @@ public static class AmazonPublicProviderDefaults
             "Zarz API",
             DownloadProviderKind,
             "https://api.zarz.moe/v1/dl/amazeamazeamaze",
-            "https://api.zarz.moe/v1/health",
-            "amazon")
+            "https://api.zarz.moe/v2/health",
+            null)
     ];
 }

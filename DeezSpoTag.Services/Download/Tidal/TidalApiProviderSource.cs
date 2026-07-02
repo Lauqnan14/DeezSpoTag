@@ -63,6 +63,9 @@ public sealed class TidalApiProviderSource
     public Task RememberFailureAsync(TidalPublicProvider provider, string category, long responseTimeMs, CancellationToken cancellationToken)
         => _providerRegistry.RecordFailureAsync(provider.Id, category, responseTimeMs, cancellationToken);
 
+    public Task RememberFailureAsync(TidalPublicProvider provider, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken)
+        => _providerRegistry.RecordFailureAsync(provider.Id, category, responseTimeMs, cooldownUntil, cancellationToken);
+
     public Task RememberFailureAsync(string providerUrl, string category, long responseTimeMs, CancellationToken cancellationToken)
         => _providerRegistry.RecordFailureAsync(providerUrl, category, responseTimeMs, cancellationToken);
 

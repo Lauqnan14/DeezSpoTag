@@ -38,7 +38,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private readonly IQobuzDownloadService _qobuzDownloader;
     private readonly IServiceProvider _serviceProvider;
     private readonly EngineFallbackCoordinator _fallbackCoordinator;
-    private readonly SongLinkResolver _songLinkResolver;
     private readonly IActivityLogWriter _activityLog;
     private readonly Utils.LyricsService _lyricsService;
     private readonly IPostDownloadTaskScheduler _postDownloadTaskScheduler;
@@ -61,7 +60,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         _qobuzDownloader = qobuzDownloader;
         _serviceProvider = serviceProvider;
         _fallbackCoordinator = serviceProvider.GetRequiredService<EngineFallbackCoordinator>();
-        _songLinkResolver = serviceProvider.GetRequiredService<SongLinkResolver>();
         _activityLog = serviceProvider.GetRequiredService<IActivityLogWriter>();
         _lyricsService = serviceProvider.GetRequiredService<Utils.LyricsService>();
         _postDownloadTaskScheduler = serviceProvider.GetRequiredService<IPostDownloadTaskScheduler>();
@@ -141,7 +139,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             payload.QobuzId = explicitQobuzTrackId.Value.ToString();
         }
 
-        var resolvedIsrc = await ResolveIsrcAsync(payload, itemToken);
+        var resolvedIsrc = IsrcValidator.IsValid(payload.Isrc) ? payload.Isrc : null;
         var resolvedTrack = await ResolveAndPersistPreferredTrackAsync(next.QueueUuid, payload, resolvedIsrc, itemToken);
         if (resolvedTrack == null)
         {
@@ -403,6 +401,11 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         string? resolvedIsrc,
         CancellationToken cancellationToken)
     {
+        if (IsFirstClassQueuedQobuzIdentity(payload, trackId))
+        {
+            return BuildResolvedUrlTrack(payload, trackId, resolvedIsrc);
+        }
+
         var validationIsrc = string.IsNullOrWhiteSpace(resolvedIsrc) ? payload.Isrc : resolvedIsrc;
         var hasValidationIdentity = !string.IsNullOrWhiteSpace(validationIsrc)
                                     || (!string.IsNullOrWhiteSpace(payload.Title)
@@ -431,6 +434,24 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
 
         return null;
+    }
+
+    private static bool IsFirstClassQueuedQobuzIdentity(QobuzQueueItem payload, int trackId)
+    {
+        if (TryParseQobuzTrackId(payload.QobuzId, out var qobuzId) && qobuzId == trackId)
+        {
+            return true;
+        }
+
+        return (ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url)) == trackId;
+    }
+
+    private static bool TryParseQobuzTrackId(string? value, out int trackId)
+    {
+        trackId = 0;
+        return !string.IsNullOrWhiteSpace(value)
+               && int.TryParse(value.Trim(), out trackId)
+               && trackId > 0;
     }
 
     private static void MarkResolutionComplete(QobuzQueueItem payload)
@@ -915,10 +936,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         Exception ex,
         CancellationToken cancellationToken)
     {
-        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
-            queueUuid,
-            PrefetchCancelDrainTimeout,
-            CancellationToken.None);
         var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
         var failureKind = IsRateLimitFailure(ex) ? "throttled" : "failed";
         if (ex is not QobuzCatalogQualityBelowPlanStepException)
@@ -954,7 +971,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var quality = payload == null || string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
         _activityLog.Warn($"Download throttled (engine={EngineName} quality={quality}): {queueUuid} {ex.Message}");
         await MarkQueueFailedAsync(queueUuid, payload, ex.Message);
-        _retryScheduler.ScheduleRetry(queueUuid, EngineName, ex.Message);
     }
 
     private async Task MarkFinalFailureAsync(string queueUuid, QobuzQueueItem? payload, Exception ex)
@@ -973,6 +989,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
     private async Task MarkQueueFailedAsync(string queueUuid, QobuzQueueItem? payload, string error)
     {
+        await _queueRepository.UpdatePrefetchStateAsync(
+            queueUuid,
+            "[]",
+            string.Empty,
+            FailedStatus,
+            "Audio download failed before prefetched assets could be finalized.",
+            CancellationToken.None);
         await _queueRepository.UpdateStatusAsync(queueUuid, FailedStatus, error, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
@@ -984,36 +1007,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         => exception is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests };
 
     private readonly record struct QobuzSourceSelection(string TrackUrl, bool HasTrackUrl);
-
-    private async Task<string?> ResolveIsrcAsync(QobuzQueueItem payload, CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(payload.Isrc) && IsrcValidator.IsValid(payload.Isrc))
-        {
-            return payload.Isrc;
-        }
-
-        var userCountry = _settingsService.LoadSettings().DeezerCountry;
-        if (!string.IsNullOrWhiteSpace(payload.DeezerId))
-        {
-            var deezerUrl = $"https://www.deezer.com/track/{payload.DeezerId}";
-            var deezerLink = await _songLinkResolver.ResolveByUrlAsync(deezerUrl, userCountry, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(deezerLink?.Isrc) && IsrcValidator.IsValid(deezerLink.Isrc))
-            {
-                return deezerLink.Isrc;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(payload.SpotifyId))
-        {
-            var spotifyLink = await _songLinkResolver.ResolveSpotifyTrackAsync(payload.SpotifyId, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(spotifyLink?.Isrc) && IsrcValidator.IsValid(spotifyLink.Isrc))
-            {
-                return spotifyLink.Isrc;
-            }
-        }
-
-        return null;
-    }
 
     private async Task<QobuzTrackResolution?> ResolvePreferredQobuzTrackAsync(
         QobuzQueueItem payload,
@@ -1098,7 +1091,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             settings,
             pathProcessor,
             EngineName,
-            !string.IsNullOrWhiteSpace(payload.QobuzId) ? payload.QobuzId : payload.SpotifyId,
+            payload.QobuzId,
             downloadTypeResolver: null,
             configureTrack: static (track, item) =>
             {

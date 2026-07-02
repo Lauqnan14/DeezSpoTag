@@ -1,6 +1,7 @@
 using System.Linq;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -8,6 +9,7 @@ using DeezSpoTag.Core.Security;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
@@ -313,6 +315,67 @@ LIMIT 1;";
             },
             $"AND lower(engine) NOT IN ({placeholders})",
             cancellationToken);
+    }
+
+    public async Task<DownloadQueueItem?> DequeueNextWithPublicEngineLimitAsync(
+        IReadOnlyCollection<string> publicEngines,
+        bool newestFirst,
+        CancellationToken cancellationToken = default)
+    {
+        if (publicEngines.Count == 0)
+        {
+            return await DequeueNextAnyAsync(newestFirst, cancellationToken);
+        }
+
+        await DequeueGate.WaitAsync(cancellationToken);
+        try
+        {
+            await EnsureSchemaAsync(cancellationToken);
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+            var normalizedEngines = publicEngines
+                .Where(engine => !string.IsNullOrWhiteSpace(engine))
+                .Select(engine => engine.Trim().ToLowerInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (normalizedEngines.Length == 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
+
+            var publicEnginePlaceholders = string.Join(", ", normalizedEngines.Select((_, index) => $"@publicEngine{index}"));
+            var hasRunningPublicEngine = await HasRunningPublicEngineAsync(
+                connection,
+                transaction,
+                normalizedEngines,
+                publicEnginePlaceholders,
+                cancellationToken);
+            var extraWhereClause = hasRunningPublicEngine
+                ? $"AND lower(engine) NOT IN ({publicEnginePlaceholders})"
+                : string.Empty;
+
+            var sql = BuildDequeueSelectSql(newestFirst, extraWhereClause);
+            await using var selectCommand = new SqliteCommand(sql, connection, transaction);
+            BindPublicEngineParameters(selectCommand, normalizedEngines);
+
+            await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
+
+            var item = ReadItem(reader);
+            await UpdateDequeuedItemStatusAsync(connection, transaction, item.Id, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return item with { Status = "running" };
+        }
+        finally
+        {
+            DequeueGate.Release();
+        }
     }
 
     public async Task<IReadOnlyList<DownloadQueueItem>> GetTasksAsync(string? engine = null, CancellationToken cancellationToken = default)
@@ -814,6 +877,35 @@ WHERE queue_uuid = @queueUuid
         }
     }
 
+    private static async Task<bool> HasRunningPublicEngineAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<string> publicEngines,
+        string placeholders,
+        CancellationToken cancellationToken)
+    {
+        var sql = $@"
+SELECT 1
+FROM download_task
+WHERE status = 'running'
+  AND lower(engine) IN ({placeholders})
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        BindPublicEngineParameters(command, publicEngines);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null and not DBNull;
+    }
+
+    private static void BindPublicEngineParameters(
+        SqliteCommand command,
+        IReadOnlyList<string> publicEngines)
+    {
+        for (var index = 0; index < publicEngines.Count; index++)
+        {
+            command.Parameters.AddWithValue($"publicEngine{index}", publicEngines[index]);
+        }
+    }
+
     private static string BuildDequeueSelectSql(bool newestFirst, string extraWhereClause)
     {
         var orderBy = newestFirst ? "DESC" : "ASC";
@@ -888,6 +980,13 @@ WHERE id = @id;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        payloadJson = await MergeCurrentPrefetchStateAsync(
+            connection,
+            transaction,
+            queueUuid,
+            payloadJson,
+            cancellationToken);
         var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, payloadJson);
         const string sql = @"
 UPDATE download_task
@@ -907,10 +1006,118 @@ SET payload = @payload,
     lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
-        await using var command = new SqliteCommand(sql, connection);
+        await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
         command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task<string> MergeCurrentPrefetchStateAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string queueUuid,
+        string incomingPayloadJson,
+        CancellationToken cancellationToken)
+    {
+        const string selectSql = "SELECT payload FROM download_task WHERE queue_uuid = @queueUuid LIMIT 1;";
+        await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
+        selectCommand.Parameters.AddWithValue("queueUuid", queueUuid);
+        var currentPayloadJson = await selectCommand.ExecuteScalarAsync(cancellationToken) as string;
+        if (string.IsNullOrWhiteSpace(currentPayloadJson))
+        {
+            return incomingPayloadJson;
+        }
+
+        try
+        {
+            var current = JsonNode.Parse(currentPayloadJson) as JsonObject;
+            var incoming = JsonNode.Parse(incomingPayloadJson) as JsonObject;
+            if (current == null || incoming == null)
+            {
+                return incomingPayloadJson;
+            }
+
+            PreserveNonEmptyProperty(current, incoming, "LyricsStatus");
+            PreserveNonEmptyProperty(current, incoming, "ArtworkStatus");
+            PreserveNonEmptyProperty(current, incoming, "ArtworkError");
+            MergeFileArrays(current, incoming);
+            return incoming.ToJsonString();
+        }
+        catch (JsonException)
+        {
+            return incomingPayloadJson;
+        }
+    }
+
+    private static void PreserveNonEmptyProperty(JsonObject current, JsonObject incoming, string propertyName)
+    {
+        if (current[propertyName] is not JsonNode currentValue
+            || string.IsNullOrWhiteSpace(currentValue.ToString()))
+        {
+            return;
+        }
+
+        incoming[propertyName] = currentValue.DeepClone();
+    }
+
+    private static void MergeFileArrays(JsonObject current, JsonObject incoming)
+    {
+        if (current["Files"] is not JsonArray currentFiles || currentFiles.Count == 0)
+        {
+            return;
+        }
+
+        var merged = incoming["Files"] is JsonArray incomingFiles
+            ? (JsonArray)incomingFiles.DeepClone()
+            : new JsonArray();
+        var serialized = new HashSet<string>(
+            merged.Where(node => node != null).Select(node => node!.ToJsonString()),
+            StringComparer.Ordinal);
+        foreach (var file in currentFiles)
+        {
+            if (file == null || !serialized.Add(file.ToJsonString()))
+            {
+                continue;
+            }
+
+            merged.Add(file.DeepClone());
+        }
+
+        incoming["Files"] = merged;
+    }
+
+    public async Task UpdatePrefetchStateAsync(
+        string queueUuid,
+        string filesJson,
+        string lyricsStatus,
+        string artworkStatus,
+        string? artworkError,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET payload = CASE
+        WHEN json_valid(payload) THEN json_set(
+            payload,
+            '$.Files', json(@files),
+            '$.LyricsStatus', @lyricsStatus,
+            '$.ArtworkStatus', @artworkStatus,
+            '$.ArtworkError', @artworkError)
+        ELSE payload
+    END,
+    lyrics_status = @lyricsStatus,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("files", filesJson);
+        command.Parameters.AddWithValue("lyricsStatus", lyricsStatus);
+        command.Parameters.AddWithValue("artworkStatus", artworkStatus);
+        command.Parameters.AddWithValue("artworkError", (object?)artworkError ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1879,9 +2086,9 @@ ORDER BY
         command.Parameters.AddWithValue("deezerTrackId", NormalizeId(request.DeezerTrackId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("spotifyTrackId", NormalizeId(request.SpotifyTrackId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("appleTrackId", NormalizeId(request.AppleTrackId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("qobuzTrackId", NormalizeId(request.QobuzTrackId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("tidalTrackId", NormalizeId(request.TidalTrackId) ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("amazonTrackId", NormalizeId(request.AmazonTrackId) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("qobuzTrackId", EngineLinkParser.NormalizeNumericTrackId(request.QobuzTrackId) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("tidalTrackId", EngineLinkParser.NormalizeNumericTrackId(request.TidalTrackId) ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("amazonTrackId", EngineLinkParser.NormalizeAmazonTrackId(request.AmazonTrackId) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("artistName", request.ArtistName);
         command.Parameters.AddWithValue("artistPrimaryName", NormalizeId(request.ArtistPrimaryName) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("trackTitle", request.TrackTitle);
@@ -2819,13 +3026,22 @@ LIMIT 1;";
         command.Parameters.AddWithValue(prefix + "appleTrackId", (object?)NormalizeId(item.AppleTrackId) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "appleAlbumId", (object?)NormalizeId(item.AppleAlbumId) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "appleArtistId", (object?)NormalizeId(item.AppleArtistId) ?? DBNull.Value);
-        command.Parameters.AddWithValue(prefix + "qobuzTrackId", (object?)(NormalizeId(item.QobuzTrackId) ?? ResolvePayloadIdentity(item.PayloadJson, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId")) ?? DBNull.Value);
+        var qobuzTrackId = EngineLinkParser.NormalizeNumericTrackId(item.QobuzTrackId)
+            ?? EngineLinkParser.NormalizeNumericTrackId(
+                ResolvePayloadIdentity(item.PayloadJson, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId"));
+        command.Parameters.AddWithValue(prefix + "qobuzTrackId", (object?)qobuzTrackId ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "qobuzAlbumId", (object?)(NormalizeId(item.QobuzAlbumId) ?? ResolvePayloadIdentity(item.PayloadJson, "QobuzAlbumId", "qobuzAlbumId")) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "qobuzArtistId", (object?)(NormalizeId(item.QobuzArtistId) ?? ResolvePayloadIdentity(item.PayloadJson, "QobuzArtistId", "qobuzArtistId")) ?? DBNull.Value);
-        command.Parameters.AddWithValue(prefix + "tidalTrackId", (object?)(NormalizeId(item.TidalTrackId) ?? ResolvePayloadIdentity(item.PayloadJson, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId")) ?? DBNull.Value);
+        var tidalTrackId = EngineLinkParser.NormalizeNumericTrackId(item.TidalTrackId)
+            ?? EngineLinkParser.NormalizeNumericTrackId(
+                ResolvePayloadIdentity(item.PayloadJson, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId"));
+        command.Parameters.AddWithValue(prefix + "tidalTrackId", (object?)tidalTrackId ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "tidalAlbumId", (object?)(NormalizeId(item.TidalAlbumId) ?? ResolvePayloadIdentity(item.PayloadJson, "TidalAlbumId", "tidalAlbumId")) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "tidalArtistId", (object?)(NormalizeId(item.TidalArtistId) ?? ResolvePayloadIdentity(item.PayloadJson, "TidalArtistId", "tidalArtistId")) ?? DBNull.Value);
-        command.Parameters.AddWithValue(prefix + "amazonTrackId", (object?)(NormalizeId(item.AmazonTrackId) ?? ResolvePayloadIdentity(item.PayloadJson, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId")) ?? DBNull.Value);
+        var amazonTrackId = EngineLinkParser.NormalizeAmazonTrackId(item.AmazonTrackId)
+            ?? EngineLinkParser.NormalizeAmazonTrackId(
+                ResolvePayloadIdentity(item.PayloadJson, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId"));
+        command.Parameters.AddWithValue(prefix + "amazonTrackId", (object?)amazonTrackId ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "amazonAlbumId", (object?)(NormalizeId(item.AmazonAlbumId) ?? ResolvePayloadIdentity(item.PayloadJson, "AmazonAlbumId", "amazonAlbumId")) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "amazonArtistId", (object?)(NormalizeId(item.AmazonArtistId) ?? ResolvePayloadIdentity(item.PayloadJson, "AmazonArtistId", "amazonArtistId")) ?? DBNull.Value);
         command.Parameters.AddWithValue(prefix + "durationMs", (object?)item.DurationMs ?? DBNull.Value);
@@ -2947,7 +3163,7 @@ WHERE queue_order IS NOT NULL;";
                 TidalTrackId = GetNullableString(reader, 34),
                 TidalAlbumId = GetNullableString(reader, 35),
                 TidalArtistId = GetNullableString(reader, 36),
-                AmazonTrackId = GetNullableString(reader, 37),
+                AmazonTrackId = EngineLinkParser.NormalizeAmazonTrackId(GetNullableString(reader, 37)),
                 AmazonAlbumId = GetNullableString(reader, 38),
                 AmazonArtistId = GetNullableString(reader, 39)
             };
@@ -3077,7 +3293,8 @@ public sealed class DuplicateLookupRequest : DownloadIdentityLookupRequest
             AppleArtistId = FirstNonEmpty(item.AppleArtistId, ReadPayloadString(payload, "AppleArtistId", "appleArtistId")),
             QobuzTrackId = FirstNonEmpty(item.QobuzTrackId, ReadPayloadString(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId")),
             TidalTrackId = FirstNonEmpty(item.TidalTrackId, ReadPayloadString(payload, "TidalId", "tidalId", "TidalTrackId", "tidalTrackId")),
-            AmazonTrackId = FirstNonEmpty(item.AmazonTrackId, ReadPayloadString(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId")),
+            AmazonTrackId = EngineLinkParser.NormalizeAmazonTrackId(item.AmazonTrackId)
+                ?? EngineLinkParser.NormalizeAmazonTrackId(ReadPayloadString(payload, "AmazonId", "amazonId", "AmazonTrackId", "amazonTrackId")),
             ArtistName = item.ArtistName,
             TrackTitle = item.TrackTitle,
             DurationMs = item.DurationMs ?? ReadPayloadInt(payload, "DurationMs", "durationMs"),
