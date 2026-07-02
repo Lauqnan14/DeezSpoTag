@@ -1065,6 +1065,37 @@ public sealed class DownloadIntentService
         return resolved.Url;
     }
 
+    private async Task<AmazonCatalogItem?> ResolveAmazonAtmosAvailabilityAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+            ?? EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout);
+        AmazonCatalogItem? resolved = null;
+        if (!string.IsNullOrWhiteSpace(amazonId))
+        {
+            resolved = await _amazonMusicMetadataService.GetTrackAsync(amazonId, cancellationToken);
+        }
+
+        resolved ??= await _amazonMusicMetadataService.ResolveTrackAsync(
+            intent.Title,
+            intent.Artist,
+            intent.Album,
+            intent.DurationMs > 0 ? intent.DurationMs : null,
+            intent.Isrc,
+            cancellationToken);
+        if (resolved is null
+            || !resolved.HasAtmos
+            || string.IsNullOrWhiteSpace(resolved.Id)
+            || string.IsNullOrWhiteSpace(resolved.Url))
+        {
+            return null;
+        }
+
+        intent.AmazonId = resolved.Id;
+        return resolved;
+    }
+
     private static string? ResolveSpotifySourceUrl(string? sourceUrl, string? spotifyId)
     {
         if (!string.IsNullOrWhiteSpace(sourceUrl)
@@ -6438,10 +6469,10 @@ public sealed class DownloadIntentService
         long secondaryDestinationFolderId)
     {
         const string secondaryQuality = TidalAtmosQuality;
-        var amazonUrl = await ResolveAmazonAvailabilityUrlAsync(request.Intent, request.CancellationToken);
-        if (string.IsNullOrWhiteSpace(amazonUrl) || string.IsNullOrWhiteSpace(request.Intent.AmazonId))
+        var amazonTrack = await ResolveAmazonAtmosAvailabilityAsync(request.Intent, request.CancellationToken);
+        if (amazonTrack is null)
         {
-            _activityLog.Warn("Secondary Atmos mapping skipped: Amazon Music URL unavailable.");
+            _activityLog.Warn("Secondary Atmos mapping skipped: Amazon Music Atmos unavailable.");
             return false;
         }
 
@@ -6459,7 +6490,7 @@ public sealed class DownloadIntentService
             Availability: request.Availability));
         var payload = new AmazonQueueItem();
         PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            amazonUrl,
+            amazonTrack.Url,
             string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
             DownloadContentTypes.Atmos,
             fallbackInfo.AutoSources,
@@ -6470,7 +6501,7 @@ public sealed class DownloadIntentService
             secondaryDestinationFolderId,
             AtmosQuality));
         payload.Quality = secondaryQuality;
-        payload.AmazonId = request.Intent.AmazonId;
+        payload.AmazonId = amazonTrack.Id;
         payload.Id = Guid.NewGuid().ToString("N");
         payload.QualityBucket = AtmosQuality;
         ApplyIntentMetadata(payload, request.Intent);

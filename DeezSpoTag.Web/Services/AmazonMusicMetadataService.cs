@@ -256,7 +256,8 @@ public sealed class AmazonMusicMetadataService
                     track.SourceUrl,
                     string.IsNullOrWhiteSpace(track.Cover) ? albumCandidate.CoverUrl : track.Cover,
                     track.DurationMs > 0 ? track.DurationMs : null,
-                    track.Isrc);
+                    track.Isrc,
+                    track.HasAtmos || albumCandidate.HasAtmos);
                 if (IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
                 {
                     return candidate;
@@ -839,7 +840,8 @@ public sealed class AmazonMusicMetadataService
             Url: BuildCatalogUrl(id, type) ?? deeplink ?? string.Empty,
             CoverUrl: NormalizeAmazonImageUrl(FirstImage(node)),
             DurationMs: durationMs,
-            Isrc: FirstText(node, "isrc", "ISRC"));
+            Isrc: FirstText(node, "isrc", "ISRC"),
+            HasAtmos: JsonElementContainsAtmos(node));
     }
 
     private static AmazonCatalogItem? ReadArtistProfile(JsonElement root, string id, string url)
@@ -872,7 +874,8 @@ public sealed class AmazonMusicMetadataService
                 Url: url,
                 CoverUrl: NormalizeAmazonImageUrl(FirstImage(node)),
                 DurationMs: null,
-                Isrc: string.Empty);
+                Isrc: string.Empty,
+                HasAtmos: JsonElementContainsAtmos(node));
         }
 
         return null;
@@ -1040,6 +1043,30 @@ public sealed class AmazonMusicMetadataService
                     CoverUrl = string.IsNullOrWhiteSpace(track.CoverUrl) ? collection.CoverUrl : track.CoverUrl
                 })
             .ToArray();
+    }
+
+    private static bool JsonElementContainsAtmos(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => ContainsAtmosMarker(element.GetString()),
+            JsonValueKind.Array => element.EnumerateArray().Any(JsonElementContainsAtmos),
+            JsonValueKind.Object => element.EnumerateObject().Any(prop => JsonElementContainsAtmos(prop.Value)),
+            _ => false
+        };
+    }
+
+    private static bool ContainsAtmosMarker(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Contains("DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)
+               || value.Contains("DOLBY ATMOS", StringComparison.OrdinalIgnoreCase)
+               || value.Contains("SPATIAL_AUDIO", StringComparison.OrdinalIgnoreCase)
+               || value.Contains("ATMOS", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ReadAlbumTitleFromContextMenu(JsonElement node)
@@ -1700,7 +1727,8 @@ public sealed record AmazonTrack(
     int DurationMs,
     int Position,
     string Isrc,
-    string AmazonId);
+    string AmazonId,
+    bool HasAtmos);
 
 public sealed record AmazonCatalogItem(
     string Id,
@@ -1711,7 +1739,8 @@ public sealed record AmazonCatalogItem(
     string Url,
     string CoverUrl,
     int? DurationMs,
-    string Isrc)
+    string Isrc,
+    bool HasAtmos)
 {
     public AmazonTrack ToTrack(int position)
         => new(
@@ -1724,5 +1753,6 @@ public sealed record AmazonCatalogItem(
             DurationMs ?? 0,
             position,
             Isrc,
-            Id);
+            Id,
+            HasAtmos);
 }

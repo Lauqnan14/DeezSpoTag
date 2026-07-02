@@ -150,7 +150,8 @@ public sealed class AmazonMusicApiController : ControllerBase
                     durationSeconds = track.DurationMs > 0 ? track.DurationMs / 1000 : 0,
                     position = track.Position,
                     track_position = track.Position,
-                    isrc = track.Isrc
+                    isrc = track.Isrc,
+                    hasAtmos = track.HasAtmos
                 })
             }
         });
@@ -171,7 +172,8 @@ public sealed class AmazonMusicApiController : ControllerBase
         durationMs = item.DurationMs,
         isrc = item.Isrc,
         type = item.Type,
-        source = "amazon"
+        source = "amazon",
+        hasAtmos = item.HasAtmos
     };
 }
 
