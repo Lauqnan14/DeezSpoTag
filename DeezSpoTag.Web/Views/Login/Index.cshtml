@@ -404,7 +404,9 @@
                     <div class="qobuz-provider-editor" id="tidalProviderEditor" hidden>
                         <div class="qobuz-provider-actions">
                             <button class="btn btn-primary action-btn" id="tidalCheckProvidersBtn" type="button">Check now</button>
+                            <button class="btn btn-secondary action-btn" id="tidalVerifyPublicDownloadsBtn" type="button">Verify public downloads</button>
                         </div>
+                        <p class="text-muted" id="tidalPublicDownloadSessionStatus">Public download verification has not been checked.</p>
                         <div id="tidalProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
                     </div>
                 </section>
@@ -1862,6 +1864,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
     bindAsyncClick('tidalCheckProvidersBtn', checkTidalProviders);
+    bindAsyncClick('tidalVerifyPublicDownloadsBtn', startTidalPublicDownloadVerification);
+    loadTidalPublicDownloadSession();
     const tidalProviderRows = document.getElementById('tidalProviderRows');
     if (tidalProviderRows) {
         tidalProviderRows.addEventListener('change', async function(event) {
@@ -3140,6 +3144,113 @@ async function checkTidalProviders() {
     } finally {
         if (button) button.disabled = false;
     }
+}
+
+async function loadTidalPublicDownloadSession() {
+    const status = document.getElementById('tidalPublicDownloadSessionStatus');
+    const button = document.getElementById('tidalVerifyPublicDownloadsBtn');
+    if (!status || !button) return;
+
+    try {
+        const response = await fetch('/api/tidal/download/public-session', {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Tidal public download verification status failed'));
+        const result = await response.json();
+        const authenticated = result?.authenticated === true;
+        status.textContent = authenticated
+            ? 'Public Tidal downloads are verified.'
+            : 'Public Tidal downloads require verification.';
+        button.hidden = authenticated;
+    } catch (error) {
+        status.textContent = error.message || 'Tidal public download verification status failed.';
+        button.hidden = false;
+    }
+}
+
+async function startTidalPublicDownloadVerification() {
+    const button = document.getElementById('tidalVerifyPublicDownloadsBtn');
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch('/api/tidal/download/public-session/start', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Tidal public download verification failed'));
+        const result = await response.json();
+        if (result?.authenticated === true) {
+            await loadTidalPublicDownloadSession();
+            return;
+        }
+        if (!result?.verificationUrl) {
+            throw new Error('Tidal public download verification URL was not returned.');
+        }
+        const verificationWindow = window.open(
+            result.verificationUrl,
+            'tidal-public-download-verification',
+            'popup=yes,width=560,height=720');
+        if (!verificationWindow) {
+            throw new Error('The Tidal public download verification window was blocked.');
+        }
+
+        await waitForTidalPublicDownloadGrant(verificationWindow);
+    } catch (error) {
+        showToast(error.message || 'Tidal public download verification failed', 'error');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+function waitForTidalPublicDownloadGrant(verificationWindow) {
+    return new Promise((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+            cleanup();
+            reject(new Error('Tidal public download verification timed out.'));
+        }, 5 * 60 * 1000);
+        const closedPoll = window.setInterval(() => {
+            if (verificationWindow.closed) {
+                cleanup();
+                reject(new Error('Tidal public download verification was closed before completion.'));
+            }
+        }, 500);
+
+        const cleanup = () => {
+            window.clearTimeout(timeout);
+            window.clearInterval(closedPoll);
+            window.removeEventListener('message', onMessage);
+        };
+        const onMessage = async event => {
+            if (event.origin !== 'https://api.zarz.moe'
+                || event.data?.type !== 'zarz_grant'
+                || !event.data?.grant) {
+                return;
+            }
+
+            cleanup();
+            try {
+                const response = await fetch('/api/tidal/download/public-session/complete', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                    body: JSON.stringify({ grant: event.data.grant })
+                });
+                if (!response.ok) {
+                    throw new Error(await getApiErrorMessage(response, 'Tidal public download verification failed'));
+                }
+
+                verificationWindow.close();
+                await loadTidalPublicDownloadSession();
+                showToast('Public Tidal downloads verified.', 'success');
+                resolve();
+            } catch (error) {
+                reject(error);
+            }
+        };
+
+        window.addEventListener('message', onMessage);
+    });
 }
 
 function renderAmazonMusicProviders(providers, publicApiOnline) {

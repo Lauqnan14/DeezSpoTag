@@ -381,7 +381,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     {
         public string Id { get; set; } = string.Empty;
         public string DisplayName { get; set; } = string.Empty;
-        public string Kind { get; set; } = TidalPublicProviderDefaults.LegacyProviderKind;
+        public string Kind { get; set; } = TidalPublicProviderDefaults.ZarzProviderKind;
         public string Endpoint { get; set; } = string.Empty;
         public string? HealthEndpoint { get; set; }
         public string? HealthServiceKey { get; set; }

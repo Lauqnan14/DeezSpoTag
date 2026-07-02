@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Security.Cryptography;
 using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download;
@@ -15,6 +16,7 @@ using DeezSpoTag.Services.Download.Shared.Utils;
 using TagLib;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Matching;
+using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Tidal;
 
@@ -33,9 +35,21 @@ public sealed class TidalDownloadService
     private const string TidalPublicLocale = "en_US";
     private const string TidalPublicDeviceType = "BROWSER";
     private const int MaxConcurrentProviderResolutions = 2;
+    private const string ZarzSignedBaseUrl = "https://api.zarz.moe/v2";
+    private const string ZarzSignedDownloadPath = "/dl/tid";
+    private const string ZarzTicketsPath = "/tickets";
+    private const string ZarzBootstrapPath = "/bootstrap";
+    private const string ZarzChallengePath = "/challenge";
+    private const string ZarzExchangePath = "/session/exchange";
+    private const string ZarzAppVersion = "tidal-web@1.1.0";
+    private const string ZarzPlatform = "extension";
+    private const string ZarzSchemeLabel = "ZARZ-HMAC-V1";
+    private const int ZarzTimeWindowSeconds = 300;
+    private const string ZarzSessionFileName = "zarz-signed-session.json";
     private static readonly string[] PlaylistLineSeparators = { "\r\n", "\n" };
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
+    private static readonly SemaphoreSlim ZarzSessionGate = new(1, 1);
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -49,6 +63,7 @@ public sealed class TidalDownloadService
     private readonly HttpClient _client;
     private readonly TidalApiProviderSource _providerSource;
     private readonly ITidalAccessTokenProvider _accessTokenProvider;
+    private readonly string _zarzSessionPath;
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
@@ -58,6 +73,7 @@ public sealed class TidalDownloadService
         _logger = logger;
         _providerSource = providerSource;
         _accessTokenProvider = accessTokenProvider;
+        _zarzSessionPath = Path.Join(DeezSpoTagDataRootResolver.Resolve(), "tidal", ZarzSessionFileName);
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(15)
@@ -736,16 +752,6 @@ public sealed class TidalDownloadService
         }.Uri.ToString();
     }
 
-    private async Task<string?> FetchManifestFromApiAsync(
-        string apiBase,
-        long trackId,
-        string quality,
-        CancellationToken cancellationToken)
-    {
-        return await FetchManifestFromLegacyTrackEndpointAsync(apiBase, trackId, quality, cancellationToken)
-            ?? await FetchManifestFromTrackManifestsEndpointAsync(apiBase, trackId, quality, cancellationToken);
-    }
-
     private async Task<string?> FetchManifestFromProviderAsync(
         TidalPublicProvider provider,
         long trackId,
@@ -755,12 +761,12 @@ public sealed class TidalDownloadService
         await ProviderResolutionGate.WaitAsync(cancellationToken);
         try
         {
-            if (string.Equals(provider.Kind, TidalPublicProviderDefaults.ZarzProviderKind, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(provider.Kind, TidalPublicProviderDefaults.ZarzProviderKind, StringComparison.OrdinalIgnoreCase))
             {
-                return await FetchManifestFromZarzAsync(provider.Endpoint, trackId, quality, cancellationToken);
+                throw new InvalidOperationException($"Unsupported Tidal public provider kind: {provider.Kind}.");
             }
 
-            return await FetchManifestFromApiAsync(provider.Endpoint, trackId, quality, cancellationToken);
+            return await FetchManifestFromZarzAsync(trackId, quality, cancellationToken);
         }
         finally
         {
@@ -769,7 +775,6 @@ public sealed class TidalDownloadService
     }
 
     private async Task<string?> FetchManifestFromZarzAsync(
-        string endpoint,
         long trackId,
         string quality,
         CancellationToken cancellationToken)
@@ -777,7 +782,7 @@ public sealed class TidalDownloadService
         var normalizedQuality = NormalizeTidalDownloadQuality(quality);
         if (string.Equals(normalizedQuality, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase))
         {
-            return await FetchAtmosManifestFromZarzAsync(endpoint, trackId, cancellationToken);
+            return await FetchAtmosManifestFromZarzAsync(trackId, cancellationToken);
         }
 
         var payload = new
@@ -785,20 +790,7 @@ public sealed class TidalDownloadService
             id = trackId.ToString(CultureInfo.InvariantCulture),
             quality = normalizedQuality
         };
-        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload, SerializerOptions), Encoding.UTF8, "application/json")
-        };
-        request.Headers.TryAddWithoutValidation("User-Agent", "SpotiFLAC-Mobile/4.6.0");
-        request.Headers.TryAddWithoutValidation("Accept", "application/json");
-        using var response = await _client.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz provider", response, errorBody));
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await SendZarzDownloadJsonAsync(payload, trackId, cancellationToken);
         if (string.IsNullOrWhiteSpace(body))
         {
             throw new InvalidOperationException("Tidal Zarz provider returned an empty response.");
@@ -813,7 +805,6 @@ public sealed class TidalDownloadService
     }
 
     private async Task<string?> FetchAtmosManifestFromZarzAsync(
-        string endpoint,
         long trackId,
         CancellationToken cancellationToken)
     {
@@ -823,20 +814,7 @@ public sealed class TidalDownloadService
             endpoint = "manifests",
             formats = new[] { "EAC3_JOC" }
         };
-        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload, SerializerOptions), Encoding.UTF8, "application/json")
-        };
-        request.Headers.TryAddWithoutValidation("User-Agent", "SpotiFLAC-Mobile/4.6.0");
-        request.Headers.TryAddWithoutValidation("Accept", "application/json");
-        using var response = await _client.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz Atmos provider", response, errorBody));
-        }
-
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await SendZarzDownloadJsonAsync(payload, trackId, cancellationToken);
         if (!TryExtractZarzAtmosManifestUri(body, out var manifestUri))
         {
             throw new InvalidOperationException("Tidal Zarz Atmos provider did not return a manifest URI.");
@@ -854,110 +832,379 @@ public sealed class TidalDownloadService
             : ManifestPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifestText));
     }
 
-    private async Task<string?> FetchManifestFromLegacyTrackEndpointAsync(
-        string apiBase,
+    private async Task<string> SendZarzDownloadJsonAsync<TPayload>(
+        TPayload payload,
         long trackId,
-        string quality,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            var url = $"{apiBase}/track/?id={trackId}&quality={quality}";
-            using var response = await _client.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+        var ticket = await RequestZarzTicketAsync(trackId, cancellationToken);
+        var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions);
+        using var response = await SendZarzSignedRequestAsync(
+            HttpMethod.Post,
+            ZarzSignedDownloadPath,
+            bodyBytes,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                return null;
-            }
-
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            return TryParseManifest(body, out var manifest) ? manifest : null;
-        }
-        catch (OperationCanceledException)
+                ["X-Zarz-Ticket"] = ticket
+            },
+            cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
         {
-            return null;
+            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz provider", response, body));
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Tidal legacy API {Api} failed for track {TrackId}", apiBase, trackId);
-            }
 
-            return null;
-        }
+        return body;
     }
 
-    private async Task<string?> FetchManifestFromTrackManifestsEndpointAsync(
-        string apiBase,
-        long trackId,
-        string quality,
-        CancellationToken cancellationToken)
+    private async Task<string> RequestZarzTicketAsync(long trackId, CancellationToken cancellationToken)
     {
-        try
+        var resourceHash = Sha256Hex(Encoding.UTF8.GetBytes($"tid:track:{trackId.ToString(CultureInfo.InvariantCulture).ToLowerInvariant()}"));
+        var payload = new
         {
-            var url = BuildTrackManifestsUrl(apiBase, trackId, quality);
-            using var response = await _client.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (TryParseManifest(body, out var manifest))
-            {
-                return manifest;
-            }
-
-            if (!TryExtractManifestUri(body, out var manifestUri))
-            {
-                return null;
-            }
-
-            using var manifestResponse = await _client.GetAsync(manifestUri, cancellationToken);
-            if (!manifestResponse.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var manifestText = await manifestResponse.Content.ReadAsStringAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(manifestText))
-            {
-                return null;
-            }
-
-            return ManifestPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifestText));
-        }
-        catch (OperationCanceledException)
-        {
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Tidal trackManifests API {Api} failed for track {TrackId}", apiBase, trackId);
-            }
-
-            return null;
-        }
-    }
-
-    private static string BuildTrackManifestsUrl(string apiBase, long trackId, string quality)
-    {
-        var query = new List<KeyValuePair<string, string>>
-        {
-            new("id", trackId.ToString()),
-            new("quality", string.IsNullOrWhiteSpace(quality) ? "LOSSLESS" : quality),
-            new("adaptive", "false"),
-            new("formats", "FLAC_HIRES"),
-            new("formats", "FLAC"),
-            new("formats", "AACLC")
+            capability = "download_ticket",
+            provider = "tid",
+            resource_hash = resourceHash
         };
+        var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions);
+        using var response = await SendZarzSignedRequestAsync(
+            HttpMethod.Post,
+            ZarzTicketsPath,
+            bodyBytes,
+            null,
+            cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz ticket provider", response, body));
+        }
 
-        var encodedQuery = string.Join(
-            "&",
-            query.Select(pair => $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"));
-        return $"{apiBase.TrimEnd('/')}/trackManifests/?{encodedQuery}";
+        try
+        {
+            var ticket = JsonSerializer.Deserialize<ZarzTicketResponse>(body, SerializerOptions);
+            var value = !string.IsNullOrWhiteSpace(ticket?.TicketId) ? ticket.TicketId : ticket?.Ticket;
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("Tidal Zarz ticket provider returned invalid JSON.", ex);
+        }
+
+        throw new InvalidOperationException("Tidal Zarz ticket provider did not return a ticket.");
+    }
+
+    private async Task<HttpResponseMessage> SendZarzSignedRequestAsync(
+        HttpMethod method,
+        string path,
+        byte[]? bodyBytes,
+        IReadOnlyDictionary<string, string>? extraHeaders,
+        CancellationToken cancellationToken)
+    {
+        var session = await EnsureZarzSignedSessionAsync(cancellationToken);
+        var uri = BuildZarzSignedUri(path);
+        var bytes = bodyBytes ?? Array.Empty<byte>();
+        var timestamp = DateTimeOffset.UtcNow;
+        var timestampValue = timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        var nonce = RandomHex(12);
+        var bodyHash = Sha256Hex(bytes);
+        var window = timestamp.ToUnixTimeSeconds() / ZarzTimeWindowSeconds;
+        var rollingInput = $"{window}:{session.SessionId}";
+        var rollingKey = Base64UrlNoPadding(HmacSha256(Encoding.UTF8.GetBytes(session.SessionSecret), Encoding.UTF8.GetBytes(rollingInput)));
+        var escapedPath = uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped);
+        var signingInput = string.Join(
+            "\n",
+            ZarzSchemeLabel,
+            method.Method.ToUpperInvariant(),
+            "/" + escapedPath.TrimStart('/'),
+            string.Empty,
+            bodyHash,
+            timestampValue,
+            nonce,
+            session.SessionId,
+            ZarzAppVersion,
+            ZarzPlatform);
+        var signature = Base64UrlNoPadding(HmacSha256(Encoding.UTF8.GetBytes(rollingKey), Encoding.UTF8.GetBytes(signingInput)));
+
+        using var request = new HttpRequestMessage(method, uri);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+        request.Headers.TryAddWithoutValidation("X-Zarz-Session", session.SessionId);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Timestamp", timestampValue);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Nonce", nonce);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Body-SHA256", bodyHash);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Signature", signature);
+        request.Headers.TryAddWithoutValidation("X-Zarz-App-Version", ZarzAppVersion);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Platform", ZarzPlatform);
+        if (extraHeaders != null)
+        {
+            foreach (var header in extraHeaders)
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        if (bodyBytes != null)
+        {
+            request.Content = new ByteArrayContent(bodyBytes);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        }
+
+        var response = await _client.SendAsync(request, cancellationToken);
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            await ClearZarzSignedSessionAsync(cancellationToken);
+        }
+
+        return response;
+    }
+
+    private async Task<ZarzSignedSessionRecord> EnsureZarzSignedSessionAsync(CancellationToken cancellationToken)
+    {
+        await ZarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var existing = await LoadZarzSignedSessionNoLockAsync(cancellationToken);
+            if (existing?.IsUsable == true)
+            {
+                return existing;
+            }
+
+            throw new InvalidOperationException(
+                "Tidal public download verification is required. Verify Zarz in the Tidal Public API Providers section.");
+        }
+        finally
+        {
+            ZarzSessionGate.Release();
+        }
+    }
+
+    public async Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
+    {
+        await ZarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            return (await LoadZarzSignedSessionNoLockAsync(cancellationToken))?.IsUsable == true;
+        }
+        finally
+        {
+            ZarzSessionGate.Release();
+        }
+    }
+
+    public async Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken)
+    {
+        await ZarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var existing = await LoadZarzSignedSessionNoLockAsync(cancellationToken);
+            if (existing?.IsUsable == true)
+            {
+                return null;
+            }
+
+            return await BootstrapZarzSignedSessionNoLockAsync(existing?.InstallId, cancellationToken);
+        }
+        finally
+        {
+            ZarzSessionGate.Release();
+        }
+    }
+
+    public async Task CompletePublicDownloadVerificationAsync(
+        string grant,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(grant))
+        {
+            throw new InvalidOperationException("Tidal public download verification grant is missing.");
+        }
+
+        await ZarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var record = await LoadZarzSignedSessionNoLockAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Tidal public download verification was not started.");
+            if (string.IsNullOrWhiteSpace(record.InstallId))
+            {
+                throw new InvalidOperationException("Tidal public download install identity is missing.");
+            }
+
+            var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(
+                new
+                {
+                    grant = grant.Trim(),
+                    install_id = record.InstallId,
+                    app_version = ZarzAppVersion,
+                    platform = ZarzPlatform
+                },
+                SerializerOptions);
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildZarzSignedUri(ZarzExchangePath))
+            {
+                Content = new ByteArrayContent(bodyBytes)
+            };
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+            request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+            using var response = await _client.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz session exchange", response, body));
+            }
+
+            var exchanged = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
+            record.SessionId = exchanged?.SessionId ?? string.Empty;
+            record.SessionSecret = exchanged?.SessionSecret ?? string.Empty;
+            record.ExpiresAt = exchanged?.ExpiresAt;
+            if (!record.IsUsable)
+            {
+                throw new InvalidOperationException("Tidal Zarz session exchange did not return a usable session.");
+            }
+
+            await SaveZarzSignedSessionNoLockAsync(record, cancellationToken);
+        }
+        finally
+        {
+            ZarzSessionGate.Release();
+        }
+    }
+
+    private async Task<ZarzSignedSessionRecord?> LoadZarzSignedSessionNoLockAsync(CancellationToken cancellationToken)
+    {
+        if (!IOFile.Exists(_zarzSessionPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = await IOFile.ReadAllTextAsync(_zarzSessionPath, cancellationToken);
+            return JsonSerializer.Deserialize<ZarzSignedSessionRecord>(json, SerializerOptions);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            _logger.LogWarning(ex, "Failed to load Tidal Zarz signed session.");
+            return null;
+        }
+    }
+
+    private async Task SaveZarzSignedSessionNoLockAsync(ZarzSignedSessionRecord session, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_zarzSessionPath) ?? DeezSpoTagDataRootResolver.Resolve());
+        await IOFile.WriteAllTextAsync(_zarzSessionPath, JsonSerializer.Serialize(session, SerializerOptions), cancellationToken);
+        if (!OperatingSystem.IsWindows())
+        {
+            IOFile.SetUnixFileMode(_zarzSessionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    private async Task ClearZarzSignedSessionAsync(CancellationToken cancellationToken)
+    {
+        await ZarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (IOFile.Exists(_zarzSessionPath))
+            {
+                IOFile.Delete(_zarzSessionPath);
+            }
+        }
+        finally
+        {
+            ZarzSessionGate.Release();
+        }
+    }
+
+    private async Task<string?> BootstrapZarzSignedSessionNoLockAsync(
+        string? existingInstallId,
+        CancellationToken cancellationToken)
+    {
+        var installId = string.IsNullOrWhiteSpace(existingInstallId) ? Guid.NewGuid().ToString("N") : existingInstallId;
+        var builder = new UriBuilder(BuildZarzSignedUri(ZarzBootstrapPath))
+        {
+            Query = string.Join(
+                "&",
+                new Dictionary<string, string>
+                {
+                    ["app_version"] = ZarzAppVersion,
+                    ["install_id"] = installId
+                }.Select(pair => $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"))
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+        using var response = await _client.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz bootstrap", response, body));
+        }
+
+        var payload = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
+        var session = new ZarzSignedSessionRecord
+        {
+            InstallId = installId,
+            SessionId = payload?.SessionId ?? string.Empty,
+            SessionSecret = payload?.SessionSecret ?? string.Empty,
+            ExpiresAt = payload?.ExpiresAt
+        };
+        if (session.IsUsable)
+        {
+            await SaveZarzSignedSessionNoLockAsync(session, cancellationToken);
+            return null;
+        }
+
+        await SaveZarzSignedSessionNoLockAsync(session, cancellationToken);
+        var verificationUrl = payload?.AuthUrl ?? payload?.ChallengeUrl;
+        if (string.IsNullOrWhiteSpace(verificationUrl) && !string.IsNullOrWhiteSpace(payload?.ChallengeId))
+        {
+            verificationUrl = BuildZarzChallengeUrl(payload.ChallengeId);
+        }
+
+        return !string.IsNullOrWhiteSpace(verificationUrl)
+            ? verificationUrl
+            : throw new InvalidOperationException("Tidal Zarz bootstrap did not return a verification challenge.");
+    }
+
+    private static string BuildZarzChallengeUrl(string challengeId)
+    {
+        var challengeBuilder = new UriBuilder(BuildZarzSignedUri(ZarzChallengePath))
+        {
+            Query = $"id={WebUtility.UrlEncode(challengeId)}"
+        };
+        return challengeBuilder.Uri.ToString();
+    }
+
+    private static Uri BuildZarzSignedUri(string path)
+    {
+        var baseUri = new Uri(ZarzSignedBaseUrl.TrimEnd('/') + "/");
+        return new Uri(baseUri, path.TrimStart('/'));
+    }
+
+    private static string Sha256Hex(byte[] value)
+    {
+        var hash = SHA256.HashData(value);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static byte[] HmacSha256(byte[] key, byte[] value)
+    {
+        using var hmac = new HMACSHA256(key);
+        return hmac.ComputeHash(value);
+    }
+
+    private static string Base64UrlNoPadding(byte[] value)
+        => Convert.ToBase64String(value)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+    private static string RandomHex(int byteCount)
+    {
+        var bytes = RandomNumberGenerator.GetBytes(byteCount);
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
     private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
@@ -1832,83 +2079,6 @@ public sealed class TidalDownloadService
         return false;
     }
 
-    private static bool TryExtractManifestUri(string body, out string manifestUri)
-    {
-        manifestUri = "";
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            return TryFindManifestUri(document.RootElement, out manifestUri);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    private static bool TryFindManifestUri(JsonElement element, out string manifestUri)
-    {
-        return element.ValueKind switch
-        {
-            JsonValueKind.Object => TryFindManifestUriInObject(element, out manifestUri),
-            JsonValueKind.Array => TryFindManifestUriInArray(element, out manifestUri),
-            _ => NoManifestUri(out manifestUri)
-        };
-    }
-
-    private static bool TryFindManifestUriInObject(JsonElement element, out string manifestUri)
-    {
-        if (TryReadManifestUriProperty(element, out manifestUri))
-        {
-            return true;
-        }
-
-        var resolvedManifestUri = element.EnumerateObject()
-            .Select(property => TryFindManifestUri(property.Value, out var resolvedUri) ? resolvedUri : null)
-            .FirstOrDefault(static resolvedUri => !string.IsNullOrWhiteSpace(resolvedUri));
-        if (!string.IsNullOrWhiteSpace(resolvedManifestUri))
-        {
-            manifestUri = resolvedManifestUri;
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool TryReadManifestUriProperty(JsonElement element, out string manifestUri)
-    {
-        manifestUri = "";
-        if (!element.TryGetProperty("uri", out var uriProperty)
-            || uriProperty.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        manifestUri = uriProperty.GetString() ?? "";
-        return !string.IsNullOrWhiteSpace(manifestUri);
-    }
-
-    private static bool TryFindManifestUriInArray(JsonElement element, out string manifestUri)
-    {
-        var resolvedManifestUri = element.EnumerateArray()
-            .Select(item => TryFindManifestUri(item, out var resolvedUri) ? resolvedUri : null)
-            .FirstOrDefault(static resolvedUri => !string.IsNullOrWhiteSpace(resolvedUri));
-        if (!string.IsNullOrWhiteSpace(resolvedManifestUri))
-        {
-            manifestUri = resolvedManifestUri;
-            return true;
-        }
-
-        manifestUri = "";
-        return false;
-    }
-
-    private static bool NoManifestUri(out string manifestUri)
-    {
-        manifestUri = "";
-        return false;
-    }
-
     private static string TryDecodeManifest(string payload)
     {
         if (string.IsNullOrWhiteSpace(payload))
@@ -2482,6 +2652,57 @@ public sealed class TidalDownloadService
             "ATMOS" => "DOLBY_ATMOS",
             _ => normalized
         };
+    }
+
+    private sealed class ZarzSignedSessionRecord
+    {
+        [JsonPropertyName("install_id")]
+        public string InstallId { get; set; } = "";
+
+        [JsonPropertyName("session_id")]
+        public string SessionId { get; set; } = "";
+
+        [JsonPropertyName("session_secret")]
+        public string SessionSecret { get; set; } = "";
+
+        [JsonPropertyName("expires_at")]
+        public DateTimeOffset? ExpiresAt { get; set; }
+
+        [JsonIgnore]
+        public bool IsUsable
+            => !string.IsNullOrWhiteSpace(SessionId)
+                && !string.IsNullOrWhiteSpace(SessionSecret)
+                && (!ExpiresAt.HasValue || ExpiresAt.Value > DateTimeOffset.UtcNow.AddMinutes(1));
+    }
+
+    private sealed class ZarzBootstrapResponse
+    {
+        [JsonPropertyName("session_id")]
+        public string? SessionId { get; set; }
+
+        [JsonPropertyName("session_secret")]
+        public string? SessionSecret { get; set; }
+
+        [JsonPropertyName("expires_at")]
+        public DateTimeOffset? ExpiresAt { get; set; }
+
+        [JsonPropertyName("auth_url")]
+        public string? AuthUrl { get; set; }
+
+        [JsonPropertyName("challenge_url")]
+        public string? ChallengeUrl { get; set; }
+
+        [JsonPropertyName("challenge_id")]
+        public string? ChallengeId { get; set; }
+    }
+
+    private sealed class ZarzTicketResponse
+    {
+        [JsonPropertyName("ticket_id")]
+        public string? TicketId { get; set; }
+
+        [JsonPropertyName("ticket")]
+        public string? Ticket { get; set; }
     }
 
     private sealed class TidalSearchResponse

@@ -59,19 +59,11 @@ public sealed record TidalPublicProviderDefinition(
 
 public static class TidalPublicProviderDefaults
 {
-    public const string LegacyProviderKind = "legacy";
     public const string ZarzProviderKind = "zarz";
 
     private static readonly (string Id, string DisplayName, string Kind, string EncodedEndpoint, string? EncodedHealthEndpoint, string? HealthServiceKey)[] EncodedProviders =
     [
-        ("zarz", "Zarz", ZarzProviderKind, "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvZGwvdGlkMg==", "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvaGVhbHRo", "tidal"),
-        ("geeked", "Geeked", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLmdlZWtlZC53dGY=", null, null),
-        ("pink-hamster", "Pink Hamster", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLnAxbmtoYW1zdGVyLnh5eg==", null, null),
-        ("qqdl-vogel", "QQDL Vogel", LegacyProviderKind, "aHR0cHM6Ly92b2dlbC5xcWRsLnNpdGU=", null, null),
-        ("spotisaver-one", "SpotiSaver One", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLW9uZS5zcG90aXNhdmVyLm5ldA==", null, null),
-        ("spotisaver-two", "SpotiSaver Two", LegacyProviderKind, "aHR0cHM6Ly9oaWZpLXR3by5zcG90aXNhdmVyLm5ldA==", null, null),
-        ("kinoplus", "KinoPlus", LegacyProviderKind, "aHR0cHM6Ly90aWRhbC5raW5vcGx1cy5vbmxpbmU=", null, null),
-        ("binimum", "Binimum", LegacyProviderKind, "aHR0cHM6Ly90aWRhbC1hcGkuYmluaW11bS5vcmc=", null, null)
+        ("zarz", "Zarz", ZarzProviderKind, "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjIvZGwvdGlk", "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvaGVhbHRo", "tidal")
     ];
 
     public static IReadOnlyList<TidalPublicProviderDefinition> Providers { get; } = EncodedProviders

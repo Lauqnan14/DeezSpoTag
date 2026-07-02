@@ -24,10 +24,12 @@ public sealed class TidalDownloadApiController : ControllerBase
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly DownloadDedupeService _dedupeService;
+    private readonly TidalDownloadService _tidalDownloadService;
     private readonly ILogger<TidalDownloadApiController> _logger;
 
     public TidalDownloadApiController(
         DownloadControllerServices services,
+        TidalDownloadService tidalDownloadService,
         ILogger<TidalDownloadApiController> logger)
     {
         _queueRepository = services.QueueRepository;
@@ -37,7 +39,40 @@ public sealed class TidalDownloadApiController : ControllerBase
         _spotifyIdResolver = services.SpotifyIdResolver;
         _libraryRepository = services.LibraryRepository;
         _dedupeService = services.DedupeService;
+        _tidalDownloadService = tidalDownloadService;
         _logger = logger;
+    }
+
+    [HttpGet("public-session")]
+    public async Task<IActionResult> GetPublicSession(CancellationToken cancellationToken)
+        => Ok(new
+        {
+            authenticated = await _tidalDownloadService.HasPublicDownloadSessionAsync(cancellationToken)
+        });
+
+    [HttpPost("public-session/start")]
+    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken)
+    {
+        var verificationUrl = await _tidalDownloadService.BeginPublicDownloadVerificationAsync(cancellationToken);
+        return Ok(new
+        {
+            authenticated = string.IsNullOrWhiteSpace(verificationUrl),
+            verificationUrl
+        });
+    }
+
+    [HttpPost("public-session/complete")]
+    public async Task<IActionResult> CompletePublicSession(
+        [FromBody] TidalPublicDownloadGrantRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Grant))
+        {
+            return BadRequest(new { error = "Tidal public download verification grant is required." });
+        }
+
+        await _tidalDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
+        return Ok(new { authenticated = true });
     }
 
     [HttpPost]
@@ -218,6 +253,11 @@ public sealed class TidalDownloadBatchRequest : EngineDownloadBatchRequestBase
 {
     public List<TidalDownloadTrackDto> Tracks { get; set; } = new();
     public string? Quality { get; set; }
+}
+
+public sealed class TidalPublicDownloadGrantRequest
+{
+    public string? Grant { get; set; }
 }
 
 public sealed class TidalDownloadTrackDto : EngineDownloadTrackDtoBase
