@@ -1023,7 +1023,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             ? (TryGetAnonymousItems(merged[existingIndex])?.Count ?? 0)
             : 0;
 
-        if (existingIndex >= 0 && existingCount > 0)
+        if (existingIndex >= 0 && existingCount > 10)
         {
             return merged;
         }
