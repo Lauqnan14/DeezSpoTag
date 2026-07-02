@@ -146,6 +146,37 @@ internal static class SpotifyTracklistResolver
         return result.DeezerId;
     }
 
+    internal static string? TryResolveCachedDeezerTrackId(
+        SpotifyTrackSummary track,
+        ILogger logger)
+    {
+        EnsurePersistentCacheLoaded(logger);
+
+        var normalizedIsrc = NormalizeIsrc(track.Isrc);
+        var canonicalKey = BuildCanonicalTrackKey(track, normalizedIsrc);
+        if (!string.IsNullOrWhiteSpace(canonicalKey)
+            && TryGetCanonicalCached(canonicalKey, out var canonicalEntry, out var canonicalNegative)
+            && !canonicalNegative)
+        {
+            return NormalizeDeezerId(canonicalEntry.DeezerId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedIsrc)
+            && TryGetCached(IsrcCache, normalizedIsrc, out var cachedIsrcId))
+        {
+            return NormalizeDeezerId(cachedIsrcId);
+        }
+
+        var metadataKey = BuildMetadataKey(track);
+        if (!string.IsNullOrWhiteSpace(metadataKey)
+            && TryGetCached(MetadataCache, metadataKey, out var cachedMetadataId))
+        {
+            return NormalizeDeezerId(cachedMetadataId);
+        }
+
+        return null;
+    }
+
     internal static async Task<SpotifyTracklistResolveResult> ResolveFinalUnmatchedFromMetadataAsync(
         DeezerClient deezerClient,
         SpotifyTrackSummary track,

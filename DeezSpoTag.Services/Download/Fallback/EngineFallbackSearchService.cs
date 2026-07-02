@@ -34,20 +34,6 @@ public sealed record EngineFallbackSearchResult(
     string? ResolvedUrl,
     string ResolutionSource);
 
-public interface IAmazonFallbackTrackResolver
-{
-    Task<AmazonFallbackTrackResolution?> ResolveTrackAsync(
-        string title,
-        string artist,
-        string? album,
-        int? durationMs,
-        CancellationToken cancellationToken);
-}
-
-public sealed record AmazonFallbackTrackResolution(
-    string Id,
-    string Url);
-
 public sealed class EngineFallbackSearchService
 {
     private const string DeezerEngine = "deezer";
@@ -62,21 +48,18 @@ public sealed class EngineFallbackSearchService
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly TidalDownloadService? _tidalDownloadService;
-    private readonly IAmazonFallbackTrackResolver? _amazonFallbackTrackResolver;
     private readonly ILogger<EngineFallbackSearchService> _logger;
 
     public EngineFallbackSearchService(
         AppleMusicCatalogService appleCatalogService,
         ILogger<EngineFallbackSearchService> logger,
         QobuzTrackResolver? qobuzTrackResolver = null,
-        TidalDownloadService? tidalDownloadService = null,
-        IAmazonFallbackTrackResolver? amazonFallbackTrackResolver = null)
+        TidalDownloadService? tidalDownloadService = null)
     {
         _appleCatalogService = appleCatalogService;
         _logger = logger;
         _qobuzTrackResolver = qobuzTrackResolver;
         _tidalDownloadService = tidalDownloadService;
-        _amazonFallbackTrackResolver = amazonFallbackTrackResolver;
     }
 
     public async Task<EngineFallbackSearchResult> ResolveAsync(
@@ -140,15 +123,6 @@ public sealed class EngineFallbackSearchService
             }
         }
 
-        if (string.Equals(request.Engine, AmazonEngine, StringComparison.OrdinalIgnoreCase))
-        {
-            var amazonUrl = await ResolveAmazonUrlAsync(request, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(amazonUrl))
-            {
-                return new EngineFallbackSearchResult(amazonUrl, "amazon-metadata-search");
-            }
-        }
-
         return new EngineFallbackSearchResult(null, "unresolved");
     }
 
@@ -202,35 +176,6 @@ public sealed class EngineFallbackSearchService
                 request.Isrc ?? string.Empty,
                 durationSeconds,
                 cancellationToken);
-    }
-
-    private async Task<string?> ResolveAmazonUrlAsync(
-        EngineFallbackSearchRequest request,
-        CancellationToken cancellationToken)
-    {
-        if (_amazonFallbackTrackResolver == null
-            || string.IsNullOrWhiteSpace(request.Title)
-            || string.IsNullOrWhiteSpace(request.Artist))
-        {
-            return null;
-        }
-
-        var resolution = await _amazonFallbackTrackResolver.ResolveTrackAsync(
-            request.Title,
-            request.Artist,
-            request.Album,
-            request.DurationMs,
-            cancellationToken);
-        if (resolution == null)
-        {
-            return null;
-        }
-
-        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(resolution.Id)
-            ?? EngineLinkParser.TryExtractAmazonTrackId(resolution.Url, EngineLinkParser.RegexTimeout);
-        return string.IsNullOrWhiteSpace(amazonId)
-            ? null
-            : $"https://music.amazon.com/tracks/{amazonId}";
     }
 
     private static bool IsAtmosRequest(EngineFallbackSearchRequest request)

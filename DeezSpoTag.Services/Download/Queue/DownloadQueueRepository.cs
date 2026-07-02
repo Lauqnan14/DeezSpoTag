@@ -53,7 +53,8 @@ public sealed class DownloadQueueRepository
     private const string EnrichmentStatusNotRequired = "not_required";
     private const string CompletedQueueStatusSqlCondition = "lower(status) IN ('completed', 'complete')";
     private const string ResolutionStatusSql = "lower(CASE WHEN json_valid(payload) THEN COALESCE(CAST(json_extract(payload, '$.ResolutionStatus') AS TEXT), CAST(json_extract(payload, '$.resolutionStatus') AS TEXT), '') ELSE '' END)";
-    private const string QueuedItemReadyForDownloadSqlCondition = "1 = 1";
+    private const string QueuedItemReadyForDownloadSqlCondition =
+        "(" + ResolutionStatusSql + " = '' OR " + ResolutionStatusSql + " = 'resolved')";
     private const string UpdateDownloadTaskSqlPrefix = "\nUPDATE " + DownloadTaskTable;
     private readonly string _connectionString;
     private readonly DownloadStagingCleanupService? _stagingCleanupService;

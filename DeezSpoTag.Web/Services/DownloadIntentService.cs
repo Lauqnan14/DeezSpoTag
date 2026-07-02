@@ -213,6 +213,15 @@ public sealed class DownloadIntentService
     private const string AttributesField = "attributes";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SearchValues<char> QueryFragmentSeparators = SearchValues.Create("?#");
+    private static readonly string[] AllIdentityEngines =
+    {
+        DeezerPlatform,
+        SpotifyPlatform,
+        ApplePlatform,
+        QobuzPlatform,
+        TidalPlatform,
+        AmazonPlatform
+    };
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadOrchestrationService _orchestrationService;
@@ -287,11 +296,14 @@ public sealed class DownloadIntentService
 
         var workingIntent = CloneIntentForAvailabilityLookup(intent);
         NormalizeAvailabilityLookupIntent(workingIntent);
+        var settings = _settingsService.LoadSettings();
+        await ResolveTrackIdentityMatrixAsync(workingIntent, settings, AllIdentityEngines, cancellationToken);
         var availability = await ResolveAvailabilityAsync(workingIntent, cancellationToken);
 
-        var deezerUrl = string.IsNullOrWhiteSpace(availability?.DeezerUrl)
+        var deezerUrl = ResolveSourceUrlFromIntentIdentity(workingIntent, DeezerPlatform);
+        deezerUrl = string.IsNullOrWhiteSpace(deezerUrl) && string.IsNullOrWhiteSpace(availability?.DeezerUrl)
             ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, DeezerPlatform, availability, cancellationToken)
-            : availability!.DeezerUrl;
+            : deezerUrl ?? availability!.DeezerUrl;
         if (string.IsNullOrWhiteSpace(deezerUrl) && !string.IsNullOrWhiteSpace(workingIntent.Isrc))
         {
             deezerUrl = await ResolveIsrcUrlAsync(DeezerPlatform, workingIntent, cancellationToken);
@@ -304,15 +316,18 @@ public sealed class DownloadIntentService
                 : $"https://www.deezer.com/track/{normalizedDeezerId}";
         }
 
-        var tidalUrl = string.IsNullOrWhiteSpace(availability?.TidalUrl)
+        var tidalUrl = ResolveSourceUrlFromIntentIdentity(workingIntent, TidalPlatform);
+        tidalUrl = string.IsNullOrWhiteSpace(tidalUrl) && string.IsNullOrWhiteSpace(availability?.TidalUrl)
             ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, TidalPlatform, availability, cancellationToken)
-            : availability!.TidalUrl;
-        var amazonUrl = string.IsNullOrWhiteSpace(availability?.AmazonUrl)
+            : tidalUrl ?? availability!.TidalUrl;
+        var amazonUrl = ResolveSourceUrlFromIntentIdentity(workingIntent, AmazonPlatform);
+        amazonUrl = string.IsNullOrWhiteSpace(amazonUrl) && string.IsNullOrWhiteSpace(availability?.AmazonUrl)
             ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, AmazonPlatform, availability, cancellationToken)
-            : availability!.AmazonUrl;
-        var qobuzUrl = string.IsNullOrWhiteSpace(availability?.QobuzUrl)
+            : amazonUrl ?? availability!.AmazonUrl;
+        var qobuzUrl = ResolveSourceUrlFromIntentIdentity(workingIntent, QobuzPlatform);
+        qobuzUrl = string.IsNullOrWhiteSpace(qobuzUrl) && string.IsNullOrWhiteSpace(availability?.QobuzUrl)
             ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, QobuzPlatform, availability, cancellationToken)
-            : availability!.QobuzUrl;
+            : qobuzUrl ?? availability!.QobuzUrl;
         var appleUrl = string.IsNullOrWhiteSpace(availability?.AppleMusicUrl)
             ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, ApplePlatform, availability, cancellationToken)
             : availability!.AppleMusicUrl;
@@ -400,8 +415,7 @@ public sealed class DownloadIntentService
         }
 
         var settings = preparation.Settings;
-        ApplySourceUrlIdentity(intent);
-        await ResolveMissingAppleIdentityAsync(intent, settings, cancellationToken);
+        await ResolveTrackIdentityMatrixAsync(intent, settings, AllIdentityEngines, cancellationToken);
 
         var engine = ResolveVisibleQueueEngine(intent, settings, preparation.IsPodcastIntent);
         if (string.IsNullOrWhiteSpace(engine))
@@ -673,11 +687,17 @@ public sealed class DownloadIntentService
             target.AutoSources,
             state.Routing.Availability));
 
-        var sourceUrl = target.Resolution.SourceUrl;
-        if (string.IsNullOrWhiteSpace(sourceUrl))
-        {
-            sourceUrl = intent.SourceUrl;
-        }
+        await ResolveTrackIdentityMatrixAsync(
+            intent,
+            state.Settings,
+            fallbackInfo.FallbackPlan
+                .Select(step => step.Engine)
+                .Append(target.Engine),
+            cancellationToken);
+
+        var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, target.Engine)
+            ?? target.Resolution.SourceUrl
+            ?? intent.SourceUrl;
 
         var qobuzId = FirstNonEmpty(
             intent.QobuzId,
@@ -687,9 +707,40 @@ public sealed class DownloadIntentService
             TryExtractTidalTrackId(sourceUrl));
         var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
             ?? EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout);
+        var resolvedEngine = string.IsNullOrWhiteSpace(target.Engine) ? item.Engine : target.Engine;
+        var identityError = ValidateQueuedResolvedIdentity(
+            resolvedEngine,
+            sourceUrl,
+            intent.DeezerId,
+            intent.AppleId,
+            qobuzId,
+            tidalId,
+            amazonId);
+        if (!string.IsNullOrWhiteSpace(identityError))
+        {
+            return new QueuePreResolutionPayload.ResolutionResult(
+                resolvedEngine,
+                null,
+                selectedQuality,
+                fallbackInfo.AutoIndex,
+                fallbackInfo.FallbackPlan,
+                identityError,
+                Isrc: intent.Isrc,
+                DeezerId: intent.DeezerId,
+                DeezerAlbumId: intent.DeezerAlbumId,
+                DeezerArtistId: intent.DeezerArtistId,
+                SpotifyId: intent.SpotifyId,
+                AppleId: intent.AppleId,
+                QobuzId: qobuzId,
+                TidalId: tidalId,
+                AmazonId: amazonId,
+                DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
+                DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
+                ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+        }
 
         return new QueuePreResolutionPayload.ResolutionResult(
-            string.IsNullOrWhiteSpace(target.Engine) ? item.Engine : target.Engine,
+            resolvedEngine,
             sourceUrl,
             selectedQuality,
             fallbackInfo.AutoIndex,
@@ -707,6 +758,43 @@ public sealed class DownloadIntentService
             DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
             ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+    }
+
+    private static string? ValidateQueuedResolvedIdentity(
+        string engine,
+        string? sourceUrl,
+        string? deezerId,
+        string? appleId,
+        string? qobuzId,
+        string? tidalId,
+        string? amazonId)
+    {
+        var normalizedEngine = NormalizeEngineName(engine);
+        var url = sourceUrl ?? string.Empty;
+        return normalizedEngine switch
+        {
+            DeezerPlatform => !string.IsNullOrWhiteSpace(NormalizeDeezerTrackId(deezerId))
+                || IsServiceUrlMatch(url, DeezerPlatform)
+                    ? null
+                    : "Deezer identity unavailable for this track.",
+            ApplePlatform => !string.IsNullOrWhiteSpace(appleId)
+                || IsServiceUrlMatch(url, ApplePlatform)
+                    ? null
+                    : "Apple Music identity unavailable for this track.",
+            QobuzPlatform => !string.IsNullOrWhiteSpace(qobuzId)
+                || IsServiceUrlMatch(url, QobuzPlatform)
+                    ? null
+                    : "Qobuz identity unavailable for this track.",
+            TidalPlatform => !string.IsNullOrWhiteSpace(tidalId)
+                || IsServiceUrlMatch(url, TidalPlatform)
+                    ? null
+                    : "Tidal identity unavailable for this track.",
+            AmazonPlatform => !string.IsNullOrWhiteSpace(amazonId)
+                || IsServiceUrlMatch(url, AmazonPlatform)
+                    ? null
+                    : "Amazon Music identity unavailable for this track.",
+            _ => null
+        };
     }
 
     [ExcludeFromCodeCoverage]
@@ -966,6 +1054,7 @@ public sealed class DownloadIntentService
             intent.Artist,
             intent.Album,
             intent.DurationMs > 0 ? intent.DurationMs : null,
+            intent.Isrc,
             cancellationToken);
         if (resolved is null || string.IsNullOrWhiteSpace(resolved.Id))
         {
@@ -1088,6 +1177,11 @@ public sealed class DownloadIntentService
             await PopulateIntentMetadataAsync(intent, preparation.Settings, profileValidation.ResolvedDownloadTagSource, cancellationToken);
         }
         var settings = preparation.Settings;
+        await ResolveTrackIdentityMatrixAsync(
+            intent,
+            settings,
+            new[] { DeezerPlatform, SpotifyPlatform, ApplePlatform },
+            cancellationToken);
         var routingFailure = TryValidateExplicitEngineRouting(intent, preparation);
         if (routingFailure != null)
         {
@@ -1104,6 +1198,12 @@ public sealed class DownloadIntentService
         {
             return (noSourcesFailure, null);
         }
+
+        await ResolveTrackIdentityMatrixAsync(
+            intent,
+            settings,
+            routing.AutoSources.Select(source => DownloadSourceOrder.DecodeAutoSource(source).Source),
+            cancellationToken);
 
         var resolvedTarget = await ResolvePrimaryEnqueueTargetAsync(intent, routing, settings, preferIsrcOnly, cancellationToken);
         if (resolvedTarget?.Resolution.Engine == string.Empty
@@ -1125,14 +1225,6 @@ public sealed class DownloadIntentService
                 Message = "Unable to resolve mapping for any auto source.",
                 Engine = string.Empty
             }, null);
-        }
-
-        if (routing.AutoSources
-                .Select(DownloadSourceOrder.DecodeAutoSource)
-                .Any(step => string.Equals(step.Source, AmazonPlatform, StringComparison.OrdinalIgnoreCase))
-            && string.IsNullOrWhiteSpace(EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)))
-        {
-            await ResolveAmazonAvailabilityUrlAsync(intent, cancellationToken);
         }
 
         return (null, new EnqueueResolutionState(settings, routing, resolvedTarget));
@@ -1360,7 +1452,12 @@ public sealed class DownloadIntentService
         var tidalId = FirstNonEmpty(request.Intent.TidalId, TryExtractTidalTrackId(sourceUrl));
         if (string.IsNullOrWhiteSpace(tidalId))
         {
-            sourceUrl = await ResolveTidalUrlForQueueAsync(request, request.CancellationToken) ?? string.Empty;
+            await ResolveTrackIdentityMatrixAsync(
+                request.Intent,
+                request.Settings,
+                new[] { TidalPlatform },
+                request.CancellationToken);
+            sourceUrl = ResolveSourceUrlFromIntentIdentity(request.Intent, TidalPlatform) ?? string.Empty;
             tidalId = TryExtractTidalTrackId(sourceUrl);
         }
 
@@ -1401,8 +1498,12 @@ public sealed class DownloadIntentService
             ?? EngineLinkParser.TryExtractAmazonTrackId(request.Intent.SourceUrl, RegexTimeout);
         if (string.IsNullOrWhiteSpace(amazonId))
         {
-            var resolvedUrl = await ResolveAmazonAvailabilityUrlAsync(request.Intent, request.CancellationToken);
-            amazonId = EngineLinkParser.TryExtractAmazonTrackId(resolvedUrl, RegexTimeout);
+            await ResolveTrackIdentityMatrixAsync(
+                request.Intent,
+                request.Settings,
+                new[] { AmazonPlatform },
+                request.CancellationToken);
+            amazonId = EngineLinkParser.NormalizeAmazonTrackId(request.Intent.AmazonId);
         }
         if (string.IsNullOrWhiteSpace(amazonId))
         {
@@ -1432,29 +1533,6 @@ public sealed class DownloadIntentService
 
         var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
         return new EngineEnqueueOutcome(null, skipped);
-    }
-
-    private async Task<string?> ResolveTidalUrlForQueueAsync(
-        EngineEnqueueRequest request,
-        CancellationToken cancellationToken)
-    {
-        if (IsAtmosQuality(request.SelectedQuality)
-            || string.Equals(request.Intent.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
-        {
-            return await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
-                request.Intent.Title ?? string.Empty,
-                request.Intent.Artist ?? string.Empty,
-                request.Intent.Isrc ?? string.Empty,
-                request.DurationSeconds,
-                cancellationToken);
-        }
-
-        return await _tidalDownloadService.ResolveTrackUrlAsync(
-            request.Intent.Title ?? string.Empty,
-            request.Intent.Artist ?? string.Empty,
-            request.Intent.Isrc ?? string.Empty,
-            request.DurationSeconds,
-            cancellationToken);
     }
 
     private static string BuildTidalTrackUrl(string tidalId)
@@ -1587,7 +1665,12 @@ public sealed class DownloadIntentService
         var qobuzId = FirstNonEmpty(request.Intent.QobuzId, TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));
         if (string.IsNullOrWhiteSpace(qobuzId))
         {
-            sourceUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(request.Intent, request.CancellationToken) ?? string.Empty;
+            await ResolveTrackIdentityMatrixAsync(
+                request.Intent,
+                request.Settings,
+                new[] { QobuzPlatform },
+                request.CancellationToken);
+            sourceUrl = ResolveSourceUrlFromIntentIdentity(request.Intent, QobuzPlatform) ?? string.Empty;
             qobuzId = TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture);
         }
 
@@ -2549,6 +2632,8 @@ public sealed class DownloadIntentService
     {
         var bootstrap = BootstrapIntentResolution(intent);
         var sourceUrl = bootstrap.SourceUrl;
+        var settings = effectiveSettings ?? _settingsService.LoadSettings();
+        await TryHydrateIntentIsrcFromBootstrapAsync(intent, bootstrap);
         var directIdentityResult = TryResolveDirectEngineIdentity(intent, engine, sourceUrl);
         if (directIdentityResult.HasValue)
         {
@@ -2566,8 +2651,12 @@ public sealed class DownloadIntentService
             return (engine, sourceUrl, string.Empty, "watchlist-qobuz-deferred");
         }
 
-        await TryHydrateIntentIsrcFromBootstrapAsync(intent, bootstrap);
-        await TryHydrateIntentFromAmazonAsync(intent, cancellationToken);
+        await ResolveTrackIdentityMatrixAsync(intent, settings, new[] { engine }, cancellationToken);
+        var generatedIdentityResult = TryResolveDirectEngineIdentity(intent, engine, sourceUrl);
+        if (generatedIdentityResult.HasValue)
+        {
+            return generatedIdentityResult.Value;
+        }
 
         var amazonDeezerResult = TryResolveAmazonMappedDeezerSource(intent, engine);
         if (amazonDeezerResult.HasValue)
@@ -2575,7 +2664,6 @@ public sealed class DownloadIntentService
             return amazonDeezerResult.Value;
         }
 
-        var settings = effectiveSettings ?? _settingsService.LoadSettings();
         var userCountry = settings.DeezerCountry;
         var strictSpotifyDeezerMode = IsStrictSpotifyDeezerMode(settings, engine, sourceUrl, intent.SpotifyId);
         var resolverStrictMode = settings.StrictSpotifyDeezerMode;
@@ -2935,7 +3023,9 @@ public sealed class DownloadIntentService
             return string.Empty;
         }
 
-        return await _songLinkResolver.ResolveDeezerIdFromSpotifyAsync(spotifyId, cancellationToken) ?? string.Empty;
+        intent.SpotifyId = spotifyId;
+        await EnsureSpotifyMappedDeezerIdentityAsync(intent, _settingsService.LoadSettings(), cancellationToken);
+        return NormalizeDeezerTrackId(intent.DeezerId) ?? string.Empty;
     }
 
     private async Task<(string Engine, string? SourceUrl, string Message, string MappingSource)?> TryResolveEngineSpecificIntentUrlAsync(
@@ -3008,6 +3098,135 @@ public sealed class DownloadIntentService
         ApplyAvailabilityIdentity(intent, songLink);
         await ResolveMissingAppleIdentityAsync(intent, settings, cancellationToken);
         return songLink;
+    }
+
+    private async Task ResolveTrackIdentityMatrixAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        IEnumerable<string>? targetEngines,
+        CancellationToken cancellationToken)
+    {
+        ApplySourceUrlIdentity(intent);
+        await TryHydrateIntentFromAmazonAsync(intent, cancellationToken);
+        await EnsureSpotifyMappedDeezerIdentityAsync(intent, settings, cancellationToken);
+        await EnsureDeezerBackedIsrcAsync(intent);
+        await ResolveMissingAppleIdentityAsync(intent, settings, cancellationToken);
+
+        var engines = BuildIdentityEngineSet(targetEngines);
+        if (engines.Count == 0)
+        {
+            return;
+        }
+
+        if (engines.Contains(DeezerPlatform)
+            && string.IsNullOrWhiteSpace(NormalizeDeezerTrackId(intent.DeezerId))
+            && !string.IsNullOrWhiteSpace(intent.Isrc))
+        {
+            var deezerUrl = await ResolveIsrcUrlAsync(DeezerPlatform, intent, cancellationToken);
+            intent.DeezerId = NormalizeDeezerTrackId(TryExtractDeezerTrackId(deezerUrl)) ?? string.Empty;
+            await EnsureDeezerBackedIsrcAsync(intent);
+        }
+
+        if (engines.Contains(QobuzPlatform)
+            && string.IsNullOrWhiteSpace(intent.QobuzId))
+        {
+            var qobuzUrl = await ResolveQobuzUrlFromBuiltInLookupAsync(intent, cancellationToken);
+            intent.QobuzId = TryExtractQobuzTrackId(qobuzUrl)?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        if (engines.Contains(TidalPlatform)
+            && string.IsNullOrWhiteSpace(intent.TidalId))
+        {
+            var tidalUrl = await ResolveTidalUrlFromBuiltInLookupAsync(intent, cancellationToken);
+            intent.TidalId = TryExtractTidalTrackId(tidalUrl) ?? string.Empty;
+        }
+
+        if (engines.Contains(AmazonPlatform)
+            && string.IsNullOrWhiteSpace(EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)))
+        {
+            var amazonUrl = await ResolveAmazonAvailabilityUrlAsync(intent, cancellationToken);
+            intent.AmazonId = EngineLinkParser.TryExtractAmazonTrackId(amazonUrl, RegexTimeout) ?? string.Empty;
+        }
+    }
+
+    private static HashSet<string> BuildIdentityEngineSet(IEnumerable<string>? targetEngines)
+    {
+        var engines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (targetEngines == null)
+        {
+            return engines;
+        }
+
+        foreach (var engine in targetEngines)
+        {
+            var normalized = NormalizeEngineName(engine);
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                engines.Add(normalized);
+            }
+        }
+
+        return engines;
+    }
+
+    private async Task<string?> ResolveTidalUrlFromBuiltInLookupAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken)
+    {
+        var tidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(intent.SourceUrl), TryExtractTidalTrackId(intent.Url));
+        if (!string.IsNullOrWhiteSpace(tidalId))
+        {
+            intent.TidalId = tidalId;
+            return BuildTidalTrackUrl(tidalId);
+        }
+
+        if (string.IsNullOrWhiteSpace(intent.Title) || string.IsNullOrWhiteSpace(intent.Artist))
+        {
+            return null;
+        }
+
+        var durationSeconds = intent.DurationMs > 0
+            ? Math.Max(1, (int)Math.Round(intent.DurationMs / 1000d))
+            : 0;
+        return await _tidalDownloadService.ResolveTrackUrlAsync(
+            intent.Title,
+            intent.Artist,
+            intent.Isrc ?? string.Empty,
+            durationSeconds,
+            cancellationToken);
+    }
+
+    private static string? ResolveSourceUrlFromIntentIdentity(DownloadIntent intent, string engine)
+    {
+        var normalizedEngine = NormalizeEngineName(engine);
+        if (!string.IsNullOrWhiteSpace(intent.SourceUrl)
+            && IsServiceUrlMatch(intent.SourceUrl, normalizedEngine))
+        {
+            return intent.SourceUrl;
+        }
+
+        return normalizedEngine switch
+        {
+            DeezerPlatform => string.IsNullOrWhiteSpace(NormalizeDeezerTrackId(intent.DeezerId))
+                ? null
+                : $"https://www.deezer.com/track/{NormalizeDeezerTrackId(intent.DeezerId)}",
+            SpotifyPlatform => string.IsNullOrWhiteSpace(intent.SpotifyId)
+                ? null
+                : $"https://open.spotify.com/track/{Uri.EscapeDataString(intent.SpotifyId)}",
+            QobuzPlatform => string.IsNullOrWhiteSpace(intent.QobuzId)
+                ? null
+                : BuildQobuzTrackUrl(intent.QobuzId),
+            TidalPlatform => string.IsNullOrWhiteSpace(intent.TidalId)
+                ? null
+                : BuildTidalTrackUrl(intent.TidalId),
+            AmazonPlatform => string.IsNullOrWhiteSpace(EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId))
+                ? null
+                : $"https://music.amazon.com/tracks/{EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)}",
+            ApplePlatform => !string.IsNullOrWhiteSpace(intent.SourceUrl) && IsServiceUrlMatch(intent.SourceUrl, ApplePlatform)
+                ? intent.SourceUrl
+                : null,
+            _ => null
+        };
     }
 
     private async Task<SongLinkResult?> ResolveInitialAvailabilityAsync(
@@ -3613,6 +3832,73 @@ public sealed class DownloadIntentService
                 Logger: _logger,
                 CancellationToken: cancellationToken));
         return NormalizeDeezerTrackId(resolvedDeezerId);
+    }
+
+    private async Task EnsureSpotifyMappedDeezerIdentityAsync(
+        DownloadIntent intent,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var normalizedExistingDeezerId = NormalizeDeezerTrackId(intent.DeezerId);
+        if (!string.IsNullOrWhiteSpace(normalizedExistingDeezerId))
+        {
+            intent.DeezerId = normalizedExistingDeezerId;
+            await EnsureDeezerBackedIsrcAsync(intent);
+            return;
+        }
+
+        var spotifyId = FirstNonEmpty(
+            intent.SpotifyId,
+            TryExtractSpotifyId(intent.SourceUrl),
+            TryExtractSpotifyId(intent.Url));
+        if (string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return;
+        }
+
+        intent.SpotifyId = spotifyId;
+        var summary = BuildSpotifyTrackSummary(intent);
+        var cachedDeezerId = SpotifyTracklistResolver.TryResolveCachedDeezerTrackId(summary, _logger);
+        if (!string.IsNullOrWhiteSpace(cachedDeezerId))
+        {
+            intent.DeezerId = cachedDeezerId;
+            await EnsureDeezerBackedIsrcAsync(intent);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(summary.Name)
+            || string.IsNullOrWhiteSpace(summary.Artists))
+        {
+            return;
+        }
+
+        var resolvedDeezerId = await SpotifyTracklistResolver.ResolveDeezerTrackIdAsync(
+            _deezerClient,
+            summary,
+            new SpotifyTrackResolveOptions(
+                AllowFallbackSearch: true,
+                PreferIsrcOnly: false,
+                StrictMode: settings.StrictSpotifyDeezerMode,
+                BypassNegativeCanonicalCache: false,
+                Logger: _logger,
+                CancellationToken: cancellationToken));
+        var normalizedDeezerId = NormalizeDeezerTrackId(resolvedDeezerId);
+        if (!string.IsNullOrWhiteSpace(normalizedDeezerId))
+        {
+            intent.DeezerId = normalizedDeezerId;
+            await EnsureDeezerBackedIsrcAsync(intent);
+        }
+    }
+
+    private async Task EnsureDeezerBackedIsrcAsync(DownloadIntent intent)
+    {
+        if (!string.IsNullOrWhiteSpace(intent.Isrc)
+            || string.IsNullOrWhiteSpace(intent.DeezerId))
+        {
+            return;
+        }
+
+        intent.Isrc = await ResolveDeezerIsrcAsync(intent.DeezerId) ?? string.Empty;
     }
 
     private static string? NormalizeDeezerTrackId(string? trackId)

@@ -9,6 +9,8 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class TrackAnalysisBackgroundService : BackgroundService
 {
+    private readonly record struct AnalysisBatchOutcome(int Processed, int Completed);
+
     private const string StandardAnalysisMode = "standard";
     private const string StandardAnalysisVersion = "naudio-basic-1";
     private const string EnhancedAnalysisMode = "enhanced";
@@ -415,11 +417,11 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
                     }
 
                     var effectiveBatch = forceWhenDisabled ? batchSize : settings.BatchSize;
-                    var processed = await AnalyzeBatchAsync(
+                    var outcome = await AnalyzeBatchAsync(
                         settings with { BatchSize = Math.Clamp(effectiveBatch, 10, 500) },
                         stopWhenDisabled: !forceWhenDisabled,
                         run.Token);
-                    if (processed == 0)
+                    if (outcome.Processed == 0 || outcome.Completed == 0)
                     {
                         break;
                     }
@@ -500,7 +502,10 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private async Task<int> AnalyzeBatchAsync(VibeAnalysisSettingsDto settings, bool stopWhenDisabled, CancellationToken cancellationToken)
+    private async Task<AnalysisBatchOutcome> AnalyzeBatchAsync(
+        VibeAnalysisSettingsDto settings,
+        bool stopWhenDisabled,
+        CancellationToken cancellationToken)
     {
         var includeCompletedStandard = IsEnhancedAnalysisAvailableForRetry();
         var orderedLibraryIds = settings.UseLibraryOrder ? settings.LibraryOrder : Array.Empty<long>();
@@ -512,7 +517,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             cancellationToken: cancellationToken);
         if (tracks.Count == 0)
         {
-            return 0;
+            return new AnalysisBatchOutcome(0, 0);
         }
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -564,7 +569,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
 
         LogBatchErrors(errors, errorBuckets);
 
-        return processedTracks;
+        return new AnalysisBatchOutcome(processedTracks, completed);
     }
 
     private sealed record BatchAnalysisOutcome(bool Completed, string? Error);

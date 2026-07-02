@@ -1420,8 +1420,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyBlobService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyAppTokenService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AmazonMusicMetadataService>();
-        services.AddSingleton<DeezSpoTag.Services.Download.Fallback.IAmazonFallbackTrackResolver>(
-            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.AmazonMusicMetadataService>());
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistServiceDependencies>(sp =>
             new DeezSpoTag.Web.Services.SpotifyArtistServiceDependencies(

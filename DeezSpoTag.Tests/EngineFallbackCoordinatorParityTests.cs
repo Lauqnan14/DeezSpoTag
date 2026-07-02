@@ -339,18 +339,12 @@ public sealed class EngineFallbackCoordinatorParityTests
         bool fallbackSearchEnabled)
     {
         var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
-        var songLinkResolver = new SongLinkResolver(new SongLinkResolver.Dependencies
-        {
-            HttpClientFactory = new StubHttpClientFactory(),
-            Logger = NullLogger<SongLinkResolver>.Instance
-        });
         var appleCatalogService = new AppleMusicCatalogService(
             new StubHttpClientFactory(),
             settingsService,
             NullLogger<AppleMusicCatalogService>.Instance,
             new MemoryCache(new MemoryCacheOptions()));
         var fallbackSearchService = new EngineFallbackSearchService(
-            songLinkResolver,
             appleCatalogService,
             NullLogger<EngineFallbackSearchService>.Instance);
 

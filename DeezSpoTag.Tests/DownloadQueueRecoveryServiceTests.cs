@@ -65,18 +65,12 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             new DeezSpoTagListener(),
             NullLogger<DownloadRetryScheduler>.Instance,
             _cancellationRegistry);
-        var songLinkResolver = new SongLinkResolver(new SongLinkResolver.Dependencies
-        {
-            HttpClientFactory = new StubHttpClientFactory(),
-            Logger = NullLogger<SongLinkResolver>.Instance
-        });
         var appleCatalogService = new AppleMusicCatalogService(
             new StubHttpClientFactory(),
             _settingsService,
             NullLogger<AppleMusicCatalogService>.Instance,
             new MemoryCache(new MemoryCacheOptions()));
         var fallbackSearchService = new EngineFallbackSearchService(
-            songLinkResolver,
             appleCatalogService,
             NullLogger<EngineFallbackSearchService>.Instance);
         var fallbackCoordinator = new EngineFallbackCoordinator(

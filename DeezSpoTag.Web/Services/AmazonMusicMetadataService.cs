@@ -7,7 +7,7 @@ using DeezSpoTag.Services.Matching;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
+public sealed class AmazonMusicMetadataService
 {
     private const string DefaultHost = "music.amazon.com";
     private const string DefaultLocale = "en_US";
@@ -212,6 +212,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         string artist,
         string? album,
         int? durationMs,
+        string? isrc,
         CancellationToken cancellationToken)
     {
         var query = BuildTrackSearchQuery(title, artist, album);
@@ -223,29 +224,43 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         var search = await SearchAsync(query, "track", 25, cancellationToken);
         foreach (var candidate in search.Tracks.Where(IsDownloadableMusicTrackResult))
         {
-            var validation = TrackCandidateValidator.Validate(
-                new TrackMatchSource(
-                    Isrc: null,
-                    Title: title,
-                    Artist: artist,
-                    Album: album,
-                    DurationMs: durationMs),
-                new TrackMatchCandidate(
-                    ProviderId: candidate.Id,
-                    Isrc: candidate.Isrc,
-                    Title: candidate.Title,
-                    Artist: candidate.Artist,
-                    Album: candidate.Album,
-                    DurationMs: candidate.DurationMs),
-                new TrackCandidateValidationOptions(
-                    StrictWithoutIsrc: true,
-                    AllowMissingCandidateArtist: false,
-                    RequireCandidateDurationWhenSourceHasDuration: false,
-                    MaxIsrcDurationDifferenceMs: 20_000,
-                    MaxMetadataDurationDifferenceMs: 8_000));
-            if (validation.Accepted)
+            if (IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
             {
                 return candidate;
+            }
+        }
+
+        var albumQuery = BuildAlbumSearchQuery(title, artist, album);
+        if (string.IsNullOrWhiteSpace(albumQuery))
+        {
+            return null;
+        }
+
+        var albumSearch = await SearchAsync(albumQuery, "album", 8, cancellationToken);
+        foreach (var albumCandidate in albumSearch.Albums.Where(IsResolvableAlbumResult))
+        {
+            var tracklist = await GetTracklistAsync(albumCandidate.Id, "album", albumCandidate.Url, cancellationToken);
+            if (tracklist is null)
+            {
+                continue;
+            }
+
+            foreach (var track in tracklist.Tracks)
+            {
+                var candidate = new AmazonCatalogItem(
+                    track.AmazonId,
+                    "track",
+                    track.Title,
+                    track.Artist,
+                    string.IsNullOrWhiteSpace(track.Album) ? albumCandidate.Title : track.Album,
+                    track.SourceUrl,
+                    string.IsNullOrWhiteSpace(track.Cover) ? albumCandidate.CoverUrl : track.Cover,
+                    track.DurationMs > 0 ? track.DurationMs : null,
+                    track.Isrc);
+                if (IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
+                {
+                    return candidate;
+                }
             }
         }
 
@@ -255,23 +270,48 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
     private static string BuildTrackSearchQuery(string title, string artist, string? album)
         => string.Join(' ', new[] { title, artist, album }.Where(static value => !string.IsNullOrWhiteSpace(value)));
 
+    private static string BuildAlbumSearchQuery(string title, string artist, string? album)
+        => string.Join(' ', new[] { string.IsNullOrWhiteSpace(album) ? title : album, artist }.Where(static value => !string.IsNullOrWhiteSpace(value)));
+
     private static bool IsDownloadableMusicTrackResult(AmazonCatalogItem item)
         => item.Type == "track"
            && !string.IsNullOrWhiteSpace(item.Id)
            && !string.IsNullOrWhiteSpace(item.Title)
            && !string.IsNullOrWhiteSpace(item.Artist);
 
-    async Task<AmazonFallbackTrackResolution?> IAmazonFallbackTrackResolver.ResolveTrackAsync(
+    private static bool IsResolvableAlbumResult(AmazonCatalogItem item)
+        => item.Type == "album"
+           && !string.IsNullOrWhiteSpace(item.Id)
+           && !string.IsNullOrWhiteSpace(item.Title);
+
+    private static bool IsAcceptedResolvedTrack(
+        AmazonCatalogItem candidate,
         string title,
         string artist,
-        string? album,
         int? durationMs,
-        CancellationToken cancellationToken)
+        string? isrc)
     {
-        var item = await ResolveTrackAsync(title, artist, album, durationMs, cancellationToken);
-        return item == null || string.IsNullOrWhiteSpace(item.Id)
-            ? null
-            : new AmazonFallbackTrackResolution(item.Id, item.Url);
+        var validation = TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                Isrc: isrc,
+                Title: title,
+                Artist: artist,
+                Album: null,
+                DurationMs: durationMs),
+            new TrackMatchCandidate(
+                ProviderId: candidate.Id,
+                Isrc: candidate.Isrc,
+                Title: candidate.Title,
+                Artist: candidate.Artist,
+                Album: candidate.Album,
+                DurationMs: candidate.DurationMs),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: false,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: false,
+                MaxIsrcDurationDifferenceMs: 20_000,
+                MaxMetadataDurationDifferenceMs: 8_000));
+        return validation.Accepted;
     }
 
     private async Task<AmazonSession> CreateSessionAsync(CancellationToken cancellationToken)
