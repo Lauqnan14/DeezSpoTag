@@ -341,7 +341,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             return session?.IsUsable == true
                 ? session
                 : throw new InvalidOperationException(
-                    "Amazon public download verification is required. Verify Amazon Music API v2.2.0 in the Amazon Music Public API Providers section.");
+                    "Amazon public download verification is required. Verify zarz in the Amazon Music Public API Providers section.");
         }
         finally
         {

@@ -13,7 +13,7 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     private const string ProtectionPurpose = "DeezSpoTag.Qobuz.PublicProviders";
     private const string FileName = "qobuz-public-providers.json";
     private const string DisabledStatus = "disabled";
-    private const string MusicDlProviderKind = "musicdl";
+    private const string SignedProviderKind = "zarz-v2";
     private const string UnknownStatus = "unknown";
     private readonly ProtectedCredentialFileStore _store;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -346,11 +346,14 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
 
     private static IEnumerable<ProviderState> DefaultProviders()
     {
-        yield return Create("spotbye", "Spotbye", MusicDlProviderKind, "aHR0cHM6Ly9xb2J1ei5zcG90YnllLnF6ei5pby9kbC9xYno=", null, null, null);
-        yield return Create("zarz", "Zarz", MusicDlProviderKind, "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvZGwvcWJ6", null, "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvaGVhbHRo", "qobuz");
-        yield return Create("musicdl", "MusicDL", MusicDlProviderKind, "aHR0cHM6Ly9kbC5tdXNpY2RsLm1lL2RsL3Fieg==", null, null, null);
-        yield return Create("monochrome-trypt", "Monochrome Trypt", "monochrome", "aHR0cHM6Ly90cnlwdC1oaWZpLWRsLTQ1NjQ2MTkzMjY4Ni51cy13ZXN0MS5ydW4uYXBw", null, null, null);
-        yield return Create("monochrome-kenny", "Monochrome Kenny", "monochrome", "aHR0cHM6Ly9xb2J1ei5rZW5ueXkuY29tLmJy", null, null, null);
+        yield return Create(
+            "zarz-v2",
+            "zarz",
+            SignedProviderKind,
+            "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjIvZGwvcWJ6",
+            null,
+            "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvaGVhbHRo",
+            "qobuz");
     }
 
     private static ProviderState Create(string id, string name, string kind, string endpoint, string? region, string? healthEndpoint, string? healthServiceKey)

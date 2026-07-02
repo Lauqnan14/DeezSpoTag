@@ -7,6 +7,8 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Security.Cryptography;
 using IOFile = System.IO.File;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download;
@@ -16,16 +18,31 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Qobuz;
 
 public interface IQobuzDownloadService
 {
+    Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken);
+    Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken);
+    Task CompletePublicDownloadVerificationAsync(string grant, CancellationToken cancellationToken);
     Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken);
 }
 
 public sealed class QobuzDownloadService : IQobuzDownloadService
 {
+    private const string ZarzBaseUrl = "https://api.zarz.moe/v2";
+    private const string ZarzDownloadPath = "/dl/qbz";
+    private const string ZarzTicketPath = "/tickets";
+    private const string ZarzBootstrapPath = "/bootstrap";
+    private const string ZarzChallengePath = "/challenge";
+    private const string ZarzExchangePath = "/session/exchange";
+    private const string ZarzAppVersion = "qobuz-web@1.1.0";
+    private const string ZarzPlatform = "extension";
+    private const string ZarzScheme = "ZARZ-HMAC-V1";
+    private const int ZarzTimeWindowSeconds = 300;
+    private const string ZarzSessionFileName = "zarz-signed-session.json";
     private const string ApplicationJsonContentType = "application/json";
     private const string DownloadUrlUnavailableMessage = "Qobuz download URL not available";
     private const string FlacExtension = ".flac";
@@ -33,15 +50,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ProviderRequestTimeout = TimeSpan.FromSeconds(8);
-    private static readonly TimeSpan ProviderTransientRetryDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan ProviderCooldown = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan PreferredProviderTtl = TimeSpan.FromMinutes(15);
-    private const int ProviderHttpMaxAttempts = 2;
     private const int MaxConcurrentProviderResolutions = 2;
     private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderBackoffUntil = new(StringComparer.OrdinalIgnoreCase);
     private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
     private static readonly string[] ProviderUrlPropertyNames = ["url", "download_url", "link"];
-    private const string MusicDlUserAgent = "QobuzDL/1.0";
     private static readonly (int Start, int End)[] ExtendedLatinRanges =
     {
         (0x0100, 0x024F),
@@ -68,7 +81,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private readonly QobuzApiConfig _qobuzConfig;
     private readonly IQobuzCredentialProvider _credentialProvider;
     private readonly IQobuzPublicProviderRegistry _publicProviderRegistry;
-    private static readonly ConcurrentDictionary<string, PreferredProviderState> PreferredProviders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _zarzSessionPath;
+    private readonly SemaphoreSlim _zarzSessionGate = new(1, 1);
 
     public QobuzDownloadService(
         ILogger<QobuzDownloadService> logger,
@@ -92,6 +106,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Timeout = TimeSpan.FromMinutes(5)
         };
         _downloadClient.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserUserAgent);
+        _zarzSessionPath = Path.Join(DeezSpoTagDataRootResolver.Resolve(), "qobuz", ZarzSessionFileName);
     }
 
     public async Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
@@ -219,7 +234,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 lastFailure = officialAttempt.Failure;
             }
 
-            var providers = await BuildOrderedProvidersAsync(trackId, qualityCode, cancellationToken);
+            var providers = await BuildPublicProvidersAsync(trackId, qualityCode, cancellationToken);
             foreach (var provider in providers)
             {
                 var attempt = await TryDownloadWithProviderAsync(
@@ -339,7 +354,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 OutputPath = outputPath,
                 Request = request
             }, cancellationToken);
-            MarkPreferredProvider(provider, qualityCode);
             return new ProviderDownloadAttempt(true, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -349,7 +363,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             DownloadFileUtilities.TryDeleteFile(outputPath);
-            ClearPreferredProvider(provider, qualityCode);
             await _publicProviderRegistry.RecordFailureAsync(
                 provider.Id,
                 ClassifyProviderFailure(ex),
@@ -369,27 +382,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
             return new ProviderDownloadAttempt(false, ex);
         }
-    }
-
-    private async Task<ProviderCandidate[]> BuildOrderedProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
-    {
-        var providers = (await BuildPublicProvidersAsync(trackId, qualityCode, cancellationToken)).ToList();
-        var preferredProvider = GetPreferredProvider(providers, qualityCode);
-        if (preferredProvider == null)
-        {
-            return providers.ToArray();
-        }
-
-        var preferredIndex = providers.FindIndex(provider =>
-            string.Equals(provider.Name, preferredProvider.Name, StringComparison.OrdinalIgnoreCase));
-        if (preferredIndex <= 0)
-        {
-            return providers.ToArray();
-        }
-
-        providers.RemoveAt(preferredIndex);
-        providers.Insert(0, preferredProvider);
-        return providers.ToArray();
     }
 
     private static bool IsProviderStreamFailure(Exception ex)
@@ -465,71 +457,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         return new List<string> { string.IsNullOrWhiteSpace(quality) ? "6" : quality };
-    }
-
-    private static ProviderCandidate? GetPreferredProvider(
-        IEnumerable<ProviderCandidate> providers,
-        string qualityCode)
-    {
-        foreach (var provider in providers)
-        {
-            var key = BuildPreferredProviderKey(provider, qualityCode);
-            if (!PreferredProviders.TryGetValue(key, out var preferred))
-            {
-                continue;
-            }
-
-            if ((DateTimeOffset.UtcNow - preferred.SetAtUtc) > PreferredProviderTtl)
-            {
-                PreferredProviders.TryRemove(key, out _);
-                continue;
-            }
-
-            if (string.Equals(provider.Id, preferred.ProviderId, StringComparison.OrdinalIgnoreCase))
-            {
-                return provider;
-            }
-        }
-
-        return null;
-    }
-
-    private static void MarkPreferredProvider(ProviderCandidate provider, string qualityCode)
-    {
-        if (string.IsNullOrWhiteSpace(provider.Name))
-        {
-            return;
-        }
-
-        PreferredProviders[BuildPreferredProviderKey(provider, qualityCode)] = new PreferredProviderState(
-            provider.Id,
-            DateTimeOffset.UtcNow);
-    }
-
-    private static void ClearPreferredProvider(ProviderCandidate provider, string qualityCode)
-    {
-        if (string.IsNullOrWhiteSpace(provider.Name))
-        {
-            return;
-        }
-
-        var key = BuildPreferredProviderKey(provider, qualityCode);
-        if (!PreferredProviders.TryGetValue(key, out var preferred)
-            || !string.Equals(preferred.ProviderId, provider.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        PreferredProviders.TryRemove(key, out _);
-    }
-
-    private static string BuildPreferredProviderKey(ProviderCandidate provider, string qualityCode)
-    {
-        var normalizedQuality = NormalizeQobuzQualityCode(qualityCode);
-        var regionKey = string.IsNullOrWhiteSpace(provider.RegionKey)
-            ? "global"
-            : provider.RegionKey.Trim().ToLowerInvariant();
-        return $"{normalizedQuality}|{regionKey}";
     }
 
     private async Task<string?> TryResolveProviderAsync(
@@ -610,67 +537,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
 
-    private async Task<HttpResponseMessage> SendProviderRequestWithRetryAsync(
-        string url,
-        Uri? referrer,
-        CancellationToken cancellationToken)
-    {
-        for (var attempt = 1; attempt <= ProviderHttpMaxAttempts; attempt++)
-        {
-            try
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                if (referrer != null)
-                {
-                    request.Headers.Referrer = referrer;
-                }
-
-                return await SendProviderRequestAsync(request, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex) when (attempt < ProviderHttpMaxAttempts && IsTransientProviderFailure(ex))
-            {
-                await Task.Delay(ProviderTransientRetryDelay, cancellationToken);
-            }
-        }
-
-        using var finalRequest = new HttpRequestMessage(HttpMethod.Get, url);
-        if (referrer != null)
-        {
-            finalRequest.Headers.Referrer = referrer;
-        }
-
-        return await SendProviderRequestAsync(finalRequest, cancellationToken);
-    }
-
-    private async Task<HttpResponseMessage> SendProviderRequestWithRetryAsync(
-        Func<HttpRequestMessage> requestFactory,
-        CancellationToken cancellationToken)
-    {
-        for (var attempt = 1; attempt <= ProviderHttpMaxAttempts; attempt++)
-        {
-            try
-            {
-                using var request = requestFactory();
-                return await SendProviderRequestAsync(request, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex) when (attempt < ProviderHttpMaxAttempts && IsTransientProviderFailure(ex))
-            {
-                await Task.Delay(ProviderTransientRetryDelay, cancellationToken);
-            }
-        }
-
-        using var finalRequest = requestFactory();
-        return await SendProviderRequestAsync(finalRequest, cancellationToken);
-    }
-
     private async Task<HttpResponseMessage> SendProviderRequestAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         using var providerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -703,6 +569,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static bool ShouldApplyProviderCooldown(Exception ex)
     {
+        if (ex.Message.Contains("public download verification is required", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         return !IsTransientProviderFailure(ex);
     }
 
@@ -750,8 +621,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
             providers.Add(provider.Kind switch
             {
-                "musicdl" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "public", ct => TryGetMusicDlStreamUrlAsync(provider.Endpoint, trackId, qualityCode, ct)),
-                "monochrome" => new ProviderCandidate(provider.Id, provider.DisplayName, provider.Region ?? "public", ct => TryGetMonochromeQobuzStreamUrlByTrackIdAsync(provider.Endpoint, trackId, qualityCode, ct)),
+                "zarz-v2" => new ProviderCandidate(
+                    provider.Id,
+                    provider.DisplayName,
+                    ct => TryGetSignedZarzStreamUrlAsync(trackId, qualityCode, ct)),
                 _ => throw new InvalidOperationException($"Unsupported Qobuz provider kind '{provider.Kind}'.")
             });
         }
@@ -838,140 +711,345 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return "unavailable";
     }
 
-    private sealed record ProviderCandidate(string Id, string Name, string RegionKey, Func<CancellationToken, Task<string?>> ResolveAsync);
+    private sealed record ProviderCandidate(string Id, string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
 
-    private sealed record PreferredProviderState(string ProviderId, DateTimeOffset SetAtUtc);
-
-    private async Task<string?> TryGetMonochromeQobuzStreamUrlByTrackIdAsync(
-        string providerBase,
+    private async Task<string?> TryGetSignedZarzStreamUrlAsync(
         long trackId,
         string qualityCode,
         CancellationToken cancellationToken)
     {
-        var url = $"{providerBase.TrimEnd('/')}/api/download-music?track_id={trackId}&quality={NormalizeQobuzQualityCode(qualityCode)}";
-        using var response = await SendProviderRequestWithRetryAsync(url, null, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        var trackUrl = $"https://open.qobuz.com/track/{trackId}";
+        var ticket = await RequestZarzTicketAsync(trackUrl, cancellationToken);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            throw new InvalidOperationException($"Monochrome Qobuz download returned HTTP {(int)response.StatusCode}");
-        }
-
-        var body = await ReadProviderResponseBodyAsync(response, "Monochrome Qobuz download", cancellationToken);
-        if (TryExtractCommonProviderUrlPayload(body, "Monochrome Qobuz download", out var directUrl))
-        {
-            return directUrl;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("success", out var successProp)
-                && successProp.ValueKind == JsonValueKind.False)
-            {
-                throw new InvalidOperationException("Monochrome Qobuz download reported success=false.");
-            }
-
-            if (TryExtractProviderUrl(doc.RootElement, out var providerUrl))
-            {
-                return providerUrl;
-            }
-        }
-        catch (JsonException)
-        {
-            throw new InvalidOperationException("Monochrome Qobuz download response was not valid JSON.");
-        }
-
-        throw new InvalidOperationException("Monochrome Qobuz download response did not contain a usable stream URL.");
-    }
-
-    private async Task<string?> TryGetMusicDlStreamUrlAsync(
-        string endpoint,
-        long trackId,
-        string qualityCode,
-        CancellationToken cancellationToken)
-    {
-        var payload = new
-        {
-            quality = MapMusicDlQuality(qualityCode),
+            quality = MapZarzQuality(qualityCode),
             upload_to_r2 = false,
-            url = $"https://open.qobuz.com/track/{trackId}"
-        };
-
-        using var response = await SendProviderRequestWithRetryAsync(
-            () =>
-            {
-                var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
-                {
-                    Content = new StringContent(
-                        JsonSerializer.Serialize(payload, SerializerOptions),
-                        Encoding.UTF8,
-                        ApplicationJsonContentType)
-                };
-                request.Headers.TryAddWithoutValidation("User-Agent", MusicDlUserAgent);
-                request.Headers.TryAddWithoutValidation("Accept", ApplicationJsonContentType);
-                return request;
-            },
+            id = trackId.ToString(CultureInfo.InvariantCulture),
+            type = "track",
+            url = trackUrl
+        });
+        using var response = await SendZarzSignedRequestAsync(
+            HttpMethod.Post,
+            ZarzDownloadPath,
+            payload,
+            new Dictionary<string, string> { ["X-Zarz-Ticket"] = ticket },
             cancellationToken);
+        var body = await ReadProviderResponseBodyAsync(response, "zarz", cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"MusicDL provider returned HTTP {(int)response.StatusCode}");
+            throw new InvalidOperationException(BuildZarzFailure("zarz", response, body));
         }
 
-        var body = await ReadProviderResponseBodyAsync(response, "MusicDL provider", cancellationToken);
-        if (TryExtractCommonProviderUrlPayload(body, "MusicDL provider", out var directUrl))
+        if (TryExtractCommonProviderUrlPayload(body, "zarz", out var directUrl))
         {
             return directUrl;
         }
 
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("success", out var successProp)
-                && successProp.ValueKind == JsonValueKind.False)
-            {
-                if (doc.RootElement.TryGetProperty("message", out var messageProp)
-                    && messageProp.ValueKind == JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(messageProp.GetString()))
-                {
-                    throw new InvalidOperationException(messageProp.GetString()!);
-                }
-
-                throw new InvalidOperationException("MusicDL provider reported success=false.");
-            }
-
-            if (doc.RootElement.TryGetProperty("error", out var errorProp)
-                && errorProp.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(errorProp.GetString()))
-            {
-                throw new InvalidOperationException(errorProp.GetString()!);
-            }
-
-            if (doc.RootElement.TryGetProperty("detail", out var detailProp)
-                && detailProp.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(detailProp.GetString()))
-            {
-                throw new InvalidOperationException(detailProp.GetString()!);
-            }
-
-            if (TryExtractProviderUrl(doc.RootElement, out var providerUrl))
-            {
-                return providerUrl;
-            }
-        }
-        catch (JsonException)
-        {
-            throw new InvalidOperationException("MusicDL provider response was not valid JSON.");
-        }
-
-        throw new InvalidOperationException("MusicDL provider response did not contain a usable stream URL.");
+        throw new InvalidOperationException("Qobuz API v1.1.0 did not return a usable stream URL.");
     }
 
-    private static string MapMusicDlQuality(string qualityCode)
+    private async Task<string> RequestZarzTicketAsync(string trackUrl, CancellationToken cancellationToken)
+    {
+        var resourceHash = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes($"qbz:track:{trackUrl.ToLowerInvariant()}")))
+            .ToLowerInvariant();
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            capability = "download_ticket",
+            provider = "qbz",
+            resource_hash = resourceHash
+        });
+        using var response = await SendZarzSignedRequestAsync(
+            HttpMethod.Post,
+            ZarzTicketPath,
+            payload,
+            null,
+            cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(BuildZarzFailure("Qobuz ticket provider", response, body));
+        }
+
+        var ticket = JsonSerializer.Deserialize<ZarzTicketResponse>(body, SerializerOptions);
+        var value = !string.IsNullOrWhiteSpace(ticket?.TicketId) ? ticket.TicketId : ticket?.Ticket;
+        return !string.IsNullOrWhiteSpace(value)
+            ? value
+            : throw new InvalidOperationException("Qobuz ticket provider did not return a ticket.");
+    }
+
+    private async Task<HttpResponseMessage> SendZarzSignedRequestAsync(
+        HttpMethod method,
+        string path,
+        byte[] body,
+        IReadOnlyDictionary<string, string>? headers,
+        CancellationToken cancellationToken)
+    {
+        var session = await EnsureZarzSessionAsync(cancellationToken);
+        var uri = BuildZarzUri(path);
+        var timestamp = DateTimeOffset.UtcNow;
+        var timestampValue = timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
+        var bodyHash = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
+        var window = timestamp.ToUnixTimeSeconds() / ZarzTimeWindowSeconds;
+        var rollingInput = $"{window}:{session.SessionId}";
+        var rollingKey = Base64UrlNoPadding(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(session.SessionSecret),
+            Encoding.UTF8.GetBytes(rollingInput)));
+        var escapedPath = uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped);
+        var canonical = string.Join('\n',
+            ZarzScheme,
+            method.Method.ToUpperInvariant(),
+            "/" + escapedPath.TrimStart('/'),
+            string.Empty,
+            bodyHash,
+            timestampValue,
+            nonce,
+            session.SessionId,
+            ZarzAppVersion,
+            ZarzPlatform);
+        var signature = Base64UrlNoPadding(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(rollingKey),
+            Encoding.UTF8.GetBytes(canonical)));
+
+        var request = new HttpRequestMessage(method, uri)
+        {
+            Content = new ByteArrayContent(body)
+        };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(ApplicationJsonContentType);
+        request.Headers.TryAddWithoutValidation("Accept", ApplicationJsonContentType);
+        request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+        request.Headers.TryAddWithoutValidation("X-Zarz-Session", session.SessionId);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Timestamp", timestampValue);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Nonce", nonce);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Body-SHA256", bodyHash);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Signature", signature);
+        request.Headers.TryAddWithoutValidation("X-Zarz-App-Version", ZarzAppVersion);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Platform", ZarzPlatform);
+        if (headers is not null)
+        {
+            foreach (var header in headers)
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        var response = await _apiClient.SendAsync(request, cancellationToken);
+        if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+        {
+            await ClearZarzSessionAsync(cancellationToken);
+        }
+        return response;
+    }
+
+    private async Task<ZarzSessionRecord> EnsureZarzSessionAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var session = await LoadZarzSessionNoLockAsync(cancellationToken);
+            return session?.IsUsable == true
+                ? session
+                : throw new InvalidOperationException(
+                    "Qobuz public download verification is required. Verify zarz in the Qobuz Public API Providers section.");
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    public async Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            return (await LoadZarzSessionNoLockAsync(cancellationToken))?.IsUsable == true;
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    public async Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var current = await LoadZarzSessionNoLockAsync(cancellationToken);
+            if (current?.IsUsable == true)
+            {
+                return null;
+            }
+            return await BootstrapZarzSessionNoLockAsync(current?.InstallId, cancellationToken);
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    public async Task CompletePublicDownloadVerificationAsync(string grant, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(grant))
+        {
+            throw new ArgumentException("Qobuz public download grant is required.", nameof(grant));
+        }
+
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var record = await LoadZarzSessionNoLockAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Start Qobuz public download verification first.");
+            var payload = JsonSerializer.Serialize(new
+            {
+                grant = grant.Trim(),
+                install_id = record.InstallId,
+                app_version = ZarzAppVersion,
+                platform = ZarzPlatform
+            });
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildZarzUri(ZarzExchangePath))
+            {
+                Content = new StringContent(payload, Encoding.UTF8, ApplicationJsonContentType)
+            };
+            request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+            using var response = await _apiClient.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(BuildZarzFailure("Qobuz session exchange", response, body));
+            }
+
+            var exchanged = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
+            record.SessionId = exchanged?.SessionId ?? string.Empty;
+            record.SessionSecret = exchanged?.SessionSecret ?? string.Empty;
+            record.ExpiresAt = ParseZarzExpiry(exchanged?.ExpiresAt);
+            if (!record.IsUsable)
+            {
+                throw new InvalidOperationException("Qobuz session exchange did not return a usable session.");
+            }
+            await SaveZarzSessionNoLockAsync(record, cancellationToken);
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    private async Task<string> BootstrapZarzSessionNoLockAsync(string? installId, CancellationToken cancellationToken)
+    {
+        installId = string.IsNullOrWhiteSpace(installId)
+            ? Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant()
+            : installId;
+        var builder = new UriBuilder(BuildZarzUri(ZarzBootstrapPath))
+        {
+            Query = string.Join('&', new Dictionary<string, string>
+            {
+                ["install_id"] = installId,
+                ["app_version"] = ZarzAppVersion,
+                ["platform"] = ZarzPlatform,
+                ["callback_url"] = "https://api.zarz.moe/v2/session/callback"
+            }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
+        request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+        using var response = await _apiClient.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(BuildZarzFailure("Qobuz session bootstrap", response, body));
+        }
+
+        var payload = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
+        var record = new ZarzSessionRecord
+        {
+            InstallId = installId,
+            SessionId = payload?.SessionId ?? string.Empty,
+            SessionSecret = payload?.SessionSecret ?? string.Empty,
+            ExpiresAt = ParseZarzExpiry(payload?.ExpiresAt)
+        };
+        await SaveZarzSessionNoLockAsync(record, cancellationToken);
+        if (record.IsUsable)
+        {
+            return string.Empty;
+        }
+        return !string.IsNullOrWhiteSpace(payload?.ChallengeId)
+            ? BuildZarzChallengeUrl(payload.ChallengeId)
+            : throw new InvalidOperationException("Qobuz session bootstrap did not return a verification challenge.");
+    }
+
+    private async Task<ZarzSessionRecord?> LoadZarzSessionNoLockAsync(CancellationToken cancellationToken)
+    {
+        if (!IOFile.Exists(_zarzSessionPath))
+        {
+            return null;
+        }
+        try
+        {
+            return JsonSerializer.Deserialize<ZarzSessionRecord>(
+                await IOFile.ReadAllTextAsync(_zarzSessionPath, cancellationToken),
+                SerializerOptions);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load Qobuz signed session.");
+            return null;
+        }
+    }
+
+    private async Task SaveZarzSessionNoLockAsync(ZarzSessionRecord record, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_zarzSessionPath) ?? DeezSpoTagDataRootResolver.Resolve());
+        await IOFile.WriteAllTextAsync(_zarzSessionPath, JsonSerializer.Serialize(record, SerializerOptions), cancellationToken);
+        if (!OperatingSystem.IsWindows())
+        {
+            IOFile.SetUnixFileMode(_zarzSessionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    private async Task ClearZarzSessionAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (IOFile.Exists(_zarzSessionPath))
+            {
+                IOFile.Delete(_zarzSessionPath);
+            }
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    private static Uri BuildZarzUri(string path) => new($"{ZarzBaseUrl.TrimEnd('/')}/{path.TrimStart('/')}");
+
+    private static string BuildZarzChallengeUrl(string challengeId)
+    {
+        var builder = new UriBuilder(BuildZarzUri(ZarzChallengePath))
+        {
+            Query = $"id={Uri.EscapeDataString(challengeId)}"
+        };
+        return builder.Uri.ToString();
+    }
+
+    private static string BuildZarzFailure(string name, HttpResponseMessage response, string body)
+        => $"{name} failed with HTTP {(int)response.StatusCode}: {body.Trim()}";
+
+    private static DateTimeOffset? ParseZarzExpiry(string? value)
+        => DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
+
+    private static string Base64UrlNoPadding(byte[] value)
+        => Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static string MapZarzQuality(string qualityCode)
     {
         return NormalizeQobuzQualityCode(qualityCode) switch
         {
             "27" => "hi-res-max",
             "7" => "hi-res",
-            "5" => "mp3",
             _ => "cd"
         };
     }
@@ -1499,6 +1577,44 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         [JsonPropertyName("artist")]
         public QobuzArtist? Artist { get; set; }
+    }
+
+    private sealed class ZarzSessionRecord
+    {
+        public string InstallId { get; set; } = string.Empty;
+        public string SessionId { get; set; } = string.Empty;
+        public string SessionSecret { get; set; } = string.Empty;
+        public DateTimeOffset? ExpiresAt { get; set; }
+
+        [JsonIgnore]
+        public bool IsUsable =>
+            !string.IsNullOrWhiteSpace(SessionId)
+            && !string.IsNullOrWhiteSpace(SessionSecret)
+            && (!ExpiresAt.HasValue || ExpiresAt.Value > DateTimeOffset.UtcNow.AddMinutes(1));
+    }
+
+    private sealed class ZarzBootstrapResponse
+    {
+        [JsonPropertyName("session_id")]
+        public string? SessionId { get; set; }
+
+        [JsonPropertyName("session_secret")]
+        public string? SessionSecret { get; set; }
+
+        [JsonPropertyName("expires_at")]
+        public string? ExpiresAt { get; set; }
+
+        [JsonPropertyName("challenge_id")]
+        public string? ChallengeId { get; set; }
+    }
+
+    private sealed class ZarzTicketResponse
+    {
+        [JsonPropertyName("ticket_id")]
+        public string? TicketId { get; set; }
+
+        [JsonPropertyName("ticket")]
+        public string? Ticket { get; set; }
     }
 
 }

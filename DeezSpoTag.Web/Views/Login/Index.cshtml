@@ -369,7 +369,9 @@
                     <div class="qobuz-provider-editor" id="qobuzProviderEditor" hidden>
                         <div class="qobuz-provider-actions">
                             <button class="btn btn-primary action-btn" id="qobuzCheckProvidersBtn" type="button">Check now</button>
+                            <button class="btn btn-secondary action-btn" id="qobuzVerifyPublicDownloadsBtn" type="button">Verify public downloads</button>
                         </div>
+                        <p class="text-muted" id="qobuzPublicDownloadSessionStatus">Public download verification has not been checked.</p>
                         <div id="qobuzProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
                     </div>
                 </section>
@@ -1855,6 +1857,8 @@ document.addEventListener('DOMContentLoaded', function() {
     bindPlatformDisconnect('qobuzDisconnectBtn', '/api/platform-auth/qobuz/disconnect', 'qobuzStatus');
     bindProviderPanelToggle('qobuzProviderToggle', 'qobuzProviderEditor');
     bindAsyncClick('qobuzCheckProvidersBtn', checkQobuzProviders);
+    bindAsyncClick('qobuzVerifyPublicDownloadsBtn', startQobuzPublicDownloadVerification);
+    loadQobuzPublicDownloadSession();
     const qobuzProviderRows = document.getElementById('qobuzProviderRows');
     if (qobuzProviderRows) {
         qobuzProviderRows.addEventListener('change', async function(event) {
@@ -3159,6 +3163,15 @@ async function loadTidalPublicDownloadSession() {
     });
 }
 
+async function loadQobuzPublicDownloadSession() {
+    return loadPublicDownloadSession({
+        endpoint: '/api/qobuz/download/public-session',
+        statusId: 'qobuzPublicDownloadSessionStatus',
+        buttonId: 'qobuzVerifyPublicDownloadsBtn',
+        label: 'Qobuz'
+    });
+}
+
 async function loadAmazonMusicPublicDownloadSession() {
     return loadPublicDownloadSession({
         endpoint: '/api/amazon/download/public-session',
@@ -3198,6 +3211,16 @@ async function startTidalPublicDownloadVerification() {
         popupName: 'tidal-public-download-verification',
         label: 'Tidal',
         reload: loadTidalPublicDownloadSession
+    });
+}
+
+async function startQobuzPublicDownloadVerification() {
+    return startPublicDownloadVerification({
+        endpoint: '/api/qobuz/download/public-session',
+        buttonId: 'qobuzVerifyPublicDownloadsBtn',
+        popupName: 'qobuz-public-download-verification',
+        label: 'Qobuz',
+        reload: loadQobuzPublicDownloadSession
     });
 }
 

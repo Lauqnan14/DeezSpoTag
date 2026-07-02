@@ -28,10 +28,12 @@ public sealed class QobuzDownloadApiController : ControllerBase
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly DownloadDedupeService _dedupeService;
+    private readonly IQobuzDownloadService _qobuzDownloadService;
     private readonly ILogger<QobuzDownloadApiController> _logger;
 
     public QobuzDownloadApiController(
         DownloadControllerServices services,
+        IQobuzDownloadService qobuzDownloadService,
         ILogger<QobuzDownloadApiController> logger)
     {
         _queueRepository = services.QueueRepository;
@@ -41,7 +43,40 @@ public sealed class QobuzDownloadApiController : ControllerBase
         _spotifyIdResolver = services.SpotifyIdResolver;
         _libraryRepository = services.LibraryRepository;
         _dedupeService = services.DedupeService;
+        _qobuzDownloadService = qobuzDownloadService;
         _logger = logger;
+    }
+
+    [HttpGet("public-session")]
+    public async Task<IActionResult> GetPublicSession(CancellationToken cancellationToken)
+        => Ok(new
+        {
+            authenticated = await _qobuzDownloadService.HasPublicDownloadSessionAsync(cancellationToken)
+        });
+
+    [HttpPost("public-session/start")]
+    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken)
+    {
+        var verificationUrl = await _qobuzDownloadService.BeginPublicDownloadVerificationAsync(cancellationToken);
+        return Ok(new
+        {
+            authenticated = string.IsNullOrWhiteSpace(verificationUrl),
+            verificationUrl
+        });
+    }
+
+    [HttpPost("public-session/complete")]
+    public async Task<IActionResult> CompletePublicSession(
+        [FromBody] QobuzPublicDownloadGrantRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Grant))
+        {
+            return BadRequest(new { error = "Qobuz public download verification grant is required." });
+        }
+
+        await _qobuzDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
+        return Ok(new { authenticated = true });
     }
 
     [HttpPost]
@@ -174,4 +209,9 @@ public sealed class QobuzDownloadBatchRequest : EngineDownloadBatchRequestBase
 public sealed class QobuzDownloadTrackDto : EngineDownloadTrackDtoBase
 {
     public string? QobuzId { get; set; }
+}
+
+public sealed class QobuzPublicDownloadGrantRequest
+{
+    public string? Grant { get; set; }
 }

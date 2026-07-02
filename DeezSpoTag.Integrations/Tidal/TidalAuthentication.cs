@@ -63,7 +63,7 @@ public static class TidalPublicProviderDefaults
 
     private static readonly (string Id, string DisplayName, string Kind, string EncodedEndpoint, string? EncodedHealthEndpoint, string? HealthServiceKey)[] EncodedProviders =
     [
-        ("zarz", "Zarz", ZarzProviderKind, "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjIvZGwvdGlk", "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvaGVhbHRo", "tidal")
+        ("zarz", "zarz", ZarzProviderKind, "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjIvZGwvdGlk", "aHR0cHM6Ly9hcGkuemFyei5tb2UvdjEvaGVhbHRo", "tidal")
     ];
 
     public static IReadOnlyList<TidalPublicProviderDefinition> Providers { get; } = EncodedProviders
