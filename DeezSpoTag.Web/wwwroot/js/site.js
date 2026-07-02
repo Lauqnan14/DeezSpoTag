@@ -1330,7 +1330,7 @@ globalThis.DeezSpoTag = {
     },
 
     setPlatformPublicApiStatus(states, id, status, onlineCount = null) {
-        if (!states?.[id] || !['qobuz', 'tidal', 'amazonmusic'].includes(id)) {
+        if (!states?.[id] || !['tidal', 'amazonmusic'].includes(id)) {
             return;
         }
 
@@ -1383,7 +1383,7 @@ globalThis.DeezSpoTag = {
                     merged[id].reason = value.reason;
                 }
                 const publicApiStatus = String(value?.publicApiStatus || '').trim().toLowerCase();
-                if (['qobuz', 'tidal', 'amazonmusic'].includes(id) && ['online', 'offline', 'unknown'].includes(publicApiStatus)) {
+                if (['tidal', 'amazonmusic'].includes(id) && ['online', 'offline', 'unknown'].includes(publicApiStatus)) {
                     merged[id].publicApiStatus = publicApiStatus;
                     const parsedCount = Number(value?.publicApiOnlineCount);
                     merged[id].publicApiOnlineCount = Number.isInteger(parsedCount) && parsedCount >= 0
@@ -1953,11 +1953,6 @@ globalThis.DeezSpoTag = {
         this.applyConnectedFlagState(authData.spotifyConnected === true, connected, platformStates, 'spotify', 'librespot-blob', 'missing');
         this.applyConnectedFlagState(authData.appleMusic?.wrapperReady === true, connected, platformStates, 'applemusic', 'wrapper', 'wrapper');
         this.applyConnectedFlagState(authData.qobuz?.connected === true, connected, platformStates, 'qobuz', 'official-api', 'offline');
-        this.setPlatformPublicApiStatus(
-            platformStates,
-            'qobuz',
-            authData.qobuz?.publicApiStatus,
-            authData.qobuz?.publicApiOnlineCount);
         this.applyConnectedFlagState(authData.tidal?.connected === true, connected, platformStates, 'tidal', 'official-api', 'offline');
         this.setPlatformPublicApiStatus(
             platformStates,
@@ -2029,7 +2024,7 @@ globalThis.DeezSpoTag = {
             }
             const isActive = status?.active === true;
             const stateLabel = isActive ? 'Connected' : 'Not connected';
-            const publicApiStatus = ['qobuz', 'tidal', 'amazonmusic'].includes(id)
+            const publicApiStatus = ['tidal', 'amazonmusic'].includes(id)
                 && ['online', 'offline', 'unknown'].includes(status?.publicApiStatus)
                 ? status.publicApiStatus
                 : null;

@@ -92,7 +92,7 @@ public class PlatformAuthApiController : ControllerBase
             state = await RefreshSoulseekConnectionAsync(state, cancellationToken);
         }
         var amazonProviders = await GetPublicAmazonProvidersAsync(cancellationToken);
-        var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
+        var qobuzProviders = GetDisabledQobuzProviders();
         var tidalProviders = await GetPublicTidalProvidersAsync(cancellationToken);
 
         return Ok(new
@@ -233,7 +233,8 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
+        await Task.CompletedTask;
+        return Ok(GetDisabledQobuzProviders());
     }
 
     [HttpPut("qobuz/providers/{providerId}/enabled")]
@@ -249,8 +250,8 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("Enabled is required.");
         }
 
-        var updated = await _qobuzPublicProviderRegistry.SetEnabledAsync(providerId, enabled, cancellationToken);
-        return updated is null ? NotFound("Unknown Qobuz provider.") : Ok(ToPublicProvider(updated));
+        await Task.CompletedTask;
+        return NotFound("Qobuz public API providers are disabled.");
     }
 
     [HttpPost("qobuz/providers/check")]
@@ -258,8 +259,8 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
-        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
+        await Task.CompletedTask;
+        return Ok(GetDisabledQobuzProviders());
     }
 
     [HttpGet("public-providers/status")]
@@ -274,17 +275,14 @@ public class PlatformAuthApiController : ControllerBase
         {
             await Task.WhenAll(
                 _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
-                _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
                 _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken));
         }
 
         var amazon = await GetPublicAmazonProvidersAsync(cancellationToken);
-        var qobuz = await GetPublicQobuzProvidersAsync(cancellationToken);
         var tidal = await GetPublicTidalProvidersAsync(cancellationToken);
         return Ok(new
         {
             amazonMusic = new { status = amazon.Status, onlineCount = amazon.OnlineCount },
-            qobuz = new { status = qobuz.Status, onlineCount = qobuz.OnlineCount },
             tidal = new { status = tidal.Status, onlineCount = tidal.OnlineCount }
         });
     }
@@ -404,7 +402,7 @@ public class PlatformAuthApiController : ControllerBase
             return state.Qobuz;
         });
 
-        var providers = await GetPublicQobuzProvidersAsync(cancellationToken);
+        var providers = GetDisabledQobuzProviders();
         return Ok(new { saved = true, qobuz = ToPublicQobuz(qobuz, providers) });
     }
 
@@ -888,19 +886,8 @@ public class PlatformAuthApiController : ControllerBase
         };
     }
 
-    private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken)
-    {
-        var providers = await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken);
-        var publicProviders = providers.Select(ToPublicProvider).ToArray();
-        var enabledProviders = publicProviders.Where(static provider => provider.Enabled).ToArray();
-        var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
-        var online = onlineCount > 0;
-        return new QobuzProviderSummary(
-            online,
-            onlineCount,
-            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked)),
-            publicProviders);
-    }
+    private static QobuzProviderSummary GetDisabledQobuzProviders()
+        => new(false, 0, "unknown", []);
 
     private static QobuzProviderView ToPublicProvider(QobuzPublicProvider provider)
         => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);

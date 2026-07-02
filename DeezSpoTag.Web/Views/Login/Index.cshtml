@@ -358,7 +358,7 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/icons/qobuz.png", ImageCssClass = "h-20 w-20", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = initialQobuzName, DetailId = "qobuzLoggedInStatus", DetailText = initialQobuzStatus, WrapperCssClass = initialQobuzConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
-                <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading">
+                <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading" hidden>
                     <div class="qobuz-provider-panel__header">
                         <div>
                             <h4 id="qobuzProviderHeading">Public API Providers</h4>
@@ -1855,18 +1855,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     bindPlatformDisconnect('qobuzDisconnectBtn', '/api/platform-auth/qobuz/disconnect', 'qobuzStatus');
-    bindProviderPanelToggle('qobuzProviderToggle', 'qobuzProviderEditor');
-    bindAsyncClick('qobuzCheckProvidersBtn', checkQobuzProviders);
-    bindAsyncClick('qobuzVerifyPublicDownloadsBtn', startQobuzPublicDownloadVerification);
-    loadQobuzPublicDownloadSession();
-    const qobuzProviderRows = document.getElementById('qobuzProviderRows');
-    if (qobuzProviderRows) {
-        qobuzProviderRows.addEventListener('change', async function(event) {
-            const toggle = event.target.closest('[data-qobuz-provider-id]');
-            if (!toggle) return;
-            await setQobuzProviderEnabled(toggle.dataset.qobuzProviderId, toggle.checked, toggle);
-        });
-    }
 
     bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
     bindAsyncClick('tidalCheckProvidersBtn', checkTidalProviders);
@@ -2975,7 +2963,6 @@ function renderQobuzInfo(auth) {
             statusLabel.textContent = 'App credentials saved | country requires a valid User Auth Token';
         }
     }
-    renderQobuzProviders(auth?.providers || [], auth?.publicApiOnline === true);
 }
 
 function renderQobuzProviders(providers, publicApiOnline) {

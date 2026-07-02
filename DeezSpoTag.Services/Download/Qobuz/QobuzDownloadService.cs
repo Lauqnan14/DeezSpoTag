@@ -288,7 +288,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             _logger.LogWarning(
                 ex,
-                "Qobuz official credentials failed for track {TrackId} quality {Quality}; trying public providers.",
+                "Qobuz official credentials failed for track {TrackId} quality {Quality}.",
                 trackId,
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
             return new ProviderDownloadAttempt(false, ex);
@@ -320,7 +320,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             DownloadFileUtilities.TryDeleteFile(outputPath);
             _logger.LogWarning(
                 ex,
-                "Qobuz official credentials stream failed for track {TrackId} quality {Quality}; trying public providers.",
+                "Qobuz official credentials stream failed for track {TrackId} quality {Quality}.",
                 trackId,
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(qualityCode));
             return new ProviderDownloadAttempt(false, ex);
@@ -615,24 +615,8 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private async Task<ProviderCandidate[]> BuildPublicProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
     {
-        var providers = new List<ProviderCandidate>();
-        foreach (var provider in await _publicProviderRegistry.GetProvidersAsync(cancellationToken))
-        {
-            if (!provider.Enabled)
-            {
-                continue;
-            }
-
-            providers.Add(provider.Kind switch
-            {
-                "zarz-v2" => new ProviderCandidate(
-                    provider.Id,
-                    provider.DisplayName,
-                    ct => TryGetSignedZarzStreamUrlAsync(trackId, qualityCode, ct)),
-                _ => throw new InvalidOperationException($"Unsupported Qobuz provider kind '{provider.Kind}'.")
-            });
-        }
-        return providers.ToArray();
+        await Task.CompletedTask;
+        return [];
     }
 
     private async Task<string?> TryResolveOfficialStreamUrlAsync(
