@@ -1398,6 +1398,9 @@ public partial class Program
                 AmazonPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Amazon.IAmazonPublicProviderRegistry>(),
                 QobuzPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Qobuz.IQobuzPublicProviderRegistry>(),
                 TidalPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalPublicProviderRegistry>(),
+                AmazonDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Amazon.IAmazonDownloadService>(),
+                QobuzDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService>(),
+                TidalDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
                 SoulseekConnectionService = sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekConnectionService>(),
                 DeezerSessionManager = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>()

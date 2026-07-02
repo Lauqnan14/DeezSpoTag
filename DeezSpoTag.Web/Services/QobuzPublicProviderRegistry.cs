@@ -381,6 +381,7 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
         null => null,
         "rate_limited" => "Provider rate limit reached.",
         "captcha_required" => "Provider requires browser verification.",
+        "verification_required" => "Public download verification is required.",
         "timeout" => "Provider check timed out.",
         "transient" => "Provider is temporarily unavailable.",
         "empty_response" => "Provider returned no usable stream URL.",

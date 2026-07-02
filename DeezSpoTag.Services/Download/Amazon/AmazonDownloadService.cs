@@ -338,10 +338,21 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         try
         {
             var session = await LoadZarzSessionNoLockAsync(cancellationToken);
-            return session?.IsUsable == true
-                ? session
-                : throw new InvalidOperationException(
-                    "Amazon public download verification is required. Verify zarz in the Amazon Music Public API Providers section.");
+            if (session?.IsUsable == true)
+            {
+                return session;
+            }
+
+            var verificationUrl = await BootstrapZarzSessionNoLockAsync(session?.InstallId, cancellationToken);
+            session = await LoadZarzSessionNoLockAsync(cancellationToken);
+            if (session?.IsUsable == true)
+            {
+                return session;
+            }
+
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(verificationUrl)
+                ? "Amazon public download verification could not be completed automatically."
+                : "Amazon public download verification requires an interactive challenge and cannot run automatically.");
         }
         finally
         {

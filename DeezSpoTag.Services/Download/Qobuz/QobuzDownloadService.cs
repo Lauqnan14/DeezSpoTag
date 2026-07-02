@@ -40,8 +40,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const string ZarzExchangePath = "/session/exchange";
     private const string ZarzAppVersion = "qobuz-web@1.1.0";
     private const string ZarzPlatform = "extension";
-    private const string ZarzExtensionState = "qobuz-web";
-    private const string ZarzCallbackScheme = "spotiflac://session-grant";
     private const string ZarzScheme = "ZARZ-HMAC-V1";
     private const int ZarzTimeWindowSeconds = 300;
     private const string ZarzSessionFileName = "zarz-signed-session.json";
@@ -337,7 +335,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     {
         if (IsProviderCoolingDown(provider.Name))
         {
-            return new ProviderDownloadAttempt(false, null);
+            return new ProviderDownloadAttempt(
+                false,
+                new InvalidOperationException($"Qobuz provider {provider.Name} is cooling down after a recent provider failure."));
         }
 
         var resolution = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
@@ -573,12 +573,21 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static bool ShouldApplyProviderCooldown(Exception ex)
     {
-        if (ex.Message.Contains("public download verification is required", StringComparison.OrdinalIgnoreCase))
+        if (IsPublicDownloadVerificationFailure(ex))
         {
             return false;
         }
 
         return !IsTransientProviderFailure(ex);
+    }
+
+    private static bool IsPublicDownloadVerificationFailure(Exception ex)
+    {
+        var message = ex.Message;
+        return message.Contains("public download verification", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("interactive challenge", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("session bootstrap", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("session exchange", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsTransientProviderFailure(Exception ex)
@@ -615,8 +624,24 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private async Task<ProviderCandidate[]> BuildPublicProvidersAsync(long trackId, string qualityCode, CancellationToken cancellationToken)
     {
-        await Task.CompletedTask;
-        return [];
+        var providers = new List<ProviderCandidate>();
+        foreach (var provider in await _publicProviderRegistry.GetProvidersAsync(cancellationToken))
+        {
+            if (!provider.Enabled)
+            {
+                continue;
+            }
+
+            providers.Add(provider.Kind switch
+            {
+                "zarz-v2" => new ProviderCandidate(
+                    provider.Id,
+                    provider.DisplayName,
+                    ct => TryGetSignedZarzStreamUrlAsync(trackId, qualityCode, ct)),
+                _ => throw new InvalidOperationException($"Unsupported Qobuz provider kind '{provider.Kind}'.")
+            });
+        }
+        return providers.ToArray();
     }
 
     private async Task<string?> TryResolveOfficialStreamUrlAsync(
@@ -689,6 +714,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static string ClassifyProviderFailure(Exception exception)
     {
+        if (IsPublicDownloadVerificationFailure(exception)) return "verification_required";
         var message = exception.Message;
         if (message.Contains("429", StringComparison.OrdinalIgnoreCase)) return "rate_limited";
         if (message.Contains("captcha", StringComparison.OrdinalIgnoreCase)) return "captcha_required";
@@ -833,10 +859,21 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         try
         {
             var session = await LoadZarzSessionNoLockAsync(cancellationToken);
-            return session?.IsUsable == true
-                ? session
-                : throw new InvalidOperationException(
-                    "Qobuz public download verification is required. Verify zarz in the Qobuz Public API Providers section.");
+            if (session?.IsUsable == true)
+            {
+                return session;
+            }
+
+            var verificationUrl = await BootstrapZarzSessionNoLockAsync(session?.InstallId, cancellationToken);
+            session = await LoadZarzSessionNoLockAsync(cancellationToken);
+            if (session?.IsUsable == true)
+            {
+                return session;
+            }
+
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(verificationUrl)
+                ? "Qobuz public download verification could not be completed automatically."
+                : "Qobuz public download verification requires an interactive challenge and cannot run automatically.");
         }
         finally
         {
@@ -932,7 +969,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Query = string.Join('&', new Dictionary<string, string>
             {
                 ["install_id"] = installId,
-                ["app_version"] = ZarzAppVersion
+                ["app_version"] = ZarzAppVersion,
+                ["platform"] = ZarzPlatform,
+                ["callback_url"] = "https://api.zarz.moe/v2/session/callback"
             }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
         };
         using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
@@ -1017,18 +1056,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static string BuildZarzChallengeUrl(string challengeId)
     {
-        var callbackQuery = string.Join('&', new Dictionary<string, string>
-        {
-            ["cb_version"] = "v2grant",
-            ["state"] = ZarzExtensionState
-        }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
-        var callback = $"{ZarzCallbackScheme}?{callbackQuery}";
         var builder = new UriBuilder(BuildZarzUri(ZarzChallengePath))
         {
             Query = string.Join('&', new Dictionary<string, string>
             {
-                ["id"] = challengeId,
-                ["cb"] = callback
+                ["id"] = challengeId
             }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
         };
         return builder.Uri.ToString();

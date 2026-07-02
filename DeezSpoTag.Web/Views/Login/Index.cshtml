@@ -358,7 +358,7 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/icons/qobuz.png", ImageCssClass = "h-20 w-20", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = initialQobuzName, DetailId = "qobuzLoggedInStatus", DetailText = initialQobuzStatus, WrapperCssClass = initialQobuzConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
-                <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading" hidden>
+                <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading">
                     <div class="qobuz-provider-panel__header">
                         <div>
                             <h4 id="qobuzProviderHeading">Public API Providers</h4>
@@ -1856,6 +1856,19 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     bindPlatformDisconnect('qobuzDisconnectBtn', '/api/platform-auth/qobuz/disconnect', 'qobuzStatus');
 
+    bindProviderPanelToggle('qobuzProviderToggle', 'qobuzProviderEditor');
+    bindAsyncClick('qobuzCheckProvidersBtn', checkQobuzProviders);
+    bindAsyncClick('qobuzVerifyPublicDownloadsBtn', startQobuzPublicDownloadVerification);
+    loadQobuzPublicDownloadSession();
+    const qobuzProviderRows = document.getElementById('qobuzProviderRows');
+    if (qobuzProviderRows) {
+        qobuzProviderRows.addEventListener('change', async function(event) {
+            const toggle = event.target.closest('[data-qobuz-provider-id]');
+            if (!toggle) return;
+            await setQobuzProviderEnabled(toggle.dataset.qobuzProviderId, toggle.checked, toggle);
+        });
+    }
+
     bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
     bindAsyncClick('tidalCheckProvidersBtn', checkTidalProviders);
     bindAsyncClick('tidalVerifyPublicDownloadsBtn', startTidalPublicDownloadVerification);
@@ -2963,9 +2976,10 @@ function renderQobuzInfo(auth) {
             statusLabel.textContent = 'App credentials saved | country requires a valid User Auth Token';
         }
     }
+    renderQobuzProviders(auth?.providers || [], auth?.publicApiOnline === true, auth?.publicApiSessionValid === true);
 }
 
-function renderQobuzProviders(providers, publicApiOnline) {
+function renderQobuzProviders(providers, publicApiOnline, sessionValid = false) {
     const container = document.getElementById('qobuzProviderRows');
     const summary = document.getElementById('qobuzProviderSummary');
     if (!container || !summary) return;
@@ -2977,7 +2991,9 @@ function renderQobuzProviders(providers, publicApiOnline) {
         ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
         : enabledCount === 0
             ? 'All public API providers are disabled.'
-            : 'No enabled public API provider is currently confirmed online.';
+            : onlineCount > 0 && !sessionValid
+                ? 'Public download session is not verified.'
+                : 'No enabled public API provider is currently confirmed online.';
 
     container.replaceChildren(...rows.map(createQobuzProviderRow));
 }
@@ -3086,7 +3102,7 @@ async function checkQobuzProviders() {
     }
 }
 
-function renderTidalProviders(providers, publicApiOnline) {
+function renderTidalProviders(providers, publicApiOnline, sessionValid = false) {
     const container = document.getElementById('tidalProviderRows');
     const summary = document.getElementById('tidalProviderSummary');
     if (!container || !summary) return;
@@ -3098,7 +3114,9 @@ function renderTidalProviders(providers, publicApiOnline) {
         ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
         : enabledCount === 0
             ? 'All public API providers are disabled.'
-            : 'No enabled public API provider is currently confirmed online.';
+            : onlineCount > 0 && !sessionValid
+                ? 'Public download session is not verified.'
+                : 'No enabled public API provider is currently confirmed online.';
 
     container.replaceChildren(...rows.map(createTidalProviderRow));
 }
@@ -3317,7 +3335,7 @@ function waitForPublicDownloadGrant(verificationWindow, config) {
     });
 }
 
-function renderAmazonMusicProviders(providers, publicApiOnline) {
+function renderAmazonMusicProviders(providers, publicApiOnline, sessionValid = false) {
     const container = document.getElementById('amazonMusicProviderRows');
     const summary = document.getElementById('amazonMusicProviderSummary');
     if (!container || !summary) return;
@@ -3329,7 +3347,9 @@ function renderAmazonMusicProviders(providers, publicApiOnline) {
         ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
         : enabledCount === 0
             ? 'All public API providers are disabled.'
-            : 'No enabled public API provider is currently confirmed online.';
+            : onlineCount > 0 && !sessionValid
+                ? 'Public download session is not verified.'
+                : 'No enabled public API provider is currently confirmed online.';
 
     container.replaceChildren(...rows.map(createAmazonMusicProviderRow));
 }
@@ -3398,7 +3418,7 @@ function renderTidalInfo(auth) {
             ? `${auth.countryCode || 'US'} | official credentials validated`
             : 'Tidal credentials are not connected.';
     }
-    renderTidalProviders(auth?.providers || [], auth?.publicApiOnline === true);
+    renderTidalProviders(auth?.providers || [], auth?.publicApiOnline === true, auth?.publicApiSessionValid === true);
 }
 
 function renderSoulseekInfo(auth) {
@@ -3438,7 +3458,7 @@ function renderAmazonMusicInfo(auth) {
             ? `${auth.host || 'music.amazon.com'} | ${auth.locale || 'en_US'}`
             : 'Amazon Music is not configured.';
     }
-    renderAmazonMusicProviders(auth?.providers || [], auth?.publicApiOnline === true);
+    renderAmazonMusicProviders(auth?.providers || [], auth?.publicApiOnline === true, auth?.publicApiSessionValid === true);
 }
 
 function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {

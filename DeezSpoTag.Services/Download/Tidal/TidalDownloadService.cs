@@ -972,8 +972,16 @@ public sealed class TidalDownloadService
                 return existing;
             }
 
-            throw new InvalidOperationException(
-                "Tidal public download verification is required. Verify Zarz in the Tidal Public API Providers section.");
+            var verificationUrl = await BootstrapZarzSignedSessionNoLockAsync(existing?.InstallId, cancellationToken);
+            existing = await LoadZarzSignedSessionNoLockAsync(cancellationToken);
+            if (existing?.IsUsable == true)
+            {
+                return existing;
+            }
+
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(verificationUrl)
+                ? "Tidal public download verification could not be completed automatically."
+                : "Tidal public download verification requires an interactive challenge and cannot run automatically.");
         }
         finally
         {

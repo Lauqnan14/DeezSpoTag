@@ -7,6 +7,9 @@ using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Services.Download.Amazon;
+using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.Tidal;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -21,6 +24,9 @@ public sealed class PlatformAuthApiDependencies
     public required IAmazonPublicProviderRegistry AmazonPublicProviderRegistry { get; init; }
     public required IQobuzPublicProviderRegistry QobuzPublicProviderRegistry { get; init; }
     public required ITidalPublicProviderRegistry TidalPublicProviderRegistry { get; init; }
+    public required IAmazonDownloadService AmazonDownloadService { get; init; }
+    public required IQobuzDownloadService QobuzDownloadService { get; init; }
+    public required TidalDownloadService TidalDownloadService { get; init; }
     public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
     public required SoulseekConnectionService SoulseekConnectionService { get; init; }
     public required DeezerSessionManager DeezerSessionManager { get; init; }
@@ -54,6 +60,9 @@ public class PlatformAuthApiController : ControllerBase
     private readonly IAmazonPublicProviderRegistry _amazonPublicProviderRegistry;
     private readonly IQobuzPublicProviderRegistry _qobuzPublicProviderRegistry;
     private readonly ITidalPublicProviderRegistry _tidalPublicProviderRegistry;
+    private readonly IAmazonDownloadService _amazonDownloadService;
+    private readonly IQobuzDownloadService _qobuzDownloadService;
+    private readonly TidalDownloadService _tidalDownloadService;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly SoulseekConnectionService _soulseekConnectionService;
     private readonly DeezerSessionManager _deezerSessionManager;
@@ -68,6 +77,9 @@ public class PlatformAuthApiController : ControllerBase
         _amazonPublicProviderRegistry = dependencies.AmazonPublicProviderRegistry;
         _qobuzPublicProviderRegistry = dependencies.QobuzPublicProviderRegistry;
         _tidalPublicProviderRegistry = dependencies.TidalPublicProviderRegistry;
+        _amazonDownloadService = dependencies.AmazonDownloadService;
+        _qobuzDownloadService = dependencies.QobuzDownloadService;
+        _tidalDownloadService = dependencies.TidalDownloadService;
         _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
         _soulseekConnectionService = dependencies.SoulseekConnectionService;
         _deezerSessionManager = dependencies.DeezerSessionManager;
@@ -92,7 +104,7 @@ public class PlatformAuthApiController : ControllerBase
             state = await RefreshSoulseekConnectionAsync(state, cancellationToken);
         }
         var amazonProviders = await GetPublicAmazonProvidersAsync(cancellationToken);
-        var qobuzProviders = GetDisabledQobuzProviders();
+        var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
         var tidalProviders = await GetPublicTidalProvidersAsync(cancellationToken);
 
         return Ok(new
@@ -233,8 +245,7 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await Task.CompletedTask;
-        return Ok(GetDisabledQobuzProviders());
+        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
     }
 
     [HttpPut("qobuz/providers/{providerId}/enabled")]
@@ -250,8 +261,8 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("Enabled is required.");
         }
 
-        await Task.CompletedTask;
-        return NotFound("Qobuz public API providers are disabled.");
+        var updated = await _qobuzPublicProviderRegistry.SetEnabledAsync(providerId, enabled, cancellationToken);
+        return updated is null ? NotFound("Unknown Qobuz provider.") : Ok(ToPublicProvider(updated));
     }
 
     [HttpPost("qobuz/providers/check")]
@@ -259,8 +270,8 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await Task.CompletedTask;
-        return Ok(GetDisabledQobuzProviders());
+        await _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
+        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
     }
 
     [HttpGet("public-providers/status")]
@@ -274,14 +285,17 @@ public class PlatformAuthApiController : ControllerBase
         if (check)
         {
             await Task.WhenAll(
+                _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
                 _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
                 _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken));
         }
 
+        var qobuz = await GetPublicQobuzProvidersAsync(cancellationToken);
         var amazon = await GetPublicAmazonProvidersAsync(cancellationToken);
         var tidal = await GetPublicTidalProvidersAsync(cancellationToken);
         return Ok(new
         {
+            qobuz = new { status = qobuz.Status, onlineCount = qobuz.OnlineCount },
             amazonMusic = new { status = amazon.Status, onlineCount = amazon.OnlineCount },
             tidal = new { status = tidal.Status, onlineCount = tidal.OnlineCount }
         });
@@ -402,7 +416,7 @@ public class PlatformAuthApiController : ControllerBase
             return state.Qobuz;
         });
 
-        var providers = GetDisabledQobuzProviders();
+        var providers = await GetPublicQobuzProvidersAsync(cancellationToken);
         return Ok(new { saved = true, qobuz = ToPublicQobuz(qobuz, providers) });
     }
 
@@ -812,6 +826,7 @@ public class PlatformAuthApiController : ControllerBase
             publicApiOnline = providers.Online,
             publicApiStatus = providers.Status,
             publicApiOnlineCount = providers.OnlineCount,
+            publicApiSessionValid = providers.SessionValid,
             connected,
             providers = providers.Providers
         };
@@ -830,6 +845,7 @@ public class PlatformAuthApiController : ControllerBase
         publicApiOnline = providers.Online,
         publicApiStatus = providers.Status,
         publicApiOnlineCount = providers.OnlineCount,
+        publicApiSessionValid = providers.SessionValid,
         connected = auth?.CredentialsValid == true,
         providers = providers.Providers
     };
@@ -886,14 +902,28 @@ public class PlatformAuthApiController : ControllerBase
         };
     }
 
-    private static QobuzProviderSummary GetDisabledQobuzProviders()
-        => new(false, 0, "unknown", []);
+    private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken)
+    {
+        var providers = (await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicProvider).ToArray();
+        var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
+        var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
+        var sessionValid = await _qobuzDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
+        var online = enabledProviders.Length > 0
+            && onlineCount == enabledProviders.Length
+            && sessionValid;
+        return new QobuzProviderSummary(
+            online,
+            online ? onlineCount : 0,
+            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid),
+            sessionValid,
+            providers);
+    }
 
     private static QobuzProviderView ToPublicProvider(QobuzPublicProvider provider)
         => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
 
     public sealed record QobuzProviderEnabledRequest(bool? Enabled);
-    private sealed record QobuzProviderSummary(bool Online, int OnlineCount, string Status, QobuzProviderView[] Providers);
+    private sealed record QobuzProviderSummary(bool Online, int OnlineCount, string Status, bool SessionValid, QobuzProviderView[] Providers);
     private sealed record QobuzProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
 
     private async Task<TidalProviderSummary> GetPublicTidalProvidersAsync(CancellationToken cancellationToken)
@@ -901,11 +931,15 @@ public class PlatformAuthApiController : ControllerBase
         var providers = (await _tidalPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicTidalProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
         var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
-        var online = onlineCount > 0;
+        var sessionValid = await _tidalDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
+        var online = enabledProviders.Length > 0
+            && onlineCount == enabledProviders.Length
+            && sessionValid;
         return new TidalProviderSummary(
             online,
-            onlineCount,
-            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked)),
+            online ? onlineCount : 0,
+            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid),
+            sessionValid,
             providers);
     }
 
@@ -913,7 +947,7 @@ public class PlatformAuthApiController : ControllerBase
         => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
 
     public sealed record TidalProviderEnabledRequest(bool? Enabled);
-    private sealed record TidalProviderSummary(bool Online, int OnlineCount, string Status, TidalProviderView[] Providers);
+    private sealed record TidalProviderSummary(bool Online, int OnlineCount, string Status, bool SessionValid, TidalProviderView[] Providers);
     private sealed record TidalProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
 
     private static bool IsChecked(QobuzProviderView provider)
@@ -922,11 +956,16 @@ public class PlatformAuthApiController : ControllerBase
     private static bool IsChecked(TidalProviderView provider)
         => provider.LastCheckedAt.HasValue && provider.Status != "unknown";
 
-    private static string ResolvePublicApiStatus(int enabledProviderCount, bool online, bool allChecked)
+    private static string ResolvePublicApiStatus(int enabledProviderCount, bool online, bool allChecked, bool sessionValid)
     {
         if (online)
         {
             return "online";
+        }
+
+        if (enabledProviderCount > 0 && !sessionValid)
+        {
+            return "offline";
         }
 
         return enabledProviderCount > 0 && allChecked ? "offline" : "unknown";
@@ -1106,11 +1145,15 @@ public class PlatformAuthApiController : ControllerBase
         var providers = (await _amazonPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicAmazonProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
         var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
-        var online = onlineCount > 0;
+        var sessionValid = await _amazonDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
+        var online = enabledProviders.Length > 0
+            && onlineCount == enabledProviders.Length
+            && sessionValid;
         return new AmazonProviderSummary(
             online,
-            onlineCount,
-            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked)),
+            online ? onlineCount : 0,
+            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid),
+            sessionValid,
             providers);
     }
 
@@ -1118,7 +1161,7 @@ public class PlatformAuthApiController : ControllerBase
         => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
 
     public sealed record AmazonProviderEnabledRequest(bool? Enabled);
-    private sealed record AmazonProviderSummary(bool Online, int OnlineCount, string Status, AmazonProviderView[] Providers);
+    private sealed record AmazonProviderSummary(bool Online, int OnlineCount, string Status, bool SessionValid, AmazonProviderView[] Providers);
     private sealed record AmazonProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
 
     private static bool IsChecked(AmazonProviderView provider)
@@ -1139,6 +1182,7 @@ public class PlatformAuthApiController : ControllerBase
             publicApiOnline = providers.Online,
             publicApiStatus = providers.Status,
             publicApiOnlineCount = providers.OnlineCount,
+            publicApiSessionValid = providers.SessionValid,
             providers = providers.Providers
         };
     }
