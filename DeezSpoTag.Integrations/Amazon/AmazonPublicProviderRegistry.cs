@@ -41,9 +41,9 @@ public static class AmazonPublicProviderDefaults
     [
         new(
             "zarz-api",
-            "Zarz API",
+            "Amazon Music API v2.2.0",
             DownloadProviderKind,
-            "https://api.zarz.moe/v1/dl/amazeamazeamaze",
+            "https://api.zarz.moe/v2/dl/amazeamazeamaze",
             "https://api.zarz.moe/v2/health",
             null)
     ];

@@ -25,10 +25,12 @@ public sealed class AmazonDownloadApiController : ControllerBase
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly DownloadDedupeService _dedupeService;
+    private readonly IAmazonDownloadService _amazonDownloadService;
     private readonly ILogger<AmazonDownloadApiController> _logger;
 
     public AmazonDownloadApiController(
         DownloadControllerServices services,
+        IAmazonDownloadService amazonDownloadService,
         ILogger<AmazonDownloadApiController> logger)
     {
         _queueRepository = services.QueueRepository;
@@ -38,7 +40,40 @@ public sealed class AmazonDownloadApiController : ControllerBase
         _spotifyIdResolver = services.SpotifyIdResolver;
         _libraryRepository = services.LibraryRepository;
         _dedupeService = services.DedupeService;
+        _amazonDownloadService = amazonDownloadService;
         _logger = logger;
+    }
+
+    [HttpGet("public-session")]
+    public async Task<IActionResult> GetPublicSession(CancellationToken cancellationToken)
+        => Ok(new
+        {
+            authenticated = await _amazonDownloadService.HasPublicDownloadSessionAsync(cancellationToken)
+        });
+
+    [HttpPost("public-session/start")]
+    public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken)
+    {
+        var verificationUrl = await _amazonDownloadService.BeginPublicDownloadVerificationAsync(cancellationToken);
+        return Ok(new
+        {
+            authenticated = string.IsNullOrWhiteSpace(verificationUrl),
+            verificationUrl
+        });
+    }
+
+    [HttpPost("public-session/complete")]
+    public async Task<IActionResult> CompletePublicSession(
+        [FromBody] AmazonPublicDownloadGrantRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Grant))
+        {
+            return BadRequest(new { error = "Amazon public download verification grant is required." });
+        }
+
+        await _amazonDownloadService.CompletePublicDownloadVerificationAsync(request.Grant, cancellationToken);
+        return Ok(new { authenticated = true });
     }
 
     [HttpPost]
@@ -118,4 +153,9 @@ public sealed class AmazonDownloadBatchRequest : EngineDownloadBatchRequestBase
 public sealed class AmazonDownloadTrackDto : EngineDownloadTrackDtoBase
 {
     public string? AmazonId { get; set; }
+}
+
+public sealed class AmazonPublicDownloadGrantRequest
+{
+    public string Grant { get; set; } = string.Empty;
 }

@@ -1,5 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Globalization;
 using System.Linq;
 using IOFile = System.IO.File;
 using DeezSpoTag.Services.Download;
@@ -8,11 +11,23 @@ using DeezSpoTag.Services.Download.Utils;
 using System.Diagnostics;
 using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Amazon;
 
 public sealed class AmazonDownloadService : IAmazonDownloadService
 {
+    private const string ZarzBaseUrl = "https://api.zarz.moe/v2";
+    private const string ZarzDownloadPath = "/dl/amazeamazeamaze";
+    private const string ZarzTicketPath = "/tickets";
+    private const string ZarzBootstrapPath = "/bootstrap";
+    private const string ZarzChallengePath = "/challenge";
+    private const string ZarzExchangePath = "/session/exchange";
+    private const string ZarzAppVersion = "amzn@2.2.0";
+    private const string ZarzPlatform = "extension";
+    private const string ZarzScheme = "ZARZ-HMAC-V1";
+    private const int ZarzTimeWindowSeconds = 300;
+    private const string ZarzSessionFileName = "zarz-signed-session.json";
     private const string FlacExtension = ".flac";
     private const string ErrorLogLevel = "error";
     private static readonly string[] FfmpegExecutableNamesWindows = ["ffmpeg.exe", "ffmpeg"];
@@ -27,6 +42,8 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     private readonly ILogger<AmazonDownloadService> _logger;
     private readonly IAmazonPublicProviderRegistry _publicProviderRegistry;
     private readonly HttpClient _client;
+    private readonly string _zarzSessionPath;
+    private readonly SemaphoreSlim _zarzSessionGate = new(1, 1);
     public AmazonDownloadService(
         ILogger<AmazonDownloadService> logger,
         IAmazonPublicProviderRegistry publicProviderRegistry)
@@ -37,6 +54,7 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         {
             Timeout = TimeSpan.FromMinutes(2)
         };
+        _zarzSessionPath = Path.Join(DeezSpoTagDataRootResolver.Resolve(), "amazon", ZarzSessionFileName);
     }
 
     public async Task<string> DownloadAsync(
@@ -143,19 +161,17 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                var apiUrl = BuildAmazonMediaApiUrl(provider.Endpoint, asin, codec);
-                using var request = CreateGetRequestWithRandomUserAgent(apiUrl);
-                using var response = await _client.SendAsync(request, cancellationToken);
+                using var response = await SendZarzDownloadRequestAsync(asin, codec, cancellationToken);
                 stopwatch.Stop();
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
                     var category = ClassifyDownloadFailure(response.StatusCode);
                     await _publicProviderRegistry.RecordFailureAsync(provider.Id, category, stopwatch.ElapsedMilliseconds, cancellationToken);
-                    lastError = new InvalidOperationException($"Amazon download API failed ({(int)response.StatusCode}).");
+                    lastError = new InvalidOperationException(BuildZarzFailure("Amazon download API", response, body));
                     continue;
                 }
 
-                var body = await response.Content.ReadAsStringAsync(cancellationToken);
                 var media = DeserializeZarzMedia(body);
                 if (string.IsNullOrWhiteSpace(media?.Audio?.Url))
                 {
@@ -209,16 +225,314 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
         throw lastError ?? new InvalidOperationException("Amazon download URL not available.");
     }
 
-    private static string BuildAmazonMediaApiUrl(string endpoint, string asin, string codec)
+    private async Task<HttpResponseMessage> SendZarzDownloadRequestAsync(
+        string asin,
+        string codec,
+        CancellationToken cancellationToken)
     {
-        var baseEndpoint = (endpoint ?? string.Empty).Trim().TrimEnd('/');
-        if (string.IsNullOrWhiteSpace(baseEndpoint))
+        var ticket = await RequestZarzTicketAsync(asin, cancellationToken);
+        return await SendZarzSignedRequestAsync(
+            HttpMethod.Post,
+            ZarzDownloadPath,
+            JsonSerializer.SerializeToUtf8Bytes(new { asin, codec }),
+            new Dictionary<string, string> { ["X-Zarz-Ticket"] = ticket },
+            cancellationToken);
+    }
+
+    private async Task<string> RequestZarzTicketAsync(string asin, CancellationToken cancellationToken)
+    {
+        var resourceHash = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes($"amazeamazeamaze:track:{asin.ToLowerInvariant()}")))
+            .ToLowerInvariant();
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new
         {
-            throw new InvalidOperationException("Amazon public download API endpoint is not configured.");
+            capability = "download_ticket",
+            provider = "amazeamazeamaze",
+            resource_hash = resourceHash
+        });
+        using var response = await SendZarzSignedRequestAsync(
+            HttpMethod.Post,
+            ZarzTicketPath,
+            payload,
+            null,
+            cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(BuildZarzFailure("Amazon ticket provider", response, body));
         }
 
-        return $"{baseEndpoint}/media?asin={Uri.EscapeDataString(asin)}&codec={Uri.EscapeDataString(codec)}";
+        var ticket = JsonSerializer.Deserialize<ZarzTicketResponse>(body, SerializerOptions);
+        var value = !string.IsNullOrWhiteSpace(ticket?.TicketId) ? ticket.TicketId : ticket?.Ticket;
+        return !string.IsNullOrWhiteSpace(value)
+            ? value
+            : throw new InvalidOperationException("Amazon ticket provider did not return a ticket.");
     }
+
+    private async Task<HttpResponseMessage> SendZarzSignedRequestAsync(
+        HttpMethod method,
+        string path,
+        byte[] body,
+        IReadOnlyDictionary<string, string>? headers,
+        CancellationToken cancellationToken)
+    {
+        var session = await EnsureZarzSessionAsync(cancellationToken);
+        var uri = BuildZarzUri(path);
+        var timestamp = DateTimeOffset.UtcNow;
+        var timestampValue = timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
+        var bodyHash = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
+        var window = timestamp.ToUnixTimeSeconds() / ZarzTimeWindowSeconds;
+        var rollingInput = $"{window}:{session.SessionId}";
+        var rollingKey = Base64UrlNoPadding(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(session.SessionSecret),
+            Encoding.UTF8.GetBytes(rollingInput)));
+        var escapedPath = uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped);
+        var canonical = string.Join('\n',
+            ZarzScheme,
+            method.Method.ToUpperInvariant(),
+            "/" + escapedPath.TrimStart('/'),
+            string.Empty,
+            bodyHash,
+            timestampValue,
+            nonce,
+            session.SessionId,
+            ZarzAppVersion,
+            ZarzPlatform);
+        var signature = Base64UrlNoPadding(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(rollingKey),
+            Encoding.UTF8.GetBytes(canonical)));
+
+        var request = new HttpRequestMessage(method, uri)
+        {
+            Content = new ByteArrayContent(body)
+        };
+        request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+        request.Headers.TryAddWithoutValidation("X-Zarz-Session", session.SessionId);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Timestamp", timestampValue);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Nonce", nonce);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Body-SHA256", bodyHash);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Signature", signature);
+        request.Headers.TryAddWithoutValidation("X-Zarz-App-Version", ZarzAppVersion);
+        request.Headers.TryAddWithoutValidation("X-Zarz-Platform", ZarzPlatform);
+        if (headers is not null)
+        {
+            foreach (var header in headers)
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        var response = await _client.SendAsync(request, cancellationToken);
+        if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+        {
+            await ClearZarzSessionAsync(cancellationToken);
+        }
+        return response;
+    }
+
+    private async Task<ZarzSessionRecord> EnsureZarzSessionAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var session = await LoadZarzSessionNoLockAsync(cancellationToken);
+            return session?.IsUsable == true
+                ? session
+                : throw new InvalidOperationException(
+                    "Amazon public download verification is required. Verify Amazon Music API v2.2.0 in the Amazon Music Public API Providers section.");
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    public async Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            return (await LoadZarzSessionNoLockAsync(cancellationToken))?.IsUsable == true;
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    public async Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var current = await LoadZarzSessionNoLockAsync(cancellationToken);
+            if (current?.IsUsable == true)
+            {
+                return null;
+            }
+            return await BootstrapZarzSessionNoLockAsync(current?.InstallId, cancellationToken);
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    public async Task CompletePublicDownloadVerificationAsync(string grant, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(grant))
+        {
+            throw new ArgumentException("Amazon public download grant is required.", nameof(grant));
+        }
+
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            var record = await LoadZarzSessionNoLockAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Start Amazon public download verification first.");
+            var payload = JsonSerializer.Serialize(new
+            {
+                grant = grant.Trim(),
+                install_id = record.InstallId,
+                app_version = ZarzAppVersion,
+                platform = ZarzPlatform
+            });
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildZarzUri(ZarzExchangePath))
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+            request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+            using var response = await _client.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(BuildZarzFailure("Amazon session exchange", response, body));
+            }
+
+            var exchanged = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
+            record.SessionId = exchanged?.SessionId ?? string.Empty;
+            record.SessionSecret = exchanged?.SessionSecret ?? string.Empty;
+            record.ExpiresAt = ParseZarzExpiry(exchanged?.ExpiresAt);
+            if (!record.IsUsable)
+            {
+                throw new InvalidOperationException("Amazon session exchange did not return a usable session.");
+            }
+            await SaveZarzSessionNoLockAsync(record, cancellationToken);
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    private async Task<string> BootstrapZarzSessionNoLockAsync(string? installId, CancellationToken cancellationToken)
+    {
+        installId = string.IsNullOrWhiteSpace(installId)
+            ? Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant()
+            : installId;
+        var builder = new UriBuilder(BuildZarzUri(ZarzBootstrapPath))
+        {
+            Query = string.Join('&', new Dictionary<string, string>
+            {
+                ["install_id"] = installId,
+                ["app_version"] = ZarzAppVersion,
+                ["platform"] = ZarzPlatform,
+                ["callback_url"] = "https://api.zarz.moe/v2/session/callback"
+            }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
+        request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
+        using var response = await _client.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(BuildZarzFailure("Amazon session bootstrap", response, body));
+        }
+
+        var payload = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
+        var record = new ZarzSessionRecord
+        {
+            InstallId = installId,
+            SessionId = payload?.SessionId ?? string.Empty,
+            SessionSecret = payload?.SessionSecret ?? string.Empty,
+            ExpiresAt = ParseZarzExpiry(payload?.ExpiresAt)
+        };
+        await SaveZarzSessionNoLockAsync(record, cancellationToken);
+        if (record.IsUsable)
+        {
+            return string.Empty;
+        }
+        return !string.IsNullOrWhiteSpace(payload?.ChallengeId)
+            ? BuildZarzChallengeUrl(payload.ChallengeId)
+            : throw new InvalidOperationException("Amazon session bootstrap did not return a verification challenge.");
+    }
+
+    private async Task<ZarzSessionRecord?> LoadZarzSessionNoLockAsync(CancellationToken cancellationToken)
+    {
+        if (!IOFile.Exists(_zarzSessionPath))
+        {
+            return null;
+        }
+        try
+        {
+            return JsonSerializer.Deserialize<ZarzSessionRecord>(
+                await IOFile.ReadAllTextAsync(_zarzSessionPath, cancellationToken),
+                SerializerOptions);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load Amazon signed session.");
+            return null;
+        }
+    }
+
+    private async Task SaveZarzSessionNoLockAsync(ZarzSessionRecord record, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_zarzSessionPath) ?? DeezSpoTagDataRootResolver.Resolve());
+        await IOFile.WriteAllTextAsync(_zarzSessionPath, JsonSerializer.Serialize(record, SerializerOptions), cancellationToken);
+        if (!OperatingSystem.IsWindows())
+        {
+            IOFile.SetUnixFileMode(_zarzSessionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    private async Task ClearZarzSessionAsync(CancellationToken cancellationToken)
+    {
+        await _zarzSessionGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (IOFile.Exists(_zarzSessionPath))
+            {
+                IOFile.Delete(_zarzSessionPath);
+            }
+        }
+        finally
+        {
+            _zarzSessionGate.Release();
+        }
+    }
+
+    private static Uri BuildZarzUri(string path) => new($"{ZarzBaseUrl.TrimEnd('/')}/{path.TrimStart('/')}");
+
+    private static string BuildZarzChallengeUrl(string challengeId)
+    {
+        var builder = new UriBuilder(BuildZarzUri(ZarzChallengePath))
+        {
+            Query = $"id={Uri.EscapeDataString(challengeId)}"
+        };
+        return builder.Uri.ToString();
+    }
+
+    private static string BuildZarzFailure(string name, HttpResponseMessage response, string body)
+        => $"{name} failed with HTTP {(int)response.StatusCode}: {body.Trim()}";
+
+    private static DateTimeOffset? ParseZarzExpiry(string? value)
+        => DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
+
+    private static string Base64UrlNoPadding(byte[] value)
+        => Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     private static string ClassifyDownloadFailure(System.Net.HttpStatusCode statusCode)
         => statusCode == System.Net.HttpStatusCode.TooManyRequests
@@ -566,6 +880,44 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     {
         [JsonPropertyName("audio")]
         public ZarzAudioResponse? Audio { get; set; }
+    }
+
+    private sealed class ZarzSessionRecord
+    {
+        public string InstallId { get; set; } = string.Empty;
+        public string SessionId { get; set; } = string.Empty;
+        public string SessionSecret { get; set; } = string.Empty;
+        public DateTimeOffset? ExpiresAt { get; set; }
+
+        [JsonIgnore]
+        public bool IsUsable =>
+            !string.IsNullOrWhiteSpace(SessionId)
+            && !string.IsNullOrWhiteSpace(SessionSecret)
+            && (!ExpiresAt.HasValue || ExpiresAt.Value > DateTimeOffset.UtcNow);
+    }
+
+    private sealed class ZarzBootstrapResponse
+    {
+        [JsonPropertyName("session_id")]
+        public string? SessionId { get; set; }
+
+        [JsonPropertyName("session_secret")]
+        public string? SessionSecret { get; set; }
+
+        [JsonPropertyName("expires_at")]
+        public string? ExpiresAt { get; set; }
+
+        [JsonPropertyName("challenge_id")]
+        public string? ChallengeId { get; set; }
+    }
+
+    private sealed class ZarzTicketResponse
+    {
+        [JsonPropertyName("ticket_id")]
+        public string? TicketId { get; set; }
+
+        [JsonPropertyName("ticket")]
+        public string? Ticket { get; set; }
     }
 
     private sealed class ZarzAudioResponse
